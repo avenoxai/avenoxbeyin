@@ -327,7 +327,14 @@ def _prepare_stage(
     daily_path: Path,
 ) -> tuple[Path, dict[str, str | None]]:
     state_dir.mkdir(parents=True, exist_ok=True)
-    stage = Path(tempfile.mkdtemp(prefix="compile-stage-", dir=state_dir))
+    # The stage MUST live outside .claude/. Claude Code treats writes under that
+    # directory as sensitive and asks for approval even with
+    # --permission-mode acceptEdits; headless (-p) there is nobody to answer, so
+    # the subagent gives up and exits 0 having written nothing. The run then
+    # dies as "no-allowed-file-changes" with no hint of why. Staging in the
+    # system temp dir keeps every boundary check intact: _promote_changes
+    # validates against the LIVE knowledge root, not the stage path.
+    stage = Path(tempfile.mkdtemp(prefix="compile-stage-"))
     stage.chmod(0o700)
     live_baseline: dict[str, str | None] = {}
     try:

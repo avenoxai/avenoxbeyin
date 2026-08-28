@@ -823,8 +823,12 @@ raise SystemExit(int(os.environ.get("BEYIN_TEST_EXIT", "0")))
             ],
         )
         call_cwd = Path(str(call["cwd"]))
-        self.assertEqual(call_cwd.parent.resolve(), self.state.resolve())
+        self.assertEqual(
+            call_cwd.parent.resolve(),
+            Path(tempfile.gettempdir()).resolve(),
+        )
         self.assertTrue(call_cwd.name.startswith("compile-stage-"))
+        self.assertFalse(call_cwd.exists())
         self.assertEqual(call["guard"], "beyin-scripts")
 
     def test_compile_stops_batch_on_first_failure(self) -> None:
