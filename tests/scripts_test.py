@@ -681,8 +681,15 @@ raise SystemExit(int(os.environ.get("BEYIN_TEST_EXIT", "0")))
             ],
         )
         call_cwd = Path(str(call["cwd"]))
-        self.assertEqual(call_cwd.parent.resolve(), self.state.resolve())
-        self.assertTrue(call_cwd.name.startswith("compile-stage-"))
+        # The stage must live outside the vault entirely (and thus outside
+        # .claude/), not under state_dir: Claude CLI auto-protects any path
+        # inside a project's .claude/ as "sensitive" and silently refuses
+        # Write/Edit there even under --permission-mode acceptEdits.
+        self.assertNotEqual(
+            os.path.commonpath([call_cwd.resolve(), self.vault.resolve()]),
+            str(self.vault.resolve()),
+        )
+        self.assertTrue(call_cwd.name.startswith("beyin-compile-stage-"))
         self.assertEqual(call["guard"], "beyin-scripts")
 
     def test_compile_stops_batch_on_first_failure(self) -> None:

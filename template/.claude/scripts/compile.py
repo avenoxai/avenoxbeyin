@@ -317,8 +317,23 @@ def _prepare_stage(
     daily_path: Path,
 ) -> tuple[Path, dict[str, str | None]]:
     state_dir.mkdir(parents=True, exist_ok=True)
-    stage = Path(tempfile.mkdtemp(prefix="compile-stage-", dir=state_dir))
+    # Staged outside the vault (system tempdir), not under state_dir/.claude/:
+    # Claude CLI auto-protects any path inside a project's .claude/ as
+    # "sensitive" and silently refuses Write/Edit there even under
+    # --permission-mode acceptEdits, which made every real compile run fail
+    # with no-allowed-file-changes.
+    stage = Path(tempfile.mkdtemp(prefix="beyin-compile-stage-"))
     stage.chmod(0o700)
+    try:
+        inside_vault = (
+            os.path.commonpath([stage.resolve(), vault_root.resolve()])
+            == str(vault_root.resolve())
+        )
+    except ValueError:
+        inside_vault = False
+    if inside_vault:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise PolicyError("stage-inside-vault")
     live_baseline: dict[str, str | None] = {}
     try:
         knowledge_source = vault_root / "knowledge"
