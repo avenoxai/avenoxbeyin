@@ -25,7 +25,11 @@ Terminalde `claude` çalıştır ve şunu yapıştır:
 Read https://avenox.lol/beyin.md and follow it exactly to build my second brain.
 ```
 
-Ya da repoyu doğrudan klonla, üç komut:
+Bu tek satırlık giriş önce platformu ayırır: macOS/Linux mevcut `SETUP.md` yolunda kalır, yerel
+Windows `SETUP-WINDOWS.md` + PowerShell kurucusuna geçer, WSL ise tamamen aynı Linux dağıtımı
+içinde kalan POSIX yolunu kullanır. Böylece Windows'ta Bash/macOS komutları çalıştırılmaz.
+
+Ya da macOS, Linux veya WSL'de repoyu doğrudan klonla, üç komut:
 
 ```bash
 git clone https://github.com/avenoxai/avenoxbeyin.git
@@ -36,7 +40,8 @@ claude "Read SETUP.md and follow it exactly to set up my second brain from this 
 Claude birkaç soru sorar (adın, ne iş yaptığın, AI ortağının adı), vault'u kurar, kancaları bağlar,
 masaüstüne 🧠 ikonlu bir kısayol koyar.
 
-Codex kullanıyorsan aynı repoda `codex` açıp `SETUP.md` dosyasını uygulatabilirsin. Kurulum
+Codex kullanıyorsan bu POSIX yolda aynı repoda `codex` açıp `SETUP.md` dosyasını
+uygulatabilirsin. Kurulum
 `AGENTS.md`, `.agents/skills` ve mutlak yollu `.codex/hooks.json` üretir. İlk açılışta Codex'in
 `/hooks` ekranından proje kancalarını onaylaman gerekir; güven hash'leri kullanıcı adına
 değiştirilmez. Claude Code ve Codex aynı router, skill ve kanca kodunu okur; iki ayrı kopya yoktur.
@@ -164,14 +169,15 @@ Sonnet çağrısı).
 ## Gereksinimler
 
 Zorunlu, her platformda: [Claude Code](https://claude.com/claude-code),
-[Obsidian](https://obsidian.md) ve `python3` (macOS'ta Command Line Tools ile gelir). `python3`
-opsiyonel değil: günlük log da gece derlemesi de onun üstünde çalışır.
+[Obsidian](https://obsidian.md) ve Python 3 (macOS/Linux'ta `python3`; yerel Windows'ta çalışan
+`python` veya `python3`). Python opsiyonel değil: günlük log da gece derlemesi de onun üstünde
+çalışır.
 
 | Platform | Durum | Ne çalışır, ne çalışmaz |
 | --- | --- | --- |
 | macOS | **test edildi** | hepsi: kancalar, `daily/`, `knowledge/`, 🧠 masaüstü kısayolu |
 | Linux | **test edilmedi** | kurulum `uname` ile dallanır: Homebrew, Obsidian cask ve macOS `.app` adımları atlanır, yerine XDG `.desktop` kısayolu yazılır. Vault, kancalar ve scriptler taşınabilir yazıldı ama gerçek bir Linux masaüstünde doğrulanmadı. Denersen sorun aç. |
-| Windows | WSL, **veya** yerel Windows | WSL içinde Linux yolu geçerli. Yerel Windows için: [`SETUP-WINDOWS.md`](SETUP-WINDOWS.md) — bkz. [`docs/WINDOWS-PORT.md`](docs/WINDOWS-PORT.md). |
+| Windows | WSL, **veya** yerel Windows | Tek satırlık `beyin.md` girişi iki yolu ayırır. Yerel Windows için [`SETUP-WINDOWS.md`](SETUP-WINDOWS.md). WSL'de motor ve vault aynı Linux dağıtımında, Linux dosya sisteminde kalır; Windows Obsidian ile karma çalışma doğrulanmış sayılmaz. Bkz. [`docs/WINDOWS-PORT.md`](docs/WINDOWS-PORT.md). |
 
 Masaüstü kısayolu macOS'ta `osacompile` ve AppKit kullanır, ikisi de Linux'ta yoktur. Vault'un
 kendisi düz Markdown, yani her yerde açılır; kurulum akışının tamamı için doğrulanmış tek platform
@@ -209,10 +215,11 @@ to write its memory files. v2's thesis is that **memory must be a mechanism, not
 a small background Haiku call, and once a day a Sonnet compile pass turns those logs into linked
 articles under `knowledge/`. The next session starts with that knowledge index already in context.
 
-Install: `git clone https://github.com/avenoxai/avenoxbeyin.git && cd avenoxbeyin && claude "Read
-SETUP.md and follow it exactly to set up my second brain from this template."` Codex can follow
-the same `SETUP.md`; its project hooks are rendered with absolute paths and require one-time
-approval in `/hooks`. Already running v1 or v2.0?
+On macOS, Linux, or WSL, install with `git clone https://github.com/avenoxai/avenoxbeyin.git && cd
+avenoxbeyin && claude "Read SETUP.md and follow it exactly to set up my second brain from this
+template."` Codex can follow the same `SETUP.md`; its project hooks are rendered with absolute
+paths and require one-time approval in `/hooks`. On native Windows, use the same clone but ask
+Claude Code to read `SETUP-WINDOWS.md`; do not run the Bash installer. Already running v1 or v2.0?
 The same command detects it and hands the work to one committed script, `scripts/upgrade.sh`:
 additive only, your memory files are never touched, the settings merge is idempotent, and it takes
 a **verified** git snapshot before it changes anything. Two things it will ask you about, and stop

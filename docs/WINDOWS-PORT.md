@@ -4,6 +4,23 @@ Bu belge `SETUP-WINDOWS.md` yolunun neden var olduğunu ve upstream'den nerede
 ayrıldığını anlatır. Her madde ölçülmüş bir gözleme dayanır; ölçülmemiş olanlar
 en sonda ayrıca listelenir.
 
+## Tek satırlık `beyin.md` girişi artık doğru lane'i seçer
+
+Yerel Windows motorunun var olması tek başına yeterli değildi. Public giriş dosyası
+`docs/beyin-v2.md`, platformu ayırmadan `/tmp`, Bash ve `SETUP.md` akışına giriyordu; dolayısıyla
+Sıfırdan izleyicisinin kopyaladığı tek satır Windows kurucusuna hiç ulaşmayabiliyordu.
+
+Giriş kapısı artık hedef vault'a yazmadan önce üç lane seçer:
+
+| Ortam | Seçilen yol | Sınır |
+| --- | --- | --- |
+| macOS / Linux | Mevcut `SETUP.md` | macOS akışı değiştirilmedi |
+| Yerel Windows | Fresh temp clone -> `SETUP-WINDOWS.md` -> `install.ps1` | Yalnız temiz kurulum |
+| WSL | `SETUP.md`, tamamen aynı WSL dağıtımı içinde | Vault Linux filesystem'de; karma Windows Obsidian runtime'ı doğrulanmış değil |
+
+Bu ayrım `tests/entrypoint_test.py` ile repo seviyesinde kilitlenir. Yerel Windows kurucusunun
+çalışan davranışı ayrıca Windows CI'daki preflight, temiz kurulum ve motor testleriyle ölçülür.
+
 ## Neden ayrı bir yol var
 
 Upstream'in kendi README'si Windows'u boşluk olarak işaretliyor:
@@ -100,8 +117,8 @@ Stub'lanan tek şey `claude`'dur; kurulum, kancalar, ayırma ve motor gerçektir
 
 ## Ne iddia etmiyoruz
 
-- **Bu port upstream'de test edilmedi.** Windows 11 + PowerShell 7 + Python 3
-  üzerinde ölçüldü, resmî değildir.
+- **Bu port fiziksel bir izleyici Windows makinesinde test edilmedi.** Windows 11 + PowerShell 7 +
+  Python 3 üzerinde CI ve katkıcı doğrulamasıyla ölçüldü, resmî Microsoft/Anthropic desteği değildir.
 - **Symlink güvenlik testi Windows'ta kurulamıyor.** `WinError 1314` yüzünden
   saldırı sahnelenemediği için `skipUnless` ile atlanır; o yüzeyde upstream'in
   güvencesine sahip değiliz. Not: junction ve hardlink varyantları ölçüldü ve

@@ -32,7 +32,9 @@ one executing it.
 1. **Speak Turkish to the user by default.** The audience is Turkish. Match the language they
    write in, but default to warm, direct Turkish. This file is English only so your instructions
    stay precise; the system you build talks to them in Turkish.
-2. **Interview first, build second.** Do the interview before touching the filesystem.
+2. **Route first, interview second, build third.** Complete STEP -1 before the interview or any
+   target-vault write. Native Windows has a separate, fail-closed runbook; never feed it the Bash
+   path below.
 3. **Never destroy.** If a target file or folder exists, show it and ask. Default to merge or skip,
    never a silent clobber. If the user already has a brain, their memory files are read-only for
    you.
@@ -61,6 +63,65 @@ Placeholders you must resolve:
 | `{{SCOPE}}` | soru 4 | `core+goals` |
 | `{{USE_MEM0}}` | soru 5 | `evet` |
 | `{{TODAY}}` | `date +%F` | `2026-08-22` |
+
+---
+
+## STEP -1: Platform gate (before every other step)
+
+Classify the environment **before** asking questions, scanning for an existing brain, cloning to
+`/tmp`, or running any Bash block in this file. Use facts from the current shell; do not infer the
+platform from path style alone.
+
+- In PowerShell, inspect `$env:OS`, `$env:WSL_DISTRO_NAME` and `$PSVersionTable`.
+- In a POSIX shell, inspect `uname -s`, `$WSL_DISTRO_NAME`, and `/proc/version` when it exists.
+- `WSL_DISTRO_NAME` or a Linux kernel containing `Microsoft` means **WSL**, not native Windows.
+- `OS=Windows_NT` without WSL means **native Windows**.
+- `uname -s = Darwin` means macOS. Other Linux kernels mean Linux.
+
+Report the detected lane in one short Turkish sentence, then follow exactly one route:
+
+### Native Windows: hand off and stop this file
+
+Do **not** execute STEP 0, the `/tmp` clone, `SETUP.md`, `upgrade.sh`, or any later Bash command in
+this file. Native Windows is a clean-install-only lane.
+
+First prove that Git runs. If `Get-Command git` or `git --version` fails, show this command and ask
+before installing it; do not run software installation without approval:
+
+```powershell
+winget install --id Git.Git --source winget
+```
+
+When Git works, clone into a fresh system-temp directory so an old checkout is never deleted or
+silently reused:
+
+```powershell
+$BeyinRepo = Join-Path $env:TEMP ("avenoxbeyin-" + [guid]::NewGuid().ToString("N"))
+git clone https://github.com/avenoxai/avenoxbeyin.git $BeyinRepo
+if ($LASTEXITCODE -ne 0) { throw "avenoxbeyin klonlanamadi; kurulum baslatilmadi" }
+Set-Location $BeyinRepo
+```
+
+Read `SETUP-WINDOWS.md` completely and follow it exactly. Its first action is a read-only
+dependency gate; it writes nothing to the target vault unless PowerShell 7, a real Python 3
+(not the WindowsApps Store stub), Git, and Claude Code all run successfully. **Stop reading this
+file now.**
+
+### WSL: stay entirely inside the Linux lane
+
+Continue with STEP 0 and then the existing `SETUP.md` POSIX path. Run Git, Claude Code, Python,
+the hooks, and future brain sessions inside the **same WSL distro**. Keep the vault on the WSL
+Linux filesystem (for example `~/Documents/AylinOS`), not under `/mnt/c`; the hook engine relies
+on POSIX permissions and symlinks. Do not use `SETUP-WINDOWS.md` or PowerShell hooks from WSL.
+
+This WSL support claim covers the installer and memory engine inside WSL. Opening that Linux vault
+from a separate Windows Obsidian process is a mixed-runtime integration and is not claimed as
+verified. For the simplest Windows + Obsidian path, use the native Windows lane above.
+
+### macOS or Linux: keep the existing POSIX lane
+
+Continue with STEP 0 unchanged. macOS remains the fully tested POSIX path; Linux remains honest
+about its unverified desktop-launcher integration.
 
 ---
 

@@ -22,6 +22,10 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File tests/Test-Preflight.ps1
 
+      - name: Public beyin.md platform yonlendirmesi
+        shell: pwsh
+        run: python tests/entrypoint_test.py
+
       # `claude` runner'da yoktur; test onu PATH'e kurulumdan ONCE stub'lar,
       # bu yuzden burada da kosar ve kota harcamaz.
       - name: Temiz kurulum (uctan uca)
