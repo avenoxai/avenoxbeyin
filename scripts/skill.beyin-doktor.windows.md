@@ -383,8 +383,16 @@ sızmış anahtarı sağlayıcıdan **iptal edip yenile**.
 
 ### 16. Grafik bütünlüğü (kırık bağlantı + yetim not)
 
+`PYTHONIOENCODING` şart, süs değil. `graf_kontrol.py` yetim listesinde klasör adlarını basar ve
+şablonun içerik klasörlerinin hepsi emoji ile başlar (`📥 000-Inbox`, `🛠️ 600-Arsenal`). Windows'ta
+çıktı bir boruya veya dosyaya yönlendirildiğinde Python konsol kod sayfasını kullanır (Türkçe
+sistemde `cp1254`, çoğu Batı Avrupa sisteminde `cp1252`) ve emoji `UnicodeEncodeError` ile taramayı
+öldürür. Ajan çıktıyı her zaman yakalar, yani yönlendirilmiş hâl normal hâldir. Emoji'li klasörde
+ilk yetim not oluştuğu anda kontrol 16 çöker; bu satır onu baştan engeller.
+
 ```powershell
 . .\.claude\hooks\lib.ps1
+$env:PYTHONIOENCODING = 'utf-8'
 & (Get-BeyinPython) .claude\scripts\graf_kontrol.py
 ```
 
