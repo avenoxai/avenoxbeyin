@@ -111,6 +111,26 @@ python "%~dp0claude_stub.py" %*
     }).Count -eq 4
     Assert 'kancalar_exec_form_kullaniyor' $execFormOk 'pwsh.exe ve args dizisi bekleniyordu'
 
+    # --------------------------------------------------- windows doktor skill
+    # The POSIX skill greps for .sh hooks and `command -v python3`; shipped
+    # unchanged it reports red on a healthy Windows vault. Both stores must
+    # carry the PowerShell edition, and .agents is a copy rather than a
+    # symlink here, so it is checked separately instead of assumed.
+    foreach ($store in '.claude\skills', '.agents\skills') {
+        $skill = Join-Path $vault "$store\beyin-doktor\SKILL.md"
+        if (-not (Test-Path -LiteralPath $skill)) {
+            Assert "doktor_skill_var_$($store -replace '[\\.]', '_')" $false "eksik: $skill"
+            continue
+        }
+        # Positive marker only. The Windows edition documents what it changed,
+        # so it quotes `chmod +x` and `hooks/*.sh` too -- a negative match on
+        # those passes for the wrong reason. `Get-BeyinPython` is the engine
+        # function the POSIX edition has no reason to name.
+        $body = Get-Content -LiteralPath $skill -Raw
+        Assert "doktor_skill_windows_$($store -replace '[\\.]', '_')" `
+            ($body -match 'Get-BeyinPython') "POSIX surumu kurulmus: $store"
+    }
+
     # ------------------------------------------------------- idempotent merge
     . $installer -PreflightOnly
     Merge-BeyinHooks -SettingsPath (Join-Path $vault '.claude\settings.json') `

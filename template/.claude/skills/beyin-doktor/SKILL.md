@@ -79,6 +79,26 @@ if command -v python3 >/dev/null 2>&1; then echo "python3: $(python3 -V 2>&1)"; 
 yoksa arka plan özetleyici durur.
 Düzeltme: python3 kur; kullandığın Claude Code veya Antigravity CLI'yi PATH'e ekle.
 
+### 4b. Model CLI oturum açmış mı
+
+Varlık yetmez. Arka plan özetleyici ve derleyici `claude -p` ile çalışır; CLI kurulu ama oturum
+kapalıysa her flush `Not logged in` alıp ölür ve **hiçbir yerde günlük oluşmaz**. Motor çalışır
+görünür, `daily/` boş kalır: 6 numaralı kontrol kırmızıya döner ama sebebi orada görünmez.
+Bir GUI uygulamasında oturum açık olması CLI'yi kapsamaz, kimlik depoları ayrıdır.
+`auth status` token harcamaz.
+
+```bash
+if command -v claude >/dev/null 2>&1; then
+  if claude auth status 2>/dev/null | grep -q '"loggedIn": *true'; then echo "oturum: acik"; else echo "oturum: KAPALI"; fi
+elif command -v agy >/dev/null 2>&1; then echo "agy kullaniliyor, bu kontrol claude'a ozgu"
+else echo "model CLI: YOK"; fi
+```
+
+🟢 `oturum: acik`. 🔴 `oturum: KAPALI`: en sinsi arıza budur.
+Düzeltme: **kullanıcı kendisi** `claude auth login` çalıştırsın, tarayıcıda OAuth açar. Bu adımı
+ajan olarak sen yapamazsın. Giriş bittikten sonra `claude auth status` ile doğrula, bir oturum
+açıp kapat ve 6 numaralı kontrolü tekrarla.
+
 ### 5. python3-missing işareti
 
 ```bash
@@ -111,13 +131,42 @@ sonra `python3 .claude/scripts/compile.py`.
 
 ### 8. Sağlık kayıtlarındaki son hatalar
 
+`health.json` satır başına bir JSON kaydı tutar (JSONL). Kayıtların hepsi arıza değildir:
+`error` alanı `warn:` ile başlıyorsa motor sorunu **kendi çözmüştür** (örneğin
+`warn:summary-schema-retried` — özetin ilk çıktısı şemaya uymadı, yeniden denendi, tuttu; günlük
+log eksiksiz yazıldı). Uyarıyı hata sayan bir kontrol sağlıklı bir vault'ta kalıcı kırmızı üretir
+ve kullanıcıyı doktoru görmezden gelmeye alıştırır. İkisini ayır.
+
 ```bash
-if [ -f .claude/scripts/.state/health.json ]; then tail -c 2000 .claude/scripts/.state/health.json; else echo "health: kayit yok"; fi
+python3 - <<'PYCHK'
+import json, os, time
+p = ".claude/scripts/.state/health.json"
+if not os.path.exists(p):
+    print("health: kayit yok"); raise SystemExit(0)
+now = time.time(); err = warn = 0
+for line in open(p, encoding="utf-8"):
+    line = line.strip()
+    if not line: continue
+    try: r = json.loads(line)
+    except ValueError: continue
+    yas = int((now - r.get("ts", now)) / 3600)
+    e = str(r.get("error", ""))
+    if e.startswith("warn:"):
+        tur = "UYARI"
+        if yas < 48: warn += 1
+    else:
+        tur = "HATA"
+        if yas < 48: err += 1
+    print("%s | %s | %s | %d saat once" % (tur, r.get("component", "?"), e, yas))
+print("ozet: son 48 saatte %d hata, %d uyari" % (err, warn))
+PYCHK
 ```
 
-🟢 kayıt yok veya son kayıt 7 günden eski. 🔴 son 48 saatte hata kaydı var.
-Düzeltme: `component` alanına bak. `flush` ise transkript veya claude CLI, `compile` ise model
-çağrısı sorunlu. Hatayı okuduktan sonra dosyayı silebilirsin, script yeniden yazar.
+🟢 kayıt yok, ya da son 48 saatte `0 hata` (uyarı olabilir). 🟡 son 48 saatte uyarı var ama hata
+yok: motor kendini toparlamış, tekrarlıyorsa bak. 🔴 son 48 saatte en az bir `HATA`.
+Düzeltme: `component` alanına bak. `flush` ise transkript veya claude CLI — önce 4b'yi kontrol
+et, `claude-exit-1` neredeyse her zaman kapalı oturum demektir. `compile` ise model çağrısı
+sorunlu. Kaydı okuduktan ve sebebini giderdikten sonra dosyayı silebilirsin, script yeniden yazar.
 
 ### 9. Bilgi indeksi büyüklüğü
 
@@ -251,6 +300,7 @@ Tüm kontroller bittikten sonra tek tablo bas:
 | Antigravity bağlantıları | 🟢 | PreInvocation ve Stop adaptörü kayıtlı |
 | Özyineleme koruması | 🟢 | hepsinde var |
 | python3 ve model CLI | 🟢 | python3 3.11.6, agy var |
+| Model CLI oturumu | 🟢 | açık |
 | python3-missing işareti | 🟢 | işaret yok |
 | Günlük log tazeliği | 🟡 | son log 51 saat önce |
 | Derleme durumu | 🔴 | last_status fail:timeout |

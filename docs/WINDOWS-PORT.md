@@ -33,8 +33,11 @@ broken."* Bu port o boşluğu doldurur; WSL yolunu değiştirmez.
 
 **macOS ve Linux davranışı değişmedi.** POSIX hook ayarı
 `template/.claude/settings.json` içinde kalır; Windows installer yalnız kurduğu
-vault'ta bunu `scripts/settings.windows.json` ile değiştirir. `upgrade.sh` ise
-yeni ortak kilit modülü `_portalock.py`yi iki motor scriptiyle birlikte kopyalar.
+vault'ta bunu `scripts/settings.windows.json` ile değiştirir. Aynı kalıp teşhis
+skill'i için de geçerlidir: POSIX `beyin-doktor` şablonda durur, installer
+kurduğu vault'ta onu `scripts/skill.beyin-doktor.windows.md` ile değiştirir.
+`upgrade.sh` ise yeni ortak kilit modülü `_portalock.py`yi iki motor scriptiyle
+birlikte kopyalar.
 
 ## `scripts/upgrade.sh`'i Windows'ta çalıştırmayın
 
@@ -55,6 +58,7 @@ açıkça kapsam dışıdır.
 | Çıktı kodlaması | UTF-8 | OEM kod sayfası | `lib.ps1` UTF-8'e sabitler |
 | Satır sonu | LF | Git CRLF'e çevirir | `.gitattributes` LF pinler |
 | Symlink testi | çalışır | `WinError 1314` | `skipUnless` ile açıkça atlanır |
+| Teşhis skill'i | `beyin-doktor` `.sh`, symlink ve `command -v python3` arar | üçü de yok, sağlıklı vault'ta kalıcı kırmızı | `scripts/skill.beyin-doktor.windows.md` (installer takas eder) |
 
 ## Ölçülmüş üç Windows tuzağı
 

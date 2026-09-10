@@ -322,6 +322,15 @@ $windowsSettings = Join-Path $repoRoot 'scripts\settings.windows.json'
 Copy-Item -LiteralPath $windowsSettings `
           -Destination (Join-Path $VaultPath '.claude\settings.json') -Force
 
+# Same reasoning for the diagnostic skill. The POSIX beyin-doktor looks for
+# .sh hooks, symlinked Codex stores and `command -v python3`; on Windows the
+# engine has none of those, so every one of those checks reports red on a
+# healthy vault. A doctor that is permanently red teaches the user to ignore
+# it, which is worse than having no doctor. Swap in the PowerShell edition
+# here, BEFORE the .agents\skills copy below picks .claude\skills up.
+Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\skill.beyin-doktor.windows.md') `
+          -Destination (Join-Path $VaultPath '.claude\skills\beyin-doktor\SKILL.md') -Force
+
 Resolve-BeyinPlaceholders -Root $VaultPath -Values @{
     OS_NAME    = $OsName
     USER_NAME  = $UserName
