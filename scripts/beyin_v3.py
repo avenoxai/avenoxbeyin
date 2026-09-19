@@ -97,6 +97,9 @@ def parser():
     receipt = sub.add_parser("receipt", help="Submit an idempotent source-linked receipt")
     receipt.add_argument("--file", default="-", help="JSON input path, or - for stdin")
     receipt.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode"), default="codex")
+    review = sub.add_parser("receipt-review", help="Review an exact receipt checkpoint without inventing an outcome")
+    review.add_argument("--file", default="-", help="JSON review input path, or - for stdin")
+    review.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode"), default="codex")
     update = sub.add_parser("task-update", help="Update task with expected revision")
     update.add_argument("--file", default="-", help="JSON {id, expected_revision, changes}")
     history = sub.add_parser("history", help="Read ordered revision snapshots for a record")
@@ -117,7 +120,7 @@ def main(argv=None):
             raise ValueError("--state must be outside the vault")
         engine = load_engine()
         store = engine.MemoryStore(state, vault)
-        sync = load_sync()(vault, state) if args.command in ("sync", "receipt", "task-update", "note-create", "task-create", "context", "jev-review") else None
+        sync = load_sync()(vault, state) if args.command in ("sync", "receipt", "receipt-review", "task-update", "note-create", "task-create", "context", "jev-review") else None
         if args.command == "init":
             result = {"initialized": True, "state": str(state), "network": False,
                       "hooks_installed": False, "optional_provider": None}
@@ -138,6 +141,11 @@ def main(argv=None):
             for filename in ("hook-health.json", "hook-error.json", "receipt-gaps.json"):
                 path = state / filename
                 result[filename] = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+            gap_report = result['receipt-gaps.json'] or {}
+            result['receipt_review'] = {
+                'unreviewed_candidates': gap_report.get('potential_missing_receipts', 0),
+                'reviewed_candidates': gap_report.get('reviewed_checkpoints', 0),
+            }
             seen = {name: set() for name in ('codex', 'claude', 'antigravity', 'hermes', 'opencode')}
             for path in (state/'hook-done').glob('*.json'):
                 event = json.loads(path.read_text(encoding='utf-8'))
@@ -166,6 +174,12 @@ def main(argv=None):
         elif args.command == "note-create":
             payload = read_json(args.file)
             result = sync.note_create(payload['source'], payload['text'], payload.get('metadata'))
+        elif args.command == "receipt-review":
+            payload = read_json(args.file)
+            result = sync.receipt_review(payload['target_harness'], payload['target_session'],
+                                         payload['turn_at'], payload['checkpoint_at'],
+                                         payload['disposition'], payload['reason'], payload['refs'],
+                                         args.harness, payload['reviewer_session'])
         elif args.command == "task-create":
             payload = read_json(args.file)
             result = sync.task_create(payload['source'], payload['text'], payload['metadata'])

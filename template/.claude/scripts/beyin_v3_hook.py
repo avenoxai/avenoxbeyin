@@ -71,7 +71,9 @@ def drain_queue(vault, state):
         result['secrets_redacted'] = secret_filter_health(state)['total']
         gap_path = state/'receipt-gaps.json'
         if gap_path.exists():
-            result['potential_missing_receipts'] = json.loads(gap_path.read_text(encoding='utf-8'))['potential_missing_receipts']
+            gaps = json.loads(gap_path.read_text(encoding='utf-8'))
+            result['unreviewed_receipt_candidates'] = gaps.get('potential_missing_receipts', 0)
+            result['reviewed_receipt_candidates'] = gaps.get('reviewed_checkpoints', 0)
         from beyin_v3_skills import sync_skills
         skills = sync_skills(vault, state)
         if skills.get("conflicts"):
@@ -186,8 +188,8 @@ def main():
                 sync = json.loads(health.read_text(encoding="utf-8")).get("sync", {})
                 if sync.get("status") not in ("ok", "succeeded", "synced"):
                     warning += "V3 sync needs attention; consult current sources and doctor.\n"
-                if sync.get('potential_missing_receipts'):
-                    warning += 'Prior checkpoints may lack structured receipts; check Last-Session/Threads and current sources for unfinished work.\n'
+                if sync.get('unreviewed_receipt_candidates'):
+                    warning += 'Receipt candidates await review; doctor shows signals, not inferred outcomes.\n'
             from beyin_v3_companion import context as companion_context, relevant
             if event == 'SessionStart' or relevant(query):
                 text = companion_context(store, settings['context_chars'], session, args.harness,

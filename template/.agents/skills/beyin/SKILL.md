@@ -105,6 +105,14 @@ refs mevcut vault-relative dosyalardır. Aynı gönderimi yeniden denerken aynı
 
 Basit soru veya selamlaşma için gereksiz kayıt yazma. Kullanıcının no-memory, no-tools ve dosya sınırları bu akıştan önceliklidir. Kendi skill kurallarını konuşma transkriptinden kendiliğinden değiştirme.
 
+`doctor` bir makbuz adayını açık iş diye kanıtlamaz. Kullanıcı bu adayları incelemeyi istediğinde hedef kaydın `harness`, `session`, `turn_at` ve `checkpoint_at` değerlerini değiştirmeden kullan. Kalıcı sonuç yoksa veya sonuç doğrulanamıyorsa eski oturum adına sahte receipt üretme; mevcut inceleyeni ayrı tutarak `receipt-review` gönder:
+
+```json
+{"target_harness":"claude","target_session":"hedef-hash","turn_at":123.0,"checkpoint_at":124.0,"disposition":"no_receipt_needed","reason":"Yanıt turu; kalıcı sonuç yok.","refs":["knowledge/inceleme.md"],"reviewer_session":"mevcut-hook-hash"}
+```
+
+Komut `python3 beyin.py receipt-review --file REVIEW_JSON --harness codex` biçimindedir. `disposition` yalnız `no_receipt_needed`, `documented_retrospectively` veya `outcome_unverified` olabilir. İnceleme hedef checkpoint'i değiştirmez veya tamamlanmış sonuç uydurmaz; aynı hedef için aynı karar idempotenttir, farklı karar çakışma verir. Yeni bir tur eski incelemeyle kapanmaz.
+
 
 ## Tüketim ve otomatik kontrol tercihleri
 

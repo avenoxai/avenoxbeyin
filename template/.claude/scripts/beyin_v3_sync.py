@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -16,7 +17,7 @@ if _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
 from beyin_v3 import HARNESSES, MemoryStore, ReceiptConflict, RevisionConflict, _json
-from beyin_v3_projections import project_receipts
+from beyin_v3_projections import _checkpoint_schema, project_receipts
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
 
@@ -212,7 +213,7 @@ class SyncEngine:
                     metadata, body = parse(raw.decode('utf-8'))
                     if metadata.get('kind') == 'task' and body.lstrip().startswith('---'):
                         raise ValueError('task has embedded frontmatter; reconcile metadata and body explicitly')
-                    if metadata.get('kind') == 'receipt' or metadata.get('generated') is True:
+                    if metadata.get('kind') in ('receipt', 'receipt-review') or metadata.get('generated') is True:
                         continue
                     record = dict(metadata, source=relative, text=body)
                     record.setdefault('id', 'md-' + _hash(relative)[:24])
@@ -253,6 +254,14 @@ class SyncEngine:
                         if previous['summary'] != event['summary'] or previous['refs'] != event['refs']:
                             raise ReceiptConflict('event id collision during recovery')
                     db.execute('INSERT OR IGNORE INTO receipts VALUES (?,?)', (event['event_id'], _json(event)))
+                elif intent['kind'] == 'receipt-review':
+                    event = intent['event']
+                    _checkpoint_schema(db)
+                    key = (event['target_harness'], event['target_session'], event['turn_at'], event['checkpoint_at'])
+                    row = db.execute('SELECT payload FROM receipt_reviews WHERE target_harness=? AND target_session=? AND turn_at=? AND checkpoint_at=?', key).fetchone()
+                    if row and json.loads(row[0]) != event:
+                        raise ReceiptConflict('receipt review collision during recovery')
+                    db.execute('INSERT OR IGNORE INTO receipt_reviews VALUES (?,?,?,?,?)', key + (_json(event),))
                 completed.append(entry)
             except (ValueError, OSError, KeyError) as exc:
                 conflicts.append({'journal': entry.name, 'reason': str(exc)})
@@ -500,4 +509,66 @@ class SyncEngine:
         self.store.submit_receipt(event_id, summary, refs, event['harness'])
         self._record_redactions(redacted)
         return {'id': event_id, 'event_id': event_id, 'status': 'succeeded', 'source': source,
+                'redacted': redacted, 'secrets_redacted': redacted}
+
+    def receipt_review(self, target_harness, target_session, turn_at, checkpoint_at,
+                       disposition, reason, refs, reviewer_harness, reviewer_session):
+        allowed = ('no_receipt_needed', 'documented_retrospectively', 'outcome_unverified')
+        if target_harness not in HARNESSES or reviewer_harness not in HARNESSES:
+            raise ValueError('invalid review harness')
+        if disposition not in allowed or not isinstance(reason, str) or not reason.strip():
+            raise ValueError('disposition and reason required')
+        if not isinstance(refs, list) or not refs:
+            raise ValueError('review refs required')
+        if not all(isinstance(value, str) and re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', value)
+                   for value in (target_session, reviewer_session)):
+            raise ValueError('invalid review session')
+        if not all(not isinstance(value, bool) and isinstance(value, (int, float)) and
+                   math.isfinite(value) and value >= 0 for value in (turn_at, checkpoint_at)):
+            raise ValueError('invalid checkpoint identity')
+        turn_at, checkpoint_at = float(turn_at), float(checkpoint_at)
+        reason, redacted = self._protect(reason)
+        refs = [self.store._source(ref) for ref in refs]
+        created_at = datetime.now(timezone.utc).isoformat()
+        identity = _hash(_json([target_harness, target_session, turn_at, checkpoint_at]))
+        source = 'receipt-reviews/' + identity + '.md'
+        event = {'target_harness': target_harness, 'target_session': target_session,
+                 'turn_at': turn_at, 'checkpoint_at': checkpoint_at,
+                 'disposition': disposition, 'reason': reason, 'refs': refs,
+                 'reviewer_harness': reviewer_harness, 'reviewer_session': reviewer_session,
+                 'created_at': created_at, 'source': source}
+        metadata = {'kind': 'receipt-review', 'visibility': 'internal',
+                    'target_harness': target_harness, 'target_session': target_session,
+                    'turn_at': turn_at, 'checkpoint_at': checkpoint_at,
+                    'disposition': disposition, 'refs': refs,
+                    'reviewer_harness': reviewer_harness, 'reviewer_session': reviewer_session,
+                    'created_at': created_at}
+        content = render(metadata, reason + '\n')
+        with self.store._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            _checkpoint_schema(db)
+            key = (target_harness, target_session, turn_at, checkpoint_at)
+            row = db.execute('SELECT payload FROM receipt_reviews WHERE target_harness=? AND target_session=? AND turn_at=? AND checkpoint_at=?', key).fetchone()
+            if row:
+                previous = json.loads(row[0])
+                comparable = dict(event, created_at=previous['created_at'])
+                if previous != comparable:
+                    raise ReceiptConflict('receipt review collision')
+                event, metadata = previous, dict(metadata, created_at=previous['created_at'])
+                content = render(metadata, previous['reason'] + '\n')
+            else:
+                checkpoint = db.execute('SELECT 1 FROM receipt_checkpoints WHERE harness=? AND session=? AND turn_at=? AND at=?', key).fetchone()
+                if not checkpoint:
+                    raise ValueError('checkpoint identity not found or changed')
+            path = self._path(source)
+            if path.exists():
+                if path.read_text(encoding='utf-8') != content:
+                    raise ReceiptConflict('receipt review source manually changed')
+            else:
+                self._intent(source, None, content, 'receipt-review', event)
+        result = self.sync()
+        if result['conflicts']:
+            raise ReceiptConflict('receipt review projection conflict')
+        self._record_redactions(redacted)
+        return {'status': 'succeeded', 'source': source, 'disposition': disposition,
                 'redacted': redacted, 'secrets_redacted': redacted}

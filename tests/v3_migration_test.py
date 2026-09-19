@@ -132,7 +132,8 @@ class MigrationTest(unittest.TestCase):
         from beyin_v3_projections import record_checkpoints
         self.source('notes/example.md', 'Synthetic source')
         engine = SyncEngine(self.root, self.state)
-        record_checkpoints(engine, [{'event': 'Stop', 'harness': 'codex', 'session': 'synthetic', 'at': 1}])
+        record_checkpoints(engine, [{'event': 'UserPromptSubmit', 'harness': 'codex', 'session': 'synthetic', 'at': 1},
+                                    {'event': 'Stop', 'harness': 'codex', 'session': 'synthetic', 'at': 2}])
         engine.sync()
         gaps = json.loads((self.state/'receipt-gaps.json').read_text())
         self.assertEqual(gaps['potential_missing_receipts'], 1)
@@ -140,6 +141,75 @@ class MigrationTest(unittest.TestCase):
         engine.receipt('session-outcome', 'Explicit synthetic outcome.', ['notes/example.md'], 'codex', session='synthetic')
         engine.sync()
         self.assertEqual(json.loads((self.state/'receipt-gaps.json').read_text())['potential_missing_receipts'], 0)
+
+    def test_session_lifecycle_without_prompt_does_not_create_gap(self):
+        from beyin_v3_sync import SyncEngine
+        from beyin_v3_projections import record_checkpoints
+        engine = SyncEngine(self.root, self.state)
+        record_checkpoints(engine, [{'event': 'SessionStart', 'harness': 'codex', 'session': 'quiet', 'at': 1},
+                                    {'event': 'SessionEnd', 'harness': 'codex', 'session': 'quiet', 'at': 2}])
+        engine.sync()
+        self.assertEqual(json.loads((self.state/'receipt-gaps.json').read_text())['potential_missing_receipts'], 0)
+
+    def test_session_resume_does_not_invalidate_matching_receipt(self):
+        from beyin_v3_sync import SyncEngine
+        from beyin_v3_projections import record_checkpoints
+        self.source('notes/example.md', 'Synthetic source')
+        engine = SyncEngine(self.root, self.state)
+        record_checkpoints(engine, [{'event': 'UserPromptSubmit', 'harness': 'codex', 'session': 'resume', 'at': 1},
+                                    {'event': 'Stop', 'harness': 'codex', 'session': 'resume', 'at': 2}])
+        engine.receipt('resume-outcome', 'Outcome before resume.', ['notes/example.md'], 'codex', session='resume')
+        record_checkpoints(engine, [{'event': 'SessionStart', 'harness': 'codex', 'session': 'resume', 'at': 3},
+                                    {'event': 'SessionEnd', 'harness': 'codex', 'session': 'resume', 'at': 4}])
+        engine.sync()
+        self.assertEqual(json.loads((self.state/'receipt-gaps.json').read_text())['potential_missing_receipts'], 0)
+
+    def test_exact_review_closes_candidate_without_fabricating_receipt(self):
+        from beyin_v3_sync import SyncEngine, ReceiptConflict
+        from beyin_v3_projections import record_checkpoints
+        self.source('notes/audit.md', 'Reviewed evidence')
+        engine = SyncEngine(self.root, self.state)
+        record_checkpoints(engine, [{'event': 'UserPromptSubmit', 'harness': 'claude', 'session': 'old', 'at': 10},
+                                    {'event': 'Stop', 'harness': 'claude', 'session': 'old', 'at': 11}])
+        engine.sync()
+        payload = ('claude', 'old', 10, 11, 'no_receipt_needed', 'Answer-only turn.',
+                   ['notes/audit.md'], 'codex', 'reviewer')
+        first = engine.receipt_review(*payload)
+        second = engine.receipt_review(*payload)
+        self.assertEqual(first['source'], second['source'])
+        gaps = json.loads((self.state/'receipt-gaps.json').read_text())
+        self.assertEqual(gaps['potential_missing_receipts'], 0)
+        self.assertEqual(gaps['reviewed_checkpoints'], 1)
+        numeric_replay = engine.receipt_review('claude', 'old', 10.0, 11.0, 'no_receipt_needed',
+                                               'Answer-only turn.', ['notes/audit.md'], 'codex', 'reviewer')
+        self.assertEqual(numeric_replay['source'], first['source'])
+        with self.assertRaises(ReceiptConflict):
+            engine.receipt_review('claude', 'old', 10, 11, 'outcome_unverified', 'Different.',
+                                  ['notes/audit.md'], 'codex', 'reviewer')
+        record_checkpoints(engine, [{'event': 'UserPromptSubmit', 'harness': 'claude', 'session': 'old', 'at': 12},
+                                    {'event': 'Stop', 'harness': 'claude', 'session': 'old', 'at': 13}])
+        engine.sync()
+        advanced = json.loads((self.state/'receipt-gaps.json').read_text())
+        self.assertEqual(advanced['potential_missing_receipts'], 1)
+        self.assertEqual(advanced['reviewed_checkpoints'], 1)
+        self.assertEqual(engine.receipt_review(*payload)['source'], first['source'])
+
+    def test_terminal_only_resume_keeps_reviewed_checkpoint_identity(self):
+        from beyin_v3_sync import SyncEngine
+        from beyin_v3_projections import record_checkpoints
+        self.source('notes/audit.md', 'Reviewed evidence')
+        engine = SyncEngine(self.root, self.state)
+        record_checkpoints(engine, [{'event': 'UserPromptSubmit', 'harness': 'codex', 'session': 'resume-review', 'at': 10},
+                                    {'event': 'Stop', 'harness': 'codex', 'session': 'resume-review', 'at': 11}])
+        engine.sync()
+        engine.receipt_review('codex', 'resume-review', 10, 11, 'no_receipt_needed', 'Answer only.',
+                              ['notes/audit.md'], 'codex', 'reviewer')
+        record_checkpoints(engine, [{'event': 'SessionStart', 'harness': 'codex', 'session': 'resume-review', 'at': 12},
+                                    {'event': 'SessionEnd', 'harness': 'codex', 'session': 'resume-review', 'at': 13}])
+        engine.sync()
+        report = json.loads((self.state/'receipt-gaps.json').read_text())
+        self.assertEqual(report['potential_missing_receipts'], 0)
+        self.assertEqual(report['reviewed_checkpoints'], 1)
 
     def test_prior_turn_receipt_does_not_cover_next_turn(self):
         from beyin_v3_sync import SyncEngine
@@ -152,6 +222,65 @@ class MigrationTest(unittest.TestCase):
         record_checkpoints(engine, [{'event': 'UserPromptSubmit', 'harness': 'codex', 'session': 'same', 'at': time.time()+1}, {'event': 'Stop', 'harness': 'codex', 'session': 'same', 'at': time.time()+2}])
         engine.sync()
         self.assertEqual(json.loads((self.state/'receipt-gaps.json').read_text())['potential_missing_receipts'], 1)
+
+    def test_legacy_session_start_boundary_is_rebuilt_from_retained_prompt_events(self):
+        from beyin_v3_sync import SyncEngine
+        engine = SyncEngine(self.root, self.state)
+        engine.sync()
+        with engine.store._connect() as db:
+            db.execute('INSERT INTO receipt_checkpoints(harness,session,at,turn_at,boundary_kind) VALUES (?,?,?,?,?)',
+                       ('codex', 'legacy', 9, 8, 'legacy_unknown'))
+        done = self.state/'hook-done'
+        done.mkdir(parents=True)
+        events = [
+            {'event': 'UserPromptSubmit', 'harness': 'codex', 'session': 'legacy', 'at': 3},
+            {'event': 'Stop', 'harness': 'codex', 'session': 'legacy', 'at': 4},
+            {'event': 'SessionStart', 'harness': 'codex', 'session': 'legacy', 'at': 8},
+            {'event': 'SessionEnd', 'harness': 'codex', 'session': 'legacy', 'at': 9},
+        ]
+        for index, event in enumerate(events):
+            (done/f'{index}.json').write_text(json.dumps(event), encoding='utf-8')
+        engine.sync()
+        gaps = json.loads((self.state/'receipt-gaps.json').read_text())
+        self.assertEqual(gaps['checkpoints'][0]['turn_at'], 3)
+        self.assertEqual(gaps['checkpoints'][0]['scope'], 'prompt')
+
+    def test_incomplete_legacy_history_does_not_replace_original_checkpoint(self):
+        from beyin_v3_sync import SyncEngine
+        engine = SyncEngine(self.root, self.state)
+        engine.sync()
+        with engine.store._connect() as db:
+            db.execute('INSERT INTO receipt_checkpoints(harness,session,at,turn_at,boundary_kind) VALUES (?,?,?,?,?)',
+                       ('codex', 'incomplete', 100, 90, 'legacy_unknown'))
+        done = self.state/'hook-done'; done.mkdir(parents=True)
+        (done/'old.json').write_text(json.dumps({'event': 'UserPromptSubmit', 'harness': 'codex',
+                                                 'session': 'incomplete', 'at': 10}), encoding='utf-8')
+        engine.sync()
+        report = json.loads((self.state/'receipt-gaps.json').read_text())
+        item = report['checkpoints'][0]
+        self.assertEqual((item['checkpoint_at'], item['turn_at'], item['scope']), (100, 90, 'legacy_unknown'))
+
+    def test_legacy_repair_does_not_move_threshold_without_original_boundary_event(self):
+        from beyin_v3_sync import SyncEngine
+        engine = SyncEngine(self.root, self.state)
+        engine.sync()
+        with engine.store._connect() as db:
+            db.execute('INSERT INTO receipt_checkpoints(harness,session,at,turn_at,boundary_kind) VALUES (?,?,?,?,?)',
+                       ('codex', 'missing-boundary', 100, 90, 'legacy_unknown'))
+            receipt = {'event_id': 'old', 'summary': 'Old outcome.', 'refs': [], 'harness': 'codex',
+                       'session': 'missing-boundary', 'created_at': '1970-01-01T00:00:20+00:00'}
+            db.execute('INSERT INTO receipts VALUES (?,?)', ('old', json.dumps(receipt)))
+        done = self.state/'hook-done'; done.mkdir(parents=True)
+        retained = [
+            {'event': 'UserPromptSubmit', 'harness': 'codex', 'session': 'missing-boundary', 'at': 10},
+            {'event': 'Stop', 'harness': 'codex', 'session': 'missing-boundary', 'at': 100},
+        ]
+        for index, event in enumerate(retained):
+            (done/f'missing-{index}.json').write_text(json.dumps(event), encoding='utf-8')
+        engine.sync()
+        report = json.loads((self.state/'receipt-gaps.json').read_text())
+        self.assertEqual(report['potential_missing_receipts'], 1)
+        self.assertEqual(report['checkpoints'][0]['turn_at'], 90)
 
 if __name__ == '__main__':
     unittest.main()

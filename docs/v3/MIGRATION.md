@@ -88,16 +88,26 @@ Use normal deliberate source editing for subsequent revisions. Private source
 metadata continues to control retrieval; `visibility: private` is excluded from
 internal/public context. Migration is not permission to expose Companion data.
 
-After Stop/SessionEnd, `doctor` reports potential receipt gaps when a checkpoint
-has no matching session receipt. This is a signal: a turn may be trivial or the
-user may have deliberately omitted memory. No transcript is promoted and no
-summary is generated to fill the gap. Matching uses the latest observed UserPromptSubmit or SessionStart boundary;
-a receipt from a previous turn cannot cover a later turn. Antigravity only
+After a UserPromptSubmit followed by Stop/SessionEnd, `doctor` reports an
+unreviewed receipt candidate when the exact checkpoint has no matching session
+receipt. SessionStart does not create or advance a Codex/Claude turn. This is a
+signal: a turn may be trivial or the user may have deliberately omitted memory.
+No transcript is promoted and no summary is generated to fill the gap. Matching
+uses the latest observed UserPromptSubmit boundary; a receipt from a previous
+turn cannot cover a later turn. Antigravity only
 provides the initial invocation boundary in this adapter, so its result is
 explicitly session-limited rather than proof of per-turn completeness. Missing
-prompt events are reported as a terminal-only limitation. Explicit `no_memory`
-hook metadata suppresses the
-checkpoint signal. Respect a user's no-memory request regardless of that signal.
+prompt provenance in legacy rows is labeled `legacy_unknown`. Explicit
+`no_memory` hook metadata suppresses the checkpoint signal. Respect a user's
+no-memory request regardless of that signal.
+
+An exact candidate can be closed with the source-backed `receipt-review`
+command. A review records the target and reviewer identities separately and
+supports `no_receipt_needed`, `documented_retrospectively`, and
+`outcome_unverified`. It never fabricates a receipt for the historical session.
+Reviewed candidates remain in doctor history but leave the unreviewed count; a
+later checkpoint has a different identity and is not hidden by an older review.
+Only unreviewed candidates cause the hook warning; reviewed history does not.
 
 ## Validation boundary
 
