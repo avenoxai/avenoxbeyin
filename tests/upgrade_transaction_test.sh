@@ -2,6 +2,12 @@
 # v1 -> v2 yükseltmesinin işlem sınırları ve sürüm damgası regresyon testleri.
 set -euo pipefail
 
+# Force UTF-8 mode for every python3 subprocess this test spawns. Without it,
+# on a non-English Windows install (e.g. Turkish cp1254), Python's stdin/
+# stdout default to the OS locale codepage instead of UTF-8 and corrupt (or
+# crash on) the Turkish text these tests write and compare.
+export PYTHONUTF8=1
+
 TEST_ROOT=$(CDPATH= cd "$(dirname "$0")/.." 2>/dev/null && pwd)
 UPGRADE="$TEST_ROOT/scripts/upgrade.sh"
 FIXTURE="$TEST_ROOT/tests/fixtures/v1_vault.sh"
@@ -326,9 +332,27 @@ test_fresh_shell_chain() {
 }
 
 test_apply_failure_no_stamp() {
-  local case_dir vault
+  local case_dir vault probe_dir
   case_dir=$(new_case)
   vault="$case_dir/vault"
+
+  # NTFS (via Git Bash chmod) does not reliably enforce directory-level
+  # write denial the way POSIX does: `chmod a-w` on a directory is often
+  # cosmetic there, so a write into it can still succeed. Probe that
+  # directly before relying on it to make apply fail; if this platform
+  # can't produce a real unwritable directory, this specific failure mode
+  # can't be exercised here even though scripts/upgrade.sh's own error
+  # handling for a failed copy is unchanged and still real.
+  probe_dir="$case_dir/write-probe"
+  mkdir -p "$probe_dir"
+  chmod a-w "$probe_dir"
+  if : > "$probe_dir/canary" 2>/dev/null; then
+    chmod u+w "$probe_dir"
+    diag "bu dosya sisteminde chmod a-w bir dizini gerçekten yazılamaz yapmıyor (Windows/NTFS), bu vaka atlanıyor"
+    return 0
+  fi
+  chmod u+w "$probe_dir"
+
   make_v1_vault "$vault" --clean-local
   chmod a-w "$vault/.claude/hooks"
   run_upgrade "$case_dir" "$case_dir/apply.out" --vault "$vault" --stage apply
@@ -450,11 +474,39 @@ test_no_git_binary_uses_external_backup() {
   local tool tool_path
   for tool in bash sh python3 cp mv rm ln find sed awk grep printf date mkdir chmod wc tr head tail sort stat basename dirname cat mktemp; do
     tool_path=$(command -v "$tool" 2>/dev/null) || continue
-    ln -sf "$tool_path" "$fake_path/$tool" 2>/dev/null || :
+    # A couple of tools (notably a Microsoft Store "app execution alias"
+    # python3, which is what a fresh Windows install resolves python3 to)
+    # live behind a reparse point that ln -s is not allowed to target;
+    # fall back to a real copy so this test's PATH still has a working
+    # python3, not just a working "not git".
+    ln -sf "$tool_path" "$fake_path/$tool" 2>/dev/null \
+      || cp "$tool_path" "$fake_path/$tool" 2>/dev/null || :
+  done
+  # On MSYS2/Git-Bash (Windows), each of the coreutils above is a small PE
+  # binary dynamically linked against msys-2.0.dll and friends. Windows
+  # resolves those DLLs relative to the launching executable's own
+  # directory, not the symlink target's directory, so a PATH containing only
+  # the tool symlinks makes every one of them fail to load ("error while
+  # loading shared libraries"). Bring the runtime DLLs along too. This is a
+  # no-op (glob matches nothing) on real POSIX systems.
+  for dll in "$(dirname "$BASH_BIN")"/*.dll; do
+    [ -e "$dll" ] || continue
+    ln -sf "$dll" "$fake_path/$(basename "$dll")" 2>/dev/null || :
   done
   if PATH="$fake_path" command -v git >/dev/null 2>&1; then
     diag "sahte PATH hâlâ git görüyor, vaka kurulamadı"
     return 1
+  fi
+  # A Windows PE binary fully isolated from the system's normal search
+  # locations (System32, WindowsApps) can fail to load even with its own
+  # DLLs alongside it: some depend on Universal-CRT "API set" forwarder
+  # DLLs that Windows normally resolves virtually, which MSYS2's exec path
+  # does not replicate for a bare, trimmed PATH. If this platform can't run
+  # even a trivial python3 call under the isolated PATH this test builds,
+  # the "no git" scenario can't be exercised here either.
+  if ! PATH="$fake_path" "$fake_path/python3" -c "1" >/dev/null 2>&1; then
+    diag "bu ortamda izole PATH içinde python3 çalıştırılamıyor (Windows/MSYS2 CRT sınırı), bu vaka atlanıyor"
+    return 0
   fi
 
   prepare_case_dirs "$case_dir"

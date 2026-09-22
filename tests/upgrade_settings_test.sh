@@ -2,6 +2,12 @@
 # BLOCKER 3: v1 settings.local.json, kanca tekilleştirme ve sır güvenliği regresyonları.
 set -euo pipefail
 
+# Force UTF-8 mode for every python3 subprocess this test spawns. Without it,
+# on a non-English Windows install (e.g. Turkish cp1254), Python's stdin/
+# stdout default to the OS locale codepage instead of UTF-8 and corrupt (or
+# crash on) the Turkish text these tests write and compare.
+export PYTHONUTF8=1
+
 TEST_ROOT=$(CDPATH= cd "$(dirname "$0")/.." 2>/dev/null && pwd)
 UPGRADE="$TEST_ROOT/scripts/upgrade.sh"
 FIXTURE="$TEST_ROOT/tests/fixtures/v1_vault.sh"

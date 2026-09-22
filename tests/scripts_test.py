@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import fcntl
 import hashlib
 import importlib.util
 import json
@@ -37,6 +36,27 @@ Kalıcı bağlam.
 - Öğrenilen.
 ## Yapılacaklar
 - Açık iş."""
+
+
+def _symlinks_supported() -> bool:
+    """Probe once whether this process can create filesystem symlinks.
+
+    Unprivileged Windows accounts without Developer Mode enabled cannot
+    create symlinks (WinError 1314); the security check this test exercises
+    is still real and still runs in production, it just can't be exercised
+    here without elevation.
+    """
+    try:
+        with tempfile.TemporaryDirectory(prefix="beyin-symlink-probe-") as probe:
+            target = Path(probe) / "target"
+            target.write_text("x", encoding="utf-8")
+            (Path(probe) / "link").symlink_to(target)
+        return True
+    except OSError:
+        return False
+
+
+SYMLINKS_SUPPORTED = _symlinks_supported()
 
 
 def load_module(name: str, path: Path):
@@ -88,9 +108,7 @@ class ScriptsTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def _write_claude_stub(self) -> None:
-        stub = self.bin_dir / "claude"
-        stub.write_text(
-            """#!/usr/bin/env python3
+        stub_source = """#!/usr/bin/env python3
 import json
 import os
 from pathlib import Path
@@ -149,10 +167,32 @@ else:
         print(output)
 
 raise SystemExit(int(os.environ.get("BEYIN_TEST_EXIT", "0")))
-""",
-            encoding="utf-8",
-        )
-        stub.chmod(0o755)
+"""
+        if sys.platform == "win32":
+            # Windows has no shebang-line execution: a bare extensionless
+            # "claude" file can't be launched directly by CreateProcess, and
+            # shutil.which() resolves names by appending PATHEXT. Ship the
+            # payload as a .py file plus a .cmd launcher shutil.which() (and
+            # subprocess.run) can actually find and execute as "claude".
+            payload = self.bin_dir / "claude_stub.py"
+            payload.write_text(stub_source, encoding="utf-8")
+            stub = self.bin_dir / "claude.cmd"
+            stub.write_text(
+                # PYTHONIOENCODING forces the stub's own stdout/stdin to UTF-8.
+                # Without it Python falls back to the system locale codepage
+                # (cp125x on a non-English Windows install), which mangles
+                # every Turkish character the stub echoes back — the real
+                # claude CLI always emits UTF-8, so production code never
+                # hits this; only this in-process Python stand-in needs it.
+                '@echo off\r\n'
+                'set PYTHONIOENCODING=utf-8\r\n'
+                'python "%~dp0claude_stub.py" %*\r\n',
+                encoding="utf-8",
+            )
+        else:
+            stub = self.bin_dir / "claude"
+            stub.write_text(stub_source, encoding="utf-8")
+            stub.chmod(0o755)
 
     def _environment(self, **overrides: str) -> dict[str, str]:
         environment = os.environ.copy()
@@ -805,6 +845,12 @@ raise SystemExit(int(os.environ.get("BEYIN_TEST_EXIT", "0")))
         self.assertEqual(state["last_status"], "fail:policy")
 
     def test_staged_symlink_is_rejected_before_promotion(self) -> None:
+        if not SYMLINKS_SUPPORTED:
+            self.skipTest(
+                "bu hesap sembolik link oluşturamıyor (Windows Geliştirici "
+                "Modu kapalı ya da ayrıcalık eksik); üretim kodundaki "
+                "kontrol bundan etkilenmez, sadece burada denenemiyor"
+            )
         daily_path = self.daily / "2026-08-20.md"
         daily_path.write_text("symlink denemesi", encoding="utf-8")
         before = self._payload_snapshot()
@@ -854,7 +900,7 @@ raise SystemExit(int(os.environ.get("BEYIN_TEST_EXIT", "0")))
         (self.daily / "2026-08-20.md").write_text("log", encoding="utf-8")
         lock_path = self.state / "compile.lock"
         with lock_path.open("a+", encoding="utf-8") as lock_file:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            FLUSH._lock_exclusive(lock_file, blocking=True)
             result = self._run_compile("--dry-run")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "")

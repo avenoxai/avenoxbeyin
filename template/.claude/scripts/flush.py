@@ -25,6 +25,11 @@ sys.dont_write_bytecode = True
 import _portalock
 from typing import Any, Callable, Sequence
 
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 VAULT_ROOT = SCRIPT_DIR.parent.parent
@@ -50,6 +55,29 @@ DIRECTIVE_SHAPED = re.compile(
 HOOK_INPUT_NAME = re.compile(r"hookin-[^/]+\.json\Z")
 INVALID_UNICODE_ESCAPE = re.compile(r"\\u(?![0-9a-fA-F]{4})")
 INVALID_JSON_ESCAPE = re.compile(r'\\(?!["\\/bfnrtu])')
+
+
+def _lock_exclusive(handle, blocking: bool) -> None:
+    """Take an exclusive lock on an open file handle, POSIX or Windows."""
+    if sys.platform == "win32":
+        saved_position = handle.tell()
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write("\0")
+            handle.flush()
+        handle.seek(0)
+        mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
+        try:
+            msvcrt.locking(handle.fileno(), mode, 1)
+        except OSError as exc:
+            handle.seek(saved_position)
+            if blocking:
+                raise
+            raise BlockingIOError(str(exc)) from exc
+        handle.seek(saved_position)
+        return
+    flags = fcntl.LOCK_EX if blocking else (fcntl.LOCK_EX | fcntl.LOCK_NB)
+    fcntl.flock(handle.fileno(), flags)
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:

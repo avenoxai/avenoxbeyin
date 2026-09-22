@@ -2,6 +2,14 @@
 [ -n "${BEYIN_INVOKED_BY:-}" ] && exit 0
 # Shared, portable helpers for all beyin hooks.
 
+# Without this, every python3 subprocess spawned below (JSON escaping,
+# session-key hashing) decodes/encodes text using the OS locale's default
+# codepage. On a non-English Windows install that's a legacy codepage
+# (e.g. cp1254 on Turkish Windows), not UTF-8, and it silently corrupts
+# every non-ASCII character piped through it. PYTHONUTF8=1 forces Python's
+# UTF-8 mode (PEP 540) for every python3 call in this process tree.
+export PYTHONUTF8=1
+
 if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
   BEYIN_PROJECT_DIR=$CLAUDE_PROJECT_DIR
 else

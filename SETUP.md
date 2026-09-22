@@ -153,13 +153,27 @@ if [ "$BEYIN_PLATFORM" = "Darwin" ]; then
     echo "🔴 BREW YOK: Homebrew kurulumu tamamlanmadı. Obsidian'ı elle kur: https://obsidian.md/download"
   fi
   [ -d "/Applications/Obsidian.app" ] && echo "Obsidian ✓" || echo "🟡 Obsidian bulunamadı, elle kurulmalı"
+elif case "$BEYIN_PLATFORM" in MINGW*|MSYS*|CYGWIN*) true ;; *) false ;; esac; then
+  # Native Windows, running this runbook under Git Bash (MSYS/MINGW `uname -s`).
+  echo "Windows tespit edildi (Git Bash / MSYS): $BEYIN_PLATFORM"
+  if command -v winget >/dev/null 2>&1; then
+    echo "winget ✓ $(command -v winget)"
+    winget list --id Obsidian.Obsidian -e >/dev/null 2>&1 \
+      || winget install --id Obsidian.Obsidian -e --accept-source-agreements --accept-package-agreements \
+      || echo "🟡 winget ile Obsidian kurulumu başarısız, elle kur: https://obsidian.md/download"
+  else
+    echo "🟡 winget bulunamadı. Obsidian'ı elle kur: https://obsidian.md/download"
+  fi
+  echo "obsidian-cli bu platformda atlanıyor (opsiyonel, sadece macOS/Linux paketleniyor)."
 else
-  # Linux / other. No Homebrew, no cask, no .app bundle. NOT verified on a real Linux desktop.
+  # Linux. No Homebrew, no cask, no .app bundle. NOT verified on a real Linux desktop.
   echo "macOS değil. Homebrew, Obsidian cask ve macOS masaüstü uygulaması adımları atlanıyor."
   echo "Obsidian'ı dağıtımının paket yöneticisinden veya https://obsidian.md/download üstünden kur."
   command -v obsidian >/dev/null 2>&1 && echo "obsidian-cli ✓" || echo "obsidian-cli yok (opsiyonel)"
 fi
 ```
+
+Windows dalı `winget`'i dener, o yoksa Obsidian'ı elle kurmasını söyler ve engellemez (kural 4: opsiyonel adımlarda durma). `obsidian-cli` şu an sadece macOS/Linux için paketleniyor, Windows'ta atlanır — launcher (PHASE 5) buna bağımlı değil.
 
 **v2 hard requirement. Both of these must be present, on every platform:**
 
@@ -289,6 +303,18 @@ Platform split. The macOS branch is the one that has been used and filmed. The L
 a standard XDG desktop entry and is **untested on a real Linux desktop**; tell the user that.
 
 ```bash
+BEYIN_LAUNCHER_PLATFORM=$(uname -s)
+case "$BEYIN_LAUNCHER_PLATFORM" in
+  MINGW*|MSYS*|CYGWIN*)
+    # Windows: a .url shortcut needs no COM/PowerShell scripting, no icon rendering step.
+    # Windows Explorer resolves obsidian:// itself once the vault has been opened in
+    # Obsidian at least once (same precondition as the other platforms).
+    BEYIN_URL_FILE="$HOME/Desktop/{{OS_NAME}}.url"
+    printf '[InternetShortcut]\r\nURL=obsidian://open?vault={{OS_NAME}}\r\n' > "$BEYIN_URL_FILE"
+    [ -f "$BEYIN_URL_FILE" ] && echo "BASLATICI: Windows .url kısayolu hazır" || echo "BASLATICI: kurulamadı"
+    exit 0
+    ;;
+esac
 if [ "$(uname -s)" = "Darwin" ]; then
   # 1) launcher applet
   osacompile -o "$HOME/Desktop/{{OS_NAME}}.app" \

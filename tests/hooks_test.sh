@@ -2,6 +2,12 @@
 # Self-contained integration tests for the portable v2 hook set.
 set -eu
 
+# Force UTF-8 mode for every python3 subprocess this test script spawns.
+# Without it, on a non-English Windows install (e.g. Turkish cp1254),
+# Python's stdin/stdout default to the OS locale codepage instead of UTF-8
+# and silently corrupt (or crash on) the Turkish text these tests compare.
+export PYTHONUTF8=1
+
 TEST_ROOT=$(CDPATH= cd "$(dirname "$0")/.." 2>/dev/null && pwd)
 SOURCE_HOOKS="$TEST_ROOT/template/.claude/hooks"
 SOURCE_SETTINGS="$TEST_ROOT/template/.claude/settings.json"
@@ -536,7 +542,13 @@ payload = json.dumps({"session_id": "s-end", "transcript_path": "/tmp/end.jsonl"
 env = os.environ.copy()
 env["CLAUDE_PROJECT_DIR"] = vault
 started = time.monotonic()
-result = subprocess.run([hook], input=payload, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+# subprocess.run has no shebang-line awareness (unlike bash's own exec, which
+# is why every other direct "$HOOKS/…" call in this script works under Git
+# Bash on Windows). Route explicitly through bash here so this one Python-
+# side invocation doesn't hit WinError 193 ("%1 is not a valid Win32
+# application") trying to launch a #!/bin/bash script as a native binary.
+argv = ["bash", hook] if sys.platform == "win32" else [hook]
+result = subprocess.run(argv, input=payload, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
 elapsed = time.monotonic() - started
 assert result.returncode == 0, result.stderr.decode()
 assert elapsed < 1.0, elapsed
@@ -614,6 +626,15 @@ NO_PY_BIN="$TEST_TMP/no-python-bin"
 mkdir -p "$NO_PY_BIN"
 ln -s "$(command -v mkdir)" "$NO_PY_BIN/mkdir"
 ln -s "$(command -v sed)" "$NO_PY_BIN/sed"
+# On MSYS2/Git-Bash (Windows), mkdir/sed are PE binaries dynamically linked
+# against msys-2.0.dll and friends, resolved relative to the launching
+# executable's own directory. A PATH containing only their symlinks makes
+# them fail to load ("error while loading shared libraries"). Bring the
+# runtime DLLs along too; this is a no-op (glob matches nothing) on POSIX.
+for dll in "$(dirname "$(command -v bash)")"/*.dll; do
+  [ -e "$dll" ] || continue
+  ln -sf "$dll" "$NO_PY_BIN/$(basename "$dll")" 2>/dev/null || :
+done
 NO_PY_OUT="$TEST_TMP/no-python.out"
 CLAUDE_PROJECT_DIR="$VAULT" PATH="$NO_PY_BIN" /bin/bash -c \
   '. "$1"; beyin_emit SessionStart "ignored unicode: ç"' _ "$HOOKS/lib.sh" > "$NO_PY_OUT"

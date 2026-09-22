@@ -25,6 +25,11 @@ sys.dont_write_bytecode = True
 import _portalock
 from typing import Any, Sequence
 
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 VAULT_ROOT = SCRIPT_DIR.parent.parent
@@ -102,6 +107,29 @@ class PolicyError(ValueError):
 
 class NoChangesError(ValueError):
     """The model exited successfully without an allowed content change."""
+
+
+def _lock_exclusive(handle, blocking: bool) -> None:
+    """Take an exclusive lock on an open file handle, POSIX or Windows."""
+    if sys.platform == "win32":
+        saved_position = handle.tell()
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write("\0")
+            handle.flush()
+        handle.seek(0)
+        mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
+        try:
+            msvcrt.locking(handle.fileno(), mode, 1)
+        except OSError as exc:
+            handle.seek(saved_position)
+            if blocking:
+                raise
+            raise BlockingIOError(str(exc)) from exc
+        handle.seek(saved_position)
+        return
+    flags = fcntl.LOCK_EX if blocking else (fcntl.LOCK_EX | fcntl.LOCK_NB)
+    fcntl.flock(handle.fileno(), flags)
 
 
 def _iso_now() -> str:
@@ -320,6 +348,31 @@ def _copy_source_tree(
                 destination_current / file_name,
                 vault_root,
             )
+
+
+def _new_stage_dir(vault_root: Path) -> Path:
+    """Create the staging tree outside the vault entirely.
+
+    A staging directory nested under the vault's own .claude/ tree gets
+    treated as a protected/"sensitive" path by the CLI's own safety guard
+    when the nested `claude -p` call tries to write into it, refusing every
+    edit. Staging in the OS temp directory avoids that, and the inside_vault
+    check below is defense in depth against a misconfigured TMPDIR pointing
+    back into the vault.
+    """
+    stage = Path(tempfile.mkdtemp(prefix="beyin-compile-stage-"))
+    try:
+        inside_vault = (
+            os.path.commonpath([stage.resolve(), vault_root.resolve()])
+            == str(vault_root.resolve())
+        )
+    except ValueError:
+        inside_vault = False
+    if inside_vault:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise PolicyError("stage-inside-vault")
+    stage.chmod(0o700)
+    return stage
 
 
 def _prepare_stage(
