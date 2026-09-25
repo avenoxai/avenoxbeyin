@@ -76,7 +76,13 @@ Bir şey ters giderse ajana **“beyin-doktor ile kontrol et”** de. Terminalde
 
 ```sh
 python3 beyin.py doctor
+python3 beyin.py recap --days 7 --human
 ```
+
+`recap`, son yedi UTC günündeki kaynak bağlantılı iş sonucu kayıtlarını en yeniden
+eskiye listeler; model çağırmaz ve yeni bir anı oluşturmaz. Bunlar ajanın yazdığı
+sonuç iddialarıdır, bağımsız doğrulanmış olgular değildir. `--days` ve `--limit`
+ile aralığı ve uzunluğu değiştirebilirsin.
 
 Windows'ta aynı komutun başında `py -3` kullan. Kurulumda özel runtime yolu seçtiysen kurulu `beyin.py` bunu zaten bilir.
 

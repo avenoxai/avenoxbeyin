@@ -94,6 +94,7 @@ python3 scripts/beyin_v3.py --vault /absolute/vault context --file query.json --
 python3 scripts/beyin_v3.py --vault /absolute/vault receipt --file receipt.json --harness codex
 python3 scripts/beyin_v3.py --vault /absolute/vault task-update --file patch.json
 python3 scripts/beyin_v3.py --vault /absolute/vault history demo-task
+python3 scripts/beyin_v3.py --vault /absolute/vault recap --days 7 --limit 20
 ```
 
 Retrieval JSON accepts `query`, `project`, `audience`, `statuses`, `limit`, and
@@ -106,6 +107,16 @@ conflict requires reading current state and reconciling the intended change.
 `history RECORD_ID` synchronizes first, like `context`, and returns ordered revision
 snapshots, including the original source synchronization, subsequent updates and a
 final `delete` event for removed sources, so changes can be reviewed from local state.
+
+`recap` is an on-demand activity view over dated receipts. It groups no facts or
+tasks by inference: the result lists the most recent agent-authored outcome claims,
+their immutable receipt source paths, and the source references submitted with
+each receipt. The default covers today plus the previous six UTC calendar days
+and returns at most 20 entries; use `--days 1..366` and `--limit 1..100` to adjust.
+Older receipts without `created_at` are counted as omitted, never assigned an
+invented date. Like `context`, the command synchronizes local sources first; it
+does not create a new memory or call a model. Run the installed `beyin.py recap
+--days 7 --human` for a compact terminal rendering instead of JSON.
 
 By default, `context` refreshes the local index before retrieval. `--no-sync`
 instead opens an already initialized SQLite index in read-only mode and does not

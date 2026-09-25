@@ -111,6 +111,24 @@ def human_result(result, command, installed_version=None):
                         for name, value in (result.get('companion_limits') or {}).items()) +
                 '\nAcikken gunde en fazla bir kez GitHub surum bilgisi okunur; notlar gonderilmez.' +
                 '\nYerel kontroller model cagirmaz. Zamanlayici kurulmaz.')
+    if command == 'recap':
+        lines = ['Kaynakli etkinlik: ' + result['from'] + ' - ' + result['through'] +
+                 ' (UTC; ajan kayitlari, bagimsiz dogrulanmis olgular degil)']
+        if not result['items']:
+            lines.append('Bu aralikta tarihli kayit yok.')
+        for item in result['items']:
+            lines.append('\n' + item['created_at'][:10] + '  ' + item['summary'])
+            lines.append('Kaynak: ' + item['source'])
+            for ref in item.get('refs', []):
+                lines.append('  - ' + ref)
+        if result['truncated']:
+            lines.append('Yalniz en yeni ' + str(result['shown']) + '/' + str(result['total']) +
+                         ' kayit gosterildi; --limit ile artirabilirsin.')
+        if result['undated_omitted']:
+            lines.append(str(result['undated_omitted']) + ' tarihsiz/eski bicimli kayit atlandi.')
+        if result.get('partial'):
+            lines.append('Uyari: kaynak esitlemesi kismi; ayrinti icin --json kullan.')
+        return '\n'.join(lines)
     if command == 'companion-compact':
         lines = []
         for name, entry in result.get('files', {}).items():

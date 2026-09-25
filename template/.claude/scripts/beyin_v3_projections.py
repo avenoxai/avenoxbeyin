@@ -1,10 +1,54 @@
 """Deterministic receipt indexes; never rewrite existing human daily/knowledge."""
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
 import re
 import time
+
+
+def recent_receipts(db, days=7, limit=20, today=None):
+    """A bounded, source-linked activity view; summaries remain agent claims."""
+    if not 1 <= days <= 366 or not 1 <= limit <= 100:
+        raise ValueError('recap days must be 1..366 and limit must be 1..100')
+    today = today or datetime.now(timezone.utc).date()
+    start = today - timedelta(days=days - 1)
+    matches = []
+    undated = 0
+    for (payload,) in db.execute('SELECT payload FROM receipts'):
+        try:
+            event = json.loads(payload)
+            stamp = datetime.fromisoformat(event['created_at'].replace('Z', '+00:00'))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            stamp = stamp.astimezone(timezone.utc)
+        except (KeyError, AttributeError, TypeError, ValueError, OverflowError):
+            undated += 1
+            continue
+        if not start <= stamp.date() <= today:
+            continue
+        ident = event.get('event_id')
+        if not isinstance(ident, str) or not ident or not isinstance(event.get('summary'), str):
+            undated += 1
+            continue
+        matches.append((stamp, ident, event))
+    matches.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    items = []
+    for stamp, ident, event in matches[:limit]:
+        items.append({
+            'created_at': stamp.isoformat(),
+            'summary': event['summary'],
+            'refs': event.get('refs') if isinstance(event.get('refs'), list) else [],
+            'source': 'receipts/' + hashlib.sha256(ident.encode()).hexdigest() + '.md',
+        })
+    return {
+        'status': 'ok', 'from': start.isoformat(), 'through': today.isoformat(),
+        'timezone': 'UTC', 'total': len(matches), 'shown': len(items),
+        'truncated': len(matches) > limit, 'undated_omitted': undated,
+        'items': items,
+        'meaning': 'Agent-authored outcomes, not independently verified facts.',
+    }
 
 
 def _checkpoint_schema(db):
@@ -278,4 +322,3 @@ def check_instruction_conflicts(vault):
         except Exception:
             pass
     return conflicts
-
