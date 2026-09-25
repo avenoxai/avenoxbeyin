@@ -125,6 +125,37 @@ class ContextRefreshTest(unittest.TestCase):
         self.assertEqual(events[-1]['record']['rejected_reason'],
                          'User corrected this inference.')
 
+    def test_rejected_at_timestamp_in_yaml_frontmatter_keeps_sync_healthy(self):
+        # Agents copy the updated_at shape; a timestamp must not degrade sync for the whole vault.
+        (self.vault / 'notes/inference.md').write_text(
+            '---\nid: amber-preference\nkind: inference\nvalidity: rejected\n'
+            'rejected_reason: User corrected this inference.\nrejected_at: 2026-09-24T10:00:00Z\n'
+            '---\nSynthetic user prefers amber diagrams.\n', encoding='utf-8')
+        synced = self.run_cli('sync')
+        self.assertEqual(synced.returncode, 0, synced.stderr)
+        self.assertEqual(json.loads(synced.stdout)['status'], 'succeeded')
+        context = self.run_cli('context', 'amber diagrams', '--no-sync')
+        self.assertNotIn('amber-preference', [row['id'] for row in json.loads(context.stdout)['records']])
+        history = self.run_cli('history', 'amber-preference')
+        self.assertEqual(history.returncode, 0, history.stderr)
+        self.assertEqual(json.loads(history.stdout)[-1]['record']['rejected_at'], '2026-09-24T10:00:00Z')
+
+    def test_doctor_reports_rejection_on_a_note_without_inference_kind(self):
+        rejection = {'validity': 'rejected', 'rejected_reason': 'User corrected this.', 'rejected_at': '2026-09-24'}
+        for name, kind in (('plain', None), ('fact', 'fact'), ('inference', 'inference')):
+            metadata = dict(rejection, id=name, **({'kind': kind} if kind else {}))
+            (self.vault / 'notes' / (name + '.md')).write_text(
+                '---\n' + json.dumps(metadata) + '\n---\nSynthetic user prefers ' + name + ' diagrams.\n', encoding='utf-8')
+        synced = self.run_cli('sync')
+        self.assertEqual(json.loads(synced.stdout)['status'], 'succeeded')
+        doctor = self.run_cli('doctor')
+        self.assertEqual(doctor.returncode, 0, doctor.stderr)
+        report = json.loads(doctor.stdout)
+        self.assertEqual(report['status'], 'needs_attention')
+        self.assertEqual(report['validity']['ignored_rejection_count'], 2)
+        self.assertEqual([(row['id'], row['kind']) for row in report['validity']['ignored_rejections']],
+                         [('fact', 'fact'), ('plain', 'note')])
+
     def test_history_syncs_edits_and_keeps_deleted_audit_trail(self):
         def write(name, **metadata):
             (self.vault / 'notes' / (name + '.md')).write_text(

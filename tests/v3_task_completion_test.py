@@ -87,6 +87,38 @@ class TaskCompletionTest(unittest.TestCase):
         self.assertEqual(task.read_bytes(), before)
         self.assertEqual(len(self.engine.store.history('synthetic-task')), 1)
 
+    def test_criterion_cannot_change_in_the_update_that_marks_strict_task_done(self):
+        self.engine.task_create('tasks/synthetic.md', 'Inspect calibration.', self.metadata)
+        self.engine.task_create('tasks/legacy.md', 'Legacy task.',
+                                {'id': 'legacy-task', 'owner': 'Synthetic Reviewer', 'status': 'active'})
+        self.engine.note_create('notes/result.md', 'Synthetic calibration result.', {'kind': 'fact'})
+        done = {'status': 'done', 'evidence_refs': ['notes/result.md']}
+        task = self.vault / 'tasks/synthetic.md'
+        before = task.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'marks a strict task done'):
+            self.engine.update_task('synthetic-task', 1, dict(done, completion_criterion='Any result exists.'))
+        self.assertEqual(task.read_bytes(), before)
+        self.assertEqual(len(self.engine.store.history('synthetic-task')), 1)
+        # Opting in on the closing update would also define the criterion after the work.
+        with self.assertRaisesRegex(ValueError, 'marks a strict task done'):
+            self.engine.update_task('legacy-task', 1, dict(done, completion_contract='strict',
+                                                           completion_criterion='Any result exists.'))
+        # A legacy task that already carries a criterion still cannot opt in while closing.
+        self.engine.task_create('tasks/preset.md', 'Preset task.',
+                                {'id': 'preset-task', 'owner': 'Synthetic Reviewer', 'status': 'active',
+                                 'completion_criterion': 'Any result exists.'})
+        preset = self.vault / 'tasks/preset.md'
+        preset_bytes = preset.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'marks a strict task done'):
+            self.engine.update_task('preset-task', 1, dict(done, completion_contract='strict'))
+        self.assertEqual(preset.read_bytes(), preset_bytes)
+        revised = self.engine.update_task('synthetic-task', 1, {'completion_criterion': 'A reviewed result is recorded.'})
+        self.assertEqual(revised['revision'], 2)
+        closed = self.engine.update_task('synthetic-task', 2,
+                                         dict(done, completion_criterion='A reviewed result is recorded.'))
+        self.assertEqual(closed['status'], 'done')
+        self.assertEqual(closed['completion_criterion'], 'A reviewed result is recorded.')
+
     def test_cancelled_and_legacy_tasks_keep_existing_status_behavior(self):
         self.engine.task_create('tasks/strict.md', 'Strict task.', self.metadata)
         cancelled = self.engine.update_task('synthetic-task', 1, {'status': 'cancelled'})

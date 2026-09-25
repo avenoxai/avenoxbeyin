@@ -3,6 +3,7 @@ from collections import defaultdict
 from datetime import datetime
 import json
 from pathlib import Path
+import re
 import time
 
 
@@ -165,3 +166,116 @@ def project_receipts(engine, db):
         db.execute('INSERT OR REPLACE INTO receipt_views VALUES (?,?)', (relative, desired_hash))
     refresh_gaps(engine, db)
     return conflicts
+
+
+# YAML lines (updated: 2026-09-25) and one-line JSON frontmatter ("updated": "2026-09-25").
+_FRONTMATTER_KEY = r'(?:^|[\s{,])["\']?%s["\']?\s*[:=]\s*'
+_FRONTMATTER_GENERATED = re.compile(_FRONTMATTER_KEY % 'generated' + r'true\b', re.M)
+_FRONTMATTER_UPDATED = re.compile(_FRONTMATTER_KEY % '(?:updated|modified)' +
+                                  r'["\']?([0-9]{4}-[0-9]{2}-[0-9]{2}(?:[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2})?)?)', re.M)
+
+
+def knowledge_freshness(vault, db, now=None):
+    """Diagnose knowledge distillation recency and count receipts since then."""
+    if now is None:
+        now = time.time()
+    vault = Path(vault)
+    knowledge_dir = vault / 'knowledge'
+    latest_mtime = None
+    latest_source = None
+
+    if knowledge_dir.is_dir():
+        for path in sorted(knowledge_dir.rglob('*.md')):
+            if path.is_symlink() or not path.is_file():
+                continue
+            try:
+                relative = path.relative_to(vault).as_posix()
+            except ValueError:
+                continue
+            # Generated views and the V2 compiler seeds are not distillation.
+            if relative.startswith('knowledge/v3/') or relative in ('knowledge/index.md', 'knowledge/log.md'):
+                continue
+            try:
+                mtime = path.stat().st_mtime
+                with path.open('rb') as handle:  # frontmatter only; a whole (possibly evicted) note is never read
+                    head = handle.read(4096).decode('utf-8', errors='ignore')
+            except OSError:
+                continue
+            end_idx = head.find('\n---', 3) if head.startswith('---') else -1
+            frontmatter = head[3:end_idx] if end_idx != -1 else ''
+            if _FRONTMATTER_GENERATED.search(frontmatter):
+                continue
+            # git checkout, clone and iCloud restore reset mtime; a recorded updated/modified date wins.
+            m = _FRONTMATTER_UPDATED.search(frontmatter)
+            # A bare date keeps the same-day mtime, so receipts earlier that day do not count as later.
+            if m and not (len(m.group(1)) == 10 and datetime.fromtimestamp(mtime).date().isoformat() == m.group(1)):
+                try:
+                    mtime = datetime.fromisoformat(m.group(1).replace(' ', 'T')).timestamp()
+                except (ValueError, OverflowError, OSError):
+                    pass
+            if latest_mtime is None or mtime > latest_mtime:
+                latest_mtime = mtime
+                latest_source = relative
+
+    total_receipts = 0
+    receipts_since = 0
+    # A store error propagates: doctor reports "unavailable" instead of a silent zero.
+    for (payload,) in db.execute('SELECT payload FROM receipts'):
+        try:
+            receipt = json.loads(payload)
+            created = datetime.fromisoformat(receipt['created_at']).timestamp()
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            continue
+        total_receipts += 1
+        if latest_mtime is None or created >= latest_mtime:
+            receipts_since += 1
+
+    days_ago = max(0, int((now - latest_mtime) / 86400)) if latest_mtime is not None else None
+
+    return {
+        'last_distilled_at': latest_mtime,
+        'days_ago': days_ago,
+        'receipts_since': receipts_since,
+        'total_receipts': total_receipts,
+        'latest_source': latest_source,
+    }
+
+
+def _fold_tr(text):
+    return (text.replace('\u0130', 'i').replace('I', 'i').lower().replace('\u0307', '')
+            .translate(str.maketrans('ıüşğöç', 'iusgoc')))
+
+
+# Only the V2 wording that hands knowledge/ to the compiler. Bare "compiler",
+# "derleyici" or "dokunma" also matched V3 rules such as "notlara dokunmadan önce".
+_V2_COMPILER_RULE = re.compile(r'derleyici\s+(?:yonetir|yazar|gunceller)|elle\s+duzenlemeyin|'
+                               r'managed\s+by\s+the\s+compiler|compiler[- ]managed')
+
+
+def check_instruction_conflicts(vault):
+    """Detect contradictory V2 compiler instructions outside the managed V3 block."""
+    vault = Path(vault)
+    conflicts = []
+    START = "<!-- beyin-v3:start -->"
+    END = "<!-- beyin-v3:end -->"
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        path = vault / name
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            outside = re.sub(r"\n*" + re.escape(START) + r".*?" + re.escape(END), "", text, flags=re.S)
+            for line in outside.splitlines():
+                line_str = line.strip()
+                folded = _fold_tr(line_str)
+                if 'knowledge' in folded and _V2_COMPILER_RULE.search(folded):
+                    conflicts.append({
+                        'file': name,
+                        'snippet': line_str[:120],
+                        'reason': 'legacy_v2_compiler_instruction'
+                    })
+                    break
+        except Exception:
+            pass
+    return conflicts
+

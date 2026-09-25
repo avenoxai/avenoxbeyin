@@ -113,6 +113,21 @@ için kaynak tarihleri ayrıca kodda kontrol edilir. Uygun aday bile yalnız
 ve `task_completed` her zaman `false` kalır. Aktif ajan kaynağı inceler ve mevcut
 yetkisi kapsamında normal kayıt akışını kullanır.
 
+İddia aynı proje ve kitle sınırında reddedilmiş bir `inference` veya `preference`
+kaydını yeniden söylüyorsa sonuç `previously_rejected` tanısını ve bu kayıtların
+kimliklerini taşır; `candidate_for_agent_review` yerine `inspect_sources` döner.
+Bu kontrol her modda, `off` dahil, yerel çalışır: model çağrısı ve yazma yoktur,
+reddedilmiş metin ve gerekçe sağlayıcı isteğine girmez. Eşleşme sözcükseldir:
+`rejected_matches(store, text, project, audience)` (`beyin_v3.py`) iki taraftaki
+metni bağlam aramasıyla aynı biçimde normalleştirir (küçük harf, Unicode biçimi,
+Türkçe ekler) ve reddedilen ifadenin, başlığı ya da metniyle, en az %60'ı ve en az
+iki terimi yeni iddiada geçiyorsa eşleşir. Başlık ancak en az üç terim taşıyorsa
+sayılır; "Kahve tercihi" gibi kısa bir başlık konu etiketidir, iddia değildir.
+Anlamca aynı ama başka sözcüklerle yazılmış iddiayı yakalamaz. Olumsuzluğu da
+ayırt etmez: reddedilen iddiayı düzelten yeni bir cümle aynı terimleri taşıdığı
+için eşleşebilir. Sonuç yalnız yönlendirmeyi `inspect_sources`'a çevirir, hiçbir
+şeyi engellemez; son karar kaynağı okuyan ajandadır. Aynı işlev aday üreten başka yollar için de çağrılabilir.
+
 `off` modunda kaynak/alıntı kontrolü yereldir; anahtar, Jev cache veya sağlayıcı
 erişimi olmaz. `shadow` değerlendirme yapabilir ama boyutları ve yönlendirmeyi
 uygulamaz. İzinli kanıtların ve eski kayıtların tam metni gönderilir; kaynak

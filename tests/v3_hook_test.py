@@ -283,6 +283,92 @@ class HookInstallerTest(unittest.TestCase):
         gaps = json.loads((self.state / 'receipt-gaps.json').read_text(encoding='utf-8'))
         self.assertEqual(gaps['potential_missing_receipts'], 0)
 
+    def test_stop_knowledge_reminder_blocks_when_receipt_has_learning_without_knowledge_note(self):
+        engine = self.seed()
+        def session(name):
+            return hashlib.sha256(name.encode()).hexdigest()[:24]
+        sess_name = 'learn-session'
+        self.lifecycle('PostToolUse', sess_name, 'claude')
+        summary = "Completed SQLite refactor.\nÖğrenilen: SQLite WAL modunda timeout süresi en az 5 saniye olmalı."
+        engine.receipt('learn-receipt-1', summary, ['notes/task.md'], 'claude', session=session(sess_name))
+        first = self.lifecycle('Stop', sess_name, 'claude')
+        self.assertEqual(first.get('decision'), 'block')
+        self.assertIn('knowledge/concepts/', first.get('reason', ''))
+        second = self.lifecycle('Stop', sess_name, 'claude')
+        self.assertEqual(second, {})
+
+    def test_stop_knowledge_reminder_passes_when_knowledge_ref_is_present(self):
+        engine = self.seed()
+        def session(name):
+            return hashlib.sha256(name.encode()).hexdigest()[:24]
+        sess_name = 'know-ref-session'
+        self.lifecycle('PostToolUse', sess_name, 'claude')
+        summary = "Completed SQLite refactor.\nÖğrenilen: SQLite WAL modunda timeout süresi en az 5 saniye olmalı."
+        engine.note_create('knowledge/concepts/sqlite-wal.md', 'WAL mode details', {'id': 'sw-1'})
+        engine.receipt('know-receipt-1', summary, ['knowledge/concepts/sqlite-wal.md'], 'claude', session=session(sess_name))
+        response = self.lifecycle('Stop', sess_name, 'claude')
+        self.assertEqual(response, {})
+
+    def test_stop_knowledge_reminder_passes_when_learning_is_declared_none(self):
+        engine = self.seed()
+        def session(name):
+            return hashlib.sha256(name.encode()).hexdigest()[:24]
+        sess_name = 'no-learn-session'
+        self.lifecycle('PostToolUse', sess_name, 'claude')
+        summary = "Routine bugfix completed.\nÖğrenilen: Yok"
+        engine.receipt('no-learn-1', summary, ['notes/task.md'], 'claude', session=session(sess_name))
+        response = self.lifecycle('Stop', sess_name, 'claude')
+        self.assertEqual(response, {})
+
+    def test_learning_declaration_reads_only_the_label_line(self):
+        declared = self.hook._has_declared_learning
+        cases = {
+            # Declared learnings the first regex missed.
+            'Learned: WAL needs a 5 second busy timeout': True,
+            '- Öğrenilen — WAL timeout en az 5 sn': True,
+            'Öğrenilen: yoklama akışı artık idempotent': True,
+            'ÖĞRENİLEN: WAL timeout': True,
+            'KALICI ÖĞRENİM: WAL timeout': True,
+            # Explicit "no learning" answers and non-labels the first regex flagged.
+            'Öğrenilen: Hiçbiri': False,
+            'ÖĞRENİLEN: HİÇBİRİ': False,
+            'Öğrenilen: kalıcı öğrenim bulunmadı': False,
+            'Yapılan: fix.\nÖğrenilen:\n\nAçık kalan: testler': False,
+            'Fixed machine learning: pipeline config': False,
+            'Tuned learning-rate schedule in the trainer': False,
+            'Ders-plan sayfası düzeltildi': False,
+            'Öğrenilen: yok.': False,
+        }
+        for summary, expected in cases.items():
+            with self.subTest(summary=summary):
+                self.assertIs(declared(summary), expected)
+
+    def test_stop_knowledge_reminder_follows_a_receipt_written_for_the_receipt_reminder(self):
+        engine = self.seed()
+        session = hashlib.sha256('chain'.encode()).hexdigest()[:24]
+        self.lifecycle('PostToolUse', 'chain', 'claude')
+        self.assertIn('knowledge/concepts/', self.lifecycle('Stop', 'chain', 'claude')['reason'])
+        # The agent answers with a receipt that declares a learning; no further file edits.
+        engine.receipt('chain-1', 'Refactor bitti.\nÖğrenilen: WAL timeout en az 5 sn.', ['notes/task.md'],
+                       'claude', session=session)
+        self.assertEqual(self.lifecycle('Stop', 'chain', 'claude', stop_hook_active=True), {})
+        nxt = self.lifecycle('Stop', 'chain', 'claude')
+        self.assertEqual(nxt.get('decision'), 'block')
+        self.assertIn('Learnings were reported', nxt['reason'])
+        self.assertEqual(self.lifecycle('Stop', 'chain', 'claude'), {})
+
+    def test_stop_knowledge_reminder_ignores_generated_knowledge_files(self):
+        engine = self.seed()
+        session = hashlib.sha256('seeds'.encode()).hexdigest()[:24]
+        self.lifecycle('PostToolUse', 'seeds', 'claude')
+        # A V2 compiler run, git pull or iCloud sync touches the seeds; nothing was distilled.
+        (self.vault / 'knowledge').mkdir(exist_ok=True)
+        for name in ('index.md', 'log.md'):
+            (self.vault / 'knowledge' / name).write_text('# seed\n', encoding='utf-8')
+        engine.receipt('seeds-1', 'Refactor bitti.\nÖğrenilen: WAL timeout en az 5 sn.',
+                       ['notes/task.md', 'knowledge/index.md'], 'claude', session=session)
+        self.assertEqual(self.lifecycle('Stop', 'seeds', 'claude').get('decision'), 'block')
+
     def test_stop_receipt_reminder_passes_without_edits(self):
         self.assertEqual(self.lifecycle('Stop', 'no-edits', 'claude'), {})
         # The global bridge (--metadata-only) keeps no reminder state.

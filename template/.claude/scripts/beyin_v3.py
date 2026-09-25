@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import date
+from datetime import datetime
 import functools
 import hashlib
 import json
@@ -15,6 +15,9 @@ import unicodedata
 
 # Every supported client. "manual" is accepted for receipts only.
 HARNESSES = ("codex", "claude", "antigravity", "hermes", "opencode", "omp")
+
+# rejected_at grammar: a date, optionally with an RFC 3339-style time.
+REJECTED_AT = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ](?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})?)?", re.ASCII)
 
 # Frontmatter keys other tools write instead of updated_at, in precedence order.
 RECENCY_ALIASES = ("updated", "modified", "last_modified", "date_modified")
@@ -243,13 +246,15 @@ class MemoryStore:
             if record.get("validity") == "rejected":
                 if not isinstance(record.get("rejected_reason"), str) or not record["rejected_reason"].strip():
                     raise ValueError("rejected_reason required for rejected validity")
+                # A date or an RFC 3339-style timestamp. The explicit grammar keeps acceptance
+                # identical across Python versions (3.14 fromisoformat also takes T24:00).
                 rejected_at = record.get("rejected_at")
-                if not isinstance(rejected_at, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", rejected_at):
-                    raise ValueError("rejected_at must be an ISO date for rejected validity")
+                if not isinstance(rejected_at, str) or not REJECTED_AT.fullmatch(rejected_at):
+                    raise ValueError("rejected_at must be an ISO date or timestamp for rejected validity")
                 try:
-                    date.fromisoformat(rejected_at)
+                    datetime.fromisoformat(rejected_at)
                 except ValueError as exc:
-                    raise ValueError("rejected_at must be an ISO date for rejected validity") from exc
+                    raise ValueError("rejected_at must be an ISO date or timestamp for rejected validity") from exc
         record.setdefault("facts", {})
         if not isinstance(record["facts"], dict):
             raise ValueError("facts must be an object")
@@ -502,8 +507,12 @@ class MemoryStore:
     # matching block (#83, beyin_v3_passage.py). An empty passage result is an answer.
     STRICT_PASSAGES = True
 
-    def _eligible(self, audience="internal", project=None):
-        """Visibility, trust, project and source-freshness gates shared by every retrieval path."""
+    def _eligible(self, audience="internal", project=None, rejected_only=False):
+        """Visibility, trust, project and source-freshness gates shared by every retrieval path.
+
+        rejected_only inverts the rejection gate alone, for rejected_matches: the same
+        scope applies to history that is looked up but never delivered.
+        """
         if audience not in ("public", "internal", "private"):
             raise ValueError("invalid audience")
         with self._connect() as db:
@@ -512,7 +521,7 @@ class MemoryStore:
         eligible = []
         stale_count = 0
         for record in records:
-            if record["visibility"] not in allowed or record.get("trust") == "untrusted" or record.get("trusted") is False or record.get("status") == "untrusted" or record.get("kind") == "untrusted" or _rejected_inference(record):
+            if record["visibility"] not in allowed or record.get("trust") == "untrusted" or record.get("trusted") is False or record.get("status") == "untrusted" or record.get("kind") == "untrusted" or _rejected_inference(record) != rejected_only:
                 continue
             if project is not None and record.get("project") != project:
                 continue
@@ -569,6 +578,50 @@ class MemoryStore:
             return [record for _, record in ranked[:limit]]
         return pack_context([record for _, record in ranked], limit, budget_chars, stale_count)
 
+
+# A rejected claim is proposed again when the new text restates most of it. Coverage is
+# measured on the rejected statement, not on the new text, so a proposal that wraps the
+# old claim in extra context is still caught. Both constants are pinned by tests.
+REJECTED_MIN_SHARED = 2
+REJECTED_MIN_COVERAGE = 0.6
+# A title is a topic label more often than a claim: "Kahve tercihi" would otherwise match
+# any new claim that names the same topic, including the user's own correction.
+REJECTED_MIN_TITLE_TERMS = 3
+
+
+def rejected_matches(store, text, project, audience="internal", limit=4):
+    """Rejected inference/preference records in scope that the text restates.
+
+    Lexical and local: no model call, no write. The comparison uses _tokens, so casing,
+    Unicode form and Turkish suffixes normalize the same way on both sides. A record is
+    compared by its title and by its text separately, and the better coverage counts.
+    Only identities are returned; the rejected text and reason never leave this function,
+    so they cannot reach context or an advisor request.
+    """
+    if (not isinstance(text, str) or not isinstance(project, str) or not project.strip() or
+            type(limit) is not int or limit < 0):
+        raise ValueError("invalid rejected match query")
+    ignored = STOPWORDS | _tokens(project)
+    claim = _tokens(text) - ignored
+    if not claim:
+        return []
+    records, _ = store._eligible(audience, project, rejected_only=True)
+    matches = []
+    for record in records:
+        coverage = 0.0
+        for statement, minimum in ((str(record.get("title", "")), REJECTED_MIN_TITLE_TERMS), (record["text"], 0)):
+            terms = _tokens(statement) - ignored
+            if len(terms) < minimum:
+                continue
+            shared = len(claim & terms)
+            if shared >= REJECTED_MIN_SHARED:
+                coverage = max(coverage, shared / len(terms))
+        if coverage >= REJECTED_MIN_COVERAGE:
+            matches.append((coverage, record))
+    matches.sort(key=lambda item: (-item[0], item[1]["id"]))
+    return [{"record_id": record["id"], "source": record["source"],
+             "rejected_at": record.get("rejected_at"), "coverage": round(coverage, 3)}
+            for coverage, record in matches[:limit]]
 
 CONTEXT_MARKER = " [truncated]"
 MIN_CONTEXT_TEXT = 150     # smallest excerpt of a source that is worth a slot

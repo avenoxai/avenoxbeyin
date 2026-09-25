@@ -15,6 +15,10 @@ Kaynak değişikliği indekslenmemişse `python3 beyin.py sync`; skill dosyalar�
 
 `companion_hygiene` bölümü companion dosyalarının karakter sayısını gösterir. `over_limit` içinde Last-Session.md veya Threads.md varsa bu bir hafıza hijyeni bulgusudur, senkronizasyon arızası değildir: `python3 beyin.py companion-compact --dry-run` ile planı göster, uygunsa `companion-compact` çalıştır. Komut eski bölümleri kelimesi kelimesine `Arşiv/` altına taşır, hiçbir metni silmez. Kurallar.md, Core.md ve Journal.md bilerek birikir; boyutları yalnız bilgi olarak raporlanır.
 
+`instruction_references` bölümü AGENTS.md, CLAUDE.md, companion Kurallar.md ve skill klasörlerindeki `[[wikilink]]` ve `[metin](yol)` bağlantılarından vault içinde karşılığı olmayanları dosya ve satırıyla listeler; kod blokları sayılmaz. Bu bilgi amaçlıdır, durumu `needs_attention` yapmaz: kullanıcıya hangi talimatın artık olmayan bir nota işaret ettiğini söyle, hedef taşındıysa bağlantıyı düzeltmeyi öner, kendiliğinden not uydurma.
+
+`validity.ignored_rejections` içindeki kayıtlarda `validity: rejected` yazıyor ama `kind` inference ya da preference değil, bu yüzden iddia hala güncel bağlamda. Kullanıcı bu iddiayı gerçekten reddettiyse kaynağa `kind: inference` (ya da `preference`) ekle; reddetmediyse `validity` alanını kaldır. Kaynağı silme.
+
 Kullanıcıya üç şey söyle: çalışan kısım, doğrulanmamış/bozuk kısım, varsa tek sonraki düzeltme. Ham JSON yerine kısa ve somut bir sonuç ver. Kullanıcının mevcut onayı güvenli düzeltmeyi kapsıyorsa gereksiz tekrar onay isteme.
 
 V3.1: `doctor` içindeki `updates` en son sürüm kontrolünü gösterir; ağ hatası güncel olunduğunu kanıtlamaz. Yalnız sürüm sorusunda `beyin.py update --check --metadata-only` kullan. Güncelleme talebini beyin-guncelle skill'ine yönlendir.

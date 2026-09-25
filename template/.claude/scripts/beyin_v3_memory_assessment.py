@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import json
 
 import beyin_v3_jev_client as client
+from beyin_v3 import rejected_matches
 from beyin_v3_jev import (_eligible, _verified_evidence, _safe, _signature, _calibration,
                           context_limit, limits, remote_allowed, source_context)
 
@@ -21,7 +22,23 @@ def assess_memory(store, proposal, *, project, transport=None):
     The route only advises the active agent to inspect sources or consider a
     candidate. Even a unanimous high-confidence result cannot approve, save,
     supersede a record, create a task, or mark a task completed.
+
+    A claim that restates a rejected inference or preference is never a candidate,
+    whatever the advisor said and whether or not it ran. Only the rejected record
+    ids are reported; the rejected text never enters the advisor request.
     """
+    result = _assess(store, proposal, project=project, transport=transport)
+    rejected = rejected_matches(store, proposal['claim'], project)
+    if rejected:
+        result['previously_rejected'] = [match['record_id'] for match in rejected]
+        # A new list: the degraded paths share theirs with the advisor payload.
+        result['diagnostics'] = result['diagnostics'] + ['previously_rejected']
+        if result['route'] == 'candidate_for_agent_review':
+            result['route'] = 'inspect_sources'
+    return result
+
+
+def _assess(store, proposal, *, project, transport):
     required = {'status', 'project', 'claim', 'evidence'}
     if not isinstance(proposal, dict) or not required <= set(proposal) or set(proposal) - required - {'prior_record_ids'}:
         raise ValueError('invalid_proposal_fields')

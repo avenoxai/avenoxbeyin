@@ -366,6 +366,15 @@ class SyncEngine:
                 'legacy_done_count': len(legacy_done), 'legacy_done': legacy_done[:20],
                 'truncated': len(strict_issues) > 20 or len(legacy_done) > 20}
 
+    def validity_health(self):
+        """Report `validity: rejected` that has no effect because the record is not an inference or preference."""
+        with self.store._connect() as db:
+            records = [json.loads(row[0]) for row in db.execute('SELECT payload FROM records ORDER BY id')]
+        ignored = [{'id': record.get('id'), 'source': record.get('source'), 'kind': record.get('kind')}
+                   for record in records
+                   if record.get('validity') == 'rejected' and record.get('kind') not in ('inference', 'preference')]
+        return {'ignored_rejection_count': len(ignored), 'ignored_rejections': ignored[:20], 'truncated': len(ignored) > 20}
+
     def _scan(self):
         records, warnings, conflicts = {}, [], []
         duplicate = set()
@@ -577,8 +586,19 @@ class SyncEngine:
             metadata, body = parse(raw.decode('utf-8'))
             if metadata.get('id') != id or type(metadata.get('revision')) is not int or metadata['revision'] > expected_revision:
                 raise RevisionConflict('source revision conflict')
+            before = {field: metadata.get(field) for field in ('status', 'completion_contract', 'completion_criterion')}
             metadata.update(changes)
             metadata['revision'] = expected_revision + 1
+            # The criterion is judged as it stood before completion, so neither it nor the
+            # opt-in can arrive with the closing update. Compared exactly, as stored.
+            if (metadata.get('completion_contract') == 'strict' and metadata.get('status') == 'done'
+                    and before['status'] != 'done'):
+                if before['completion_contract'] != 'strict':
+                    raise ValueError('completion_contract cannot be set in the update that marks a strict task done; '
+                                     'opt in with a separate update before closing it')
+                if metadata.get('completion_criterion') != before['completion_criterion']:
+                    raise ValueError('completion_criterion cannot change in the update that marks a strict task done; '
+                                     'omit it or pass the stored value, or change it in a separate update first')
             # A task that never opted in keeps unrelated updates, even with a same-named legacy field.
             if metadata.get('completion_contract') is not None or COMPLETION_FIELDS & set(changes):
                 issue = self._completion_issue(metadata, record['source'])

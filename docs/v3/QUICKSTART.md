@@ -188,6 +188,13 @@ conflicts appear in `doctor` under `skill_conflicts` and in session context as a
 warning, but they no longer stop queued event metadata from being processed;
 only source synchronization failures do that.
 
+`doctor` also reads `AGENTS.md`, `CLAUDE.md`, the companion `Kurallar.md` and
+every Markdown file under `.agents/skills` and `.claude/skills` for `[[wikilink]]`
+and `[text](path)` links that resolve to nothing inside the vault, and lists them
+with file and line under `instruction_references`. Code blocks, inline code,
+URLs and links that leave the vault are skipped. It is information only: it
+makes no model call, writes nothing and does not change the doctor status.
+
 Hooks enqueue only event metadata, never raw prompts or transcripts. They start
 an opportunistic detached Python worker. Startup waits at most 1.5 seconds for
 source synchronization before context; a slow sync reports pending instead of

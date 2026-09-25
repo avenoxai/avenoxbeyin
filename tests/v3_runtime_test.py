@@ -237,9 +237,20 @@ class RuntimeContractTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'rejected_reason'):
             self.store.ingest(self.record('missing-reason', kind='inference', validity='rejected',
                                           rejected_at='2026-09-24'))
-        with self.assertRaisesRegex(ValueError, 'rejected_at'):
-            self.store.ingest(self.record('invalid-date', kind='inference', validity='rejected',
-                                          rejected_reason='User corrected it.', rejected_at='2026-02-30'))
+        for invalid in ('2026-02-30', '2026-09-24T25:00:00Z', '2026-09-24T24:00:00', '2026-09-24T10',
+                        '2026-09-24T10:00:00UTC', '2026-W39-4', '20260924', 'yesterday'):
+            with self.assertRaisesRegex(ValueError, 'rejected_at'):
+                self.store.ingest(self.record('invalid-date', kind='inference', validity='rejected',
+                                              rejected_reason='User corrected it.', rejected_at=invalid))
+
+    def test_rejected_at_accepts_timestamps_like_updated_at(self):
+        for index, stamp in enumerate(('2026-09-24T10:00:00Z', '2026-09-24T13:00:00+03:00', '2026-09-24 10:00')):
+            record_id = 'stamped-' + str(index)
+            self.store.ingest(self.record(record_id, kind='inference', validity='rejected',
+                                          rejected_reason='User corrected it.', rejected_at=stamp,
+                                          text='Synthetic user prefers amber diagrams.'))
+            self.assertNotIn(record_id, [row['id'] for row in self.store.retrieve('prefers amber diagrams')['records']])
+            self.assertEqual(self.store.history(record_id)[-1]['record']['rejected_at'], stamp)
 
     def test_history_keeps_visibility_and_current_source_hash_boundary(self):
         self.store.ingest(self.record('private', kind='inference', validity='rejected',
