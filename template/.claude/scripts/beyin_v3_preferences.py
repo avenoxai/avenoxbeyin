@@ -12,6 +12,11 @@ PROFILES = {
     'economical': dict(auto_sync=True, interval_minutes=15, context_mode='session', context_chars=2000, secret_filter=False, excluded_components=[]),
     'manual': dict(auto_sync=False, interval_minutes=15, context_mode='off', context_chars=2000, secret_filter=False, excluded_components=[]),
 }
+# Optional surfaces a user can switch off for good (install_v3.py maps them to vault paths).
+# Core files and the Claude/Codex hook entries are not listed and cannot be excluded.
+EXCLUDABLE_COMPONENTS = ('agents_block', 'adapters', 'adapters/hermes', 'adapters/omp', 'adapters/opencode',
+                         'harnesses/antigravity', 'launchers', 'skills', 'skills/beyin',
+                         'skills/beyin-doktor', 'skills/beyin-guncelle')
 
 
 def validate(value):
@@ -29,6 +34,10 @@ def validate(value):
         raise ValueError('context_mode must be turn, session or off')
     if not isinstance(result.get('excluded_components', []), (list, tuple)) or not all(isinstance(x, str) for x in result.get('excluded_components', [])):
         raise ValueError('excluded_components must be a list of strings')
+    unknown = sorted(set(result['excluded_components']) - set(EXCLUDABLE_COMPONENTS))
+    if unknown:
+        raise ValueError('Unknown or core component ' + ', '.join(unknown) +
+                         '; excludable: ' + ', '.join(EXCLUDABLE_COMPONENTS))
     result['excluded_components'] = sorted(set(result.get('excluded_components', [])))
     return result
 

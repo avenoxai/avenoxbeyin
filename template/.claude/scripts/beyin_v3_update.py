@@ -346,9 +346,6 @@ def update(vault, state, package=None, check=False):
                     path = vault / name
                     previous = path.read_bytes() if path.exists() else None
                     operations.append({'scope': 'vault', 'name': name, 'old': encode(previous), 'new': encode(data), 'old_mode': stat.S_IMODE(path.stat().st_mode) if path.exists() else None, 'new_mode': plan.get('modes', {}).get(name, 0o644)})
-                for name, previous in plan.get('removed', {}).items():
-                    path = vault / name
-                    operations.append({'scope': 'vault', 'name': name, 'old': encode(previous), 'new': None, 'old_mode': stat.S_IMODE(path.stat().st_mode) if path.exists() else None, 'new_mode': None})
                 path = state / 'v3-install.json'
                 operations.append({'scope': 'state', 'name': 'v3-install.json', 'old': encode(path.read_bytes() if path.exists() else None), 'new': encode(jbytes(plan['manifest']))})
                 path = vault / '.beyin-version'
