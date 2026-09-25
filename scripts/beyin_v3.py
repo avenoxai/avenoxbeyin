@@ -215,14 +215,25 @@ def main(argv=None):
                 changes['auto_sync'] = args.auto_sync == 'on'
             if args.secret_filter is not None:
                 changes['secret_filter'] = args.secret_filter == 'on'
+            import beyin_v3_exclusions as exclusions
+            exclusion_notice = None
             if args.exclude_component or args.include_component:
-                current_excluded = set(preferences.read(vault).get('excluded_components', []))
-                current_excluded.update(args.exclude_component)
-                current_excluded.difference_update(args.include_component)
-                changes['excluded_components'] = sorted(current_excluded)
+                exclude_args = [name.replace('\\', '/') for name in args.exclude_component]
+                include_args = [name.replace('\\', '/') for name in args.include_component]
+                exclusions.validate_exclusions(exclude_args + include_args)
+                current_excluded = set(exclusions.read_exclusions(vault))
+                current_excluded.update(exclude_args)
+                current_excluded.difference_update(include_args)
+                result_excluded = exclusions.save_exclusions(vault, current_excluded)
+                exclusion_notice = 'Haric tutma tercihleri kaydedildi; bir sonraki kurulum ya da guncellemede uygulanir.'
+            else:
+                result_excluded = exclusions.read_exclusions(vault)
             settings = preferences.save(vault, changes, args.profile) if changes or args.profile else preferences.read(vault)
-            result = {'status': 'saved' if changes or args.profile else 'current', 'preferences': settings,
+            result = {'status': 'saved' if changes or args.profile or (args.exclude_component or args.include_component) else 'current',
+                      'preferences': settings, 'excluded_components': result_excluded,
                       'model_calls': False, 'timer_installed': False}
+            if exclusion_notice:
+                result['exclusion_notice'] = exclusion_notice
             # Machine-local like update notifications: rollback-safe, outside the vault schema.
             result['companion_limits'] = companion.save_limits(state, limits) if limits else companion.read_limits(state)[0]
             if limits:
@@ -264,6 +275,11 @@ def main(argv=None):
             result['kept_legacy_runners'] = manifest_data.get('kept_legacy', [])
             result['excluded_components'] = manifest_data.get('excluded_components', [])
             load_sync()
+            import beyin_v3_exclusions as exclusions
+            configured_excluded = exclusions.read_exclusions(vault)
+            if set(configured_excluded) != set(result['excluded_components']):
+                result['pending_exclusions'] = sorted(set(configured_excluded) ^ set(result['excluded_components']))
+                result['exclusions_pending'] = True
             import beyin_v3_preferences as preferences
             result['preferences'] = preferences.read(vault)
             import beyin_v3_releases as releases

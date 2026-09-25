@@ -125,6 +125,15 @@ Arşiv izin listesi, dosya SHA256, sürüm ve runtime şeması doğrulanır. Pak
 
 Bu kontroller dağıtık cloud kilidi veya bütün harici uygulamalar için atomik transaction değildir. Başka bir editörün görülen değişiklikleri korunur; gerçek istemci davranışı ayrı doğrulanır. [Platform raporu](PLATFORM-TESTS.md).
 
+## Bileşen hariç tutma ve güncellemeler
+
+Kullanıcı gereksinim duymadığı bileşenleri (`skills/<ad>`, `adapters/<ad>`, `launchers`, `agents_block`, `harnesses/antigravity`) kurulumda `--exclude-component` ile veya çalışma zamanında `beyin.py preferences --exclude-component <ad>` ile hariç tutabilir (`--include-component` ile geri açabilir).
+
+- `update` ve `install` sırasında hariç tutulan bileşenlere ait yönetilen ve değiştirilmemiş dosyalar diskten temizlenir ve manifestten düşürülür.
+- Kullanıcı tarafından değiştirilmiş dosyalar asla silinmez, üzerine yazılmaz; korunur ve işlem özetinde bildirilir.
+- Kullanıcı ortak dosyalardaki (`AGENTS.md` veya `.agents/hooks.json`) V3 bölgelerini elle kaldırmışsa çakışma üretilmez.
+- Rollback yapıldığında önceki durum geri yüklenir; `.beyin-exclusions.json` dosyasındaki hariç tutma tercihleri korunur.
+
 ## Geliştiriciler için paket üretimi
 
 Repo kökünde:

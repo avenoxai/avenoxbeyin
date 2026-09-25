@@ -101,16 +101,21 @@ def human_result(result, command, installed_version=None):
         return '\n'.join(lines + jev_lines(result))
     if command == 'preferences':
         prefs = result['preferences']
-        return ('Otomatik kontrol: ' + ('acik' if prefs['auto_sync'] else 'kapali') +
-                '\nKontrol araligi: ' + str(prefs['interval_minutes']) + ' dakika (0 = her olay)' +
-                '\nOtomatik baglam: ' + prefs['context_mode'] +
-                '\nBaglam ust siniri: ' + str(prefs['context_chars']) + ' karakter' +
-                '\nSir suzgeci: ' + ('acik' if prefs['secret_filter'] else 'kapali') +
-                '\nSurum bildirimi: ' + ('acik' if result.get('update_notifications', {}).get('effective') else 'kapali') +
-                ''.join('\nHafiza dosyasi siniri, ' + name + ': ' + (str(value) + ' karakter' if value else 'kapali')
-                        for name, value in (result.get('companion_limits') or {}).items()) +
-                '\nAcikken gunde en fazla bir kez GitHub surum bilgisi okunur; notlar gonderilmez.' +
-                '\nYerel kontroller model cagirmaz. Zamanlayici kurulmaz.')
+        lines = ['Otomatik kontrol: ' + ('acik' if prefs['auto_sync'] else 'kapali'),
+                 'Kontrol araligi: ' + str(prefs['interval_minutes']) + ' dakika (0 = her olay)',
+                 'Otomatik baglam: ' + prefs['context_mode'],
+                 'Baglam ust siniri: ' + str(prefs['context_chars']) + ' karakter',
+                 'Sir suzgeci: ' + ('acik' if prefs['secret_filter'] else 'kapali'),
+                 'Surum bildirimi: ' + ('acik' if result.get('update_notifications', {}).get('effective') else 'kapali')]
+        for name, value in (result.get('companion_limits') or {}).items():
+            lines.append('Hafiza dosyasi siniri, ' + name + ': ' + (str(value) + ' karakter' if value else 'kapali'))
+        if result.get('excluded_components'):
+            lines.append('Haric tutulan bilesenler: ' + ', '.join(result['excluded_components']))
+        if result.get('exclusion_notice'):
+            lines.append(result['exclusion_notice'])
+        lines.append('Acikken gunde en fazla bir kez GitHub surum bilgisi okunur; notlar gonderilmez.')
+        lines.append('Yerel kontroller model cagirmaz. Zamanlayici kurulmaz.')
+        return '\n'.join(lines)
     if command == 'companion-compact':
         lines = []
         for name, entry in result.get('files', {}).items():
@@ -163,6 +168,10 @@ def human_result(result, command, installed_version=None):
             lines.append('Skill kopyalari ayristi: ' + ', '.join(result['skill_conflicts']) + '. Iki surum de korundu.')
         if result.get('skill_unmanaged'):
             lines.append('Skill klasorundeki yonetilmeyen girdiler (bilgi): ' + ', '.join(result['skill_unmanaged']) + '.')
+        if result.get('excluded_components'):
+            lines.append('Haric tutulan bilesenler: ' + ', '.join(result['excluded_components']) + '.')
+        if result.get('pending_exclusions') or result.get('exclusions_pending'):
+            lines.append('Haric tutma degisikligi bekliyor: bir sonraki kurulum ya da guncellemede uygulanir.')
         hygiene = result.get('companion_hygiene') or {}
         for name in hygiene.get('over_limit', []):
             entry = hygiene['files'][name]
@@ -176,6 +185,10 @@ def human_result(result, command, installed_version=None):
         return '\n'.join(update_lines(result) + ['Yalniz surum bilgisi kontrol edildi; paket kurulumu denenmedi.'])
     if status == 'updated':
         message = 'Beyin guncellendi: ' + str(result.get('from_version', installed_version or '?')) + ' -> ' + str(result['version'])
+        if result.get('removed'):
+            message += '\nHaric tutulan bilesenler kaldirildi: ' + ', '.join(result['removed']) + '.'
+        if result.get('preserved_excluded'):
+            message += '\nHaric tutulan ancak degistirilmis dosyalar korundu: ' + ', '.join(result['preserved_excluded']) + '.'
     elif status == 'available':
         message = 'Yeni surum var: ' + str(result.get('current_version', '?')) + ' -> ' + str(result['version']) + '\nGuncellemek icin: python beyin.py update'
     elif status == 'noop':
