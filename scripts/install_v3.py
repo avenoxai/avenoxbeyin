@@ -162,6 +162,16 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
     vault, state = vault.resolve(), state.resolve()
     if not vault.is_dir() or state == vault or vault in state.parents:
         raise ValueError("Existing vault and state outside vault required")
+    if not (uninstall or plan_only):
+        # Create the state root, then resolve it again. On Windows a path under a
+        # redirected folder (MSIX-virtualised %LOCALAPPDATA%) only gains its reparse
+        # point once it exists, so the first resolve above keeps the pre-redirect
+        # spelling. Pinning that spelling makes processes inside the package and
+        # outside it read the same string and reach different directories.
+        state.mkdir(parents=True, exist_ok=True)
+        state = state.resolve()
+        if state == vault or vault in state.parents:
+            raise ValueError("Existing vault and state outside vault required")
     manifest_path = state / "v3-install.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {"files": {}}
     if uninstall:
