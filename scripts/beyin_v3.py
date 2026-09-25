@@ -111,6 +111,9 @@ def parser():
     sub.add_parser("sync", help="Reconcile Markdown sources into local state")
     sub.add_parser("skill-sync", help="Reconcile project-local shared skills")
     sub.add_parser("doctor", help="Read local hook health and pending metadata counts")
+    recap = sub.add_parser("recap", help="Read recent source-linked outcomes without a model call")
+    recap.add_argument("--days", type=int, default=7, help="Calendar days in UTC, including today (1..366)")
+    recap.add_argument("--limit", type=int, default=20, help="Maximum recent receipts to return (1..100)")
     settings = sub.add_parser("preferences", help="Control automatic local checks and injected context")
     settings.add_argument("--profile", choices=("normal", "economical", "manual"))
     settings.add_argument("--auto-sync", choices=("on", "off"))
@@ -191,7 +194,7 @@ def main(argv=None):
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
         engine = load_engine() if args.command != "jev" else None
         store = engine.MemoryStore(state, vault, read_only=read_only_context) if engine else None
-        sync = load_sync()(vault, state) if args.command in ("sync", "receipt", "task-update", "note-create", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
+        sync = load_sync()(vault, state) if args.command in ("sync", "recap", "receipt", "task-update", "note-create", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
         if args.command == "init":
             result = {"initialized": True, "state": str(state), "network": False,
                       "hooks_installed": False, "optional_provider": None}
@@ -319,6 +322,20 @@ def main(argv=None):
                 result['sync'] = {'status': load_sync()(vault, state).sync().get('status')}
         elif args.command == "sync":
             result = sync.sync()
+        elif args.command == "recap":
+            if not 1 <= args.days <= 366 or not 1 <= args.limit <= 100:
+                raise ValueError('recap days must be 1..366 and limit must be 1..100')
+            refreshed = sync.sync()
+            if refreshed.get('status') == 'conflict':
+                raise RuntimeError('Recap blocked: source sync conflict. Run sync to inspect sources.')
+            from beyin_v3_projections import recent_receipts
+            with store._connect() as db:
+                result = recent_receipts(db, days=args.days, limit=args.limit)
+            if refreshed.get('status') == 'degraded':
+                warnings = refreshed.get('warnings', [])
+                result['partial'] = True
+                result['source_sync'] = {'status': 'degraded', 'warnings': warnings[:20],
+                                         'warning_count': len(warnings), 'truncated': len(warnings) > 20}
         elif args.command == "ingest":
             payload = read_json(args.file)
             result = [store.ingest(record) for record in payload] if isinstance(payload, list) else store.ingest(payload)
