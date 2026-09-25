@@ -56,6 +56,33 @@ def managed_handler(handler, previous, kept=()):
     return command in previous or "beyin_v3_hook.py" in command or legacy
 
 
+# Vault paths of the file components. Names are validated against
+# beyin_v3_exclusions.EXCLUDABLE_COMPONENTS; core files and the Claude/Codex hook entries are
+# not excludable. agents_block and harnesses/antigravity edit shared files and are handled
+# where those files are planned.
+COMPONENT_PATHS = {
+    "skills": (".agents/skills/", ".claude/skills/"),
+    "launchers": ("Beyni Guncelle", "Beyni Güncelle"),
+    "adapters/hermes": (".claude/hermes-plugin/",),
+    "adapters/opencode": (".opencode/plugins/",),
+    "adapters/omp": (".omp/hooks/",),
+}
+
+
+def is_component_excluded(target, excluded):
+    for name in excluded:
+        if name.startswith("skills/"):
+            skill = name.split("/", 1)[1]
+            prefixes = (f".agents/skills/{skill}/", f".claude/skills/{skill}/")
+        elif name == "adapters":
+            prefixes = COMPONENT_PATHS["adapters/hermes"] + COMPONENT_PATHS["adapters/opencode"] + COMPONENT_PATHS["adapters/omp"]
+        else:
+            prefixes = COMPONENT_PATHS.get(name, ())
+        if prefixes and target.startswith(prefixes):
+            return True
+    return False
+
+
 def atomic(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(dir=path.parent, prefix=".beyin-install-")
@@ -128,7 +155,7 @@ def conflict_case(current):
     return "deleted" if current is None else "content differs"
 
 
-def semantic_unchanged(name, baseline, current, previous, kept=()):
+def semantic_unchanged(name, baseline, current, previous, kept=(), user_excluded=()):
     if baseline is None or current is None: return False
     if line_endings_only(baseline, current): return True
     # The owned-region comparisons below must not see line endings either: a CRLF rewrite
@@ -138,6 +165,8 @@ def semantic_unchanged(name, baseline, current, previous, kept=()):
         if name in ("AGENTS.md", "CLAUDE.md"):
             pattern = re.escape(START) + r".*?" + re.escape(END)
             blocks = re.findall(pattern, current.decode(), re.S)
+            if "agents_block" in user_excluded and not blocks:
+                return True
             imports = name == "CLAUDE.md" and bool(AGENTS_IMPORT.search(current.decode()))
             # An importing CLAUDE.md already receives the block through AGENTS.md; the import-only
             # file the installer created owns its import line the way other routers own the block.
@@ -151,6 +180,8 @@ def semantic_unchanged(name, baseline, current, previous, kept=()):
                 data = json.loads(raw)
                 if name == ".agents/hooks.json": return data.get("beyin-v3")
                 return {event: [dict(group, hooks=[h for h in group.get("hooks", []) if managed_handler(h, previous, kept)]) for group in groups if any(managed_handler(h, previous, kept) for h in group.get("hooks", []))] for event, groups in data.get("hooks", {}).items() if any(managed_handler(h, previous, kept) for group in groups for h in group.get("hooks", []))}
+            if name == ".agents/hooks.json" and "harnesses/antigravity" in user_excluded and owned(current) is None:
+                return True
             return owned(baseline) == owned(current)
     except (ValueError, UnicodeError, TypeError): pass
     return False
@@ -158,7 +189,7 @@ def semantic_unchanged(name, baseline, current, previous, kept=()):
 
 def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", legacy_hashes=None,
              legacy_skill_hashes=None, migration=None, migration_plan=None, accept_customized=(),
-             keep_customized=()):
+             keep_customized=(), exclude_components=(), include_components=()):
     vault, state = vault.resolve(), state.resolve()
     if not vault.is_dir() or state == vault or vault in state.parents:
         raise ValueError("Existing vault and state outside vault required")
@@ -229,8 +260,21 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
     kept = sorted(user_owned - set(accept_customized))
     if migration_plan is not None and (kept or 'kept_legacy' in migration_plan):
         migration_plan['kept_legacy'] = kept
+    # .beyin-exclusions.json is the persistent source, so `beyin.py preferences` and the
+    # installer flags cannot disagree; the manifest only records what this install applied.
+    # Flags are validated here and saved to exclusions after a successful install.
+    spec = importlib.util.spec_from_file_location('beyin_install_exclusions', ROOT / 'template/.claude/scripts/beyin_v3_exclusions.py')
+    exclusions = importlib.util.module_from_spec(spec); spec.loader.exec_module(exclusions)
+    stored_excluded = exclusions.read_exclusions(vault)
+    norm_exclude = [name.replace('\\', '/') for name in exclude_components]
+    norm_include = [name.replace('\\', '/') for name in include_components]
+    exclusions.validate_exclusions(norm_exclude + norm_include)
+    user_excluded = (set(stored_excluded) | set(norm_exclude)) - set(norm_include)
+    exclusions.validate_exclusions(sorted(user_excluded))
 
     def add(name, content):
+        if is_component_excluded(name, user_excluded):
+            return
         path = (vault / name).resolve()
         if path != vault and vault not in path.parents:
             raise ValueError("Managed destination escapes vault")
@@ -326,12 +370,17 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
     path = vault / ".agents/hooks.json"
     data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     data.pop("avenox-beyin", None)
-    managed = {}
-    for event in ("PreInvocation", "Stop"):
-        posix, windows = commands([sys.executable, hook, "--vault", vault, "--state", state, "--harness", "antigravity", "--event", event])
-        managed[event] = [{"type": "command", "command": windows if os.name == "nt" else posix, "timeout": 20 if os.name == "nt" else 5}]
-    data["beyin-v3"] = managed
-    add(".agents/hooks.json", jbytes(data))
+    if "harnesses/antigravity" in user_excluded:
+        data.pop("beyin-v3", None)
+        if path.exists():
+            add(".agents/hooks.json", jbytes(data))
+    else:
+        managed = {}
+        for event in ("PreInvocation", "Stop"):
+            posix, windows = commands([sys.executable, hook, "--vault", vault, "--state", state, "--harness", "antigravity", "--event", event])
+            managed[event] = [{"type": "command", "command": windows if os.name == "nt" else posix, "timeout": 20 if os.name == "nt" else 5}]
+        data["beyin-v3"] = managed
+        add(".agents/hooks.json", jbytes(data))
     cfg = vault / ".codex/config.toml"
     text = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
     section = re.search(r"(?m)^\[features\]\s*$", text)
@@ -387,30 +436,65 @@ Local checks make no model calls. The V2 background compiler is retired; the act
 now performs source-linked reflection and knowledge synthesis. Receipt indexes alone are
 not knowledge synthesis.
 {END}"""
-    for name in ("AGENTS.md", "CLAUDE.md"):
-        path = vault / name
-        text = path.read_text(encoding="utf-8") if path.exists() else ""
-        if name == "CLAUDE.md":
-            # A CLAUDE.md symlinked to AGENTS.md was already planned through AGENTS.md.
-            if path.resolve() == (vault / "AGENTS.md").resolve(): continue
-            item = manifest["files"].get(name)
-            outside = re.sub(r"\n*" + re.escape(START) + r".*?" + re.escape(END), "", text, flags=re.S)
-            # Absent, or the block-only file an earlier install created (an edited block still conflicts below).
-            if not path.exists() or (item is not None and item["original"] is None and not outside.strip()):
-                add(name, CLAUDE_IMPORT)
+    removed, preserved_excluded = [], []
+    if "agents_block" in user_excluded:
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            path = vault / name
+            if not path.exists():
                 continue
-            if AGENTS_IMPORT.search(outside):
-                if item is not None or START in text: add(name, outside.encode())
-                continue
-        text = re.sub(re.escape(START) + r".*?" + re.escape(END), lambda _: block, text, flags=re.S) if START in text else text.rstrip() + "\n\n" + block + "\n"
-        add(name, text.encode())
+            text = path.read_text(encoding="utf-8")
+            if START in text:
+                outside = re.sub(r"\n*" + re.escape(START) + r".*?" + re.escape(END) + r"\n*", "", text, flags=re.S)
+            else:
+                outside = text
+            item = manifest.get("files", {}).get(name)
+            original_bytes = base64.b64decode(item["original"]) if item and item.get("original") is not None else None
+            if original_bytes is not None:
+                original_text = original_bytes.decode("utf-8", errors="replace")
+                if outside.rstrip() == original_text.rstrip() or outside == original_text:
+                    cleaned = original_bytes
+                else:
+                    cleaned = outside.encode("utf-8")
+            else:
+                if not outside.strip():
+                    cleaned = None
+                elif name == "CLAUDE.md" and outside.strip() == "@AGENTS.md":
+                    cleaned = None
+                else:
+                    cleaned = outside.encode("utf-8")
+            if cleaned is None:
+                planned[name] = None
+                removed.append(name)
+            else:
+                if path.read_bytes() != cleaned:
+                    planned[name] = cleaned
+                if original_bytes is not None and cleaned != original_bytes:
+                    preserved_excluded.append(name)
+    else:
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            path = vault / name
+            text = path.read_text(encoding="utf-8") if path.exists() else ""
+            if name == "CLAUDE.md":
+                # A CLAUDE.md symlinked to AGENTS.md was already planned through AGENTS.md.
+                if path.resolve() == (vault / "AGENTS.md").resolve(): continue
+                item = manifest["files"].get(name)
+                outside = re.sub(r"\n*" + re.escape(START) + r".*?" + re.escape(END), "", text, flags=re.S)
+                # Absent, or the block-only file an earlier install created (an edited block still conflicts below).
+                if not path.exists() or (item is not None and item["original"] is None and not outside.strip()):
+                    add(name, CLAUDE_IMPORT)
+                    continue
+                if AGENTS_IMPORT.search(outside):
+                    if item is not None or START in text: add(name, outside.encode())
+                    continue
+            text = re.sub(re.escape(START) + r".*?" + re.escape(END), lambda _: block, text, flags=re.S) if START in text else text.rstrip() + "\n\n" + block + "\n"
+            add(name, text.encode())
     for name in planned:
         item = manifest["files"].get(name)
         path = vault / name
         current = path.read_bytes() if path.exists() else None
         if item and (current is None or digest(current) != item["installed_hash"]):
             baseline = base64.b64decode(item["installed_content"]) if item.get("installed_content") else None
-            if not semantic_unchanged(name, baseline, current, manifest.get("commands", []), user_owned):
+            if not semantic_unchanged(name, baseline, current, manifest.get("commands", []), user_owned, user_excluded):
                 raise ValueError("Reinstall conflict: managed file changed " + name +
                                  " (" + conflict_case(current) + ")")
         elif not item and current is not None and not line_endings_only(planned[name], current):
@@ -418,11 +502,35 @@ not knowledge synthesis.
             legacy = digest(current) in legacy_skill_hashes.get(name, []) or legacy_hashes.get(name) == digest(current)
             if not semantic and not legacy:
                 raise ValueError("Unmanaged file conflict " + name)
+    # A file an excluded component installed earlier is planned as None (delete) when untouched,
+    # or back to the user's original when it replaced one: the existing encode(None) path,
+    # which installed 3.3/3.4 updaters already apply. An edited file stays and is the user's.
     next_manifest = json.loads(json.dumps(manifest))
+    if "agents_block" in user_excluded:
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            next_manifest["files"].pop(name, None)
+    if "harnesses/antigravity" in user_excluded and not (vault / ".agents/hooks.json").exists():
+        next_manifest["files"].pop(".agents/hooks.json", None)
+    for name, item in manifest.get("files", {}).items():
+        if name in planned or not is_component_excluded(name, user_excluded):
+            continue
+        next_manifest["files"].pop(name, None)
+        path = vault / name
+        current = path.read_bytes() if path.exists() else None
+        if current is None:
+            continue
+        baseline = base64.b64decode(item["installed_content"]) if item.get("installed_content") else None
+        if digest(current) == item["installed_hash"] or line_endings_only(baseline, current):
+            planned[name] = None if item["original"] is None else base64.b64decode(item["original"])
+            removed.append(name)
+        else:
+            preserved_excluded.append(name)
     for name, content in planned.items():
+        if name in removed: continue
+        if "agents_block" in user_excluded and name in ("AGENTS.md", "CLAUDE.md"): continue
         path = vault / name
         old = path.read_bytes() if path.exists() else None
-        original = manifest["files"].get(name, {}).get("original", encode(old))
+        original = manifest.get("files", {}).get(name, {}).get("original", encode(old))
         next_manifest["files"][name] = {"original": original, "installed_hash": digest(content), "installed_content": encode(content)}
     next_manifest["commands"] = next_manifest.pop("new_commands", [])
     next_manifest["version"] = version
@@ -430,8 +538,12 @@ not knowledge synthesis.
         next_manifest["kept_legacy"] = kept
     else:
         next_manifest.pop("kept_legacy", None)
+    if user_excluded:
+        next_manifest["excluded_components"] = sorted(user_excluded)
+    else:
+        next_manifest.pop("excluded_components", None)
     if plan_only:
-        return {"planned": planned, "manifest": next_manifest, "modes": modes}
+        return {"planned": planned, "manifest": next_manifest, "modes": modes, "removed": removed, "preserved_excluded": preserved_excluded}
     spec = importlib.util.spec_from_file_location('beyin_install_transaction', ROOT / 'template/.claude/scripts/beyin_v3_update.py')
     updater = importlib.util.module_from_spec(spec); spec.loader.exec_module(updater)
     operations = []
@@ -458,12 +570,16 @@ not knowledge synthesis.
             raise ValueError('Pending installation; run installed beyin.py recover or rollback first')
         atomic(state/'update-journal.json',jbytes(journal))
         updater._apply(vault,state,journal,(migration,migration_plan) if migration else None)
+    if sorted(user_excluded) != stored_excluded:
+        exclusions.save_exclusions(vault, user_excluded)
     from beyin_v3_companion import initialize
     companion = initialize(vault, state)
     return {'status':'installed','files':len(planned),'trust_review_required':True,'kept_legacy':kept,
+            'excluded_components': sorted(user_excluded),
+            'removed': removed, 'preserved_excluded': preserved_excluded,
             'companion': companion,
             'update_notice': 'New releases are checked on GitHub at most daily; notes are not sent. Disable with beyin.py preferences --update-notifications off.',
-            'skills':{'synced':['beyin','beyin-doktor','beyin-guncelle'],'conflicts':[], 'mode':'managed'}}
+            'skills':{'synced':[s for s in ('beyin','beyin-doktor','beyin-guncelle') if not is_component_excluded(f'.agents/skills/{s}/', user_excluded)],'conflicts':[], 'mode':'managed'}}
 
 
 def package_defaults():
@@ -497,7 +613,8 @@ def package_defaults():
 
 
 def install(vault, state, uninstall=False, plan_only=False, version=None, legacy_hashes=None,
-            legacy_skill_hashes=None, accept_customized=(), keep_customized=()):
+            legacy_skill_hashes=None, accept_customized=(), keep_customized=(),
+            exclude_components=(), include_components=()):
     package = package_defaults()
     if package is not None:
         if version is not None and version != package['version']:
@@ -513,7 +630,8 @@ def install(vault, state, uninstall=False, plan_only=False, version=None, legacy
         version = version or '3.0.0'
     if plan_only or uninstall:
         return _install(vault, state, uninstall, plan_only, version, legacy_hashes, legacy_skill_hashes,
-                        accept_customized=accept_customized, keep_customized=keep_customized)
+                        accept_customized=accept_customized, keep_customized=keep_customized,
+                        exclude_components=exclude_components, include_components=include_components)
     directory = ROOT / 'template/.claude/scripts'
     if (Path(state).resolve() / 'update-journal.json').exists():
         spec = importlib.util.spec_from_file_location('beyin_install_recovery', directory / 'beyin_v3_update.py')
@@ -527,19 +645,23 @@ def install(vault, state, uninstall=False, plan_only=False, version=None, legacy
         with module.migration_guard(vault, state) as plan:
             return _install(vault, state, version=version, legacy_hashes=legacy_hashes,
                             legacy_skill_hashes=legacy_skill_hashes, migration=module, migration_plan=plan,
-                            accept_customized=accept_customized, keep_customized=keep_customized)
+                            accept_customized=accept_customized, keep_customized=keep_customized,
+                            exclude_components=exclude_components, include_components=include_components)
     finally:
         sys.path.remove(str(directory))
 
 
 def plan_report(plan):
-    retire = sorted(name for name, content in plan["planned"].items() if content.startswith(RETIRED_STUB))
+    retire = sorted(name for name, content in plan["planned"].items() if content is not None and content.startswith(RETIRED_STUB))
     files = plan["manifest"]["files"]
     return {"status": "plan", "version": plan["manifest"]["version"],
-            "write": sorted(name for name in plan["planned"] if name not in retire),
+            "write": sorted(name for name in plan["planned"] if name not in retire and name not in plan.get("removed", [])),
             "retire": retire,
-            "preserve": sorted(name for name in plan["planned"] if files[name]["original"] is not None),
-            "keep": sorted(plan["manifest"].get("kept_legacy", []))}
+            "preserve": sorted(name for name in plan["planned"] if files.get(name, {}).get("original") is not None),
+            "keep": sorted(plan["manifest"].get("kept_legacy", [])),
+            "excluded": sorted(plan["manifest"].get("excluded_components", [])),
+            "removed": sorted(plan.get("removed", [])),
+            "preserved_excluded": sorted(plan.get("preserved_excluded", []))}
 
 
 def main():
@@ -553,6 +675,10 @@ def main():
                         help="retire one named customized legacy runner (vault-relative); repeatable")
     parser.add_argument("--keep-customized-legacy", action="append", default=[], metavar="PATH",
                         help="leave one named customized legacy runner and its hook entries untouched and unmanaged (vault-relative); repeatable")
+    parser.add_argument("--exclude-component", action="append", default=[], metavar="COMPONENT",
+                        help="disable/exclude a managed component, skill, adapter, or launcher; repeatable")
+    parser.add_argument("--include-component", action="append", default=[], metavar="COMPONENT",
+                        help="re-enable a previously excluded component; repeatable")
     args = parser.parse_args()
     spec = importlib.util.spec_from_file_location("beyin_cli_defaults", ROOT / "scripts/beyin_v3.py")
     defaults = importlib.util.module_from_spec(spec); spec.loader.exec_module(defaults)
@@ -561,8 +687,12 @@ def main():
     try:
         accepted = tuple(name.replace("\\", "/") for name in args.accept_customized_legacy)
         kept = tuple(name.replace("\\", "/") for name in args.keep_customized_legacy)
+        excluded = tuple(name.replace("\\", "/") for name in args.exclude_component)
+        included = tuple(name.replace("\\", "/") for name in args.include_component)
         result = install(args.vault, args.state or default_state(args.vault.resolve()), args.uninstall,
-                         plan_only=args.plan, accept_customized=accepted, keep_customized=kept)
+                         plan_only=args.plan, accept_customized=accepted, keep_customized=kept,
+                         exclude_components=excluded,
+                         include_components=included)
         print(json.dumps(plan_report(result) if args.plan else result))
     except Exception as exc:
         print(json.dumps({"error": type(exc).__name__, "message": str(exc)}), file=sys.stderr)

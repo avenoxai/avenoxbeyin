@@ -353,7 +353,14 @@ def update(vault, state, package=None, check=False):
                 journal = {'schema': 1, 'vault': str(vault), 'direction': 'update', 'from_version': old, 'to_version': new, 'operations': operations, 'migration_plan': migration[1] if migration else None, 'migration_backup': encode((state/'v2-migration.json').read_bytes() if (state/'v2-migration.json').exists() else None)}
                 atomic(state / 'update-journal.json', jbytes(journal))
                 _apply(vault, state, journal, migration)
-        return {'status': 'updated', 'from_version': old, 'version': new, 'trust_review_required': trust_review}
+        result = {'status': 'updated', 'from_version': old, 'version': new, 'trust_review_required': trust_review}
+        if plan.get('removed'):
+            result['removed'] = plan['removed']
+        if plan.get('preserved_excluded'):
+            result['preserved_excluded'] = plan['preserved_excluded']
+        if plan.get('manifest', {}).get('excluded_components'):
+            result['excluded_components'] = plan['manifest']['excluded_components']
+        return result
 
 
 def _merge_json(base, current, target):

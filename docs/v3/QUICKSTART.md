@@ -227,6 +227,12 @@ PowerShell is used as the native command launcher. Codex also receives an explic
 `commandWindows` override. Native Windows execution must be verified on Windows;
 POSIX success does not prove it. Newline-containing command paths are rejected.
 
+To exclude unneeded components during installation (repeatable):
+
+```text
+python3 scripts/install_v3.py --vault /absolute/path/to/vault --exclude-component skills/beyin-doktor --exclude-component launchers
+```
+
 To roll back adapter installation using the saved exact originals:
 
 ```text

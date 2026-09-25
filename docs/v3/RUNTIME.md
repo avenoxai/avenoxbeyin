@@ -41,3 +41,16 @@ Record ingestion and revision updates append an immutable snapshot event inside 
 Initialization adds the events table to existing foundation databases. Prior mutations remain explicitly unrecorded prehistory; the module does not invent baseline events for old rows. This is a local audit history, not a distributed log or a complete event-replay migration tool.
 
 Supply a dedicated application runtime directory. Initialization sets that exact directory to account-private permissions; never pass a general home, cache, or shared parent directory. Its parent permissions are not modified.
+
+## Managed paths and unmanaged user layer
+
+V3 writes exclusively to its explicit managed vault files:
+- Entry point and metadata: `beyin.py`, `.beyin-runtime.json`, `.beyin-version`.
+- Scripts: `.claude/scripts/beyin_v3*.py`.
+- Managed starter skills: `.agents/skills/{beyin,beyin-doktor,beyin-guncelle}/` and `.claude/skills/...`.
+- Platform launchers: `Beyni Guncelle.cmd`, `Beyni Güncelle.sh`, `Beyni Guncelle.command`, `Beyni Güncelle.desktop`.
+- Adapter shims: `.claude/hermes-plugin/`, `.opencode/plugins/`, `.omp/hooks/`.
+- Harness hook declarations: `.claude/settings.local.json`, `.codex/hooks.json`, `.codex/config.toml`, `.agents/hooks.json`.
+- Companion instruction blocks: `AGENTS.md`, `CLAUDE.md`.
+
+All other paths belong to the user. In particular, `.brain/` and `custom/` directories are reserved as an untouched, unmanaged user layer. Installer, updater, and `doctor` checks never treat files under `.brain/` or `custom/` as conflicts or unmanaged system intrusions.

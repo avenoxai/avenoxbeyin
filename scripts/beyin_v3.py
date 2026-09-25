@@ -121,6 +121,10 @@ def parser():
     settings.add_argument("--update-notifications", choices=("on", "off"))
     settings.add_argument("--last-session-chars", type=int, help="Hygiene limit for Last-Session.md; 0 turns it off")
     settings.add_argument("--threads-chars", type=int, help="Hygiene limit for Threads.md; 0 turns it off")
+    settings.add_argument("--exclude-component", action="append", default=[], metavar="COMPONENT",
+                          help="Disable/exclude a managed component or skill (repeatable)")
+    settings.add_argument("--include-component", action="append", default=[], metavar="COMPONENT",
+                          help="Re-enable a previously excluded component (repeatable)")
     compact = sub.add_parser("companion-compact", help="Move older Last-Session/Threads entries verbatim into a private archive; deletes nothing")
     compact.add_argument("--dry-run", action="store_true", help="Report what would move without writing")
     skill = sub.add_parser("skill-import", help="Import one explicitly chosen skill directory")
@@ -211,9 +215,25 @@ def main(argv=None):
                 changes['auto_sync'] = args.auto_sync == 'on'
             if args.secret_filter is not None:
                 changes['secret_filter'] = args.secret_filter == 'on'
+            import beyin_v3_exclusions as exclusions
+            exclusion_notice = None
+            if args.exclude_component or args.include_component:
+                exclude_args = [name.replace('\\', '/') for name in args.exclude_component]
+                include_args = [name.replace('\\', '/') for name in args.include_component]
+                exclusions.validate_exclusions(exclude_args + include_args)
+                current_excluded = set(exclusions.read_exclusions(vault))
+                current_excluded.update(exclude_args)
+                current_excluded.difference_update(include_args)
+                result_excluded = exclusions.save_exclusions(vault, current_excluded)
+                exclusion_notice = 'Haric tutma tercihleri kaydedildi; bir sonraki kurulum ya da guncellemede uygulanir.'
+            else:
+                result_excluded = exclusions.read_exclusions(vault)
             settings = preferences.save(vault, changes, args.profile) if changes or args.profile else preferences.read(vault)
-            result = {'status': 'saved' if changes or args.profile else 'current', 'preferences': settings,
+            result = {'status': 'saved' if changes or args.profile or (args.exclude_component or args.include_component) else 'current',
+                      'preferences': settings, 'excluded_components': result_excluded,
                       'model_calls': False, 'timer_installed': False}
+            if exclusion_notice:
+                result['exclusion_notice'] = exclusion_notice
             # Machine-local like update notifications: rollback-safe, outside the vault schema.
             result['companion_limits'] = companion.save_limits(state, limits) if limits else companion.read_limits(state)[0]
             if limits:
@@ -251,8 +271,15 @@ def main(argv=None):
             result['lifecycle'] = {name: {'status': 'observed_metadata' if events else 'never_seen', 'events': sorted(events)} for name, events in seen.items()}
             result['legacy_external_schedules'] = 'not_inspected; review custom OS/compiler schedules before migration'
             manifest = state / 'v3-install.json'
-            result['kept_legacy_runners'] = json.loads(manifest.read_text(encoding='utf-8')).get('kept_legacy', []) if manifest.exists() else []
+            manifest_data = json.loads(manifest.read_text(encoding='utf-8')) if manifest.exists() else {}
+            result['kept_legacy_runners'] = manifest_data.get('kept_legacy', [])
+            result['excluded_components'] = manifest_data.get('excluded_components', [])
             load_sync()
+            import beyin_v3_exclusions as exclusions
+            configured_excluded = exclusions.read_exclusions(vault)
+            if set(configured_excluded) != set(result['excluded_components']):
+                result['pending_exclusions'] = sorted(set(configured_excluded) ^ set(result['excluded_components']))
+                result['exclusions_pending'] = True
             import beyin_v3_preferences as preferences
             result['preferences'] = preferences.read(vault)
             import beyin_v3_releases as releases
