@@ -127,6 +127,8 @@ class BoundaryTest(unittest.TestCase):
         self.root = Path(tmp.name)
         self.vault = self.root / 'Beyin'
         self.vault.mkdir()
+        self.state_dir = self.root / 'state'
+        self.state_dir.mkdir()
 
     def test_nested_repo_and_code_folder_are_named(self):
         (self.vault / '.obsidian').mkdir()
@@ -146,7 +148,22 @@ class BoundaryTest(unittest.TestCase):
         self.assertIn('parent', report['findings'][0])
         (self.root / '.obsidian').rmdir()
         (self.vault / '.obsidian').mkdir()
-        self.assertEqual(hygiene.boundary(self.vault), {'status': 'ok', 'findings': []})
+        self.assertEqual(hygiene.boundary(self.vault)['status'], 'ok')
+
+    def test_kasa_class_folders_are_excluded_and_reported(self):
+        (self.vault / 'Finans').mkdir()
+        (self.vault / 'Finans/kart.md').write_text('borc ' * 600)
+        (self.vault / 'notes').mkdir()
+        (self.vault / 'notes/normal.md').write_text('govde\n')
+        report = hygiene.boundary(self.vault)
+        self.assertEqual(report['sensitive_excluded'], ['Finans'])
+        self.assertTrue(any(f.startswith('kasa_excluded:') for f in report['findings']))
+        # Hygiene channels never read into a kasa-class folder.
+        scanned = hygiene.cap_scan(self.vault)
+        self.assertEqual(scanned['over'], [])
+        self.assertEqual(hygiene.folder_questions(self.vault, self.state_dir, cooldown_days=14), [])
+        promo = hygiene.promotion(self.vault, self.state_dir)
+        self.assertFalse([entry for entry in promo['hot'] + promo['cold'] if 'Finans' in entry['folder']])
 
 
 class ClosedTasksTest(unittest.TestCase):

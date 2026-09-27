@@ -272,8 +272,13 @@ def human_result(result, command, installed_version=None):
             lines.append('Kelime tavani (' + str(cap['cap']) + ') asan not (bilgi): ' + shown +
                          (' ve ' + str(more) + ' tane daha' if more > 0 else '') +
                          '. Bolum sinyali, emir degil: tek konu arasini birak.')
-        for finding in (result.get('boundary') or {}).get('findings') or []:
-            lines.append('Kok siniri: ' + ascii_text(finding))
+        boundary_report = result.get('boundary') or {}
+        for finding in boundary_report.get('findings') or []:
+            if finding.startswith('kasa_excluded:'):
+                lines.append('Kasa sinifi klasor taramalarin disinda (bilgi): ' + ascii_text(finding.split(': ', 1)[1]) +
+                             '; tam garanti icin kaynaklarina visibility: private ekle.')
+            else:
+                lines.append('Kok siniri: ' + ascii_text(finding))
         closed = result.get('closed_tasks') or {}
         if closed.get('closed_count'):
             shown = ', '.join(entry['source'] + ' (' + str(entry['days_old']) + ' gun)' for entry in closed.get('closed')[:3])

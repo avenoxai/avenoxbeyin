@@ -18,15 +18,24 @@ import time
 # views and archives grow without being read into context. Mirrors the MMS
 # muafiyet list; archive detection is by file path, like the MMS hook.
 CAP_EXCLUDED_DIRS = {'daily', 'knowledge', 'receipts', 'raw', 'tasks'}
-ARCHIVE_DIR = re.compile(r'(?i)(archive|arşiv|arsiv)')
-ARCHIVE_FRONT = re.compile(r'(?mi)^(type:[ \t]*gecmis|durum:[ \t]*arşiv|status:[ \t]*(done|cancelled))')
+ARCHIVE_DIR = re.compile(r'(?i)(archive|arsiv|arsiv)')
+ARCHIVE_FRONT = re.compile(r'(?mi)^(type:[ \t]*gecmis|durum:[ \t]*arsiv|status:[ \t]*(done|cancelled))')
 SKILL_OR_INDEX = re.compile(r'(?i)s(skill\.md?|index\.md|indeks\.md)$')
 # Generated, user-instruction or code-adjacent folders never carry residence notes.
 SORU_SKIP_DIRS = re.compile(r'(?ix)^(\.).|^(daily|knowledge|receipts|tasks|notes|nodes|node_modules|'
-                            r"raw|tmp|out|output|bin|log|logs|Finans|Müşteriler|gptpro)$")
+                            r"raw|tmp|out|output|bin|log|logs|Finans|Musteriler|gptpro)$")
+# Kasa-class folders: personal or financial content that must never reach the
+# session context through the hygiene channels. The MMS vault answered this with
+# a dedicated 🔐 kasa/ folder its loader never opens; a V3 vault has no such
+# folder, so the same guarantee is enforced by name and by finding: any
+# top-level folder matching this pattern is skipped by every scan here and
+# reported in boundary() so the owner knows the guarantee is active.
+SENSITIVE_DIRS = re.compile(
+    r'(?ix)^(kasa|sifre|sifre|kimlik|finans|finansal|musteri|musteri|vergi|fatura|maas|maas|'
+    r'ozel|ozel|gizli|private|secret|kimlikler)$')
 DEFAULT_CAP = 500
 FRONT = re.compile(r'\A---\n.*?\n---\n', re.S)
-STATUS = re.compile(r'(?mi)^status:[ \t]*(done|kapandı)')
+STATUS = re.compile(r'(?mi)^status:[ \t]*(done|kapandi)')
 
 
 def _words(text):
@@ -36,8 +45,9 @@ def _words(text):
 
 def _excluded(relative):
     parts = relative.replace('\\', '/').split('/')
-    return any(part in CAP_EXCLUDED_DIRS or ARCHIVE_DIR.search(part) or SKILL_OR_INDEX.search(part)
-               for part in parts[:-1]) or SKILL_OR_INDEX.search(parts[-1]) or not parts[-1].endswith('.md')
+    return (any(part in CAP_EXCLUDED_DIRS or ARCHIVE_DIR.search(part) or SKILL_OR_INDEX.search(part) or
+                SENSITIVE_DIRS.match(part) for part in parts[:-1]) or
+            SKILL_OR_INDEX.search(parts[-1]) or not parts[-1].endswith('.md'))
 
 
 def file_over_cap(vault, path, cap=DEFAULT_CAP):
@@ -72,7 +82,7 @@ def cap_scan(vault, cap=DEFAULT_CAP, limit=20):
     over, checked = [], 0
     for directory, folders, files in os.walk(vault):
         folders[:] = [name for name in folders if not name.startswith('.') and name not in CAP_EXCLUDED_DIRS
-                      and not ARCHIVE_DIR.search(name)]
+                      and not ARCHIVE_DIR.search(name) and not SENSITIVE_DIRS.match(name)]
         for name in files:
             if SKILL_OR_INDEX.search(name) or not name.endswith('.md') or name.startswith('.'):
                 continue
@@ -105,7 +115,7 @@ def hook_cap_warning(vault, payload, cap=DEFAULT_CAP):
 
     Claude and Codex deliver the edited path in tool_input; other harnesses
     carry no path, so the cap stays a doctor scan for them. A split signal, not
-    a split action — the wording is MMS's on purpose.
+    a split action - the wording is MMS's on purpose.
     """
     if payload.get('hook_event_name') != 'PostToolUse':
         return ''
@@ -123,7 +133,7 @@ def hook_cap_warning(vault, payload, cap=DEFAULT_CAP):
         relative = Path(path).resolve().relative_to(Path(vault).resolve()).as_posix()
     except (ValueError, OSError):
         relative = path
-    return ('Buyuk not: "%s" %d kelime — %d kelime tavan uzerinde. Bolum SINYALI, emir degil: '
+    return ('Buyuk not: "%s" %d kelime - %d kelime tavan uzerinde. Bolum SINYALI, emir degil: '
             'dosya tek soruyu cevapliyorsa birak; birden fazla soruyu cevapliyorsa alt dosyaya bol '
             've notlar arasina [[wikilink]] ile bagla.\n'
             % (relative, words, words - cap))
@@ -145,7 +155,7 @@ def folder_questions(vault, state, cooldown_days=14, limit=3):
     try:
         roots = sorted(entry.name for entry in vault.iterdir()
                        if entry.is_dir() and not entry.name.startswith('.') and not entry.is_symlink()
-                       and not SORU_SKIP_DIRS.match(entry.name))
+                       and not SORU_SKIP_DIRS.match(entry.name) and not SENSITIVE_DIRS.match(entry.name))
     except OSError:
         return []
     for name in roots:
@@ -244,7 +254,7 @@ def promotion(vault, state, days=30, limit=8):
         for entry in sorted(vault.iterdir()):
             if not entry.is_dir() or entry.name.startswith('.') or entry.is_symlink():
                 continue
-            if SORU_SKIP_DIRS.match(entry.name) or entry.name in touched:
+            if SORU_SKIP_DIRS.match(entry.name) or SENSITIVE_DIRS.match(entry.name) or entry.name in touched:
                 continue
             try:
                 if not entry.rglob('*.md'):
@@ -269,9 +279,20 @@ def boundary(vault):
     The MMS denetci guards four invariants here: one code root inside the vault
     (node_modules / venv), one nested second repo, an Obsidian index above or
     below the root, and privacy-facing leftovers. Each check reads only paths.
+    The kasa check reports the sensitive folders the hygiene scans are already
+    excluding, naming the active guarantee instead of leaving it implicit.
     """
     vault = Path(vault).resolve()
-    report = {'status': 'ok', 'findings': []}
+    report = {'status': 'ok', 'findings': [], 'sensitive_excluded': []}
+    kasa = sorted(entry.name for entry in vault.iterdir()
+                  if entry.is_dir() and not entry.is_symlink() and not entry.name.startswith('.')
+                  and SENSITIVE_DIRS.match(entry.name))
+    if kasa:
+        report['sensitive_excluded'] = kasa
+        report['findings'].append('kasa_excluded: ' + ', '.join(kasa) +
+                                  '; these folders are skipped by every hygiene scan, the'
+                                  ' context scans (strict matching) still follow visibility metadata -'
+                                  ' mark their sources visibility: private for the full guarantee.')
     parent = vault.parent
     if (parent / '.obsidian').is_dir():
         report['findings'].append('parent_obsidian_index: parent directory also holds a .obsidian vault root; '
@@ -311,9 +332,9 @@ def boundary(vault):
 
 
 def closed_tasks(vault, days=30, limit=20, now=None):
-    """Closed work that no longer belongs at the top level — a report, not a move.
+    """Closed work that no longer belongs at the top level - a report, not a move.
 
-    Scans tasks/*.md frontmatter for status done/kapandı, older than the number
+    Scans tasks/*.md frontmatter for status done/kapandi, older than the number
     of days by file mtime (metadata carries updated_at only when the writer set
     it, so mtime is the independent bound). V3 keeps source paths in the runtime
     database; a kapanis move would sever every receipt ref and revision history,
