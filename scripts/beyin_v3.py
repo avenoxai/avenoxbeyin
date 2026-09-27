@@ -481,6 +481,19 @@ def main(argv=None):
             except Exception as exc:
                 result['validity'] = {'ignored_rejection_count': 0, 'ignored_rejections': [], 'truncated': False,
                                       'error': (type(exc).__name__ + ': ' + str(exc))[:240]}
+            load_sync()
+            try:
+                import beyin_v3_hygiene as hygiene
+                result['word_cap'] = hygiene.cap_scan(vault)
+                result['boundary'] = hygiene.boundary(vault)
+                result['closed_tasks'] = hygiene.closed_tasks(vault)
+                result['folder_questions'] = hygiene.folder_questions(vault, state)
+                result['promotion'] = hygiene.promotion(vault, state)
+            except Exception as exc:  # a hygiene scan must never hide the rest of doctor
+                result['word_cap'] = result['boundary'] = result['closed_tasks'] = None
+                result['folder_questions'] = []
+                result['promotion'] = {'window_days': 30, 'hot': [], 'cold': [], 'truncated': False}
+                result['hygiene_error'] = type(exc).__name__
             result['status'] = ('needs_attention' if health.get('sync', {}).get('status') in ('conflict', 'degraded') or result['skill_conflicts'] or result.get('instruction_conflicts') or result['hook-error.json'] or result['task_completion']['strict_issue_count'] or result['task_completion'].get('error') or result['validity']['ignored_rejection_count'] or result['validity'].get('error') else 'pending' if result['pending_events'] else 'observed_metadata' if result['acknowledged_events'] else 'never_seen')
         elif args.command == "skill-sync":
             result = load_skills().sync_skills(vault, state)

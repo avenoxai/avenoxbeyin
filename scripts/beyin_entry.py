@@ -265,6 +265,31 @@ def human_result(result, command, installed_version=None):
             more = references['dead_count'] - min(3, len(references['dead']))
             lines.append('Talimat ve skill dosyalarinda kirik baglanti (bilgi): ' + shown +
                          (' ve ' + str(more) + ' tane daha' if more > 0 else '') + '.')
+        cap = result.get('word_cap') or {}
+        if cap.get('over_count'):
+            shown = ', '.join(entry['file'] + ' (' + str(entry['words']) + ' kelime)' for entry in cap.get('over', [])[:3])
+            more = cap['over_count'] - min(3, len(cap.get('over') or []))
+            lines.append('Kelime tavani (' + str(cap['cap']) + ') asan not (bilgi): ' + shown +
+                         (' ve ' + str(more) + ' tane daha' if more > 0 else '') +
+                         '. Bolum sinyali, emir degil: tek konu arasini birak.')
+        for finding in (result.get('boundary') or {}).get('findings') or []:
+            lines.append('Kok siniri: ' + ascii_text(finding))
+        closed = result.get('closed_tasks') or {}
+        if closed.get('closed_count'):
+            shown = ', '.join(entry['source'] + ' (' + str(entry['days_old']) + ' gun)' for entry in closed.get('closed')[:3])
+            more = closed['closed_count'] - min(3, len(closed.get('closed') or []))
+            lines.append('Kapali durumda sedintede duran gorev (bilgi, tasima senin kararin): ' + shown +
+                         (' ve ' + str(more) + ' tane daha' if more > 0 else '') + '.')
+        questions = result.get('folder_questions') or []
+        if questions:
+            lines.append('Soru sirasi: ' + ' | '.join(questions[:2]))
+        promo = result.get('promotion') or {}
+        if promo.get('hot'):
+            lines.append('Sicak klasorler (son ' + str(promo.get('window_days', 30)) + ' gun dokunma): ' +
+                         ', '.join(entry['folder'] + ' (' + str(entry['touches']) + ')' for entry in promo['hot'][:3]))
+        if promo.get('cold'):
+            lines.append('Soguk klasorler (terfi karari senin): ' +
+                         ', '.join(entry['folder'] + ' (' + str(entry['days_quiet']) + ' gun)' for entry in promo['cold'][:3]))
         lines += state_location_lines(result.get('state_location'))
         if status in ('needs_attention', 'pending'):
             lines.append('Ajanina "beyin doktor" diyerek ayrintiyi inceletebilirsin.')
