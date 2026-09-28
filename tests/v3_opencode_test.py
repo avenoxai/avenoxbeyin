@@ -13,7 +13,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 NODE = shutil.which('node')
 
-# Drives the generated plugin the way OpenCode does: import, call the factory with a
+# Drives the generated plugin the way OpenCode 1.x does: import, call default.server with a
 # client, then invoke hooks with OpenCode's (input, output) shapes. Prints one JSON line.
 DRIVER = r"""
 import { pathToFileURL } from "node:url"
@@ -21,7 +21,7 @@ const [plugin, parents] = process.argv.slice(1)
 const parentOf = JSON.parse(parents)
 const client = { session: { get: async ({ path }) => ({ data: { id: path.id, parentID: parentOf[path.id] } }) } }
 const mod = await import(pathToFileURL(plugin).href)
-const hooks = await mod.BeyinV3({ client, directory: process.cwd() })
+const hooks = await mod.default.server({ client, directory: process.cwd() })
 const system = async (sessionID) => {
   const output = { system: ["base"] }
   await hooks["experimental.chat.system.transform"]?.({ sessionID, model: {} }, output)
@@ -45,6 +45,68 @@ if (result.keys.length) {
   await hooks.event({ event: { type: "session.idle", properties: { sessionID: "sub-1" } } })
   await hooks.event({ event: { type: "session.deleted", properties: { info: { id: "oc-1" } } } })
   result.afterDelete = await system("oc-1")
+}
+console.log(JSON.stringify(result))
+"""
+
+# Drives the same file the way OpenCode 2.x does: call default.setup(ctx), which registers hooks on
+# ctx and subscribes to the event stream; events carry data.sessionID and there is no session.idle.
+DRIVER_V2 = r"""
+import { pathToFileURL } from "node:url"
+const [plugin, parents] = process.argv.slice(1)
+const parentOf = JSON.parse(parents)
+const hooks = {}
+const queue = []
+let wake
+const push = (event) => { queue.push(event); wake?.() }
+let pending = 0
+const settle = async () => {
+  // Events are consumed serially and each mapped one runs the adapter; wait until the stream is idle.
+  for (let i = 0; i < 400 && (queue.length || pending); i++) await new Promise((resolve) => setTimeout(resolve, 25))
+}
+const ctx = {
+  session: {
+    hook: async (name, fn) => { hooks["session." + name] = fn },
+    get: async ({ sessionID }) => ({ id: sessionID, parentID: parentOf[sessionID] }),
+  },
+  tool: { hook: async (name, fn) => { hooks["tool." + name] = fn } },
+  event: {
+    subscribe: ({ signal } = {}) => ({
+      async *[Symbol.asyncIterator]() {
+        while (!signal?.aborted) {
+          if (queue.length) { pending++; yield queue.shift(); pending--; continue }
+          await new Promise((resolve) => { wake = resolve; signal?.addEventListener("abort", resolve, { once: true }) })
+        }
+      },
+    }),
+  },
+}
+const mod = await import(pathToFileURL(plugin).href)
+const dispose = await mod.default.setup(ctx)
+const system = async (sessionID) => {
+  const event = { sessionID, system: [] }
+  await hooks["session.context"]?.(event)
+  return event.system
+}
+const say = (sessionID, text) => hooks["session.prompt"]?.({ sessionID, prompt: { text } })
+const result = { id: mod.default.id, hooks: Object.keys(hooks).sort(), dispose: typeof dispose }
+if (result.hooks.length) {
+  await say("oc-1", "merhaba")
+  result.first = await system("oc-1")
+  await say("oc-1", "klima kargo DHL")
+  result.second = await system("oc-1")
+  await hooks["tool.execute.after"]({ tool: "edit", sessionID: "oc-1" })
+  await hooks["tool.execute.after"]({ tool: "read", sessionID: "oc-1" })
+  await hooks["session.compaction"]({ sessionID: "oc-1" })
+  push({ type: "session.execution.succeeded", data: { sessionID: "oc-1" } })
+  await say("sub-1", "alt ajan")
+  result.child = await system("sub-1")
+  push({ type: "session.execution.succeeded", data: { sessionID: "sub-1" } })
+  push({ type: "session.deleted", data: { sessionID: "oc-1" } })
+  await settle()
+  result.afterDelete = await system("oc-1")
+  await say("oc-2", "ikinci oturum")
+  await dispose()
 }
 console.log(JSON.stringify(result))
 """
@@ -91,8 +153,8 @@ class OpenCodeHarnessTest(unittest.TestCase):
                                '--state', str(self.state), '--harness', harness, *extra],
                               input=json.dumps(payload), capture_output=True, text=True, encoding='utf-8')
 
-    def drive(self, parents=None):
-        result = subprocess.run([NODE, '--input-type=module', '-e', DRIVER, str(self.plugin), json.dumps(parents or {})],
+    def drive(self, parents=None, driver=DRIVER):
+        result = subprocess.run([NODE, '--input-type=module', '-e', driver, str(self.plugin), json.dumps(parents or {})],
                                 capture_output=True, text=True, encoding='utf-8', cwd=self.vault)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout.strip().splitlines()[-1])
@@ -153,6 +215,28 @@ class OpenCodeHarnessTest(unittest.TestCase):
         self.assertEqual(sorted(e['event'] for e in done),
                          sorted(['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PreCompact', 'Stop', 'SessionEnd']),
                          'One event per mapped hook; read tools and the sub-agent session queue nothing')
+        for event in done:
+            self.assertNotIn('prompt', event, 'Hook metadata must never persist transcript text')
+
+    @unittest.skipUnless(NODE, 'node is required to execute the OpenCode plugin')
+    def test_plugin_maps_opencode_v2_lifecycle_to_adapter_events(self):
+        result = self.drive({'sub-1': 'oc-1'}, DRIVER_V2)
+        self.assertEqual(result['id'], 'beyin-v3')
+        self.assertEqual(result['hooks'], ['session.compaction', 'session.context', 'session.prompt', 'tool.execute.after'])
+        self.assertEqual(result['dispose'], 'function', 'setup returns a cleanup that ends open sessions')
+        self.assertEqual(len(result['first']), 1, 'First turn injects only the SessionStart context')
+        self.assertEqual(result['first'][0]['type'], 'text', 'OpenCode 2.x system parts are typed objects')
+        self.assertIn('Receipt session=', result['first'][0]['text'])
+        self.assertEqual(result['second'][0], result['first'][0], 'SessionStart context stays for the whole session')
+        self.assertIn('notes/klima.md', result['second'][1]['text'])
+        self.assertEqual(result['child'], [], 'Sub-agent sessions get no memory context')
+        self.assertEqual(result['afterDelete'], [], 'Deleted sessions are forgotten')
+        done = self.done_events()
+        self.assertEqual({e['harness'] for e in done}, {'opencode'})
+        self.assertEqual(sorted(e['event'] for e in done),
+                         sorted(['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PreCompact', 'Stop', 'SessionEnd',
+                                 'SessionStart', 'SessionEnd']),
+                         'session.execution.* is Stop; delete and dispose each end a session once; the sub-agent queues nothing')
         for event in done:
             self.assertNotIn('prompt', event, 'Hook metadata must never persist transcript text')
 
