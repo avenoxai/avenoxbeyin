@@ -46,9 +46,9 @@ function Get-BeyinFileLines {
 }
 
 
-# session-start.sh:20-27 -- awk prints from the first '## Session:' line and
-# stops at '## Previous', then sed keeps the first 50 lines. The '## Session:'
-# line itself is included; the '## Previous' line is not.
+# session-start.sh:20-27 -- awk prints from the first '## Session:' or ISO date line and
+# stops at '## Previous' or '## Önceki', then sed keeps the first 50 lines. The start
+# line itself is included; the closing line is not.
 $lastSession = ''
 $lastSessionPath = Join-Path $script:BeyinMemoryDir 'Last-Session.md'
 $lines = Get-BeyinFileLines -Path $lastSessionPath
@@ -56,15 +56,15 @@ if ($lines.Count) {
     $kept = [System.Collections.Generic.List[string]]::new()
     $active = $false
     foreach ($line in $lines) {
-        if ($line -match '^## Session:') { $active = $true }
-        if ($active -and $line -match '^## Previous') { break }
+        if ($line -match '^## (Session:|\d{4}-\d{2}-\d{2})') { $active = $true }
+        if ($active -and $line -match '^## (Previous|Önceki)') { break }
         if ($active) { $kept.Add($line) }
     }
     $lastSession = ($kept | Select-Object -First 50) -join "`n"
 }
 
-# session-start.sh:29-34 -- the '## Active'..'## Closed' range, then only the
-# '### ' headings and '**Status:**' lines, then the first 12 of those.
+# session-start.sh:29-34 -- the '## Active'..'## Closed' range (or bilingual equivalents),
+# then only the '### ' headings and '**Status:**' lines, then the first 12 of those.
 $threads = ''
 $threadsPath = Join-Path $script:BeyinMemoryDir 'Threads.md'
 $lines = Get-BeyinFileLines -Path $threadsPath
@@ -72,13 +72,12 @@ if ($lines.Count) {
     $inRange = $false
     $picked = [System.Collections.Generic.List[string]]::new()
     foreach ($line in $lines) {
-        if (-not $inRange -and $line -match '^## Active') { $inRange = $true }
+        if (-not $inRange -and $line -match '^## (Active|Aktif|Açık)') { $inRange = $true }
         if ($inRange) {
             if ($line -match '^### ' -or $line -match '^\*\*Status:\*\*') { $picked.Add($line) }
             # sed's range is inclusive of the closing address, but the closing
-            # line is '## Closed' and never matches the grep above, so stopping
-            # here is equivalent.
-            if ($line -match '^## Closed') { break }
+            # line never matches the grep above, so stopping here is equivalent.
+            if ($line -match '^## (Closed|Kapan|Kapalı)') { break }
         }
     }
     $threads = ($picked | Select-Object -First 12) -join "`n"

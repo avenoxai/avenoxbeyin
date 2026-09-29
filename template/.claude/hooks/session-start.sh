@@ -20,15 +20,15 @@ fi
 BEYIN_LAST_SESSION=""
 if [ -f "$BEYIN_MEMORY_DIR/Last-Session.md" ]; then
   BEYIN_LAST_SESSION=$(awk '
-    /^## Session:/ { active = 1 }
-    active && /^## Previous/ { exit }
+    /^## (Session:|[0-9]{4}-[0-9]{2}-[0-9]{2})/ { active = 1 }
+    active && /^## (Previous|Önceki)/ { exit }
     active { print }
   ' "$BEYIN_MEMORY_DIR/Last-Session.md" 2>/dev/null | sed -n '1,50p')
 fi
 
 BEYIN_THREADS=""
 if [ -f "$BEYIN_MEMORY_DIR/Threads.md" ]; then
-  BEYIN_THREADS=$(sed -n '/^## Active/,/^## Closed/p' "$BEYIN_MEMORY_DIR/Threads.md" 2>/dev/null \
+  BEYIN_THREADS=$(sed -E -n '/^## (Active|Aktif|Açık)/,/^## (Closed|Kapan|Kapalı)/p' "$BEYIN_MEMORY_DIR/Threads.md" 2>/dev/null \
     | grep -E '^### |^\*\*Status:\*\*' 2>/dev/null \
     | sed -n '1,12p')
 fi

@@ -408,6 +408,42 @@ assert_not_contains "$YESTERDAY_CONTEXT" 'yesterday-005'
 assert_contains "$YESTERDAY_CONTEXT" 'yesterday-030'
 pass "bugünün logu yoksa BSD/GNU uyumlu dün hesabıyla son 25 satır enjekte ediliyor"
 
+cp "$MEMORY/Last-Session.md" "$TEST_TMP/Last-Session.tr.saved"
+cp "$MEMORY/Threads.md" "$TEST_TMP/Threads.tr.saved"
+
+cat > "$MEMORY/Last-Session.md" <<'EOF'
+# Son Oturum
+## 2026-09-29 18:00 · test · 12345678
+turkce-oturum-aktif
+## Önceki oturumlar
+turkce-oturum-eski-gizli
+EOF
+
+cat > "$MEMORY/Threads.md" <<'EOF'
+# Konular
+## Açık konular
+### Konu-01
+**Status:** devam ediyor
+## Kapanan konular
+### Kapanan-01
+**Status:** tamamlandı
+EOF
+
+TR_OUT="$TEST_TMP/session-start-tr.json"
+printf '%s\n' '{"session_id":"s-tr","transcript_path":"/tmp/transcript.jsonl"}' \
+  | CLAUDE_PROJECT_DIR="$VAULT" "$HOOKS/session-start.sh" > "$TR_OUT"
+TR_CONTEXT=$(json_context "$TR_OUT")
+assert_contains "$TR_CONTEXT" '[Hafıza: Son Oturum]'
+assert_contains "$TR_CONTEXT" 'turkce-oturum-aktif'
+assert_not_contains "$TR_CONTEXT" 'turkce-oturum-eski-gizli'
+assert_contains "$TR_CONTEXT" '[Hafıza: Aktif Konular]'
+assert_contains "$TR_CONTEXT" 'Konu-01'
+assert_contains "$TR_CONTEXT" 'devam ediyor'
+assert_not_contains "$TR_CONTEXT" 'Kapanan-01'
+mv "$TEST_TMP/Last-Session.tr.saved" "$MEMORY/Last-Session.md"
+mv "$TEST_TMP/Threads.tr.saved" "$MEMORY/Threads.md"
+pass "SessionStart Türkçe başlıkları (Önceki oturumlar, Açık/Kapanan konular) eksiksiz ayrıştırıyor"
+
 MTIME=$(CLAUDE_PROJECT_DIR="$VAULT" /bin/bash -c '. "$1"; beyin_mtime "$2"' \
   _ "$HOOKS/lib.sh" "$MEMORY/Last-Session.md")
 case "$MTIME" in
