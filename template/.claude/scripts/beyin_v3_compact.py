@@ -9,11 +9,9 @@ moves; nothing is rewritten, summarized or dropped.
 """
 from contextlib import contextmanager
 from datetime import datetime, timezone
-import hashlib
 import os
 from pathlib import Path
 import re
-import tempfile
 import time
 
 from beyin_v3_companion import LIMITS, directory, read_limits
@@ -236,24 +234,13 @@ def _inside(path, vault):
 
 @contextmanager
 def _compact_lock(vault, state, timeout=10.0, step=0.1):
-    vault_path = Path(vault).resolve()
-    key = hashlib.sha256(str(vault_path).encode('utf-8')).hexdigest()[:16]
-    handle = None
-    candidates = [
-        Path(tempfile.gettempdir()) / f'beyin-compact-{key}.lock',
-        Path(state) / 'compact.lock',
-    ]
-    for candidate in candidates:
-        try:
-            candidate.parent.mkdir(parents=True, exist_ok=True)
-            candidate.touch(exist_ok=True)
-            handle = candidate.open('a+b')
-            break
-        except OSError:
-            continue
-    if handle is None:
-        yield
-        return
+    lock_path = Path(state) / 'compact.lock'
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.touch(exist_ok=True)
+        handle = lock_path.open('a+b')
+    except OSError as exc:
+        raise OSError(f'cannot open compaction lock {lock_path}: {exc}') from exc
 
     deadline = time.monotonic() + timeout
     acquired = False
@@ -314,6 +301,8 @@ def compact(vault, state, dry_run=False, now=None):
             return _compact_files(vault, target, configured, dry_run=False, now=now)
     except TimeoutError as exc:
         return {'status': 'conflict', 'reason': str(exc), 'files': {}}
+    except OSError as exc:
+        return {'status': 'needs_attention', 'reason': str(exc), 'files': {}}
 
 
 def _compact_files(vault, target, configured, dry_run=False, now=None):
@@ -393,6 +382,12 @@ def _compact_files(vault, target, configured, dry_run=False, now=None):
             elif not existing.endswith('\n'):
                 existing += newline
             archive_written = existing + ''.join(added)
+            current_live = path.read_bytes() if path.exists() else None
+            current_archive = archive.read_bytes() if archive.exists() else None
+            if current_live != raw or current_archive != previous:
+                report.pop('backup', None)
+                files[name] = dict(report, status='conflict', reason='file changed during compaction; nothing moved, retry')
+                continue
             _write(archive, archive_written)
             # Compare-and-swap: a concurrent edit of the live file wins and the archive returns
             # to its previous bytes, so no text is ever held only by the archive or lost.

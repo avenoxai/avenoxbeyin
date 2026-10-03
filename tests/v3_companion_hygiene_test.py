@@ -673,6 +673,46 @@ class CompactionRaceTest(unittest.TestCase):
         self.assertTrue(self.archive.exists())
         self.assertEqual(self.archive.read_bytes(), b'# CONCURRENT_CALLER_ARCHIVE_DATA\n')
 
+    def test_lock_failure_reports_needs_attention_without_modifying_files(self):
+        """When the compaction lock file cannot be opened, compact fails safe with needs_attention."""
+        original_open = Path.open
+
+        def patched_open(target, *args, **kwargs):
+            if target.name == 'compact.lock':
+                raise OSError('Permission denied')
+            return original_open(target, *args, **kwargs)
+
+        with mock.patch.object(Path, 'open', patched_open):
+            result = compact_module.compact(self.vault, self.state, now=NOW)
+        self.assertEqual(result['status'], 'needs_attention')
+        self.assertIn('cannot open compaction lock', result['reason'])
+        self.assertFalse(self.archive.exists())
+
+    def test_pre_write_conflict_aborts_without_archive_write(self):
+        """If the live file or archive changes before writing to the archive, compact aborts as conflict without modifying files."""
+        original_inside = compact_module._inside
+
+        def modify_live(path, vault):
+            original_inside(path, vault)
+            if path == self.archive:
+                with self.live.open('a', encoding='utf-8') as handle:
+                    handle.write('PRE_WRITE_MUTATION\n')
+
+        with mock.patch.object(compact_module, '_inside', modify_live):
+            result = compact_module.compact(self.vault, self.state, now=NOW)
+        self.assertEqual(result['status'], 'conflict')
+        self.assertFalse(self.archive.exists())
+
+    def test_lock_contention_returns_conflict_timeout(self):
+        """When compaction lock is held by another caller, timeout returns conflict status."""
+        orig_lock = compact_module._compact_lock
+        with compact_module._compact_lock(self.vault, self.state):
+            with mock.patch.object(compact_module, '_compact_lock',
+                                   lambda v, s: orig_lock(v, s, timeout=0.1, step=0.02)):
+                result = compact_module.compact(self.vault, self.state, now=NOW)
+        self.assertEqual(result['status'], 'conflict')
+        self.assertIn('vault compaction lock busy', result['reason'])
+
     def test_hygiene_counts_characters_and_names_the_directory(self):
         report = companion_module.hygiene(self.vault, self.state)
         self.assertEqual(report['directory'], COMPANION)
