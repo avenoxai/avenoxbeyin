@@ -383,15 +383,22 @@ def without_reasons(text):
     return stripped.rstrip('\n') + f'\n[{count} rule reasons (**neden:**) omitted to fit the opening; read source]\n'
 
 
-def ends(text, budget):
-    """Opening plus closing lines of a rule set, with the omitted amount named.
+RULE = re.compile(r'^(?:[-*+]|\d+[.)])[ \t]', re.M)
 
-    The first marker is sized with the whole length, so the final one, counting only
-    what was really dropped, can never be longer and the result stays inside budget.
+
+def ends(text, budget):
+    """Opening plus closing lines of a rule set, with the omitted rules named.
+
+    The first marker is sized with the widest form the final one can take, so the
+    final one, naming only what was really dropped, can never be longer and the
+    result stays inside budget. Text with no list items keeps the character count.
     """
     if len(text) <= budget:
         return text
     gap = f'\n[truncated: {len(text)} characters omitted here; read source]\n'
+    total = len(RULE.findall(text))
+    widest = f'\n[truncated: rules {total}-{total} ({total} of {total}) omitted here; read source]\n'
+    gap = max(gap, widest, key=len)
     keep = budget - len(gap)
     if keep < 80:
         return None
@@ -413,7 +420,10 @@ def ends(text, budget):
         end = text.find('\n', len(head), start) + 1
         if end and len(closing) + end <= keep and end < start:
             head, grown = text[:end], True
-    return head + f'\n[truncated: {start - len(head)} characters omitted here; read source]\n' + closing
+    first = len(RULE.findall(head)) + 1
+    omitted = len(RULE.findall(text, len(head), start))
+    what = f'rules {first}-{first + omitted - 1} ({omitted} of {total})' if omitted > 0 else f'{start - len(head)} characters'
+    return head + f'\n[truncated: {what} omitted here; read source]\n' + closing
 
 
 def clip(text, budget, tail=False, both=False):
