@@ -655,6 +655,24 @@ class CompactionRaceTest(unittest.TestCase):
         self.assertEqual(result['files']['Last-Session.md']['status'], 'conflict')
         self.assertEqual(self.archive.read_bytes(), b'# Kullanicinin arsivi\n')
 
+    def test_concurrent_call_archive_is_not_reverted_on_conflict(self):
+        """#193: A conflicting compact must not roll back if the archive was modified by another caller."""
+        original = compact_module._write
+
+        def write(path, text):
+            original(path, text)
+            if Path(path).parent.name == 'Arşiv':
+                # Simulate another caller committing its own archive and live update
+                self.archive.write_bytes(b'# CONCURRENT_CALLER_ARCHIVE_DATA\n')
+                with self.live.open('a', encoding='utf-8') as handle:
+                    handle.write('CONCURRENT_EDIT\n')
+
+        with mock.patch.object(compact_module, '_write', write):
+            result = compact_module.compact(self.vault, self.state, now=NOW)
+        self.assertEqual(result['status'], 'conflict')
+        self.assertTrue(self.archive.exists())
+        self.assertEqual(self.archive.read_bytes(), b'# CONCURRENT_CALLER_ARCHIVE_DATA\n')
+
     def test_hygiene_counts_characters_and_names_the_directory(self):
         report = companion_module.hygiene(self.vault, self.state)
         self.assertEqual(report['directory'], COMPANION)

@@ -7,9 +7,14 @@ private monthly archive beside the companion files, until the file fits. The new
 of every container (the handoff, each thread) always stays. Every line either stays or
 moves; nothing is rewritten, summarized or dropped.
 """
+from contextlib import contextmanager
 from datetime import datetime, timezone
+import hashlib
+import os
 from pathlib import Path
 import re
+import tempfile
+import time
 
 from beyin_v3_companion import LIMITS, directory, read_limits
 
@@ -229,6 +234,68 @@ def _inside(path, vault):
         raise ValueError('companion archive escapes vault')
 
 
+@contextmanager
+def _compact_lock(vault, state, timeout=10.0, step=0.1):
+    vault_path = Path(vault).resolve()
+    key = hashlib.sha256(str(vault_path).encode('utf-8')).hexdigest()[:16]
+    handle = None
+    candidates = [
+        Path(tempfile.gettempdir()) / f'beyin-compact-{key}.lock',
+        Path(state) / 'compact.lock',
+    ]
+    for candidate in candidates:
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            candidate.touch(exist_ok=True)
+            handle = candidate.open('a+b')
+            break
+        except OSError:
+            continue
+    if handle is None:
+        yield
+        return
+
+    deadline = time.monotonic() + timeout
+    acquired = False
+    try:
+        while True:
+            try:
+                if os.name == 'nt':
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    acquired = True
+                    break
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+            except (OSError, BlockingIOError):
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(step)
+        if not acquired:
+            raise TimeoutError('vault compaction lock busy; wait for completion')
+        yield
+    finally:
+        if acquired:
+            try:
+                if os.name == 'nt':
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        try:
+            handle.close()
+        except OSError:
+            pass
+
+
 def compact(vault, state, dry_run=False, now=None):
     vault = Path(vault).resolve()
     target = directory(vault)
@@ -240,6 +307,16 @@ def compact(vault, state, dry_run=False, now=None):
         # could archive far more than they wanted.
         return {'status': 'needs_attention', 'files': {}, 'limits_file': 'invalid',
                 'reason': 'companion-limits.json in the runtime state is invalid; nothing moved. Fix or remove it first.'}
+    if dry_run:
+        return _compact_files(vault, target, configured, dry_run=True, now=now)
+    try:
+        with _compact_lock(vault, state):
+            return _compact_files(vault, target, configured, dry_run=False, now=now)
+    except TimeoutError as exc:
+        return {'status': 'conflict', 'reason': str(exc), 'files': {}}
+
+
+def _compact_files(vault, target, configured, dry_run=False, now=None):
     now = now or datetime.now(timezone.utc)
     month = now.strftime('%Y-%m')
     relative = target.relative_to(vault).as_posix()
@@ -315,14 +392,18 @@ def compact(vault, state, dry_run=False, now=None):
                     'gerektiğinde bu dosyayı doğrudan aç.', ''])
             elif not existing.endswith('\n'):
                 existing += newline
-            _write(archive, existing + ''.join(added))
+            archive_written = existing + ''.join(added)
+            _write(archive, archive_written)
             # Compare-and-swap: a concurrent edit of the live file wins and the archive returns
             # to its previous bytes, so no text is ever held only by the archive or lost.
             if path.read_bytes() != raw:
-                if previous is None:
-                    archive.unlink()
-                else:
-                    _write(archive, previous.decode('utf-8'))
+                # #193: Roll back only if the archive still holds this invocation's exact write.
+                # A concurrent caller that already committed its own archive is never reverted.
+                if archive.exists() and archive.read_bytes() == archive_written.encode('utf-8'):
+                    if previous is None:
+                        archive.unlink()
+                    else:
+                        _write(archive, previous.decode('utf-8'))
                 report.pop('backup', None)
                 files[name] = dict(report, status='conflict', reason='file changed during compaction; nothing moved, retry')
                 continue
