@@ -694,7 +694,7 @@ class CompactionRaceTest(unittest.TestCase):
 
         def modify_live(path, vault):
             original_inside(path, vault)
-            if path == self.archive:
+            if Path(path).parent.name == 'Arşiv':
                 with self.live.open('a', encoding='utf-8') as handle:
                     handle.write('PRE_WRITE_MUTATION\n')
 
