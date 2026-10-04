@@ -12,6 +12,7 @@
 .claude/hooks/.state/
 .claude/scripts/.state/*
 !.claude/scripts/.state/.gitkeep
+**/.beyin-compact.lock
 
 # OS / editor noise
 .DS_Store

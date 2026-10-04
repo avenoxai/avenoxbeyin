@@ -41,12 +41,20 @@ Beyni Guncelle.cmd
 .codex/hooks.json
 .opencode/plugins/beyin-v3.js
 .omp/hooks/pre/beyin-v3.ts
+# companion-compact süreçler arası kilidi; kalıcıdır ama kullanıcı verisi değildir
+**/.beyin-compact.lock
 # Yerel veritabanından üretilen görünümler: her makine kendisininkini üretir
 daily/v3/
 knowledge/v3/
 ```
 
 Kontrol: kurulumdan ya da güncellemeden hemen sonra `git status --short` boş olmalıdır.
+
+`companion-compact` kilit dosyasını companion klasöründe kalıcı bırakır. Dosyanın
+silinmemesi, POSIX üzerinde kilit tutulurken aynı yolda yeni bir inode açılmasını önler.
+Kilit yalnız aynı paylaşılan dosya sistemini gören süreçleri koordine eder; senkronizasyon
+araçlarıyla çoğaltılmış ayrı çalışma kopyaları ve kilit semantiği sunmayan NFS/SMB
+kurulumları bu garantinin dışındadır.
 
 - **3.6.0 ve öncesi:** O sürümlerde blok bu makinenin mutlak komut yolunu taşıyordu. İki makine
   de 3.7.0'a geçene kadar `AGENTS.md`'yi (bloğu kendisi taşıyorsa `CLAUDE.md`'yi de) `.gitignore`'da
