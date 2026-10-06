@@ -550,25 +550,32 @@ class SyncEngine:
         try:
             receipts_dir = self._path('receipts')
             if not receipts_dir.is_dir():
-                return []
+                return [], []
             # Every new source, local or synced from another device, is a new directory entry and
             # changes this signature; a fresh state has none stored. Warm syncs stop at one stat.
             stat = receipts_dir.stat()
             signature = f'{stat.st_dev}:{stat.st_ino}:{stat.st_mtime_ns}'
             if db.execute("SELECT 1 FROM metadata WHERE key='receipt_scan_signature' AND value=?", (signature,)).fetchone():
-                return []
+                return [], []
             names = sorted(os.listdir(receipts_dir))
         except (ValueError, OSError) as exc:
-            return [{'source': 'receipts', 'reason': str(exc)}]
-        warnings = []
-        known = {_hash(row[0]) + '.md' for row in db.execute('SELECT id FROM receipts')}
+            return [{'source': 'receipts', 'reason': str(exc)}], []
+        warnings, conflicts = [], []
+        known = {_hash(row[0]) + '.md': json.loads(row[1]) for row in db.execute('SELECT id, payload FROM receipts')}
         for name in names:
-            # Indexed receipts stay authoritative; other names were never written by receipt().
-            if name in known or not re.fullmatch(r'[0-9a-f]{64}\.md', name):
+            # Other names were never written by receipt().
+            if not re.fullmatch(r'[0-9a-f]{64}\.md', name):
                 continue
             rel = 'receipts/' + name
             try:
                 event = self._receipt_event(rel)
+                if name in known:
+                    # Indexed receipts stay authoritative, but a source that no longer matches them means
+                    # another device wrote the same event_id and a merge kept its file (#205).
+                    old = known[name]
+                    if (old['summary'], old['refs']) != (event['summary'], event['refs']):
+                        conflicts.append({'source': rel, 'reason': 'receipt source differs from indexed receipt; event_id reused on another device'})
+                    continue
                 db.execute('INSERT OR IGNORE INTO receipts VALUES (?,?)', (event['event_id'], _json(event)))
             except (ValueError, OSError, UnicodeError) as exc:
                 warnings.append({'source': rel, 'reason': str(exc)})
@@ -576,17 +583,17 @@ class SyncEngine:
         # (up to 2 s on FAT, 1 s on HFS+) could still hide behind an unchanged mtime.
         if not warnings and time.time_ns() - stat.st_mtime_ns > 2_000_000_000:
             db.execute("INSERT OR REPLACE INTO metadata VALUES ('receipt_scan_signature',?)", (signature,))
-        return warnings
+        return warnings, conflicts
 
     def sync(self):
         # Serialize recovery, source scan and projection across local processes.
         with self.store._connect() as db:
             db.execute('BEGIN IMMEDIATE')
             completed, recovery_conflicts = self._recover(db)
-            receipt_warnings = self._scan_receipts(db)
+            receipt_warnings, receipt_conflicts = self._scan_receipts(db)
             records, warnings, conflicts = self._scan()
             warnings.extend(receipt_warnings)
-            conflicts.extend(recovery_conflicts)
+            conflicts.extend(recovery_conflicts + receipt_conflicts)
             old_owned = {row[0] for row in db.execute('SELECT id FROM markdown_sources')}
             deleted = 0
             for id in old_owned - records.keys():
