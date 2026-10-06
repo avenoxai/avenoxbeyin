@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import time
 
@@ -147,6 +148,38 @@ def state_location(vault: Path, state: Path, windows=None) -> dict:
             "database, so which half a session reads depends on whether it runs inside the "
             "package. Keep one and move it out of the container; see docs/v3/UPDATE.md.")
     return report
+
+
+def receipt_line_endings(vault: Path) -> dict:
+    """Report whether git can rewrite receipt line endings in this vault (#205).
+
+    Receipts are compared byte for byte. With core.autocrlf=true (the Git for Windows
+    default) a pulled receipt is checked out as CRLF unless the vault stops that for
+    receipts/ with `-text` or `eol=lf`; the index then reads a different summary and the
+    same receipt resubmitted from the other machine fails as an event id collision.
+    Read-only, information only; a vault that is not a git work tree reports not_applicable.
+    """
+    def git(*args):
+        done = subprocess.run(("git", "-C", str(vault)) + args, capture_output=True, text=True, timeout=10)
+        return done.returncode, done.stdout.strip()
+    try:
+        code, inside = git("rev-parse", "--is-inside-work-tree")
+        if code != 0 or inside != "true":
+            return {"status": "not_applicable", "reason": "vault is not a git work tree"}
+        _, autocrlf = git("config", "--type=bool", "--get", "core.autocrlf")
+        if autocrlf != "true":
+            return {"status": "ok", "autocrlf": autocrlf or "unset"}
+        _, attrs = git("check-attr", "text", "eol", "--", "receipts/x.md")
+        found = dict((line.split(": ")[1], line.split(": ")[2]) for line in attrs.splitlines() if line.count(": ") == 2)
+        if found.get("text") == "unset" or found.get("eol") == "lf":
+            return {"status": "ok", "autocrlf": "true", "receipts_attributes": found}
+        return {"status": "warning", "autocrlf": "true", "receipts_attributes": found,
+                "warning": "line_endings: core.autocrlf=true and receipts/ is not pinned, so a receipt synced "
+                           "from another machine can be checked out as CRLF, which changes its bytes and makes "
+                           "the same receipt fail as an event id collision. Add 'receipts/** -text' to the "
+                           "vault's .gitattributes and check the receipts out again; see docs/v3/MULTI-MACHINE.md."}
+    except Exception as exc:  # no git, a hung git or a broken config must never hide the rest of doctor
+        return {"status": "unavailable", "error": type(exc).__name__}
 
 
 def load_engine():
@@ -558,6 +591,7 @@ def main(argv=None):
                 result['parallel_sessions'] = parallel.doctor(state)
             except Exception as exc:
                 result['parallel_sessions'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            result['receipt_line_endings'] = receipt_line_endings(vault)  # information only: the status below is untouched
             result['status'] = ('needs_attention' if health.get('sync', {}).get('status') in ('conflict', 'degraded') or result['skill_conflicts'] or result.get('instruction_conflicts') or result['hook-error.json'] or result['task_completion']['strict_issue_count'] or result['task_completion'].get('error') or result['validity']['ignored_rejection_count'] or result['validity'].get('error') else 'pending' if result['pending_events'] else 'observed_metadata' if result['acknowledged_events'] else 'never_seen')
             # Information only: a leftover global OMP hook copy predates the vault-owned plan
             # (OMP.md says the installer never updates or removes it). After an engine update the
