@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import time
 
@@ -22,6 +23,38 @@ def default_state(vault: Path) -> Path:
         base = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state")))
     key = hashlib.sha256(str(vault).encode()).hexdigest()[:16]
     return base / "beyin-v3" / key
+
+
+def _is_foreign_or_invalid_state(pinned: str) -> bool:
+    """Detect whether a pinned state string belongs to another OS or is unresolvable."""
+    if not isinstance(pinned, str) or not pinned.strip():
+        return True
+    if sys.platform != "win32":
+        if re.match(r"^[a-zA-Z]:", pinned) or pinned.startswith("\\\\") or "\\" in pinned:
+            return True
+        try:
+            p = Path(pinned).expanduser()
+            if not p.is_absolute():
+                return True
+            parts = p.parts
+            if len(parts) >= 3 and parts[1] in ("Users", "home") and not Path(*parts[:3]).exists():
+                return True
+        except Exception:
+            return True
+    else:
+        if pinned.startswith("/") or not (re.match(r"^[a-zA-Z]:[/\\]", pinned) or pinned.startswith("\\\\")):
+            return True
+        try:
+            p = Path(pinned).expanduser()
+            if not p.is_absolute():
+                return True
+            parts = p.parts
+            if len(parts) >= 3 and parts[1].lower() == "users" and not Path(*parts[:3]).exists():
+                return True
+        except Exception:
+            return True
+    return False
+
 
 
 def _in_package_container(pinned: str) -> bool:
@@ -323,7 +356,10 @@ def main(argv=None):
         vault = args.vault.expanduser().resolve()
         if not vault.is_dir():
             raise ValueError("--vault must be an existing directory")
-        state = (args.state.expanduser() if args.state else default_state(vault)).resolve()
+        if args.state and not _is_foreign_or_invalid_state(str(args.state)):
+            state = args.state.expanduser().resolve()
+        else:
+            state = default_state(vault).resolve()
         if state == vault or vault in state.parents:
             raise ValueError("--state must be outside the vault")
         read_only_context = args.command == "context" and args.no_sync

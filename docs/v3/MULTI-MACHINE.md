@@ -91,11 +91,18 @@ göre sıralar, en yenisini korur.
 - **Git adımları:** çalışmaya başlamadan önce `pull`; bitince `commit`, `pull --rebase`,
   `push`. Aynı vault'ta birden çok oturum açıksa git komutlarını aynı anda birden çok
   oturumdan çalıştırma; bir oturumdan ya da günün sonunda tek seferde gönder.
-- **Aynı makinede paralel oturumlar:** `preferences --parallel-sessions on` açıkken ajan,
+- **Paralel oturumlar ve çapraz makine farkındalığı:** `preferences --parallel-sessions on` açıkken ajan,
   aynı vault'ta son 45 dakikada etkin başka bir oturum varsa ilk isteminde tek satırlık bir
-  uyarı alır ([PREFERENCES.md](PREFERENCES.md#paralel-oturum-bildirimi)). İşaretler makineye
-  özel runtime klasöründe durur; öbür makinedeki oturumları görmez, onlar için yukarıdaki git
-  adımları geçerlidir.
+  uyarı alır ([PREFERENCES.md](PREFERENCES.md#paralel-oturum-bildirimi)). Yerel oturumlar makineye
+  özel runtime klasöründeki işaretlerden tespit edilir. Ayrıca `Last-Session.md` içindeki en üst
+  kart son 45 dakika içinde başka bir makine veya oturum tarafından yazılmışsa, merkezi bir sunucuya
+  ihtiyaç duymadan doğrudan dosya başlığından (`## YYYY-MM-DD HH:MM · <etiket> · <session_id[:8]>`)
+  çapraz makine oturumu olarak algılanır ve ajana bildirilir ([#205](https://github.com/avenoxai/avenoxbeyin/issues/205)).
+- **İşletim sistemleri arası state geri çekilme (fallback):** Vault Git ile klonlandığında veya
+  Syncthing/iCloud ile farklı bir işletim sistemine (macOS <-> Linux <-> Windows) aktarıldığında
+  `.beyin-runtime.json` eksik olsa veya yabancı işletim sistemine ait mutlak yol içerse bile sistem
+  `Kurulum ayari eksik` hatasıyla çökmez; otomatik olarak mevcut işletim sisteminin yerel varsayılan
+  state dizinine geri çekilir ([#205](https://github.com/avenoxai/avenoxbeyin/issues/205)).
 - **Çakışma çözülmeden oturum açma:** `pull --rebase` çakışmada durduğunda dosyada
   `<<<<<<<`, `=======`, `>>>>>>>` işaretleri kalır. `sync` bu işaretleri sırayla taşıyan
   not ve makbuz dosyalarını indekslemez ve `unresolved git conflict markers` uyarısıyla

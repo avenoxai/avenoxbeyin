@@ -11,10 +11,12 @@ The switch lives in `<state>/parallel-sessions.json` (default off), never in
 rollback would break its doctor and hooks. Every function here fails open: a marker
 error drops the line, never the hook. The doctor reads, never writes.
 """
+from datetime import datetime
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import time
 
@@ -25,6 +27,12 @@ MAX_AGE_SECONDS = 24 * 3600   # older markers are pruned on every write
 MAX_MARKERS = 128
 MAX_SHOWN = 2
 MAX_MARKER_BYTES = 8192
+
+CARD_HEADER = re.compile(
+    r'^##\s+(\d{4}-\d{2}-\d{2}(?:[T\s][0-2]\d:[0-5]\d)?)\s*[·•\-]\s*(.*?)\s*[·•\-]\s*([0-9a-fA-F]{8,})',
+    re.MULTILINE
+)
+
 
 
 def read_settings(state):
@@ -119,11 +127,65 @@ def line(others, now):
             '. Ayni dosyaya dokunmadan once diskten yeniden oku; commit oncesi git status.\n')
 
 
-def touch(state, harness, session_id, now=None):
+def _scan_last_session(vault, session_id, now):
+    """Detect active parallel session card in Last-Session.md from another machine/session."""
+    try:
+        from beyin_v3_companion import directory
+        comp_dir = directory(vault)
+    except Exception:
+        comp_dir = None
+    candidates = []
+    if comp_dir:
+        candidates.append(comp_dir / 'Last-Session.md')
+    candidates.extend([vault / '🔮 850-Companion' / 'Last-Session.md', vault / 'Last-Session.md'])
+    card_path = None
+    for candidate in candidates:
+        if candidate.is_file():
+            card_path = candidate
+            break
+    if not card_path:
+        return None
+    try:
+        with open(card_path, 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read(8192)
+    except OSError:
+        return None
+    match = CARD_HEADER.search(content)
+    if not match:
+        return None
+    ts_str, tag, card_session = match.groups()
+    card_session = card_session.strip().lower()[:8]
+    own_session = receipt_session(session_id)[:8] if session_id else ''
+    if card_session == own_session:
+        return None
+    try:
+        ts_clean = ts_str.strip().replace('T', ' ')
+        if len(ts_clean) == 10:
+            dt = datetime.strptime(ts_clean, '%Y-%m-%d')
+        else:
+            dt = datetime.strptime(ts_clean[:16], '%Y-%m-%d %H:%M')
+        card_time = dt.timestamp()
+    except Exception:
+        card_time = None
+    try:
+        mtime = card_path.stat().st_mtime
+    except OSError:
+        mtime = None
+    best_time = max([t for t in (card_time, mtime) if t is not None], default=None)
+    if best_time is None:
+        return None
+    age = now - best_time
+    if -180 <= age <= ACTIVE_SECONDS:
+        return {'session': card_session, 'last_at': best_time, 'key': 'card-' + card_session}
+    return None
+
+
+def touch(state, harness, session_id, now=None, vault=None):
     """Refresh this session's marker; return the notice line for newly seen sessions, or ''.
 
     Runs on a real user prompt only. Prunes markers older than a day and keeps at most
     128. Announces each other session once per session, at most two named per line.
+    Cross-machine parallel sessions are detected from recent cards in Last-Session.md.
     """
     try:
         name = _marker_name(harness, session_id)
@@ -168,6 +230,11 @@ def touch(state, harness, session_id, now=None):
             value = _load(entry.path)
             if value is not None and -60 <= now - value['last_at'] <= ACTIVE_SECONDS:
                 fresh.append(dict(value, key=key))
+        if vault is not None:
+            ext = _scan_last_session(vault, session_id, now)
+            if ext and ext['key'] not in announced:
+                if not any(item['session'][:8] == ext['session'][:8] for item in fresh):
+                    fresh.append(ext)
         fresh.sort(key=lambda item: item['last_at'], reverse=True)
         marker = {'schema': 1, 'harness': harness, 'session': receipt_session(session_id),
                   'first_at': saved['first_at'] if saved else now, 'last_at': now,
@@ -212,21 +279,24 @@ def end(state, harness, session_id):
         pass
 
 
-def doctor(state, now=None):
+def doctor(state, now=None, vault=None):
     """Read-only: the switch and how many markers look active. Never creates the folder."""
     now = time.time() if now is None else now
     value, valid = read_settings(state)
     result = {'enabled': value, 'valid': valid, 'markers': 0, 'active': 0}
     folder = _folder(state)
-    if folder is None or not folder.is_dir():
-        return result
-    try:
-        with os.scandir(folder) as listing:
-            for entry in listing:
-                if entry.name.endswith('.json') and not entry.is_symlink() and entry.is_file():
-                    result['markers'] += 1
-                    if now - entry.stat().st_mtime <= ACTIVE_SECONDS:
-                        result['active'] += 1
-    except OSError:
-        pass
+    if folder is not None and folder.is_dir():
+        try:
+            with os.scandir(folder) as listing:
+                for entry in listing:
+                    if entry.name.endswith('.json') and not entry.is_symlink() and entry.is_file():
+                        result['markers'] += 1
+                        if now - entry.stat().st_mtime <= ACTIVE_SECONDS:
+                            result['active'] += 1
+        except OSError:
+            pass
+    if vault is not None and value and result['active'] == 0:
+        if _scan_last_session(vault, None, now):
+            result['active'] += 1
     return result
+

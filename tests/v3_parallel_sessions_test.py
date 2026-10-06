@@ -158,6 +158,55 @@ class ParallelSessionsTest(unittest.TestCase):
         self.assertEqual(self.notice(output), [])
         self.assertEqual(json.loads((self.markers / marker_name('claude', 'human')).read_text())['announced'], [])
 
+    def test_cross_machine_parallel_session_announced_from_last_session_card(self):
+        self.enable()
+        comp_dir = self.vault / '🔮 850-Companion'
+        comp_dir.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        five_min_ago = now - 300
+        dt = time.strftime('%Y-%m-%d %H:%M', time.localtime(five_min_ago))
+        (comp_dir / 'Last-Session.md').write_text(
+            f'# Son oturum\n\n## {dt} · external-machine · a1b2c3d4\n\nExternal work summary.\n',
+            encoding='utf-8'
+        )
+        os.utime(comp_dir / 'Last-Session.md', (five_min_ago, five_min_ago))
+        lines = self.notice(self.hook('UserPromptSubmit', 'local-session'))
+        self.assertEqual(len(lines), 1)
+        self.assertIn("1 oturum daha acik: #a1b2c3d4", lines[0])
+        self.assertTrue(lines[0].isascii())
+        # Announced only once
+        self.assertEqual(self.notice(self.hook('UserPromptSubmit', 'local-session')), [])
+
+    def test_cross_machine_own_session_card_is_not_announced(self):
+        self.enable()
+        comp_dir = self.vault / '🔮 850-Companion'
+        comp_dir.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        dt = time.strftime('%Y-%m-%d %H:%M', time.localtime(now))
+        own_short = receipt_short('my-session')
+        (comp_dir / 'Last-Session.md').write_text(
+            f'# Son oturum\n\n## {dt} · my-task · {own_short}\n\nMy work summary.\n',
+            encoding='utf-8'
+        )
+        lines = self.notice(self.hook('UserPromptSubmit', 'my-session'))
+        self.assertEqual(lines, [])
+
+    def test_cross_machine_stale_card_is_ignored(self):
+        self.enable()
+        comp_dir = self.vault / '🔮 850-Companion'
+        comp_dir.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        one_hour_ago = now - 3600
+        dt = time.strftime('%Y-%m-%d %H:%M', time.localtime(one_hour_ago))
+        (comp_dir / 'Last-Session.md').write_text(
+            f'# Son oturum\n\n## {dt} · stale-task · e5f6a7b8\n\nStale work summary.\n',
+            encoding='utf-8'
+        )
+        os.utime(comp_dir / 'Last-Session.md', (one_hour_ago, one_hour_ago))
+        lines = self.notice(self.hook('UserPromptSubmit', 'active-session'))
+        self.assertEqual(lines, [])
+
+
     def test_off_by_default_and_off_output_matches_no_feature(self):
         def scenario():
             outputs = [self.hook('UserPromptSubmit', 'off-a'), self.hook('UserPromptSubmit', 'off-b'),

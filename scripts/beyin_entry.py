@@ -1,13 +1,60 @@
 #!/usr/bin/env python3
 """Vault-local entry point; configuration contains no credentials."""
 from contextlib import redirect_stdout, redirect_stderr
+import hashlib
 import io
 import importlib.util
 import json
+import os
 from pathlib import Path
+import re
 import sys
 import unicodedata
 sys.dont_write_bytecode = True
+
+
+def _default_state(vault: Path) -> Path:
+    """Keep mutable state outside the vault, separated by canonical vault path."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData/Local")))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library/Application Support"
+    else:
+        base = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state")))
+    key = hashlib.sha256(str(vault.resolve()).encode()).hexdigest()[:16]
+    return base / "beyin-v3" / key
+
+
+def _is_foreign_or_invalid_state(pinned: str) -> bool:
+    """Detect whether a pinned state string belongs to another OS or is unresolvable."""
+    if not isinstance(pinned, str) or not pinned.strip():
+        return True
+    if sys.platform != 'win32':
+        if re.match(r'^[a-zA-Z]:', pinned) or pinned.startswith('\\\\') or '\\' in pinned:
+            return True
+        try:
+            p = Path(pinned).expanduser()
+            if not p.is_absolute():
+                return True
+            parts = p.parts
+            if len(parts) >= 3 and parts[1] in ('Users', 'home') and not Path(*parts[:3]).exists():
+                return True
+        except Exception:
+            return True
+    else:
+        if pinned.startswith('/') or not (re.match(r'^[a-zA-Z]:[/\\]', pinned) or pinned.startswith('\\\\')):
+            return True
+        try:
+            p = Path(pinned).expanduser()
+            if not p.is_absolute():
+                return True
+            parts = p.parts
+            if len(parts) >= 3 and parts[1].lower() == 'users' and not Path(*parts[:3]).exists():
+                return True
+        except Exception:
+            return True
+    return False
+
 
 
 
@@ -386,10 +433,20 @@ def main(argv=None):
     try:
         installed_version = stamp.read_text(encoding='utf-8').strip() if stamp.is_file() else None
         config_path = vault / '.beyin-runtime.json'
-        if not config_path.is_file():
-            raise ValueError('Kurulum ayari eksik; resmi V3 installer ile bu vault kurulumunu tamamlayin.')
-        config = json.loads(config_path.read_text(encoding='utf-8'))
-        state = Path(config['state'])
+        cli_file = vault / '.claude/scripts/beyin_v3_cli.py'
+        state = None
+        if config_path.is_file():
+            try:
+                config = json.loads(config_path.read_text(encoding='utf-8'))
+                state_str = config.get('state') if isinstance(config, dict) else None
+                if state_str and not _is_foreign_or_invalid_state(state_str):
+                    state = Path(state_str)
+            except Exception:
+                state = None
+        if state is None:
+            if not cli_file.is_file() and not config_path.is_file():
+                raise ValueError('Kurulum ayari eksik; resmi V3 installer ile bu vault kurulumunu tamamlayin.')
+            state = _default_state(vault)
         directory = vault / '.claude/scripts'
         sys.path.insert(0, str(directory))
         if argv and argv[0] in ('update', 'rollback', 'recover'):

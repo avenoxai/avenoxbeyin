@@ -182,6 +182,32 @@ class StateLocationTest(unittest.TestCase):
         self.assertEqual(report["pin_status"], "unreadable")
         self.assertEqual(report["warnings"], [])
 
+    def test_foreign_state_detection_across_platforms(self):
+        spec = importlib.util.spec_from_file_location("entry_under_test", ROOT / "scripts/beyin_entry.py")
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        windows_path = "C:\\Users\\ada\\AppData\\Local\\beyin-v3\\ab12"
+        posix_path = "/Users/ada/Library/Application Support/beyin-v3/ab12"
+        linux_path = "/home/ada/.local/state/beyin-v3/ab12"
+        if sys.platform == "win32":
+            self.assertTrue(entry._is_foreign_or_invalid_state(posix_path))
+            self.assertTrue(entry._is_foreign_or_invalid_state(linux_path))
+            self.assertTrue(CLI._is_foreign_or_invalid_state(posix_path))
+        else:
+            self.assertTrue(entry._is_foreign_or_invalid_state(windows_path))
+            self.assertTrue(CLI._is_foreign_or_invalid_state(windows_path))
+        self.assertTrue(entry._is_foreign_or_invalid_state(""))
+        self.assertTrue(entry._is_foreign_or_invalid_state(None))
+
+    def test_entry_point_fallback_when_runtime_missing_or_foreign(self):
+        spec = importlib.util.spec_from_file_location("entry_under_test", ROOT / "scripts/beyin_entry.py")
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        fallback = entry._default_state(self.vault)
+        self.assertIn("beyin-v3", str(fallback))
+        self.assertNotEqual(str(fallback), str(self.vault))
+
+
     def doctor(self, driver):
         home = self.state.parent / "home"
         result = subprocess.run([sys.executable, "-c", driver, str(ROOT / "scripts/beyin_v3.py"),

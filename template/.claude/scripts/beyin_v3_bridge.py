@@ -8,12 +8,57 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
 
 sys.dont_write_bytecode = True
 EVENTS = ('SessionStart', 'Stop', 'PreCompact', 'SessionEnd')
+
+
+def _default_state(vault: Path) -> Path:
+    """Keep mutable state outside the vault, separated by canonical vault path."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData/Local")))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library/Application Support"
+    else:
+        base = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state")))
+    key = hashlib.sha256(str(vault.resolve()).encode()).hexdigest()[:16]
+    return base / "beyin-v3" / key
+
+
+def _is_foreign_or_invalid_state(pinned: str) -> bool:
+    """Detect whether a pinned state string belongs to another OS or is unresolvable."""
+    if not isinstance(pinned, str) or not pinned.strip():
+        return True
+    if sys.platform != 'win32':
+        if re.match(r'^[a-zA-Z]:', pinned) or pinned.startswith('\\\\') or '\\' in pinned:
+            return True
+        try:
+            p = Path(pinned).expanduser()
+            if not p.is_absolute():
+                return True
+            parts = p.parts
+            if len(parts) >= 3 and parts[1] in ('Users', 'home') and not Path(*parts[:3]).exists():
+                return True
+        except Exception:
+            return True
+    else:
+        if pinned.startswith('/') or not (re.match(r'^[a-zA-Z]:[/\\]', pinned) or pinned.startswith('\\\\')):
+            return True
+        try:
+            p = Path(pinned).expanduser()
+            if not p.is_absolute():
+                return True
+            parts = p.parts
+            if len(parts) >= 3 and parts[1].lower() == 'users' and not Path(*parts[:3]).exists():
+                return True
+        except Exception:
+            return True
+    return False
+
 
 
 def working_directory(payload, harness):
@@ -213,7 +258,19 @@ def main(argv=None):
         vault = args.vault.expanduser().resolve()
         if not vault.is_dir() or not 0 <= args.context_chars <= 4000:
             raise ValueError('Invalid vault or context budget')
-        state = args.state or Path(json.loads((vault / '.beyin-runtime.json').read_text(encoding='utf-8'))['state'])
+        state = args.state
+        if state is None or _is_foreign_or_invalid_state(str(state)):
+            config_path = vault / '.beyin-runtime.json'
+            state_val = None
+            if config_path.is_file():
+                try:
+                    data = json.loads(config_path.read_text(encoding='utf-8'))
+                    state_str = data.get('state') if isinstance(data, dict) else None
+                    if state_str and not _is_foreign_or_invalid_state(state_str):
+                        state_val = Path(state_str)
+                except Exception:
+                    pass
+            state = state_val or _default_state(vault)
         if not state.is_absolute():
             raise ValueError('Runtime state must be absolute')
         state = state.resolve()

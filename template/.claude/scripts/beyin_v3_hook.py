@@ -14,6 +14,50 @@ import uuid
 
 EVENTS = {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "PreCompact", "SessionEnd"}
 HOOK_BUDGET = 3.8  # seconds; installed POSIX hooks are killed at 5
+
+
+def _default_state(vault: Path) -> Path:
+    """Keep mutable state outside the vault, separated by canonical vault path."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData/Local")))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library/Application Support"
+    else:
+        base = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state")))
+    key = hashlib.sha256(str(vault.resolve()).encode()).hexdigest()[:16]
+    return base / "beyin-v3" / key
+
+
+def _is_foreign_or_invalid_state(pinned: str) -> bool:
+    """Detect whether a pinned state string belongs to another OS or is unresolvable."""
+    if not isinstance(pinned, str) or not pinned.strip():
+        return True
+    if sys.platform != 'win32':
+        if re.match(r'^[a-zA-Z]:', pinned) or pinned.startswith('\\\\') or '\\' in pinned:
+            return True
+        try:
+            p = Path(pinned).expanduser()
+            if not p.is_absolute():
+                return True
+            parts = p.parts
+            if len(parts) >= 3 and parts[1] in ('Users', 'home') and not Path(*parts[:3]).exists():
+                return True
+        except Exception:
+            return True
+    else:
+        if pinned.startswith('/') or not (re.match(r'^[a-zA-Z]:[/\\]', pinned) or pinned.startswith('\\\\')):
+            return True
+        try:
+            p = Path(pinned).expanduser()
+            if not p.is_absolute():
+                return True
+            parts = p.parts
+            if len(parts) >= 3 and parts[1].lower() == 'users' and not Path(*parts[:3]).exists():
+                return True
+        except Exception:
+            return True
+    return False
+
 RECEIPT_REMINDER = (
     "Files were edited in this session but no receipt was written after the edits. If the work is done, write one now: "
     "python3 beyin.py receipt --file RECEIPT_JSON --harness {harness}. "
@@ -350,7 +394,12 @@ def main():
     parser.add_argument("--drain-queue", action="store_true")
     parser.add_argument("--metadata-only", action="store_true", help="Queue lifecycle metadata without injecting vault context")
     args = parser.parse_args()
-    vault, state = args.vault.resolve(), args.state.resolve()
+    vault = args.vault.resolve()
+    state_str = str(args.state)
+    if _is_foreign_or_invalid_state(state_str):
+        state = _default_state(vault).resolve()
+    else:
+        state = args.state.resolve()
     if state == vault or vault in state.parents:
         raise ValueError("Runtime state must be outside vault")
     os.umask(0o077)
@@ -423,7 +472,7 @@ def main():
                         and (state / 'parallel-sessions.json').is_file() and not is_synthetic_prompt(payload):
                     from beyin_v3_parallel import enabled, touch
                     if enabled(state):
-                        notice += touch(state, args.harness, payload.get('session_id'))
+                        notice += touch(state, args.harness, payload.get('session_id'), vault=vault)
             except Exception:
                 pass  # a marker can never cost the turn
         if not settings['auto_sync']:
