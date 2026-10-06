@@ -2,7 +2,7 @@
 """Source-authoritative synchronization contract, synthetic local fixtures only."""
 import importlib.util
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import subprocess
@@ -74,6 +74,21 @@ class SourceSyncTest(unittest.TestCase):
         deleted = self.engine.sync()
         self.assertGreaterEqual(deleted['deleted'], 1)
         self.assertEqual(self.records(), [])
+
+    def test_unresolved_git_conflict_markers_in_markdown_are_reported(self):
+        # #205: a pull --rebase that stops on a conflict leaves markers the agent would read as content.
+        body = ('<<<<<<< HEAD\nNebula calibration awaits owner Synthetic Reviewer.\n=======\n'
+                'Nebula calibration moved to owner Synthetic Auditor.\n>>>>>>> 3f9a1c2\n')
+        path = self.write(body=body)
+        report = self.engine.sync()
+        self.assertEqual(report['status'], 'degraded')
+        self.assertEqual([w['source'] for w in report['warnings']], ['notes/task.md'])
+        self.assertIn('conflict markers', report['warnings'][0]['reason'])
+        self.assertEqual(self.records(), [])
+        self.write()
+        report = self.engine.sync()
+        self.assertEqual(report['warnings'], [])
+        self.assertEqual([r['id'] for r in self.records()], ['nebula-task'])
 
     def test_history_keeps_deleted_record_audit_trail_behind_last_snapshot(self):
         path = self.write()
@@ -842,6 +857,57 @@ class ReceiptStateResetTest(unittest.TestCase):
         self.assertTrue(engine.sync()['conflicts'])
         self.assertEqual(engine.sync()['conflicts'], [])
         self.assertEqual(engine.receipt('event-3', 'Back in step.', ['notes/task.md'], 'codex')['status'], 'succeeded')
+
+    def test_unresolved_git_conflict_markers_in_receipts_are_reported_and_not_indexed(self):
+        # #205: an add/add conflict on a receipt source leaves markers in receipts/<hash>.md
+        state = self.root / 'state_conflict_receipt'
+        engine = self.module.SyncEngine(self.vault, state)
+        engine.sync()
+        receipts_dir = self.vault / 'receipts'
+        receipts_dir.mkdir(exist_ok=True)
+        eid = 'event-conflict-receipt'
+        h = self._hash(eid)
+        rfile = receipts_dir / f'{h}.md'
+        body = ('<<<<<<< HEAD\nSummary from machine A.\n=======\nSummary from machine B.\n>>>>>>> other\n')
+        rfile.write_text(self.module.render({'kind': 'receipt', 'event_id': eid, 'refs': ['notes/task.md'], 'harness': 'codex'}, body), encoding='utf-8')
+        report = engine.sync()
+        self.assertEqual(report['status'], 'degraded')
+        self.assertTrue(any(w['source'] == f'receipts/{h}.md' and 'conflict markers' in w['reason'] for w in report['warnings']))
+        with engine.store._connect() as db:
+            row = db.execute('SELECT payload FROM receipts WHERE id=?', (eid,)).fetchone()
+            self.assertIsNone(row)
+        outcomes = self.vault / 'knowledge/v3/outcomes.md'
+        if outcomes.exists():
+            self.assertNotIn('<<<<<<<', outcomes.read_text(encoding='utf-8'))
+
+    def test_receipt_modified_by_remote_git_sync_reconciles_cleanly(self):
+        # #205 Point 1: when a remote machine's receipt version is chosen during git merge,
+        # sync() reconciles SQLite with the authoritative Markdown source on disk.
+        state = self.root / 'state_recon'
+        engine = self.module.SyncEngine(self.vault, state)
+        engine.sync()
+        eid = 'event-multi-machine-recon'
+        h = self._hash(eid)
+        engine.receipt(eid, 'Summary from local machine.', ['notes/task.md'], 'codex')
+        outcomes1 = (self.vault / 'knowledge/v3/outcomes.md').read_text(encoding='utf-8')
+        self.assertIn('Summary from local machine.', outcomes1)
+
+        # Simulate git pull / conflict resolution: disk content is updated with remote version
+        now = datetime.now(timezone.utc).isoformat()
+        rfile = self.vault / 'receipts' / f'{h}.md'
+        rfile.write_bytes(self.module.render({'kind': 'receipt', 'event_id': eid, 'refs': ['notes/task.md'], 'harness': 'codex', 'created_at': now}, 'Summary from remote machine.\n').encode('utf-8'))
+        past = (int(datetime.now().timestamp()) + 1) * 10**9
+        os.utime(self.vault / 'receipts')
+
+        report = engine.sync()
+        self.assertEqual(report['conflicts'], [])
+        self.assertEqual(report['warnings'], [])
+        with engine.store._connect() as db:
+            payload = json.loads(db.execute('SELECT payload FROM receipts WHERE id=?', (eid,)).fetchone()[0])
+            self.assertEqual(payload['summary'], 'Summary from remote machine.')
+        outcomes2 = (self.vault / 'knowledge/v3/outcomes.md').read_text(encoding='utf-8')
+        self.assertIn('Summary from remote machine.', outcomes2)
+        self.assertNotIn('Summary from local machine.', outcomes2)
 
 
 if __name__ == '__main__':

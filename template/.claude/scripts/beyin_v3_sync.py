@@ -232,6 +232,19 @@ EXCLUDED_DIRS = {'node_modules', 'receipts', '__pycache__'}
 COMPLETION_FIELDS = {'completion_contract', 'completion_criterion', 'evidence_refs'}
 
 
+def _has_conflict_markers(text):
+    """True when a git merge left <<<<<<< / ======= / >>>>>>> in order (#205)."""
+    stage = 0
+    for line in text.splitlines():
+        if stage == 0 and line.startswith('<<<<<<<'):
+            stage = 1
+        elif stage == 1 and line.rstrip() == '=======':
+            stage = 2
+        elif stage == 2 and line.startswith('>>>>>>>'):
+            return True
+    return False
+
+
 class SyncEngine:
     def projection_helpers(self):
         return _hash, atomic, render
@@ -441,7 +454,10 @@ class SyncEngine:
                 try:
                     self._path(relative, existing=True)
                     raw = path.read_bytes()
-                    metadata, body = parse(raw.decode('utf-8'))
+                    text = raw.decode('utf-8')
+                    if _has_conflict_markers(text):
+                        raise ValueError('unresolved git conflict markers; resolve the merge before sync')
+                    metadata, body = parse(text)
                     if metadata.get('kind') == 'task' and body.lstrip().startswith('---'):
                         raise ValueError('task has embedded frontmatter; reconcile metadata and body explicitly')
                     if metadata.get('kind') == 'receipt' or metadata.get('generated') is True:
@@ -494,7 +510,10 @@ class SyncEngine:
         """Rebuild a receipts row from its immutable source; ValueError when the file is not a valid receipt."""
         path = self._path(relative, existing=True)
         # Bytes, not read_text: universal newlines would turn '\r' into '\n' and fake an event id collision.
-        metadata, body = parse(path.read_bytes().decode('utf-8'))
+        text = path.read_bytes().decode('utf-8')
+        if _has_conflict_markers(text):
+            raise ValueError('unresolved git conflict markers; resolve the merge before sync')
+        metadata, body = parse(text)
         event_id, harness, refs = metadata.get('event_id'), metadata.get('harness', 'manual'), metadata.get('refs')
         if metadata.get('kind') != 'receipt' or not isinstance(event_id, str) or not event_id.strip():
             raise ValueError('missing kind receipt or event_id')
@@ -523,7 +542,7 @@ class SyncEngine:
         return event
 
     def _scan_receipts(self, db):
-        """Re-index receipt sources missing from local state, e.g. after a state reset or on a new device."""
+        """Re-index receipt sources missing from local state or reconciled from remote sync (#205)."""
         try:
             receipts_dir = self._path('receipts')
             if not receipts_dir.is_dir():
@@ -538,15 +557,22 @@ class SyncEngine:
         except (ValueError, OSError) as exc:
             return [{'source': 'receipts', 'reason': str(exc)}]
         warnings = []
-        known = {_hash(row[0]) + '.md' for row in db.execute('SELECT id FROM receipts')}
         for name in names:
             # Indexed receipts stay authoritative; other names were never written by receipt().
-            if name in known or not re.fullmatch(r'[0-9a-f]{64}\.md', name):
+            if not re.fullmatch(r'[0-9a-f]{64}\.md', name):
                 continue
             rel = 'receipts/' + name
             try:
                 event = self._receipt_event(rel)
-                db.execute('INSERT OR IGNORE INTO receipts VALUES (?,?)', (event['event_id'], _json(event)))
+                payload = _json(event)
+                row = db.execute('SELECT payload FROM receipts WHERE id=?', (event['event_id'],)).fetchone()
+                if row:
+                    if row[0] != payload:
+                        # Authoritative Markdown source changed on disk (e.g. multi-machine git sync/rebase).
+                        # Reconcile local SQLite cache with disk so projections (daily/v3, outcomes.md) stay in sync (#205).
+                        db.execute('UPDATE receipts SET payload=? WHERE id=?', (payload, event['event_id']))
+                else:
+                    db.execute('INSERT OR IGNORE INTO receipts VALUES (?,?)', (event['event_id'], payload))
             except (ValueError, OSError, UnicodeError) as exc:
                 warnings.append({'source': rel, 'reason': str(exc)})
         # Rescan while a source is invalid, and while an entry added in the same timestamp tick

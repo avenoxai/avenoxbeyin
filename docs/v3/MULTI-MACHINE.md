@@ -97,17 +97,18 @@ göre sıralar, en yenisini korur.
   özel runtime klasöründe durur; öbür makinedeki oturumları görmez, onlar için yukarıdaki git
   adımları geçerlidir.
 - **Çakışma çözülmeden oturum açma:** `pull --rebase` çakışmada durduğunda dosyada
-  `<<<<<<<`, `=======`, `>>>>>>>` işaretleri kalır. Bu halde açılan oturumda `sync` dosyayı
-  olduğu gibi indeksler ve işaretler sonraki bağlama girer; ajan onları içerik sanabilir.
-  `sync` ve `doctor` bunu bildirmez. Önce çakışmayı çöz (`git status` temiz olmalı), sonra
-  oturum aç.
+  `<<<<<<<`, `=======`, `>>>>>>>` işaretleri kalır. `sync` bu işaretleri sırayla taşıyan
+  not ve makbuz dosyalarını indekslemez ve `unresolved git conflict markers` uyarısıyla
+  `degraded` döner; dosya çözülene kadar bağlamdan ve veritabanından uzak tutulur ([#205](https://github.com/avenoxai/avenoxbeyin/issues/205)).
+  Önce çakışmayı çöz (`git status` temiz olmalı), sonra oturum aç.
 - **Receipt `event_id`'sini makineler arasında tekil tut:** `event_id`'yi ajan seçer ve dosya
   adı onun özetidir. İki makine aynı gün aynı konuya aynı adı verirse (`ortak-konu-2026-09-27`)
   iki farklı receipt aynı dosyaya düşer ve `pull --rebase` `CONFLICT (add/add)` ile durur.
-  Çakışma bir tarafın dosyası seçilerek çözülürse öbür makinenin veritabanında kendi özeti
-  kalır; `sync` uyarı vermez ve iki makinenin görünümleri sessizce ayrışır. Bunu önlemek için
-  `event_id`'nin sonuna kart başlığındaki gibi `Receipt session=` değerinin ilk 8 karakterini
-  ekle: `ortak-konu-2026-09-27-3f9a1c2b`.
+  Çakışma bir tarafın dosyası seçilerek çözüldüğünde `sync`, diskteki güncel makbuz kaynağını
+  yerel SQLite veritabanıyla otomatik olarak mutabık kılar ve görünümleri (`daily/v3`,
+  `knowledge/v3/outcomes.md`) diske göre günceller ([#205](https://github.com/avenoxai/avenoxbeyin/issues/205)).
+  Yine de birleşme çakışmalarını en baştan önlemek için `event_id`'nin sonuna kart
+  başlığındaki gibi `Receipt session=` değerinin ilk 8 karakterini ekle: `ortak-konu-2026-09-27-3f9a1c2b`.
 
 ## Nasıl doğrulandı
 
