@@ -613,6 +613,11 @@ class SyncEngine:
         return warnings
 
     def sync(self):
+        try:
+            from beyin_v3_launcher import reconcile_all_hooks
+            reconcile_all_hooks(self.root)
+        except Exception:
+            pass
         # Serialize recovery, source scan and projection across local processes.
         with self.store._connect() as db:
             db.execute('BEGIN IMMEDIATE')

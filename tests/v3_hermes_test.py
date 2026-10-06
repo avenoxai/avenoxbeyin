@@ -200,6 +200,27 @@ class HermesHarnessTest(unittest.TestCase):
             result = hooks['pre_llm_call'](session_id='long', turn_id='x', user_message='devam', is_first_turn=False)
         self.assertIsNone(result, 'No adapter context and no reminder due means no injection')
 
+    def test_foreign_runtime_state_falls_back_to_default_and_registers(self):
+        runtime = self.vault / '.beyin-runtime.json'
+        foreign = '/Users/ada/Library/Application Support/beyin-v3/ab12' if sys.platform == 'win32' else 'C:\\Users\\ada\\AppData\\Local\\beyin-v3\\ab12'
+        runtime.write_text(json.dumps({'state': foreign, 'schema': 1}), encoding='utf-8')
+        ctx = FakeHermesContext()
+        self.module.register(ctx, vault=self.vault)
+        self.assertEqual(sorted(ctx.hooks), ['on_session_finalize', 'pre_llm_call'])
+        fallback = self.module._runtime(self.vault)
+        self.assertEqual(fallback, self.module._default_state(self.vault))
+
+    def test_missing_runtime_file_falls_back_to_default_and_registers(self):
+        runtime = self.vault / '.beyin-runtime.json'
+        if runtime.is_file():
+            runtime.unlink()
+        ctx = FakeHermesContext()
+        self.module.register(ctx, vault=self.vault)
+        self.assertEqual(sorted(ctx.hooks), ['on_session_finalize', 'pre_llm_call'])
+        fallback = self.module._runtime(self.vault)
+        self.assertEqual(fallback, self.module._default_state(self.vault))
+
 
 if __name__ == '__main__':
     unittest.main()
+

@@ -26,10 +26,12 @@ logged through Hermes' plugin logger instead and the turn proceeds without conte
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -46,13 +48,39 @@ REMINDER_EVERY = 15
 REMINDER = "[Hafıza] {n}. mesaj. Anlamlı iş bittiyse `beyin.py receipt --harness hermes` ile kaynak bağlantılı makbuz yaz."
 
 
+def _default_state(vault: Path) -> Path:
+    """Keep mutable state outside the vault, separated by canonical vault path."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData/Local")))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library/Application Support"
+    else:
+        base = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state")))
+    key = hashlib.sha256(str(Path(vault).resolve()).encode()).hexdigest()[:16]
+    return base / "beyin-v3" / key
+
+
+def _is_foreign_state(pinned: str) -> bool:
+    """Detect whether a pinned state string belongs to another OS."""
+    if not isinstance(pinned, str) or not pinned.strip():
+        return False
+    if sys.platform == "win32":
+        return pinned.startswith("/")
+    return bool(re.match(r"^[a-zA-Z]:", pinned) or pinned.startswith("\\\\") or "\\" in pinned)
+
+
 def _runtime(vault):
-    """Resolve the state directory from the vault's installer-written runtime file."""
+    """Resolve the state directory from the vault's runtime file with foreign-OS fallback."""
     runtime = Path(vault) / ".beyin-runtime.json"
+    if not runtime.is_file():
+        return _default_state(Path(vault))
     data = json.loads(runtime.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or not isinstance(data.get("state"), str) or not data["state"]:
         raise ValueError("runtime state missing")
-    state = Path(data["state"]).expanduser()
+    state_str = data["state"]
+    if _is_foreign_state(state_str):
+        return _default_state(Path(vault))
+    state = Path(state_str).expanduser()
     if not state.is_absolute():
         raise ValueError("runtime state must be absolute")
     return state
@@ -125,7 +153,11 @@ def make_hooks(vault, state=None, python=None):
 def register(ctx, vault=None, state=None):
     """Hermes entry point. ``vault`` defaults to ``BEYIN_VAULT`` so one plugin serves any vault."""
     vault = vault or os.environ.get("BEYIN_VAULT")
-    if not vault or not (Path(vault) / ".beyin-runtime.json").is_file():
+    if not vault:
+        return
+    hook_file = Path(vault) / ".claude/scripts/beyin_v3_hook.py"
+    runtime_file = Path(vault) / ".beyin-runtime.json"
+    if not hook_file.is_file() and not runtime_file.is_file():
         return  # An unmounted or uninstalled vault must leave Hermes fully usable.
     try:
         hooks = make_hooks(vault, state)

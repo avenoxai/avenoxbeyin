@@ -394,7 +394,14 @@ def main():
     parser.add_argument("--drain-queue", action="store_true")
     parser.add_argument("--metadata-only", action="store_true", help="Queue lifecycle metadata without injecting vault context")
     args = parser.parse_args()
-    vault = args.vault.resolve()
+    vault_str = str(args.vault)
+    if _is_foreign_or_invalid_state(vault_str) or not args.vault.is_dir():
+        if (Path.cwd() / ".claude/scripts/beyin_v3_hook.py").is_file():
+            vault = Path.cwd().resolve()
+        else:
+            vault = Path(__file__).resolve().parents[2]
+    else:
+        vault = args.vault.resolve()
     state_str = str(args.state)
     if _is_foreign_or_invalid_state(state_str):
         state = _default_state(vault).resolve()

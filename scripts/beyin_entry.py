@@ -449,6 +449,11 @@ def main(argv=None):
             state = _default_state(vault)
         directory = vault / '.claude/scripts'
         sys.path.insert(0, str(directory))
+        try:
+            import beyin_v3_launcher as launcher
+            launcher.reconcile_all_hooks(vault)
+        except Exception:
+            pass
         if argv and argv[0] in ('update', 'rollback', 'recover'):
             import argparse
             import beyin_v3_update as updater
