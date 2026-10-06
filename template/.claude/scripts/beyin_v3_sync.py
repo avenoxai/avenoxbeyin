@@ -245,6 +245,25 @@ def _has_conflict_markers(text):
     return False
 
 
+def _is_sync_conflict_copy(name, directory_files=None):
+    """True when a filename matches known file-sync conflict patterns (iCloud, Dropbox, Syncthing) (#205)."""
+    # Dropbox: Note (conflicted copy ...).md or Note (Case Conflict ...).md
+    if re.search(r'\(.*(?:conflicted copy|case conflict).*\)\.md$', name, re.IGNORECASE):
+        return True
+    # Syncthing: Note.sync-conflict-...md
+    if re.search(r'\.sync-conflict-.*\.md$', name, re.IGNORECASE):
+        return True
+    # iCloud: Note 2.md (when Note.md also exists beside it, or in receipts/ where hash is 64 chars)
+    icloud = re.fullmatch(r'(.+) \d{1,2}\.md', name, re.IGNORECASE)
+    if icloud:
+        base = icloud[1] + '.md'
+        if directory_files is not None and base in directory_files:
+            return True
+        if re.fullmatch(r'[0-9a-f]{64}', icloud[1]):
+            return True
+    return False
+
+
 class SyncEngine:
     def projection_helpers(self):
         return _hash, atomic, render
@@ -446,11 +465,15 @@ class SyncEngine:
         duplicate = set()
         for directory, dirs, files in os.walk(self.root, followlinks=False):
             dirs[:] = sorted(d for d in dirs if not d.startswith('.') and d.casefold() not in EXCLUDED_DIRS and not (Path(directory) / d).is_symlink())
+            file_set = set(files)
             for name in sorted(files):
                 if name.startswith('.') or not name.lower().endswith('.md') or name.casefold() in EXCLUDED_FILES or name.casefold().startswith('setup-'):
                     continue
                 path = Path(directory) / name
                 relative = path.relative_to(self.root).as_posix()
+                if _is_sync_conflict_copy(name, file_set):
+                    warnings.append({'source': relative, 'reason': 'file sync conflict copy detected (iCloud/Dropbox/Syncthing); resolve copy before sync'})
+                    continue
                 try:
                     self._path(relative, existing=True)
                     raw = path.read_bytes()
@@ -560,6 +583,9 @@ class SyncEngine:
         for name in names:
             # Indexed receipts stay authoritative; other names were never written by receipt().
             if not re.fullmatch(r'[0-9a-f]{64}\.md', name):
+                if _is_sync_conflict_copy(name) or (len(name) > 64 and re.match(r'^[0-9a-f]{64}', name)):
+                    rel = 'receipts/' + name
+                    warnings.append({'source': rel, 'reason': 'file sync conflict copy in receipts directory; resolve copy before sync'})
                 continue
             rel = 'receipts/' + name
             try:

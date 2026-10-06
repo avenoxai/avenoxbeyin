@@ -90,6 +90,30 @@ class SourceSyncTest(unittest.TestCase):
         self.assertEqual(report['warnings'], [])
         self.assertEqual([r['id'] for r in self.records()], ['nebula-task'])
 
+    def test_file_sync_conflict_copies_in_markdown_notes_are_reported_and_not_indexed(self):
+        # #205: File-sync services (iCloud, Dropbox, Syncthing) create separate conflict files beside the original.
+        self.write('notes/research.md', id='res', body='Original research.\n')
+        self.write('notes/research 2.md', id='res-2', body='iCloud conflict copy.\n')
+        self.write('notes/task (conflicted copy 2026-10-06).md', id='res-db', body='Dropbox conflict copy.\n')
+        self.write('notes/task.sync-conflict-20261006-120000-XYZ.md', id='res-st', body='Syncthing conflict copy.\n')
+        self.write('notes/phase 2.md', id='phase-2', body='Legitimate note named phase 2.\n')
+
+        report = self.engine.sync()
+        self.assertEqual(report['status'], 'degraded')
+        warned = {w['source'] for w in report['warnings']}
+        self.assertIn('notes/research 2.md', warned)
+        self.assertIn('notes/task (conflicted copy 2026-10-06).md', warned)
+        self.assertIn('notes/task.sync-conflict-20261006-120000-XYZ.md', warned)
+        self.assertNotIn('notes/phase 2.md', warned)
+
+        with self.engine.store._connect() as db:
+            indexed_sources = {json.loads(r[0])['source'] for r in db.execute('SELECT payload FROM records')}
+        self.assertIn('notes/research.md', indexed_sources)
+        self.assertIn('notes/phase 2.md', indexed_sources)
+        self.assertNotIn('notes/research 2.md', indexed_sources)
+        self.assertNotIn('notes/task (conflicted copy 2026-10-06).md', indexed_sources)
+        self.assertNotIn('notes/task.sync-conflict-20261006-120000-XYZ.md', indexed_sources)
+
     def test_history_keeps_deleted_record_audit_trail_behind_last_snapshot(self):
         path = self.write()
         self.engine.sync()
@@ -908,6 +932,27 @@ class ReceiptStateResetTest(unittest.TestCase):
         outcomes2 = (self.vault / 'knowledge/v3/outcomes.md').read_text(encoding='utf-8')
         self.assertIn('Summary from remote machine.', outcomes2)
         self.assertNotIn('Summary from local machine.', outcomes2)
+
+    def test_file_sync_conflict_copies_in_receipts_are_reported_and_not_indexed(self):
+        # #205: iCloud/Dropbox create conflict files like <hash> 2.md or <hash> (conflicted copy).md in receipts/
+        state = self.root / 'state_receipt_copy'
+        engine = self.module.SyncEngine(self.vault, state)
+        engine.sync()
+        receipts_dir = self.vault / 'receipts'
+        receipts_dir.mkdir(exist_ok=True)
+        eid = 'event-icloud-copy'
+        h = self._hash(eid)
+        (receipts_dir / f'{h} 2.md').write_bytes(b'fake receipt copy')
+        (receipts_dir / f'{h} (conflicted copy).md').write_bytes(b'dropbox receipt copy')
+        (receipts_dir / 'README.md').write_bytes(b'Human documentation note')
+        os.utime(self.vault / 'receipts')
+
+        report = engine.sync()
+        self.assertEqual(report['status'], 'degraded')
+        warned = {w['source'] for w in report['warnings']}
+        self.assertIn(f'receipts/{h} 2.md', warned)
+        self.assertIn(f'receipts/{h} (conflicted copy).md', warned)
+        self.assertNotIn('receipts/README.md', warned)
 
 
 if __name__ == '__main__':

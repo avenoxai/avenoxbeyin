@@ -109,6 +109,11 @@ göre sıralar, en yenisini korur.
   `knowledge/v3/outcomes.md`) diske göre günceller ([#205](https://github.com/avenoxai/avenoxbeyin/issues/205)).
   Yine de birleşme çakışmalarını en baştan önlemek için `event_id`'nin sonuna kart
   başlığındaki gibi `Receipt session=` değerinin ilk 8 karakterini ekle: `ortak-konu-2026-09-27-3f9a1c2b`.
+- **Dosya senkron servisleri (iCloud, Dropbox, Syncthing):** Git yerine dosya senkron
+  servisleri kullanıldığında çakışmalar satır içi işaret yerine ayrı kopya dosyalar olarak
+  oluşur (` 2.md`, `(conflicted copy)`, `.sync-conflict-`). `sync`, notlarda ve `receipts/`
+  altında bu kalıplarla oluşan çakışma kopyalarını indekslemez ve `file sync conflict copy detected`
+  uyarısıyla `degraded` döner; çift veya eski kopyaların bağlama sızması engellenir ([#205](https://github.com/avenoxai/avenoxbeyin/issues/205)).
 
 ## Nasıl doğrulandı
 
