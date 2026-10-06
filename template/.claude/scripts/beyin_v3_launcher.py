@@ -61,6 +61,22 @@ def _is_foreign_or_invalid_state(pinned: str) -> bool:
     return False
 
 
+def _is_beyin_hook(command: str) -> bool:
+    """Detect whether a command string belongs to Beyin hook or launcher, including encoded PowerShell commands."""
+    if not isinstance(command, str) or not command.strip():
+        return False
+    if "beyin_v3_hook.py" in command or "beyin_v3_launcher.py" in command:
+        return True
+    match = re.search(r"-EncodedCommand\s+([A-Za-z0-9+/=]+)", command, re.IGNORECASE)
+    if match:
+        try:
+            decoded = base64.b64decode(match.group(1)).decode("utf-16le", errors="ignore")
+            return "beyin_v3_hook.py" in decoded or "beyin_v3_launcher.py" in decoded
+        except Exception:
+            pass
+    return False
+
+
 def is_foreign_command(command: str) -> bool:
     """Detect whether a hook command string was generated for a foreign operating system."""
     if not isinstance(command, str) or not command.strip():
@@ -74,7 +90,7 @@ def is_foreign_command(command: str) -> bool:
         stripped = command.strip().strip("'\"")
         if stripped.startswith("/") and not command.lower().startswith("c:"):
             return True
-        if "/usr/bin/" in command or "/opt/homebrew/" in command:
+        if any(prefix in command for prefix in ("/usr/bin/", "/usr/local/bin/", "/opt/homebrew/", "/home/", "/Users/")):
             return True
     return False
 
@@ -167,7 +183,7 @@ def reconcile_hook_file(vault: Path, relative_name: str, python: str | None = No
                 if isinstance(groups, list):
                     for g in groups:
                         for h in g.get("hooks", []):
-                            if isinstance(h, dict) and "beyin_v3_hook.py" in h.get("command", ""):
+                            if isinstance(h, dict) and _is_beyin_hook(h.get("command", "")):
                                 if is_foreign_command(h.get("command", "")):
                                     posix, windows = local_commands([py, hook_script, "--vault", vault, "--state", state,
                                                                      "--harness", "claude"])
@@ -182,7 +198,7 @@ def reconcile_hook_file(vault: Path, relative_name: str, python: str | None = No
                         for h in g.get("hooks", []):
                             cmd = h.get("command", "")
                             cmd_win = h.get("commandWindows", "")
-                            if "beyin_v3_hook.py" in (cmd + cmd_win):
+                            if _is_beyin_hook(cmd) or _is_beyin_hook(cmd_win):
                                 if is_foreign_command(cmd) or (sys.platform == "win32" and is_foreign_command(cmd_win)):
                                     posix, windows = local_commands([py, hook_script, "--vault", vault, "--state", state,
                                                                      "--harness", "codex"])

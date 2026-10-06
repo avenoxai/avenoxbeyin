@@ -73,11 +73,13 @@ class LauncherTest(unittest.TestCase):
         codex_hooks = codex_dir / "hooks.json"
 
         # Seed foreign commands
-        foreign_cmd = (
-            "'/usr/bin/python3' '/Users/ada/vault/.claude/scripts/beyin_v3_hook.py' --vault '/Users/ada/vault'"
-            if sys.platform == "win32"
-            else "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -EncodedCommand JgAgAC4ALgAu"
-        )
+        posix_seed, win_seed = self.launcher.local_commands([
+            "/usr/bin/python3" if sys.platform == "win32" else "C:/Python/python.exe",
+            "/Users/ada/vault/.claude/scripts/beyin_v3_hook.py" if sys.platform == "win32" else "C:/vault/.claude/scripts/beyin_v3_hook.py",
+            "--vault",
+            "/Users/ada/vault" if sys.platform == "win32" else "C:/vault",
+        ])
+        foreign_cmd = posix_seed if sys.platform == "win32" else win_seed
 
         hooks_json.write_text(json.dumps({
             "beyin-v3": {
@@ -122,11 +124,13 @@ class LauncherTest(unittest.TestCase):
         agents_dir = self.vault / ".agents"
         agents_dir.mkdir(parents=True)
         hooks_json = agents_dir / "hooks.json"
-        foreign_cmd = (
-            "'/usr/bin/python3' '/Users/ada/vault/.claude/scripts/beyin_v3_hook.py' --vault '/Users/ada/vault'"
-            if sys.platform == "win32"
-            else "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -EncodedCommand JgAgAC4ALgAu"
-        )
+        posix_seed, win_seed = self.launcher.local_commands([
+            "/usr/bin/python3" if sys.platform == "win32" else "C:/Python/python.exe",
+            "/Users/ada/vault/.claude/scripts/beyin_v3_hook.py" if sys.platform == "win32" else "C:/vault/.claude/scripts/beyin_v3_hook.py",
+            "--vault",
+            "/Users/ada/vault" if sys.platform == "win32" else "C:/vault",
+        ])
+        foreign_cmd = posix_seed if sys.platform == "win32" else win_seed
         hooks_json.write_text(json.dumps({
             "beyin-v3": {
                 "PreInvocation": [{"type": "command", "command": foreign_cmd, "timeout": 20}]
