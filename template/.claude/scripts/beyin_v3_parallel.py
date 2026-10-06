@@ -150,33 +150,34 @@ def _scan_last_session(vault, session_id, now):
             content = f.read(8192)
     except OSError:
         return None
-    match = CARD_HEADER.search(content)
-    if not match:
-        return None
-    ts_str, tag, card_session = match.groups()
-    card_session = card_session.strip().lower()[:8]
     own_session = receipt_session(session_id)[:8] if session_id else ''
-    if card_session == own_session:
-        return None
-    try:
-        ts_clean = ts_str.strip().replace('T', ' ')
-        if len(ts_clean) == 10:
-            dt = datetime.strptime(ts_clean, '%Y-%m-%d')
-        else:
-            dt = datetime.strptime(ts_clean[:16], '%Y-%m-%d %H:%M')
-        card_time = dt.timestamp()
-    except Exception:
-        card_time = None
-    try:
-        mtime = card_path.stat().st_mtime
-    except OSError:
-        mtime = None
-    best_time = max([t for t in (card_time, mtime) if t is not None], default=None)
-    if best_time is None:
-        return None
-    age = now - best_time
-    if -180 <= age <= ACTIVE_SECONDS:
-        return {'session': card_session, 'last_at': best_time, 'key': 'card-' + card_session}
+    for match in CARD_HEADER.finditer(content):
+        ts_str, tag, card_session = match.groups()
+        card_session = card_session.strip().lower()[:8]
+        if own_session and card_session == own_session:
+            continue
+        try:
+            ts_clean = ts_str.strip().replace('T', ' ')
+            if len(ts_clean) == 10:
+                dt = datetime.strptime(ts_clean, '%Y-%m-%d')
+            else:
+                dt = datetime.strptime(ts_clean[:16], '%Y-%m-%d %H:%M')
+            card_time = dt.timestamp()
+        except Exception:
+            card_time = None
+        effective_time = card_time
+        if effective_time is None:
+            try:
+                effective_time = card_path.stat().st_mtime
+            except OSError:
+                effective_time = None
+        if effective_time is None:
+            continue
+        age = now - effective_time
+        if -180 <= age <= ACTIVE_SECONDS:
+            return {'session': card_session, 'last_at': effective_time, 'key': 'card-' + card_session}
+        if age > ACTIVE_SECONDS:
+            break
     return None
 
 

@@ -233,10 +233,15 @@ COMPLETION_FIELDS = {'completion_contract', 'completion_criterion', 'evidence_re
 
 
 def _has_conflict_markers(text):
-    """True when a git merge left <<<<<<< / ======= / >>>>>>> in order (#205)."""
-    stage = 0
+    """True when a git merge left <<<<<<< / ======= / >>>>>>> in order outside code fences (#205)."""
+    stage, fence = 0, False
     for line in text.splitlines():
-        if stage == 0 and line.startswith('<<<<<<<'):
+        trimmed = line.lstrip()
+        if trimmed.startswith(('```', '~~~')):
+            fence = not fence
+        elif fence:
+            continue
+        elif stage == 0 and line.startswith('<<<<<<<'):
             stage = 1
         elif stage == 1 and line.rstrip() == '=======':
             stage = 2

@@ -206,6 +206,25 @@ class ParallelSessionsTest(unittest.TestCase):
         lines = self.notice(self.hook('UserPromptSubmit', 'active-session'))
         self.assertEqual(lines, [])
 
+    def test_cross_machine_skips_own_top_card_and_detects_second_active_card(self):
+        self.enable()
+        comp_dir = self.vault / '🔮 850-Companion'
+        comp_dir.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        own_short = receipt_short('local-session')
+        dt_own = time.strftime('%Y-%m-%d %H:%M', time.localtime(now - 60))
+        dt_ext = time.strftime('%Y-%m-%d %H:%M', time.localtime(now - 300))
+        (comp_dir / 'Last-Session.md').write_text(
+            f'# Son oturum\n\n'
+            f'## {dt_own} · own-recent-card · {own_short}\nOwn work.\n\n'
+            f'## {dt_ext} · ext-parallel-card · 778899aa\nExt work.\n',
+            encoding='utf-8'
+        )
+        lines = self.notice(self.hook('UserPromptSubmit', 'local-session'))
+        self.assertEqual(len(lines), 1)
+        self.assertIn("1 oturum daha acik: #778899aa", lines[0])
+
+
 
     def test_off_by_default_and_off_output_matches_no_feature(self):
         def scenario():

@@ -90,6 +90,15 @@ class SourceSyncTest(unittest.TestCase):
         self.assertEqual(report['warnings'], [])
         self.assertEqual([r['id'] for r in self.records()], ['nebula-task'])
 
+    def test_conflict_marker_lookalikes_stay_indexed(self):
+        body = ('Nebula calibration awaits owner Synthetic Reviewer.\n\nSetext heading\n=======\n\n'
+                '```\n<<<<<<< HEAD\nmine\n=======\ntheirs\n>>>>>>> branch\n```\n')
+        self.write(body=body)
+        report = self.engine.sync()
+        self.assertEqual(report['warnings'], [])
+        self.assertEqual([r['id'] for r in self.records()], ['nebula-task'])
+
+
     def test_file_sync_conflict_copies_in_markdown_notes_are_reported_and_not_indexed(self):
         # #205: File-sync services (iCloud, Dropbox, Syncthing) create separate conflict files beside the original.
         self.write('notes/research.md', id='res', body='Original research.\n')
