@@ -30,7 +30,7 @@ import tempfile
 import time
 import unicodedata
 
-from beyin_v3 import HARNESSES, STOPWORDS, _json, _tokens, pack_context
+from beyin_v3 import HARNESSES, STOPWORDS, _json, _status_word, _tokens, pack_context
 
 # #83 chose 0.15 on one 263-note Turkish vault without a coverage cap. With the cap, on a
 # second 1,285-note vault 0.20 is the lowest floor that keeps everyday and agent-command
@@ -367,12 +367,13 @@ def search(index, terms, limit=5, floor=FLOOR, min_shared=MIN_SHARED):
 
 def pool(store, eligible, statuses=None, exclude=DEFAULT_EXCLUDE):
     """The strict candidate set of MemoryStore._retrieve, minus configured record paths."""
-    superseded = {rid for record in eligible for rid in record["supersedes"]}
+    superseded = store._superseded_ids()
     prefixes = tuple(_path_key(prefix) for prefix in exclude)
+    allowed_statuses = {_status_word({"status": value}) for value in statuses} if statuses is not None else None
     result = []
     for record in eligible:
         source = str(record.get("source", ""))
-        if (record["id"] in superseded or (statuses is not None and record.get("status") not in statuses) or
+        if (record["id"] in superseded or (allowed_statuses is not None and _status_word(record) not in allowed_statuses) or
                 source.startswith(store.STRICT_EXCLUDE) or _path_key(source).startswith(prefixes)):
             continue
         result.append(record)

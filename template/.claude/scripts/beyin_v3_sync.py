@@ -16,7 +16,7 @@ _MODULE_DIR = str(Path(__file__).resolve().parent)
 if _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
-from beyin_v3 import HARNESSES, MemoryStore, ReceiptConflict, RevisionConflict, _json
+from beyin_v3 import HARNESSES, MemoryStore, ReceiptConflict, RevisionConflict, _json, resolve_supersedes
 from beyin_v3_projections import project_receipts
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
@@ -563,6 +563,9 @@ class SyncEngine:
             receipt_warnings = self._scan_receipts(db)
             records, warnings, conflicts = self._scan()
             warnings.extend(receipt_warnings)
+            _retired, dead_supersedes = resolve_supersedes(list(records.values()))
+            warnings.extend({'source': item['source'], 'reason': item['reason'], 'value': item['value']}
+                             for item in dead_supersedes)
             conflicts.extend(recovery_conflicts)
             old_owned = {row[0] for row in db.execute('SELECT id FROM markdown_sources')}
             deleted = 0

@@ -99,6 +99,23 @@ class SplitTest(unittest.TestCase):
 
 
 class PassageContextTest(Vault):
+    def test_status_gate_and_human_supersedes_references_apply_to_note_and_passage_reads(self):
+        self.ingest('old', 'Zirkon kovası eski karar.', 'knowledge/route-v1.md', status='superseded')
+        self.ingest('current', 'Zirkon kovası güncel karar.', 'knowledge/route-v2.md',
+                    supersedes=['[[knowledge/route-v1]]'])
+        self.ingest('waiting', 'Zirkon kovası bekleyen karar.', 'knowledge/waiting.md', status='waiting later')
+        self.assertEqual([row['id'] for row in self.store.retrieve('zirkon kovası karar')['records']], ['waiting', 'current'])
+        self.assertEqual([row['id'] for row in self.strict('zirkon kovası karar', statuses=('active',))['records']], ['current'])
+
+    def test_ambiguous_supersedes_stem_does_not_retire_either_record(self):
+        self.ingest('first', 'Zirkon kovası ilk karar.', 'a/route.md')
+        self.ingest('second', 'Zirkon kovası ikinci karar.', 'b/route.md')
+        self.ingest('replacement', 'Zirkon kovası yeni karar.', 'knowledge/new.md', supersedes=['route'])
+        ids = [row['id'] for row in self.store.retrieve('zirkon kovası karar')['records']]
+        self.assertEqual(set(ids), {'first', 'second', 'replacement'})
+        _retired, dead = runtime.resolve_supersedes(self.store._eligible()[0])
+        self.assertEqual(dead[0]['value'], 'route')
+
     def test_delivers_the_matching_block_of_a_rich_note(self):
         self.ingest('rich', RICH, 'projects/kuzey.md')
         self.ingest('other', 'Market listesi: elma, ekmek, zeytinyağı.', 'notes/market.md')

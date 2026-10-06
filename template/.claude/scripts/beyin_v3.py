@@ -45,6 +45,69 @@ def _rejected_inference(record):
             (record.get("validity") == "rejected" or record.get("status") == "rejected"))
 
 
+def _status_word(record):
+    """Return the first status word; missing or blank status means active."""
+    value = record.get("status")
+    if not isinstance(value, str) or not value.strip():
+        return "active"
+    return value.strip().split()[0].casefold()
+
+
+def _supersedes_key(value):
+    """Normalize a human-readable supersedes reference without substring matching."""
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    if value.startswith("[[") and value.endswith("]]"):
+        value = value[2:-2].split("|", 1)[0].strip()
+    return value.replace("\\", "/").strip("/")
+
+
+def resolve_supersedes(records):
+    """Resolve trusted supersedes references to record ids and report dead links."""
+    trusted = [record for record in records
+               if record.get("trust") != "untrusted" and record.get("trusted") is not False
+               and record.get("status") != "untrusted" and record.get("kind") != "untrusted"
+               and not _rejected_inference(record)]
+    by_id = {record.get("id"): record for record in trusted if isinstance(record.get("id"), str)}
+    by_path, by_stem = {}, {}
+    for record in trusted:
+        source = str(record.get("source", "")).replace("\\", "/").strip("/")
+        if not source:
+            continue
+        path_key = source[:-3] if source.casefold().endswith(".md") else source
+        by_path.setdefault(path_key.casefold(), []).append(record)
+        by_stem.setdefault(Path(source).stem.casefold(), []).append(record)
+    retired, dead = set(), []
+    for record in trusted:
+        values = record.get("supersedes", [])
+        if isinstance(values, str):
+            values = [values]
+        if not isinstance(values, list):
+            continue
+        for raw in values:
+            key = _supersedes_key(raw)
+            if not key:
+                dead.append({"source": record.get("source", ""), "value": raw,
+                             "reason": "ambiguous or unresolved supersedes reference"})
+                continue
+            target = by_id.get(key)
+            if target is None or target.get("id") == record.get("id"):
+                matches = by_path.get(key.casefold(), [])
+                if len(matches) == 1:
+                    target = matches[0]
+                elif not matches:
+                    matches = by_stem.get(Path(key).stem.casefold(), [])
+                    if len(matches) == 1:
+                        target = matches[0]
+            if target is None:
+                dead.append({"source": record.get("source", ""), "value": raw,
+                             "reason": "ambiguous or unresolved supersedes reference"})
+            else:
+                retired.add(target["id"])
+    return retired, dead
+
+
 # Opt-in project scope for vaults organized by folder. Without this file an explicit
 # project matches only a record's own project field, so a vault that never writes that
 # field has an empty scope for every explicit-project command.
@@ -638,6 +701,11 @@ class MemoryStore:
             eligible.append(record)
         return eligible, stale_count
 
+    def _superseded_ids(self):
+        with self._connect() as db:
+            records = [json.loads(row[0]) for row in db.execute("SELECT payload FROM records ORDER BY id")]
+        return resolve_supersedes(records)[0]
+
     def _retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, snapshot=False, strict=False, candidate_only=False):
         if audience not in ("public", "internal", "private"):
             raise ValueError("invalid audience")
@@ -646,7 +714,8 @@ class MemoryStore:
         if isinstance(statuses, str):
             statuses = [statuses]
         eligible, stale_count = self._eligible(audience, project)
-        superseded = {rid for record in eligible for rid in record["supersedes"]}
+        superseded = self._superseded_ids()
+        allowed_statuses = {_status_word({"status": value}) for value in statuses} if statuses is not None else None
         query_tokens = _tokens(query)
         project_tokens = _tokens(project or "")
         terms = query_tokens - STOPWORDS - project_tokens
@@ -656,8 +725,7 @@ class MemoryStore:
         for record in eligible:
             if record["id"] in superseded:
                 continue
-            statusless_note = snapshot and "status" not in record and record.get("kind", "note") != "task"
-            if statuses is not None and record.get("status") not in statuses and not statusless_note:
+            if allowed_statuses is not None and _status_word(record) not in allowed_statuses:
                 continue
             if strict and str(record.get("source", "")).startswith(self.STRICT_EXCLUDE):
                 continue
