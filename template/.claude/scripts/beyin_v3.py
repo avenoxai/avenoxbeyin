@@ -203,6 +203,11 @@ def _stem(word):
             break
         else:
             break
+    # Consonant softening: kitap/kitabi and ornek/ornegi (soft g is already folded to g).
+    # A b or g after a vowel goes back to p or k on every stem, peeled or not, so both
+    # sides agree. d is left alone: past tense stems like "dened" would land on "denet".
+    if len(word) >= 4 and word[-1] in "bg" and word[-2] in _VOWELS:
+        word = word[:-1] + ("p" if word[-1] == "b" else "k")
     return word
 
 
