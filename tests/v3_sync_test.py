@@ -75,6 +75,29 @@ class SourceSyncTest(unittest.TestCase):
         self.assertGreaterEqual(deleted['deleted'], 1)
         self.assertEqual(self.records(), [])
 
+    def test_unresolved_git_conflict_markers_are_reported_and_not_indexed(self):
+        # #205: a pull --rebase that stops on a conflict leaves markers the agent would read as content.
+        body = ('<<<<<<< HEAD\nNebula calibration awaits owner Synthetic Reviewer.\n=======\n'
+                'Nebula calibration moved to owner Synthetic Auditor.\n>>>>>>> 3f9a1c2 (other machine)\n')
+        path = self.write(body=body)
+        report = self.engine.sync()
+        self.assertEqual(report['status'], 'degraded')
+        self.assertEqual([w['source'] for w in report['warnings']], ['notes/task.md'])
+        self.assertIn('conflict markers', report['warnings'][0]['reason'])
+        self.assertEqual(self.records(), [])
+        self.write()
+        report = self.engine.sync()
+        self.assertEqual(report['warnings'], [])
+        self.assertEqual([r['id'] for r in self.records()], ['nebula-task'])
+
+    def test_conflict_marker_lookalikes_stay_indexed(self):
+        body = ('Nebula calibration awaits owner Synthetic Reviewer.\n\nSetext heading\n=======\n\n'
+                '```\n<<<<<<< HEAD\nmine\n=======\ntheirs\n>>>>>>> branch\n```\n')
+        self.write(body=body)
+        report = self.engine.sync()
+        self.assertEqual(report['warnings'], [])
+        self.assertEqual([r['id'] for r in self.records()], ['nebula-task'])
+
     def test_history_keeps_deleted_record_audit_trail_behind_last_snapshot(self):
         path = self.write()
         self.engine.sync()

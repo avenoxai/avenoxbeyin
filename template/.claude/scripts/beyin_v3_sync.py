@@ -232,6 +232,23 @@ EXCLUDED_DIRS = {'node_modules', 'receipts', '__pycache__'}
 COMPLETION_FIELDS = {'completion_contract', 'completion_criterion', 'evidence_refs'}
 
 
+def _has_conflict_markers(text):
+    """True when a git merge left <<<<<<< / ======= / >>>>>>> in order outside code fences (#205)."""
+    stage, fence = 0, False
+    for line in text.splitlines():
+        if line.lstrip().startswith(('```', '~~~')):
+            fence = not fence
+        elif fence:
+            continue
+        elif stage == 0 and line.startswith('<<<<<<< '):
+            stage = 1
+        elif stage == 1 and line.rstrip() == '=======':
+            stage = 2
+        elif stage == 2 and line.startswith('>>>>>>> '):
+            return True
+    return False
+
+
 class SyncEngine:
     def projection_helpers(self):
         return _hash, atomic, render
@@ -441,7 +458,10 @@ class SyncEngine:
                 try:
                     self._path(relative, existing=True)
                     raw = path.read_bytes()
-                    metadata, body = parse(raw.decode('utf-8'))
+                    text = raw.decode('utf-8')
+                    if _has_conflict_markers(text):
+                        raise ValueError('unresolved git conflict markers; resolve the merge before sync')
+                    metadata, body = parse(text)
                     if metadata.get('kind') == 'task' and body.lstrip().startswith('---'):
                         raise ValueError('task has embedded frontmatter; reconcile metadata and body explicitly')
                     if metadata.get('kind') == 'receipt' or metadata.get('generated') is True:
