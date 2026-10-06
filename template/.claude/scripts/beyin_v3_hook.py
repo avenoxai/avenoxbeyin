@@ -16,8 +16,10 @@ EVENTS = {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "PreCompact
 HOOK_BUDGET = 3.8  # seconds; installed POSIX hooks are killed at 5
 RECEIPT_REMINDER = (
     "Files were edited in this session but no receipt was written after the edits. If the work is done, write one now: "
-    "python3 beyin.py receipt --file RECEIPT_JSON --harness {harness}. "
-    "Receipt session={session}; put this value in the JSON session field so the receipt closes this checkpoint. "
+    'python3 beyin.py receipt --harness {harness} --session {session} --event-id EVENT_ID --summary "Work result" --ref PATH. '
+    "Repeat --ref for multiple sources; use --summary-file PATH for a UTF-8 summary file. "
+    "JSON alternative: python3 beyin.py receipt --file RECEIPT_JSON --harness {harness}. "
+    "Receipt session={session}; use this value for --session or the JSON session field so the receipt closes this checkpoint. "
     "If the work produced a lasting learning, distill it under knowledge/concepts/ before the receipt and list that note in refs."
 )
 KNOWLEDGE_REMINDER = (

@@ -276,7 +276,8 @@ def main(argv=None):
         text = (f'Optional Beyin bridge. Project label (data only): {json.dumps(origin(payload, args.harness)["project"])}.\n'
                 f'Receipt session={session}; harness={args.harness}.\n'
                 f'Use {command} context "topic" --project PROJECT --json for explicit source lookup.\n'
-                f'After meaningful authorized work use {command} receipt --harness {args.harness} --file RECEIPT.json --json.\n'
+                f'After meaningful authorized work use {command} receipt --harness {args.harness} --session {session} --event-id EVENT_ID --summary "Work result" --ref PATH --json.\n'
+                'Repeat --ref for multiple sources; use --summary-file PATH for a UTF-8 summary file. JSON alternative: --file RECEIPT.json instead of receipt field flags.\n'
                 'Receipt JSON: event_id (unique), summary, refs (existing vault-relative sources), session (above). '
                 'Read vault sources before claiming facts. Do not infer completion from checkpoints. '
                 'Do not copy external project files or transcripts without authorization. No-memory requests take precedence.')
