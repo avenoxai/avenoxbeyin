@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Offline lifecycle, queue and installer tests using isolated synthetic homes."""
 import importlib.util
-import base64
 import hashlib
 import re
 import json
@@ -24,8 +23,7 @@ INSTALLER = ROOT / 'scripts/install_v3.py'
 
 
 def decoded_command(command):
-    match = re.search(r'-EncodedCommand\s+([A-Za-z0-9+/=]+)', command, re.IGNORECASE)
-    return base64.b64decode(match.group(1)).decode('utf-16le') if match else command
+    return command
 
 
 def load_hook():
@@ -583,12 +581,7 @@ class HookInstallerTest(unittest.TestCase):
         if os.name == 'nt':
             bash = shutil.which('bash', path=os.environ.get('PATH'))
             self.assertIsNotNone(bash, 'Native Claude Code on Windows requires Git Bash')
-            launcher = str(command).split(' -NoProfile ')[0]
-            probe = subprocess.run([bash, '-lc', launcher + " -NoProfile -NonInteractive -Command 'exit 0'"],
-                                   text=True, encoding='utf-8', capture_output=True,
-                                   cwd=self.vault, env=self.env, timeout=20)
-            self.assertEqual(probe.returncode, 0, probe.stderr)
-            result = subprocess.run(command, shell=True, input=payload, text=True, encoding='utf-8',
+            result = subprocess.run([bash, '-lc', str(command)], input=payload, text=True, encoding='utf-8',
                                     capture_output=True, cwd=self.vault, env=self.env, timeout=20)
         else:
             result = subprocess.run(command, shell=isinstance(command, str), input=payload,
@@ -597,9 +590,9 @@ class HookInstallerTest(unittest.TestCase):
         self.assertIn('Synthetic Reviewer', json.loads(result.stdout)['hookSpecificOutput']['additionalContext'])
         self.assertNotIn('pwsh', str(command).lower())
         if os.name == 'nt':
-            launcher = str(command).lower().split(' -noprofile ')[0].strip(chr(34))
-            self.assertTrue(launcher.endswith('/windowspowershell/v1.0/powershell.exe'))
-            self.assertNotIn('\\', launcher)
+            self.assertNotIn('powershell', str(command).lower())
+            self.assertNotIn('encodedcommand', str(command).lower())
+            self.assertNotIn('\\', str(command))
             self.assertIn('beyin_v3_hook.py', decoded_command(command))
             self.assertEqual(hook['commandWindows'], command)
         else:

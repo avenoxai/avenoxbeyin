@@ -127,28 +127,46 @@ def jbytes(value):
     return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode()
 
 
-def commands(argv):
+def commands(argv, root=None):
     if any(any(c in str(value) for c in "\n\r\x00") for value in argv):
         raise ValueError("Newlines or NUL in command paths are unsupported")
-    # Keep a direct form for POSIX shells and Codex's explicit fallback field.
-    portable_argv = [str(value).replace("\\", "/") if os.name == "nt" else str(value) for value in argv]
-    posix = shlex.join(portable_argv)
-    # Explicit PowerShell invocation with single-quoted literals inside encoded code.
-    # EncodedCommand prevents cmd.exe metacharacters in paths being evaluated.
-    script = "& " + " ".join("'" + str(value).replace("'", "''") + "'" for value in argv)
-    script += "; exit $LASTEXITCODE"
-    encoded = base64.b64encode(script.encode("utf-16le")).decode()
-    launcher = "powershell.exe"
+    # Claude Code dispatches native Windows hooks through Git Bash, while Codex
+    # and Antigravity may invoke the same string through cmd or PowerShell. A
+    # PowerShell/EncodedCommand wrapper is not shell-agnostic: Bash mangles its
+    # Windows launcher path before PowerShell can decode it. Forward-slash paths
+    # inside double quotes are accepted by all three shells for these commands.
+    def short_path(text):
+        try:
+            import ctypes
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = ctypes.windll.kernel32.GetShortPathNameW(text, buffer, len(buffer))
+            if length and length < len(buffer):
+                return buffer.value
+        except (AttributeError, OSError):
+            pass
+        return text
+
+    root_text = str(root) if root is not None else None
+    short_root = short_path(root_text) if root_text else None
+
+    def portable(value):
+        text = str(value)
+        if os.name != "nt":
+            return text
+        # Git Bash can mojibake non-ASCII Windows argv before Python sees it.
+        # Prefer the NT short path when available; it keeps direct commands
+        # shell-agnostic without bringing back the broken PowerShell wrapper.
+        if root_text and (text == root_text or text.startswith(root_text + os.sep)):
+            text = short_root + text[len(root_text):]
+        else:
+            text = short_path(text)
+        return text.replace("\\", "/")
+    portable_argv = [portable(value) for value in argv]
     if os.name == "nt":
-        windows_root = os.environ.get("SYSTEMROOT") or os.environ.get("WINDIR") or r"C:\Windows"
-        # Claude Code dispatches native Windows hooks through Git Bash. Bash
-        # consumes backslashes in an unquoted C:\... launcher, while the
-        # forward-slash form works in Bash, cmd and PowerShell. User-controlled
-        # Unicode paths stay inside EncodedCommand and never cross that shell.
-        launcher_path = str(Path(windows_root) / "System32/WindowsPowerShell/v1.0/powershell.exe").replace("\\", "/")
-        launcher = subprocess.list2cmdline([launcher_path])
-    windows = launcher + " -NoProfile -NonInteractive -EncodedCommand " + encoded
-    return posix, windows
+        direct = " ".join('"' + value.replace('"', '\\"') + '"' for value in portable_argv)
+    else:
+        direct = shlex.join(portable_argv)
+    return direct, direct
 
 
 def line_endings_only(baseline, current):
@@ -363,7 +381,7 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
                 if remaining:
                     cleaned.append(dict(group, hooks=remaining))
             hooks[event] = cleaned
-        posix, windows = commands([sys.executable, hook, "--vault", vault, "--state", state, "--harness", harness])
+        posix, windows = commands([sys.executable, hook, "--vault", vault, "--state", state, "--harness", harness], root=vault)
         for event in ("SessionStart", "UserPromptSubmit", "Stop", "PostToolUse", "PreCompact", "SessionEnd"):
             timeout = 3 if event == "SessionEnd" else (20 if os.name == "nt" else 5)
             handler = {"type": "command", "command": windows if os.name == "nt" else posix, "timeout": timeout}
@@ -393,7 +411,7 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
     else:
         managed = {}
         for event in ("PreInvocation", "Stop"):
-            posix, windows = commands([sys.executable, hook, "--vault", vault, "--state", state, "--harness", "antigravity", "--event", event])
+            posix, windows = commands([sys.executable, hook, "--vault", vault, "--state", state, "--harness", "antigravity", "--event", event], root=vault)
             managed[event] = [{"type": "command", "command": windows if os.name == "nt" else posix, "timeout": 20 if os.name == "nt" else 5}]
         data["beyin-v3"] = managed
         add(".agents/hooks.json", jbytes(data))
