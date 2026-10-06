@@ -233,18 +233,18 @@ COMPLETION_FIELDS = {'completion_contract', 'completion_criterion', 'evidence_re
 
 
 def _has_conflict_markers(text):
-    """True when a git merge left <<<<<<< / ======= / >>>>>>> in order outside code fences (#205)."""
-    stage, fence = 0, False
+    """True when a merge left <<<<<<< / ======= / >>>>>>> in order (#205).
+
+    Code fences are not skipped: a real conflict inside a note's code block must not reach context,
+    and a quoted example costs only a visible warning.
+    """
+    stage = 0
     for line in text.splitlines():
-        if line.lstrip().startswith(('```', '~~~')):
-            fence = not fence
-        elif fence:
-            continue
-        elif stage == 0 and line.startswith('<<<<<<< '):
+        if stage == 0 and line.startswith('<<<<<<<'):
             stage = 1
         elif stage == 1 and line.rstrip() == '=======':
             stage = 2
-        elif stage == 2 and line.startswith('>>>>>>> '):
+        elif stage == 2 and line.startswith('>>>>>>>'):
             return True
     return False
 
@@ -514,7 +514,10 @@ class SyncEngine:
         """Rebuild a receipts row from its immutable source; ValueError when the file is not a valid receipt."""
         path = self._path(relative, existing=True)
         # Bytes, not read_text: universal newlines would turn '\r' into '\n' and fake an event id collision.
-        metadata, body = parse(path.read_bytes().decode('utf-8'))
+        text = path.read_bytes().decode('utf-8')
+        if _has_conflict_markers(text):
+            raise ValueError('unresolved git conflict markers; resolve the merge before sync')
+        metadata, body = parse(text)
         event_id, harness, refs = metadata.get('event_id'), metadata.get('harness', 'manual'), metadata.get('refs')
         if metadata.get('kind') != 'receipt' or not isinstance(event_id, str) or not event_id.strip():
             raise ValueError('missing kind receipt or event_id')

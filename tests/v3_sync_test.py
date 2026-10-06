@@ -90,13 +90,41 @@ class SourceSyncTest(unittest.TestCase):
         self.assertEqual(report['warnings'], [])
         self.assertEqual([r['id'] for r in self.records()], ['nebula-task'])
 
-    def test_conflict_marker_lookalikes_stay_indexed(self):
-        body = ('Nebula calibration awaits owner Synthetic Reviewer.\n\nSetext heading\n=======\n\n'
-                '```\n<<<<<<< HEAD\nmine\n=======\ntheirs\n>>>>>>> branch\n```\n')
+    def test_setext_heading_is_not_a_conflict_marker(self):
+        body = 'Nebula calibration awaits owner Synthetic Reviewer.\n\nSetext heading\n=======\n\nMore text.\n'
         self.write(body=body)
         report = self.engine.sync()
         self.assertEqual(report['warnings'], [])
         self.assertEqual([r['id'] for r in self.records()], ['nebula-task'])
+
+    def test_conflict_inside_code_fence_and_unlabeled_markers_are_reported(self):
+        for body in ('Nebula calibration awaits owner Synthetic Reviewer.\n```bash\n<<<<<<< HEAD\necho a\n'
+                     '=======\necho b\n>>>>>>> 3f9a1c2\n```\n',
+                     '<<<<<<<\nNebula calibration awaits owner Synthetic Reviewer.\n=======\nother\n>>>>>>>\n'):
+            with self.subTest(body=body):
+                self.write(body=body)
+                report = self.engine.sync()
+                self.assertEqual([w['source'] for w in report['warnings']], ['notes/task.md'])
+                self.assertEqual(self.records(), [])
+
+    def test_receipt_with_conflict_markers_is_not_indexed(self):
+        # A device that first sees a receipt after an unresolved add/add merge must not index the markers.
+        self.write()
+        receipt = self.engine.receipt('shared-topic', 'Calibration done here.', ['notes/task.md'], 'codex')
+        raw = (self.vault / receipt['source']).read_text(encoding='utf-8')
+        fresh = self.root / 'fresh'
+        (fresh / 'receipts').mkdir(parents=True)
+        (fresh / 'notes').mkdir()
+        (fresh / 'notes/task.md').write_text((self.vault / 'notes/task.md').read_text(encoding='utf-8'), encoding='utf-8')
+        (fresh / receipt['source']).write_text(raw.replace(
+            'Calibration done here.\n',
+            '<<<<<<< HEAD\nCalibration done here.\n=======\nCalibration done there.\n>>>>>>> 3f9a1c2\n'), encoding='utf-8')
+        engine = self.module.SyncEngine(fresh, self.root / 'fresh-state')
+        report = engine.sync()
+        self.assertEqual(report['status'], 'degraded')
+        self.assertIn(receipt['source'], [w['source'] for w in report['warnings']])
+        outcomes = fresh / 'knowledge/v3/outcomes.md'
+        self.assertFalse(outcomes.exists() and '<<<<<<<' in outcomes.read_text(encoding='utf-8'))
 
     def test_history_keeps_deleted_record_audit_trail_behind_last_snapshot(self):
         path = self.write()

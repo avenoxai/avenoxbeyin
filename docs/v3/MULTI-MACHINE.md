@@ -98,9 +98,9 @@ göre sıralar, en yenisini korur.
   adımları geçerlidir.
 - **Çakışma çözülmeden oturum açma:** `pull --rebase` çakışmada durduğunda dosyada
   `<<<<<<<`, `=======`, `>>>>>>>` işaretleri kalır. `sync` bu üç işareti sırayla taşıyan
-  dosyayı indekslemez ve `unresolved git conflict markers` uyarısıyla `degraded` döner; dosya
-  çözülene kadar bağlamdan çıkar ([#205](https://github.com/avenoxai/avenoxbeyin/issues/205)).
-  Kod bloğu içindeki işaretler sayılmaz. Önce çakışmayı çöz (`git status` temiz olmalı), sonra
+  dosyayı (receipt dahil) indekslemez ve `unresolved git conflict markers` uyarısıyla `degraded`
+  döner; dosya çözülene kadar bağlamdan çıkar ([#205](https://github.com/avenoxai/avenoxbeyin/issues/205)).
+  Kod bloğundaki işaretler de sayılır: notta alıntılanmış bir çakışma örneği de uyarı verir. Önce çakışmayı çöz (`git status` temiz olmalı), sonra
   oturum aç.
 - **Receipt `event_id`'sini makineler arasında tekil tut:** `event_id`'yi ajan seçer ve dosya
   adı onun özetidir. İki makine aynı gün aynı konuya aynı adı verirse (`ortak-konu-2026-09-27`)
