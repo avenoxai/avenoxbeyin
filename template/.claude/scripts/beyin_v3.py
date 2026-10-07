@@ -564,8 +564,9 @@ class MemoryStore:
             result["truncated"] = True
         return result
 
-    def _strict_rank(self, ranked, terms, vocabularies):
-        """Keep only meaningful lexical matches; see STRICT_* for the calibrated rules."""
+    @staticmethod
+    def _lexical_weights(ranked, terms, vocabularies):
+        """(weight, shared_count, record) for every candidate; see the strict comment for the formula."""
         frequency = {}
         for vocabulary in vocabularies.values():
             for token in vocabulary:
@@ -574,16 +575,30 @@ class MemoryStore:
         idf_max = math.log((total + 1) / 2) + 1
         weighted = []
         for shared_count, record in ranked:
-            if shared_count < self.STRICT_MIN_SHARED:
-                continue
             vocabulary = vocabularies[record["id"]]
             weight = sum(math.log((total + 1) / (frequency.get(token, 0) + 1)) + 1 for token in terms & vocabulary)
-            weight = weight / idf_max / math.log(10 + len(vocabulary))
-            if weight >= self.STRICT_MIN_WEIGHT:
-                weighted.append((weight, record))
+            weighted.append((weight / idf_max / math.log(10 + len(vocabulary)), shared_count, record))
+        return weighted
+
+    @staticmethod
+    def _by_weight(weighted):
         weighted.sort(key=lambda item: (item[1].get("updated_at", ""), item[1]["id"]), reverse=True)
         weighted.sort(key=lambda item: -item[0])
         return weighted
+
+    def _strict_rank(self, ranked, terms, vocabularies):
+        """Keep only meaningful lexical matches; see STRICT_* for the calibrated rules."""
+        return self._by_weight([(weight, record) for weight, shared_count, record in self._lexical_weights(ranked, terms, vocabularies)
+                                if shared_count >= self.STRICT_MIN_SHARED and weight >= self.STRICT_MIN_WEIGHT])
+
+    def _weighted_rank(self, ranked, terms, vocabularies):
+        """Order without dropping anything: the strict weight, none of the strict thresholds.
+
+        A raw shared-term count favours whichever note has the largest vocabulary, so one long
+        hub note can win every query. Records with no shared term (scoped listings, snapshots)
+        weigh 0 and keep their previous updated_at order.
+        """
+        return self._by_weight([(weight, record) for weight, _, record in self._lexical_weights(ranked, terms, vocabularies)])
 
     # Strict automatic context: used by the per-turn hook so that a single shared common
     # word never pulls an unrelated note into the prompt. Weight = sum of relative idf over
@@ -673,8 +688,7 @@ class MemoryStore:
         if strict and not snapshot:
             ranked = self._strict_rank(ranked, terms, vocabularies)
         else:
-            ranked.sort(key=lambda item: (item[1].get("updated_at", ""), item[1]["id"]), reverse=True)
-            ranked.sort(key=lambda item: -item[0])
+            ranked = self._weighted_rank(ranked, terms, vocabularies)
         if candidate_only:
             return [record for _, record in ranked[:limit]]
         return pack_context([record for _, record in ranked], limit, budget_chars, stale_count)
