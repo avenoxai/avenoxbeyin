@@ -351,6 +351,12 @@ class SyncEngine:
                 if isinstance(item, dict) and (item.get('source') == source or
                                                (record_id is not None and item.get('id') == record_id))]
 
+    @staticmethod
+    def _write_blockers(result, source):
+        # Another receipt's divergence leaves this write's projection intact; it stays in every sync report (#210).
+        return [item for item in result['conflicts']
+                if not (item.get('kind') == 'receipt_divergence' and item.get('source') != source)]
+
     def _path(self, relative, existing=False):
         if not isinstance(relative, str) or Path(relative).is_absolute() or '..' in Path(relative).parts:
             raise ValueError('relative source required')
@@ -574,7 +580,8 @@ class SyncEngine:
                     # another device wrote the same event_id and a merge kept its file (#205).
                     old = known[name]
                     if (old['summary'], old['refs']) != (event['summary'], event['refs']):
-                        conflicts.append({'source': rel, 'reason': 'receipt source differs from indexed receipt; event_id reused on another device'})
+                        conflicts.append({'source': rel, 'kind': 'receipt_divergence',
+                                          'reason': 'receipt source differs from indexed receipt; event_id reused on another device'})
                     continue
                 db.execute('INSERT OR IGNORE INTO receipts VALUES (?,?)', (event['event_id'], _json(event)))
             except (ValueError, OSError, UnicodeError) as exc:
@@ -692,7 +699,7 @@ class SyncEngine:
             intended = render(metadata, body)
             self._intent(record['source'], record['source_sha256'], intended, 'task')
         result = self.sync()
-        if result['conflicts']:
+        if self._write_blockers(result, record['source']):
             raise RevisionConflict('source projection conflict')
         with self.store._connect() as db:
             row = db.execute('SELECT payload FROM records WHERE id=?', (id,)).fetchone()
@@ -864,7 +871,7 @@ class SyncEngine:
             else:
                 self._intent(source, None, content, 'receipt', event)
         result = self.sync()
-        if result['conflicts']:
+        if self._write_blockers(result, source):
             raise ReceiptConflict('receipt projection conflict')
         if self._path(source, existing=True).read_bytes() != content.encode('utf-8'):
             raise ReceiptConflict('receipt source changed before readback')
