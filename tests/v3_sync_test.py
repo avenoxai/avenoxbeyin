@@ -107,6 +107,20 @@ class SourceSyncTest(unittest.TestCase):
                 self.assertEqual([w['source'] for w in report['warnings']], ['notes/task.md'])
                 self.assertEqual(self.records(), [])
 
+    def test_crlf_and_diff3_conflicts_are_reported(self):
+        # core.autocrlf=true checks markers out with CRLF; merge.conflictStyle=diff3 adds a ||||||| base section.
+        for eol, body in (('\r\n', '<<<<<<< HEAD\nNebula calibration awaits owner Synthetic Reviewer.\n=======\nother\n'
+                                   '>>>>>>> 3f9a1c2\n'),
+                          ('\n', '<<<<<<< HEAD\nNebula calibration awaits owner Synthetic Reviewer.\n'
+                                 '||||||| merged common ancestors\nbase\n=======\nother\n>>>>>>> 3f9a1c2\n')):
+            with self.subTest(body=body):
+                path = self.write(body=body)
+                # Bytes, not write_text: the platform newline would hide which line ending is under test.
+                path.write_bytes(path.read_bytes().replace(b'\r\n', b'\n').replace(b'\n', eol.encode()))
+                report = self.engine.sync()
+                self.assertEqual([w['source'] for w in report['warnings']], ['notes/task.md'])
+                self.assertEqual(self.records(), [])
+
     def test_receipt_with_conflict_markers_is_not_indexed(self):
         # A device that first sees a receipt after an unresolved add/add merge must not index the markers.
         self.write()
