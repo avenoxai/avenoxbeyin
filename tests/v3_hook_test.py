@@ -579,7 +579,8 @@ class HookInstallerTest(unittest.TestCase):
         command = [hook['command']] + hook['args'] if hook.get('args') else hook['command']
         payload = json.dumps(dict(self.payload, hook_event_name='SessionStart', prompt='Nebula calibration'))
         if os.name == 'nt':
-            bash = shutil.which('bash', path=os.environ.get('PATH'))
+            git_bash = [p for p in (r'C:\Program Files\Git\bin\bash.exe', r'C:\Program Files\Git\usr\bin\bash.exe') if os.path.exists(p)]
+            bash = git_bash[0] if git_bash else shutil.which('bash', path=os.environ.get('PATH'))
             self.assertIsNotNone(bash, 'Native Claude Code on Windows requires Git Bash')
             result = subprocess.run([bash, '-lc', str(command)], input=payload, text=True, encoding='utf-8',
                                     capture_output=True, cwd=self.vault, env=self.env, timeout=20)

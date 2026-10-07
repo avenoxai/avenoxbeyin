@@ -147,7 +147,7 @@ def commands(argv, root=None):
         return text
 
     root_text = str(root) if root is not None else None
-    short_root = short_path(root_text) if root_text else None
+    short_root = short_path(root_text) if (root_text and any(ord(c) > 127 for c in root_text)) else root_text
 
     def portable(value):
         text = str(value)
@@ -156,10 +156,11 @@ def commands(argv, root=None):
         # Git Bash can mojibake non-ASCII Windows argv before Python sees it.
         # Prefer the NT short path when available; it keeps direct commands
         # shell-agnostic without bringing back the broken PowerShell wrapper.
-        if root_text and (text == root_text or text.startswith(root_text + os.sep)):
-            text = short_root + text[len(root_text):]
-        else:
-            text = short_path(text)
+        if any(ord(c) > 127 for c in text):
+            if root_text and (text == root_text or text.startswith(root_text + os.sep)):
+                text = (short_root or root_text) + text[len(root_text):]
+            else:
+                text = short_path(text)
         return text.replace("\\", "/")
     portable_argv = [portable(value) for value in argv]
     if os.name == "nt":
