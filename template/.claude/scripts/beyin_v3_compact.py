@@ -96,6 +96,10 @@ def blocks(lines, name):
                 fence = None
             continue
         opened = FENCE.match(bare)
+        # CommonMark: a backtick fence's info string cannot contain a backtick, so a line such as
+        # ```code``` is inline code, not an opening fence that would swallow the cards below (#228).
+        if opened and opened[1][0] == '`' and '`' in bare[opened.end():]:
+            opened = None
         if opened:
             fence = opened[1]
             boundary = False

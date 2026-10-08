@@ -912,6 +912,39 @@ class CompactionRaceTest(unittest.TestCase):
         self.assertEqual(report['over_limit'], ['Last-Session.md'])
         self.assertIn('Memory hygiene: Last-Session.md is', companion_module.hygiene_notice(report))
 
+    def test_single_line_code_blocks_dont_swallow_subsequent_headings(self):
+        """Code block on a single line '```code```' shouldn't leave parser in fence state."""
+        lines = [
+            "# Last-Session.md\n",
+            "```python print('hello') ```\n",
+            "## 2026-09-25 10:00 UTC\n",
+            "A card here\n"
+        ]
+        parsed = compact_module.blocks(lines, 'Last-Session.md')
+        has_entry = any(p['kind'] == 'entry' for p in parsed)
+        self.assertTrue(has_entry, "The subsequent valid date heading should be an entry, not swallowed by a single-line code block.")
+
+    def test_single_line_multiple_fences(self):
+        """Testing multiple fences in the same line like ```code``` ```other```"""
+        lines = [
+            "# Last-Session.md\n",
+            "```python code ``` ```other```\n",
+            "## 2026-09-25 10:00 UTC\n",
+            "A card here\n"
+        ]
+        parsed = compact_module.blocks(lines, 'Last-Session.md')
+        has_entry = any(p['kind'] == 'entry' for p in parsed)
+        self.assertTrue(has_entry, "Should handle multiple blocks on the same line properly.")
+
+    def test_real_fences_still_hide_dated_headings(self):
+        # An info string without backticks still opens a fence (```python), and a tilde fence may
+        # carry backticks or tildes in its info string; the dated line inside stays code.
+        for opener in ('```python\n', '~~~ text ~~~\n', '~~~ `x`\n'):
+            with self.subTest(opener=opener):
+                lines = ['# Last-Session.md\n', opener, '## 2026-09-25 10:00 UTC\n', opener[:3] + '\n']
+                parsed = compact_module.blocks(lines, 'Last-Session.md')
+                self.assertFalse(any(p['kind'] == 'entry' for p in parsed), parsed)
+
 
 if __name__ == '__main__':
     unittest.main()
