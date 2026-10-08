@@ -324,9 +324,17 @@ class MemoryStore:
             # and file mtime is not a date: synced vaults rewrite it.
             for alias in RECENCY_ALIASES:
                 value = record.get(alias)
-                if isinstance(value, str) and re.match(r"\d{4}-\d{2}-\d{2}", value.strip()):
-                    record["updated_at"] = value.strip()
-                    break
+                if isinstance(value, str):
+                    v = value.strip()
+                    if re.match(r"^\d{4}/\d{2}/\d{2}", v):
+                        v = v.replace("/", "-", 2)
+                    else:
+                        m = re.match(r"^(\d{2})[-/](\d{2})[-/](\d{4})(.*)$", v)
+                        if m:
+                            v = f"{m.group(3)}-{m.group(2)}-{m.group(1)}{m.group(4)}"
+                    if re.match(r"^\d{4}-\d{2}-\d{2}", v):
+                        record["updated_at"] = v
+                        break
         for field in ("project", "kind", "status", "updated_at"):
             if field in record and not isinstance(record[field], str):
                 raise ValueError(field + " must be a string")

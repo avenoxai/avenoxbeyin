@@ -128,6 +128,15 @@ def _parse_yaml_value(value):
         elif value[0] in '"\'':
             return _quoted_scalar(value)
         else:
+            if ',' in value:
+                # Many Obsidian users write `tags: a, b` or `aliases: a, b`
+                items = []
+                for part in value.split(','):
+                    part = part.strip()
+                    if part:
+                        items.append(_plain_scalar(part))
+                if len(items) > 1:
+                    return items
             return _plain_scalar(value)
 
 

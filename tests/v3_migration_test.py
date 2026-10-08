@@ -201,5 +201,51 @@ class MigrationTest(unittest.TestCase):
             self.m.migrate_v2(self.root, self.state)
         self.assertFalse((self.state / 'v2-migration.json').exists())
 
+    def test_legacy_tags_converted_to_list(self):
+        from beyin_v3_sync import parse
+        content = "---\ntags: a, b, c\n---\nbody"
+        meta, _ = parse(content)
+        self.assertEqual(meta.get('tags'), ['a', 'b', 'c'])
+
+    def test_legacy_tags_yaml_list_converted_to_list(self):
+        from beyin_v3_sync import parse
+        content = "---\ntags: [a, b]\n---\nbody"
+        meta, _ = parse(content)
+        self.assertEqual(meta.get('tags'), ['a', 'b'])
+
+    def test_date_conversion(self):
+        from beyin_v3 import MemoryStore
+        store = MemoryStore(self.state, self.root, read_only=False)
+        self.source("t.md", "body")
+        r1 = store._validate({"id": "1", "text": "t", "source": "t.md", "updated": "2026/09/20"})
+        self.assertEqual(r1.get("updated_at"), "2026-09-20")
+
+        r2 = store._validate({"id": "2", "text": "t", "source": "t.md", "updated": "20-09-2026"})
+        self.assertEqual(r2.get("updated_at"), "2026-09-20")
+
+    def test_migration_rollback_on_failure(self):
+        self.source('.claude/scripts/.state/flush-state.json', '{"status":"ok"}')
+        self.source('.claude/scripts/.state/compile-state.json', '{"status":"ok"}')
+
+        import shutil
+        original_copyfile = shutil.copyfile
+
+        def failing_copyfile(src, dst):
+            original_copyfile(src, dst)
+            if 'compile-state.json' in str(src):
+                raise RuntimeError("Simulated disk full")
+
+        shutil.copyfile = failing_copyfile
+        try:
+            with self.assertRaisesRegex(RuntimeError, "Simulated disk full"):
+                self.m.migrate_v2(self.root, self.state)
+
+            self.assertFalse((self.state / 'v2-preserved-state' / 'flush-state.json').exists())
+            self.assertFalse((self.state / 'v2-preserved-state' / 'compile-state.json').exists())
+            self.assertFalse((self.state / 'v2-migration.json').exists())
+        finally:
+            shutil.copyfile = original_copyfile
+
+
 if __name__ == '__main__':
     unittest.main()

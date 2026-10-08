@@ -127,15 +127,23 @@ def finalize_migration(vault_root, state_dir, plan):
     if any(sources.get(name) != digest for name, digest in plan['sources'].items()) or states != plan['legacy_state']:
         raise RuntimeError('source or legacy state changed during migration; no success receipt')
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
-    for name in plan['legacy_state']:
-        destination = state/'v2-preserved-state'/name
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(vault/name, destination)
-        destination.chmod(0o600)
-    result = dict(plan, status='succeeded', historical_replay=False,
-                  compiler_policy='New outcomes use explicit semantic receipts and knowledge notes; no automatic model compiler. External schedules require operator review.')
-    atomic(state/'v2-migration.json', json.dumps(result, ensure_ascii=False, indent=2))
-    return result
+    written = []
+    try:
+        for name in plan['legacy_state']:
+            destination = state/'v2-preserved-state'/name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(vault/name, destination)
+            destination.chmod(0o600)
+            written.append(destination)
+        result = dict(plan, status='succeeded', historical_replay=False,
+                      compiler_policy='New outcomes use explicit semantic receipts and knowledge notes; no automatic model compiler. External schedules require operator review.')
+        atomic(state/'v2-migration.json', json.dumps(result, ensure_ascii=False, indent=2))
+        return result
+    except Exception:
+        # Rollback partial state copy
+        for path in written:
+            path.unlink(missing_ok=True)
+        raise
 
 
 def migrate_v2(vault_root, state_dir):
