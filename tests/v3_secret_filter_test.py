@@ -87,6 +87,10 @@ class SecretFilterTest(unittest.TestCase):
             'eyJhbGciOiJSU0EtT0FFUCJ9.' + 'I'*20 + '.' + 'J'*16 + '.' + 'K'*30 + '.' + 'L'*22,
             'M' + 'T'*25 + '.' + 'G'*6 + '.' + 'x'*38,
             'N' + 'z'*23 + '.' + 'Y'*6 + '.' + 'q'*27,
+            'sk-' + '1'*20 + '-',
+            'sk-' + '2'*20 + '_',
+            'npm_' + '3'*36,
+            'https://user:@example.com/endpoint',
         ]
         for value in values:
             with self.subTest(value=value[:12]):
