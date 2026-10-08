@@ -4,7 +4,7 @@ Claude Code, Codex veya Google Antigravity ile kullanabileceğin yerel ikinci be
 
 Python **3.11 veya üzeri** yeterli. Git, pip, Mem0 hesabı, API anahtarı veya sürekli açık sunucu gerekmez. Kullandığın AI istemcisinin kendi kurulumu ve hesabı ayrı olarak gerekir.
 
-> **V3.7.1:** Güncellemeden sonra `doctor` ve oturum başı bildirimi artık kurulu sürümü yanlışlıkla "resmi sürümden ileride" göstermiyor; vault'u git ile birden çok makinede eşitleyenlerde öbür makineden güncel gelen dosyalar güncellemeyi durdurmuyor. Mevcut kurulumda vault içinde `python3 beyin.py update` çalıştır; V3.1.0 ve sonrasında yeni sürümleri oturum başında görürsün. [Sürüm notları](docs/v3/releases/3.7.1.md) · [Güncelleme rehberi](docs/v3/UPDATE.md).
+> **V3.8.0:** Receipt artık komut satırı bayraklarıyla yazılabiliyor (`--event-id`, `--summary`, `--ref`), aramada uzun özet notlar asıl konuyu anlatan notun önüne geçmiyor (BM25), `supersedes` ve emekli durumlar eski notları bağlamdan çıkarıyor; çoklu makinede çözülmemiş git çakışmaları ve farklı cihazda ayrışan receipt'ler sessiz kalmıyor. Mevcut kurulumda vault içinde `python3 beyin.py update` çalıştır; V3.1.0 ve sonrasında yeni sürümleri oturum başında görürsün. [Sürüm notları](docs/v3/releases/3.8.0.md) · [Güncelleme rehberi](docs/v3/UPDATE.md).
 
 ## En kolay kurulum: bir klasör, bir mesaj
 
