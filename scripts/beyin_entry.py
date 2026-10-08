@@ -115,6 +115,15 @@ def state_location_lines(location):
     return lines
 
 
+def receipt_line_endings_lines(report):
+    """Doctor line for the receipt line-ending warning (#205); information only, never a status."""
+    if isinstance(report, dict) and report.get('status') == 'warning':
+        return ['Receipt satir sonu (bilgi): core.autocrlf=true ve receipts/ sabitlenmemis; baska makineden gelen'
+                ' receipt CRLF ile cikip ayni receipt\'in "event id collision" vermesine yol acabilir.'
+                ' .gitattributes dosyasina "receipts/** -text" ekle, docs/v3/MULTI-MACHINE.md.']
+    return []
+
+
 def rewrite_note(entry):
     """#168: the rewrite instruction, said only once the full text is safe in the archive."""
     if entry.get('backup') in ('written', 'exists'):
@@ -336,6 +345,7 @@ def human_result(result, command, installed_version=None):
         elif parallel.get('valid') is False:
             lines.append('parallel-sessions.json gecersiz; paralel oturum bildirimi kapali sayiliyor.')
         lines += state_location_lines(result.get('state_location'))
+        lines += receipt_line_endings_lines(result.get('receipt_line_endings'))
         if status in ('needs_attention', 'pending'):
             lines.append('Ajanina "beyin doktor" diyerek ayrintiyi inceletebilirsin.')
         return '\n'.join(lines + update_lines(result.get('updates', {})))

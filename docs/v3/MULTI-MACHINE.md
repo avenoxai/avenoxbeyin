@@ -140,3 +140,27 @@ depo ve iki vault; Beyin her birine ayrı `--state` ile kuruldu.
 - İki vault aynı `event_id` ile farklı özetli receipt yazdı: ikisi de aynı `receipts/<özet>.md`,
   `pull --rebase` add/add çakışmasıyla durdu. A'nın dosyası seçilip devam edilince B'de `sync`
   `conflicts: []` döndü; B'nin `recap` ve `daily/v3` çıktısı B'nin özetini göstermeye devam etti.
+
+## Satır sonu: `core.autocrlf=true` ve receipt'ler
+
+Bu kontrol [#205](https://github.com/avenoxai/avenoxbeyin/issues/205) için eklendi. Git for Windows
+varsayılanı `core.autocrlf=true`'dur ve `receipts/** -text` satırı yoksa bu makine öbür makineden gelen
+receipt'i CRLF olarak çıkarır. Sonuç sessizdir: `sync` ve `doctor` hata vermez, ama aynı receipt'in
+bayt özeti iki makinede farklı olur ve receipt öbür makineden yeniden gönderilince
+`ReceiptConflict: event id collision` hatası gelir. Yukarıdaki [`.gitattributes`](#önerilen-gitattributes)
+satırı bunu önler; `eol=lf` de aynı işi görür.
+
+`doctor` artık vault bir git deposuysa ve `core.autocrlf=true` iken `receipts/` için `-text` ya da
+`eol=lf` yoksa `receipt_line_endings` alanında `warning` bildirir (insan çıktısında bir "Receipt satir
+sonu (bilgi)" satırı). Bu yalnız bilgidir, `doctor` durumunu değiştirmez ve hiçbir şeyi düzeltmez.
+
+Uyarıyı gördüysen:
+
+1. `.gitattributes` dosyasına `receipts/** -text` ekle ve commit'le.
+2. Bu makinede receipt dosyalarını LF olarak yeniden çıkar (çalışma ağacın temizken):
+   `git rm -r receipts` ardından `git checkout HEAD -- receipts`.
+3. Dosyalar düzelse de bu makinenin yerel indeksi CRLF'li özeti tutmaya devam eder ve aynı receipt
+   yine `event id collision` verir. State klasöründeki `memory.sqlite3` dosyasını yedeğe taşı ve
+   `python3 beyin.py sync` çalıştır; indeks Markdown'dan yeniden kurulur.
+
+Kontrol: `git check-attr text -- receipts/x.md` çıktısı `text: unset` olmalıdır.
