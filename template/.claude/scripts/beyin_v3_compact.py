@@ -152,7 +152,7 @@ def plan(text, name, limit, pointer):
         falling = any(a > b for a, b in zip(keys, keys[1:]))
         # Same-day entries carry no order of their own, so the file's direction decides:
         # Last-Session cards are newest-first, thread updates are appended at the bottom (#163).
-        newest_first = falling and not rising if rising or falling else name == 'Last-Session.md'
+        newest_first = falling and not rising if (rising != falling) else name == 'Last-Session.md'
         for rank, p in enumerate(positions):
             order[p] = (parsed[p]['key'], -rank if newest_first else rank, p)
         protected.add(max(positions, key=order.get))
@@ -262,6 +262,10 @@ def _compact_lock(vault, state, timeout=10.0, step=0.1):
             try:
                 if os.name == 'nt':
                     import msvcrt
+                    handle.seek(0, os.SEEK_END)
+                    if handle.tell() == 0:
+                        handle.write(b'\n')
+                        handle.flush()
                     handle.seek(0)
                     msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
                     acquired = True
@@ -373,7 +377,8 @@ def _compact_files(vault, target, configured, dry_run=False, now=None):
         heading = '## ' + now.strftime('%Y-%m-%d %H:%M UTC') + ', ' + name + ', '
         added = []
         if result is not None:
-            added.append(newline + heading + str(result['moved_chars']) + ' karakter taşındı' + newline + newline + result['archive'])
+            added.append(newline + heading + str(result['moved_chars']) + ' karakter taşındı' + newline + newline + result['archive'] +
+                         ('' if result['archive'].endswith('\n') else newline))
         if backup is not None:
             marker = BACKUP.format(len(backup))
             if existing is not None and marker in existing and backup in existing:
