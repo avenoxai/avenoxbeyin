@@ -75,6 +75,71 @@ class SourceSyncTest(unittest.TestCase):
         self.assertGreaterEqual(deleted['deleted'], 1)
         self.assertEqual(self.records(), [])
 
+    def test_unresolved_git_conflict_markers_are_reported_and_not_indexed(self):
+        # #205: a pull --rebase that stops on a conflict leaves markers the agent would read as content.
+        body = ('<<<<<<< HEAD\nNebula calibration awaits owner Synthetic Reviewer.\n=======\n'
+                'Nebula calibration moved to owner Synthetic Auditor.\n>>>>>>> 3f9a1c2 (other machine)\n')
+        path = self.write(body=body)
+        report = self.engine.sync()
+        self.assertEqual(report['status'], 'degraded')
+        self.assertEqual([w['source'] for w in report['warnings']], ['notes/task.md'])
+        self.assertIn('conflict markers', report['warnings'][0]['reason'])
+        self.assertEqual(self.records(), [])
+        self.write()
+        report = self.engine.sync()
+        self.assertEqual(report['warnings'], [])
+        self.assertEqual([r['id'] for r in self.records()], ['nebula-task'])
+
+    def test_setext_heading_is_not_a_conflict_marker(self):
+        body = 'Nebula calibration awaits owner Synthetic Reviewer.\n\nSetext heading\n=======\n\nMore text.\n'
+        self.write(body=body)
+        report = self.engine.sync()
+        self.assertEqual(report['warnings'], [])
+        self.assertEqual([r['id'] for r in self.records()], ['nebula-task'])
+
+    def test_conflict_inside_code_fence_and_unlabeled_markers_are_reported(self):
+        for body in ('Nebula calibration awaits owner Synthetic Reviewer.\n```bash\n<<<<<<< HEAD\necho a\n'
+                     '=======\necho b\n>>>>>>> 3f9a1c2\n```\n',
+                     '<<<<<<<\nNebula calibration awaits owner Synthetic Reviewer.\n=======\nother\n>>>>>>>\n'):
+            with self.subTest(body=body):
+                self.write(body=body)
+                report = self.engine.sync()
+                self.assertEqual([w['source'] for w in report['warnings']], ['notes/task.md'])
+                self.assertEqual(self.records(), [])
+
+    def test_crlf_and_diff3_conflicts_are_reported(self):
+        # core.autocrlf=true checks markers out with CRLF; merge.conflictStyle=diff3 adds a ||||||| base section.
+        for eol, body in (('\r\n', '<<<<<<< HEAD\nNebula calibration awaits owner Synthetic Reviewer.\n=======\nother\n'
+                                   '>>>>>>> 3f9a1c2\n'),
+                          ('\n', '<<<<<<< HEAD\nNebula calibration awaits owner Synthetic Reviewer.\n'
+                                 '||||||| merged common ancestors\nbase\n=======\nother\n>>>>>>> 3f9a1c2\n')):
+            with self.subTest(body=body):
+                path = self.write(body=body)
+                # Bytes, not write_text: the platform newline would hide which line ending is under test.
+                path.write_bytes(path.read_bytes().replace(b'\r\n', b'\n').replace(b'\n', eol.encode()))
+                report = self.engine.sync()
+                self.assertEqual([w['source'] for w in report['warnings']], ['notes/task.md'])
+                self.assertEqual(self.records(), [])
+
+    def test_receipt_with_conflict_markers_is_not_indexed(self):
+        # A device that first sees a receipt after an unresolved add/add merge must not index the markers.
+        self.write()
+        receipt = self.engine.receipt('shared-topic', 'Calibration done here.', ['notes/task.md'], 'codex')
+        raw = (self.vault / receipt['source']).read_text(encoding='utf-8')
+        fresh = self.root / 'fresh'
+        (fresh / 'receipts').mkdir(parents=True)
+        (fresh / 'notes').mkdir()
+        (fresh / 'notes/task.md').write_text((self.vault / 'notes/task.md').read_text(encoding='utf-8'), encoding='utf-8')
+        (fresh / receipt['source']).write_text(raw.replace(
+            'Calibration done here.\n',
+            '<<<<<<< HEAD\nCalibration done here.\n=======\nCalibration done there.\n>>>>>>> 3f9a1c2\n'), encoding='utf-8')
+        engine = self.module.SyncEngine(fresh, self.root / 'fresh-state')
+        report = engine.sync()
+        self.assertEqual(report['status'], 'degraded')
+        self.assertIn(receipt['source'], [w['source'] for w in report['warnings']])
+        outcomes = fresh / 'knowledge/v3/outcomes.md'
+        self.assertFalse(outcomes.exists() and '<<<<<<<' in outcomes.read_text(encoding='utf-8'))
+
     def test_history_keeps_deleted_record_audit_trail_behind_last_snapshot(self):
         path = self.write()
         self.engine.sync()

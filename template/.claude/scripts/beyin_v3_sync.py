@@ -232,6 +232,23 @@ EXCLUDED_DIRS = {'node_modules', 'receipts', '__pycache__'}
 COMPLETION_FIELDS = {'completion_contract', 'completion_criterion', 'evidence_refs'}
 
 
+def _has_conflict_markers(text):
+    """True when a merge left <<<<<<< / ======= / >>>>>>> in order (#205).
+
+    Code fences are not skipped: a real conflict inside a note's code block must not reach context,
+    and a quoted example costs only a visible warning.
+    """
+    stage = 0
+    for line in text.splitlines():
+        if stage == 0 and line.startswith('<<<<<<<'):
+            stage = 1
+        elif stage == 1 and line.rstrip() == '=======':
+            stage = 2
+        elif stage == 2 and line.startswith('>>>>>>>'):
+            return True
+    return False
+
+
 class SyncEngine:
     def projection_helpers(self):
         return _hash, atomic, render
@@ -441,7 +458,10 @@ class SyncEngine:
                 try:
                     self._path(relative, existing=True)
                     raw = path.read_bytes()
-                    metadata, body = parse(raw.decode('utf-8'))
+                    text = raw.decode('utf-8')
+                    if _has_conflict_markers(text):
+                        raise ValueError('unresolved git conflict markers; resolve the merge before sync')
+                    metadata, body = parse(text)
                     if metadata.get('kind') == 'task' and body.lstrip().startswith('---'):
                         raise ValueError('task has embedded frontmatter; reconcile metadata and body explicitly')
                     if metadata.get('kind') == 'receipt' or metadata.get('generated') is True:
@@ -494,7 +514,10 @@ class SyncEngine:
         """Rebuild a receipts row from its immutable source; ValueError when the file is not a valid receipt."""
         path = self._path(relative, existing=True)
         # Bytes, not read_text: universal newlines would turn '\r' into '\n' and fake an event id collision.
-        metadata, body = parse(path.read_bytes().decode('utf-8'))
+        text = path.read_bytes().decode('utf-8')
+        if _has_conflict_markers(text):
+            raise ValueError('unresolved git conflict markers; resolve the merge before sync')
+        metadata, body = parse(text)
         event_id, harness, refs = metadata.get('event_id'), metadata.get('harness', 'manual'), metadata.get('refs')
         if metadata.get('kind') != 'receipt' or not isinstance(event_id, str) or not event_id.strip():
             raise ValueError('missing kind receipt or event_id')
