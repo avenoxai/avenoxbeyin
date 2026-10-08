@@ -2,6 +2,7 @@
 """Install or exactly roll back project-local V3 adapters. No global settings."""
 import argparse
 import base64
+import errno
 import hashlib
 import importlib.util
 import io
@@ -87,17 +88,44 @@ def is_component_excluded(target, excluded):
 
 
 def atomic(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(dir=path.parent, prefix=".beyin-install-")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError as e:
+        raise PermissionError('Access denied creating directory: ' + str(path.parent)) from e
+    except OSError as e:
+        if getattr(e, 'winerror', 0) in (3, 206) or e.errno == errno.ENAMETOOLONG:
+            raise OSError('Path limit exceeded: ' + str(path.parent)) from e
+        raise
+
+    try:
+        fd, name = tempfile.mkstemp(dir=path.parent, prefix=".beyin-install-")
+    except OSError as e:
+        if getattr(e, 'winerror', 0) in (3, 206) or e.errno == errno.ENAMETOOLONG:
+            raise OSError('Path limit exceeded: ' + str(path.parent)) from e
+        raise
+
     try:
         with os.fdopen(fd, "wb") as out:
             out.write(data)
             out.flush()
             os.fsync(out.fileno())
-        os.replace(name, path)
+        if path.exists():
+            try: path.chmod(stat.S_IWRITE | stat.S_IREAD)
+            except OSError: pass
+        try:
+            os.replace(name, path)
+        except PermissionError as e:
+            raise PermissionError('Access denied or file locked: ' + str(path)) from e
+    except OSError as e:
+        if getattr(e, 'winerror', 0) in (3, 206) or e.errno == errno.ENAMETOOLONG:
+            raise OSError('Path limit exceeded: ' + str(path)) from e
+        raise
     finally:
         if os.path.exists(name):
-            os.unlink(name)
+            try:
+                os.chmod(name, stat.S_IWRITE | stat.S_IREAD)
+                os.unlink(name)
+            except OSError: pass
 
 
 def digest(data):
