@@ -682,6 +682,14 @@ class CompactionRaceTest(unittest.TestCase):
         self.assertEqual(report['over_limit'], ['Last-Session.md'])
         self.assertIn('Memory hygiene: Last-Session.md is', companion_module.hygiene_notice(report))
 
+    def test_compact_lock_raises_when_all_candidates_fail(self):
+        """When every lock file candidate raises OSError, _compact_lock must raise RuntimeError (Issue #205)."""
+        with mock.patch.object(Path, 'open', side_effect=OSError('Permission denied')):
+            with self.assertRaises(RuntimeError) as ctx:
+                with compact_module._compact_lock(self.vault, self.state):
+                    pass
+            self.assertIn('failed to create or open any compaction lock file', str(ctx.exception))
+
 
 if __name__ == '__main__':
     unittest.main()

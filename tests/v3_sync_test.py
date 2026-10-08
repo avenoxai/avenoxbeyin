@@ -843,6 +843,39 @@ class ReceiptStateResetTest(unittest.TestCase):
         self.assertEqual(engine.sync()['conflicts'], [])
         self.assertEqual(engine.receipt('event-3', 'Back in step.', ['notes/task.md'], 'codex')['status'], 'succeeded')
 
+    def test_crlf_receipt_reconciliation(self):
+        """Receipt matching tolerates CRLF line endings from git core.autocrlf=true without false conflict (Issue #205)."""
+        engine = self.module.SyncEngine(self.vault, self.root / 'state_crlf')
+        engine.note_create('notes/crlf.md', 'Task note.', {'id': 'task-crlf'})
+        res = engine.receipt('event-crlf-1', 'CRLF test summary.', ['notes/crlf.md'], 'claude')
+        receipt_path = self.vault / res['source']
+        self.assertTrue(receipt_path.exists())
+
+        # Rewrite receipt with CRLF line endings (simulating git checkout on Windows)
+        raw_lf = receipt_path.read_bytes()
+        raw_crlf = raw_lf.replace(b'\n', b'\r\n')
+        receipt_path.write_bytes(raw_crlf)
+
+        # Resubmitting the same receipt must succeed without 'receipt source manually changed'
+        res2 = engine.receipt('event-crlf-1', 'CRLF test summary.', ['notes/crlf.md'], 'claude')
+        self.assertEqual(res2['status'], 'succeeded')
+
+    def test_unresolved_git_conflict_markers_early_isolation(self):
+        """Files containing unresolved git conflict markers must raise ValueError during parse (Issue #205)."""
+        conflicted_content = (
+            "<<<<<<< HEAD\n"
+            "---\n"
+            "{\"id\": \"task-conflicted\", \"status\": \"active\"}\n"
+            "---\n"
+            "Local changes.\n"
+            "=======\n"
+            "Remote changes.\n"
+            ">>>>>>> main\n"
+        )
+        with self.assertRaises(ValueError) as ctx:
+            self.module.parse(conflicted_content)
+        self.assertIn("unresolved git conflict markers found", str(ctx.exception))
+
 
 if __name__ == '__main__':
     unittest.main()

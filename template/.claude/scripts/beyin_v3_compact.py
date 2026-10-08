@@ -252,8 +252,7 @@ def _compact_lock(vault, state, timeout=10.0, step=0.1):
         except OSError:
             continue
     if handle is None:
-        yield
-        return
+        raise RuntimeError('failed to create or open any compaction lock file')
 
     deadline = time.monotonic() + timeout
     acquired = False

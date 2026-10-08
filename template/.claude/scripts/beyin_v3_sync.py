@@ -149,6 +149,8 @@ def _mapping_value(sub_key, value):
 
 def parse(text):
     """JSON frontmatter or deliberately bounded flat scalar/list YAML with single-level mapping."""
+    if re.search(r'^(<{7} |={7}|>{7} )', text, flags=re.MULTILINE):
+        raise ValueError('unresolved git conflict markers found')
     lines = text.splitlines(keepends=True)
     if not lines or lines[0].strip() != '---':
         return {}, text
@@ -829,14 +831,14 @@ class SyncEngine:
             path = self._path(source)
             if path.exists():
                 # Byte comparison: universal-newline text would call a '\r' summary a manual change.
-                if path.read_bytes() != content.encode('utf-8'):
+                if path.read_bytes().replace(b'\r\n', b'\n') != content.replace('\r\n', '\n').encode('utf-8'):
                     raise ReceiptConflict('receipt source manually changed')
             else:
                 self._intent(source, None, content, 'receipt', event)
         result = self.sync()
         if result['conflicts']:
             raise ReceiptConflict('receipt projection conflict')
-        if self._path(source, existing=True).read_bytes() != content.encode('utf-8'):
+        if self._path(source, existing=True).read_bytes().replace(b'\r\n', b'\n') != content.replace('\r\n', '\n').encode('utf-8'):
             raise ReceiptConflict('receipt source changed before readback')
         self.store.submit_receipt(event_id, summary, refs, event['harness'])
         self._record_redactions(redacted)
