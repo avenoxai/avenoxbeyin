@@ -124,7 +124,9 @@ Kaynak yazıldıktan sonra `python3 beyin.py sync` çalıştır. Görev değişi
 
 Anlamlı çalışma bittiğinde, kullanıcı hafızaya yazılmamasını istemediyse kısa bir kaynak bağlantılı sonuç kaydı gönder. İşin gerçek sonucunu ve varsa açık kalan adımı yaz; planı tamamlanmış sonuç gibi kaydetme. Yalnız kalıcı öğrenimler varsa bunları kullanıcının knowledge düzeninde kaynak bağlantılı Markdown olarak damıt. Her konuşmadan zorla öğrenim çıkarma; reasoning, ham araç logları veya bütün transkriptleri notlara kopyalama.
 
-`python3 beyin.py receipt --file RECEIPT_JSON --harness codex` komutunu çalıştır; mevcut istemciye göre `claude`, `antigravity`, `hermes`, `opencode` veya `omp` seç. Şema:
+Öncelikle `python3 beyin.py receipt --harness codex --event-id EVENT_ID --summary "Sonuç özeti" --ref notes/kaynak.md` komutunu kullan; mevcut istemciye göre `claude`, `antigravity`, `hermes`, `opencode` veya `omp` seç. Birden çok kaynak için `--ref` tekrarlanır. Çok satırlı UTF-8 özet dosyası için `--summary` yerine `--summary-file PATH` kullan; `--summary` içindeki iki karakterli `\n` satır sonuna çevrilmez. Özet çift tırnak içeriyorsa ya da `\` ile bitiyorsa (Windows PowerShell 5.1 bunları programa bozarak geçirebilir) `--summary-file` kullan.
+
+JSON alternatifi: `python3 beyin.py receipt --file RECEIPT_JSON --harness codex`. `--file` ile receipt alan bayraklarını birleştirme. Şema:
 
 ```json
 {"event_id":"bu-sonuca-ozel-kararli-id","summary":"Yapılan iş, doğrulama ve açık kalan adım.\nÖğrenilen: yok","refs":["notes/kaynak.md"]}
@@ -132,7 +134,7 @@ Anlamlı çalışma bittiğinde, kullanıcı hafızaya yazılmamasını istemedi
 
 summary içinde kalıcı öğrenimi ayrı bir satırda `Öğrenilen: <tek cümle>` olarak beyan et; öğrenim yoksa `Öğrenilen: yok` yaz. Öğrenim beyan ettiysen receipt'ten önce `knowledge/concepts/` altında notu oluştur ya da mevcut notu güncelle ve bu notu refs içine ekle. Stop kancası beyan edilen öğrenim için yazılmış bir knowledge notu görmezse oturumda bir kez hatırlatır; kalıcı not gerekmiyorsa bunu tek cümleyle söylemen yeterli.
 
-Hook bağlamında `Receipt session=...` verilmişse JSON içine `session` alanını bu değerle aynen ekle; değer yoksa session uydurma. Bu, sonucun doğru istemci oturumuna bağlanmasını sağlar.
+Hook bağlamında `Receipt session=...` verilmişse `--session` ile (JSON modunda `session` alanına) bu değeri aynen ekle; değer yoksa session uydurma. Bu, sonucun doğru istemci oturumuna bağlanmasını sağlar.
 
 refs mevcut vault-relative dosyalardır. Aynı gönderimi yeniden denerken aynı event_id ve gövdeyi kullan; farklı sonuç için yeni ID seç. Geçici JSON'u kullanıcı içerik klasörüne dağıtma. Günlük/knowledge otomatik görünümlerini CLI/worker üretir; kaynağını düzenle. Son kaydı ve gerektiğinde `doctor` çıktısını kontrol et; failed/pending/conflict durumunu başarı diye sunma.
 

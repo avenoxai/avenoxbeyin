@@ -16,7 +16,7 @@ _MODULE_DIR = str(Path(__file__).resolve().parent)
 if _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
-from beyin_v3 import HARNESSES, MemoryStore, ReceiptConflict, RevisionConflict, _json
+from beyin_v3 import HARNESSES, REJECTED_AT, MemoryStore, ReceiptConflict, RevisionConflict, _json
 from beyin_v3_projections import project_receipts
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
@@ -135,6 +135,7 @@ def _parse_yaml_value(value):
 # silently ignored (only top-level metadata reaches the gates), so such a source
 # stays excluded with a warning, as before nested mappings were read (#179).
 GATE_KEYS = ('visibility', 'trust', 'trusted', 'remote_allowed')
+COMMA_LIST_KEYS = ('tags', 'aliases')
 
 
 def _mapping_value(sub_key, value):
@@ -219,7 +220,15 @@ def parse(text):
             else:
                 metadata[key] = None
             continue
-        metadata[key] = _parse_yaml_value(value)
+        parsed = _parse_yaml_value(value)
+        # Obsidian reads an unquoted `tags: a, b` or `aliases: a, b` as a list. Other keys keep
+        # their text: `title: Merhaba, dunya` or `project: Acme, Inc` stay one string, and a
+        # task update renders the parsed metadata back into the note.
+        if key in COMMA_LIST_KEYS and isinstance(parsed, str) and value[:1] not in '"\'' and ',' in parsed:
+            items = [part.strip() for part in parsed.split(',') if part.strip()]
+            if len(items) > 1:
+                parsed = items
+        metadata[key] = parsed
     return metadata, body
 
 
@@ -230,6 +239,43 @@ def render(metadata, body):
 EXCLUDED_FILES = {'agents.md', 'claude.md', 'gemini.md', 'skill.md', 'hooks.md', 'config.md', 'settings.md', 'instructions.md', 'codex.md', 'setup.md', 'install.md'}
 EXCLUDED_DIRS = {'node_modules', 'receipts', '__pycache__'}
 COMPLETION_FIELDS = {'completion_contract', 'completion_criterion', 'evidence_refs'}
+TASK_STATUSES = ('inbox', 'active', 'waiting', 'blocked', 'done', 'cancelled')
+
+
+def _check_task_dates(fields):
+    """Write-path check for due_at/updated_at given to task-create or task-update.
+
+    Sync does not apply it, so task files written before this check, or edited by
+    hand, stay indexed. The explicit grammar (the one rejected_at uses) keeps
+    acceptance the same on every Python version; a null due_at clears the date.
+    """
+    for field in ('due_at', 'updated_at'):
+        if field not in fields or (field == 'due_at' and fields[field] is None):
+            continue
+        value = fields[field]
+        try:
+            if not isinstance(value, str) or not REJECTED_AT.fullmatch(value):
+                raise ValueError(field)
+            datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError(field + ' must be an ISO date or timestamp') from exc
+
+
+def _has_conflict_markers(text):
+    """True when a merge left <<<<<<< / ======= / >>>>>>> in order (#205).
+
+    Code fences are not skipped: a real conflict inside a note's code block must not reach context,
+    and a quoted example costs only a visible warning.
+    """
+    stage = 0
+    for line in text.splitlines():
+        if stage == 0 and line.startswith('<<<<<<<'):
+            stage = 1
+        elif stage == 1 and line.rstrip() == '=======':
+            stage = 2
+        elif stage == 2 and line.startswith('>>>>>>>'):
+            return True
+    return False
 
 
 class SyncEngine:
@@ -441,7 +487,10 @@ class SyncEngine:
                 try:
                     self._path(relative, existing=True)
                     raw = path.read_bytes()
-                    metadata, body = parse(raw.decode('utf-8'))
+                    text = raw.decode('utf-8')
+                    if _has_conflict_markers(text):
+                        raise ValueError('unresolved git conflict markers; resolve the merge before sync')
+                    metadata, body = parse(text)
                     if metadata.get('kind') == 'task' and body.lstrip().startswith('---'):
                         raise ValueError('task has embedded frontmatter; reconcile metadata and body explicitly')
                     if metadata.get('kind') == 'receipt' or metadata.get('generated') is True:
@@ -494,7 +543,10 @@ class SyncEngine:
         """Rebuild a receipts row from its immutable source; ValueError when the file is not a valid receipt."""
         path = self._path(relative, existing=True)
         # Bytes, not read_text: universal newlines would turn '\r' into '\n' and fake an event id collision.
-        metadata, body = parse(path.read_bytes().decode('utf-8'))
+        text = path.read_bytes().decode('utf-8')
+        if _has_conflict_markers(text):
+            raise ValueError('unresolved git conflict markers; resolve the merge before sync')
+        metadata, body = parse(text)
         event_id, harness, refs = metadata.get('event_id'), metadata.get('harness', 'manual'), metadata.get('refs')
         if metadata.get('kind') != 'receipt' or not isinstance(event_id, str) or not event_id.strip():
             raise ValueError('missing kind receipt or event_id')
@@ -619,6 +671,9 @@ class SyncEngine:
         allowed = {'title', 'status', 'project', 'visibility', 'facts', 'next_action', 'owner', 'priority', 'due_at', 'updated_at', 'supersedes', 'completion_contract', 'completion_criterion', 'evidence_refs'}
         if not isinstance(changes, dict) or set(changes) - allowed:
             raise ValueError('unsupported task metadata changes')
+        if 'status' in changes and changes['status'] not in TASK_STATUSES:
+            raise ValueError('valid explicit task status required')
+        _check_task_dates(changes)
         changes, redacted = self._protect_metadata(changes)
         with self.store._connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -750,8 +805,9 @@ class SyncEngine:
             raise ValueError('stable task id required')
         if not isinstance(metadata.get('owner'), str) or not metadata['owner'].strip():
             raise ValueError('explicit task owner required')
-        if metadata.get('status') not in ('inbox', 'active', 'waiting', 'blocked', 'done', 'cancelled'):
+        if metadata.get('status') not in TASK_STATUSES:
             raise ValueError('valid explicit task status required')
+        _check_task_dates(metadata)
         if type(metadata.get('revision', 1)) is not int or metadata.get('revision', 1) != 1:
             raise ValueError('new task revision must be 1')
         if metadata.get('kind', 'task') != 'task':

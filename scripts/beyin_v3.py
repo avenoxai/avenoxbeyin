@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import time
 
@@ -147,6 +148,38 @@ def state_location(vault: Path, state: Path, windows=None) -> dict:
             "database, so which half a session reads depends on whether it runs inside the "
             "package. Keep one and move it out of the container; see docs/v3/UPDATE.md.")
     return report
+
+
+def receipt_line_endings(vault: Path) -> dict:
+    """Report whether git can rewrite receipt line endings in this vault (#205).
+
+    Receipts are compared byte for byte. With core.autocrlf=true (the Git for Windows
+    default) a pulled receipt is checked out as CRLF unless the vault stops that for
+    receipts/ with `-text` or `eol=lf`; the index then reads a different summary and the
+    same receipt resubmitted from the other machine fails as an event id collision.
+    Read-only, information only; a vault that is not a git work tree reports not_applicable.
+    """
+    def git(*args):
+        done = subprocess.run(("git", "-C", str(vault)) + args, capture_output=True, text=True, timeout=10)
+        return done.returncode, done.stdout.strip()
+    try:
+        code, inside = git("rev-parse", "--is-inside-work-tree")
+        if code != 0 or inside != "true":
+            return {"status": "not_applicable", "reason": "vault is not a git work tree"}
+        _, autocrlf = git("config", "--type=bool", "--get", "core.autocrlf")
+        if autocrlf != "true":
+            return {"status": "ok", "autocrlf": autocrlf or "unset"}
+        _, attrs = git("check-attr", "text", "eol", "--", "receipts/x.md")
+        found = dict((line.split(": ")[1], line.split(": ")[2]) for line in attrs.splitlines() if line.count(": ") == 2)
+        if found.get("text") == "unset" or found.get("eol") == "lf":
+            return {"status": "ok", "autocrlf": "true", "receipts_attributes": found}
+        return {"status": "warning", "autocrlf": "true", "receipts_attributes": found,
+                "warning": "line_endings: core.autocrlf=true and receipts/ is not pinned, so a receipt synced "
+                           "from another machine can be checked out as CRLF, which changes its bytes and makes "
+                           "the same receipt fail as an event id collision. Add 'receipts/** -text' to the "
+                           "vault's .gitattributes and check the receipts out again; see docs/v3/MULTI-MACHINE.md."}
+    except Exception as exc:  # no git, a hung git or a broken config must never hide the rest of doctor
+        return {"status": "unavailable", "error": type(exc).__name__}
 
 
 def load_engine():
@@ -391,8 +424,13 @@ def parser():
     answer.add_argument("--file", required=True, help="JSON list of claims (maximum 32,000 characters)")
     answer.add_argument("--project", required=True)
     receipt = sub.add_parser("receipt", help="Submit an idempotent source-linked receipt")
-    receipt.add_argument("--file", default="-", help="JSON input path, or - for stdin")
+    receipt.add_argument("--file", help="JSON input path, or - for stdin (default without receipt flags)")
     receipt.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp"), default="codex")
+    receipt.add_argument("--event-id", help="Required receipt event identifier in flag mode")
+    receipt.add_argument("--summary", help="Receipt summary text, preserving literal newlines")
+    receipt.add_argument("--summary-file", type=Path, metavar="PATH", help="Read the receipt summary from a UTF-8 file")
+    receipt.add_argument("--ref", action="append", help="Vault-relative source path; repeat for multiple refs")
+    receipt.add_argument("--session", help="Optional session identifier")
     update = sub.add_parser("task-update", help="Update task with expected revision")
     update.add_argument("--file", default="-", help="JSON {id, expected_revision, changes}")
     history = sub.add_parser("history", help="Read ordered revision snapshots for a record")
@@ -403,7 +441,24 @@ def parser():
 def main(argv=None):
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8")
-    args = parser().parse_args(argv)
+    argument_parser = parser()
+    args = argument_parser.parse_args(argv)
+    receipt_flags = args.command == "receipt" and any(
+        getattr(args, name) is not None for name in ("event_id", "summary", "summary_file", "ref", "session"))
+    if receipt_flags:
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8")
+        if args.file is not None:
+            argument_parser.error("--file cannot be combined with receipt flags")
+        if args.event_id is None:
+            argument_parser.error("--event-id is required in flag mode")
+        if args.summary is not None and args.summary_file is not None:
+            argument_parser.error("use exactly one of --summary and --summary-file")
+        if args.summary is None and args.summary_file is None:
+            argument_parser.error("--summary or --summary-file is required in flag mode")
+        if not args.ref:
+            argument_parser.error("--ref is required in flag mode (at least one)")
     try:
         vault = args.vault.expanduser().resolve()
         if not vault.is_dir():
@@ -647,6 +702,7 @@ def main(argv=None):
                 result['parallel_sessions'] = parallel.doctor(state)
             except Exception as exc:
                 result['parallel_sessions'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            result['receipt_line_endings'] = receipt_line_endings(vault)  # information only: the status below is untouched
             result['status'] = ('needs_attention' if health.get('sync', {}).get('status') in ('conflict', 'degraded') or result['hook_paths'].get('status') == 'stale' or result['skill_conflicts'] or result.get('instruction_conflicts') or result['hook-error.json'] or result['task_completion']['strict_issue_count'] or result['task_completion'].get('error') or result['validity']['ignored_rejection_count'] or result['validity'].get('error') else 'pending' if result['pending_events'] else 'observed_metadata' if result['acknowledged_events'] else 'never_seen')
             # Information only: a leftover global OMP hook copy predates the vault-owned plan
             # (OMP.md says the installer never updates or removes it). After an engine update the
@@ -764,7 +820,18 @@ def main(argv=None):
                 handler = assess_memory
             result = handler(sync.store, json.loads(raw), project=args.project)
         elif args.command == "receipt":
-            payload = read_json(args.file)
+            if receipt_flags:
+                summary = args.summary
+                if args.summary_file is not None:
+                    # Preserve CRLF as well as LF, matching the JSON input text. utf-8-sig drops
+                    # the BOM that Windows PowerShell 5.1 writes with -Encoding UTF8.
+                    with args.summary_file.open(encoding="utf-8-sig", newline="") as stream:
+                        summary = stream.read()
+                payload = {"event_id": args.event_id, "summary": summary, "refs": args.ref}
+                if args.session is not None:
+                    payload["session"] = args.session
+            else:
+                payload = read_json(args.file if args.file is not None else "-")
             result = sync.receipt(payload["event_id"], payload["summary"],
                                           payload["refs"], args.harness, session=payload.get('session'))
         elif args.command == "history":

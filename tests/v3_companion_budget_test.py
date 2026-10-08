@@ -61,7 +61,7 @@ class CompanionBudgetTest(unittest.TestCase):
                 self.assertIn('FIRST_RULE_CANARY', text)
                 self.assertIn('CORRECTION_CANARY', text)
                 self.assertIn('HANDOFF_CANARY', text)
-                self.assertRegex(text, r'\[truncated: \d+ characters omitted')
+                self.assertRegex(text, r'\[truncated: rules \d+-\d+ \(\d+ of \d+\) omitted')
 
     def test_budget_left_over_by_retrieval_goes_back_to_the_clipped_sources(self):
         for budget in (1000, 2000, 5000, 12000):
@@ -264,7 +264,7 @@ class CompanionBudgetTest(unittest.TestCase):
                 text = companion.context(store, budget, 'synthetic-budget', 'codex')
                 self.assertLessEqual(len(text), budget)
                 self.assertGreaterEqual(len(text), .95 * budget)
-                self.assertRegex(text, r'\[truncated: \d+ characters omitted')
+                self.assertRegex(text, r'\[truncated: rules \d+-\d+ \(\d+ of \d+\) omitted')
                 map_body = text.split('[Knowledge map: knowledge/index.md]\n')[1].split('\n[')[0]
                 self.assertLessEqual(len(map_body), 600)
 

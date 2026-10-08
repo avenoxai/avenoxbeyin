@@ -189,11 +189,15 @@ class ReleasesTest(unittest.TestCase):
 
     def test_notice_once_across_clients_and_dismiss_only_one_version(self):
         self.seed_cache()
+        with self.assertRaises(ValueError):
+            releases.dismiss(self.vault, self.state, 'invalid-version')
+        self.assertFalse((self.state / 'releases.db').exists())
         with ThreadPoolExecutor(max_workers=4) as pool:
             notices = list(pool.map(lambda _: releases.notification(self.vault, self.state, now=1001), range(4)))
         self.assertEqual(sum(bool(x) for x in notices), 1)
         self.assertNotIn('UNTRUSTED', ''.join(notices))
         self.seed_cache(v='3.2.0')
+        releases.dismiss(self.vault, self.state, '3.2.0')
         releases.dismiss(self.vault, self.state, '3.2.0')
         self.assertEqual(releases.notification(self.vault, self.state, now=1001), '')
         self.seed_cache(v='3.3.0')

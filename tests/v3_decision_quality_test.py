@@ -394,6 +394,23 @@ class DecisionQualityTest(unittest.TestCase):
         continuity.remember(self.store, 'claude', 'session', 'Quartz deployment', delivered, now=100)
         self.assertFalse(self.follow('onu da test et')[1])
 
+    def test_anchor_files_stay_at_the_cap_and_an_update_deletes_nothing(self):
+        delivered = dict(records=[dict(id='target', revision=1, source_sha256='0' * 64, project='demo')])
+        folder = self.state / 'topic-refs'
+        for index in range(continuity.MAX_SESSIONS):
+            continuity.remember(self.store, 'claude', 'session-' + str(index), 'Quartz deployment', delivered, now=100)
+            os.utime(continuity._path(self.store, 'claude', 'session-' + str(index)), (1000 + index, 1000 + index))
+        oldest = continuity._path(self.store, 'claude', 'session-0')
+        # The newest session writes again: nothing else goes.
+        continuity.remember(self.store, 'claude', 'session-' + str(continuity.MAX_SESSIONS - 1), 'Quartz deployment',
+                            delivered, now=100)
+        self.assertEqual(len(list(folder.glob('*.json'))), continuity.MAX_SESSIONS)
+        self.assertTrue(oldest.exists())
+        # A new session takes the oldest one's place; the count never passes the cap.
+        continuity.remember(self.store, 'claude', 'session-new', 'Quartz deployment', delivered, now=100)
+        self.assertEqual(len(list(folder.glob('*.json'))), continuity.MAX_SESSIONS)
+        self.assertFalse(oldest.exists())
+
 
 if __name__ == '__main__':
     unittest.main()
