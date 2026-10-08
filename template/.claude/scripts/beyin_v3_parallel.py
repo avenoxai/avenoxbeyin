@@ -147,8 +147,6 @@ def touch(state, harness, session_id, now=None):
                     if now - modified > MAX_AGE_SECONDS:
                         os.unlink(entry.path)
                         continue
-                    if temporary:
-                        continue  # a write cut short by a killed hook; pruned once it is old
                 except OSError:
                     continue  # gone, or held open by another process on Windows
                 entries.append((modified, entry))
@@ -160,6 +158,8 @@ def touch(state, harness, session_id, now=None):
                 pass
         fresh = []
         for modified, entry in entries[:MAX_MARKERS - 1]:
+            if entry.name.startswith('.marker-') and entry.name.endswith('.tmp'):
+                continue
             if now - modified > ACTIVE_SECONDS:
                 break  # sorted newest first; last_at never trails the file time
             key = entry.name[:24]
@@ -188,6 +188,8 @@ def _write(path, value):
                                          suffix='.tmp', delete=False) as handle:
             temporary = handle.name
             json.dump(value, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, path)
         temporary = None
         return True
