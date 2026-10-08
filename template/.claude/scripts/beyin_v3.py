@@ -1,6 +1,7 @@
 """Local, source-backed memory foundation. No model or network dependencies."""
 from __future__ import annotations
 
+from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime
 import functools
@@ -211,10 +212,15 @@ def _stem(word):
     return word
 
 
-def _tokens(text):
+def _token_counts(text):
+    """Stem -> occurrence count; the keys are exactly _tokens(text)."""
     text = unicodedata.normalize("NFKD", str(text).casefold())
     text = "".join(c for c in text if not unicodedata.combining(c)).replace("ı", "i")
-    return {_stem(word) for word in re.findall(r"[a-z0-9]+", text)}
+    return Counter(_stem(word) for word in re.findall(r"[a-z0-9]+", text))
+
+
+def _tokens(text):
+    return set(_token_counts(text))
 
 
 # Stopwords are matched against stems, so Turkish content words had to leave the list:
@@ -569,8 +575,9 @@ class MemoryStore:
             result["truncated"] = True
         return result
 
-    def _strict_rank(self, ranked, terms, vocabularies):
-        """Keep only meaningful lexical matches; see STRICT_* for the calibrated rules."""
+    @staticmethod
+    def _lexical_weights(ranked, terms, vocabularies):
+        """(weight, shared_count, record) for every candidate; see the strict comment for the formula."""
         frequency = {}
         for vocabulary in vocabularies.values():
             for token in vocabulary:
@@ -579,16 +586,46 @@ class MemoryStore:
         idf_max = math.log((total + 1) / 2) + 1
         weighted = []
         for shared_count, record in ranked:
-            if shared_count < self.STRICT_MIN_SHARED:
-                continue
             vocabulary = vocabularies[record["id"]]
             weight = sum(math.log((total + 1) / (frequency.get(token, 0) + 1)) + 1 for token in terms & vocabulary)
-            weight = weight / idf_max / math.log(10 + len(vocabulary))
-            if weight >= self.STRICT_MIN_WEIGHT:
-                weighted.append((weight, record))
+            weighted.append((weight / idf_max / math.log(10 + len(vocabulary)), shared_count, record))
+        return weighted
+
+    @staticmethod
+    def _by_weight(weighted):
         weighted.sort(key=lambda item: (item[1].get("updated_at", ""), item[1]["id"]), reverse=True)
         weighted.sort(key=lambda item: -item[0])
         return weighted
+
+    def _strict_rank(self, ranked, terms, vocabularies):
+        """Keep only meaningful lexical matches; see STRICT_* for the calibrated rules."""
+        return self._by_weight([(weight, record) for weight, shared_count, record in self._lexical_weights(ranked, terms, vocabularies)
+                                if shared_count >= self.STRICT_MIN_SHARED and weight >= self.STRICT_MIN_WEIGHT])
+
+    BM25_K1 = 1.5
+    BM25_B = 0.75
+
+    def _weighted_rank(self, ranked, terms, term_counts):
+        """Order without dropping anything: Okapi BM25 over stem counts, no thresholds.
+
+        A raw shared-term count favours whichever note has the largest vocabulary, so one long
+        hub note can win every query; a presence-only idf weight still cannot tell a note that
+        is about a term from one that mentions it once. Records with no shared term (scoped
+        listings, snapshots) weigh 0 and keep their previous updated_at order.
+        """
+        total = len(term_counts)
+        lengths = {rid: sum(counts.values()) for rid, counts in term_counts.items()}
+        average = sum(lengths.values()) / total if total else 0
+        frequency = {term: sum(1 for counts in term_counts.values() if term in counts) for term in terms}
+        weighted = []
+        for _, record in ranked:
+            counts = term_counts[record["id"]]
+            norm = self.BM25_K1 * (1 - self.BM25_B + self.BM25_B * (lengths[record["id"]] / average if average else 0))
+            weight = sum(math.log((total - frequency[term] + 0.5) / (frequency[term] + 0.5) + 1) *
+                         counts[term] * (self.BM25_K1 + 1) / (counts[term] + norm)
+                         for term in terms if counts.get(term))
+            weighted.append((weight, record))
+        return self._by_weight(weighted)
 
     # Strict automatic context: used by the per-turn hook so that a single shared common
     # word never pulls an unrelated note into the prompt. Weight = sum of relative idf over
@@ -658,6 +695,7 @@ class MemoryStore:
         scoped_listing = project is not None and bool(query_tokens & project_tokens) and not (query_tokens - STOPWORDS - project_tokens)
         ranked = []
         vocabularies = {}
+        term_counts = {}
         for record in eligible:
             if record["id"] in superseded:
                 continue
@@ -670,16 +708,19 @@ class MemoryStore:
             aliases = record.get("aliases", [])
             aliases = aliases if isinstance(aliases, list) else []
             alias_text = " ".join(a[:160] for a in aliases[:32] if isinstance(a, str))
-            vocabulary = _tokens(record["text"] + " " + _json(record["facts"]) + " " + str(record.get("title", "")) + " " + alias_text) - STOPWORDS
+            counts = _token_counts(record["text"] + " " + _json(record["facts"]) + " " + str(record.get("title", "")) + " " + alias_text)
+            for stopword in STOPWORDS & counts.keys():
+                del counts[stopword]
+            vocabulary = set(counts)
             vocabularies[record["id"]] = vocabulary
+            term_counts[record["id"]] = counts
             score = len(terms & vocabulary)
             if score or scoped_listing or snapshot:
                 ranked.append((score, record))
         if strict and not snapshot:
             ranked = self._strict_rank(ranked, terms, vocabularies)
         else:
-            ranked.sort(key=lambda item: (item[1].get("updated_at", ""), item[1]["id"]), reverse=True)
-            ranked.sort(key=lambda item: -item[0])
+            ranked = self._weighted_rank(ranked, terms, term_counts)
         if candidate_only:
             return [record for _, record in ranked[:limit]]
         return pack_context([record for _, record in ranked], limit, budget_chars, stale_count)
