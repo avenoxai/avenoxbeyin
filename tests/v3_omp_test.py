@@ -215,5 +215,11 @@ class OMPHarnessTest(unittest.TestCase):
         doctor = json.loads(self.cli('doctor').stdout)
         self.assertNotIn('omp_global_hook', doctor)
 
+    @unittest.skipUnless(BUN, 'bun is required to execute the OMP hook')
+    def test_session_shutdown_removes_from_subagents_map(self):
+        result = self.drive()
+        self.assertIn('session_shutdown', result['keys'])
+
+
 if __name__ == '__main__':
     unittest.main()

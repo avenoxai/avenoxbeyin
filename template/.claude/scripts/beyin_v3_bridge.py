@@ -199,7 +199,7 @@ def shell_command(argv):
 
 def main(argv=None):
     if hasattr(sys.stdin, 'reconfigure'):
-        sys.stdin.reconfigure(encoding='utf-8')
+        sys.stdin.reconfigure(encoding='utf-8', errors='replace')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--vault', type=Path, required=True)
     parser.add_argument('--state', type=Path, help='Defaults to the installed vault runtime locator')
@@ -234,7 +234,10 @@ def main(argv=None):
             print(json.dumps({'hooks': {event: [{'hooks': [{'type': 'command', 'command': shell,
                               'timeout': 3 if event == 'SessionEnd' else 5}]}] for event in events}}, indent=2))
             return 0
-        payload = json.loads(sys.stdin.read(1_000_000) or '{}')
+        try:
+            payload = json.loads(sys.stdin.read(1_000_000) or '{}')
+        except ValueError:
+            print('{}'); return 0
         if not isinstance(payload, dict):
             raise ValueError('Invalid hook payload')
         event = payload.get('hook_event_name')

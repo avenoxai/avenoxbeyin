@@ -340,7 +340,7 @@ def drain_queue(vault, state):
 def main():
     started = time.monotonic()
     if hasattr(sys.stdin, "reconfigure"):
-        sys.stdin.reconfigure(encoding="utf-8")
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser()
     parser.add_argument("--vault", required=True, type=Path)
     parser.add_argument("--state", required=True, type=Path)
@@ -366,7 +366,10 @@ def main():
         return
     notice = ''
     try:
-        payload = json.loads(sys.stdin.read(1_000_000) or "{}")
+        try:
+            payload = json.loads(sys.stdin.read(1_000_000) or "{}")
+        except ValueError:
+            print('{}'); return 0
         event = payload.get("hook_event_name", args.event)
         if args.harness == "hermes":
             # Hermes plugin hooks: pre_llm_call (first turn -> SessionStart, later ->

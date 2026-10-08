@@ -345,6 +345,26 @@ class BridgeTest(unittest.TestCase):
             self.assertTrue(line.startswith('- TASK_'))
             self.assertIn(': Action', line)
 
+    def test_invalid_utf8_in_payload_fails_open(self):
+        payload = b'{"hook_event_name": "UserPromptSubmit", "prompt": "bad \xff bytes"}'
+        p = subprocess.run(
+            [sys.executable, str(ROOT / 'template/.claude/scripts/beyin_v3_bridge.py'), 
+             '--vault', str(self.vault), '--state', str(self.state), '--harness', 'codex', '--project-root', str(self.vault)],
+            input=payload, capture_output=True
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.strip(), b'{}')
+
+    def test_truncated_payload_fails_open(self):
+        payload = b'{"hook_event_name": "UserPromptSubmit", "prompt": "' + b'A' * 2_000_000 + b'"}'
+        p = subprocess.run(
+            [sys.executable, str(ROOT / 'template/.claude/scripts/beyin_v3_bridge.py'), 
+             '--vault', str(self.vault), '--state', str(self.state), '--harness', 'codex', '--project-root', str(self.vault)],
+            input=payload, capture_output=True
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.strip(), b'{}')
+
 
 if __name__ == '__main__':
     unittest.main()
