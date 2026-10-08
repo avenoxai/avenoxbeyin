@@ -33,9 +33,12 @@ def digest(data):
 
 
 def version(value):
-    if not isinstance(value, str) or not re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', value):
+    if not isinstance(value, str):
         raise ValueError('stable semantic version required')
-    return tuple(map(int, value.split('.')))
+    match = re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[a-zA-Z0-9.-]+)?(?:[+][a-zA-Z0-9.-]+)?', value)
+    if not match:
+        raise ValueError('stable semantic version required')
+    return tuple(map(int, match.groups()))
 
 
 def allowed(name):

@@ -284,7 +284,7 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
     stored_excluded = exclusions.read_exclusions(vault)
     norm_exclude = [name.replace('\\', '/') for name in exclude_components]
     norm_include = [name.replace('\\', '/') for name in include_components]
-    exclusions.validate_exclusions(norm_exclude + norm_include)
+    exclusions.validate_exclusions(sorted(set(norm_exclude + norm_include)))
     user_excluded = (set(stored_excluded) | set(norm_exclude)) - set(norm_include)
     exclusions.validate_exclusions(sorted(user_excluded))
 

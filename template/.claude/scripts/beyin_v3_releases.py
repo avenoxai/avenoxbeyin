@@ -36,9 +36,12 @@ class ReleaseError(ValueError):
 
 
 def version(value):
-    if not isinstance(value, str) or not re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', value):
+    if not isinstance(value, str):
         raise ReleaseError('invalid_version')
-    return tuple(map(int, value.split('.')))
+    match = re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[a-zA-Z0-9.-]+)?(?:[+][a-zA-Z0-9.-]+)?', value)
+    if not match:
+        raise ReleaseError('invalid_version')
+    return tuple(map(int, match.groups()))
 
 
 def safe_url(url):

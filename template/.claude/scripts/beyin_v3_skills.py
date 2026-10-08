@@ -3,10 +3,27 @@ from pathlib import Path
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
 import uuid
+
+
+def _validate_manifest(content):
+    if b'\0' in content:
+        raise ValueError('skill contains binary files')
+    text = content.decode('utf-8', errors='replace')
+    m = re.match(r'^---\r?\n(.*?)\r?\n---(?:\r?\n|$)', text, re.DOTALL)
+    if not m:
+        raise ValueError('skill missing frontmatter')
+    fm = m.group(1)
+    if not re.search(r'^name\s*:', fm, re.MULTILINE) or not re.search(r'^description\s*:', fm, re.MULTILINE):
+        raise ValueError('skill missing name or description')
+    for line in fm.splitlines():
+        if not line.strip() or line.lstrip().startswith('#'): continue
+        if not re.match(r'^([^\W\d][\w-]*):', line) and not line.startswith((' ', '\t', '-')):
+            raise ValueError(f'invalid YAML frontmatter line: {line!r}')
 
 
 def _tree(path, vault):
@@ -19,7 +36,12 @@ def _tree(path, vault):
         if p.is_symlink():
             raise ValueError('nested skill symlink requires manual review')
         if p.is_file():
-            digest.update(p.relative_to(path).as_posix().encode());digest.update(b'\0');digest.update(p.read_bytes())
+            data = p.read_bytes()
+            if p.name == 'SKILL.md':
+                _validate_manifest(data)
+            elif b'\0' in data:
+                raise ValueError('skill contains binary files')
+            digest.update(p.relative_to(path).as_posix().encode());digest.update(b'\0');digest.update(data)
     return digest.hexdigest()
 
 
