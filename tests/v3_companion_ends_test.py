@@ -97,6 +97,34 @@ class EndsTest(unittest.TestCase):
         head, closing, named = split(text, ends(text, 600))
         self.assertEqual(named, f'{len(text) - len(head) - len(closing)} characters')
 
+    def test_list_lines_in_a_code_block_are_not_counted_as_rules(self):
+        # A rule with an example command block: its `- ` lines must not shift the numbers.
+        example = '```\n- ornek satir\n- ornek satir\n```\n~~~~\n1. ornek\n```\n- hala ornek\n~~~~\n'
+        text = '- kural 01: once oku\n' + example + ''.join(
+            f'- kural {i:02d}: ' + 'x' * 60 + '\n' for i in range(2, 31))
+        result = ends(text, 900)
+        match = re.search(r'\[truncated: rules (\d+)-(\d+) \((\d+) of (\d+)\) omitted', result)
+        self.assertIsNotNone(match, result)
+        first, last, omitted, counted = (int(group) for group in match.groups())
+        self.assertEqual(counted, 30)
+        self.assertIn(f'- kural {first - 1:02d}:', result)
+        self.assertNotIn(f'- kural {first:02d}:', result)
+        self.assertNotIn(f'- kural {last:02d}:', result)
+        self.assertIn(f'- kural {last + 1:02d}:', result)
+        self.assertEqual(omitted, last - first + 1)
+        self.assertLessEqual(len(result), 900)
+
+    def test_text_without_list_items_reserves_only_the_character_marker(self):
+        text = ''.join(f'duz paragraf satiri {i:02d} ' + 'y' * 50 + '\n' for i in range(400))
+        widest = len(f'\n[truncated: {len(text)} characters omitted here; read source]\n')
+        line = len(text.split('\n', 1)[0]) + 1
+        for budget in range(1500, 1500 + line):
+            with self.subTest(budget=budget):
+                head, closing, named = split(text, ends(text, budget))
+                self.assertTrue(named.endswith(' characters'))
+                # Every line is the same length: the ends fill all that this one marker leaves.
+                self.assertGreater(len(head) + len(closing) + line, budget - widest)
+
 
 if __name__ == '__main__':
     unittest.main()

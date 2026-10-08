@@ -383,7 +383,25 @@ def without_reasons(text):
     return stripped.rstrip('\n') + f'\n[{count} rule reasons (**neden:**) omitted to fit the opening; read source]\n'
 
 
-RULE = re.compile(r'^(?:[-*+]|\d+[.)])[ \t]', re.M)
+RULE = re.compile(r'^(?:[-*+]|\d+[.)])[ \t]')
+FENCE = re.compile(r'[ \t]{0,3}(`{3,}|~{3,})')
+
+
+def rule_starts(text):
+    """Offsets of the top-level list items, the same markers REASON knows. Lines inside a
+    fenced code block (an example command, a sample list) are not rules."""
+    starts, fence, offset = [], None, 0
+    for line in text.split('\n'):
+        match = FENCE.match(line)
+        if fence:
+            if match and match[1][0] == fence[0] and len(match[1]) >= len(fence):
+                fence = None
+        elif match:
+            fence = match[1]
+        elif RULE.match(line):
+            starts.append(offset)
+        offset += len(line) + 1
+    return starts
 
 
 def ends(text, budget):
@@ -396,9 +414,11 @@ def ends(text, budget):
     if len(text) <= budget:
         return text
     gap = f'\n[truncated: {len(text)} characters omitted here; read source]\n'
-    total = len(RULE.findall(text))
-    widest = f'\n[truncated: rules {total}-{total} ({total} of {total}) omitted here; read source]\n'
-    gap = max(gap, widest, key=len)
+    rules = rule_starts(text)
+    total = len(rules)
+    if total:
+        widest = f'\n[truncated: rules {total}-{total} ({total} of {total}) omitted here; read source]\n'
+        gap = max(gap, widest, key=len)
     keep = budget - len(gap)
     if keep < 80:
         return None
@@ -420,8 +440,8 @@ def ends(text, budget):
         end = text.find('\n', len(head), start) + 1
         if end and len(closing) + end <= keep and end < start:
             head, grown = text[:end], True
-    first = len(RULE.findall(head)) + 1
-    omitted = len(RULE.findall(text, len(head), start))
+    first = sum(rule < len(head) for rule in rules) + 1
+    omitted = sum(len(head) <= rule < start for rule in rules)
     what = f'rules {first}-{first + omitted - 1} ({omitted} of {total})' if omitted > 0 else f'{start - len(head)} characters'
     return head + f'\n[truncated: {what} omitted here; read source]\n' + closing
 
