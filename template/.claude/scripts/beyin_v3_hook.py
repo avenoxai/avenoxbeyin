@@ -176,12 +176,15 @@ def _has_declared_learning(summary):
 
 
 # Generated views and the V2 compiler seeds change without any agent distilling.
-_NOT_DISTILLATION = ("knowledge/v3/", "knowledge/index.md", "knowledge/log.md")
+_NOT_DISTILLATION = (
+    "knowledge/v3/", "knowledge/index.md", "knowledge/log.md",
+    "🧠 500-Knowledge/v3/", "🧠 500-Knowledge/index.md", "🧠 500-Knowledge/log.md",
+)
 
 
 def _is_distilled_note(relative):
     relative = relative.replace("\\", "/")
-    return (relative.startswith("knowledge/") and relative.endswith(".md") and
+    return ((relative.startswith("knowledge/") or relative.startswith("🧠 500-Knowledge/")) and relative.endswith(".md") and
             not any(relative == item or relative.startswith(item) for item in _NOT_DISTILLATION))
 
 
@@ -190,16 +193,19 @@ def _has_knowledge_update(vault, receipt, since):
         return False
     if any(isinstance(ref, str) and _is_distilled_note(ref) for ref in receipt.get("refs", [])):
         return True
-    k_dir = Path(vault) / "knowledge" if vault else None
-    if k_dir is None or not k_dir.is_dir():
+    if not vault:
         return False
-    for path in k_dir.rglob("*.md"):
-        try:
-            if (path.is_file() and not path.is_symlink() and path.stat().st_mtime >= since and
-                    _is_distilled_note(path.relative_to(vault).as_posix())):
-                return True
-        except (ValueError, OSError):
+    roots = [Path(vault) / "knowledge", Path(vault) / "🧠 500-Knowledge"]
+    for root in roots:
+        if not root.is_dir():
             continue
+        for path in root.rglob("*.md"):
+            try:
+                if (path.is_file() and not path.is_symlink() and path.stat().st_mtime >= since and
+                        _is_distilled_note(path.relative_to(vault).as_posix())):
+                    return True
+            except (ValueError, OSError):
+                continue
     return False
 
 
@@ -234,6 +240,15 @@ def receipt_reminder(payload, state, harness, event, vault=None):
                 edited.unlink(missing_ok=True)
             return None
         if event == "PostToolUse":
+            tool_name = payload.get("toolName") or payload.get("tool_name")
+            if tool_name in ("Bash", "MultiEdit", "NotebookEdit") and vault:
+                try:
+                    from beyin_v3_hygiene import edited_paths, _vault_relative
+                    paths = edited_paths(payload)
+                    if not any(_vault_relative(vault, p) is not None for p in paths):
+                        return None
+                except Exception:
+                    pass
             if not edited.exists():
                 atomic(edited, {"at": time.time()})
             return None

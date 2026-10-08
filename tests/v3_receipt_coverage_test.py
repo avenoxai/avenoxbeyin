@@ -240,6 +240,64 @@ class ReceiptCoverageTest(unittest.TestCase):
             cols = {row[1] for row in db.execute('PRAGMA table_info(receipt_checkpoints)')}
             self.assertIn('prompt_at', cols)
 
+    def test_receipt_after_prompt_at_covers_session_despite_late_conversational_turn(self):
+        """Late conversational turns (e.g. 'thanks', 'status') after receipt was written do not un-cover the session (Issue #212)."""
+        import hashlib
+        engine = SyncEngine(self.vault, self.state)
+        now = time.time()
+        sess_id = 'sess_late_turn'
+        sess_hashed = hashlib.sha256(sess_id.encode('utf-8')).hexdigest()[:24]
+
+        # 1. User starts prompt at now - 100
+        self._enqueue('SessionStart', sess_id, at=now - 100)
+        self._enqueue('UserPromptSubmit', sess_id, at=now - 90)
+
+        # 2. Receipt generated at now - 50 (after prompt_at, before late turn)
+        engine.note_create('notes/task.md', 'Work completed.', {'id': 'task-1'})
+        engine.receipt('evt_task', 'Completed work', ['notes/task.md'], 'claude', session=sess_id)
+        # Manually backdate receipt created_at to now - 50
+        later = datetime.fromtimestamp(now - 50, timezone.utc).isoformat().replace('+00:00', 'Z')
+        with engine.store._connect() as db:
+            db.execute("UPDATE receipts SET payload = json_set(payload, '$.created_at', ?) WHERE id = 'evt_task'", (later,))
+        engine.sync()
+
+        # 3. User says "thanks!" at now - 20 (turn_at becomes now - 20, later than receipt created_at)
+        self._enqueue('UserPromptSubmit', sess_id, at=now - 20)
+        self._enqueue('Stop', sess_id, at=now - 10)
+        hook.drain_queue(self.vault, self.state)
+
+        # 4. Coverage and gaps must still mark this session as COVERED because receipt >= prompt_at
+        gaps_file = self.state / 'receipt-gaps.json'
+        data = json.loads(gaps_file.read_text(encoding='utf-8'))
+        coverage = data['receipt_coverage']
+        self.assertEqual(coverage['total'], 1)
+        self.assertEqual(coverage['covered'], 1)
+        self.assertEqual(coverage['missing'], 0)
+        self.assertEqual(data['potential_missing_receipts'], 0)
+
+    def test_stop_reminder_recognizes_500_knowledge_and_bash_vault_filter(self):
+        """🧠 500-Knowledge/ counts as distilled note (Issue #197), and Bash outside vault does not trigger reminder (Issue #212)."""
+        # 1. Check _is_distilled_note
+        self.assertTrue(hook._is_distilled_note('🧠 500-Knowledge/AI/Agents.md'))
+        self.assertTrue(hook._is_distilled_note('knowledge/concepts/agent.md'))
+        self.assertFalse(hook._is_distilled_note('🧠 500-Knowledge/v3/notes.md'))
+        self.assertFalse(hook._is_distilled_note('tasks/todo.md'))
+
+        # 2. Check receipt_reminder tool filter for Bash outside vault
+        sess = 'sess_bash_test'
+        # Bash call targeting a file OUTSIDE the vault
+        payload_outside = {
+            'session_id': sess,
+            'toolName': 'Bash',
+            'tool_input': {'command': 'cat /tmp/other_file.txt', 'file_path': '/tmp/other_file.txt'},
+            'cwd': str(self.tmp.name),
+        }
+        res = hook.receipt_reminder(payload_outside, self.state, 'claude', 'PostToolUse', vault=self.vault)
+        self.assertIsNone(res)
+        # Verify no .edited marker created
+        folder = self.state / 'receipt-reminders'
+        self.assertFalse(any(p.name.endswith('.edited') for p in folder.glob('*')))
+
 
 if __name__ == '__main__':
     unittest.main()

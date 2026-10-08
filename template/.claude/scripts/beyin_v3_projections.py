@@ -159,7 +159,7 @@ def record_checkpoints(engine, events):
                 continue
             values = (event['harness'], event['session'], event['at'])
             if event.get('event') == 'UserPromptSubmit' or (event.get('event') == 'SessionStart' and event.get('prompted')):
-                db.execute('INSERT INTO receipt_checkpoints(harness,session,at,turn_at,prompt_at) VALUES (?,?,0,?,?) ON CONFLICT(harness,session) DO UPDATE SET turn_at=MAX(turn_at,excluded.turn_at), prompt_at=MAX(prompt_at,excluded.prompt_at)',
+                db.execute('INSERT INTO receipt_checkpoints(harness,session,at,turn_at,prompt_at) VALUES (?,?,0,?,?) ON CONFLICT(harness,session) DO UPDATE SET turn_at=MAX(turn_at,excluded.turn_at), prompt_at=CASE WHEN prompt_at > 0 THEN prompt_at ELSE excluded.prompt_at END',
                            (event['harness'], event['session'], event['at'], event['at']))
             elif event.get('event') == 'SessionStart':
                 db.execute('INSERT INTO receipt_checkpoints(harness,session,at,turn_at) VALUES (?,?,0,?) ON CONFLICT(harness,session) DO UPDATE SET turn_at=MAX(turn_at,excluded.turn_at)', values)
@@ -203,7 +203,7 @@ def receipt_coverage(db, now=None):
         if not row[6]:
             continue
         chk_at = row[2]
-        threshold = row[3] or row[2]
+        threshold = row[6] or row[3] or row[2]
         matched = latest.get((row[0], row[1]), float('-inf')) >= threshold
         for w_name, w_active in (('all_time', True), ('last_30d', chk_at >= thirty_days), ('last_7d', chk_at >= seven_days)):
             if w_active:
@@ -238,10 +238,10 @@ def refresh_gaps(engine, db):
     _checkpoint_schema(db)
     latest = _latest_receipts(db)
     gaps = []
-    for row in db.execute('SELECT harness,session,at,turn_at,project,project_id FROM receipt_checkpoints'):
+    for row in db.execute('SELECT harness,session,at,turn_at,project,project_id,prompt_at FROM receipt_checkpoints'):
         if not row[2] or row[2] < row[3]:
             continue
-        threshold = row[3] or row[2]
+        threshold = row[6] or row[3] or row[2]
         matched = latest.get((row[0], row[1]), float('-inf')) >= threshold
         if not matched:
             gaps.append({'harness': row[0], 'session': row[1], 'checkpoint_at': row[2], 'turn_at': row[3], 'scope': 'session_only' if row[0] == 'antigravity' else 'turn' if row[3] else 'terminal_only'})
