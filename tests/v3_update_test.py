@@ -134,6 +134,21 @@ class OfflineUpdateTest(unittest.TestCase):
         self.assertEqual(self.version(), '3.0.0')
         self.assertEqual(core.stat().st_mtime, old_time)
 
+    def test_rollback_keeps_new_mtime_of_merged_settings(self):
+        import os, time
+        config = self.vault / '.claude/settings.local.json'
+        old_time = 1500000000.0
+        os.utime(config, (old_time, old_time))
+        self.module.update(self.vault, self.state, self.package)
+        after = json.loads(config.read_text(encoding='utf-8'))
+        after['post_update_user_preference'] = 'kept'
+        config.write_text(json.dumps(after), encoding='utf-8')
+        before_rollback = time.time() - 5
+        self.module.rollback(self.vault, self.state)
+        # The merged file holds an edit made after the update; an old mtime would hide it.
+        self.assertEqual(json.loads(config.read_text(encoding='utf-8'))['post_update_user_preference'], 'kept')
+        self.assertGreater(config.stat().st_mtime, before_rollback)
+
     def test_interrupted_apply_keeps_old_version_and_recovers_once(self):
         def crash(phase, index=None):
             if phase == 'after_replace' and index == 0:
