@@ -28,7 +28,8 @@ jobs:
   stdlib-contracts:
     name: ${{ matrix.os }} / Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    # Windows runs the same suite in 8-14 minutes against 3-4 elsewhere; keep hangs fast to spot there.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 25 || 15 }}
     strategy:
       fail-fast: false
       matrix:
