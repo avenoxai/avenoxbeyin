@@ -45,12 +45,39 @@ def _rejected_inference(record):
             (record.get("validity") == "rejected" or record.get("status") == "rejected"))
 
 
+# A note whose own status says it was replaced is history, like a note another trusted note
+# supersedes. Every read route drops these unless the caller asks for statuses explicitly.
+# Any other status (current, verified, aktif, waiting, a custom word) stays deliverable: an
+# allow-list of `active` alone silently hid most real vaults' notes from per-turn context.
+RETIRED_STATUSES = frozenset(("superseded", "retired", "archived", "archive", "deprecated", "obsolete",
+                              "replaced", "arsiv", "arsivlendi", "eski", "emekli", "gecersiz"))
+_STATUS_FOLD = str.maketrans("ŞşĞğÜüÇçÖöİIı", "SsGgUuCcOoiii")
+
+
 def _status_word(record):
-    """Return the first status word; missing or blank status means active."""
+    """First word of the status, case and Turkish-letter folded; missing status means active.
+
+    A task without a status is not active: task_create always writes one.
+    """
     value = record.get("status")
     if not isinstance(value, str) or not value.strip():
-        return "active"
-    return value.strip().split()[0].casefold()
+        return "" if record.get("kind") == "task" else "active"
+    word = re.match(r"[^\W_]+", unicodedata.normalize("NFC", value.strip()).translate(_STATUS_FOLD).casefold())
+    return word.group(0) if word else ""
+
+
+def _status_allowed(record, allowed):
+    """allowed: None for the default read gate, else a set of folded status words."""
+    word = _status_word(record)
+    return word not in RETIRED_STATUSES if allowed is None else word in allowed
+
+
+def _allowed_statuses(statuses):
+    if statuses is None:
+        return None
+    if isinstance(statuses, str):
+        statuses = [statuses]
+    return {_status_word({"status": value}) for value in statuses}
 
 
 def _supersedes_key(value):
@@ -59,25 +86,35 @@ def _supersedes_key(value):
         return ""
     value = value.strip()
     if value.startswith("[[") and value.endswith("]]"):
-        value = value[2:-2].split("|", 1)[0].strip()
+        # [[path#heading|alias]] and [[path^block]] name the note before the anchor.
+        value = re.split(r"[|#^]", value[2:-2], maxsplit=1)[0].strip()
     return value.replace("\\", "/").strip("/")
 
 
+def _trusted_record(record):
+    return (record.get("trust") != "untrusted" and record.get("trusted") is not False
+            and record.get("status") != "untrusted" and record.get("kind") != "untrusted"
+            and not _rejected_inference(record))
+
+
 def resolve_supersedes(records):
-    """Resolve trusted supersedes references to record ids and report dead links."""
-    trusted = [record for record in records
-               if record.get("trust") != "untrusted" and record.get("trusted") is not False
-               and record.get("status") != "untrusted" and record.get("kind") != "untrusted"
-               and not _rejected_inference(record)]
+    """Resolve trusted supersedes references to record ids and report links that do nothing.
+
+    A value is an explicit id, else a vault path (with or without .md) or [[link]] by its whole
+    value, else its last segment when exactly one note has that file name. Never a substring.
+    A reference that resolves to the note itself retires nothing and is reported (#206).
+    Untrusted notes neither retire nor are counted as targets.
+    """
+    trusted = [record for record in records if isinstance(record, dict) and _trusted_record(record)]
     by_id = {record.get("id"): record for record in trusted if isinstance(record.get("id"), str)}
-    by_path, by_stem = {}, {}
+    by_path, by_name = {}, {}
     for record in trusted:
         source = str(record.get("source", "")).replace("\\", "/").strip("/")
         if not source:
             continue
         path_key = source[:-3] if source.casefold().endswith(".md") else source
         by_path.setdefault(path_key.casefold(), []).append(record)
-        by_stem.setdefault(Path(source).stem.casefold(), []).append(record)
+        by_name.setdefault(path_key.rsplit("/", 1)[-1].casefold(), []).append(record)
     retired, dead = set(), []
     for record in trusted:
         values = record.get("supersedes", [])
@@ -87,22 +124,22 @@ def resolve_supersedes(records):
             continue
         for raw in values:
             key = _supersedes_key(raw)
-            if not key:
-                dead.append({"source": record.get("source", ""), "value": raw,
-                             "reason": "ambiguous or unresolved supersedes reference"})
-                continue
-            target = by_id.get(key)
-            if target is None or target.get("id") == record.get("id"):
-                matches = by_path.get(key.casefold(), [])
+            folded = key[:-3] if key.casefold().endswith(".md") else key
+            target, reason = by_id.get(key), None
+            if target is None and folded:
+                matches = by_path.get(folded.casefold(), [])
+                if not matches:
+                    matches = by_name.get(folded.rsplit("/", 1)[-1].casefold(), [])
                 if len(matches) == 1:
                     target = matches[0]
-                elif not matches:
-                    matches = by_stem.get(Path(key).stem.casefold(), [])
-                    if len(matches) == 1:
-                        target = matches[0]
+                elif matches:
+                    reason = "ambiguous supersedes reference"
             if target is None:
-                dead.append({"source": record.get("source", ""), "value": raw,
-                             "reason": "ambiguous or unresolved supersedes reference"})
+                reason = reason or "unresolved supersedes reference"
+            elif target is record or target.get("id") == record.get("id"):
+                target, reason = None, "supersedes reference points to the note itself"
+            if target is None:
+                dead.append({"id": record.get("id"), "source": record.get("source", ""), "value": raw, "reason": reason})
             else:
                 retired.add(target["id"])
     return retired, dead
@@ -663,16 +700,21 @@ class MemoryStore:
     # matching block (#83, beyin_v3_passage.py). An empty passage result is an answer.
     STRICT_PASSAGES = True
 
-    def _eligible(self, audience="internal", project=None, rejected_only=False):
+    def _records(self):
+        with self._connect() as db:
+            return [json.loads(row[0]) for row in db.execute("SELECT payload FROM records ORDER BY id")]
+
+    def _eligible(self, audience="internal", project=None, rejected_only=False, records=None):
         """Visibility, trust, project and source-freshness gates shared by every retrieval path.
 
         rejected_only inverts the rejection gate alone, for rejected_matches: the same
-        scope applies to history that is looked up but never delivered.
+        scope applies to history that is looked up but never delivered. records lets a
+        caller that also needs the supersession set read the table once.
         """
         if audience not in ("public", "internal", "private"):
             raise ValueError("invalid audience")
-        with self._connect() as db:
-            records = [json.loads(row[0]) for row in db.execute("SELECT payload FROM records ORDER BY id")]
+        if records is None:
+            records = self._records()
         allowed = {"public"} if audience == "public" else {"public", "internal"} if audience == "internal" else {"public", "internal", "private"}
         # Read only for an explicit project: the per-turn hook path passes none.
         scopes = read_project_scopes(self.vault_root) if project is not None else None
@@ -701,21 +743,19 @@ class MemoryStore:
             eligible.append(record)
         return eligible, stale_count
 
-    def _superseded_ids(self):
-        with self._connect() as db:
-            records = [json.loads(row[0]) for row in db.execute("SELECT payload FROM records ORDER BY id")]
-        return resolve_supersedes(records)[0]
+    def _superseded_ids(self, records=None):
+        """Ids retired by any trusted record, not only by the ones this reader may see (#201)."""
+        return resolve_supersedes(self._records() if records is None else records)[0]
 
     def _retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, snapshot=False, strict=False, candidate_only=False):
         if audience not in ("public", "internal", "private"):
             raise ValueError("invalid audience")
         if not isinstance(query, str) or type(limit) is not int or limit < 0 or type(budget_chars) is not int or budget_chars < 0:
             raise ValueError("invalid query or budget")
-        if isinstance(statuses, str):
-            statuses = [statuses]
-        eligible, stale_count = self._eligible(audience, project)
-        superseded = self._superseded_ids()
-        allowed_statuses = {_status_word({"status": value}) for value in statuses} if statuses is not None else None
+        records = self._records()
+        eligible, stale_count = self._eligible(audience, project, records=records)
+        superseded = self._superseded_ids(records)
+        allowed_statuses = _allowed_statuses(statuses)
         query_tokens = _tokens(query)
         project_tokens = _tokens(project or "")
         terms = query_tokens - STOPWORDS - project_tokens
@@ -725,7 +765,7 @@ class MemoryStore:
         for record in eligible:
             if record["id"] in superseded:
                 continue
-            if allowed_statuses is not None and _status_word(record) not in allowed_statuses:
+            if not _status_allowed(record, allowed_statuses):
                 continue
             if strict and str(record.get("source", "")).startswith(self.STRICT_EXCLUDE):
                 continue

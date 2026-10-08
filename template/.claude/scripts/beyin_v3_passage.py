@@ -30,7 +30,7 @@ import tempfile
 import time
 import unicodedata
 
-from beyin_v3 import HARNESSES, STOPWORDS, _json, _status_word, _tokens, pack_context
+from beyin_v3 import HARNESSES, STOPWORDS, _allowed_statuses, _json, _status_allowed, _tokens, pack_context
 
 # #83 chose 0.15 on one 263-note Turkish vault without a coverage cap. With the cap, on a
 # second 1,285-note vault 0.20 is the lowest floor that keeps everyday and agent-command
@@ -365,15 +365,16 @@ def search(index, terms, limit=5, floor=FLOOR, min_shared=MIN_SHARED):
     return ranked[:limit]
 
 
-def pool(store, eligible, statuses=None, exclude=DEFAULT_EXCLUDE):
+def pool(store, eligible, statuses=None, exclude=DEFAULT_EXCLUDE, superseded=None):
     """The strict candidate set of MemoryStore._retrieve, minus configured record paths."""
-    superseded = store._superseded_ids()
+    if superseded is None:
+        superseded = store._superseded_ids()
     prefixes = tuple(_path_key(prefix) for prefix in exclude)
-    allowed_statuses = {_status_word({"status": value}) for value in statuses} if statuses is not None else None
+    allowed_statuses = _allowed_statuses(statuses)
     result = []
     for record in eligible:
         source = str(record.get("source", ""))
-        if (record["id"] in superseded or (allowed_statuses is not None and _status_word(record) not in allowed_statuses) or
+        if (record["id"] in superseded or not _status_allowed(record, allowed_statuses) or
                 source.startswith(store.STRICT_EXCLUDE) or _path_key(source).startswith(prefixes)):
             continue
         result.append(record)
@@ -394,8 +395,9 @@ def context_for(store, harness, query, project=None, audience="internal", status
     if isinstance(statuses, str):
         statuses = [statuses]
     config = settings(store.state_dir)
-    eligible, stale_count = store._eligible(audience, project)
-    candidates = pool(store, eligible, statuses, config["exclude"])
+    records = store._records()
+    eligible, stale_count = store._eligible(audience, project, records=records)
+    candidates = pool(store, eligible, statuses, config["exclude"], superseded=store._superseded_ids(records))
     index = build(store.state_dir, candidates, write=not store.read_only,
                   deadline=time.monotonic() + BUILD_SECONDS)
     if candidates and not index.passages:

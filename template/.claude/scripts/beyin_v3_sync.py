@@ -428,6 +428,13 @@ class SyncEngine:
                    if record.get('validity') == 'rejected' and record.get('kind') not in ('inference', 'preference')]
         return {'ignored_rejection_count': len(ignored), 'ignored_rejections': ignored[:20], 'truncated': len(ignored) > 20}
 
+    def supersedes_health(self):
+        """Report supersedes values that retire nothing: unresolved, ambiguous or the note itself."""
+        with self.store._connect() as db:
+            records = [json.loads(row[0]) for row in db.execute('SELECT payload FROM records ORDER BY id')]
+        dead = resolve_supersedes(records)[1]
+        return {'dead_count': len(dead), 'dead': dead[:20], 'truncated': len(dead) > 20}
+
     def _scan(self):
         records, warnings, conflicts = {}, [], []
         duplicate = set()
@@ -563,9 +570,6 @@ class SyncEngine:
             receipt_warnings = self._scan_receipts(db)
             records, warnings, conflicts = self._scan()
             warnings.extend(receipt_warnings)
-            _retired, dead_supersedes = resolve_supersedes(list(records.values()))
-            warnings.extend({'source': item['source'], 'reason': item['reason'], 'value': item['value']}
-                             for item in dead_supersedes)
             conflicts.extend(recovery_conflicts)
             old_owned = {row[0] for row in db.execute('SELECT id FROM markdown_sources')}
             deleted = 0
@@ -595,13 +599,20 @@ class SyncEngine:
                     db.execute('INSERT INTO events(event_type,record_id,revision,record) VALUES (?,?,?,?)', (event_type, id, record['revision'], payload))
                 db.execute('INSERT OR REPLACE INTO markdown_sources VALUES (?,?)', (id, record['source']))
             conflicts.extend(project_receipts(self, db, warnings))
+            # A supersedes value that retires nothing is reported, not a degraded scan: no
+            # source was excluded and the hook must not warn on every turn about it.
+            dead_supersedes = resolve_supersedes([json.loads(row[0]) for row in db.execute('SELECT payload FROM records ORDER BY id')])[1]
             if conflicts:
                 # A receipt hidden by a directory mtime that did not move surfaces as a view
                 # conflict; the next sync then rescans receipts/ in full.
                 db.execute("DELETE FROM metadata WHERE key='receipt_scan_signature'")
         for entry in completed:
             entry.unlink(missing_ok=True)
-        return {'status': 'conflict' if conflicts else 'degraded' if warnings else 'succeeded', 'indexed': len(records), 'deleted': deleted, 'warnings': warnings, 'conflicts': conflicts}
+        result = {'status': 'conflict' if conflicts else 'degraded' if warnings else 'succeeded', 'indexed': len(records), 'deleted': deleted, 'warnings': warnings, 'conflicts': conflicts}
+        if dead_supersedes:
+            result['supersedes_issues'] = dead_supersedes[:20]
+            result['supersedes_issue_count'] = len(dead_supersedes)
+        return result
 
     def _intent(self, relative, old_hash, content, kind, event=None):
         path = self._path(relative)
