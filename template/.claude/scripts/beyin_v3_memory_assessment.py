@@ -110,7 +110,7 @@ def _assess(store, proposal, *, project, transport):
     result['prior_relations'] = [dict(record_id=record['id'], **choices['relation_p' + str(i)])
                                  for i, record in enumerate(priors)]
     _calibration(result, mode)
-    uncertain = any(item['confidence'] < limits(mode)['confidence'] for item in choices.values())
+    uncertain = any(not (item['confidence'] >= limits(mode)['confidence']) for item in choices.values())
     conflict = any(relation['choice'] == 'contradiction' for relation in result['prior_relations'])
     if conflict:
         result['diagnostics'].append('prior_conflict')

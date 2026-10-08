@@ -129,7 +129,7 @@ def remember(store, harness, session, query, delivered, *, inherited=False, now=
         # This directory is owned by this feature; bound both lifetime and count.
         files = sorted((p for p in path.parent.glob('*.json') if not p.is_symlink()),
                        key=lambda p: p.stat().st_mtime, reverse=True)
-        for candidate in files[MAX_SESSIONS - 1:]:
+        for candidate in files[MAX_SESSIONS:]:
             candidate.unlink(missing_ok=True)
         with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=path.parent, delete=False) as handle:
             temporary = handle.name
