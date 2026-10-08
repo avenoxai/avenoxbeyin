@@ -56,7 +56,21 @@ def managed_handler(handler, previous, kept=()):
     legacy = any(re.search(r'(?:^|/)' + re.escape(root + name) + r'(?=$|[\s"\';&|])', normalized)
                  for root in (".claude/hooks/", ".codex/hooks/", ".agents/hooks/")
                  for name in LEGACY_HOOK_FILES if root + name not in kept)
-    return command in previous or "beyin_v3_hook.py" in command or legacy
+    return command in previous or "beyin_v3_hook.py" in command or "beyin_v3_hook.py" in encoded_script(command) or legacy
+
+
+def encoded_script(command):
+    """The PowerShell text inside a Windows -EncodedCommand hook; empty for any other command.
+
+    The encoded form shows no file name, so a vault moved from another account or machine,
+    whose manifest lists none of its commands, kept those stale entries beside the new ones (#204)."""
+    match = re.search(r"-EncodedCommand\s+([A-Za-z0-9+/=]+)", str(command), re.I)
+    if not match:
+        return ""
+    try:
+        return base64.b64decode(match.group(1), validate=True).decode("utf-16le")
+    except (ValueError, UnicodeError):
+        return ""
 
 
 # Vault paths of the file components. Names are validated against

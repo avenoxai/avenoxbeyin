@@ -214,6 +214,91 @@ def jev_advice(result):
     return result
 
 
+HOOK_FILES = (".claude/settings.local.json", ".codex/hooks.json", ".agents/hooks.json")
+
+
+def _hook_arguments(command: str) -> list:
+    """Arguments of one installed hook command: POSIX shell text or the Windows EncodedCommand."""
+    import base64
+    import re
+    import shlex
+    match = re.search(r"-EncodedCommand\s+([A-Za-z0-9+/=]+)", command, re.I)
+    if match:
+        try:
+            script = base64.b64decode(match.group(1), validate=True).decode("utf-16le")
+        except (ValueError, UnicodeError):
+            return []
+        return [item.replace("''", "'") for item in re.findall(r"'((?:[^']|'')*)'", script)]
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return []
+
+
+def hook_paths(vault: Path) -> dict:
+    """Read-only (#204): hook commands that still name another install location.
+
+    A vault moved to another account or machine together with its hook files keeps commands
+    such as C:\\Users\\<old>\\...\\beyin_v3_hook.py; every lifecycle hook then fails with a
+    generic error. Reads only the three hook files; never writes and never walks the vault."""
+    stale, checked = [], 0
+    try:
+        here = vault.resolve()
+    except OSError:
+        here = vault
+    for name in HOOK_FILES:
+        path = vault / name
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeError):
+            stale.append({"file": name, "reason": "unreadable"})
+            continue
+        events = data.get("beyin-v3", {}) if name == ".agents/hooks.json" else data.get("hooks", {})
+        handlers = []
+        for event, groups in (events.items() if isinstance(events, dict) else ()):
+            for group in groups if isinstance(groups, list) else ():
+                if not isinstance(group, dict):
+                    continue
+                for handler in group.get("hooks", [group]) if "hooks" in group else [group]:
+                    if isinstance(handler, dict) and isinstance(handler.get("command"), str):
+                        handlers.append((event, handler["command"]))
+        for event, command in handlers:
+            arguments = _hook_arguments(command)
+            script = next((a for a in arguments if a.replace("\\", "/").endswith("/beyin_v3_hook.py")), None)
+            if script is None:
+                continue
+            checked += 1
+            reasons = []
+            if not Path(script).is_file():
+                reasons.append(("hook_script_missing", script))
+            if "--vault" in arguments[:-1]:
+                bound = arguments[arguments.index("--vault") + 1]
+                try:
+                    same = Path(bound).resolve() == here
+                except OSError:
+                    same = False
+                if not same:
+                    reasons.append(("other_vault", bound))
+            if arguments and Path(arguments[0]).is_absolute() and not Path(arguments[0]).exists():
+                reasons.append(("python_missing", arguments[0]))
+            for reason, value in reasons:
+                entry = {"file": name, "event": event, "reason": reason, "path": value}
+                if entry not in stale:
+                    stale.append(entry)
+    if not checked and not stale:
+        return {"status": "not_installed", "checked": 0}
+    result = {"status": "stale" if stale else "ok", "checked": checked}
+    if stale:
+        result["stale"] = stale[:20]
+        result["hint"] = ("Hook commands point to another install location (vault moved, or hook files synced "
+                          "from another machine). Run the installer again on this machine with this vault; if the "
+                          "vault moved from another account or folder, pass the old state folder (or a copy) with "
+                          "--state. Keep hook files out of sync (docs/v3/MULTI-MACHINE.md).")
+    return result
+
+
 def read_json(filename: str):
     if filename == "-":
         return json.load(sys.stdin)
@@ -465,6 +550,10 @@ def main(argv=None):
                     seen[event['harness']].add(event.get('event', 'unknown'))
             result['lifecycle'] = {name: {'status': 'observed_metadata' if events else 'never_seen', 'events': sorted(events)} for name, events in seen.items()}
             result['legacy_external_schedules'] = 'not_inspected; review custom OS/compiler schedules before migration'
+            try:  # information only: a stale-path report must never hide the rest of doctor
+                result['hook_paths'] = hook_paths(vault)
+            except Exception as exc:
+                result['hook_paths'] = {'status': 'unavailable', 'error': type(exc).__name__}
             # Information only; a split or container-bound state root never raises the status.
             try:
                 result['state_location'] = state_location(vault, state)
@@ -558,7 +647,7 @@ def main(argv=None):
                 result['parallel_sessions'] = parallel.doctor(state)
             except Exception as exc:
                 result['parallel_sessions'] = {'status': 'unavailable', 'error': type(exc).__name__}
-            result['status'] = ('needs_attention' if health.get('sync', {}).get('status') in ('conflict', 'degraded') or result['skill_conflicts'] or result.get('instruction_conflicts') or result['hook-error.json'] or result['task_completion']['strict_issue_count'] or result['task_completion'].get('error') or result['validity']['ignored_rejection_count'] or result['validity'].get('error') else 'pending' if result['pending_events'] else 'observed_metadata' if result['acknowledged_events'] else 'never_seen')
+            result['status'] = ('needs_attention' if health.get('sync', {}).get('status') in ('conflict', 'degraded') or result['hook_paths'].get('status') == 'stale' or result['skill_conflicts'] or result.get('instruction_conflicts') or result['hook-error.json'] or result['task_completion']['strict_issue_count'] or result['task_completion'].get('error') or result['validity']['ignored_rejection_count'] or result['validity'].get('error') else 'pending' if result['pending_events'] else 'observed_metadata' if result['acknowledged_events'] else 'never_seen')
             # Information only: a leftover global OMP hook copy predates the vault-owned plan
             # (OMP.md says the installer never updates or removes it). After an engine update the
             # copy can be older than the installed vault hook, so a session outside the vault can
