@@ -135,6 +135,7 @@ def _parse_yaml_value(value):
 # silently ignored (only top-level metadata reaches the gates), so such a source
 # stays excluded with a warning, as before nested mappings were read (#179).
 GATE_KEYS = ('visibility', 'trust', 'trusted', 'remote_allowed')
+COMMA_LIST_KEYS = ('tags', 'aliases')
 
 
 def _mapping_value(sub_key, value):
@@ -219,7 +220,15 @@ def parse(text):
             else:
                 metadata[key] = None
             continue
-        metadata[key] = _parse_yaml_value(value)
+        parsed = _parse_yaml_value(value)
+        # Obsidian reads an unquoted `tags: a, b` or `aliases: a, b` as a list. Other keys keep
+        # their text: `title: Merhaba, dunya` or `project: Acme, Inc` stay one string, and a
+        # task update renders the parsed metadata back into the note.
+        if key in COMMA_LIST_KEYS and isinstance(parsed, str) and value[:1] not in '"\'' and ',' in parsed:
+            items = [part.strip() for part in parsed.split(',') if part.strip()]
+            if len(items) > 1:
+                parsed = items
+        metadata[key] = parsed
     return metadata, body
 
 
