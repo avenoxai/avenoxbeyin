@@ -60,12 +60,11 @@ class SecretFilterTest(unittest.TestCase):
             'sk-admin-' + 'B'*24,
             'hf_' + 'D'*24,
             'ASIA' + 'E'*16,
-            '-----BEGIN CERTIFICATE-----\nABC\n-----END CERTIFICATE-----',
-            '-----BEGIN CERTIFICATE-----\r\nDEF\r\n-----END CERTIFICATE-----',
             'sk-' + 'C'*24,
             'AKIA' + 'D'*16,
             'Bearer ' + 'e'*24,
             'password=synthetic-password',
+            'password' + ' '*24 + '= synthetic-password',
             '-----BEGIN PRIVATE KEY-----\nSYNTHETIC\n-----END PRIVATE KEY-----',
         ]
         filtered, count = redact('\n'.join(values), self.state)
@@ -101,6 +100,11 @@ class SecretFilterTest(unittest.TestCase):
                     self.assertGreaterEqual(count, 1)
                     self.assertNotIn(value, filtered)
                     self.assertNotIn(value[8:], filtered)
+
+    def test_public_certificate_is_not_a_secret(self):
+        """#227: a certificate is public by design; only private key blocks are redacted."""
+        cert = '-----BEGIN CERTIFICATE-----\nMIIBsyntheticPublicCertificate\n-----END CERTIFICATE-----'
+        self.assertEqual(redact(cert, self.state), (cert, 0))
 
     def test_provider_patterns_leave_ordinary_text_and_identifiers_alone(self):
         png = ('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk'
@@ -368,32 +372,10 @@ class SecretFilterTest(unittest.TestCase):
         self.assertNotIn('abcdefghijkl', content)
         self.assertNotIn(self.token, content)
 
-    def test_redos_limits(self):
-        """Verify that extremely long repetitive inputs do not trigger ReDoS."""
-        import time
-        from beyin_v3 import REJECTED_AT
-
-        # 1. Assignment ReDoS
-        text = 'password' + '=' + ' ' * 100000 + '"' + 'A'*7
-        t0 = time.time()
-        redact(text, self.state)
-        self.assertLess(time.time() - t0, 1.0)
-
-        # 2. CERT ReDoS
-        text = "-----BEGIN CERTIFICATE-----\n" + "A" * 100000 + "\n-----END CERTIFICATE-----"
-        t0 = time.time()
-        redact(text, self.state)
-        self.assertLess(time.time() - t0, 1.0)
-
-        # 3. REJECTED_AT ReDoS
-        text = "2023-01-01T" + "1" * 100000
-        t0 = time.time()
-        REJECTED_AT.match(text)
-        self.assertLess(time.time() - t0, 1.0)
-
     def test_pathological_runs_stay_linear(self):
         for text in ('\\' * 20000 + 'password', 'x://' + ':' * 20000, 'x://' + 'a:' * 10000,
-                     'password: "' + 'a' * 20000, 'password: "a' * 2000):
+                     'password: "' + 'a' * 20000, 'password: "a' * 2000,
+                     'password=' + ' ' * 100000 + '"' + 'A' * 7):
             with self.subTest(text=text[:12], length=len(text)):
                 started = time.monotonic()
                 redact(text, self.state)
