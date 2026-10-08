@@ -124,7 +124,7 @@ Kaynak yazıldıktan sonra `python3 beyin.py sync` çalıştır. Görev değişi
 
 Anlamlı çalışma bittiğinde, kullanıcı hafızaya yazılmamasını istemediyse kısa bir kaynak bağlantılı sonuç kaydı gönder. İşin gerçek sonucunu ve varsa açık kalan adımı yaz; planı tamamlanmış sonuç gibi kaydetme. Yalnız kalıcı öğrenimler varsa bunları kullanıcının knowledge düzeninde kaynak bağlantılı Markdown olarak damıt. Her konuşmadan zorla öğrenim çıkarma; reasoning, ham araç logları veya bütün transkriptleri notlara kopyalama.
 
-Öncelikle `python3 beyin.py receipt --harness codex --event-id EVENT_ID --summary "Sonuç özeti" --ref notes/kaynak.md` komutunu kullan; mevcut istemciye göre `claude`, `antigravity`, `hermes`, `opencode` veya `omp` seç. Birden çok kaynak için `--ref` tekrarlanır. Çok satırlı UTF-8 özet dosyası için `--summary` yerine `--summary-file PATH` kullan; `--summary` içindeki iki karakterli `\n` satır sonuna çevrilmez.
+Öncelikle `python3 beyin.py receipt --harness codex --event-id EVENT_ID --summary "Sonuç özeti" --ref notes/kaynak.md` komutunu kullan; mevcut istemciye göre `claude`, `antigravity`, `hermes`, `opencode` veya `omp` seç. Birden çok kaynak için `--ref` tekrarlanır. Çok satırlı UTF-8 özet dosyası için `--summary` yerine `--summary-file PATH` kullan; `--summary` içindeki iki karakterli `\n` satır sonuna çevrilmez. Özet çift tırnak içeriyorsa ya da `\` ile bitiyorsa (Windows PowerShell 5.1 bunları programa bozarak geçirebilir) `--summary-file` kullan.
 
 JSON alternatifi: `python3 beyin.py receipt --file RECEIPT_JSON --harness codex`. `--file` ile receipt alan bayraklarını birleştirme. Şema:
 
