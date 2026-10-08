@@ -535,6 +535,15 @@ class CompactionPlanTest(unittest.TestCase):
         self.assertIn('AKŞAM', live)
         self.assertNotIn('SABAH', live)
 
+    def test_plan_mixed_order(self):
+        text = ('# Son oturum\n\n## Session: 2026-09-25\nILK_YENI\n\n## Session: 2026-09-24\nORTA\n\n'
+                '## Session: 2026-09-25\nIKINCI_YENI\n')
+        # Mixed dates: 25 -> 24 is falling, 24 -> 25 is rising.
+        # Last-Session.md must fall back to newest_first (keeping the top-most card when dates tie).
+        result = self.plan(text, 'Last-Session.md', 10)
+        self.assertIn('ILK_YENI', result['live'])
+        self.assertNotIn('IKINCI_YENI', result['live'])
+
     def test_same_day_thread_updates_keep_the_bottom_one(self):
         # The reproduction from #163: thread updates are appended, so the bottom one is newest.
         text = ('# Threads\n\n## Active Threads\n### Thread: Volt\n**Status:** Active\n'
