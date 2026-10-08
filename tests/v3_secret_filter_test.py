@@ -87,6 +87,10 @@ class SecretFilterTest(unittest.TestCase):
             'eyJhbGciOiJSU0EtT0FFUCJ9.' + 'I'*20 + '.' + 'J'*16 + '.' + 'K'*30 + '.' + 'L'*22,
             'M' + 'T'*25 + '.' + 'G'*6 + '.' + 'x'*38,
             'N' + 'z'*23 + '.' + 'Y'*6 + '.' + 'q'*27,
+            'sk-' + '1'*20 + '-',
+            'sk-' + '2'*20 + '_',
+            'npm_' + '3'*36,
+            'https://user:@example.com/endpoint',
         ]
         for value in values:
             with self.subTest(value=value[:12]):
@@ -95,6 +99,19 @@ class SecretFilterTest(unittest.TestCase):
                     self.assertGreaterEqual(count, 1)
                     self.assertNotIn(value, filtered)
                     self.assertNotIn(value[8:], filtered)
+
+    def test_dashed_keys_redact_next_to_punctuation(self):
+        """#221: a key ending in - or _ was cut short at a word boundary, and a stricter boundary
+        must not let a key at the end of a sentence or after a period or dash through."""
+        values = ['sk-' + 'A'*19 + '-', 'sk-proj-' + 'B'*40 + '_' + 'C'*20 + '-',
+                  'sk-ant-api03-' + 'D'*60 + 'AA', 'npm_' + 'E'*36]
+        for value in values:
+            for text in (f'Anahtar {value}.', f'Anahtar {value}, sonra', f'cfg.{value} x', f'x-{value} y',
+                         f'({value})', f'{value}_x' if value.startswith('npm_') else f'"{value}"'):
+                with self.subTest(text=text[:24]):
+                    filtered, count = redact(text, self.state)
+                    self.assertGreaterEqual(count, 1)
+                    self.assertNotIn(value[4:], filtered)
 
     def test_provider_patterns_leave_ordinary_text_and_identifiers_alone(self):
         png = ('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk'
