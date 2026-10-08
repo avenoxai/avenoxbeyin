@@ -100,6 +100,19 @@ class SecretFilterTest(unittest.TestCase):
                     self.assertNotIn(value, filtered)
                     self.assertNotIn(value[8:], filtered)
 
+    def test_dashed_keys_redact_next_to_punctuation(self):
+        """#221: a key ending in - or _ was cut short at a word boundary, and a stricter boundary
+        must not let a key at the end of a sentence or after a period or dash through."""
+        values = ['sk-' + 'A'*19 + '-', 'sk-proj-' + 'B'*40 + '_' + 'C'*20 + '-',
+                  'sk-ant-api03-' + 'D'*60 + 'AA', 'npm_' + 'E'*36]
+        for value in values:
+            for text in (f'Anahtar {value}.', f'Anahtar {value}, sonra', f'cfg.{value} x', f'x-{value} y',
+                         f'({value})', f'{value}_x' if value.startswith('npm_') else f'"{value}"'):
+                with self.subTest(text=text[:24]):
+                    filtered, count = redact(text, self.state)
+                    self.assertGreaterEqual(count, 1)
+                    self.assertNotIn(value[4:], filtered)
+
     def test_provider_patterns_leave_ordinary_text_and_identifiers_alone(self):
         png = ('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk'
                'YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==')

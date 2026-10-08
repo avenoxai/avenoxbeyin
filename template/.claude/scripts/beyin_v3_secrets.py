@@ -14,7 +14,9 @@ BUILTIN_PATTERNS = (
     re.compile(r"(?<=://)[^/\s?#:]*:[^/\s?#]*(?=@[^/\s?#@]+)"),
     re.compile(r"\bgh(?:p|o|u|s|r)_[A-Za-z0-9]{20,255}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,255}\b"),
-    re.compile(r"(?<![A-Za-z0-9_.-])sk-[A-Za-z0-9_-]{20,255}(?![A-Za-z0-9_.-])"),
+    # The key alphabet includes - and _, so only a key character may not follow; a period
+    # or dash before the key, or a sentence-ending period after it, still redacts.
+    re.compile(r"\bsk-[A-Za-z0-9_-]{20,255}(?![A-Za-z0-9_-])"),
     re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
     re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"),
     re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
@@ -25,7 +27,7 @@ BUILTIN_PATTERNS = (
     re.compile(r"\bxox[abeoprs]-[0-9]+-[A-Za-z0-9-]{8,255}\b"),
     re.compile(r"\bxapp-[0-9]+-[A-Za-z0-9-]{8,255}\b"),
     re.compile(r"(?<![A-Za-z0-9_-])AIza[0-9A-Za-z_-]{35}(?![A-Za-z0-9_-])"),
-    re.compile(r"(?<![A-Za-z0-9_.-])npm_[A-Za-z0-9]{36}(?![A-Za-z0-9_.-])"),
+    re.compile(r"\bnpm_[A-Za-z0-9]{36}(?![A-Za-z0-9])"),
     re.compile(r"(?<![A-Za-z0-9_.-])SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])"),
     # A JWT header is base64url JSON, so it always opens with eyJ; three dot-separated
     # base64url segments are required (five for an encrypted JWE). Plain base64
@@ -82,27 +84,18 @@ def record(state, count):
     path = state / 'secret-filter.sqlite3'
     if path.is_symlink():
         raise ValueError('secret filter health database must not be a symlink')
-    retries = 10
-    for attempt in range(retries):
-        try:
-            with closing(sqlite3.connect(path, timeout=10)) as db, db:
-                db.execute('CREATE TABLE IF NOT EXISTS health (id INTEGER PRIMARY KEY CHECK(id=1), total INTEGER NOT NULL, last_count INTEGER NOT NULL, last_at TEXT)')
-                db.execute('BEGIN IMMEDIATE')
-                row = db.execute('SELECT total FROM health WHERE id=1').fetchone()
-                total = (row[0] if row else 0) + count
-                db.execute('INSERT OR REPLACE INTO health VALUES (1,?,?,?)',
-                           (total, count, datetime.now(timezone.utc).isoformat()))
-            try:
-                path.chmod(0o600)
-            except OSError:
-                pass
-            return {'total': total, 'last_count': count}
-        except sqlite3.OperationalError as e:
-            if "locked" in str(e).lower() and attempt < retries - 1:
-                import time
-                time.sleep(0.1)
-                continue
-            return {'total': count, 'last_count': count}
+    with closing(sqlite3.connect(path, timeout=10)) as db, db:
+        db.execute('CREATE TABLE IF NOT EXISTS health (id INTEGER PRIMARY KEY CHECK(id=1), total INTEGER NOT NULL, last_count INTEGER NOT NULL, last_at TEXT)')
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT total FROM health WHERE id=1').fetchone()
+        total = (row[0] if row else 0) + count
+        db.execute('INSERT OR REPLACE INTO health VALUES (1,?,?,?)',
+                   (total, count, datetime.now(timezone.utc).isoformat()))
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    return {'total': total, 'last_count': count}
 
 
 def health(state):
