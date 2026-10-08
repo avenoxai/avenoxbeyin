@@ -331,8 +331,12 @@ def build(state_dir, pool, write=True, deadline=None):
 
 
 def _weight(shared, frequency, total, size):
+    total = max(1, total)
     idf_max = math.log((total + 1) / 2) + 1
+    if not shared:
+        return 0.0
     weight = sum(math.log((total + 1) / (frequency.get(token, 0) + 1)) + 1 for token in shared)
+    size = max(0, size)
     return weight / idf_max / math.log(10 + size)
 
 

@@ -316,6 +316,17 @@ class BenchmarkTest(unittest.TestCase):
         self.assertEqual(passages['noise_everyday'], 0.0)
         self.assertLessEqual(passages['noise_agent'], 0.1)
 
+    def test_weight_zero_and_empty_edge_cases(self):
+        """_weight handles total=0, size=0, and empty shared without math errors or negative idf (PR #213/#214)."""
+        import math
+        w_empty = passage._weight(set(), {}, total=0, size=0)
+        self.assertEqual(w_empty, 0.0)
+
+        w_single = passage._weight({'term'}, {'term': 1}, total=0, size=0)
+        self.assertGreater(w_single, 0.0)
+        self.assertFalse(math.isnan(w_single))
+        self.assertFalse(math.isinf(w_single))
+
 
 if __name__ == '__main__':
     unittest.main()

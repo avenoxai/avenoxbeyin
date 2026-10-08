@@ -58,6 +58,16 @@ class StrictRetrieveTest(unittest.TestCase):
     def test_meaningful_match_survives_strict_mode(self):
         self.assertEqual(self.sources('why is the GoPlus quota wasted', strict=True), ['knowledge/goplus-quota.md'])
 
+    def test_empty_vocabulary_note_is_cleanly_handled(self):
+        """Notes with empty vocabulary (or only stopwords) do not cause math errors in _strict_rank (PR #213/#214)."""
+        self.ingest('empty-note', '   ', 'notes/empty.md')
+        self.ingest('stopword-note', 'and the or is', 'notes/stopwords.md')
+        # Querying should evaluate without raising ZeroDivisionError or ValueError
+        results = self.sources('quota wasted', strict=True)
+        self.assertIn('knowledge/goplus-quota.md', results)
+        self.assertNotIn('notes/empty.md', results)
+        self.assertNotIn('notes/stopwords.md', results)
+
     def test_strict_abstains_when_nothing_relates(self):
         result = self.store.retrieve('thanks that was great', strict=True)
         self.assertEqual(result['records'], [])

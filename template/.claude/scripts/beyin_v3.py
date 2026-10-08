@@ -577,8 +577,11 @@ class MemoryStore:
             if shared_count < self.STRICT_MIN_SHARED:
                 continue
             vocabulary = vocabularies[record["id"]]
+            vocab_len = len(vocabulary)
+            if vocab_len == 0:
+                continue
             weight = sum(math.log((total + 1) / (frequency.get(token, 0) + 1)) + 1 for token in terms & vocabulary)
-            weight = weight / idf_max / math.log(10 + len(vocabulary))
+            weight = weight / idf_max / math.log(10 + vocab_len)
             if weight >= self.STRICT_MIN_WEIGHT:
                 weighted.append((weight, record))
         weighted.sort(key=lambda item: (item[1].get("updated_at", ""), item[1]["id"]), reverse=True)
