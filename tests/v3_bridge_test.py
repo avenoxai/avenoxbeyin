@@ -50,6 +50,7 @@ class BridgeTest(unittest.TestCase):
             result = self.invoke(harness=harness)
             text = result['hookSpecificOutput']['additionalContext']
             self.assertIn('receipt --harness ' + harness, text)
+            self.assertIn('--event-id EVENT_ID --summary "Work result" --ref PATH', text)
             self.assertIn(str(self.vault / 'beyin.py'), text)
             self.assertLessEqual(len(text), 1500)
         events = self.queued()

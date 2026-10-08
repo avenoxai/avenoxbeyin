@@ -323,6 +323,8 @@ class HookInstallerTest(unittest.TestCase):
             queued = len(list((self.state / 'hook-queue').glob('*.json')))
             first = self.lifecycle('Stop', session, harness)
             self.assertEqual(first['decision'], 'block')
+            self.assertIn('receipt --harness ' + harness + ' --session ' + hashlib.sha256(session.encode()).hexdigest()[:24], first['reason'])
+            self.assertIn('--event-id EVENT_ID --summary "Work result" --ref PATH', first['reason'])
             self.assertIn('python3 beyin.py receipt --file RECEIPT_JSON --harness ' + harness, first['reason'])
             self.assertIn('Receipt session=' + hashlib.sha256(session.encode()).hexdigest()[:24] + ';', first['reason'])
             # The Stop checkpoint is queued before any reminder work.
