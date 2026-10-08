@@ -277,8 +277,8 @@ def main(argv=None):
                 f'Receipt session={session}; harness={args.harness}.\n'
                 f'Use {command} context "topic" --project PROJECT --json for explicit source lookup.\n'
                 f'After meaningful authorized work use {command} receipt --harness {args.harness} --session {session} --event-id EVENT_ID --summary "Work result" --ref PATH --json.\n'
-                'Repeat --ref for multiple sources; use --summary-file PATH for a UTF-8 summary file. JSON alternative: --file RECEIPT.json instead of receipt field flags.\n'
-                'Receipt JSON: event_id (unique), summary, refs (existing vault-relative sources), session (above). '
+                'EVENT_ID unique; PATH an existing vault-relative source, repeatable; --summary-file FILE reads UTF-8. '
+                'JSON alternative: --file RECEIPT.json with event_id, summary, refs, session. '
                 'Read vault sources before claiming facts. Do not infer completion from checkpoints. '
                 'Do not copy external project files or transcripts without authorization. No-memory requests take precedence.')
         if read_project_context(state):
