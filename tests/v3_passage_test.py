@@ -97,6 +97,16 @@ class SplitTest(unittest.TestCase):
             self.assertLess(time.perf_counter() - started, 1.0)
             self.assertEqual(spans[0][0], 'a' + gap + 'b')
 
+    def test_oversized_text_without_spaces_preserves_overlap_and_does_not_loop(self):
+        text = "a" * 49 + " " + "b" * 150
+        spans = passage._windows(text, 0, len(text), 100, 20)
+        self.assertLess(spans[1][0], spans[0][1], "Overlap was dropped!")
+
+    def test_nested_code_blocks_are_handled(self):
+        text = "````\n```\na\n```\nb\n````"
+        spans = passage.split_blocks(text, 100, 20)
+        self.assertEqual(len(spans), 1)
+
 
 class PassageContextTest(Vault):
     def test_delivers_the_matching_block_of_a_rich_note(self):

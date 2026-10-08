@@ -98,6 +98,18 @@ class ReferencesTest(unittest.TestCase):
         report = references.check(self.vault)
         self.assertEqual((report['dead_count'], len(report['dead']), report['truncated']), (25, 20, True))
 
+    def test_circular_references_do_not_infinite_loop(self):
+        self.write('AGENTS.md', '[[CLAUDE]]')
+        self.write('CLAUDE.md', '[[AGENTS]]')
+        report = references.check(self.vault)
+        self.assertIn('checked_files', report)
+
+    def test_special_characters_and_aliases_are_parsed_correctly(self):
+        self.write('AGENTS.md', '[[Türkçe (Karakter) Notu|Görünen Ad]]')
+        self.write('Türkçe (Karakter) Notu.md', 'içerik')
+        report = references.check(self.vault)
+        self.assertEqual(report['dead'], [])
+
 
 class DoctorIntegrationTest(unittest.TestCase):
     def setUp(self):
