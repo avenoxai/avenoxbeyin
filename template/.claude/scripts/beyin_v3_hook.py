@@ -366,10 +366,9 @@ def main():
         return
     notice = ''
     try:
-        try:
-            payload = json.loads(sys.stdin.read(1_000_000) or "{}")
-        except ValueError:
-            print('{}'); return 0
+        # A payload cut at the read limit is not JSON: the handler below answers "{}" and
+        # records the error for doctor instead of silently dropping the turn.
+        payload = json.loads(sys.stdin.read(1_000_000) or "{}")
         event = payload.get("hook_event_name", args.event)
         if args.harness == "hermes":
             # Hermes plugin hooks: pre_llm_call (first turn -> SessionStart, later ->

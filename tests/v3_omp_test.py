@@ -54,6 +54,25 @@ console.log(JSON.stringify(result))
 """
 
 
+SHUTDOWN_DRIVER = """
+import { pathToFileURL } from "node:url"
+const handlers = {}
+const pi = { on: (name, fn) => { handlers[name] = fn } }
+const mod = await import(pathToFileURL(process.env.PLUGIN_PATH).href)
+mod.default(pi)
+const calls = { top: 0, sub: 0 }
+const make = (id, key, entries) => ({ cwd: process.env.OMP_CWD,
+  sessionManager: { getSessionId: () => id, getEntries: () => { calls[key] += 1; return entries } } })
+const top = make("omp-top", "top", [{ type: "message" }])
+const sub = make("omp-sub", "sub", [{ type: "session_init", task: "t" }])
+for (const ctx of [top, sub]) {
+  await handlers.session_stop({}, ctx)
+  await handlers.session_shutdown({}, ctx)
+  await handlers.session_stop({}, ctx)
+}
+console.log(JSON.stringify(calls))
+"""
+
 def load(path, name):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -216,9 +235,13 @@ class OMPHarnessTest(unittest.TestCase):
         self.assertNotIn('omp_global_hook', doctor)
 
     @unittest.skipUnless(BUN, 'bun is required to execute the OMP hook')
-    def test_session_shutdown_removes_from_subagents_map(self):
+    def test_session_shutdown_forgets_the_subagent_decision(self):
+        # The per-session sub-agent decision is cached (getEntries copies the session); a shut
+        # down session, top-level or sub-agent, leaves no entry behind in a long-lived process.
+        self.driver.write_text(SHUTDOWN_DRIVER, encoding='utf-8')
         result = self.drive()
-        self.assertIn('session_shutdown', result['keys'])
+        self.assertEqual(result['top'], 2, 'top-level session decided again after its shutdown')
+        self.assertEqual(result['sub'], 2, 'sub-agent session decided again after its shutdown')
 
 
 if __name__ == '__main__':

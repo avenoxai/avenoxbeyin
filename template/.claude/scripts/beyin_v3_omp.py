@@ -166,7 +166,8 @@ export default function (pi) {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     const session = inVaultOf(ctx)
-    subagents.delete(session)
+    // Forget the decision for sub-agents too: inVaultOf returns null for them.
+    subagents.delete(sessionOf(ctx))
     if (session) await send(state, "SessionEnd", { session_id: session })
   })
 }

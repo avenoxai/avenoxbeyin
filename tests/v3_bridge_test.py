@@ -345,25 +345,22 @@ class BridgeTest(unittest.TestCase):
             self.assertTrue(line.startswith('- TASK_'))
             self.assertIn(': Action', line)
 
-    def test_invalid_utf8_in_payload_fails_open(self):
-        payload = b'{"hook_event_name": "UserPromptSubmit", "prompt": "bad \xff bytes"}'
-        p = subprocess.run(
-            [sys.executable, str(ROOT / 'template/.claude/scripts/beyin_v3_bridge.py'), 
-             '--vault', str(self.vault), '--state', str(self.state), '--harness', 'codex', '--project-root', str(self.vault)],
-            input=payload, capture_output=True
-        )
-        self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertEqual(p.stdout.strip(), b'{}')
+    def raw(self, data):
+        command = [sys.executable, str(SCRIPTS / 'beyin_v3_bridge.py'), '--vault', str(self.vault), '--state',
+                   str(self.state), '--harness', 'claude', '--project-root', str(self.root / 'Projects')]
+        result = subprocess.run(command, input=data, capture_output=True, env=self.env, cwd=self.project, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
 
-    def test_truncated_payload_fails_open(self):
-        payload = b'{"hook_event_name": "UserPromptSubmit", "prompt": "' + b'A' * 2_000_000 + b'"}'
-        p = subprocess.run(
-            [sys.executable, str(ROOT / 'template/.claude/scripts/beyin_v3_bridge.py'), 
-             '--vault', str(self.vault), '--state', str(self.state), '--harness', 'codex', '--project-root', str(self.vault)],
-            input=payload, capture_output=True
-        )
-        self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertEqual(p.stdout.strip(), b'{}')
+    def test_undecodable_prompt_byte_keeps_the_event_and_a_cut_payload_stays_inert(self):
+        # A stray byte in the prompt no longer costs the whole event: it is read as U+FFFD.
+        data = json.dumps(self.payload).encode('utf-8').replace(b'TRANSCRIPT_CANARY', b'TRANSCRIPT\xffCANARY')
+        self.assertIn('receipt --harness claude', self.raw(data)['hookSpecificOutput']['additionalContext'])
+        self.assertEqual(len(self.queued()), 1)
+        # A payload cut at the 1 MB read is not JSON: no context, no event, exit 0.
+        cut = json.dumps(dict(self.payload, event_id='cut', prompt='x' * 1_100_000)).encode('utf-8')
+        self.assertEqual(self.raw(cut), {})
+        self.assertEqual(len(self.queued()), 1)
 
 
 if __name__ == '__main__':

@@ -234,10 +234,8 @@ def main(argv=None):
             print(json.dumps({'hooks': {event: [{'hooks': [{'type': 'command', 'command': shell,
                               'timeout': 3 if event == 'SessionEnd' else 5}]}] for event in events}}, indent=2))
             return 0
-        try:
-            payload = json.loads(sys.stdin.read(1_000_000) or '{}')
-        except ValueError:
-            print('{}'); return 0
+        # A payload cut at the read limit is not JSON: the handler below answers '{}'.
+        payload = json.loads(sys.stdin.read(1_000_000) or '{}')
         if not isinstance(payload, dict):
             raise ValueError('Invalid hook payload')
         event = payload.get('hook_event_name')
