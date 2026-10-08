@@ -253,8 +253,9 @@ class MigrationTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Simulated disk full"):
                 self.m.migrate_v2(self.root, self.state)
 
-            self.assertFalse((self.state / 'v2-preserved-state' / 'flush-state.json').exists())
-            self.assertFalse((self.state / 'v2-preserved-state' / 'compile-state.json').exists())
+            preserved = self.state / 'v2-preserved-state' / '.claude/scripts/.state'
+            self.assertFalse((preserved / 'flush-state.json').exists())
+            self.assertFalse((preserved / 'compile-state.json').exists())
             self.assertFalse((self.state / 'v2-migration.json').exists())
         finally:
             shutil.copyfile = original_copyfile

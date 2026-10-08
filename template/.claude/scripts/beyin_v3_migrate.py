@@ -132,9 +132,10 @@ def finalize_migration(vault_root, state_dir, plan):
         for name in plan['legacy_state']:
             destination = state/'v2-preserved-state'/name
             destination.parent.mkdir(parents=True, exist_ok=True)
+            # Recorded before the copy: a copy that fails half way leaves a partial file too.
+            written.append(destination)
             shutil.copyfile(vault/name, destination)
             destination.chmod(0o600)
-            written.append(destination)
         result = dict(plan, status='succeeded', historical_replay=False,
                       compiler_policy='New outcomes use explicit semantic receipts and knowledge notes; no automatic model compiler. External schedules require operator review.')
         atomic(state/'v2-migration.json', json.dumps(result, ensure_ascii=False, indent=2))
