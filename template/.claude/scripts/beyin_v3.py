@@ -189,8 +189,23 @@ def _harmonizes(stem, suffix):
     return True
 
 
+_DROPS = {
+    'agz': 'agiz', 'akl': 'akil', 'sehr': 'sehir', 'fikr': 'fikir', 'metn': 'metin',
+    'omr': 'omur', 'vakt': 'vakit', 'kayb': 'kayip', 'hukm': 'hukum', 'ism': 'isim',
+    'resm': 'resim', 'cism': 'cisim', 'nesl': 'nesil', 'nfs': 'nefis', 'asl': 'asil',
+    'keyf': 'keyif', 'karn': 'karin', 'burn': 'burun', 'ogl': 'ogul', 'sabr': 'sabir',
+    'seyr': 'seyir'
+}
+
+
 @functools.lru_cache(maxsize=16384)
 def _stem(word):
+    for suffix, floor, gate in _SUFFIXES:
+        if word.endswith(suffix):
+            stem = word[:-len(suffix)]
+            if stem in _DROPS:
+                return _DROPS[stem]
+
     # Words under 5 characters are already stems; peeling them merges unrelated roots.
     while len(word) >= 5:
         for suffix, floor, gate in _SUFFIXES:
@@ -203,7 +218,15 @@ def _stem(word):
             break
         else:
             break
+
+    if len(word) >= 4 and word[-2] in _VOWELS:
+        if word.endswith("b"):
+            word = word[:-1] + "p"
+        elif word.endswith("g"):
+            word = word[:-1] + "k"
+
     return word
+
 
 
 def _tokens(text):

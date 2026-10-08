@@ -18,9 +18,16 @@ PAIRS = (
     ('kütüphane', 'kütüphanesi'), ('toplantı', 'toplantıda'), ('dükkan', 'dükkanında'),
     ('çoban', 'çobanın'), ('yayın', 'yayında'), ('kartal', 'kartalların'),
     ('berber', 'berberlerin'), ('köşe', 'köşelerde'), ('şişe', 'şişeden'),
-    ('çatal', 'çatallarda'), ('kitap', 'kitaplar'), ('karar', 'kararı'),
+    ('çatal', 'çatallarda'), ('karar', 'kararı'),
     ('durum', 'durumu'), ('sunucu', 'sunucularda'), ('araba', 'arabanın'),
     ('neden', 'nedenleri'), ('kapı', 'kapısında'), ('orman', 'ormanda'),
+    # Consonant softening (p/b, k/ğ):
+    ('kitap', 'kitabı'), ('örnek', 'örneği'), ('çocuk', 'çocuğu'),
+    ('hesap', 'hesabından'), ('temizlik', 'temizliği'), ('istek', 'isteğini'),
+    # Vowel dropping:
+    ('ağız', 'ağzı'), ('akıl', 'aklı'), ('fikir', 'fikri'),
+    ('şehir', 'şehri'), ('vakit', 'vakti'), ('kayıp', 'kaybı'),
+    ('hüküm', 'hükmü'), ('metin', 'metni'), ('resim', 'resmi'),
 )
 
 # Pairs that must stay apart: a stemmer that merges these turns recall into noise.
@@ -29,6 +36,7 @@ NEGATIVES = (
     ('bir', 'birim'), ('kod', 'kodla'), ('gol', 'golden'), ('tab', 'table'),
     ('hand', 'handle'), ('gar', 'garden'), ('sta', 'state'), ('list', 'listen'),
     ('dur', 'durum'), ('sür', 'sürüm'), ('yay', 'yayın'), ('haf', 'hafta'),
+    ('denedi', 'denetim'), ('kod', 'kot'), ('card', 'cart'), ('bulgu', 'bulk'),
 )
 
 FILLER = 'Bu sentetik test kaydıdır.'
