@@ -126,10 +126,11 @@ def remember(store, harness, session, query, delivered, *, inherited=False, now=
         path = _path(store, harness, session, create=True)
         if path is None:
             return
-        # This directory is owned by this feature; bound both lifetime and count.
-        files = sorted((p for p in path.parent.glob('*.json') if not p.is_symlink()),
+        # This directory is owned by this feature; bound both lifetime and count. The prune runs
+        # before the write, so it leaves room for this session's file: MAX_SESSIONS in all.
+        files = sorted((p for p in path.parent.glob('*.json') if not p.is_symlink() and p != path),
                        key=lambda p: p.stat().st_mtime, reverse=True)
-        for candidate in files[MAX_SESSIONS:]:
+        for candidate in files[MAX_SESSIONS - 1:]:
             candidate.unlink(missing_ok=True)
         with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=path.parent, delete=False) as handle:
             temporary = handle.name

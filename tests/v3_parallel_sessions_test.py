@@ -297,6 +297,17 @@ class ParallelModuleTest(unittest.TestCase):
         self.assertIn('#' + receipt_short('first'), self.module.touch(self.state, 'codex', 'second'))
         self.assertEqual(self.module.touch(self.state, 'codex', 'second'), '')
 
+    def test_failed_refresh_of_an_existing_marker_announces_nothing_and_once_later(self):
+        # The session already has a marker; a later sharing violation must not announce what
+        # it could not record, or every prompt during the lock would repeat the line.
+        self.module.touch(self.state, 'codex', 'second')
+        self.module.touch(self.state, 'claude', 'first')
+        with patch.object(self.module.os, 'replace', side_effect=PermissionError(32, 'sharing violation')):
+            self.assertEqual(self.module.touch(self.state, 'codex', 'second'), '')
+            self.assertEqual(self.module.touch(self.state, 'codex', 'second'), '')
+        self.assertIn('#' + receipt_short('first'), self.module.touch(self.state, 'codex', 'second'))
+        self.assertEqual(self.module.touch(self.state, 'codex', 'second'), '')
+
     def test_unknown_or_missing_session_writes_nothing(self):
         for session in (None, '', 'unknown', 'x' * 513):
             self.assertEqual(self.module.touch(self.state, 'claude', session), '')

@@ -172,7 +172,7 @@ def touch(state, harness, session_id, now=None):
         marker = {'schema': 1, 'harness': harness, 'session': receipt_session(session_id),
                   'first_at': saved['first_at'] if saved else now, 'last_at': now,
                   'announced': (announced + [item['key'] for item in fresh])[-MAX_MARKERS:]}
-        if not _write(own, marker) and saved is None:
+        if not _write(own, marker):
             return ''  # never announce what could not be recorded: no repeat on the next prompt
         return line(fresh, now) if fresh else ''
     except Exception:
