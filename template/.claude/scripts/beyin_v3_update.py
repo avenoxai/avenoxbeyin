@@ -266,6 +266,11 @@ def _apply(vault, state, journal, migration=None):
         if actual != after:
             if actual != before:
                 raise ValueError('update conflict: managed target changed ' + operation['name'])
+            if path.exists() and not os.access(path, os.W_OK):
+                try:
+                    path.chmod(stat.S_IWRITE | stat.S_IREAD)
+                except OSError:
+                    pass
             if after is None:
                 path.unlink(missing_ok=True)
             else:
