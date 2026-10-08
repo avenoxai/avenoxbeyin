@@ -110,7 +110,10 @@ class OfflineUpdateTest(unittest.TestCase):
 
     def test_update_lock_holds_runtime_writer_lock_for_uri_special_state_paths(self):
         import sqlite3
-        for name in ('state #1', '100%25 state', 'q?x state'):
+        import os
+        # '?' cannot appear in a Windows path; '#' and '%' still exercise the URI escaping there.
+        names = ('state #1', '100%25 state') + (() if os.name == 'nt' else ('q?x state',))
+        for name in names:
             state = self.base / name
             state.mkdir()
             database = state / 'memory.sqlite3'
