@@ -159,6 +159,15 @@ class OfflineUpdateTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.module.update(self.vault, self.state, bad)
         self.assertEqual(snapshot(self.vault), before)
+
+        def corrupt_missing(files):
+            metadata = json.loads(files['manifest.json'])
+            metadata['files']['scripts/beyin_entry.py'] = None
+            files['manifest.json'] = json.dumps(metadata).encode()
+        bad2 = rewrite_zip(self.package, self.base / 'corrupt2.zip', corrupt_missing)
+        with self.assertRaisesRegex(ValueError, 'package checksum mismatch'):
+            self.module.update(self.vault, self.state, bad2)
+        self.assertEqual(snapshot(self.vault), before)
         self.assertEqual(self.version(), '3.0.0')
 
     def test_path_traversal_and_nonallowlisted_paths_rejected(self):
@@ -401,6 +410,51 @@ class OfflineUpdateTest(unittest.TestCase):
         cache.write_text(json.dumps({'schema': 1, 'checked_at': checked, 'attempted_at': checked,
                                      'next_check_at': checked + 86400, 'etag': '"old"', 'release': release, 'failures': 0}))
         self.assertEqual(doctor()['status'], 'ahead')
+
+    def test_windows_permission_error_restores_write_mode_during_apply(self):
+        file_path = self.vault / 'readonly_file.txt'
+        file_path.write_text('new content', encoding='utf-8')
+        os.chmod(file_path, stat.S_IREAD)
+        journal = {
+            'schema': 1,
+            'vault': str(self.vault),
+            'direction': 'rollback',
+            'operations': [
+                {
+                    'scope': 'vault',
+                    'name': 'readonly_file.txt',
+                    'old': self.module.encode(b'new content'),
+                    'new': self.module.encode(b'restored content')
+                }
+            ]
+        }
+        # POSIX replaces a read-only file; Windows refuses (WinError 5). Emulate that refusal so
+        # the test fails without the fix on every platform, not only on the Windows runner.
+        original_replace = os.replace
+        def windows_replace(source, destination):
+            if os.path.exists(destination) and not os.access(destination, os.W_OK):
+                raise PermissionError(13, 'Access is denied', str(destination))
+            return original_replace(source, destination)
+        with patch.object(self.module.os, 'replace', side_effect=windows_replace):
+            self.module._apply(self.vault, self.state, journal)
+        self.assertEqual(file_path.read_text(encoding='utf-8'), 'restored content')
+        self.assertFalse(os.access(file_path, os.W_OK), 'the read-only flag is the user\'s lock')
+
+    def test_update_and_rollback_keep_a_read_only_managed_file_locked(self):
+        version = self.vault / '.beyin-version'
+        os.chmod(version, stat.S_IREAD)
+        original_replace = os.replace
+        def windows_replace(source, destination):
+            if os.path.exists(destination) and not os.access(destination, os.W_OK):
+                raise PermissionError(13, 'Access is denied', str(destination))
+            return original_replace(source, destination)
+        with patch.object(self.module.os, 'replace', side_effect=windows_replace):
+            self.assertEqual(self.module.update(self.vault, self.state, self.package)['status'], 'updated')
+            self.assertEqual(self.version(), '3.0.1')
+            self.assertFalse(os.access(version, os.W_OK))
+            self.module.rollback(self.vault, self.state)
+        self.assertEqual(self.version(), '3.0.0')
+        self.assertFalse(os.access(version, os.W_OK))
 
 
 if __name__ == '__main__':
