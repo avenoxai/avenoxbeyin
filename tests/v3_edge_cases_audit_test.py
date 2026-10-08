@@ -15,17 +15,15 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Insert template/.claude/scripts BEFORE scripts
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
-if str(ROOT / 'scripts') in sys.path:
-    sys.path.remove(str(ROOT / 'scripts'))
-sys.path.append(str(ROOT / 'scripts'))
+sys.path.insert(0, str(ROOT / 'tests'))
 
 import beyin_v3 as runtime
 from beyin_v3_sync import SyncEngine, parse as parse_frontmatter
 from beyin_v3 import pack_context, MemoryStore, RevisionConflict, ReceiptConflict
 from beyin_v3_projections import recent_receipts, _receipt_instant, receipt_day
 from beyin_v3_compact import compact
+from v3_package_helpers import inherited_env
 
 
 class TestV3EdgeCasesAndResilience(unittest.TestCase):
@@ -148,9 +146,9 @@ class TestV3EdgeCasesAndResilience(unittest.TestCase):
         res = subprocess.run(
             [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
              '--state', str(self.state), 'task-create', '--file', str(task_file)],
-            capture_output=True, text=True
+            capture_output=True, text=True, env=inherited_env()
         )
-        self.assertEqual(res.returncode, 0)
+        self.assertEqual(res.returncode, 0, res.stderr)
 
         task_path = self.vault / 'tasks/t1.md'
         self.assertTrue(task_path.exists())
