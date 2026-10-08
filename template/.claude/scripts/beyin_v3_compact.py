@@ -92,13 +92,13 @@ def blocks(lines, name):
                 fence = None
             continue
         opened = FENCE.match(bare)
+        # CommonMark: a backtick fence's info string cannot contain a backtick, so a line such as
+        # ```code``` is inline code, not an opening fence that would swallow the cards below (#228).
+        if opened and opened[1][0] == '`' and '`' in bare[opened.end():]:
+            opened = None
         if opened:
             fence = opened[1]
             boundary = False
-            # Check if the fence is also closed on this same line (e.g. ```code```)
-            close_pattern = r'' + re.escape(fence[0]) + '{' + str(len(fence)) + r',}'
-            if re.search(close_pattern, bare[opened.end():]):
-                fence = None
             continue
         # A dated heading opens a card (#118): up to the next heading of its own or a higher
         # level, every line is that one entry, dated lines and sub-headings included, so a

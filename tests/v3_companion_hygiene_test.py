@@ -706,6 +706,15 @@ class CompactionRaceTest(unittest.TestCase):
         has_entry = any(p['kind'] == 'entry' for p in parsed)
         self.assertTrue(has_entry, "Should handle multiple blocks on the same line properly.")
 
+    def test_real_fences_still_hide_dated_headings(self):
+        # An info string without backticks still opens a fence (```python), and a tilde fence may
+        # carry backticks or tildes in its info string; the dated line inside stays code.
+        for opener in ('```python\n', '~~~ text ~~~\n', '~~~ `x`\n'):
+            with self.subTest(opener=opener):
+                lines = ['# Last-Session.md\n', opener, '## 2026-09-25 10:00 UTC\n', opener[:3] + '\n']
+                parsed = compact_module.blocks(lines, 'Last-Session.md')
+                self.assertFalse(any(p['kind'] == 'entry' for p in parsed), parsed)
+
 
 if __name__ == '__main__':
     unittest.main()
