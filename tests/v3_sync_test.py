@@ -702,6 +702,49 @@ class ReceiptStateResetTest(unittest.TestCase):
         self.assertIn('Initial calibration completed.', outcomes2)
         self.assertIn('Second phase verified.', outcomes2)
 
+    def test_event_id_reused_on_another_device_is_reported(self):
+        # #205: two devices write the same event_id; the merge keeps the other device's file.
+        other = self.root / 'other'
+        (other / 'notes').mkdir(parents=True)
+        (other / 'notes/task.md').write_text('# Task\nInitial work item.\n', encoding='utf-8')
+        here = self.module.SyncEngine(self.vault, self.root / 'state-here')
+        there = self.module.SyncEngine(other, self.root / 'state-there')
+        mine = here.receipt('shared-topic', 'Calibration done here.', ['notes/task.md'], 'codex')
+        there.receipt('shared-topic', 'Calibration done there.', ['notes/task.md'], 'claude')
+        source = self.vault / mine['source']
+        own = source.read_bytes()
+        source.unlink()
+        source.write_bytes((other / mine['source']).read_bytes())
+        report = here.sync()
+        self.assertEqual(report['status'], 'conflict')
+        self.assertIn(mine['source'], [c.get('source') for c in report['conflicts']])
+        source.unlink()
+        source.write_bytes(own)
+        report = here.sync()
+        self.assertNotIn(mine['source'], [c.get('source') for c in report['conflicts']])
+
+    def test_receipt_divergence_does_not_fail_unrelated_writes(self):
+        # #210 review: another receipt's divergence must not turn a completed, unrelated write into an exception.
+        other = self.root / 'other'
+        (other / 'notes').mkdir(parents=True)
+        (other / 'notes/task.md').write_text('# Task\nInitial work item.\n', encoding='utf-8')
+        (self.vault / 'notes/work.md').write_text('---\n' + json.dumps(
+            {'id': 'work-task', 'kind': 'task', 'project': 'nebula', 'revision': 1, 'status': 'active',
+             'visibility': 'internal'}) + '\n---\nNebula work.\n', encoding='utf-8')
+        here = self.module.SyncEngine(self.vault, self.root / 'state-here')
+        there = self.module.SyncEngine(other, self.root / 'state-there')
+        mine = here.receipt('shared-topic', 'Calibration done here.', ['notes/task.md'], 'codex')
+        there.receipt('shared-topic', 'Calibration done there.', ['notes/task.md'], 'claude')
+        source = self.vault / mine['source']
+        source.unlink()
+        source.write_bytes((other / mine['source']).read_bytes())
+        self.assertEqual(here.receipt('independent-event', 'Unrelated work.', ['notes/task.md'], 'codex')['status'],
+                         'succeeded')
+        self.assertEqual(here.update_task('work-task', 1, {'status': 'waiting'})['revision'], 2)
+        report = here.sync()
+        self.assertEqual(report['status'], 'conflict')
+        self.assertIn(mine['source'], [c.get('source') for c in report['conflicts']])
+
     def test_receipt_with_whitespace_and_newlines_recovers_cleanly(self):
         """Review Point 1 & 2: Summaries with trailing newlines or spaces must not cause false event id collision."""
         summaries = ['Done.\n', '  Done.', 'Line1\nLine2  ']
