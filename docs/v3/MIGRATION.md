@@ -157,8 +157,12 @@ internal/public context. Migration is not permission to expose Companion data.
 After Stop/SessionEnd, `doctor` reports potential receipt gaps when a checkpoint
 has no matching session receipt. This is a signal: a turn may be trivial or the
 user may have deliberately omitted memory. No transcript is promoted and no
-summary is generated to fill the gap. Matching uses the latest observed UserPromptSubmit or SessionStart boundary;
-a receipt from a previous turn cannot cover a later turn. Antigravity only
+summary is generated to fill the gap. Matching uses the start of the latest turn
+that edited a file (a PostToolUse event from the installed edit matchers); a later
+question or "thanks" turn without edits does not reopen the session, but a receipt
+from an earlier turn cannot cover a later turn that edited again. Without an
+observed edit the latest UserPromptSubmit or SessionStart boundary applies.
+Edits made through a shell command are not observed as edits. Antigravity only
 provides the initial invocation boundary in this adapter, so its result is
 explicitly session-limited rather than proof of per-turn completeness. Missing
 prompt events are reported as a terminal-only limitation. Explicit `no_memory`

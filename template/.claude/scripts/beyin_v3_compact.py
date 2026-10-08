@@ -9,11 +9,10 @@ moves; nothing is rewritten, summarized or dropped.
 """
 from contextlib import contextmanager
 from datetime import datetime, timezone
-import hashlib
+import errno
 import os
 from pathlib import Path
 import re
-import tempfile
 import time
 
 from beyin_v3_companion import LIMITS, directory, read_limits
@@ -39,6 +38,11 @@ ARCHIVE_DIRECTORY = 'Arşiv'
 POINTER = 'Arşivlenen metin: `{}`'
 BACKUP = '{} karakter tam metin yedeği (needs_rewrite)'
 POINTER_LINE = re.compile(r'Arşivlenen metin: `[^`\n]+`[ \t]*\r?\n?$')
+LOCK_NAME = '.beyin-compact.lock'
+
+
+class _LockError(Exception):
+    pass
 
 
 def stamp(line, heading=False):
@@ -92,6 +96,10 @@ def blocks(lines, name):
                 fence = None
             continue
         opened = FENCE.match(bare)
+        # CommonMark: a backtick fence's info string cannot contain a backtick, so a line such as
+        # ```code``` is inline code, not an opening fence that would swallow the cards below (#228).
+        if opened and opened[1][0] == '`' and '`' in bare[opened.end():]:
+            opened = None
         if opened:
             fence = opened[1]
             boundary = False
@@ -150,9 +158,10 @@ def plan(text, name, limit, pointer):
         keys = [parsed[p]['key'] for p in positions]
         rising = any(a < b for a, b in zip(keys, keys[1:]))
         falling = any(a > b for a, b in zip(keys, keys[1:]))
-        # Same-day entries carry no order of their own, so the file's direction decides:
-        # Last-Session cards are newest-first, thread updates are appended at the bottom (#163).
-        newest_first = falling and not rising if rising or falling else name == 'Last-Session.md'
+        # Same-day entries carry no order of their own, and neither does a mixed order such as one
+        # backdated card (#220), so the file's direction decides: Last-Session cards are
+        # newest-first, thread updates are appended at the bottom (#163).
+        newest_first = falling if rising != falling else name == 'Last-Session.md'
         for rank, p in enumerate(positions):
             order[p] = (parsed[p]['key'], -rank if newest_first else rank, p)
         protected.add(max(positions, key=order.get))
@@ -235,25 +244,19 @@ def _inside(path, vault):
 
 
 @contextmanager
-def _compact_lock(vault, state, timeout=10.0, step=0.1):
-    vault_path = Path(vault).resolve()
-    key = hashlib.sha256(str(vault_path).encode('utf-8')).hexdigest()[:16]
-    handle = None
-    candidates = [
-        Path(tempfile.gettempdir()) / f'beyin-compact-{key}.lock',
-        Path(state) / 'compact.lock',
-    ]
-    for candidate in candidates:
-        try:
-            candidate.parent.mkdir(parents=True, exist_ok=True)
-            candidate.touch(exist_ok=True)
-            handle = candidate.open('a+b')
-            break
-        except OSError:
-            continue
-    if handle is None:
-        yield
-        return
+def _compact_lock(target, timeout=10.0, step=0.1):
+    """Serialize writers that share one canonical companion directory.
+
+    The empty file is intentionally persistent: unlinking a held advisory-lock file can
+    let a later process lock a new inode while the first process still owns the old one.
+    """
+    lock_path = Path(target).resolve() / LOCK_NAME
+    try:
+        if lock_path.is_symlink():
+            raise OSError('compaction lock must not be a symlink')
+        handle = lock_path.open('a+b')
+    except OSError as exc:
+        raise _LockError(f'cannot open compaction lock {lock_path}: {exc}') from exc
 
     deadline = time.monotonic() + timeout
     acquired = False
@@ -271,7 +274,9 @@ def _compact_lock(vault, state, timeout=10.0, step=0.1):
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                     acquired = True
                     break
-            except (OSError, BlockingIOError):
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                    raise _LockError(f'cannot use compaction lock {lock_path}: {exc}') from exc
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(step)
@@ -309,11 +314,18 @@ def compact(vault, state, dry_run=False, now=None):
                 'reason': 'companion-limits.json in the runtime state is invalid; nothing moved. Fix or remove it first.'}
     if dry_run:
         return _compact_files(vault, target, configured, dry_run=True, now=now)
+    # An uninitialized vault has nothing to compact and should not gain a companion
+    # directory merely because the lock lives beside the files it protects.
+    if not target.is_dir():
+        return {'status': 'within_limit', 'directory': target.relative_to(vault).as_posix(), 'files': {},
+                'dry_run': False, 'limits_file': 'ok', 'deleted_chars': 0, 'model_calls': False}
     try:
-        with _compact_lock(vault, state):
+        with _compact_lock(target):
             return _compact_files(vault, target, configured, dry_run=False, now=now)
     except TimeoutError as exc:
         return {'status': 'conflict', 'reason': str(exc), 'files': {}}
+    except _LockError as exc:
+        return {'status': 'needs_attention', 'reason': str(exc), 'files': {}}
 
 
 def _compact_files(vault, target, configured, dry_run=False, now=None):
@@ -393,9 +405,16 @@ def _compact_files(vault, target, configured, dry_run=False, now=None):
             elif not existing.endswith('\n'):
                 existing += newline
             archive_written = existing + ''.join(added)
+            current_live = path.read_bytes() if path.exists() else None
+            current_archive = archive.read_bytes() if archive.exists() else None
+            if current_live != raw or current_archive != previous:
+                report.pop('backup', None)
+                files[name] = dict(report, status='conflict',
+                                   reason='file changed during compaction; nothing moved, retry')
+                continue
             _write(archive, archive_written)
-            # Compare-and-swap: a concurrent edit of the live file wins and the archive returns
-            # to its previous bytes, so no text is ever held only by the archive or lost.
+            # Best-effort conflict detection for writers that do not take our lock.
+            # Separate reads and writes are not an atomic compare-and-swap.
             if path.read_bytes() != raw:
                 # #193: Roll back only if the archive still holds this invocation's exact write.
                 # A concurrent caller that already committed its own archive is never reverted.

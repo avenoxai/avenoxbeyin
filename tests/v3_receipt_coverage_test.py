@@ -239,6 +239,43 @@ class ReceiptCoverageTest(unittest.TestCase):
             _checkpoint_schema(db)
             cols = {row[1] for row in db.execute('PRAGMA table_info(receipt_checkpoints)')}
             self.assertIn('prompt_at', cols)
+            self.assertIn('edit_at', cols)
+
+    def _edit_session(self, session, now, receipt_turns, turns):
+        """One session: each turn is a prompt, optional edit and optional receipt, drained after its Stop."""
+        engine = SyncEngine(self.vault, self.state)
+        if not (self.vault / 'notes/task.md').exists():
+            engine.note_create('notes/task.md', 'Work.', {'id': 'task'})
+        for index, edits in enumerate(turns):
+            start = now + index * 100
+            self._enqueue('UserPromptSubmit', session, at=start)
+            if edits:
+                self._enqueue('PostToolUse', session, at=start + 10)
+            hook.drain_queue(self.vault, self.state)
+            if index in receipt_turns:
+                event_id = f'{session}-{index}'
+                engine.receipt(event_id, 'Bitti.', ['notes/task.md'], 'claude', session=session)
+                stamp = datetime.fromtimestamp(start + 30, timezone.utc).isoformat()
+                with engine.store._connect() as db:
+                    db.execute("UPDATE receipts SET payload=json_set(payload,'$.created_at',?) WHERE id=?", (stamp, event_id))
+            self._enqueue('Stop', session, at=start + 50)
+            hook.drain_queue(self.vault, self.state)
+        return json.loads((self.state / 'receipt-gaps.json').read_text(encoding='utf-8'))
+
+    def test_question_after_the_receipt_keeps_the_session_covered(self):
+        """A "thanks" or status turn after the receipt does not reopen finished work (#212)."""
+        now = time.time() - 1000
+        # Edit + receipt, then a question; also two edit turns closed by one receipt, then a question.
+        data = self._edit_session('late_thanks', now, {0}, [True, False])
+        data = self._edit_session('two_edit_turns', now, {1}, [True, True, False])
+        self.assertEqual(data['potential_missing_receipts'], 0)
+        self.assertEqual((data['receipt_coverage']['covered'], data['receipt_coverage']['total']), (2, 2))
+
+    def test_later_edit_turn_still_needs_its_own_receipt(self):
+        """A receipt from an earlier turn never covers a later turn that edited again (#212)."""
+        data = self._edit_session('next_edit', time.time() - 1000, {0}, [True, True])
+        self.assertEqual([item['session'] for item in data['checkpoints']], ['next_edit'])
+        self.assertEqual(data['receipt_coverage']['missing'], 1)
 
 
 if __name__ == '__main__':

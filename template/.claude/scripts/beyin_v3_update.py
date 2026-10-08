@@ -266,12 +266,23 @@ def _apply(vault, state, journal, migration=None):
         if actual != after:
             if actual != before:
                 raise ValueError('update conflict: managed target changed ' + operation['name'])
+            # Windows refuses to replace or delete a read-only file (WinError 5); POSIX does not.
+            # Lift the flag for the replacement only and put it back below: a user who locked a
+            # managed file keeps the lock, and rollback restores the recorded old mode anyway.
+            read_only = path.exists() and not os.access(path, os.W_OK)
+            if read_only:
+                try:
+                    path.chmod(stat.S_IWRITE | stat.S_IREAD)
+                except OSError:
+                    pass
             if after is None:
                 path.unlink(missing_ok=True)
             else:
                 atomic(path, after)
                 if operation.get('new_mode') is not None: path.chmod(operation['new_mode'])
-        if path.exists() and operation.get('new_mode') is not None:
+                if read_only:
+                    path.chmod(stat.S_IMODE(path.stat().st_mode) & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+        if path.exists() and operation.get('new_mode') is not None and os.access(path, os.W_OK):
             path.chmod(operation['new_mode'])
         transaction_hook('after_replace', index)
     if journal['direction'] == 'update':

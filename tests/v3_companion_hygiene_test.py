@@ -6,7 +6,10 @@ and many dated updates per thread plus a closed section (Threads.md).
 """
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+import errno
+import hashlib
 import json
+import multiprocessing as mp
 import os
 from pathlib import Path
 import subprocess
@@ -27,6 +30,61 @@ import beyin_v3_companion as companion_module  # noqa: E402
 COMPANION = '🔮 850-Companion'
 NOW = datetime(2026, 9, 25, 4, 30, tzinfo=timezone.utc)
 FILLER = 'Karar gerekçesi, kaynak bağlantısı ve açık kalan adım burada ayrıntılı olarak anlatılıyor. '
+RACE_OLD = 'OLD_CARD_CONTENT_MUST_REMAIN_RECOVERABLE'
+RACE_READY = float(os.environ.get('BEYIN_TEST_READY_TIMEOUT', '20'))
+RACE_PROBE = float(os.environ.get('BEYIN_TEST_BLOCK_PROBE_SECONDS', '3'))
+RACE_JOIN = float(os.environ.get('BEYIN_TEST_JOIN_TIMEOUT', '25'))
+
+
+def isolated_temp(state):
+    root = Path(str(state) + '-tmp')
+    root.mkdir(exist_ok=True)
+    tempfile.tempdir = str(root)
+
+
+def stop_process(process):
+    if process.is_alive():
+        process.terminate()
+    process.join(RACE_JOIN)
+
+
+def tree_snapshot(root):
+    return {str(p.relative_to(root)): (p.stat().st_mode, p.stat().st_mtime_ns,
+                                     hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None)
+            for p in [root, *sorted(root.rglob('*'))]}
+
+
+def compact_race_slow(vault, state, ready, resume, out):
+    """Pause after the pre-write checks while retaining the production lock."""
+    isolated_temp(state)
+    original_write = compact_module._write
+    paused = False
+
+    def write(path, content):
+        nonlocal paused
+        if Path(path).parent.name == 'Arşiv' and not paused:
+            paused = True
+            ready.set()
+            if not resume.wait(RACE_READY + RACE_JOIN):
+                raise TimeoutError('slow compaction was not released')
+        original_write(path, content)
+
+    compact_module._write = write
+    out.put(('slow', compact_module.compact(vault, state, now=NOW)))
+
+
+def compact_race_fast(vault, state, done, out):
+    isolated_temp(state)
+    try:
+        out.put(('fast', compact_module.compact(vault, state, now=NOW)))
+    finally:
+        done.set()
+
+
+def acquire_compact_lock_and_exit(target, ready):
+    with compact_module._compact_lock(target):
+        ready.set()
+        os._exit(17)
 
 
 
@@ -262,6 +320,7 @@ class HygieneCliTest(unittest.TestCase):
         self.assertEqual(result['files']['Last-Session.md']['backup'], 'planned')
         self.assertEqual(path.read_bytes(), before)
         self.assertFalse((self.directory / 'Arşiv').exists())
+        self.assertFalse((self.directory / compact_module.LOCK_NAME).exists())
         # The human dry-run line must not claim a backup that was never written.
         human = human_entry().human_result(result, 'companion-compact')
         self.assertNotIn('yedeklendi', human)
@@ -476,6 +535,15 @@ class CompactionPlanTest(unittest.TestCase):
         self.assertIn('AKŞAM', live)
         self.assertNotIn('SABAH', live)
 
+    def test_plan_mixed_order(self):
+        text = ('# Son oturum\n\n## Session: 2026-09-25\nILK_YENI\n\n## Session: 2026-09-24\nORTA\n\n'
+                '## Session: 2026-09-25\nIKINCI_YENI\n')
+        # Mixed dates: 25 -> 24 is falling, 24 -> 25 is rising.
+        # Last-Session.md must fall back to newest_first (keeping the top-most card when dates tie).
+        result = self.plan(text, 'Last-Session.md', 10)
+        self.assertIn('ILK_YENI', result['live'])
+        self.assertNotIn('IKINCI_YENI', result['live'])
+
     def test_same_day_thread_updates_keep_the_bottom_one(self):
         # The reproduction from #163: thread updates are appended, so the bottom one is newest.
         text = ('# Threads\n\n## Active Threads\n### Thread: Volt\n**Status:** Active\n'
@@ -673,6 +741,168 @@ class CompactionRaceTest(unittest.TestCase):
         self.assertTrue(self.archive.exists())
         self.assertEqual(self.archive.read_bytes(), b'# CONCURRENT_CALLER_ARCHIVE_DATA\n')
 
+    def test_different_state_processes_share_the_companion_lock(self):
+        """#193: state isolation must not split the lock for one canonical vault."""
+        for existing_archive in (False, True):
+            with self.subTest(existing_archive=existing_archive):
+                self.live.write_text(
+                    '# Son oturum\n\n## 2026-09-01 09:00 · eski · a\n' + RACE_OLD
+                    + '\n' + 'eski veri ' * 300
+                    + '\n\n## 2026-09-02 09:00 · yeni · b\nNEWEST_CARD_CONTENT\n'
+                    + 'yeni veri ' * 300 + '\n', encoding='utf-8')
+                if self.archive.exists():
+                    self.archive.unlink()
+                if existing_archive:
+                    self.archive.parent.mkdir(exist_ok=True)
+                    self.archive.write_text('# EXISTING_ARCHIVE_MARKER\n', encoding='utf-8')
+
+                slow_state = Path(self.tmp.name) / f'state-slow-{existing_archive}'
+                fast_state = Path(self.tmp.name) / f'state-fast-{existing_archive}'
+                context = mp.get_context('spawn')
+                ready, resume, done = context.Event(), context.Event(), context.Event()
+                out = context.Queue()
+                slow = context.Process(target=compact_race_slow,
+                                       args=(self.vault, slow_state, ready, resume, out))
+                slow.start()
+                self.addCleanup(stop_process, slow)
+                self.addCleanup(resume.set)
+                self.assertTrue(ready.wait(RACE_READY), 'slow process did not reach archive write')
+                fast = context.Process(target=compact_race_fast,
+                                       args=(self.vault, fast_state, done, out))
+                fast.start()
+                self.addCleanup(stop_process, fast)
+                done.wait(RACE_PROBE)  # Observation window, never a success criterion.
+                resume.set()
+                slow.join(RACE_JOIN)
+                fast.join(RACE_JOIN)
+                for process in (slow, fast):
+                    if process.is_alive():
+                        process.terminate()
+                        process.join()
+                self.assertEqual((slow.exitcode, fast.exitcode), (0, 0))
+                results = dict(out.get(timeout=5) for _ in range(2))
+                self.assertIn(results['slow']['files']['Last-Session.md']['status'],
+                              {'compacted', 'needs_rewrite'})
+                live_text = self.live.read_text(encoding='utf-8')
+                archive_text = self.archive.read_text(encoding='utf-8') if self.archive.exists() else ''
+                self.assertIn(RACE_OLD, live_text + archive_text)
+                self.assertIn(RACE_OLD, archive_text)
+                self.assertIn('eski veri ' * 300, archive_text)
+                self.assertIn('NEWEST_CARD_CONTENT', live_text)
+                if existing_archive:
+                    self.assertIn('EXISTING_ARCHIVE_MARKER', archive_text)
+                for result in results.values():
+                    self.assertIn(result['files']['Last-Session.md']['status'],
+                                  {'compacted', 'needs_rewrite', 'within_limit', 'conflict'})
+                out.close()
+                out.join_thread()
+
+    def test_lock_failure_reports_needs_attention_without_modifying_files(self):
+        original_open = Path.open
+
+        def open_path(target, *args, **kwargs):
+            if target.name == compact_module.LOCK_NAME:
+                raise OSError('Permission denied')
+            return original_open(target, *args, **kwargs)
+
+        before = self.live.read_bytes()
+        with mock.patch.object(Path, 'open', open_path):
+            result = compact_module.compact(self.vault, self.state, now=NOW)
+        self.assertEqual(result['status'], 'needs_attention')
+        self.assertIn('cannot open compaction lock', result['reason'])
+        self.assertEqual(self.live.read_bytes(), before)
+        self.assertFalse(self.archive.exists())
+
+    def test_missing_companion_returns_without_creating_or_entering_compaction(self):
+        other_vault = Path(self.tmp.name) / 'empty-vault'
+        other_vault.mkdir()
+        with mock.patch.object(compact_module, '_compact_files',
+                               side_effect=AssertionError('missing companion entered compaction')):
+            result = compact_module.compact(other_vault, self.state, now=NOW)
+        self.assertEqual(result['status'], 'within_limit')
+        self.assertEqual(result['files'], {})
+        self.assertFalse((other_vault / COMPANION).exists())
+
+    def test_content_io_failure_is_not_reported_as_lock_failure(self):
+        original_read = Path.read_bytes
+
+        def read(path):
+            if path.resolve() == self.live.resolve():
+                raise OSError('synthetic content read failure')
+            return original_read(path)
+
+        with mock.patch.object(Path, 'read_bytes', read):
+            with self.assertRaisesRegex(OSError, 'synthetic content read failure'):
+                compact_module.compact(self.vault, self.state, now=NOW)
+
+    def test_lock_contention_returns_conflict_timeout(self):
+        original_lock = compact_module._compact_lock
+        with original_lock(self.directory):
+            with mock.patch.object(compact_module, '_compact_lock',
+                                   lambda target: original_lock(target, timeout=0.1, step=0.02)):
+                result = compact_module.compact(self.vault, self.state, now=NOW)
+        self.assertEqual(result['status'], 'conflict')
+        self.assertIn('vault compaction lock busy', result['reason'])
+        self.assertFalse(self.archive.exists())
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX advisory lock error injection')
+    def test_lock_api_failure_does_not_masquerade_as_contention(self):
+        import fcntl
+        before = self.live.read_bytes()
+        with mock.patch.object(fcntl, 'flock', side_effect=OSError(errno.ENOLCK, 'no locks available')):
+            result = compact_module.compact(self.vault, self.state, now=NOW)
+        self.assertEqual(result['status'], 'needs_attention')
+        self.assertEqual(before, self.live.read_bytes())
+        self.assertFalse(self.archive.exists())
+
+    def test_dry_run_does_not_lock_write_or_change_tree(self):
+        companion_module.save_limits(self.state, {'Last-Session.md': 3000, 'Threads.md': 8000})
+        before = tree_snapshot(Path(self.tmp.name))
+        with mock.patch.object(compact_module, '_compact_lock', side_effect=AssertionError('dry-run locked')):
+            with mock.patch.object(compact_module, '_write', side_effect=AssertionError('dry-run wrote')):
+                result = compact_module.compact(self.vault, self.state, dry_run=True, now=NOW)
+        self.assertEqual(result['status'], 'dry_run')
+        self.assertEqual(before, tree_snapshot(Path(self.tmp.name)))
+
+    def test_external_archive_edit_between_snapshot_and_prewrite_is_preserved(self):
+        self.archive.parent.mkdir()
+        previous = b'# PREVIOUS\n'
+        edited = previous + b'EXTERNAL_APPEND\n'
+        self.archive.write_bytes(previous)
+        original_read = Path.read_bytes
+        changed = False
+
+        def read(path):
+            nonlocal changed
+            content = original_read(path)
+            if path.resolve() == self.archive.resolve() and not changed:
+                changed = True
+                path.write_bytes(edited)
+            return content
+
+        live = self.live.read_bytes()
+        with mock.patch.object(Path, 'read_bytes', read):
+            result = compact_module.compact(self.vault, self.state, now=NOW)
+        self.assertEqual(result['status'], 'conflict')
+        self.assertEqual(self.archive.read_bytes(), edited)
+        self.assertEqual(self.live.read_bytes(), live)
+
+    def test_process_exit_releases_lock_for_retry(self):
+        context = mp.get_context('spawn')
+        ready = context.Event()
+        process = context.Process(target=acquire_compact_lock_and_exit,
+                                  args=(self.directory, ready))
+        process.start()
+        self.addCleanup(stop_process, process)
+        self.assertTrue(ready.wait(RACE_READY), 'child did not acquire compaction lock')
+        process.join(RACE_JOIN)
+        self.assertEqual(process.exitcode, 17)
+        result = compact_module.compact(self.vault, self.state, now=NOW)
+        self.assertNotEqual(result['status'], 'conflict')
+        self.assertIn(result['files']['Last-Session.md']['status'],
+                      {'compacted', 'needs_rewrite'})
+        self.assertIn('ENTRY_007', self.live.read_text(encoding='utf-8') + self.archive.read_text(encoding='utf-8'))
+
     def test_hygiene_counts_characters_and_names_the_directory(self):
         report = companion_module.hygiene(self.vault, self.state)
         self.assertEqual(report['directory'], COMPANION)
@@ -681,6 +911,39 @@ class CompactionRaceTest(unittest.TestCase):
         self.assertEqual(report['files']['Last-Session.md']['chars'], len(self.live.read_bytes().decode('utf-8')))
         self.assertEqual(report['over_limit'], ['Last-Session.md'])
         self.assertIn('Memory hygiene: Last-Session.md is', companion_module.hygiene_notice(report))
+
+    def test_single_line_code_blocks_dont_swallow_subsequent_headings(self):
+        """Code block on a single line '```code```' shouldn't leave parser in fence state."""
+        lines = [
+            "# Last-Session.md\n",
+            "```python print('hello') ```\n",
+            "## 2026-09-25 10:00 UTC\n",
+            "A card here\n"
+        ]
+        parsed = compact_module.blocks(lines, 'Last-Session.md')
+        has_entry = any(p['kind'] == 'entry' for p in parsed)
+        self.assertTrue(has_entry, "The subsequent valid date heading should be an entry, not swallowed by a single-line code block.")
+
+    def test_single_line_multiple_fences(self):
+        """Testing multiple fences in the same line like ```code``` ```other```"""
+        lines = [
+            "# Last-Session.md\n",
+            "```python code ``` ```other```\n",
+            "## 2026-09-25 10:00 UTC\n",
+            "A card here\n"
+        ]
+        parsed = compact_module.blocks(lines, 'Last-Session.md')
+        has_entry = any(p['kind'] == 'entry' for p in parsed)
+        self.assertTrue(has_entry, "Should handle multiple blocks on the same line properly.")
+
+    def test_real_fences_still_hide_dated_headings(self):
+        # An info string without backticks still opens a fence (```python), and a tilde fence may
+        # carry backticks or tildes in its info string; the dated line inside stays code.
+        for opener in ('```python\n', '~~~ text ~~~\n', '~~~ `x`\n'):
+            with self.subTest(opener=opener):
+                lines = ['# Last-Session.md\n', opener, '## 2026-09-25 10:00 UTC\n', opener[:3] + '\n']
+                parsed = compact_module.blocks(lines, 'Last-Session.md')
+                self.assertFalse(any(p['kind'] == 'entry' for p in parsed), parsed)
 
 
 if __name__ == '__main__':

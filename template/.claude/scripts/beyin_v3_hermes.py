@@ -32,6 +32,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 
 HOOK_TIMEOUT = 20 if os.name == "nt" else 6
 PLUGIN_NAME = "beyin-v3"
@@ -90,30 +91,35 @@ def make_hooks(vault, state=None, python=None):
     vault = Path(vault).expanduser().resolve()
     state = Path(state).expanduser().resolve() if state else _runtime(vault)
     sessions = {}  # session_id -> {"platform": str | None, "turns": int}; process-local, no disk
+    sessions_lock = threading.Lock()
 
     def before(**kw):
         session_id = kw.get("session_id")
         if not isinstance(session_id, str) or not session_id:
             return None
         first = bool(kw.get("is_first_turn"))
-        info = sessions.setdefault(session_id, {"platform": None, "turns": 0})
-        if first or info["platform"] is None:
-            platform = kw.get("platform")
-            info["platform"] = platform if isinstance(platform, str) else None
-        info["turns"] += 1
+        with sessions_lock:
+            info = sessions.setdefault(session_id, {"platform": None, "turns": 0})
+            if first or info["platform"] is None:
+                platform = kw.get("platform")
+                info["platform"] = platform if isinstance(platform, str) else None
+            info["turns"] += 1
+            turns = info["turns"]
+            platform = info["platform"]
         event = "SessionStart" if first else "UserPromptSubmit"
         prompt = kw.get("user_message") if isinstance(kw.get("user_message"), str) else ""
         text = run_hook(vault, state, {"hook_event_name": event, "session_id": session_id, "prompt": prompt}, python)
         parts = [text] if text else []
-        if info["turns"] % REMINDER_EVERY == 0 and info["platform"] not in UNATTENDED_PLATFORMS:
-            parts.append(REMINDER.format(n=info["turns"]))
+        if turns % REMINDER_EVERY == 0 and platform not in UNATTENDED_PLATFORMS:
+            parts.append(REMINDER.format(n=turns))
         return {"context": "\n\n".join(parts)} if parts else None
 
     def finalize(**kw):
         session_id = kw.get("session_id")
         if not isinstance(session_id, str) or not session_id:
             return None
-        info = sessions.pop(session_id, None)
+        with sessions_lock:
+            info = sessions.pop(session_id, None)
         if info and info["platform"] in UNATTENDED_PLATFORMS:
             return None
         run_hook(vault, state, {"hook_event_name": "SessionEnd", "session_id": session_id}, python)

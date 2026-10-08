@@ -41,12 +41,20 @@ Beyni Guncelle.cmd
 .codex/hooks.json
 .opencode/plugins/beyin-v3.js
 .omp/hooks/pre/beyin-v3.ts
+# companion-compact süreçler arası kilidi; kalıcıdır ama kullanıcı verisi değildir
+**/.beyin-compact.lock
 # Yerel veritabanından üretilen görünümler: her makine kendisininkini üretir
 daily/v3/
 knowledge/v3/
 ```
 
 Kontrol: kurulumdan ya da güncellemeden hemen sonra `git status --short` boş olmalıdır.
+
+`companion-compact` kilit dosyasını companion klasöründe kalıcı bırakır. Dosyanın
+silinmemesi, POSIX üzerinde kilit tutulurken aynı yolda yeni bir inode açılmasını önler.
+Kilit yalnız aynı paylaşılan dosya sistemini gören süreçleri koordine eder; senkronizasyon
+araçlarıyla çoğaltılmış ayrı çalışma kopyaları ve kilit semantiği sunmayan NFS/SMB
+kurulumları bu garantinin dışındadır.
 
 - **3.6.0 ve öncesi:** O sürümlerde blok bu makinenin mutlak komut yolunu taşıyordu. İki makine
   de 3.7.0'a geçene kadar `AGENTS.md`'yi (bloğu kendisi taşıyorsa `CLAUDE.md`'yi de) `.gitignore`'da
@@ -97,9 +105,10 @@ göre sıralar, en yenisini korur.
   özel runtime klasöründe durur; öbür makinedeki oturumları görmez, onlar için yukarıdaki git
   adımları geçerlidir.
 - **Çakışma çözülmeden oturum açma:** `pull --rebase` çakışmada durduğunda dosyada
-  `<<<<<<<`, `=======`, `>>>>>>>` işaretleri kalır. Bu halde açılan oturumda `sync` dosyayı
-  olduğu gibi indeksler ve işaretler sonraki bağlama girer; ajan onları içerik sanabilir.
-  `sync` ve `doctor` bunu bildirmez. Önce çakışmayı çöz (`git status` temiz olmalı), sonra
+  `<<<<<<<`, `=======`, `>>>>>>>` işaretleri kalır. `sync` bu üç işareti sırayla taşıyan
+  dosyayı (receipt dahil) indekslemez ve `unresolved git conflict markers` uyarısıyla `degraded`
+  döner; dosya çözülene kadar bağlamdan çıkar ([#205](https://github.com/avenoxai/avenoxbeyin/issues/205)).
+  Kod bloğundaki işaretler de sayılır: notta alıntılanmış bir çakışma örneği de uyarı verir. Önce çakışmayı çöz (`git status` temiz olmalı), sonra
   oturum aç.
 - **Receipt `event_id`'sini makineler arasında tekil tut:** `event_id`'yi ajan seçer ve dosya
   adı onun özetidir. İki makine aynı gün aynı konuya aynı adı verirse (`ortak-konu-2026-09-27`)

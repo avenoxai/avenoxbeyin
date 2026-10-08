@@ -9,13 +9,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
 from beyin_v3_companion import clip, ends
 
-MARKER = re.compile(r'\n\[truncated: (\d+) characters omitted here; read source\]\n')
+MARKER = re.compile(r'\n\[truncated: (rules \d+-\d+ \(\d+ of \d+\)|\d+ characters) omitted here; read source\]\n')
 
 
 def split(text, result):
     match = MARKER.search(result)
     head, closing = result[:match.start()], result[match.end():]
-    return head, closing, int(match[1])
+    return head, closing, match[1]
 
 
 class EndsTest(unittest.TestCase):
@@ -40,19 +40,27 @@ class EndsTest(unittest.TestCase):
             cases += 1
             with self.subTest(seed=seed, budget=budget):
                 self.assertLessEqual(len(result), budget)
-                head, closing, omitted = split(text, result)
+                head, closing, named = split(text, result)
                 self.assertTrue(text.startswith(head))
                 self.assertTrue(text.endswith(closing))
-                self.assertEqual(omitted, len(text) - len(head) - len(closing))
-                self.assertGreater(omitted, 0)
+                # The marker names the rules that start in the gap, or the characters
+                # when no rule starts there.
+                start = len(text) - len(closing)
+                self.assertGreater(start - len(head), 0)
+                rules = [match.start() for match in re.finditer(r'^- ', text, re.M)]
+                kept = sum(rule < len(head) for rule in rules)
+                dropped = sum(len(head) <= rule < start for rule in rules)
+                self.assertEqual(named, f'rules {kept + 1}-{kept + dropped} ({dropped} of {len(rules)})'
+                                 if dropped else f'{start - len(head)} characters')
                 # Whole lines, unless one line alone is longer than its end's share.
                 self.assertTrue(head.endswith('\n') or '\n' not in head)
                 self.assertTrue(text[:len(text) - len(closing)].endswith('\n') or '\n' not in closing[:-1])
                 # Maximal: neither the next opening line nor the previous closing line fits
                 # in what the widest possible marker leaves.
-                widest = len(f'\n[truncated: {len(text)} characters omitted here; read source]\n')
+                total = len(rules)
+                widest = max(len(f'\n[truncated: {len(text)} characters omitted here; read source]\n'),
+                             len(f'\n[truncated: rules {total}-{total} ({total} of {total}) omitted here; read source]\n'))
                 slack = budget - widest - len(head) - len(closing)
-                start = len(text) - len(closing)
                 following = text[len(head):text.find('\n', len(head)) + 1]
                 previous = text[text.rfind('\n', 0, start - 1) + 1:start]
                 self.assertTrue(len(following) >= start - len(head) or len(following) > slack, following)
@@ -68,6 +76,54 @@ class EndsTest(unittest.TestCase):
                 self.assertGreaterEqual(len(result), budget - 2 * 26)
                 self.assertIn('kural 000', result)
                 self.assertIn('kural 299', result)
+
+    def test_marker_names_the_omitted_rules(self):
+        total = 30
+        text = ''.join(f'- kural {i:02d}: kisa bir kural\n' for i in range(1, total + 1))
+        result = ends(text, 600)
+        match = re.search(r'\n\[truncated: rules (\d+)-(\d+) \((\d+) of (\d+)\) omitted here; read source\]\n', result)
+        self.assertIsNotNone(match, result)
+        first, last, omitted, counted = (int(group) for group in match.groups())
+        kept_before = result[:match.start()].count('- kural')
+        kept_after = result[match.end():].count('- kural')
+        self.assertEqual(counted, total)
+        self.assertEqual(first, kept_before + 1)
+        self.assertEqual(last, total - kept_after)
+        self.assertEqual(omitted, last - first + 1)
+        self.assertLessEqual(len(result), 600)
+
+    def test_text_without_list_items_keeps_the_character_count(self):
+        text = ''.join(f'duz paragraf satiri {i:02d}\n' for i in range(40))
+        head, closing, named = split(text, ends(text, 600))
+        self.assertEqual(named, f'{len(text) - len(head) - len(closing)} characters')
+
+    def test_list_lines_in_a_code_block_are_not_counted_as_rules(self):
+        # A rule with an example command block: its `- ` lines must not shift the numbers.
+        example = '```\n- ornek satir\n- ornek satir\n```\n~~~~\n1. ornek\n```\n- hala ornek\n~~~~\n'
+        text = '- kural 01: once oku\n' + example + ''.join(
+            f'- kural {i:02d}: ' + 'x' * 60 + '\n' for i in range(2, 31))
+        result = ends(text, 900)
+        match = re.search(r'\[truncated: rules (\d+)-(\d+) \((\d+) of (\d+)\) omitted', result)
+        self.assertIsNotNone(match, result)
+        first, last, omitted, counted = (int(group) for group in match.groups())
+        self.assertEqual(counted, 30)
+        self.assertIn(f'- kural {first - 1:02d}:', result)
+        self.assertNotIn(f'- kural {first:02d}:', result)
+        self.assertNotIn(f'- kural {last:02d}:', result)
+        self.assertIn(f'- kural {last + 1:02d}:', result)
+        self.assertEqual(omitted, last - first + 1)
+        self.assertLessEqual(len(result), 900)
+
+    def test_text_without_list_items_reserves_only_the_character_marker(self):
+        text = ''.join(f'duz paragraf satiri {i:02d} ' + 'y' * 50 + '\n' for i in range(400))
+        widest = len(f'\n[truncated: {len(text)} characters omitted here; read source]\n')
+        line = len(text.split('\n', 1)[0]) + 1
+        for budget in range(1500, 1500 + line):
+            with self.subTest(budget=budget):
+                head, closing, named = split(text, ends(text, budget))
+                self.assertTrue(named.endswith(' characters'))
+                # Every line is the same length: the ends fill all that this one marker leaves.
+                self.assertGreater(len(head) + len(closing) + line, budget - widest)
 
 
 if __name__ == '__main__':
