@@ -326,12 +326,20 @@ class MemoryStore:
                 value = record.get(alias)
                 if isinstance(value, str):
                     v = value.strip()
-                    if re.match(r"^\d{4}/\d{2}/\d{2}", v):
-                        v = v.replace("/", "-", 2)
-                    else:
+                    # YYYY/MM/DD, or day-first DD-MM-YYYY / DD/MM/YYYY as Turkish templates
+                    # write it. A converted value must be a real date: month-first text such
+                    # as 12/31/2026 stays unset instead of becoming 2026-31-12.
+                    m = re.match(r"^(\d{4})/(\d{2})/(\d{2})(.*)$", v)
+                    parts = (m[1], m[2], m[3], m[4]) if m else None
+                    if parts is None:
                         m = re.match(r"^(\d{2})[-/](\d{2})[-/](\d{4})(.*)$", v)
-                        if m:
-                            v = f"{m.group(3)}-{m.group(2)}-{m.group(1)}{m.group(4)}"
+                        parts = (m[3], m[2], m[1], m[4]) if m else None
+                    if parts is not None:
+                        try:
+                            datetime(int(parts[0]), int(parts[1]), int(parts[2]))
+                        except ValueError:
+                            continue
+                        v = f"{parts[0]}-{parts[1]}-{parts[2]}{parts[3]}"
                     if re.match(r"^\d{4}-\d{2}-\d{2}", v):
                         record["updated_at"] = v
                         break

@@ -222,6 +222,19 @@ class MigrationTest(unittest.TestCase):
 
         r2 = store._validate({"id": "2", "text": "t", "source": "t.md", "updated": "20-09-2026"})
         self.assertEqual(r2.get("updated_at"), "2026-09-20")
+        # Month-first text is not a day-first date; it stays unset instead of 2026-31-12.
+        r3 = store._validate({"id": "3", "text": "t", "source": "t.md", "updated": "12/31/2026"})
+        self.assertNotIn("updated_at", r3)
+        r4 = store._validate({"id": "4", "text": "t", "source": "t.md", "updated": "2026/02/30", "modified": "2026-02-01"})
+        self.assertEqual(r4.get("updated_at"), "2026-02-01")
+
+    def test_comma_lists_only_for_tags_and_aliases(self):
+        from beyin_v3_sync import parse
+        meta, _ = parse("---\ntitle: Merhaba, dunya\nproject: Acme, Inc\naliases: Alfa, Beta\ntags: \"a, b\"\n---\nbody")
+        self.assertEqual(meta['title'], 'Merhaba, dunya')
+        self.assertEqual(meta['project'], 'Acme, Inc')
+        self.assertEqual(meta['aliases'], ['Alfa', 'Beta'])
+        self.assertEqual(meta['tags'], 'a, b')
 
     def test_migration_rollback_on_failure(self):
         self.source('.claude/scripts/.state/flush-state.json', '{"status":"ok"}')
