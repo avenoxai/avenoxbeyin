@@ -108,6 +108,21 @@ class OfflineUpdateTest(unittest.TestCase):
             pass
         self.assertFalse(memory_db.exists())
 
+    def test_update_lock_holds_runtime_writer_lock_for_uri_special_state_paths(self):
+        import sqlite3
+        for name in ('state #1', '100%25 state', 'q?x state'):
+            state = self.base / name
+            state.mkdir()
+            database = state / 'memory.sqlite3'
+            sqlite3.connect(database).close()
+            with self.module.locked(self.vault, state):
+                other = sqlite3.connect(database, timeout=0.1)
+                try:
+                    with self.assertRaises(sqlite3.OperationalError, msg=name):
+                        other.execute('BEGIN IMMEDIATE')
+                finally:
+                    other.close()
+
     def test_rollback_preserves_original_file_mtime(self):
         import os
         core = self.vault / '.claude/scripts/beyin_v3.py'

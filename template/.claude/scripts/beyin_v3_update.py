@@ -172,15 +172,16 @@ def locked(vault, state):
     try:
         # Use the same SQLite writer lock as participating runtime operations.
         for path in (state / 'update-lock.sqlite3', state / 'memory.sqlite3'):
-            try:
-                if path.name == 'memory.sqlite3':
-                    connection = sqlite3.connect(f"file:{path.resolve()}?mode=rw", uri=True, timeout=5)
-                else:
-                    connection = sqlite3.connect(path, timeout=5)
-            except sqlite3.OperationalError:
-                if path.name == 'memory.sqlite3':
+            if path.name == 'memory.sqlite3':
+                # The runtime creates its index on first sync; locking must not leave an empty
+                # one behind. mode=rw never creates the file, and as_uri() escapes '#', '?' and
+                # '%' in the state path: an unescaped URI opened another path, and a skipped
+                # lock let runtime writers run during apply.
+                if not path.is_file():
                     continue
-                raise
+                connection = sqlite3.connect(path.resolve().as_uri() + '?mode=rw', uri=True, timeout=5)
+            else:
+                connection = sqlite3.connect(path, timeout=5)
             connections.append(connection)
             connection.execute('BEGIN IMMEDIATE')
         yield
@@ -473,7 +474,9 @@ def rollback(vault, state):
                 else:
                     raise ValueError('rollback conflict: changed managed file ' + item['name'] +
                                      (' (deleted)' if actual is None else ' (content differs)'))
-            operations.append(dict(item, old=encode(actual), new=encode(restore), old_mode=item.get('new_mode'), new_mode=item.get('old_mode'), new_mtime=item.get('old_mtime')))
+            operations.append(dict(item, old=encode(actual), new=encode(restore), old_mode=item.get('new_mode'), new_mode=item.get('old_mode'),
+                                   # A merged settings file holds edits made after the update: keep its new mtime.
+                                   new_mtime=item.get('old_mtime') if restore == decode(item['old']) else None))
         if 'migration_result' in original:
             marker = state / 'v2-migration.json'
             actual = marker.read_bytes() if marker.exists() else None
