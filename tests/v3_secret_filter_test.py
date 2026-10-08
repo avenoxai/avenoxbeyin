@@ -58,7 +58,7 @@ class SecretFilterTest(unittest.TestCase):
             'github_pat_' + 'B'*24,
             'sk-proj-' + 'A'*24,
             'sk-admin-' + 'B'*24,
-            'hf_' + 'D'*24,
+            'hf_' + 'D'*34,
             'ASIA' + 'E'*16,
             'sk-' + 'C'*24,
             'AKIA' + 'D'*16,
@@ -100,6 +100,19 @@ class SecretFilterTest(unittest.TestCase):
                     self.assertGreaterEqual(count, 1)
                     self.assertNotIn(value, filtered)
                     self.assertNotIn(value[8:], filtered)
+
+    def test_hugging_face_token_has_a_fixed_length(self):
+        """#227: hf_ tokens are 34 characters; shorter or longer hf_ identifiers stay."""
+        token = 'hf_' + 'aB3' * 11 + 'z'
+        for text in (token, f'HF_TOKEN={token}', f'{token}_x', f'cfg.{token}.'):
+            with self.subTest(text=text[:12]):
+                filtered, count = redact(text, self.state)
+                self.assertGreaterEqual(count, 1)
+                self.assertNotIn(token[3:], filtered)
+        for text in ('hf_TransformersAutoModelLoader', 'hf_hub_download_with_retry_and_cache',
+                     'hf_' + 'A' * 40):
+            with self.subTest(text=text[:12]):
+                self.assertEqual(redact(text, self.state), (text, 0))
 
     def test_public_certificate_is_not_a_secret(self):
         """#227: a certificate is public by design; only private key blocks are redacted."""
