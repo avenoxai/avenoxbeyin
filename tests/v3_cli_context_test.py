@@ -202,4 +202,43 @@ class ContextRefreshTest(unittest.TestCase):
         self.assertEqual(result.stdout, '')
         self.assertIn('conflict', result.stderr.lower())
 
+    def test_recap_with_since_and_until_filters_correctly(self):
+        result = self.run_cli('recap', '--since', '2026-09-20', '--until', '2026-09-24T12:00:00Z')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        self.assertEqual(out['from'], '2026-09-20T00:00:00+00:00')
+        self.assertEqual(out['through'], '2026-09-24T12:00:00+00:00')
+
+    def test_invalid_date_exits_cleanly(self):
+        result = self.run_cli('recap', '--since', 'invalid-date')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('invalid date format', result.stderr)
+        self.assertEqual(result.stdout.strip(), '')
+
+    def test_json_flag_forces_json_error(self):
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault), '--state', str(self.state), 'recap', '--since', 'invalid-date'], capture_output=True, text=True, encoding='utf-8')
+        self.assertNotEqual(result.returncode, 0)
+        err_msg = [l for l in result.stderr.split('\n') if 'invalid date format' in l]
+        self.assertTrue(len(err_msg) > 0)
+        self.assertEqual(result.stdout.strip(), '')
+
+    def test_since_after_until_exits_cleanly(self):
+        result = self.run_cli('recap', '--since', '2026-09-20', '--until', '2026-09-10')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('since must be before or equal to until', result.stderr)
+        self.assertEqual(result.stdout.strip(), '')
+
+    def test_json_entry_forces_json_error(self):
+        (self.vault / '.beyin-runtime.json').write_text('{"state": "' + str(self.state).replace('\\', '/') + '"}', encoding='utf-8')
+        (self.vault / '.claude/scripts').mkdir(parents=True, exist_ok=True)
+        import shutil
+        shutil.copyfile(str(ROOT / 'scripts/beyin_v3.py'), str(self.vault / '.claude/scripts/beyin_v3_cli.py'))
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/beyin_entry.py'), '--json', 'recap', '--since', 'invalid-date'], capture_output=True, text=True, encoding='utf-8', cwd=str(self.vault))
+        self.assertNotEqual(result.returncode, 0)
+        out = json.loads(result.stdout)
+        self.assertIn('error', out)
+        self.assertTrue(isinstance(out['message'], str))
+        self.assertEqual(result.stderr.strip(), '')
+
+
 if __name__=='__main__':unittest.main()

@@ -227,6 +227,22 @@ def load_skills():
     return beyin_v3_skills
 
 
+def parse_iso_date(value: str):
+    from datetime import datetime, timezone
+    try:
+        val = value
+        if val.endswith('Z'):
+            val = val[:-1] + '+00:00'
+        if len(val) == 10 and val.count('-') == 2:
+            val += 'T00:00:00+00:00'
+        stamp = datetime.fromisoformat(val)
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return stamp.astimezone(timezone.utc)
+    except Exception:
+        raise argparse.ArgumentTypeError(f"invalid date format: {value}")
+
+
 def parser():
     root = argparse.ArgumentParser(description=__doc__)
     root.add_argument("--vault", required=True, type=Path, help="Existing vault directory")
@@ -239,6 +255,8 @@ def parser():
     recap = sub.add_parser("recap", help="Read recent source-linked outcomes without a model call")
     recap.add_argument("--days", type=int, default=7, help="Calendar days in UTC, including today (1..366)")
     recap.add_argument("--limit", type=int, default=20, help="Maximum recent receipts to return (1..100)")
+    recap.add_argument("--since", type=parse_iso_date, help="Start date/time (ISO 8601)")
+    recap.add_argument("--until", type=parse_iso_date, help="End date/time (ISO 8601)")
     settings = sub.add_parser("preferences", help="Control automatic local checks and injected context")
     settings.add_argument("--profile", choices=("normal", "economical", "manual"))
     settings.add_argument("--auto-sync", choices=("on", "off"))
@@ -318,7 +336,13 @@ def parser():
 def main(argv=None):
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8")
-    args = parser().parse_args(argv)
+    p = parser()
+    try:
+        args = p.parse_args(argv)
+    except SystemExit as exc:
+        if "--json" in (argv or []):
+            print('{"error": "ArgumentError", "message": "Invalid arguments provided."}')
+        raise
     try:
         vault = args.vault.expanduser().resolve()
         if not vault.is_dir():
@@ -603,12 +627,14 @@ def main(argv=None):
         elif args.command == "recap":
             if not 1 <= args.days <= 366 or not 1 <= args.limit <= 100:
                 raise ValueError('recap days must be 1..366 and limit must be 1..100')
+            if getattr(args, 'since', None) and getattr(args, 'until', None) and args.since > args.until:
+                raise ValueError('since must be before or equal to until')
             refreshed = sync.sync()
             if refreshed.get('status') == 'conflict':
                 raise RuntimeError('Recap blocked: source sync conflict. Run sync to inspect sources.')
             from beyin_v3_projections import recent_receipts
             with store._connect() as db:
-                result = recent_receipts(db, days=args.days, limit=args.limit, vault=vault)
+                result = recent_receipts(db, days=args.days, limit=args.limit, vault=vault, since=getattr(args, 'since', None), until=getattr(args, 'until', None))
             if refreshed.get('status') == 'degraded':
                 warnings = refreshed.get('warnings', [])
                 result['partial'] = True
@@ -695,7 +721,7 @@ def main(argv=None):
         error = {"error": type(exc).__name__, "message": str(exc)}
         if isinstance(exc, ValueError) and str(exc) in ERROR_HINTS:
             error["hint"] = ERROR_HINTS[str(exc)]
-        print(json.dumps(error, ensure_ascii=True), file=sys.stderr)
+        print(json.dumps(error, ensure_ascii=False), file=sys.stderr)
         return 1
 
 
