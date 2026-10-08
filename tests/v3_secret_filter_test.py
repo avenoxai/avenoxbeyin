@@ -56,10 +56,15 @@ class SecretFilterTest(unittest.TestCase):
         values = [
             'ghp_' + 'A'*24,
             'github_pat_' + 'B'*24,
+            'sk-proj-' + 'A'*24,
+            'sk-admin-' + 'B'*24,
+            'hf_' + 'D'*34,
+            'ASIA' + 'E'*16,
             'sk-' + 'C'*24,
             'AKIA' + 'D'*16,
             'Bearer ' + 'e'*24,
             'password=synthetic-password',
+            'password' + ' '*24 + '= synthetic-password',
             '-----BEGIN PRIVATE KEY-----\nSYNTHETIC\n-----END PRIVATE KEY-----',
         ]
         filtered, count = redact('\n'.join(values), self.state)
@@ -112,6 +117,24 @@ class SecretFilterTest(unittest.TestCase):
                     filtered, count = redact(text, self.state)
                     self.assertGreaterEqual(count, 1)
                     self.assertNotIn(value[4:], filtered)
+
+    def test_hugging_face_token_has_a_fixed_length(self):
+        """#227: hf_ tokens are 34 characters; shorter or longer hf_ identifiers stay."""
+        token = 'hf_' + 'aB3' * 11 + 'z'
+        for text in (token, f'HF_TOKEN={token}', f'{token}_x', f'cfg.{token}.'):
+            with self.subTest(text=text[:12]):
+                filtered, count = redact(text, self.state)
+                self.assertGreaterEqual(count, 1)
+                self.assertNotIn(token[3:], filtered)
+        for text in ('hf_TransformersAutoModelLoader', 'hf_hub_download_with_retry_and_cache',
+                     'hf_' + 'A' * 40):
+            with self.subTest(text=text[:12]):
+                self.assertEqual(redact(text, self.state), (text, 0))
+
+    def test_public_certificate_is_not_a_secret(self):
+        """#227: a certificate is public by design; only private key blocks are redacted."""
+        cert = '-----BEGIN CERTIFICATE-----\nMIIBsyntheticPublicCertificate\n-----END CERTIFICATE-----'
+        self.assertEqual(redact(cert, self.state), (cert, 0))
 
     def test_provider_patterns_leave_ordinary_text_and_identifiers_alone(self):
         png = ('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk'
@@ -381,7 +404,8 @@ class SecretFilterTest(unittest.TestCase):
 
     def test_pathological_runs_stay_linear(self):
         for text in ('\\' * 20000 + 'password', 'x://' + ':' * 20000, 'x://' + 'a:' * 10000,
-                     'password: "' + 'a' * 20000, 'password: "a' * 2000):
+                     'password: "' + 'a' * 20000, 'password: "a' * 2000,
+                     'password=' + ' ' * 100000 + '"' + 'A' * 7):
             with self.subTest(text=text[:12], length=len(text)):
                 started = time.monotonic()
                 redact(text, self.state)

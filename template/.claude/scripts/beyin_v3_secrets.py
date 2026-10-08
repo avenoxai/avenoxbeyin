@@ -14,6 +14,9 @@ BUILTIN_PATTERNS = (
     re.compile(r"(?<=://)[^/\s?#:]*:[^/\s?#]*(?=@[^/\s?#@]+)"),
     re.compile(r"\bgh(?:p|o|u|s|r)_[A-Za-z0-9]{20,255}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,255}\b"),
+    # Hugging Face access token: hf_ plus exactly 34 letters or digits. A fixed length
+    # keeps identifiers such as hf_TransformersAutoModelLoader out.
+    re.compile(r"\bhf_[A-Za-z0-9]{34}(?![A-Za-z0-9])"),
     # The key alphabet includes - and _, so only a key character may not follow; a period
     # or dash before the key, or a sentence-ending period after it, still redacts.
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,255}(?![A-Za-z0-9_-])"),
