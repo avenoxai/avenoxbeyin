@@ -428,7 +428,15 @@ class OfflineUpdateTest(unittest.TestCase):
                 }
             ]
         }
-        self.module._apply(self.vault, self.state, journal)
+        # POSIX replaces a read-only file; Windows refuses (WinError 5). Emulate that refusal so
+        # the test fails without the fix on every platform, not only on the Windows runner.
+        original_replace = os.replace
+        def windows_replace(source, destination):
+            if os.path.exists(destination) and not os.access(destination, os.W_OK):
+                raise PermissionError(13, 'Access is denied', str(destination))
+            return original_replace(source, destination)
+        with patch.object(self.module.os, 'replace', side_effect=windows_replace):
+            self.module._apply(self.vault, self.state, journal)
         self.assertEqual(file_path.read_text(encoding='utf-8'), 'restored content')
 
 
