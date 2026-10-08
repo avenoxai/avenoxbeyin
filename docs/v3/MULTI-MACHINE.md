@@ -118,6 +118,28 @@ göre sıralar, en yenisini korur.
   `event_id`'nin sonuna kart başlığındaki gibi `Receipt session=` değerinin ilk 8 karakterini
   ekle: `ortak-konu-2026-09-27-3f9a1c2b`.
 
+## Vault'u başka klasöre ya da hesaba taşımak
+
+Hook dosyaları kurulumun mutlak yollarını taşır (Python, `beyin_v3_hook.py`, `--vault`,
+`--state`). Kurulu bir vault başka bir klasöre ya da başka bir Windows hesabına taşınınca
+(`C:\Users\<eski>\...`) her yaşam döngüsü hook'u genel bir hatayla düşer. `doctor` bunu
+`hook_paths: stale` ve `needs_attention` olarak gösterir; her satır dosyayı, olayı ve eski
+yolu (`hook_script_missing`, `other_vault`, `python_missing`) verir ([#204](https://github.com/avenoxai/avenoxbeyin/issues/204)).
+
+Çözüm, kurucuyu bu makinede yeni vault yoluyla yeniden çalıştırmaktır. Eski state klasörünü
+(ya da kopyasını) `--state` ile ver; kurulum kaydı oradadır ve kurucu yolları taşıyan bütün
+dosyaları yeniden üretir:
+
+```text
+py -3 scripts/install_v3.py --vault "C:\Users\<yeni>\Beynim" --state "<eski state klasörünün kopyası>"
+```
+
+Eski state yoksa kurucu kayıtsız bulduğu kurulum dosyalarını (`.beyin-runtime.json` gibi)
+`Unmanaged file conflict` ile korur ve durur. Hook dosyaları başka makineden git'le geldiyse
+içlerindeki eski Beyin girdileri, Windows'un PowerShell `-EncodedCommand` biçiminde olsalar da
+kurulumda Beyin'in kendi girdisi olarak tanınır ve yenileriyle değiştirilir; yanlarında
+çalışmayan bir kopya kalmaz.
+
 ## Nasıl doğrulandı
 
 Windows 11, Git 2.55 (`core.autocrlf=true`), Python 3.13, `main` @ db1f23d. Yerel bir çıplak

@@ -631,6 +631,73 @@ class HookInstallerTest(unittest.TestCase):
         self.install()
         self.assertEqual((self.vault / 'AGENTS.md').read_bytes(), first)
 
+    def stale_hook_commands(self):
+        spec = importlib.util.spec_from_file_location('v3_hook_test_installer', INSTALLER)
+        installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer)
+        old = self.root / 'old account' / 'Beyin'
+        return installer.commands([str(old / 'python.exe'), str(old / '.claude/scripts/beyin_v3_hook.py'),
+                                   '--vault', str(old), '--state', str(self.root / 'old account' / 'state'),
+                                   '--harness', 'claude'])
+
+    def doctor_report(self):
+        doctor = subprocess.run([sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
+                                 '--state', str(self.state), 'doctor'], capture_output=True, text=True,
+                                encoding='utf-8', cwd=self.vault, env=self.env, timeout=30)
+        self.assertEqual(doctor.returncode, 0, doctor.stderr)
+        return json.loads(doctor.stdout)
+
+    def test_install_replaces_synced_encoded_hooks_from_another_install(self):
+        # #204: hook files synced from another account carry its Windows EncodedCommand entries.
+        # This state has no record of them and the encoded text never names beyin_v3_hook.py.
+        _, encoded = self.stale_hook_commands()
+        (self.vault / '.claude').mkdir()
+        user_hook = {'type': 'command', 'command': 'echo user-owned'}
+        (self.vault / '.claude/settings.local.json').write_text(json.dumps({'hooks': {'SessionStart': [
+            {'hooks': [{'type': 'command', 'command': encoded, 'timeout': 20}]}, {'hooks': [user_hook]}]}}),
+            encoding='utf-8')
+        self.install()
+        groups = json.loads((self.vault / '.claude/settings.local.json').read_text(encoding='utf-8'))['hooks']['SessionStart']
+        commands = [hook['command'] for group in groups for hook in group['hooks']]
+        self.assertNotIn(encoded, commands)
+        self.assertIn(user_hook['command'], commands)
+        self.assertEqual(len([c for c in commands if 'beyin_v3_hook.py' in decoded_command(c)]), 1)
+
+    def test_reinstall_over_synced_encoded_hook_applies_and_drops_it(self):
+        # The same file arriving after this machine's install: reinstall and update must not stop
+        # with a managed-file conflict over it (they did not before #204 either).
+        self.install()
+        _, encoded = self.stale_hook_commands()
+        name = self.vault / '.claude/settings.local.json'
+        data = json.loads(name.read_text(encoding='utf-8'))
+        data['hooks']['SessionStart'].append({'hooks': [{'type': 'command', 'command': encoded, 'timeout': 20}]})
+        name.write_text(json.dumps(data), encoding='utf-8')
+        self.install()
+        groups = json.loads(name.read_text(encoding='utf-8'))['hooks']['SessionStart']
+        commands = [hook['command'] for group in groups for hook in group['hooks']]
+        self.assertNotIn(encoded, commands)
+        self.assertEqual(len([c for c in commands if 'beyin_v3_hook.py' in decoded_command(c)]), 1)
+
+    def test_doctor_reports_hook_commands_from_another_install(self):
+        self.install()
+        report = self.doctor_report()
+        self.assertEqual(report['hook_paths']['status'], 'ok')
+        self.assertGreater(report['hook_paths']['checked'], 0)
+        name = self.vault / '.claude/settings.local.json'
+        data = json.loads(name.read_text(encoding='utf-8'))
+        for command in self.stale_hook_commands():
+            data['hooks']['SessionStart'].append({'hooks': [{'type': 'command', 'command': command, 'timeout': 20}]})
+        name.write_text(json.dumps(data), encoding='utf-8')
+        report = self.doctor_report()
+        self.assertEqual(report['status'], 'needs_attention')
+        paths = report['hook_paths']
+        self.assertEqual(paths['status'], 'stale')
+        old = str(self.root / 'old account' / 'Beyin')
+        reasons = {(item['reason'], item['path']) for item in paths['stale']}
+        self.assertIn(('other_vault', old), reasons)
+        self.assertIn(('hook_script_missing', str(Path(old) / '.claude/scripts/beyin_v3_hook.py')), reasons)
+        self.assertIn('--state', paths['hint'])
+
     def test_installed_command_runs_with_spaces_and_unicode(self):
         self.install()
         self.seed()
@@ -642,13 +709,18 @@ class HookInstallerTest(unittest.TestCase):
         command = [hook['command']] + hook['args'] if hook.get('args') else hook['command']
         payload = json.dumps(dict(self.payload, hook_event_name='SessionStart', prompt='Nebula calibration'))
         if os.name == 'nt':
-            bash = shutil.which('bash', path=os.environ.get('PATH'))
+            # System32\bash.exe is the WSL launcher; Claude Code uses Git for Windows' bash (#204).
+            git_bash = [p for p in (r'C:\Program Files\Git\bin\bash.exe', r'C:\Program Files\Git\usr\bin\bash.exe')
+                        if os.path.exists(p)]
+            bash = git_bash[0] if git_bash else shutil.which('bash', path=os.environ.get('PATH'))
             self.assertIsNotNone(bash, 'Native Claude Code on Windows requires Git Bash')
             launcher = str(command).split(' -NoProfile ')[0]
             probe = subprocess.run([bash, '-lc', launcher + " -NoProfile -NonInteractive -Command 'exit 0'"],
                                    text=True, encoding='utf-8', capture_output=True,
                                    cwd=self.vault, env=self.env, timeout=20)
             self.assertEqual(probe.returncode, 0, probe.stderr)
+            # Running the whole encoded command through Git Bash returned exit 0 with empty stdout on
+            # the Windows runners (#238 CI); kept out until it is reproduced on a real Windows client (#204).
             result = subprocess.run(command, shell=True, input=payload, text=True, encoding='utf-8',
                                     capture_output=True, cwd=self.vault, env=self.env, timeout=20)
         else:

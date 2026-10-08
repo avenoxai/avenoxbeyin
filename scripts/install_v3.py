@@ -59,6 +59,22 @@ def managed_handler(handler, previous, kept=()):
     return command in previous or "beyin_v3_hook.py" in command or legacy
 
 
+def encoded_script(command):
+    """The PowerShell text inside a Windows -EncodedCommand hook; empty for any other command.
+
+    The encoded form shows no file name, so a vault moved from another account or machine,
+    whose manifest lists none of its commands, kept those stale entries beside the new ones (#204).
+    Only planning drops them; managed_handler, and so the reinstall/update conflict check, keeps
+    treating them as foreign entries, as before, so an update over such a file still applies."""
+    match = re.search(r"-EncodedCommand\s+([A-Za-z0-9+/=]+)", str(command), re.I)
+    if not match:
+        return ""
+    try:
+        return base64.b64decode(match.group(1), validate=True).decode("utf-16le")
+    except (ValueError, UnicodeError):
+        return ""
+
+
 # Vault paths of the file components. Names are validated against
 # beyin_v3_exclusions.EXCLUDABLE_COMPONENTS; core files and the Claude/Codex hook entries are
 # not excludable. agents_block and harnesses/antigravity edit shared files and are handled
@@ -356,7 +372,8 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
         for event, groups in list(hooks.items()):
             cleaned = []
             for group in groups:
-                remaining = [h for h in group.get("hooks", []) if not managed_handler(h, manifest.get("commands", []), kept)]
+                remaining = [h for h in group.get("hooks", []) if not managed_handler(h, manifest.get("commands", []), kept)
+                             and "beyin_v3_hook.py" not in encoded_script(h.get("command", ""))]
                 # Encoded Windows command contains no visible filename; match exact prior manifest below.
                 previous = manifest.get("commands", [])
                 remaining = [h for h in remaining if h.get("command") not in previous]
