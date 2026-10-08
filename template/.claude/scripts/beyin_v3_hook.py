@@ -348,7 +348,7 @@ def drain_queue(vault, state):
 def main():
     started = time.monotonic()
     if hasattr(sys.stdin, "reconfigure"):
-        sys.stdin.reconfigure(encoding="utf-8")
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser()
     parser.add_argument("--vault", required=True, type=Path)
     parser.add_argument("--state", required=True, type=Path)
@@ -374,6 +374,8 @@ def main():
         return
     notice = ''
     try:
+        # A payload cut at the read limit is not JSON: the handler below answers "{}" and
+        # records the error for doctor instead of silently dropping the turn.
         payload = json.loads(sys.stdin.read(1_000_000) or "{}")
         event = payload.get("hook_event_name", args.event)
         if args.harness == "hermes":

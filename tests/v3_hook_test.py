@@ -362,6 +362,28 @@ class HookInstallerTest(unittest.TestCase):
         self.assertEqual(self.hook.prompt_text({'prompt': None}), '')
         self.assertEqual(self.hook.prompt_text(None), '')
 
+    def test_undecodable_prompt_byte_keeps_the_turn_and_a_cut_payload_is_recorded(self):
+        self.seed()
+
+        def raw(data):
+            result = subprocess.run([sys.executable, str(HOOK), '--vault', str(self.vault), '--state', str(self.state),
+                                     '--harness', 'claude'], input=data, capture_output=True, cwd=self.vault,
+                                    env=self.env, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+
+        payload = {'hook_event_name': 'UserPromptSubmit', 'session_id': 'raw-bytes', 'event_id': 'raw-bytes-1',
+                   'prompt': 'Nebula calibration owner BYTE'}
+        # A stray byte in the prompt is read as U+FFFD; the turn keeps its context.
+        output = raw(json.dumps(payload).encode('utf-8').replace(b'BYTE', b'\xff'))
+        self.assertIn('Nebula calibration owner', output['hookSpecificOutput']['additionalContext'])
+        self.assertFalse((self.state / 'hook-error.json').exists())
+        # A payload cut at the 1 MB read is not JSON: '{}' for the host, and doctor still sees why.
+        cut = json.dumps(dict(payload, event_id='raw-bytes-2', prompt='x' * 1_100_000)).encode('utf-8')
+        self.assertEqual(raw(cut), {})
+        error = json.loads((self.state / 'hook-error.json').read_text(encoding='utf-8'))
+        self.assertEqual(error['error'], 'JSONDecodeError')
+
     def test_stop_receipt_reminder_session_closes_the_gap(self):
         engine = self.seed()
         self.lifecycle('UserPromptSubmit', 'gap-session', 'claude', prompt='update the calibration note')
