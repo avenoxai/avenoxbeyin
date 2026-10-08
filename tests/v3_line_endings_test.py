@@ -43,12 +43,31 @@ class LineEndingGateTest(unittest.TestCase):
         self.snapshot.mkdir()
         shutil.copytree(self.vault, self.snapshot / 'vault')
         shutil.copytree(self.state, self.snapshot / 'state')
+        self.saved = self.fingerprint()
 
     def restore(self):
-        shutil.rmtree(self.vault, ignore_errors=True)
-        shutil.rmtree(self.state, ignore_errors=True)
-        shutil.copytree(self.snapshot / 'vault', self.vault)
-        shutil.copytree(self.snapshot / 'state', self.state)
+        # Rewrites only what a gate changed: on Windows every fresh copy is rescanned on first
+        # open, so recopying the whole tree per subtest made these tests dominate the suite.
+        live = self.fingerprint()
+        for path in live.keys() - self.saved.keys():
+            path.unlink()
+        for path, stamp in self.saved.items():
+            if live.get(path) != stamp:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                source = self.snapshot / ('vault' if self.vault in path.parents else 'state') / path.relative_to(
+                    self.vault if self.vault in path.parents else self.state)
+                path.write_bytes(source.read_bytes())
+                self.saved[path] = self.stamp(path)
+
+    @staticmethod
+    def stamp(path):
+        stat = path.stat()
+        return stat.st_size, stat.st_mtime_ns
+
+    def fingerprint(self):
+        # stat only: checking what a gate wrote must not reopen every file.
+        return {path: self.stamp(path) for root in (self.vault, self.state)
+                for path in root.rglob('*') if path.is_file()}
 
     def crlf(self, name):
         path = self.vault / name
@@ -85,19 +104,26 @@ class LineEndingGateTest(unittest.TestCase):
         for name in self.managed:
             for gate, run in (('install', self.reinstall), ('uninstall', self.uninstall), ('rollback', self.rollback)):
                 with self.subTest(file=name, gate=gate):
-                    self.restore()
                     self.crlf(name)
-                    run()
+                    try:
+                        run()
+                    finally:
+                        self.restore()
 
     def test_real_change_still_conflicts_on_every_gate(self):
         for name in self.managed:
             for case in ('edited', 'edited_crlf', 'deleted'):
                 for gate, run in (('install', self.reinstall), ('uninstall', self.uninstall), ('rollback', self.rollback)):
                     with self.subTest(file=name, case=case, gate=gate):
-                        self.restore()
                         self.mutate(name, case)
-                        with self.assertRaises(ValueError):
-                            run()
+                        before = self.fingerprint()
+                        try:
+                            with self.assertRaises(ValueError):
+                                run()
+                            # A conflict must stop the gate before it writes anything.
+                            self.assertEqual(self.fingerprint(), before)
+                        finally:
+                            self.restore()
 
     def test_conflict_message_names_the_case(self):
         target = '.claude/scripts/beyin_v3_hook.py'
