@@ -222,6 +222,10 @@ class MigrationTest(unittest.TestCase):
 
         r2 = store._validate({"id": "2", "text": "t", "source": "t.md", "updated": "20-09-2026"})
         self.assertEqual(r2.get("updated_at"), "2026-09-20")
+        r5 = store._validate({"id": "5", "text": "t", "source": "t.md", "updated": "20.09.2026"})
+        self.assertEqual(r5.get("updated_at"), "2026-09-20")
+        r6 = store._validate({"id": "6", "text": "t", "source": "t.md", "updated": "20.09-2026"})
+        self.assertNotIn("updated_at", r6)
         # Month-first text is not a day-first date; it stays unset instead of 2026-31-12.
         r3 = store._validate({"id": "3", "text": "t", "source": "t.md", "updated": "12/31/2026"})
         self.assertNotIn("updated_at", r3)

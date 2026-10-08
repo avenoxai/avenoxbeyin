@@ -326,14 +326,14 @@ class MemoryStore:
                 value = record.get(alias)
                 if isinstance(value, str):
                     v = value.strip()
-                    # YYYY/MM/DD, or day-first DD-MM-YYYY / DD/MM/YYYY as Turkish templates
-                    # write it. A converted value must be a real date: month-first text such
+                    # YYYY/MM/DD, or day-first DD.MM.YYYY / DD-MM-YYYY / DD/MM/YYYY as Turkish
+                    # templates write it. A converted value must be a real date: month-first text such
                     # as 12/31/2026 stays unset instead of becoming 2026-31-12.
                     m = re.match(r"^(\d{4})/(\d{2})/(\d{2})(.*)$", v)
                     parts = (m[1], m[2], m[3], m[4]) if m else None
                     if parts is None:
-                        m = re.match(r"^(\d{2})[-/](\d{2})[-/](\d{4})(.*)$", v)
-                        parts = (m[3], m[2], m[1], m[4]) if m else None
+                        m = re.match(r"^(\d{2})([-/.])(\d{2})\2(\d{4})(.*)$", v)
+                        parts = (m[4], m[3], m[1], m[5]) if m else None
                     if parts is not None:
                         try:
                             datetime(int(parts[0]), int(parts[1]), int(parts[2]))
