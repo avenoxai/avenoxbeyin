@@ -290,7 +290,6 @@ class ParallelSessionsTest(unittest.TestCase):
         self.assertLessEqual(len(names), 128)
 
 
-
 class ParallelModuleTest(unittest.TestCase):
     """In-process checks for the failure paths a subprocess cannot reach."""
 
