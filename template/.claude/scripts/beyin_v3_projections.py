@@ -69,7 +69,7 @@ def latest_receipts(db, vault, sessions=None):
             yield source, event
 
 
-def recent_receipts(db, days=7, limit=20, today=None, vault=None):
+def recent_receipts(db, days=7, limit=20, today=None, vault=None, since=None, until=None):
     """A bounded, source-linked activity view; summaries remain agent claims.
 
     With a vault, receipts whose own source file is gone are omitted, and refs that no longer
@@ -79,6 +79,10 @@ def recent_receipts(db, days=7, limit=20, today=None, vault=None):
         raise ValueError('recap days must be 1..366 and limit must be 1..100')
     today = today or datetime.now(timezone.utc).date()
     start = today - timedelta(days=days - 1)
+    if since:
+        since_date = since.date()
+        if since_date < start:
+            start = since_date
     matches = []
     undated = 0
     for (payload,) in db.execute('SELECT payload FROM receipts'):
@@ -91,7 +95,11 @@ def recent_receipts(db, days=7, limit=20, today=None, vault=None):
         except (KeyError, AttributeError, TypeError, ValueError, OverflowError):
             undated += 1
             continue
-        if not start <= stamp.date() <= today:
+        if since is not None and stamp < since:
+            continue
+        if until is not None and stamp > until:
+            continue
+        if since is None and until is None and not start <= stamp.date() <= today:
             continue
         ident = event.get('event_id')
         if not isinstance(ident, str) or not ident or not isinstance(event.get('summary'), str):
@@ -129,7 +137,7 @@ def recent_receipts(db, days=7, limit=20, today=None, vault=None):
             item['refs_withheld'] = {'private': private, 'missing': missing}
         items.append(item)
     result = {
-        'status': 'ok', 'from': start.isoformat(), 'through': today.isoformat(),
+        'status': 'ok', 'from': since.isoformat() if since else start.isoformat(), 'through': until.isoformat() if until else today.isoformat(),
         'timezone': 'UTC', 'audience': 'internal', 'total': len(matches), 'shown': len(items),
         'truncated': len(matches) > limit, 'undated_omitted': undated,
         'items': items,
