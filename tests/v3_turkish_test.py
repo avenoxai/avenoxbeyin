@@ -21,6 +21,9 @@ PAIRS = (
     ('çatal', 'çatallarda'), ('kitap', 'kitaplar'), ('karar', 'kararı'),
     ('durum', 'durumu'), ('sunucu', 'sunucularda'), ('araba', 'arabanın'),
     ('neden', 'nedenleri'), ('kapı', 'kapısında'), ('orman', 'ormanda'),
+    # Consonant softening: p/b and k/ğ alternate before a vowel suffix.
+    ('cevap', 'cevabı'), ('hesap', 'hesabından'), ('örnek', 'örneği'),
+    ('temizlik', 'temizliği'), ('çocuk', 'çocuğu'), ('istek', 'isteğini'),
 )
 
 # Pairs that must stay apart: a stemmer that merges these turns recall into noise.
@@ -29,6 +32,7 @@ NEGATIVES = (
     ('bir', 'birim'), ('kod', 'kodla'), ('gol', 'golden'), ('tab', 'table'),
     ('hand', 'handle'), ('gar', 'garden'), ('sta', 'state'), ('list', 'listen'),
     ('dur', 'durum'), ('sür', 'sürüm'), ('yay', 'yayın'), ('haf', 'hafta'),
+    ('denedi', 'denetim'), ('kod', 'kot'), ('card', 'cart'), ('bulgu', 'bulk'),
 )
 
 FILLER = 'Bu sentetik test kaydıdır.'
