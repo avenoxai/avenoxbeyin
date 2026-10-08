@@ -84,6 +84,14 @@ class ReceiptCliTest(unittest.TestCase):
         self.submit('--file', '-', payload={'event_id': 'summary-file', 'summary': summary,
                                            'refs': ['notes/ilk.md']})
 
+    def test_summary_file_drops_utf8_bom(self):
+        # Windows PowerShell 5.1 `Set-Content -Encoding UTF8` and `Out-File` write a BOM.
+        summary = 'Öğrenilen: yok'
+        summary_file = self.root / 'bom.txt'
+        summary_file.write_bytes(b'\xef\xbb\xbf' + summary.encode('utf-8'))
+        self.submit('--event-id', 'bom', '--summary-file', summary_file, '--ref', 'notes/ilk.md')
+        self.assertEqual(self.saved('bom')['summary'], summary)
+
     def test_json_stdin_default_and_explicit_file_are_unchanged(self):
         for args in ([], ['--file', '-']):
             with self.subTest(args=args):

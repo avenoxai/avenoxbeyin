@@ -700,8 +700,9 @@ def main(argv=None):
             if receipt_flags:
                 summary = args.summary
                 if args.summary_file is not None:
-                    # Preserve CRLF as well as LF, matching the JSON input text.
-                    with args.summary_file.open(encoding="utf-8", newline="") as stream:
+                    # Preserve CRLF as well as LF, matching the JSON input text. utf-8-sig drops
+                    # the BOM that Windows PowerShell 5.1 writes with -Encoding UTF8.
+                    with args.summary_file.open(encoding="utf-8-sig", newline="") as stream:
                         summary = stream.read()
                 payload = {"event_id": args.event_id, "summary": summary, "refs": args.ref}
                 if args.session is not None:
