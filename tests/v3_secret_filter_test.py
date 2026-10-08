@@ -56,6 +56,12 @@ class SecretFilterTest(unittest.TestCase):
         values = [
             'ghp_' + 'A'*24,
             'github_pat_' + 'B'*24,
+            'sk-proj-' + 'A'*24,
+            'sk-admin-' + 'B'*24,
+            'hf_' + 'D'*24,
+            'ASIA' + 'E'*16,
+            '-----BEGIN CERTIFICATE-----\nABC\n-----END CERTIFICATE-----',
+            '-----BEGIN CERTIFICATE-----\r\nDEF\r\n-----END CERTIFICATE-----',
             'sk-' + 'C'*24,
             'AKIA' + 'D'*16,
             'Bearer ' + 'e'*24,
@@ -361,6 +367,29 @@ class SecretFilterTest(unittest.TestCase):
         content = (self.vault/'tasks/strict.md').read_text(encoding='utf-8')
         self.assertNotIn('abcdefghijkl', content)
         self.assertNotIn(self.token, content)
+
+    def test_redos_limits(self):
+        """Verify that extremely long repetitive inputs do not trigger ReDoS."""
+        import time
+        from beyin_v3 import REJECTED_AT
+
+        # 1. Assignment ReDoS
+        text = 'password' + '=' + ' ' * 100000 + '"' + 'A'*7
+        t0 = time.time()
+        redact(text, self.state)
+        self.assertLess(time.time() - t0, 1.0)
+
+        # 2. CERT ReDoS
+        text = "-----BEGIN CERTIFICATE-----\n" + "A" * 100000 + "\n-----END CERTIFICATE-----"
+        t0 = time.time()
+        redact(text, self.state)
+        self.assertLess(time.time() - t0, 1.0)
+
+        # 3. REJECTED_AT ReDoS
+        text = "2023-01-01T" + "1" * 100000
+        t0 = time.time()
+        REJECTED_AT.match(text)
+        self.assertLess(time.time() - t0, 1.0)
 
     def test_pathological_runs_stay_linear(self):
         for text in ('\\' * 20000 + 'password', 'x://' + ':' * 20000, 'x://' + 'a:' * 10000,
