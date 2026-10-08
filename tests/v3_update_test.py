@@ -438,6 +438,23 @@ class OfflineUpdateTest(unittest.TestCase):
         with patch.object(self.module.os, 'replace', side_effect=windows_replace):
             self.module._apply(self.vault, self.state, journal)
         self.assertEqual(file_path.read_text(encoding='utf-8'), 'restored content')
+        self.assertFalse(os.access(file_path, os.W_OK), 'the read-only flag is the user\'s lock')
+
+    def test_update_and_rollback_keep_a_read_only_managed_file_locked(self):
+        version = self.vault / '.beyin-version'
+        os.chmod(version, stat.S_IREAD)
+        original_replace = os.replace
+        def windows_replace(source, destination):
+            if os.path.exists(destination) and not os.access(destination, os.W_OK):
+                raise PermissionError(13, 'Access is denied', str(destination))
+            return original_replace(source, destination)
+        with patch.object(self.module.os, 'replace', side_effect=windows_replace):
+            self.assertEqual(self.module.update(self.vault, self.state, self.package)['status'], 'updated')
+            self.assertEqual(self.version(), '3.0.1')
+            self.assertFalse(os.access(version, os.W_OK))
+            self.module.rollback(self.vault, self.state)
+        self.assertEqual(self.version(), '3.0.0')
+        self.assertFalse(os.access(version, os.W_OK))
 
 
 if __name__ == '__main__':
