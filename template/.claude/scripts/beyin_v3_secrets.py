@@ -11,13 +11,15 @@ import sqlite3
 BUILTIN_PATTERNS = (
     re.compile(r"(?i)(?<=[?&])(?:api[_ -]?key|access[_ -]?token|token|secret|password|passwd)=[^&\s]{8,}"),
     re.compile(r"""(?i)(?<![a-zA-Z0-9_])(?:\\{0,8}["\']?(?:api[_ -]?key|access[_ -]?token|token|secret|password|passwd)\\{0,8}["\']?)\s*[:=]\s*(?:\\{0,8}["\']\S{8,}\\{0,8}["\']|[^"\'\s,;][^\s,;]{7,})"""),
-    re.compile(r"(?<=://)[^/\s?#:]*:[^/\s?#]+(?=@[^/\s?#@]+)"),
+    re.compile(r"(?<=://)[^/\s?#:]*:[^/\s?#]*(?=@[^/\s?#@]+)"),
     re.compile(r"\bgh(?:p|o|u|s|r)_[A-Za-z0-9]{20,255}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,255}\b"),
     # Hugging Face access token: hf_ plus exactly 34 letters or digits. A fixed length
     # keeps identifiers such as hf_TransformersAutoModelLoader out.
     re.compile(r"\bhf_[A-Za-z0-9]{34}(?![A-Za-z0-9])"),
-    re.compile(r"\bsk-[A-Za-z0-9_-]{20,255}\b"),
+    # The key alphabet includes - and _, so only a key character may not follow; a period
+    # or dash before the key, or a sentence-ending period after it, still redacts.
+    re.compile(r"\bsk-[A-Za-z0-9_-]{20,255}(?![A-Za-z0-9_-])"),
     re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
     re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"),
     re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
@@ -28,7 +30,7 @@ BUILTIN_PATTERNS = (
     re.compile(r"\bxox[abeoprs]-[0-9]+-[A-Za-z0-9-]{8,255}\b"),
     re.compile(r"\bxapp-[0-9]+-[A-Za-z0-9-]{8,255}\b"),
     re.compile(r"(?<![A-Za-z0-9_-])AIza[0-9A-Za-z_-]{35}(?![A-Za-z0-9_-])"),
-    re.compile(r"\bnpm_[A-Za-z0-9]{36}\b"),
+    re.compile(r"\bnpm_[A-Za-z0-9]{36}(?![A-Za-z0-9])"),
     re.compile(r"(?<![A-Za-z0-9_.-])SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])"),
     # A JWT header is base64url JSON, so it always opens with eyJ; three dot-separated
     # base64url segments are required (five for an encrypted JWE). Plain base64

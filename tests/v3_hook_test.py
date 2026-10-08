@@ -429,10 +429,47 @@ class HookInstallerTest(unittest.TestCase):
             'Tuned learning-rate schedule in the trainer': False,
             'Ders-plan sayfası düzeltildi': False,
             'Öğrenilen: yok.': False,
+            # A parenthetical only explains a "none" answer; text after it is still a learning.
+            'Öğrenilen: yok (rutin kontrol)': False,
+            'Öğrenilen: yok (ayrıntı araştırma notunda).': False,
+            'Learned: none (routine check)': False,
+            'Öğrenilen: yok (rutin) ama WAL timeout en az 5 sn': True,
+            'Öğrenilen: yoklama (idempotent) akışı': True,
         }
         for summary, expected in cases.items():
             with self.subTest(summary=summary):
                 self.assertIs(declared(summary), expected)
+
+    def test_stop_knowledge_reminder_accepts_human_knowledge_root(self):
+        # The official template keeps human-curated knowledge in 🧠 500-Knowledge/ (or 500-Knowledge/).
+        engine = self.seed()
+        summary = 'Araştırma bitti.\nÖğrenilen: WAL timeout en az 5 sn.'
+        for index, root in enumerate(('🧠 500-Knowledge', '500-Knowledge')):
+            for via_ref in (True, False):
+                with self.subTest(root=root, via_ref=via_ref):
+                    name = f'human-root-{index}-{via_ref}'
+                    session = hashlib.sha256(name.encode()).hexdigest()[:24]
+                    self.lifecycle('PostToolUse', name, 'claude')
+                    note = self.vault / root / 'Ajanlar' / f'wal-{name}.md'
+                    note.parent.mkdir(parents=True, exist_ok=True)
+                    note.write_text('# WAL\n', encoding='utf-8')
+                    refs = ['notes/task.md']
+                    if via_ref:
+                        refs.append(note.relative_to(self.vault).as_posix())
+                    engine.receipt(f'{name}-1', summary, refs, 'claude', session=session)
+                    self.assertEqual(self.lifecycle('Stop', name, 'claude'), {})
+                    os.utime(note, (0, 0))  # keep the folder scan of the next case honest
+
+    def test_stop_knowledge_reminder_ignores_other_roots(self):
+        engine = self.seed()
+        session = hashlib.sha256('elsewhere'.encode()).hexdigest()[:24]
+        self.lifecycle('PostToolUse', 'elsewhere', 'claude')
+        note = self.vault / 'notes' / '500-Knowledge-plan.md'
+        note.parent.mkdir(parents=True, exist_ok=True)
+        note.write_text('# plan\n', encoding='utf-8')
+        engine.receipt('elsewhere-1', 'Refactor bitti.\nÖğrenilen: WAL timeout en az 5 sn.',
+                       ['notes/500-Knowledge-plan.md'], 'claude', session=session)
+        self.assertEqual(self.lifecycle('Stop', 'elsewhere', 'claude').get('decision'), 'block')
 
     def test_stop_knowledge_reminder_follows_a_receipt_written_for_the_receipt_reminder(self):
         engine = self.seed()
