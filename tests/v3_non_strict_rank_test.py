@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Non-strict retrieval ranks by the strict idf weight, so a long hub note cannot win every query."""
+"""Non-strict retrieval ranks by BM25 over stem counts, so a long hub note cannot win every query."""
 import importlib.util
 from pathlib import Path
 import tempfile
