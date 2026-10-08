@@ -50,5 +50,30 @@ class TaskEdgesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "updated_at must be an ISO date or timestamp"):
             self.engine.update_task('edge-task', 1, {'updated_at': '2025-13-45'})
 
+    def test_task_files_from_older_versions_stay_indexed(self):
+        """Status and date checks guard task-create/task-update only. A task file an older
+        version wrote (or a hand edit) and an Obsidian `updated` date must not drop out of
+        the index on the next sync."""
+        (self.vault / 'tasks').mkdir()
+        (self.vault / 'tasks/hand.md').write_text(
+            '---\nid: legacy-task\nkind: task\ntitle: Elle\nstatus: todo\nowner: Tester\n'
+            'due_at: 2026-10-10 sabah\nrevision: 1\n---\nElle yazilmis gorev.\n', encoding='utf-8')
+        (self.vault / 'obsidian.md').write_text(
+            '---\nupdated: 2026-10-08 (Persembe)\n---\nObsidian notu.\n', encoding='utf-8')
+        result = self.engine.sync()
+        self.assertEqual(result['warnings'], [])
+        with self.engine.store._connect() as db:
+            ids = {row[0] for row in db.execute('SELECT id FROM records')}
+        self.assertIn('legacy-task', ids)
+        self.assertEqual(len(ids), 2)
+
+    def test_task_create_checks_dates_the_same_on_every_python(self):
+        for due in ('2026-10-10 sabah', '2026-10-15T24:00:00', '2025-13-45'):
+            with self.subTest(due=due), self.assertRaisesRegex(ValueError, 'due_at must be an ISO date or timestamp'):
+                self.engine.task_create('tasks/dated.md', 'Body.', dict(self.metadata, due_at=due))
+        created = self.engine.task_create('tasks/dated.md', 'Body.',
+                                          dict(self.metadata, due_at='2026-10-15T09:30:00+03:00'))
+        self.assertEqual(created['due_at'], '2026-10-15T09:30:00+03:00')
+
 if __name__ == '__main__':
     unittest.main()

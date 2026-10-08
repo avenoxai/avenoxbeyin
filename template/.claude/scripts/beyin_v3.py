@@ -327,27 +327,9 @@ class MemoryStore:
                 if isinstance(value, str) and re.match(r"\d{4}-\d{2}-\d{2}", value.strip()):
                     record["updated_at"] = value.strip()
                     break
-        updated_at = record.get("updated_at")
-        if updated_at is not None:
-            if not isinstance(updated_at, str):
-                raise ValueError("updated_at must be a string")
-            try:
-                datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-            except ValueError as exc:
-                raise ValueError("updated_at must be an ISO date or timestamp") from exc
         for field in ("project", "kind", "status", "updated_at"):
             if field in record and not isinstance(record[field], str):
                 raise ValueError(field + " must be a string")
-        if record.get("kind") == "task" and record.get("status") not in ("inbox", "active", "waiting", "blocked", "done", "cancelled"):
-            raise ValueError("valid explicit task status required")
-        due_at = record.get("due_at")
-        if due_at is not None:
-            if not isinstance(due_at, str):
-                raise ValueError("due_at must be a string")
-            try:
-                datetime.fromisoformat(due_at.replace("Z", "+00:00"))
-            except ValueError as exc:
-                raise ValueError("due_at must be an ISO date or timestamp") from exc
         if record.get("kind") in ("inference", "preference"):
             if record.get("validity", "current") not in ("current", "rejected"):
                 raise ValueError("inference validity must be current or rejected")

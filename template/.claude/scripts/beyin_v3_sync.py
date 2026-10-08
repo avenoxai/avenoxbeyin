@@ -16,7 +16,7 @@ _MODULE_DIR = str(Path(__file__).resolve().parent)
 if _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
-from beyin_v3 import HARNESSES, MemoryStore, ReceiptConflict, RevisionConflict, _json
+from beyin_v3 import HARNESSES, REJECTED_AT, MemoryStore, ReceiptConflict, RevisionConflict, _json
 from beyin_v3_projections import project_receipts
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
@@ -230,6 +230,26 @@ def render(metadata, body):
 EXCLUDED_FILES = {'agents.md', 'claude.md', 'gemini.md', 'skill.md', 'hooks.md', 'config.md', 'settings.md', 'instructions.md', 'codex.md', 'setup.md', 'install.md'}
 EXCLUDED_DIRS = {'node_modules', 'receipts', '__pycache__'}
 COMPLETION_FIELDS = {'completion_contract', 'completion_criterion', 'evidence_refs'}
+TASK_STATUSES = ('inbox', 'active', 'waiting', 'blocked', 'done', 'cancelled')
+
+
+def _check_task_dates(fields):
+    """Write-path check for due_at/updated_at given to task-create or task-update.
+
+    Sync does not apply it, so task files written before this check, or edited by
+    hand, stay indexed. The explicit grammar (the one rejected_at uses) keeps
+    acceptance the same on every Python version; a null due_at clears the date.
+    """
+    for field in ('due_at', 'updated_at'):
+        if field not in fields or (field == 'due_at' and fields[field] is None):
+            continue
+        value = fields[field]
+        try:
+            if not isinstance(value, str) or not REJECTED_AT.fullmatch(value):
+                raise ValueError(field)
+            datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError(field + ' must be an ISO date or timestamp') from exc
 
 
 class SyncEngine:
@@ -619,6 +639,9 @@ class SyncEngine:
         allowed = {'title', 'status', 'project', 'visibility', 'facts', 'next_action', 'owner', 'priority', 'due_at', 'updated_at', 'supersedes', 'completion_contract', 'completion_criterion', 'evidence_refs'}
         if not isinstance(changes, dict) or set(changes) - allowed:
             raise ValueError('unsupported task metadata changes')
+        if 'status' in changes and changes['status'] not in TASK_STATUSES:
+            raise ValueError('valid explicit task status required')
+        _check_task_dates(changes)
         changes, redacted = self._protect_metadata(changes)
         with self.store._connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -750,8 +773,9 @@ class SyncEngine:
             raise ValueError('stable task id required')
         if not isinstance(metadata.get('owner'), str) or not metadata['owner'].strip():
             raise ValueError('explicit task owner required')
-        if metadata.get('status') not in ('inbox', 'active', 'waiting', 'blocked', 'done', 'cancelled'):
+        if metadata.get('status') not in TASK_STATUSES:
             raise ValueError('valid explicit task status required')
+        _check_task_dates(metadata)
         if type(metadata.get('revision', 1)) is not int or metadata.get('revision', 1) != 1:
             raise ValueError('new task revision must be 1')
         if metadata.get('kind', 'task') != 'task':
