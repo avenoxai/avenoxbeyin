@@ -124,7 +124,8 @@ def project_context(vault, state, project_id, project_name, budget=1200, today_i
                     continue
                 if isinstance(record, dict) and _visible(record):
                     records.append(record)
-            superseded = {rid for record in records for rid in (record.get('supersedes') or []) if isinstance(rid, str)}
+            from beyin_v3 import resolve_supersedes  # ids, paths and [[links]] alike (#201)
+            superseded = resolve_supersedes(records)[0]
             for record in records:
                 if record.get('kind') != 'task' or record.get('status') not in ('active', 'waiting') or record.get('id') in superseded:
                     continue

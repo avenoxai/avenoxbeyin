@@ -59,7 +59,7 @@ def _read(path, now):
 
 
 def _current(store, saved):
-    # Reapply all source, index, supersession, visibility, trust and project gates.
+    # Reapply all source, index, supersession, retired-status, visibility, trust and project gates.
     eligible = store._retrieve('', project=saved['project'], snapshot=True,
                                limit=100000, budget_chars=10000000)['records']
     by_id = {r['id']: r for r in eligible if not r.get('text_truncated')}

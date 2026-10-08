@@ -505,7 +505,8 @@ def main():
             else:
                 # Per-turn automatic context is strict: only meaningful lexical matches are
                 # injected, and an empty match injects nothing at all instead of a receipt
-                # header plus the newest unrelated notes.
+                # header plus the newest unrelated notes. Superseded and retired-status notes are
+                # dropped by the shared read gate before ranking (#201).
                 context = store.context_for(args.harness, query, project=project, budget_chars=limit, strict=True) if query else {"records": []}
                 inherited = False
                 from beyin_v3_continuity import resolve, remember

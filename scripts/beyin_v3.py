@@ -592,6 +592,12 @@ def main(argv=None):
             except Exception as exc:
                 result['validity'] = {'ignored_rejection_count': 0, 'ignored_rejections': [], 'truncated': False,
                                       'error': (type(exc).__name__ + ': ' + str(exc))[:240]}
+            # Information only: a supersedes link that retires nothing keeps the old note in
+            # context, as before #206; it never raises the doctor status.
+            try:
+                result['supersedes'] = load_sync().reader(store).supersedes_health()
+            except Exception as exc:
+                result['supersedes'] = {'status': 'unavailable', 'error': type(exc).__name__}
             # Read-only information: each scan fails alone and never hides the rest of doctor.
             # The word cap and promotion reports follow the user's opt-in (state/hygiene.json):
             # a default install gets no new doctor lines and no whole-vault read.
