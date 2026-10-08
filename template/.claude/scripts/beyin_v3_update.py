@@ -172,7 +172,15 @@ def locked(vault, state):
     try:
         # Use the same SQLite writer lock as participating runtime operations.
         for path in (state / 'update-lock.sqlite3', state / 'memory.sqlite3'):
-            connection = sqlite3.connect(path, timeout=5)
+            try:
+                if path.name == 'memory.sqlite3':
+                    connection = sqlite3.connect(f"file:{path.resolve()}?mode=rw", uri=True, timeout=5)
+                else:
+                    connection = sqlite3.connect(path, timeout=5)
+            except sqlite3.OperationalError:
+                if path.name == 'memory.sqlite3':
+                    continue
+                raise
             connections.append(connection)
             connection.execute('BEGIN IMMEDIATE')
         yield
@@ -273,6 +281,8 @@ def _apply(vault, state, journal, migration=None):
                 if operation.get('new_mode') is not None: path.chmod(operation['new_mode'])
         if path.exists() and operation.get('new_mode') is not None:
             path.chmod(operation['new_mode'])
+        if path.exists() and operation.get('new_mtime') is not None:
+            os.utime(path, (operation['new_mtime'], operation['new_mtime']))
         transaction_hook('after_replace', index)
     if journal['direction'] == 'update':
         atomic(state / 'last-update.json', jbytes(journal))
@@ -388,7 +398,7 @@ def update(vault, state, package=None, check=False):
                     if name == '.beyin-version': continue
                     path = vault / name
                     previous = path.read_bytes() if path.exists() else None
-                    operations.append({'scope': 'vault', 'name': name, 'old': encode(previous), 'new': encode(data), 'old_mode': stat.S_IMODE(path.stat().st_mode) if path.exists() else None, 'new_mode': plan.get('modes', {}).get(name, 0o644)})
+                    operations.append({'scope': 'vault', 'name': name, 'old': encode(previous), 'new': encode(data), 'old_mode': stat.S_IMODE(path.stat().st_mode) if path.exists() else None, 'old_mtime': path.stat().st_mtime if path.exists() else None, 'new_mode': plan.get('modes', {}).get(name, 0o644)})
                 path = state / 'v3-install.json'
                 operations.append({'scope': 'state', 'name': 'v3-install.json', 'old': encode(path.read_bytes() if path.exists() else None), 'new': encode(jbytes(plan['manifest']))})
                 path = vault / '.beyin-version'
@@ -463,7 +473,7 @@ def rollback(vault, state):
                 else:
                     raise ValueError('rollback conflict: changed managed file ' + item['name'] +
                                      (' (deleted)' if actual is None else ' (content differs)'))
-            operations.append(dict(item, old=encode(actual), new=encode(restore), old_mode=item.get('new_mode'), new_mode=item.get('old_mode')))
+            operations.append(dict(item, old=encode(actual), new=encode(restore), old_mode=item.get('new_mode'), new_mode=item.get('old_mode'), new_mtime=item.get('old_mtime')))
         if 'migration_result' in original:
             marker = state / 'v2-migration.json'
             actual = marker.read_bytes() if marker.exists() else None
