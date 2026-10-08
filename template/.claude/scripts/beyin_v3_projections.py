@@ -146,6 +146,9 @@ def _checkpoint_schema(db):
         db.execute('ALTER TABLE receipt_checkpoints ADD COLUMN turn_at REAL DEFAULT 0')
     if 'prompt_at' not in {row[1] for row in db.execute('PRAGMA table_info(receipt_checkpoints)')}:
         db.execute('ALTER TABLE receipt_checkpoints ADD COLUMN prompt_at REAL DEFAULT 0')
+    # Start of the latest turn that edited a file (#212); a later conversational turn keeps it.
+    if 'edit_at' not in {row[1] for row in db.execute('PRAGMA table_info(receipt_checkpoints)')}:
+        db.execute('ALTER TABLE receipt_checkpoints ADD COLUMN edit_at REAL DEFAULT 0')
     for column in ('project', 'project_id'):
         if column not in {row[1] for row in db.execute('PRAGMA table_info(receipt_checkpoints)')}:
             db.execute(f'ALTER TABLE receipt_checkpoints ADD COLUMN {column} TEXT')
@@ -165,6 +168,9 @@ def record_checkpoints(engine, events):
                 db.execute('INSERT INTO receipt_checkpoints(harness,session,at,turn_at) VALUES (?,?,0,?) ON CONFLICT(harness,session) DO UPDATE SET turn_at=MAX(turn_at,excluded.turn_at)', values)
             elif event.get('event') in ('Stop', 'SessionEnd'):
                 db.execute('INSERT INTO receipt_checkpoints(harness,session,at) VALUES (?,?,?) ON CONFLICT(harness,session) DO UPDATE SET at=MAX(at,excluded.at)', values)
+            elif event.get('event') == 'PostToolUse':
+                # Installed matchers send only file-editing tools; remember the turn that edited, not the edit.
+                db.execute('INSERT INTO receipt_checkpoints(harness,session,at,edit_at) VALUES (?,?,0,?) ON CONFLICT(harness,session) DO UPDATE SET edit_at=MAX(edit_at,CASE WHEN turn_at>0 AND turn_at<=excluded.edit_at THEN turn_at ELSE excluded.edit_at END)', values)
             if event.get('project') and event.get('project_id'):
                 db.execute('UPDATE receipt_checkpoints SET project=?,project_id=? WHERE harness=? AND session=?',
                            (event['project'], event['project_id'], event['harness'], event['session']))
@@ -184,6 +190,17 @@ def _latest_receipts(db):
     return latest
 
 
+def _coverage_threshold(at, turn_at, edit_at):
+    """Earliest receipt time that closes a checkpoint.
+
+    A receipt must follow the start of the latest turn that edited a file, so a later
+    "thanks" or status question does not reopen finished work (#212), while a later turn
+    that edits again still needs its own receipt. Without an observed edit (other harnesses,
+    rows from before edit_at existed) the latest prompt boundary applies as before.
+    """
+    return edit_at or turn_at or at
+
+
 def receipt_coverage(db, now=None):
     if now is None:
         now = time.time()
@@ -196,14 +213,14 @@ def receipt_coverage(db, now=None):
         'last_7d': {'total': 0, 'covered': 0, 'missing': 0},
         'last_30d': {'total': 0, 'covered': 0, 'missing': 0},
     }
-    for row in db.execute('SELECT harness,session,at,turn_at,project,project_id,prompt_at FROM receipt_checkpoints'):
+    for row in db.execute('SELECT harness,session,at,turn_at,project,project_id,prompt_at,edit_at FROM receipt_checkpoints'):
         if not row[2] or row[2] < row[3]:
             continue
         # Only count sessions that saw a user prompt: UserPromptSubmit, or a SessionStart carrying the first prompt (#78)
         if not row[6]:
             continue
         chk_at = row[2]
-        threshold = row[3] or row[2]
+        threshold = _coverage_threshold(row[2], row[3], row[7])
         matched = latest.get((row[0], row[1]), float('-inf')) >= threshold
         for w_name, w_active in (('all_time', True), ('last_30d', chk_at >= thirty_days), ('last_7d', chk_at >= seven_days)):
             if w_active:
@@ -238,10 +255,10 @@ def refresh_gaps(engine, db):
     _checkpoint_schema(db)
     latest = _latest_receipts(db)
     gaps = []
-    for row in db.execute('SELECT harness,session,at,turn_at,project,project_id FROM receipt_checkpoints'):
+    for row in db.execute('SELECT harness,session,at,turn_at,project,project_id,edit_at FROM receipt_checkpoints'):
         if not row[2] or row[2] < row[3]:
             continue
-        threshold = row[3] or row[2]
+        threshold = _coverage_threshold(row[2], row[3], row[6])
         matched = latest.get((row[0], row[1]), float('-inf')) >= threshold
         if not matched:
             gaps.append({'harness': row[0], 'session': row[1], 'checkpoint_at': row[2], 'turn_at': row[3], 'scope': 'session_only' if row[0] == 'antigravity' else 'turn' if row[3] else 'terminal_only'})
