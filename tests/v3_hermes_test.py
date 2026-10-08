@@ -200,6 +200,30 @@ class HermesHarnessTest(unittest.TestCase):
             result = hooks['pre_llm_call'](session_id='long', turn_id='x', user_message='devam', is_first_turn=False)
         self.assertIsNone(result, 'No adapter context and no reminder due means no injection')
 
+    def test_hermes_turn_counter_race_condition(self):
+        import threading
+        sys.setswitchinterval(1e-6)
+
+        hooks = self.module.make_hooks(self.vault, self.state)
+        with patch.object(self.module, 'run_hook', return_value=''):
+            def worker():
+                for _ in range(500):
+                    hooks['pre_llm_call'](session_id='race', is_first_turn=False)
+
+            threads = [threading.Thread(target=worker) for _ in range(10)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            closure = hooks['pre_llm_call'].__closure__
+            sessions = None
+            for c in closure:
+                if isinstance(c.cell_contents, dict):
+                    sessions = c.cell_contents
+                    break
+            self.assertEqual(sessions['race']['turns'], 5000, 'Turn counter lost updates due to race condition')
+
 
 if __name__ == '__main__':
     unittest.main()

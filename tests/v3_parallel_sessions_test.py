@@ -275,6 +275,21 @@ class ParallelSessionsTest(unittest.TestCase):
         self.assertEqual(human.returncode, 0, human.stderr)
         self.assertIn('Paralel oturum bildirimi: acik', human.stdout)
 
+    def test_prune_cleans_dead_temp_files(self):
+        self.enable()
+        self.markers.mkdir(parents=True, exist_ok=True)
+        then = time.time()
+        for index in range(130):
+            path = self.markers / f".marker-dead{index}.tmp"
+            path.write_text('{}', encoding='utf-8')
+            os.utime(path, (then, then))
+
+        self.hook('UserPromptSubmit', 'pruner')
+
+        names = {path.name for path in self.markers.iterdir()}
+        self.assertLessEqual(len(names), 128)
+
+
 
 class ParallelModuleTest(unittest.TestCase):
     """In-process checks for the failure paths a subprocess cannot reach."""
