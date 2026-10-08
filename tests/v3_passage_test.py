@@ -104,7 +104,8 @@ class PassageContextTest(Vault):
         self.ingest('current', 'Zirkon kovası güncel karar.', 'knowledge/route-v2.md',
                     supersedes=['[[knowledge/route-v1]]'])
         self.ingest('waiting', 'Zirkon kovası bekleyen karar.', 'knowledge/waiting.md', status='waiting later')
-        self.assertEqual([row['id'] for row in self.store.retrieve('zirkon kovası karar')['records']], ['waiting', 'current'])
+        # Equal scores and timestamps: the order is a tie, the gate is what is tested.
+        self.assertCountEqual([row['id'] for row in self.store.retrieve('zirkon kovası karar')['records']], ['waiting', 'current'])
         self.assertEqual([row['id'] for row in self.strict('zirkon kovası karar', statuses=('active',))['records']], ['current'])
 
     def test_ambiguous_supersedes_stem_does_not_retire_either_record(self):
