@@ -602,6 +602,21 @@ class HookInstallerTest(unittest.TestCase):
         self.assertIn(user_hook['command'], commands)
         self.assertEqual(len([c for c in commands if 'beyin_v3_hook.py' in decoded_command(c)]), 1)
 
+    def test_reinstall_over_synced_encoded_hook_applies_and_drops_it(self):
+        # The same file arriving after this machine's install: reinstall and update must not stop
+        # with a managed-file conflict over it (they did not before #204 either).
+        self.install()
+        _, encoded = self.stale_hook_commands()
+        name = self.vault / '.claude/settings.local.json'
+        data = json.loads(name.read_text(encoding='utf-8'))
+        data['hooks']['SessionStart'].append({'hooks': [{'type': 'command', 'command': encoded, 'timeout': 20}]})
+        name.write_text(json.dumps(data), encoding='utf-8')
+        self.install()
+        groups = json.loads(name.read_text(encoding='utf-8'))['hooks']['SessionStart']
+        commands = [hook['command'] for group in groups for hook in group['hooks']]
+        self.assertNotIn(encoded, commands)
+        self.assertEqual(len([c for c in commands if 'beyin_v3_hook.py' in decoded_command(c)]), 1)
+
     def test_doctor_reports_hook_commands_from_another_install(self):
         self.install()
         report = self.doctor_report()

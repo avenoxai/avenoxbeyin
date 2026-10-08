@@ -56,14 +56,16 @@ def managed_handler(handler, previous, kept=()):
     legacy = any(re.search(r'(?:^|/)' + re.escape(root + name) + r'(?=$|[\s"\';&|])', normalized)
                  for root in (".claude/hooks/", ".codex/hooks/", ".agents/hooks/")
                  for name in LEGACY_HOOK_FILES if root + name not in kept)
-    return command in previous or "beyin_v3_hook.py" in command or "beyin_v3_hook.py" in encoded_script(command) or legacy
+    return command in previous or "beyin_v3_hook.py" in command or legacy
 
 
 def encoded_script(command):
     """The PowerShell text inside a Windows -EncodedCommand hook; empty for any other command.
 
     The encoded form shows no file name, so a vault moved from another account or machine,
-    whose manifest lists none of its commands, kept those stale entries beside the new ones (#204)."""
+    whose manifest lists none of its commands, kept those stale entries beside the new ones (#204).
+    Only planning drops them; managed_handler, and so the reinstall/update conflict check, keeps
+    treating them as foreign entries, as before, so an update over such a file still applies."""
     match = re.search(r"-EncodedCommand\s+([A-Za-z0-9+/=]+)", str(command), re.I)
     if not match:
         return ""
@@ -370,7 +372,8 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
         for event, groups in list(hooks.items()):
             cleaned = []
             for group in groups:
-                remaining = [h for h in group.get("hooks", []) if not managed_handler(h, manifest.get("commands", []), kept)]
+                remaining = [h for h in group.get("hooks", []) if not managed_handler(h, manifest.get("commands", []), kept)
+                             and "beyin_v3_hook.py" not in encoded_script(h.get("command", ""))]
                 # Encoded Windows command contains no visible filename; match exact prior manifest below.
                 previous = manifest.get("commands", [])
                 remaining = [h for h in remaining if h.get("command") not in previous]
