@@ -116,6 +116,16 @@ class PassageContextTest(Vault):
         _retired, dead = runtime.resolve_supersedes(self.store._eligible()[0])
         self.assertEqual(dead[0]['value'], 'route')
 
+    def test_continuity_current_filters_out_archived_and_superseded_notes(self):
+        import beyin_v3_continuity as continuity
+        self.ingest('archived-note', 'Archived content.', 'knowledge/archived.md', status='archived')
+        arch = [r for r in self.store._retrieve('', snapshot=True, statuses=['archived'], limit=10)['records'] if r['id'] == 'archived-note'][0]
+        saved = {
+            'version': 1, 'at': time.time(), 'project': None,
+            'refs': [{'id': arch['id'], 'revision': arch['revision'], 'source_sha256': arch['source_sha256']}]
+        }
+        self.assertEqual(continuity._current(self.store, saved), [])
+
     def test_delivers_the_matching_block_of_a_rich_note(self):
         self.ingest('rich', RICH, 'projects/kuzey.md')
         self.ingest('other', 'Market listesi: elma, ekmek, zeytinyağı.', 'notes/market.md')
