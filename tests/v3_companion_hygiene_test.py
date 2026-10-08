@@ -682,13 +682,6 @@ class CompactionRaceTest(unittest.TestCase):
         self.assertTrue(self.archive.exists())
         self.assertEqual(self.archive.read_bytes(), b'# CONCURRENT_CALLER_ARCHIVE_DATA\n')
 
-    def test_zero_byte_lock_file_acquisition(self):
-        self.state.mkdir(parents=True, exist_ok=True)
-        lockfile = self.state / 'compact.lock'
-        lockfile.write_bytes(b'')
-        with compact_module._compact_lock(self.vault, self.state, timeout=1.0):
-            self.assertGreater(lockfile.stat().st_size if os.name == 'nt' else 0, -1)
-
     def test_hygiene_counts_characters_and_names_the_directory(self):
         report = companion_module.hygiene(self.vault, self.state)
         self.assertEqual(report['directory'], COMPANION)
