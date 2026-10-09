@@ -433,7 +433,13 @@ def main(argv=None):
             return cli.main(cli_args)
         if hasattr(cli, 'main') and 'return_result' in getattr(getattr(cli, 'main'), '__code__', {}).co_varnames:
             result, code = cli.main(cli_args, return_result=True)
-            message = human_result(result, command, installed_version)
+            try:
+                message = human_result(result, command, installed_version)
+            except (ValueError, TypeError, AttributeError):
+                # A result human_result cannot shape (history returns a list) prints as the JSON
+                # the captured path below shows, not as a failed command.
+                message = ('Islem tamamlanamadi; ayrinti icin ayni komutu --json ile calistir.' if code
+                           else json.dumps(result, ensure_ascii=True, indent=2))
         else:
             from contextlib import redirect_stdout, redirect_stderr
             import io
