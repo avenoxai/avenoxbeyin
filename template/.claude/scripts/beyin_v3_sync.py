@@ -16,7 +16,8 @@ _MODULE_DIR = str(Path(__file__).resolve().parent)
 if _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
-from beyin_v3 import HARNESSES, REJECTED_AT, MemoryStore, ReceiptConflict, RevisionConflict, _json, _path_redirected, rejected_dependents, resolve_supersedes
+from beyin_v3 import (HARNESSES, REJECTED_AT, RETIRED_STATUSES, MemoryStore, ReceiptConflict, RevisionConflict, _json,
+                      _path_redirected, _rejected_inference, _status_word, rejected_dependents, resolve_supersedes)
 from beyin_v3_projections import project_receipts
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
@@ -503,6 +504,50 @@ class SyncEngine:
                 'rejected_dependent_count': len(dependents), 'rejected_dependents': dependents[:20],
                 'ambiguous_rejected_link_count': len(ambiguous), 'ambiguous_rejected_links': ambiguous[:20],
                 'truncated': len(ignored) > 20 or len(dependents) > 20 or len(ambiguous) > 20}
+
+    def review_health(self, today=None):
+        """Notes whose own `review_at` date has come: an idea to revisit, not a task to do.
+
+        Only notes that set `review_at` are decoded (the payload is prefiltered in SQLite, so a
+        vault without the field pays no whole-index read); a retired note (by status or by another
+        note's supersedes) or a rejected one is not listed. A date in the rejected_at/due_at grammar
+        (time and offset ignored) on or before today (local) is due, oldest first; any other value
+        is listed apart instead of being guessed. An empty property (`review_at:` left by Obsidian)
+        or a Templater placeholder is not a date yet and is skipped. Information only.
+        """
+        today = today or datetime.now().date()
+        with self.store._connect() as db:
+            # _json() writes compact keys, so every record that sets the field contains this text.
+            records = [json.loads(row[0]) for row in db.execute(
+                'SELECT payload FROM records WHERE instr(payload, ?) > 0 ORDER BY id', ('"review_at":',))]
+        candidates = []
+        for record in records:
+            value = record.get('review_at')
+            if ('review_at' not in record or value is None or (isinstance(value, str) and (
+                    not value.strip() or re.fullmatch(r'\{\{[^{}\n]*\}\}', value.strip()))) or
+                    _rejected_inference(record) or _status_word(record) in RETIRED_STATUSES):
+                continue
+            candidates.append(record)
+        superseded = self.store._superseded_ids() if candidates else set()
+        due, invalid = [], []
+        for record in candidates:
+            if record.get('id') in superseded:
+                continue
+            value = record['review_at']
+            try:
+                when = (datetime.strptime(value[:10], '%Y-%m-%d').date()
+                        if isinstance(value, str) and REJECTED_AT.fullmatch(value) else None)
+            except ValueError:
+                when = None
+            if when is None:
+                invalid.append({'id': record.get('id'), 'source': record.get('source'), 'review_at': value})
+            elif when <= today:
+                due.append({'id': record.get('id'), 'source': record.get('source'), 'review_at': when.isoformat(),
+                            'days_overdue': (today - when).days})
+        due.sort(key=lambda entry: (-entry['days_overdue'], entry['source'] or ''))
+        invalid.sort(key=lambda entry: entry['source'] or '')
+        return {'due_count': len(due), 'due': due[:20], 'invalid_count': len(invalid), 'invalid': invalid[:20],
+                'truncated': len(due) > 20 or len(invalid) > 20}
 
     def supersedes_health(self):
         """Report supersedes values that retire nothing: unresolved, ambiguous or the note itself."""

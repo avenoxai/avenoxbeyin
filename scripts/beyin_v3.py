@@ -698,6 +698,11 @@ def main(argv=None):
                 result['supersedes'] = load_sync().reader(store).supersedes_health()
             except Exception as exc:
                 result['supersedes'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            # Information only: a note's own review_at date has come; never raises the doctor status.
+            try:
+                result['review'] = load_sync().reader(store).review_health()
+            except Exception as exc:
+                result['review'] = {'status': 'unavailable', 'error': type(exc).__name__}
             # Read-only information: each scan fails alone and never hides the rest of doctor.
             # The word cap and promotion reports follow the user's opt-in (state/hygiene.json):
             # a default install gets no new doctor lines and no whole-vault read.

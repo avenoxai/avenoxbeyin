@@ -324,6 +324,15 @@ def human_result(result, command, installed_version=None):
                              '); ozel bir kopya tasiyor olabilir.')
             elif code in boundary_lines:
                 lines.append(boundary_lines[code])
+        review = result.get('review') or {}
+        if review.get('due_count'):
+            shown = ', '.join(plain_text(entry['source']) + ' (' + str(entry['days_overdue']) + ' gun)' for entry in review['due'][:3])
+            more = review['due_count'] - min(3, len(review['due']))
+            lines.append('Yeniden bakma tarihi gelen not (review_at, bilgi): ' + shown +
+                         (' ve ' + str(more) + ' tane daha' if more > 0 else '') + '.')
+        if review.get('invalid_count'):
+            lines.append('Gercek tarih olmayan review_at (bilgi): ' +
+                         ', '.join(plain_text(entry['source']) for entry in review['invalid'][:3]) + '.')
         closed = result.get('closed_tasks') or {}
         if closed.get('closed_count'):
             shown = ', '.join(plain_text(entry['source']) + ' (' + str(entry['days_old']) + ' gun)' for entry in closed.get('closed')[:3])

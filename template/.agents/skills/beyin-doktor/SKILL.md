@@ -21,6 +21,8 @@ Kaynak değişikliği indekslenmemişse `python3 beyin.py sync`; skill dosyalar�
 
 `validity.rejected_dependents` reddedilmiş bir çıkarıma `[[wikilink]]` ya da `[metin](yol)` ile bağlanan güncel notları listeler; `ambiguous_rejected_links` aynı dosya adını taşıyan birden çok nottan biri reddedilmiş olduğunda bağlantıyı ayrıca gösterir. Bu bilgi amaçlıdır, durumu `needs_attention` yapmaz: bağlantı reddin gerekçesini anlatıyor olabilir. Kullanıcıya hangi notun reddedilmiş iddiaya dayandığını söyle; not o iddiayı hala doğru sayıyorsa düzeltmeyi ya da `supersedes` ile yeni nota bağlamayı öner. Notu kendiliğinden değiştirme veya reddetme.
 
+`review.due` notun kendi `review_at` tarihinin geldiğini gösterir: bir fikri yeniden değerlendirme zamanı, arıza değil. Kullanıcıya hangi notların beklediğini söyle; tarihi ileri almayı, notu göreve çevirmeyi ya da emekliye ayırmayı öner, kararı ona bırak. `review.invalid` gerçek tarih olmayan değerleri listeler; doğru tarihi kullanıcıya sor, tahmin etme.
+
 Kullanıcıya üç şey söyle: çalışan kısım, doğrulanmamış/bozuk kısım, varsa tek sonraki düzeltme. Ham JSON yerine kısa ve somut bir sonuç ver. Kullanıcının mevcut onayı güvenli düzeltmeyi kapsıyorsa gereksiz tekrar onay isteme.
 
 V3.1: `doctor` içindeki `updates` en son sürüm kontrolünü gösterir; ağ hatası güncel olunduğunu kanıtlamaz. Yalnız sürüm sorusunda `beyin.py update --check --metadata-only` kullan. Güncelleme talebini beyin-guncelle skill'ine yönlendir.
