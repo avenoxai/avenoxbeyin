@@ -1122,7 +1122,7 @@ def saved_hotkey(state):
         return DEFAULT_HOTKEY
 
 
-# ---------------------------------------------------------------- hotkey listener (macOS)
+# ---------------------------------------------------------------- hotkey listeners (macOS & Windows)
 
 def listen_mac(vault, script, keycode=11, modifiers=0x1000 | 0x800):
     """Carbon RegisterEventHotKey: global, no Accessibility permission, standard library only."""
@@ -1165,6 +1165,99 @@ def listen_mac(vault, script, keycode=11, modifiers=0x1000 | 0x800):
     if carbon.RegisterEventHotKey(keycode, modifiers, HotKeyID(fourcc('BYKL'), 1), target, 0, byref(hotkey_ref)):
         raise SystemExit('Kisayol baska bir uygulamada kayitli; beyin.py yakala kisayol ile degistir')
     carbon.RunApplicationEventLoop()
+
+
+def _windows_hotkey_vk(spec):
+    mods, key = parse_hotkey(spec)
+    if 'cmd' in mods:
+        raise ValueError('Windows kisayolunda Win/Cmd tusu kullanilamaz; ctrl, alt ve shift kullan')
+    fs_modifiers = 0x4000  # MOD_NOREPEAT
+    if 'alt' in mods:
+        fs_modifiers |= 0x0001
+    if 'ctrl' in mods:
+        fs_modifiers |= 0x0002
+    if 'shift' in mods:
+        fs_modifiers |= 0x0004
+    key_lower = key.lower()
+    if re.fullmatch(r'f\d{1,2}', key_lower):
+        f_num = int(key_lower[1:])
+        if not (1 <= f_num <= 24):
+            raise ValueError('Gecersiz F tusu: ' + key)
+        vk = 0x70 + (f_num - 1)
+    elif len(key) == 1 and key.isalnum():
+        vk = ord(key.upper())
+    else:
+        raise ValueError('Windows kisayolunda yalniz harf, rakam ya da F tusu olabilir: ' + key)
+    return fs_modifiers, vk
+
+
+def listen_windows(vault, script, spec=None):
+    """Win32 RegisterHotKey: global, no external dependencies, standard library ctypes only."""
+    import ctypes
+    from ctypes import wintypes
+    import hashlib
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+
+    vault_path = Path(vault).resolve()
+    state = resolve_state(vault_path)
+    spec = spec or saved_hotkey(state)
+    modifiers, vk = _windows_hotkey_vk(spec)
+
+    vault_hash = hashlib.sha256(str(vault_path).encode('utf-8')).hexdigest()[:16]
+    mutex_name = 'Local\\AvenoxBeyinYakala_' + vault_hash
+    mutex = kernel32.CreateMutexW(None, True, mutex_name)
+    if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        return 0
+
+    hotkey_id = 1
+    user32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT]
+    user32.RegisterHotKey.restype = wintypes.BOOL
+    user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.UnregisterHotKey.restype = wintypes.BOOL
+    user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
+    user32.GetMessageW.restype = wintypes.BOOL
+
+    if not user32.RegisterHotKey(None, hotkey_id, modifiers, vk):
+        if not user32.RegisterHotKey(None, hotkey_id, modifiers & ~0x4000, vk):
+            kernel32.CloseHandle(mutex)
+            raise SystemExit('Kisayol baska bir uygulamada kayitli; beyin.py yakala kisayol ile degistir')
+
+    pid_file = Path(state) / 'yakala' / 'dinleyici.pid'
+    try:
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text(str(os.getpid()), encoding='utf-8')
+    except OSError:
+        pass
+
+    try:
+        msg = wintypes.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            if msg.message == 0x0312:  # WM_HOTKEY
+                try:
+                    context = windows_context()
+                    current = vault_path / '.claude/scripts' / Path(script).name
+                    target = current if current.is_file() else Path(script).resolve()
+                    pythonw = Path(sys.executable).with_name('pythonw.exe')
+                    exe = str(pythonw if pythonw.is_file() else sys.executable)
+                    subprocess.Popen([exe, str(target), 'pencere', '--vault', str(vault_path),
+                                      '--baglam', json.dumps(context)],
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
+                except Exception:
+                    pass
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+    finally:
+        user32.UnregisterHotKey(None, hotkey_id)
+        kernel32.CloseHandle(mutex)
+        try:
+            if pid_file.is_file():
+                pid_file.unlink()
+        except OSError:
+            pass
+    return 0
 
 
 # ---------------------------------------------------------------- install / remove
@@ -1274,7 +1367,50 @@ def _agent_vault():
 
 def _windows_dirs():
     appdata = Path(os.environ.get('APPDATA', str(Path.home() / 'AppData/Roaming')))
-    return appdata / 'Microsoft/Windows/Start Menu/Programs', appdata / 'Microsoft/Windows/SendTo'
+    programs = appdata / 'Microsoft/Windows/Start Menu/Programs'
+    return programs, appdata / 'Microsoft/Windows/SendTo', programs / 'Startup'
+
+
+def _windows_listener_running(vault):
+    import ctypes
+    import hashlib
+    vault_hash = hashlib.sha256(str(Path(vault).resolve()).encode('utf-8')).hexdigest()[:16]
+    mutex_name = 'Local\\AvenoxBeyinYakala_' + vault_hash
+    handle = ctypes.windll.kernel32.OpenMutexW(0x00100000, False, mutex_name)
+    if handle:
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    return False
+
+
+def _windows_listener_ok(vault, timeout=1.5):
+    import time
+    start = time.time()
+    while time.time() - start < timeout:
+        if _windows_listener_running(vault):
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _windows_stop_listener(state):
+    pid_file = Path(state) / 'yakala' / 'dinleyici.pid'
+    if pid_file.is_file():
+        try:
+            pid = int(pid_file.read_text(encoding='utf-8').strip())
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            proc = kernel32.OpenProcess(0x0001 | 0x00100000, False, pid)
+            if proc:
+                kernel32.TerminateProcess(proc, 0)
+                kernel32.WaitForSingleObject(proc, 1000)
+                kernel32.CloseHandle(proc)
+        except Exception:
+            pass
+        try:
+            pid_file.unlink()
+        except OSError:
+            pass
 
 
 def _ps_quote(value):
@@ -1362,10 +1498,19 @@ def install(vault, state, hotkey=True, spec=None):
     elif hotkey and os.name == 'nt':
         pythonw = Path(sys.executable).with_name('pythonw.exe')
         target = pythonw if pythonw.is_file() else Path(sys.executable)
-        programs, sendto = _windows_dirs()
+        programs, sendto, startup = _windows_dirs()
         _windows_shortcut(programs / 'Beyne At.lnk', target, _argline([script, 'pencere', '--vault', vault]), win_value)
         _windows_shortcut(sendto / 'Beyne At.lnk', target, _argline([script, 'ekle', '--vault', vault, '--arac', 'gonder-menusu']))
+        _windows_stop_listener(state)
+        runner = state / 'yakala' / script.name
+        runner.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(script, runner)
+        _windows_shortcut(startup / 'Beyne At Dinleyici.lnk', target,
+                          _argline([runner, 'dinle', '--vault', vault, '--tus', spec]))
+        subprocess.Popen([str(target), str(runner), 'dinle', '--vault', str(vault), '--tus', spec],
+                         creationflags=NO_WINDOW)
         done.update(kisayol=label, gonder_menusu=True)
+        done['kisayol_calisiyor'] = _windows_listener_ok(vault)
     state.mkdir(parents=True, exist_ok=True)
     _state_path(state).write_text(json.dumps({'schema': 1, 'session_notice': True, 'kisayol': done['kisayol'],
                                               'tus': spec if done['kisayol'] else saved_hotkey(state)}, ensure_ascii=False) + '\n',
@@ -1383,11 +1528,13 @@ def uninstall(vault, state):
         _launch_agent().unlink()
         removed.append('LaunchAgent')
     elif os.name == 'nt':
+        _windows_stop_listener(state)
         for folder in _windows_dirs():
-            link = folder / 'Beyne At.lnk'
-            if link.exists():
-                link.unlink()
-                removed.append(str(link.name))
+            for name in ('Beyne At.lnk', 'Beyne At Dinleyici.lnk'):
+                link = folder / name
+                if link.exists():
+                    link.unlink()
+                    removed.append(str(link.name))
     link = Path(vault) / '.claude/skills/beyin-yakala'
     if link.is_symlink() and os.readlink(link).replace('\\', '/').endswith('.agents/skills/beyin-yakala'):
         link.unlink()
@@ -1416,6 +1563,8 @@ def status(vault, state):
     if sys.platform == 'darwin' and _agent_vault() == str(Path(vault).resolve()):
         probe = subprocess.run(['launchctl', 'print', 'gui/' + str(os.getuid()) + '/' + LAUNCH_LABEL], capture_output=True)
         running = probe.returncode == 0
+    elif os.name == 'nt' and installed:
+        running = _windows_listener_running(vault)
     return {'status': 'tamam', 'kurulu': installed, 'dinleyici_calisiyor': running,
             'bekleyen': pending(vault), 'klasor': INBOX,
             'araclar': {name: bool(path) for name, path in tools().items()}}
@@ -1493,6 +1642,20 @@ def human(result, command):
 
 
 def main(argv=None, vault=None, state=None):
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            try:
+                stream.reconfigure(encoding='utf-8', errors='replace')
+            except Exception:
+                try:
+                    stream.reconfigure(errors='replace')
+                except Exception:
+                    pass
+    if hasattr(sys.stdin, 'reconfigure'):
+        try:
+            sys.stdin.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
     def shared(default):
         # Subcommands must not reset a --vault/--json given before them, hence SUPPRESS there.
         common = argparse.ArgumentParser(add_help=False)
@@ -1517,6 +1680,7 @@ def main(argv=None, vault=None, state=None):
     listen = command_parser('dinle', help=argparse.SUPPRESS)
     listen.add_argument('--keycode', type=int, default=11)
     listen.add_argument('--mods', type=int, default=0x1000 | 0x800)
+    listen.add_argument('--tus')
     run = command_parser('isle', help='Bekleyen kaynaklarin metnini cikar (ag kullanir)')
     run.add_argument('ids', nargs='*')
     run.add_argument('--ses-yok', action='store_true', help='Altyazi yoksa sesi indirme')
@@ -1547,8 +1711,13 @@ def main(argv=None, vault=None, state=None):
         context = json.loads(args.baglam) if getattr(args, 'baglam', None) else gather_context()
         result = popup(vault, context)
     elif command == 'dinle':
-        listen_mac(vault, Path(__file__).resolve(), args.keycode, args.mods)
-        return 0
+        if sys.platform == 'darwin':
+            listen_mac(vault, Path(__file__).resolve(), args.keycode, args.mods)
+            return 0
+        elif os.name == 'nt':
+            listen_windows(vault, Path(__file__).resolve(), args.tus)
+            return 0
+        raise ValueError('Bu isletim sisteminde kisayol dinleyicisi desteklenmiyor')
     elif command == 'ekle':
         url, files, texts = None, [], []
         for item in args.items:
@@ -1589,6 +1758,15 @@ def main(argv=None, vault=None, state=None):
 
 
 if __name__ == '__main__':
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            try:
+                stream.reconfigure(encoding='utf-8', errors='replace')
+            except Exception:
+                try:
+                    stream.reconfigure(errors='replace')
+                except Exception:
+                    pass
     try:
         raise SystemExit(main())
     except ValueError as exc:

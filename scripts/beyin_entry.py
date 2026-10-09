@@ -418,12 +418,20 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     human = ('--human' in argv or sys.stdout.isatty()) and '--json' not in argv
     argv = [arg for arg in argv if arg not in ('--human', '--json')]
-    if human:
-        # A piped or redirected Windows console uses a legacy code page (cp1252 has no s-cedilla);
-        # an unencodable character must print as '?' instead of failing the whole command.
-        for stream in (sys.stdout, sys.stderr):
-            if hasattr(stream, 'reconfigure'):
-                stream.reconfigure(errors='replace')
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            try:
+                stream.reconfigure(encoding='utf-8', errors='replace')
+            except Exception:
+                try:
+                    stream.reconfigure(errors='replace')
+                except Exception:
+                    pass
+    if hasattr(sys.stdin, 'reconfigure'):
+        try:
+            sys.stdin.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
     command = argv[0] if argv else 'doctor'
     vault = Path(__file__).resolve().parent
     stamp = vault / '.beyin-version'
