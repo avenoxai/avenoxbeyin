@@ -632,12 +632,17 @@ not knowledge synthesis.
         exclusions.save_exclusions(vault, user_excluded)
     from beyin_v3_companion import initialize
     companion = initialize(vault, state)
-    return {'status':'installed','files':len(planned),'trust_review_required':True,'kept_legacy':kept,
-            'excluded_components': sorted(user_excluded),
-            'removed': removed, 'preserved_excluded': preserved_excluded,
-            'companion': companion,
-            'update_notice': 'New releases are checked on GitHub at most daily; notes are not sent. Disable with beyin.py preferences --update-notifications off.',
-            'skills':{'synced':[s for s in ('beyin','beyin-doktor','beyin-guncelle') if not is_component_excluded(f'.agents/skills/{s}/', user_excluded)],'conflicts':[], 'mode':'managed'}}
+    result = {'status':'installed','files':len(planned),'trust_review_required':True,'kept_legacy':kept,
+              'excluded_components': sorted(user_excluded),
+              'removed': removed, 'preserved_excluded': preserved_excluded,
+              'companion': companion,
+              'update_notice': 'New releases are checked on GitHub at most daily; notes are not sent. Disable with beyin.py preferences --update-notifications off.',
+              'skills':{'synced':[s for s in ('beyin','beyin-doktor','beyin-guncelle') if not is_component_excluded(f'.agents/skills/{s}/', user_excluded)],'conflicts':[], 'mode':'managed'}}
+    # V2 flush sentinels whose writer provably died: the cutover went ahead, the summaries they
+    # were writing never reached daily/.
+    if migration_plan and migration_plan.get('orphaned_legacy_state'):
+        result['orphaned_legacy_state'] = migration_plan['orphaned_legacy_state']
+    return result
 
 
 def package_defaults():

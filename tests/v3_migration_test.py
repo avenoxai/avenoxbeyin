@@ -42,6 +42,69 @@ class MigrationTest(unittest.TestCase):
             self.m.migrate_v2(self.root, self.state)
         self.assertFalse((self.state / 'v2-migration.json').exists())
 
+    def test_orphaned_inflight_is_recorded_when_its_writer_lock_is_free(self):
+        # V2 flush holds flush-<key>.lock from before it writes "inflight" until its terminal
+        # state. A guard that holds that lock has proof the writer died mid-summary.
+        sentinel = self.source('.claude/scripts/.state/flush-example.json', '{"status":"inflight"}')
+        self.source('.claude/scripts/.state/flush-example.lock', '')
+        result = self.m.migrate_v2(self.root, self.state)
+        self.assertEqual(result['orphaned_legacy_state'], ['.claude/scripts/.state/flush-example.json'])
+        self.assertEqual(sentinel.read_bytes(), b'{"status":"inflight"}')
+        self.assertTrue((self.state / 'v2-preserved-state/.claude/scripts/.state/flush-example.json').exists())
+
+    def test_inflight_with_an_active_writer_lock_still_blocks(self):
+        self.source('.claude/scripts/.state/flush-example.json', '{"status":"inflight"}')
+        lock = self.source('.claude/scripts/.state/flush-example.lock', '0')
+        with self.m._legacy_lock(lock):
+            with self.assertRaisesRegex(RuntimeError, 'legacy writer lock'):
+                self.m.migrate_v2(self.root, self.state)
+        self.assertFalse((self.state / 'v2-migration.json').exists())
+
+    def test_inflight_under_another_writers_lock_still_blocks(self):
+        # Only the sentinel's own lock is proof: compile.lock says nothing about a claim
+        # in compile-state.json.
+        self.source('.claude/scripts/.state/compile-state.json', '{"state":"running"}')
+        self.source('.claude/scripts/.state/compile.lock', '')
+        with self.assertRaisesRegex(RuntimeError, r'compile-state\.json.*reconcile'):
+            self.m.migrate_v2(self.root, self.state)
+        self.assertFalse((self.state / 'v2-migration.json').exists())
+
+    def test_only_a_flush_inflight_claim_is_proven_by_its_lock(self):
+        # Stock V2 also leaves antigravity-<key>.json next to antigravity-<key>.lock, and a
+        # "pending" or "running" record waits without holding a lock: a free lock proves
+        # nothing about those.
+        state_dir = self.root / '.claude/scripts/.state'
+        for name, record in (('antigravity-example', '{"state":"pending"}'),
+                             ('flush-example', '{"status":"pending"}'),
+                             ('flush-example', '{"status":"running"}'),
+                             ('flush-example', '{"status":"inflight","state":"pending"}')):
+            with self.subTest(name=name, record=record):
+                sentinel = self.source('.claude/scripts/.state/' + name + '.json', record)
+                lock = self.source('.claude/scripts/.state/' + name + '.lock', '')
+                self.addCleanup(sentinel.unlink, missing_ok=True)
+                self.addCleanup(lock.unlink, missing_ok=True)
+                with self.assertRaisesRegex(RuntimeError, name + r'\.json.*reconcile'):
+                    self.m.migrate_v2(self.root, self.state)
+                self.assertFalse((self.state / 'v2-migration.json').exists())
+                sentinel.unlink()
+                lock.unlink()
+        self.assertEqual(list(state_dir.iterdir()), [])
+
+    def test_blocking_sentinel_error_says_how_to_reconcile(self):
+        self.source('.claude/scripts/.state/flush-example.json', '{"status":"inflight"}')
+        with self.assertRaisesRegex(RuntimeError, r'no V2 writer running.*terminal value such as "fail"'):
+            self.m.migrate_v2(self.root, self.state)
+
+    def test_orphaned_inflight_left_after_cutover_does_not_block_a_later_guard(self):
+        # update and recover enter the same guard and take no flags, and a kept V2 flush can
+        # die mid-summary long after the cutover.
+        first = self.m.migrate_v2(self.root, self.state)
+        self.source('.claude/scripts/.state/flush-later.json', '{"status":"inflight"}')
+        self.source('.claude/scripts/.state/flush-later.lock', '')
+        with self.m.migration_guard(self.root, self.state) as plan:
+            self.assertEqual(plan['orphaned_legacy_state'], ['.claude/scripts/.state/flush-later.json'])
+            self.assertEqual(self.m.finalize_migration(self.root, self.state, plan), first)
+
     def test_legacy_lock_is_guarded_but_excluded_from_inventory(self):
         lock = self.source('.claude/scripts/.state/compile.lock', '')
         state_file = self.source('.claude/scripts/.state/compile-state.json', '{"status":"ok"}')
