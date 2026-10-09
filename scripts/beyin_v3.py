@@ -386,6 +386,9 @@ def parser():
                           help="Opt-in doctor report of notes waiting in top-level inbox folders")
     settings.add_argument("--inbox-max-items", type=int, help="Inbox report threshold in notes (1..100000, default 10)")
     settings.add_argument("--inbox-max-days", type=int, help="Inbox report threshold in days (1..3650, default 7)")
+    settings.add_argument("--inbox-folder", action="append",
+                          help="Top-level inbox folder name for the report (repeat for several; replaces the "
+                               "generic name detection; an empty value returns to it)")
     settings.add_argument("--parallel-sessions", choices=("on", "off"),
                           help="Opt-in one-line notice when another session is open on this vault")
     compact = sub.add_parser("companion-compact", help="Move older Last-Session/Threads entries verbatim into a private archive; deletes nothing")
@@ -497,7 +500,9 @@ def main(argv=None):
                 hygiene_changes['max_words'] = args.max_words
             inbox_changes = {key: value for key, value in (
                 ('enabled', None if args.inbox_report is None else args.inbox_report == 'on'),
-                ('max_items', args.inbox_max_items), ('max_days', args.inbox_max_days)) if value is not None}
+                ('max_items', args.inbox_max_items), ('max_days', args.inbox_max_days),
+                ('folders', None if args.inbox_folder is None else [name for name in args.inbox_folder if name]))
+                if value is not None}
             if inbox_changes:  # validated before anything is saved
                 current_inbox, inbox_valid = hygiene.read_inbox_settings(state)
                 if not inbox_valid:
@@ -720,7 +725,8 @@ def main(argv=None):
                         result[key] = hygiene.promotion(vault, state) if opted['promotion'] else {'enabled': False}
                     elif key == 'inbox':
                         inbox, _ = hygiene.read_inbox_settings(state)
-                        result[key] = (hygiene.inbox_report(vault, state, inbox['max_items'], inbox['max_days'])
+                        result[key] = (hygiene.inbox_report(vault, state, inbox['max_items'], inbox['max_days'],
+                                                            folders=inbox['folders'])
                                        if inbox['enabled'] else {'enabled': False})
                     else:
                         result[key] = getattr(hygiene, key)(vault)

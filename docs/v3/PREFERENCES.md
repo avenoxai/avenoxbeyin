@@ -100,7 +100,14 @@ Companion klasörü, kasa sınıfı adlar (`Kasa`, `Şifreler`, `Müşteriler`, 
 python3 beyin.py preferences --inbox-report on --inbox-max-items 10 --inbox-max-days 7
 ```
 
-Varsayılan kapalıdır. Açıkken `doctor`, adında `inbox` ya da `gelen` sözcüğü geçen üst klasörlerdeki (`📥 000-Inbox`, `00_INBOX`, `Gelen Kutusu`) Markdown notlarını sayar ve en eski notun yaşını dosya değişiklik zamanına göre gösterir (`inbox` alanı). Not sayısı `--inbox-max-items` değerine ya da en eski not `--inbox-max-days` gününe ulaşan klasör `attention` ile işaretlenir; bu yalnız bir sinyaldir, `doctor` durumunu değiştirmez. Hiçbir not taşınmaz, sınıflandırılmaz ve ajan başlatılmaz; işleme kararı senindir. Okunamayan klasör boş sayılmaz, `error` ile listelenir. Companion ve kasa sınıfı klasörler muaftır, nokta klasörler ve sembolik bağlar sayılmaz. Eski sürümler bilinmeyen `hygiene.json` anahtarını reddettiği için ayar runtime klasöründe ayrı bir `inbox-report.json` dosyasında tutulur; rollback diğer hijyen sinyallerini kapatmaz. Kapatmak için `--inbox-report off`.
+Varsayılan kapalıdır. Açıkken `doctor`, adında `inbox` sözcüğü ya da `gelen kutusu` ifadesi geçen üst klasörlerdeki (`📥 000-Inbox`, `00_INBOX`, `Gelen Kutusu`) Markdown notlarını sayar ve en eski notun yaşını gösterir (`inbox` alanı). Yaş notun frontmatter `created` tarihinden alınır; tarih yoksa ya da gerçek bir tarih değilse dosya değişiklik zamanına düşer (klon ve eşitleme istemcileri bu zamanı sıfırlayabilir). Gelen kutun başka bir adla duruyorsa üst klasör adını kendin ver; liste ad tanımanın yerine geçer, büyük/küçük harf ve Unicode yazımı fark etmez:
+
+```bash
+python3 beyin.py preferences --inbox-folder "Yakalama" --inbox-folder "📥 Notlar"
+python3 beyin.py preferences --inbox-folder ""   # listeyi boşalt, ad tanımaya dön
+```
+
+Listede olup vault'ta bulunmayan klasör `error: not_found` ile gösterilir. Not sayısı `--inbox-max-items` değerine ya da en eski not `--inbox-max-days` gününe ulaşan klasör `attention` ile işaretlenir; bu yalnız bir sinyaldir, `doctor` durumunu değiştirmez. Hiçbir not taşınmaz, sınıflandırılmaz ve ajan başlatılmaz; işleme kararı senindir. Okunamayan klasör boş sayılmaz, `error` ile listelenir. Companion ve kasa sınıfı klasörler muaftır, nokta klasörler ve sembolik bağlar sayılmaz. Eski sürümler bilinmeyen `hygiene.json` anahtarını reddettiği için ayar runtime klasöründe ayrı bir `inbox-report.json` dosyasında tutulur; rollback diğer hijyen sinyallerini kapatmaz. Kapatmak için `--inbox-report off`.
 
 ## Paralel oturum bildirimi
 

@@ -458,9 +458,9 @@ class InboxReportTest(unittest.TestCase):
         default = json.loads(self.cli('doctor').stdout)
         self.assertEqual(default['inbox'], {'enabled': False})
         shown = json.loads(self.cli('preferences').stdout)
-        self.assertEqual(shown['inbox_report'], {'enabled': False, 'max_items': 10, 'max_days': 7})
+        self.assertEqual(shown['inbox_report'], {'enabled': False, 'max_items': 10, 'max_days': 7, 'folders': []})
         saved = json.loads(self.cli('preferences', '--inbox-report', 'on', '--inbox-max-days', '30').stdout)
-        self.assertEqual(saved['inbox_report'], {'enabled': True, 'max_items': 10, 'max_days': 30})
+        self.assertEqual(saved['inbox_report'], {'enabled': True, 'max_items': 10, 'max_days': 30, 'folders': []})
         self.assertFalse((self.state / 'hygiene.json').exists(), 'an older release must still read hygiene.json')
         report = json.loads(self.cli('doctor').stdout)['inbox']
         self.assertFalse(report['attention'], 'no folder reaches 10 notes or 30 days')
@@ -473,6 +473,54 @@ class InboxReportTest(unittest.TestCase):
         self.assertFalse(damaged['inbox_report']['enabled'])
         self.assertIn('inbox_report_notice', damaged)
         self.assertEqual(json.loads(self.cli('doctor').stdout)['inbox'], {'enabled': False})
+
+    def test_folder_words_are_narrow_and_a_named_folder_list_replaces_them(self):
+        import unicodedata
+        for relative in ('Gelen Belgeler/belge.md', 'GelenKutusu/x.MD',
+                         unicodedata.normalize('NFD', 'Yakalama Çekmecesi') + '/y.md'):
+            path = self.vault / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('# not\n', encoding='utf-8')
+        rows = {row['folder']: row for row in hygiene.inbox_report(self.vault, now=self.now)['folders']}
+        # "gelen" alone is an ordinary word ("Gelen Belgeler" = incoming documents), not an inbox.
+        self.assertNotIn('Gelen Belgeler', rows)
+        self.assertEqual(rows['GelenKutusu']['notes'], 1, 'a .MD note counts like .md, as sync reads it')
+        # A layout the words do not know is named by the user; the list replaces word detection.
+        self.cli('preferences', '--inbox-report', 'on')
+        saved = json.loads(self.cli('preferences', '--inbox-folder', 'Yakalama Çekmecesi',
+                                    '--inbox-folder', 'Missing').stdout)
+        self.assertEqual(saved['inbox_report']['folders'], ['Yakalama Çekmecesi', 'Missing'])
+        report = json.loads(self.cli('doctor').stdout)['inbox']
+        rows = {unicodedata.normalize('NFC', row['folder']): row for row in report['folders']}
+        self.assertEqual(sorted(rows), ['Missing', 'Yakalama Çekmecesi'])
+        self.assertEqual(rows['Yakalama Çekmecesi']['notes'], 1, 'an NFD folder matches the NFC name typed')
+        self.assertEqual(rows['Missing']['error'], 'not_found')
+        self.assertTrue(report['attention'])
+        for name in ('../escape', '🔐 Kasa'):
+            refused = self.cli('preferences', '--inbox-folder', name)
+            self.assertNotEqual(refused.returncode, 0, name)
+        reset = json.loads(self.cli('preferences', '--inbox-folder', '').stdout)
+        self.assertEqual(reset['inbox_report']['folders'], [])
+        self.assertIn('📥 000-Inbox', {row['folder'] for row in json.loads(self.cli('doctor').stdout)['inbox']['folders']})
+
+    def test_human_doctor_and_preferences_show_the_opted_in_report(self):
+        spec = importlib.util.spec_from_file_location('beyin_entry_inbox', ROOT / 'scripts/beyin_entry.py')
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        report = {'folders': [{'folder': '📥 000-Inbox', 'notes': 14, 'oldest_days': 12, 'attention': True},
+                              {'folder': 'Quiet', 'notes': 1, 'oldest_days': 0, 'attention': False},
+                              {'folder': 'Gone', 'notes': 0, 'oldest_days': None, 'attention': False,
+                               'error': 'not_found'}], 'attention': True}
+        text = entry.human_result({'status': 'observed_metadata', 'inbox': report}, 'doctor', '3.8.1')
+        self.assertIn('Gelen kutusunda bekleyen (bilgi, isleme karari senin): 📥 000-Inbox (14 not, en eskisi 12 gun), '
+                      'Gone (okunamadi: not_found).', text)
+        quiet = entry.human_result({'status': 'observed_metadata', 'inbox': {'enabled': False}}, 'doctor', '3.8.1')
+        self.assertNotIn('Gelen kutusu', quiet)
+        prefs = {'auto_sync': True, 'interval_minutes': 0, 'context_mode': 'auto', 'context_chars': 6000,
+                 'secret_filter': True}
+        shown = entry.human_result({'preferences': prefs, 'inbox_report': {
+            'enabled': True, 'max_items': 10, 'max_days': 7, 'folders': ['Yakalama']}}, 'preferences')
+        self.assertIn('Gelen kutusu raporu (varsayilan kapali): acik (10 not / 7 gun; klasorler: Yakalama)', shown)
 
 
 if __name__ == '__main__':
