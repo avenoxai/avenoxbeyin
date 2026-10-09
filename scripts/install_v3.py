@@ -197,17 +197,18 @@ def semantic_unchanged(name, baseline, current, previous, kept=(), user_excluded
             return re.findall(pattern, baseline.decode(), re.S) == blocks
         if name == ".codex/config.toml":
             return bool(re.search(r"(?m)^hooks\s*=\s*true\s*$", current.decode()))
-        if name == "beyin.py":
-            def normalize_entry(b):
-                text = b.decode("utf-8", errors="replace")
-                text = re.sub(
-                    r"directory = vault / '\.claude/scripts'\s+sys\.path\.insert\(0, str\(directory\)\)\s+raw_state = config\.get\('state', ''\).*?state = Path\(raw_state\)",
-                    "state = Path(config['state'])\n        directory = vault / '.claude/scripts'\n        sys.path.insert(0, str(directory))",
-                    text,
-                    flags=re.S
-                )
-                return text.encode("utf-8")
-            return line_endings_only(normalize_entry(baseline), normalize_entry(current))
+        if name == ".beyin-runtime.json":
+            # The installer pins a resolved absolute path. A pin that is not absolute here was
+            # written by another OS through a synced vault (#249); it cannot name this machine's
+            # state, so the reinstall replaces it. Any other change still conflicts.
+            data, before = json.loads(current), json.loads(baseline)
+            if not isinstance(data, dict) or not isinstance(before, dict) or not isinstance(data.get("state"), str):
+                return False
+            try:
+                foreign = not Path(data["state"]).expanduser().is_absolute()
+            except RuntimeError:
+                return False
+            return foreign and dict(data, state=None) == dict(before, state=None)
         if name in (".claude/settings.local.json", ".claude/settings.json", ".codex/hooks.json", ".agents/hooks.json"):
             def owned(raw):
                 data = json.loads(raw)

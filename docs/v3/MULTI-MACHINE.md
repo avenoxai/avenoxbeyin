@@ -50,6 +50,15 @@ knowledge/v3/
 
 Kontrol: kurulumdan ya da güncellemeden hemen sonra `git status --short` boş olmalıdır.
 
+`.beyin-runtime.json` yine de başka bir işletim sisteminden geldiyse (Windows'ta `C:\...`,
+macOS ya da Linux'ta `/...` yolu) bu makinede mutlak bir yol değildir. `beyin.py` o zaman bu
+makinenin varsayılan state dizinini kullanır ve `doctor` bunu `pinned_state_not_absolute`
+olarak gösterir. Kurucu da böyle bir yolu değişmiş dosya saymaz, bu makinenin yoluyla yeniden
+yazar ([#249](https://github.com/avenoxai/avenoxbeyin/issues/249)). 3.8.1 ve öncesinin
+`beyin.py`'si bu yolu okuyamadığı için `beyin.py update` çalışmaz; bir kez yeni paketin
+kurucusunu çalıştır (`python3 scripts/install_v3.py --vault "<vault>"`; bu makinede özel
+state kullandıysan `--state` ile onu ver), sonra dosyayı `.gitignore`'a ekle.
+
 `companion-compact` kilit dosyasını companion klasöründe kalıcı bırakır. Dosyanın
 silinmemesi, POSIX üzerinde kilit tutulurken aynı yolda yeni bir inode açılmasını önler.
 Kilit yalnız aynı paylaşılan dosya sistemini gören süreçleri koordine eder; senkronizasyon
