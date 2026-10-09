@@ -42,6 +42,17 @@ def allowed(name):
     return name in ('scripts/install_v3.py', 'scripts/beyin_v3.py', 'scripts/beyin_entry.py') or bool(re.fullmatch(r'template/\.claude/scripts/beyin_v3(?:_[a-z]+)*\.py', name)) or bool(re.fullmatch(r'template/\.agents/skills/(beyin|beyin-doktor|beyin-guncelle)/SKILL\.md', name))
 
 
+def _safe_replace(source, destination, max_attempts=5, delay=0.015):
+    for attempt in range(max_attempts):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if attempt == max_attempts - 1:
+                raise
+            time.sleep(delay * (2 ** attempt))
+
+
 def atomic(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -51,7 +62,7 @@ def atomic(path, data):
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        _safe_replace(temporary, path)
         try:
             fd = os.open(path.parent, os.O_RDONLY)
             try: os.fsync(fd)

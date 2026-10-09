@@ -26,6 +26,17 @@ def _hash(data):
     return hashlib.sha256(data if isinstance(data, bytes) else data.encode()).hexdigest()
 
 
+def _safe_replace(source, destination, max_attempts=5, delay=0.015):
+    for attempt in range(max_attempts):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if attempt == max_attempts - 1:
+                raise
+            time.sleep(delay * (2 ** attempt))
+
+
 def atomic(path, text):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -35,7 +46,7 @@ def atomic(path, text):
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(name, path)
+        _safe_replace(name, path)
         try:
             directory = os.open(path.parent, os.O_RDONLY)
             try:
@@ -290,6 +301,7 @@ class SyncEngine:
         self.journal.mkdir(exist_ok=True, mode=0o700)
         with self.store._connect() as db:
             db.execute('CREATE TABLE IF NOT EXISTS markdown_sources(id TEXT PRIMARY KEY, source TEXT NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS source_stats(source TEXT PRIMARY KEY, id TEXT NOT NULL, mtime_ns INTEGER NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL)')
 
     @classmethod
     def reader(cls, store):
@@ -506,9 +518,22 @@ class SyncEngine:
         dead = resolve_supersedes(records)[1]
         return {'dead_count': len(dead), 'dead': dead[:20], 'truncated': len(dead) > 20}
 
-    def _scan(self):
+    def _scan(self, db=None, old_sources=None, old_payloads=None):
         records, warnings, conflicts = {}, [], []
         duplicate = set()
+        known_stats = {}
+        records_by_id = {}
+        now_ns = time.time_ns()
+        if db is not None and old_payloads is not None:
+            try:
+                known_stats = {row[0]: (row[1], row[2], row[3], row[4])
+                               for row in db.execute('SELECT source, id, mtime_ns, size, sha256 FROM source_stats')}
+                records_by_id = {id: json.loads(payload) for id, payload in old_payloads.items()}
+            except (sqlite3.OperationalError, json.JSONDecodeError):
+                known_stats = {}
+                records_by_id = {}
+
+        new_stats = {}
         for directory, dirs, files in os.walk(self.root, followlinks=False):
             dirs[:] = sorted(d for d in dirs if not d.startswith('.') and d.casefold() not in EXCLUDED_DIRS and not (Path(directory) / d).is_symlink())
             for name in sorted(files):
@@ -517,6 +542,20 @@ class SyncEngine:
                 path = Path(directory) / name
                 relative = path.relative_to(self.root).as_posix()
                 try:
+                    st = path.stat()
+                    mtime_ns, size = st.st_mtime_ns, st.st_size
+                    cached = known_stats.get(relative)
+                    if (cached is not None and cached[1] == mtime_ns and cached[2] == size
+                            and cached[0] in records_by_id):
+                        cached_record = records_by_id[cached[0]]
+                        if cached_record.get('source_sha256') == cached[3]:
+                            self._scan_path(relative)
+                            if cached_record['id'] in records:
+                                duplicate.add(cached_record['id'])
+                            records[cached_record['id']] = cached_record
+                            new_stats[relative] = cached
+                            continue
+
                     path, resolved = self._scan_path(relative)
                     raw = path.read_bytes()
                     text = raw.decode('utf-8')
@@ -536,11 +575,22 @@ class SyncEngine:
                     if record['id'] in records:
                         duplicate.add(record['id'])
                     records[record['id']] = record
+                    new_stats[relative] = (record['id'], mtime_ns, size, record['source_sha256'])
                 except (ValueError, OSError, UnicodeError) as exc:
                     warnings.append({'source': relative, 'reason': str(exc)})
         for id in sorted(duplicate):
             records.pop(id, None)
             conflicts.append({'id': id, 'reason': 'duplicate source id; all copies quarantined'})
+
+        if db is not None:
+            warning_sources = {w['source'] for w in warnings}
+            deleted_sources = set(known_stats.keys()) - set(new_stats.keys()) - warning_sources
+            for del_src in deleted_sources:
+                db.execute('DELETE FROM source_stats WHERE source=?', (del_src,))
+            for src, (s_id, s_mtime, s_size, s_sha) in new_stats.items():
+                if known_stats.get(src) != (s_id, s_mtime, s_size, s_sha):
+                    db.execute('INSERT OR REPLACE INTO source_stats VALUES (?,?,?,?,?)', (src, s_id, s_mtime, s_size, s_sha))
+
         return records, warnings, conflicts
 
     def _recover(self, db):
@@ -653,13 +703,13 @@ class SyncEngine:
             db.execute('BEGIN IMMEDIATE')
             completed, recovery_conflicts = self._recover(db)
             receipt_warnings, receipt_conflicts = self._scan_receipts(db)
-            records, warnings, conflicts = self._scan()
-            warnings.extend(receipt_warnings)
-            conflicts.extend(recovery_conflicts + receipt_conflicts)
             old_sources = dict(db.execute('SELECT id, source FROM markdown_sources ORDER BY id'))
             # Match the old covering-ID scan's set construction and deletion event order.
             old_owned = {id for id in old_sources}
             old_payloads = dict(db.execute('SELECT id, payload FROM records'))
+            records, warnings, conflicts = self._scan(db=db, old_sources=old_sources, old_payloads=old_payloads)
+            warnings.extend(receipt_warnings)
+            conflicts.extend(recovery_conflicts + receipt_conflicts)
             deleted = 0
             for id in old_owned - records.keys():
                 previous_payload = old_payloads.get(id)
