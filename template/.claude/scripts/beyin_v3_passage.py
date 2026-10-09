@@ -237,20 +237,35 @@ _PROBE = "Kütüphanesindeki notlarımızı güncellediler; running tests quickl
 _PARAMS = [BLOCK_TARGET, BLOCK_OVERLAP, hashlib.sha256(" ".join(sorted(_tokens(_PROBE))).encode()).hexdigest()[:16]]
 
 
+_CACHE_MEM: dict[str, tuple[int, int, dict]] = {}
+
+
 def _read_cache(path):
+    global _CACHE_MEM
     try:
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > CACHE_MAX_BYTES:
+        if path.is_symlink() or not path.is_file():
             return None
+        st = path.stat()
+        if st.st_size > CACHE_MAX_BYTES:
+            return None
+        key = str(path.resolve())
+        cached = _CACHE_MEM.get(key)
+        if cached is not None:
+            mtime_ns, size, blob = cached
+            if st.st_mtime_ns == mtime_ns and st.st_size == size:
+                return blob
         blob = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     if (not isinstance(blob, dict) or blob.get("version") != CACHE_VERSION or
             blob.get("params") != _PARAMS or not isinstance(blob.get("records"), dict)):
         return None
+    _CACHE_MEM[str(path.resolve())] = (st.st_mtime_ns, st.st_size, blob)
     return blob
 
 
 def _write_cache(path, blob):
+    global _CACHE_MEM
     temporary = None
     try:
         data = json.dumps(blob, ensure_ascii=False, separators=(",", ":"))
@@ -263,6 +278,11 @@ def _write_cache(path, blob):
             handle.write(data)
         os.replace(temporary, path)
         temporary = None
+        try:
+            st = path.stat()
+            _CACHE_MEM[str(path.resolve())] = (st.st_mtime_ns, st.st_size, blob)
+        except OSError:
+            pass
     except OSError:
         pass  # a cache that cannot be written (or is locked on Windows) is a slow path
     finally:

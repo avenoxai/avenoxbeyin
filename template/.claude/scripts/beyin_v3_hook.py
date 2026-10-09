@@ -496,8 +496,8 @@ def main():
                     return
                 if process is not None and process.returncode:
                     raise RuntimeError("Source sync failed; metadata remains queued")
-            from beyin_v3_sync import SyncEngine
-            store = SyncEngine(vault, state).store
+            from beyin_v3 import MemoryStore
+            store = MemoryStore(state, vault)
             query = prompt_text(payload)
             project = payload.get('project')
             project = project if isinstance(project, str) and project.strip() else None
