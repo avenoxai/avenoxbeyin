@@ -118,8 +118,15 @@ class SourceSnapshotTest(unittest.TestCase):
         self.store = subject.MemoryStore(Path(self.tmp.name) / 'state', self.vault)
         self.addCleanup(self.store.close)
         self.virtual = {}
+        # Synced vaults carry the ownership table; ingest-only stores do not (see below).
+        with self.store._connect() as db:
+            db.execute('CREATE TABLE IF NOT EXISTS markdown_sources(id TEXT PRIMARY KEY, source TEXT NOT NULL)')
 
-    def add(self, id, source, virtual=False, **changes):
+    def own(self, id, source):
+        with self.store._connect() as db:
+            db.execute('INSERT OR REPLACE INTO markdown_sources VALUES (?,?)', (id, source))
+
+    def add(self, id, source, virtual=False, owned=True, **changes):
         data = ('Synthetic source ' + id).encode('utf-8')
         record = dict(id=id, source=source, text=id + ' 🧠 ' + 'body ' * 200,
                       visibility='internal', source_sha256=hashlib.sha256(data).hexdigest())
@@ -136,6 +143,8 @@ class SourceSnapshotTest(unittest.TestCase):
             if not path.exists():
                 path.write_bytes(data)
             self.store.ingest(record)
+        if owned:
+            self.own(id, source)
 
     def assert_equivalent(self, names, **kwargs):
         old = original_snapshot(self.store, names, **kwargs)
@@ -147,12 +156,12 @@ class SourceSnapshotTest(unittest.TestCase):
         self.add('ordinary', 'notes/Other.md')
         self.add('false-positive', 'notes/Unrelated.md', title='Core.md Güncel.md')
         self.add('long', 'other-companion/long/Core.md')
-        self.add('plain', 'Core.md')
+        self.add('plain', 'Core.md', owned=False)
         # Equal candidate keys must retain ORDER BY id, not insertion order.
         self.add('z-tie', 'echo/Core.md')
         self.add('a-tie', 'echo/Core.md')
         self.add('private', 'private/Threads.md', visibility='private')
-        self.add('public', 'public/Threads.md', visibility='public')
+        self.add('public', 'public/Threads.md', visibility='public', owned=False)
         for key, value in [('trust', 'untrusted'), ('trusted', False),
                            ('status', 'untrusted'), ('kind', 'untrusted')]:
             self.add('hidden-' + key, key + '/Core.md', **{key: value})
@@ -165,13 +174,10 @@ class SourceSnapshotTest(unittest.TestCase):
         (self.vault / 'deleted/Threads.md').unlink()
         for name in ('Güncel.md', 'Arşiv', 'Arşiv.md', 'Journal.md', 'Kurallar.md'):
             self.add(name, 'Arşiv/' + name)
-        self.add('quote', 'Arşiv/"Güncel".md', virtual=True)
+        self.add('quote', 'Arşiv/"Güncel".md', virtual=True, owned=False)
         self.add('backslash-directory', 'Arşiv\\folder/Last-Session.md', virtual=True)
         self.add('knowledge', 'knowledge/index.md')
         self.add('wrong-index', 'index.md')
-        # Ordinary ingest deliberately has no markdown_sources table/ownership row.
-        with self.store._connect() as db:
-            self.assertIsNone(db.execute("SELECT name FROM sqlite_master WHERE name='markdown_sources'").fetchone())
         names = ['Core.md', 'Threads.md', 'Güncel.md', 'Arşiv', 'Arşiv.md', '"Güncel".md',
                  'Last-Session.md', 'Journal.md', 'Kurallar.md', 'Missing.md', 'Core.md']
         read_bytes = Path.read_bytes
@@ -217,12 +223,21 @@ class SourceSnapshotTest(unittest.TestCase):
                            ((f'note-{i}', _json(dict(id=f'note-{i}', source=f'notes/{i}.md',
                                                     text='Synthetic unrelated note', visibility='internal')))
                             for i in range(2000)))
+            db.executemany('INSERT INTO markdown_sources VALUES (?,?)', ((f'note-{i}', f'notes/{i}.md') for i in range(2000)))
         after = count(subject.MemoryStore.source_snapshot)
         oracle = count(original_snapshot)
         self.assertEqual(before, 2)  # One candidate plus the existing budget copy.
         self.assertEqual(after, before)
         self.assertEqual(oracle, after + 2000)
         self.assert_equivalent(['Core.md'], budget_chars=3000)
+
+    def test_store_without_ownership_table_keeps_full_scan(self):
+        self.add('companion', 'echo/Core.md')
+        self.add('ingested', 'notes/Threads.md', owned=False)
+        with self.store._connect() as db:
+            db.execute('DROP TABLE markdown_sources')
+        for names in (['Core.md'], ['Threads.md', 'Core.md'], []):
+            self.assert_equivalent(names, budget_chars=3000)
 
     def test_invalid_requests_still_rejected(self):
         for names in ('Core.md', [''], ['dir/Core.md'], ['quote\\name.md'], [None]):

@@ -616,20 +616,28 @@ class MemoryStore:
         if audience not in ("public", "internal", "private"):
             raise ValueError("invalid audience")
         allowed = {"public"} if audience == "public" else {"public", "internal"} if audience == "internal" else {"public", "internal", "private"}
-        # Every writer stores _json() payloads. A matching source must contain its
-        # basename's serialized contents (without the enclosing quotes), even
-        # when it contains Unicode or JSON escapes. Other fields can produce
-        # false positives; the full Python gates below still decide eligibility.
-        # Bound SQL parameters/expression depth for unusually large requests.
-        needles = tuple(dict.fromkeys(_json(name)[1:-1] for name in source_names))
-        query = "SELECT payload FROM records"
-        if len(needles) <= 128:
-            query += " WHERE " + (" OR ".join("instr(payload, ?) > 0" for _ in needles) or "0")
-        else:
-            needles = ()  # Exact original scan for oversized requests.
-        query += " ORDER BY id"
+        # Decode only rows that can match; the full Python gates below still decide.
+        # Markdown-owned records: sync writes markdown_sources(id, source) in the same
+        # transaction as the payload, so their basenames are read from that small table.
+        # Other records (ingest): every writer stores _json() payloads, so a matching
+        # source contains the name exactly as _json() serializes it (Unicode, escapes).
+        # Both are supersets of the matches; anything unusual keeps the full scan.
+        needles = list(dict.fromkeys(_json(name)[1:-1] for name in source_names))
+        wanted = set(source_names)
         with self._connect() as db:
-            records = [json.loads(row[0]) for row in db.execute(query, needles)]
+            try:
+                owned = db.execute("SELECT id, source FROM markdown_sources").fetchall()
+            except sqlite3.OperationalError:
+                owned = None  # a store that never synced Markdown has no ownership table
+            ids = None if owned is None else sorted(id for id, source in owned if Path(source).name in wanted)
+            if ids is None or len(needles) > 128 or len(ids) > 512:
+                query, params = "SELECT payload FROM records ORDER BY id", ()
+            else:
+                other = "id NOT IN (SELECT id FROM markdown_sources) AND (" + (
+                    " OR ".join("instr(payload, ?) > 0" for _ in needles) or "0") + ")"
+                clause = ("id IN (" + ",".join("?" * len(ids)) + ") OR (" + other + ")") if ids else other
+                query, params = "SELECT payload FROM records WHERE " + clause + " ORDER BY id", ids + needles
+            records = [json.loads(row[0]) for row in db.execute(query, params)]
         candidates = {name: [] for name in source_names}
         stale_count = 0
         for record in records:
