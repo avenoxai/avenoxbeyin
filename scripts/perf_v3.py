@@ -46,8 +46,9 @@ EVENTS = dict(session_start='SessionStart', user_prompt='UserPromptSubmit',
               post_tool_use='PostToolUse', stop='Stop', session_end='SessionEnd')
 # A first concrete prompt delivers sources and saves a topic anchor (continuity); the
 # timed follow-up is either another concrete prompt or a vague continuation of it.
-ANCHOR_PROMPT = 'What is the next nebula calibration step?'
-PROMPTS = dict(user_prompt=ANCHOR_PROMPT, user_prompt_followup='How should we verify nebula calibration sources before the experiment?',
+# Rare tags of note 0: words shared by every note carry no strict (relative idf) weight.
+ANCHOR_PROMPT = 'What are tag0 tag1 calibration sources?'
+PROMPTS = dict(user_prompt=ANCHOR_PROMPT, user_prompt_followup='How should tag0 tag1 calibration sources be verified?',
                user_prompt_continuation='bunu biraz daha detaylandır')
 SYNC_SCENARIOS = ('sync_cold', 'sync_warm', 'sync_one_note', 'sync_one_receipt',
                   'sync_divergent_repeat', 'sync_after_resolution')
