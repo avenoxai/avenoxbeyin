@@ -59,7 +59,10 @@ class RedirectedChildrenTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
         # The container spelling reaches the same directory, as the merged view does.
         self.container.parent.mkdir(parents=True)
-        os.symlink(self.local, self.container, target_is_directory=True)
+        try:
+            os.symlink(self.local, self.container, target_is_directory=True)
+        except OSError:
+            self.skipTest('symlinks unavailable on this runner')
 
     def package(self, version='3.0.1'):
         path = build_package(self.base / 'release.zip', version, self.env)
@@ -162,7 +165,10 @@ class RedirectedChildrenTest(unittest.TestCase):
         (self.state / 'hook-queue').mkdir(parents=True)
         (self.state / 'hook-queue' / 'entry.json').write_text('{}\n', encoding='utf-8')
         self.container.parent.mkdir(parents=True)
-        os.symlink(self.local, self.container, target_is_directory=True)
+        try:
+            os.symlink(self.local, self.container, target_is_directory=True)
+        except OSError:
+            self.skipTest('symlinks unavailable on this runner')
         with self.redirected():
             for name in ('v3-install.json', 'hook-queue/entry.json', 'hook-queue/new/absent.json'):
                 with self.subTest(name=name):
@@ -172,15 +178,15 @@ class RedirectedChildrenTest(unittest.TestCase):
     def test_links_that_leave_the_root_are_still_rejected_under_the_redirected_view(self):
         self.state.mkdir(parents=True)
         self.container.parent.mkdir(parents=True)
-        os.symlink(self.local, self.container, target_is_directory=True)
         try:
+            os.symlink(self.local, self.container, target_is_directory=True)
             os.symlink(self.outside, self.state / 'escape', target_is_directory=True)
             os.symlink(self.outside / 'v3-install.json', self.state / 'leaf.json')
             os.symlink(self.outside, self.vault / '.claude', target_is_directory=True)
+            (self.state / 'plain').mkdir()
+            os.symlink(self.outside, self.state / 'plain' / 'deeper', target_is_directory=True)
         except (OSError, NotImplementedError):
             self.skipTest('symlinks unavailable on this runner')
-        (self.state / 'plain').mkdir()
-        os.symlink(self.outside, self.state / 'plain' / 'deeper', target_is_directory=True)
         cases = [('state', 'escape/v3-install.json'), ('state', 'leaf.json'),
                  ('state', 'plain/deeper/v3-install.json'), ('state', 'escape/new/absent.json'),
                  ('vault', '.claude/scripts/beyin_v3.py')]
