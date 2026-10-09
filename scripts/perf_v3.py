@@ -77,10 +77,15 @@ def environment(home, tmp=None, nospawn=False):
     tmp = Path(tmp or home).resolve()
     home.mkdir(parents=True, exist_ok=True)
     tmp.mkdir(parents=True, exist_ok=True)
+    path_entries = [str(Path(sys.executable).parent)]
+    if sys.platform == 'win32':
+        win = os.environ.get('SYSTEMROOT', r'C:\Windows')
+        path_entries.extend([os.path.join(win, 'System32'), win, os.path.join(win, 'System32', 'WindowsPowerShell', 'v1.0')])
+    path_entries.append(os.defpath)
     env = {key: os.environ[key] for key in ('SYSTEMROOT', 'WINDIR') if key in os.environ}
     env.update(HOME=str(home), USERPROFILE=str(home), APPDATA=str(home / 'appdata'),
                LOCALAPPDATA=str(home / 'localappdata'), TEMP=str(tmp), TMP=str(tmp), TMPDIR=str(tmp),
-               PATH=str(Path(sys.executable).parent) + os.pathsep + os.defpath,
+               PATH=os.pathsep.join(path_entries),
                PYTHONIOENCODING='utf-8', PYTHONDONTWRITEBYTECODE='1',
                BEYIN_UPDATES_OFF='1', BEYIN_JEV_DISABLE='1', TZ='UTC')
     if nospawn:
@@ -268,9 +273,12 @@ def replace_tree(source, destination):
     shutil.copytree(source, destination)
 
 
-def wait_file(path, timeout=60):
+def wait_file(path, timeout=60, process=None):
     deadline = time.monotonic() + timeout
     while not path.exists():
+        if process and process.poll() is not None:
+            stdout, stderr = process.communicate()
+            raise RuntimeError(f'Process exited early ({process.returncode}):\n{stderr}')
         if time.monotonic() >= deadline:
             raise RuntimeError(f'Timed out waiting for {path.name}')
         time.sleep(0.01)
@@ -282,7 +290,12 @@ def lock_worker(vault, state, coordination, role):
     A deterministic 250ms overlap after process two reaches the lock removes the
     scheduler race of two fast compactions. Startup is excluded from lock wait.
     """
+    directory = str(Path(vault) / '.claude/scripts')
+    if directory not in sys.path:
+        sys.path.insert(0, directory)
     modules(vault)
+    if directory not in sys.path:
+        sys.path.insert(0, directory)
     compact = importlib.import_module('beyin_v3_compact')
     original = compact._compact_lock
     coordination = Path(coordination)
@@ -450,7 +463,7 @@ class Benchmark:
                 processes.append(subprocess.Popen(command, cwd=self.vault, env=env,
                                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE))
                 if role == 'first':
-                    wait_file(coordination / 'first-held')
+                    wait_file(coordination / 'first-held', process=processes[0])
             for process in processes:
                 stdout, stderr = process.communicate(timeout=60)
                 if process.returncode:
