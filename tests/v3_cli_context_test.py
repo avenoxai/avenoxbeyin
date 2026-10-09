@@ -213,6 +213,54 @@ class ContextRefreshTest(unittest.TestCase):
                          ['notes/angle.md', 'notes/typed.md'])
         self.assertEqual(validity['ambiguous_rejected_links'], [])
 
+    def test_doctor_lists_notes_whose_review_date_has_come(self):
+        def write(name, metadata):
+            (self.vault / 'notes' / (name + '.md')).write_text(
+                '---\n' + json.dumps(dict(metadata, id=name)) + '\n---\nSynthetic idea ' + name + '.\n', encoding='utf-8')
+        write('seed-old', {'review_at': '2020-01-05'})
+        write('seed-time', {'review_at': '2020-03-01T10:00:00Z'})
+        write('seed-later', {'review_at': '2999-01-01'})
+        write('seed-typo', {'review_at': '2026-13-40'})
+        write('seed-number', {'review_at': 20200105})
+        write('seed-retired', {'review_at': '2020-01-05', 'status': 'archived'})
+        write('seed-rejected', {'review_at': '2020-01-05', 'kind': 'inference', 'validity': 'rejected',
+                                'rejected_reason': 'User corrected this.', 'rejected_at': '2026-09-24'})
+        write('plain', {})
+        synced = self.run_cli('sync')
+        self.assertEqual(json.loads(synced.stdout)['status'], 'succeeded', synced.stdout)
+        report = json.loads(self.run_cli('doctor').stdout)
+        review = report['review']
+        self.assertEqual([(row['id'], row['review_at']) for row in review['due']],
+                         [('seed-old', '2020-01-05'), ('seed-time', '2020-03-01')])
+        self.assertGreater(review['due'][0]['days_overdue'], review['due'][1]['days_overdue'])
+        self.assertEqual(sorted(row['id'] for row in review['invalid']), ['seed-number', 'seed-typo'])
+        self.assertNotEqual(report['status'], 'needs_attention', 'a due review is information, not a fault')
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('beyin_entry_review', ROOT / 'scripts/beyin_entry.py')
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        text = entry.human_result(report, 'doctor', '3.8.1')
+        self.assertIn('Yeniden bakma tarihi gelen not (review_at, bilgi): notes/seed-old.md (', text)
+        self.assertIn('Gercek tarih olmayan review_at (bilgi): notes/seed-number.md, notes/seed-typo.md.', text)
+
+    def test_review_report_skips_empty_and_superseded_and_uses_the_date_grammar(self):
+        notes = self.vault / 'notes'
+        # Obsidian leaves `review_at:` when a date property is cleared; a template keeps a placeholder.
+        (notes / 'cleared.md').write_text('---\nid: cleared\nreview_at:\n---\nIdea.\n', encoding='utf-8')
+        (notes / 'template.md').write_text('---\nid: template\nreview_at: {{date:YYYY-MM-DD}}\n---\nIdea.\n',
+                                           encoding='utf-8')
+        (notes / 'old-idea.md').write_text('---\n{"id": "old-idea", "review_at": "2020-01-05"}\n---\nOld idea.\n',
+                                           encoding='utf-8')
+        (notes / 'new-idea.md').write_text('---\n{"id": "new-idea", "supersedes": ["[[old-idea]]"]}\n---\nNew.\n',
+                                           encoding='utf-8')
+        (notes / 'junk.md').write_text('---\n{"id": "junk", "review_at": "2020-01-05Tlater"}\n---\nIdea.\n',
+                                       encoding='utf-8')
+        synced = self.run_cli('sync')
+        self.assertEqual(json.loads(synced.stdout)['status'], 'succeeded', synced.stdout)
+        review = json.loads(self.run_cli('doctor').stdout)['review']
+        self.assertEqual(review['due'], [], 'a note retired by supersedes is not current')
+        self.assertEqual([row['id'] for row in review['invalid']], ['junk'])
+
     def test_history_syncs_edits_and_keeps_deleted_audit_trail(self):
         def write(name, **metadata):
             (self.vault / 'notes' / (name + '.md')).write_text(

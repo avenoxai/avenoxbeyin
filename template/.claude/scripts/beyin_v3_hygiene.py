@@ -24,6 +24,7 @@ NFD-encoded from macOS or iCloud. Names are folded (NFC, Turkish İ/ı, ASCII)
 before any word match so a rule cannot silently stop applying on a real
 folder name.
 """
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -41,6 +42,18 @@ DEFAULT_COMPANION = '🔮 850-Companion'
 SETTINGS_FILE = 'hygiene.json'
 SETTINGS_DEFAULTS = {'word_cap_warning': False, 'max_words': 500, 'folder_questions': False, 'promotion': False}
 MAX_WORDS_RANGE = (10, 100000)
+# The inbox report keeps its own file: a release before it rejects unknown hygiene.json keys and
+# would read every hygiene signal as off after a rollback (same reason as project-context.json).
+INBOX_SETTINGS_FILE = 'inbox-report.json'
+INBOX_DEFAULTS = {'enabled': False, 'max_items': 10, 'max_days': 7, 'folders': []}
+INBOX_RANGES = {'max_items': (1, 100000), 'max_days': (1, 3650)}
+INBOX_MAX_FOLDERS = 20
+# Without a folder list, a top-level folder is an inbox by generic product words on its folded
+# name: "📥 000-Inbox", "00_INBOX", "Gelen Kutusu", "GelenKutusu". "gelen" alone is an ordinary
+# word ("Gelen Belgeler"), so only the phrase counts. Any other layout is named by the user
+# (`--inbox-folder`); a personal folder name never enters the code.
+INBOX_WORDS = re.compile(r'(?:inbox|inboxes|gelenkutusu|gelenkutum)')
+INBOX_FILE_LIMIT = 5000  # notes counted per inbox folder; the report says when it stopped early
 
 # Machine views and archives grow without being read into context, so they are
 # exempt from the word cap. Mirrors the MMS muafiyet list.
@@ -124,6 +137,63 @@ def check_settings(value):
     low, high = MAX_WORDS_RANGE
     if type(result['max_words']) is not int or not low <= result['max_words'] <= high:
         raise ValueError(f'max_words must be an integer between {low} and {high}')
+    return result
+
+
+def check_inbox_settings(value):
+    """Validated inbox report settings; unknown keys, wrong types and out-of-range thresholds are refused."""
+    if not isinstance(value, dict) or set(value) - set(INBOX_DEFAULTS) - {'schema'} or value.get('schema', 1) != 1:
+        raise ValueError('inbox report settings accept only ' + ', '.join(sorted(INBOX_DEFAULTS)))
+    result = dict(INBOX_DEFAULTS, **{key: item for key, item in value.items() if key != 'schema'})
+    if type(result['enabled']) is not bool:
+        raise ValueError('inbox report must be on or off')
+    folders = result['folders']
+    if (not isinstance(folders, list) or len(folders) > INBOX_MAX_FOLDERS or
+            any(not isinstance(name, str) for name in folders)):
+        raise ValueError(f'inbox folders must be a list of at most {INBOX_MAX_FOLDERS} top-level folder names')
+    for name in folders:
+        if (not name.strip() or name != name.strip() or len(name) > 255 or '/' in name or '\\' in name or
+                name in ('.', '..') or name.startswith('.') or sensitive_excluded(name)):
+            raise ValueError('inbox folder must be one visible top-level folder name, not a kasa-class folder: ' +
+                             repr(name))
+    if len({fold(name) for name in folders}) != len(folders):
+        raise ValueError('inbox folders repeat a name')
+    result['folders'] = list(folders)
+    for key, (low, high) in INBOX_RANGES.items():
+        if type(result[key]) is not int or not low <= result[key] <= high:
+            raise ValueError(f'inbox {key} must be an integer between {low} and {high}')
+    return result
+
+
+def read_inbox_settings(state):
+    """(settings, valid), like read_settings: missing is off, damaged reads as off and is reported."""
+    path = Path(state) / INBOX_SETTINGS_FILE
+    if not path.exists() and not path.is_symlink():
+        return dict(INBOX_DEFAULTS), True
+    try:
+        if path.is_symlink():
+            raise ValueError('symlink')
+        return check_inbox_settings(json.loads(path.read_text(encoding='utf-8'))), True
+    except (ValueError, OSError):
+        return dict(INBOX_DEFAULTS), False
+
+
+def save_inbox_settings(state, changes):
+    current, valid = read_inbox_settings(state)
+    if not valid:
+        raise ValueError(INBOX_SETTINGS_FILE + ' in the runtime state is invalid; fix or remove it first')
+    result = check_inbox_settings(dict(current, **changes))
+    state = Path(state)
+    state.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix='.inbox-', dir=state)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as out:
+            json.dump(dict(schema=1, **result), out, ensure_ascii=False, indent=2)
+            out.write('\n'); out.flush(); os.fsync(out.fileno())
+        os.replace(temporary, state / INBOX_SETTINGS_FILE)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     return result
 
 
@@ -639,3 +709,101 @@ def closed_tasks(vault, days=30, limit=20, now=None):
     closed.sort(key=lambda entry: (-entry['days_old'], entry['source']))
     return {'closed_count': len(closed), 'closed': closed[:limit], 'truncated': len(closed) > limit,
             'days': days}
+
+
+def _inbox_folder(name, configured):
+    if configured is not None:
+        return fold(name) in configured
+    words = _name_words(name)
+    return any(INBOX_WORDS.fullmatch(word) for word in words) or any(
+        pair == ('gelen', 'kutusu') or pair == ('gelen', 'kutum') for pair in zip(words, words[1:]))
+
+
+def _capture_time(path):
+    """When a note was captured: a valid frontmatter `created` date, else the file mtime.
+
+    A clone, a sync client or a restore rewrites mtimes, so a week-old capture would read as new;
+    the note's own date survives that. A missing or malformed date falls back to the mtime.
+    """
+    modified = path.stat().st_mtime
+    try:
+        with path.open(encoding='utf-8', errors='replace') as handle:
+            head = handle.read(4096)
+    except OSError:
+        return modified
+    created = _front_values(head, ('created',)).get('created', '')
+    match = re.match(r'(\d{4})-(\d{2})-(\d{2})', created)
+    if not match:
+        return modified
+    try:
+        return min(modified, datetime(int(match[1]), int(match[2]), int(match[3])).timestamp())
+    except (OverflowError, ValueError, OSError):  # an impossible date (2026-13-40) is malformed, not normalized
+        return modified
+
+
+def inbox_report(vault, state=None, max_items=10, max_days=7, now=None, folders=None):
+    """How much capture is waiting in top-level inbox folders - a report, not a processing run.
+
+    `folders` (the user's list, compared NFC and Turkish-case folded) names the inbox folders;
+    without it a top-level folder is an inbox by the generic words in INBOX_WORDS ("📥 000-Inbox",
+    "00_INBOX", "Gelen Kutusu"). Counts the Markdown notes under it (dot folders and symlinks
+    skipped) and the age of the oldest by its frontmatter `created` date, else its file mtime.
+    A folder over either threshold is marked `attention`; nothing is moved, classified or handed
+    to an agent. A folder that could not be read, or a named folder that is missing, is listed
+    with an error, never reported as empty.
+    """
+    vault = Path(vault).resolve()
+    now = time.time() if now is None else now
+    companions = companion_names(vault, state)
+    configured = {fold(name): name for name in folders} if folders else None
+    rows = []
+    try:
+        entries = sorted(vault.iterdir())
+    except OSError as exc:
+        return {'folders': [], 'attention': False, 'error': type(exc).__name__,
+                'max_items': max_items, 'max_days': max_days}
+    found = set()
+    for entry in entries:
+        name = entry.name
+        if (not entry.is_dir() or entry.is_symlink() or name.startswith('.') or _nfc(name) in companions or
+                sensitive_excluded(name) or not _inbox_folder(name, configured)):
+            continue
+        found.add(fold(name))
+        count, oldest, partial, error = 0, None, False, None
+
+        def unreadable(exc):
+            nonlocal error
+            error = error or type(exc).__name__
+
+        for directory, subfolders, files in os.walk(entry, onerror=unreadable):
+            subfolders[:] = sorted(sub for sub in subfolders
+                                   if not sub.startswith('.') and not (Path(directory) / sub).is_symlink())
+            for file in sorted(files):
+                path = Path(directory) / file
+                if not file.lower().endswith('.md') or file.startswith('.') or path.is_symlink():
+                    continue
+                if count >= INBOX_FILE_LIMIT:
+                    partial = True
+                    break
+                try:
+                    modified = _capture_time(path)
+                except OSError as exc:
+                    unreadable(exc)
+                    continue
+                count += 1
+                oldest = modified if oldest is None else min(oldest, modified)
+            if partial:
+                break
+        oldest_days = None if oldest is None else max(0, int((now - oldest) // 86400))
+        row = {'folder': name, 'notes': count, 'oldest_days': oldest_days,
+               'attention': count >= max_items or (oldest_days is not None and oldest_days >= max_days)}
+        if partial:
+            row['truncated'] = True
+        if error:
+            row['error'] = error
+        rows.append(row)
+    for key, name in (configured or {}).items():
+        if key not in found:
+            rows.append({'folder': name, 'notes': 0, 'oldest_days': None, 'attention': False, 'error': 'not_found'})
+    return {'folders': rows, 'attention': any(row['attention'] or 'error' in row for row in rows),
+            'max_items': max_items, 'max_days': max_days}
