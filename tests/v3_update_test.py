@@ -100,6 +100,29 @@ class OfflineUpdateTest(unittest.TestCase):
         self.assertEqual(core.read_bytes(), original)
         self.assertEqual(self.note.read_text(), 'User edit after system update.\n')
 
+    def test_update_reports_a_flush_sentinel_orphaned_after_the_cutover(self):
+        # A kept V2 flush that dies mid-summary leaves "inflight" behind. update takes no flags,
+        # so a guard that ignored the proof of its own lock stopped every later update here.
+        legacy = self.vault / '.claude/scripts/.state'
+        legacy.mkdir(parents=True, exist_ok=True)
+        sentinel = legacy / 'flush-example.json'
+        sentinel.write_bytes(b'{"status":"inflight"}')
+        (legacy / 'flush-example.lock').write_bytes(b'')
+        report = self.module.update(self.vault, self.state, self.package)
+        self.assertEqual(report['status'], 'updated')
+        self.assertEqual(report['orphaned_legacy_state'], ['.claude/scripts/.state/flush-example.json'])
+        self.assertEqual(self.version(), '3.0.1')
+        self.assertEqual(sentinel.read_bytes(), b'{"status":"inflight"}')
+
+    def test_update_message_counts_orphaned_flush_sentinels(self):
+        spec = importlib.util.spec_from_file_location('update_test_entry_cli', ROOT / 'scripts/beyin_entry.py')
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        report = {'status': 'updated', 'from_version': '3.0.0', 'version': '3.0.1'}
+        self.assertNotIn('flush', entry.human_result(report, 'update'))
+        message = entry.human_result(dict(report, orphaned_legacy_state=['a.json', 'b.json']), 'update')
+        self.assertIn('2 V2 flush kaydi inflight kalmis', message)
+
     def test_update_lock_does_not_create_empty_sqlite_file(self):
         import sqlite3
         memory_db = self.state / 'memory.sqlite3'

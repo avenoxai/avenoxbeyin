@@ -384,6 +384,9 @@ def human_result(result, command, installed_version=None):
             message += '\nHaric tutulan bilesenler kaldirildi: ' + ', '.join(result['removed']) + '.'
         if result.get('preserved_excluded'):
             message += '\nHaric tutulan ancak degistirilmis dosyalar korundu: ' + ', '.join(result['preserved_excluded']) + '.'
+        if result.get('orphaned_legacy_state'):
+            message += ('\nYazicisi olmus ' + str(len(result['orphaned_legacy_state'])) + ' V2 flush kaydi inflight kalmis;'
+                        ' engel sayilmadi, dosyalara dokunulmadi. O oturumlarin ozeti daily/ altina yazilmamis olabilir.')
     elif status == 'available':
         message = 'Yeni surum var: ' + str(result.get('current_version', '?')) + ' -> ' + str(result['version']) + '\nGuncellemek icin: python beyin.py update'
     elif status == 'noop':

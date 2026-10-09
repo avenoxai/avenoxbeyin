@@ -14,9 +14,23 @@ user sources and the original V2 state; the updater owns system-file rollback.
 
 The guard takes nonblocking locks on existing V2 `.claude/scripts/.state/*.lock`
 files and rejects known `inflight`, `running` or `pending` writer states. If a
-worker is active, let it finish and rerun. An orphaned inflight sentinel needs
-explicit reconciliation; the migration never deletes it or declares it safe
-from its age alone. Source or legacy-state changes during cutover reject success.
+worker is active, let it finish and rerun. A V2 flush holds `flush-<key>.lock`
+for as long as `flush-<key>.json` says `status: inflight`, so such a sentinel
+whose own lock the guard holds was left by a writer that died, for example a
+logout or shutdown in the middle of a summary. That sentinel does not block: the
+file is preserved as it is and its path is listed as `orphaned_legacy_state` in
+the installer result, in the `update` result and message, and, at the first
+cutover, in `v2-migration.json`. The summary it was writing never reached
+`daily/`. The same holds on every later `update` for a flush kept with
+`--keep-customized-legacy`.
+
+Nothing else is proven by a free lock: a `pending` or `running` state, a record
+of another writer, or a flush sentinel without a lock of the same name still
+needs explicit reconciliation, and the migration never deletes one or declares
+it safe from its age alone. To reconcile, make sure no V2 writer is running,
+set that record's status to a terminal value such as `fail`, and rerun; the
+session it belonged to has no summary in `daily/`. Source or legacy-state
+changes during cutover reject success.
 These are local cooperating-worker protections, not a distributed filesystem lock.
 
 The installer also replaces hash-recognized stock legacy runners with reversible
@@ -183,7 +197,8 @@ covers a session.
 ## Validation boundary
 
 Synthetic tests cover byte preservation, idempotent watermarking, inflight
-rejection, concurrent source-edit detection, private Companion filtering,
+rejection, lock-proven orphaned sentinels, concurrent source-edit detection,
+private Companion filtering,
 new-only outcome projections, manual-view conflicts, note-create refusal to
 overwrite, and receipt-gap closure. Actual V2 workers, external schedules and
 client trust still require environment-specific validation. A green migration

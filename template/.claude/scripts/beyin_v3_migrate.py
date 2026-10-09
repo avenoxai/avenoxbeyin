@@ -73,12 +73,15 @@ def migration_guard(vault_root, state_dir):
     if state.is_relative_to(vault):
         raise ValueError('migration state must be outside vault')
     legacy = _legacy_root(vault)
+    orphaned = []
     with ExitStack() as stack:
         if legacy.exists():
+            held = set()
             for path in sorted(legacy.glob('*.lock')):
                 if path.is_symlink():
                     raise RuntimeError('legacy writer lock symlink requires review')
                 stack.enter_context(_legacy_lock(path))
+                held.add(path.name)
             for path in legacy.glob('*.json'):
                 if not path.name.startswith(('flush-', 'compile', 'antigravity-')):
                     continue
@@ -88,13 +91,26 @@ def migration_guard(vault_root, state_dir):
                     raise RuntimeError('legacy writer state unreadable; review locally')
                 if isinstance(item, dict) and any(item.get(key) in ('inflight', 'running', 'pending') for key in ('status', 'state')):
                     relative = path.relative_to(vault).as_posix()
+                    # A V2 flush takes flush-<key>.lock before it writes status "inflight" to
+                    # flush-<key>.json and keeps it until its terminal status. Holding that lock
+                    # here is proof this writer is gone (a logout or shutdown mid-summary), which
+                    # the sentinel's age alone never was. No other record or state has that
+                    # guarantee: a "pending" one, for instance, waits without holding any lock.
+                    if (path.name.startswith('flush-') and item.get('status') == 'inflight'
+                            and item.get('state') not in ('inflight', 'running', 'pending')
+                            and path.with_suffix('.lock').name in held):
+                        orphaned.append(relative)
+                        continue
                     raise RuntimeError('legacy writer inflight sentinel in ' + relative +
-                                       '; verify the prior write completed, then reconcile that record before migration')
+                                       '; verify the prior write completed, then reconcile that record before migration:'
+                                       ' with no V2 writer running, set its status to a terminal value such as "fail" and rerun')
         sources, states = _inventory(vault)
         prior = state/'v2-migration.json'
         plan = {'migration': 'v2-to-v3-source-cutover-1', 'cutover_at': datetime.now(timezone.utc).isoformat(),
                 'sources': sources, 'legacy_state': states,
                 'historical_receipts': sorted(p.relative_to(vault).as_posix() for p in (vault/'receipts').glob('*.md'))}
+        if orphaned:
+            plan['orphaned_legacy_state'] = sorted(orphaned)
         if prior.exists():
             plan['previous'] = json.loads(prior.read_text(encoding='utf-8'))
         # Runners the user kept at install time stay theirs on every later update.

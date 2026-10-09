@@ -239,6 +239,18 @@ class InstallLegacyExemptionTest(unittest.TestCase):
         self.assertEqual(manifest['kept_legacy'], ['.claude/scripts/flush.py'])
         self.assertNotIn('.claude/scripts/flush.py', manifest['files'])
 
+    def test_install_reports_flush_sentinels_whose_writer_died(self):
+        self.seed('.claude/scripts/flush.py', CUSTOM_RUNNER)
+        sentinel = self.seed('.claude/scripts/.state/flush-example.json', b'{"status":"inflight"}')
+        self.seed('.claude/scripts/.state/flush-example.lock', b'')
+        result = self.cli('--keep-customized-legacy', '.claude/scripts/flush.py')
+        self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
+        orphaned = ['.claude/scripts/.state/flush-example.json']
+        self.assertEqual(json.loads(result.stdout)['orphaned_legacy_state'], orphaned)
+        self.assertEqual(sentinel.read_bytes(), b'{"status":"inflight"}')
+        receipt = json.loads((self.state / 'v2-migration.json').read_text(encoding='utf-8'))
+        self.assertEqual(receipt['orphaned_legacy_state'], orphaned)
+
     def test_keeping_one_runner_does_not_exempt_another(self):
         self.seed('.claude/scripts/flush.py', CUSTOM_RUNNER)
         self.seed('.claude/scripts/compile.py', CUSTOM_RUNNER)

@@ -442,6 +442,10 @@ def update(vault, state, package=None, check=False):
             result['preserved_excluded'] = plan['preserved_excluded']
         if plan.get('manifest', {}).get('excluded_components'):
             result['excluded_components'] = plan['manifest']['excluded_components']
+        # A kept V2 flush that died mid-summary: the guard let its sentinel through on proof,
+        # but nothing else would ever tell the user that session's summary is missing.
+        if migration and migration[1].get('orphaned_legacy_state'):
+            result['orphaned_legacy_state'] = migration[1]['orphaned_legacy_state']
         return result
 
 
