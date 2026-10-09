@@ -683,10 +683,14 @@ def main(argv=None):
                     'error': (type(exc).__name__ + ': ' + str(exc))[:240],
                 }
             # A rejection on a plain note leaves the claim in current context; sync stays healthy.
+            # Notes that link to a rejected inference are listed for review only and never raise
+            # the doctor status: citing a rejected claim can be legitimate (explaining why it fell).
             try:
                 result['validity'] = load_sync().reader(store).validity_health()
             except Exception as exc:
                 result['validity'] = {'ignored_rejection_count': 0, 'ignored_rejections': [], 'truncated': False,
+                                      'rejected_dependent_count': 0, 'rejected_dependents': [],
+                                      'ambiguous_rejected_link_count': 0, 'ambiguous_rejected_links': [],
                                       'error': (type(exc).__name__ + ': ' + str(exc))[:240]}
             # Information only: a supersedes link that retires nothing keeps the old note in
             # context, as before #206; it never raises the doctor status.
