@@ -42,7 +42,13 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 PROFILES = ('day1', 'active', 'mega', 'edge')
 EVENTS = dict(session_start='SessionStart', user_prompt='UserPromptSubmit',
+              user_prompt_followup='UserPromptSubmit', user_prompt_continuation='UserPromptSubmit',
               post_tool_use='PostToolUse', stop='Stop', session_end='SessionEnd')
+# A first concrete prompt delivers sources and saves a topic anchor (continuity); the
+# timed follow-up is either another concrete prompt or a vague continuation of it.
+ANCHOR_PROMPT = 'What is the next nebula calibration step?'
+PROMPTS = dict(user_prompt=ANCHOR_PROMPT, user_prompt_followup='How should we verify nebula calibration sources before the experiment?',
+               user_prompt_continuation='bunu biraz daha detaylandır')
 SYNC_SCENARIOS = ('sync_cold', 'sync_warm', 'sync_one_note', 'sync_one_receipt',
                   'sync_divergent_repeat', 'sync_after_resolution')
 SCENARIOS = ('cold_process', *SYNC_SCENARIOS, 'lock_two_process',
@@ -386,8 +392,17 @@ class Benchmark:
             name = scenario.removeprefix('hook_').removesuffix('_nospawn').removesuffix('_direct')
             self.payload = dict(hook_event_name=EVENTS[name], session_id='perf-session',
                                 event_id='perf-hook-event', cwd=str(self.vault))
-            if name == 'user_prompt':
-                self.payload['prompt'] = 'What is the next nebula calibration step?'
+            if name in PROMPTS:
+                self.payload['prompt'] = PROMPTS[name]
+            if name in ('user_prompt_followup', 'user_prompt_continuation'):
+                # Untimed anchor turn in the same session, worker disabled so it leaves no
+                # background process; the timed hook's worker drains its queued metadata.
+                anchor = dict(self.payload, prompt=ANCHOR_PROMPT, event_id='perf-anchor-event')
+                direct = [sys.executable, str(self.vault / '.claude/scripts/beyin_v3_hook.py'),
+                          '--vault', str(self.vault), '--state', str(self.state), '--harness', 'claude']
+                output = json.loads(checked(direct, self.vault, environment(self.home, nospawn=True), anchor).stdout)
+                assert output.get('hookSpecificOutput', {}).get('additionalContext'), 'anchor turn delivered no context'
+                assert list((self.state / 'topic-refs').glob('*.json')), 'anchor turn saved no topic reference'
             if name == 'post_tool_use':
                 self.payload.update(tool_name='Write', tool_input=dict(file_path=str(
                     self.vault / 'notes/000/000/note-000000.md')))
