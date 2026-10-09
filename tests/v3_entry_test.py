@@ -27,6 +27,34 @@ class EntryPresentationTest(unittest.TestCase):
             self.assertNotIn('"hook-health.json"',text)
             self.assertNotIn(str(state),text)
 
+    def test_entry_in_memory_invocation_avoids_io_redirect(self):
+        with tempfile.TemporaryDirectory(prefix='v3-entry-mem-') as t:
+            root = Path(t); vault = root / 'vault'; vault.mkdir(); state = root / 'state'; env = isolated_env(root / 'home')
+            installed = install(vault, state, env)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            # Verify entrypoint runs cleanly in human mode with zero stdout-capture overhead
+            human = run_python(vault / 'beyin.py', ['sync', '--human'], vault, env)
+            self.assertEqual(human.returncode, 0, human.stderr)
+            self.assertIn('succeeded', human.stdout.decode('utf-8').lower())
+
+    def test_human_mode_prints_unshaped_results_and_shows_usage_errors(self):
+        with tempfile.TemporaryDirectory(prefix='v3-entry-shape-') as t:
+            root = Path(t); vault = root / 'vault'; vault.mkdir(); state = root / 'state'; env = isolated_env(root / 'home')
+            (vault / 'Synthetic.md').write_text('# Synthetic\n\nQuartz shape canary.\n', encoding='utf-8')
+            installed = install(vault, state, env)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            found = run_python(vault / 'beyin.py', ['context', 'Quartz shape canary', '--json'], vault, env)
+            self.assertEqual(found.returncode, 0, found.stderr)
+            record = next(r['id'] for r in json.loads(found.stdout)['records'] if r['source'] == 'Synthetic.md')
+            # history returns a list, which human_result cannot shape: it prints as JSON, as before.
+            human = run_python(vault / 'beyin.py', ['history', record, '--human'], vault, env)
+            self.assertEqual(human.returncode, 0, human.stderr.decode('utf-8', errors='replace'))
+            self.assertEqual(json.loads(human.stdout)[0]['record_id'], record)
+            # An argparse error is no longer swallowed by the captured stderr in human mode.
+            usage = run_python(vault / 'beyin.py', ['receipt', '--event-id', 'x', '--human'], vault, env)
+            self.assertEqual(usage.returncode, 2)
+            self.assertIn('--summary or --summary-file is required', usage.stderr.decode('utf-8'))
+
 
 # The installer pins a resolved absolute path; this is one another OS wrote into a synced vault (#249).
 FOREIGN_PIN = ('/home/ada/.local/state/beyin-v3/ab12' if sys.platform == 'win32' else

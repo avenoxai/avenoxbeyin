@@ -25,6 +25,8 @@ def plan_launchers(vault, state):
     if os.name == 'nt':
         # ASCII filename/content avoids cmd.exe's legacy codepage for Unicode paths;
         # use PowerShell's UTF-16 encoded script to carry exact path characters.
+        # The update this file starts rewrites it, and cmd.exe resumes at the old byte
+        # offset: changing this layout ends the first update before pause and exit /b.
         import base64
         script = '& ' + ' '.join("'" + str(v).replace("'", "''") + "'" for v in [sys.executable, entry, 'update'])
         script += '; exit $LASTEXITCODE'
