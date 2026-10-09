@@ -667,31 +667,74 @@ def gather_context():
 
 # ---------------------------------------------------------------- popup
 
-PALETTE = {'bg': '#0D1424', 'panel': '#152038', 'line': '#22304F', 'text': '#E9EEF8', 'muted': '#8C9AB5',
-           'accent': '#F2C84B', 'accent_text': '#1A1405', 'ok': '#7AD9A4'}
+PALETTE = {'bg': '#0A0E17', 'card': '#111827', 'card_line': '#1E293B', 'line': '#172033', 'text': '#F1F5F9',
+           'soft': '#CBD5E1', 'muted': '#64748B', 'faint': '#3F4C63', 'accent': '#F5C84C', 'accent_text': '#1A1405',
+           'key': '#151D2C', 'key_line': '#26324A', 'ok': '#6EE7A8'}
+KIND_LABEL = {'youtube': 'VİDEO', 'x': 'TWEET', 'mail': 'MAİL', 'github': 'REPO', 'pdf': 'PDF', 'makale': 'SAYFA'}
 
 
 def _font(size, weight='normal'):
-    family = 'Segoe UI' if os.name == 'nt' else ('Helvetica Neue' if sys.platform == 'darwin' else 'DejaVu Sans')
+    if sys.platform == 'darwin':
+        family = '.AppleSystemUIFont'
+    elif os.name == 'nt':
+        family = 'Segoe UI Variable Text' if sys.getwindowsversion().build >= 22000 else 'Segoe UI'
+    else:
+        family = 'DejaVu Sans'
     return (family, size, weight)
 
 
-def _activate_mac():
-    """Accessory app (no Dock icon) whose window floats over every Space, full-screen apps included."""
+def _nsstring(objc, send, text):
+    import ctypes
+    return send(objc.objc_getClass(b'NSString'), b'stringWithUTF8String:', ctypes.c_void_p, ctypes.c_char_p(text.encode('utf-8')))
+
+
+def _style_mac(focus=True):
+    """Spotlight-like panel: no title bar or buttons, dark appearance, floats over every Space."""
     try:
         import ctypes
         objc, send = _objc()
         app = send(objc.objc_getClass(b'NSApplication'), b'sharedApplication')
-        send(app, b'setActivationPolicy:', ctypes.c_void_p, ctypes.c_long(1))
+        send(app, b'setActivationPolicy:', ctypes.c_void_p, ctypes.c_long(1))  # accessory: no Dock icon
+        dark = send(objc.objc_getClass(b'NSAppearance'), b'appearanceNamed:', ctypes.c_void_p,
+                    ctypes.c_void_p(_nsstring(objc, send, 'NSAppearanceNameDarkAqua')))
+        send(app, b'setAppearance:', ctypes.c_void_p, ctypes.c_void_p(dark))
         windows = send(app, b'windows')
         for index in range(send(windows, b'count', ctypes.c_ulong)):
             window = send(windows, b'objectAtIndex:', ctypes.c_void_p, ctypes.c_ulong(index))
-            # canJoinAllSpaces | fullScreenAuxiliary; NSStatusWindowLevel
-            send(window, b'setCollectionBehavior:', ctypes.c_void_p, ctypes.c_ulong(1 | 256))
+            mask = send(window, b'styleMask', ctypes.c_ulong)
+            send(window, b'setStyleMask:', ctypes.c_void_p, ctypes.c_ulong(mask | (1 << 15)))  # full-size content
+            send(window, b'setTitlebarAppearsTransparent:', ctypes.c_void_p, ctypes.c_bool(True))
+            send(window, b'setTitleVisibility:', ctypes.c_void_p, ctypes.c_long(1))
+            for button in range(3):
+                handle = send(window, b'standardWindowButton:', ctypes.c_void_p, ctypes.c_long(button))
+                if handle:
+                    send(handle, b'setHidden:', ctypes.c_void_p, ctypes.c_bool(True))
+            send(window, b'setMovableByWindowBackground:', ctypes.c_void_p, ctypes.c_bool(True))
+            send(window, b'setCollectionBehavior:', ctypes.c_void_p, ctypes.c_ulong(1 | 256))  # all Spaces, over full screen
             send(window, b'setLevel:', ctypes.c_void_p, ctypes.c_long(25))
-        send(app, b'activateIgnoringOtherApps:', ctypes.c_void_p, ctypes.c_bool(True))
+            send(window, b'setHasShadow:', ctypes.c_void_p, ctypes.c_bool(True))
+        if focus:
+            send(app, b'activateIgnoringOtherApps:', ctypes.c_void_p, ctypes.c_bool(True))
     except Exception:
         pass
+
+
+def _round_rect(canvas, x1, y1, x2, y2, radius, **options):
+    r = min(radius, (x2 - x1) / 2, (y2 - y1) / 2)
+    points = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2, x2 - r, y2,
+              x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+    return canvas.create_polygon(points, smooth=True, splinesteps=24, **options)
+
+
+def _fit(canvas, text, font, width):
+    """Trim with an ellipsis so the text fits `width` pixels in `font`."""
+    import tkinter.font as tkfont
+    measure = tkfont.Font(root=canvas, font=font).measure
+    if measure(text) <= width:
+        return text
+    while text and measure(text + '…') > width:
+        text = text[:-1]
+    return text.rstrip() + '…'
 
 
 def repair_mojibake(text):
@@ -717,114 +760,218 @@ def _clipboard(root):
 
 
 def popup(vault, context=None):
-    """Small dark window: what will be saved, one reason field, Enter saves, Esc closes."""
+    """Command-palette window: what will be saved, one line for why, Enter saves, Esc closes."""
     context = dict(context or {})
     try:
         import tkinter as tk
     except ImportError:
         return _popup_fallback(vault, context)
+    snapshot = os.environ.get('BEYIN_YAKALA_SNAPSHOT')
     root = tk.Tk()
     root.withdraw()
     clip = _clipboard(root).strip()
     clip_is_url = bool(re.match(r'^https?://\S+$', clip))
     url = context.get('url') or (clip if clip_is_url else None)
     files = context.get('dosyalar') or []
+    clip_text = clip if clip and not clip_is_url else ''
+    include = {'on': bool(clip_text) and not url and not files}
+
+    P, W, pad = PALETTE, 640, 26
     root.title('Beyne at')
-    root.configure(bg=PALETTE['bg'])
+    root.configure(bg=P['bg'])
     root.resizable(False, False)
-    width = 540
-    try:
-        root.attributes('-topmost', True)
-    except tk.TclError:
-        pass
+    if os.name == 'nt':
+        root.overrideredirect(True)
+    canvas = tk.Canvas(root, width=W, highlightthickness=0, bd=0, bg=P['bg'])
+    canvas.pack(fill='both', expand=True)
 
-    outer = tk.Frame(root, bg=PALETTE['bg'], padx=22, pady=18)
-    outer.pack(fill='both', expand=True)
-    tk.Label(outer, text='Beyne at', font=_font(17, 'bold'), fg=PALETTE['text'], bg=PALETTE['bg'], anchor='w').pack(fill='x')
-    origin = ' · '.join(part for part in (context.get('uygulama'), context.get('pencere')) if part)
-    if origin:
-        tk.Label(outer, text=origin[:80], font=_font(11), fg=PALETTE['muted'], bg=PALETTE['bg'], anchor='w').pack(fill='x', pady=(2, 0))
+    # Header: brand mark, name, where it came from.
+    y = 30
+    canvas.create_oval(pad, y - 6, pad + 12, y + 6, fill=P['accent'], outline='')
+    canvas.create_text(pad + 22, y, text='Beyne at', anchor='w', fill=P['text'], font=_font(13, 'bold'))
+    source = context.get('uygulama') or ''
+    if source:
+        canvas.create_text(W - pad, y, text=_fit(canvas, source, _font(12), 260), anchor='e', fill=P['muted'], font=_font(12))
 
-    card = tk.Frame(outer, bg=PALETTE['panel'], highlightthickness=1, highlightbackground=PALETTE['line'], padx=14, pady=12)
-    card.pack(fill='x', pady=(14, 12))
-    if files:
-        kind, headline, detail = 'DOSYA', Path(files[0]).name + (' +' + str(len(files) - 1) if len(files) > 1 else ''), ''
-    elif url:
-        kind = {'youtube': 'VIDEO', 'x': 'TWEET', 'mail': 'MAIL', 'github': 'REPO', 'pdf': 'PDF'}.get(kind_of(url), 'SAYFA')
-        headline, detail = (context.get('baslik') or url), url
-    elif clip:
-        kind, headline, detail = 'METİN', _first_line(clip, 90), ''
-    else:
-        kind, headline, detail = 'NOT', 'Yalnız not yazabilirsin', ''
-    top = tk.Frame(card, bg=PALETTE['panel'])
-    top.pack(fill='x')
-    tk.Label(top, text=' ' + kind + ' ', font=_font(9, 'bold'), fg=PALETTE['accent_text'], bg=PALETTE['accent']).pack(side='left')
-    tk.Label(top, text='  ' + headline[:70], font=_font(13, 'bold'), fg=PALETTE['text'], bg=PALETTE['panel'], anchor='w').pack(side='left', fill='x')
-    if detail and detail != headline:
-        tk.Label(card, text=detail[:86], font=_font(10), fg=PALETTE['muted'], bg=PALETTE['panel'], anchor='w').pack(fill='x', pady=(6, 0))
+    # Main field: large, borderless, with a placeholder.
+    y = 64
+    entry = tk.Entry(root, font=_font(21), fg=P['text'], bg=P['bg'], insertbackground=P['accent'], insertwidth=2,
+                     relief='flat', bd=0, highlightthickness=0)
+    canvas.create_window(pad, y, window=entry, anchor='nw', width=W - 2 * pad, height=40)
+    placeholder_text = 'Neden kaydediyorsun?' if (url or files or clip_text) else 'Aklındakini yaz…'
+    hint = {'on': False}
 
-    # Clipboard text rides along by default only when there is nothing better to save.
-    include_clip = tk.BooleanVar(value=bool(clip) and not clip_is_url and not url and not files)
-    if clip and not clip_is_url:
-        tk.Checkbutton(outer, text='Panodaki metni de ekle  (' + _first_line(clip, 46) + ')', variable=include_clip,
-                       font=_font(11), fg=PALETTE['muted'], bg=PALETTE['bg'], activebackground=PALETTE['bg'],
-                       activeforeground=PALETTE['text'], selectcolor=PALETTE['panel'], anchor='w',
-                       highlightthickness=0, bd=0).pack(fill='x', pady=(0, 8))
+    def show_hint():
+        entry.delete(0, 'end')
+        entry.insert(0, placeholder_text)
+        entry.configure(fg=P['faint'])
+        entry.icursor(0)
+        hint['on'] = True
 
-    tk.Label(outer, text='Neden kaydediyorsun? (boş bırakabilirsin)', font=_font(11), fg=PALETTE['muted'], bg=PALETTE['bg'], anchor='w').pack(fill='x')
-    entry = tk.Entry(outer, font=_font(14), fg=PALETTE['text'], bg=PALETTE['panel'], insertbackground=PALETTE['accent'],
-                     relief='flat', highlightthickness=1, highlightbackground=PALETTE['line'], highlightcolor=PALETTE['accent'])
-    entry.pack(fill='x', ipady=8, pady=(6, 14))
+    def on_key(event):
+        # Embedded windows sit above canvas items, so the hint lives inside the field itself.
+        if hint['on'] and (event.char and event.char.isprintable() or event.keysym in ('BackSpace', 'Delete')):
+            entry.delete(0, 'end')
+            entry.configure(fg=P['text'])
+            hint['on'] = False
+            if event.keysym in ('BackSpace', 'Delete'):
+                return 'break'
+        if hint['on'] and event.keysym in ('Left', 'Right', 'Home', 'End'):
+            return 'break'
 
-    footer = tk.Frame(outer, bg=PALETTE['bg'])
-    footer.pack(fill='x')
-    status = tk.Label(footer, text='Enter kaydeder · Esc kapatır', font=_font(10), fg=PALETTE['muted'], bg=PALETTE['bg'])
-    status.pack(side='left')
+    def after_key(_event=None):
+        if not hint['on'] and not entry.get():
+            show_hint()
+    def on_paste(_event=None):
+        if hint['on']:
+            entry.delete(0, 'end')
+            entry.configure(fg=P['text'])
+            hint['on'] = False
+    entry.bind('<KeyPress>', on_key)
+    entry.bind('<<Paste>>', on_paste, add='+')
+    entry.bind('<KeyRelease>', after_key)
+    entry.bind('<Button-1>', lambda _e: (entry.focus_set(), entry.icursor(0), 'break')[-1] if hint['on'] else None)
+    show_hint()
+    y += 56
+    canvas.create_line(pad, y, W - pad, y, fill=P['line'])
+    y += 16
+
+    # Preview card.
+    if files or url or clip_text:
+        if files:
+            kind = 'DOSYA'
+            headline = Path(files[0]).name + ('  +' + str(len(files) - 1) if len(files) > 1 else '')
+            detail = str(Path(files[0]).parent)
+        elif url:
+            kind = KIND_LABEL.get(kind_of(url), 'SAYFA')
+            headline, detail = context.get('baslik') or url, url
+        else:
+            kind, headline, detail = 'METİN', _first_line(clip_text, 200), ''
+        card_h = 78 if detail and detail != headline else 56
+        _round_rect(canvas, pad, y, W - pad, y + card_h, 14, fill=P['card'], outline=P['card_line'])
+        chip_font = _font(10, 'bold')
+        import tkinter.font as tkfont
+        chip_w = tkfont.Font(root=root, font=chip_font).measure(kind) + 18
+        chip_y = y + (20 if card_h > 56 else card_h / 2) + (8 if card_h > 56 else 0)
+        _round_rect(canvas, pad + 16, chip_y - 11, pad + 16 + chip_w, chip_y + 11, 8, fill=P['accent'], outline='')
+        canvas.create_text(pad + 16 + chip_w / 2, chip_y, text=kind, fill=P['accent_text'], font=chip_font)
+        text_x = pad + 16 + chip_w + 12
+        canvas.create_text(text_x, chip_y, text=_fit(canvas, headline, _font(14, 'bold'), W - pad - 16 - text_x),
+                           anchor='w', fill=P['text'], font=_font(14, 'bold'))
+        if card_h > 56:
+            canvas.create_text(pad + 16, y + card_h - 20, text=_fit(canvas, detail, _font(12), W - 2 * pad - 32),
+                               anchor='w', fill=P['muted'], font=_font(12))
+        y += card_h + 12
+
+    # Optional clipboard toggle when something better is already being saved.
+    if clip_text and (url or files):
+        box = _round_rect(canvas, pad + 2, y + 2, pad + 18, y + 18, 5, fill=P['bg'], outline=P['faint'])
+        tick = canvas.create_text(pad + 10, y + 10, text='✓', fill=P['accent_text'], font=_font(10, 'bold'), state='hidden')
+        label = canvas.create_text(pad + 28, y + 10, anchor='w', fill=P['soft'], font=_font(12),
+                                   text=_fit(canvas, 'Panodaki metni de ekle · ' + _first_line(clip_text, 120), _font(12), W - 2 * pad - 40))
+
+        def toggle(_event=None):
+            include['on'] = not include['on']
+            canvas.itemconfigure(box, fill=P['accent'] if include['on'] else P['bg'],
+                                 outline=P['accent'] if include['on'] else P['faint'])
+            canvas.itemconfigure(tick, state='normal' if include['on'] else 'hidden')
+            return 'break'
+        for item in (box, tick, label):
+            canvas.tag_bind(item, '<Button-1>', toggle)
+        root.bind('<Tab>', toggle)
+        y += 30
+
+    # Footer: status on the left, key hints on the right.
+    y += 8
+    footer_y = y + 14
+    status = canvas.create_text(pad, footer_y, anchor='w', fill=P['muted'], font=_font(12),
+                                text='Tab: panoyu ekle' if clip_text and (url or files) else 'İkinci beynine kaydedilir')
+    right = W - pad
+
+    def keycap(x_right, key, label):
+        import tkinter.font as tkfont
+        label_w = tkfont.Font(root=root, font=_font(12)).measure(label)
+        canvas.create_text(x_right, footer_y, text=label, anchor='e', fill=P['soft'], font=_font(12))
+        key_w = tkfont.Font(root=root, font=_font(11, 'bold')).measure(key) + 14
+        x2 = x_right - label_w - 8
+        _round_rect(canvas, x2 - key_w, footer_y - 11, x2, footer_y + 11, 6, fill=P['key'], outline=P['key_line'])
+        canvas.create_text(x2 - key_w / 2, footer_y, text=key, fill=P['soft'], font=_font(11, 'bold'))
+        return x2 - key_w - 18
+    right = keycap(right, '↵', 'Kaydet')
+    keycap(right, 'esc', 'Kapat')
+    height = footer_y + 28
+    canvas.configure(height=height)
     result = {}
 
+    def close():
+        def fade(alpha):
+            if alpha <= 0:
+                root.destroy()
+                return
+            try:
+                root.attributes('-alpha', alpha)
+            except tk.TclError:
+                root.destroy()
+                return
+            root.after(16, fade, round(alpha - 0.12, 2))
+        fade(1.0)
+
     def save(_event=None):
-        text = clip if clip and not clip_is_url and include_clip.get() else None
-        why = entry.get().strip()
+        text = clip_text if include['on'] else None
+        why = '' if hint['on'] else entry.get().strip()
         if not (url or files or text or why):
-            status.configure(text='Kaydedilecek bir şey yok', fg=PALETTE['accent'])
-            return
+            canvas.itemconfigure(status, text='Önce bir şey yaz', fill=P['accent'])
+            return 'break'
         if not (url or files or text):
             text, why = why, ''  # only a typed line: the line itself is the note
         try:
             result.update(capture(vault, url=url, text=text, files=files, why=why, app=context.get('uygulama'),
                                   title=context.get('baslik') if url else None))
         except Exception as exc:
-            status.configure(text='Kaydedilemedi: ' + str(exc)[:60], fg=PALETTE['accent'])
-            return
-        status.configure(text='Beyne atıldı  ✓', fg=PALETTE['ok'])
-        root.after(650, root.destroy)
+            canvas.itemconfigure(status, text=_fit(canvas, 'Kaydedilemedi: ' + str(exc), _font(12), 300), fill=P['accent'])
+            return 'break'
+        entry.configure(state='disabled', disabledbackground=P['bg'], disabledforeground=P['muted'])
+        canvas.itemconfigure(status, text='✓  Beyne atıldı', fill=P['ok'], font=_font(12, 'bold'))
+        root.after(520, close)
+        return 'break'
 
-    button = tk.Label(footer, text='  Kaydet  ', font=_font(12, 'bold'), fg=PALETTE['accent_text'], bg=PALETTE['accent'], cursor='hand2', padx=6, pady=5)
-    button.pack(side='right')
-    button.bind('<Button-1>', save)
     root.bind('<Return>', save)
     root.bind('<KP_Enter>', save)
-    root.bind('<Escape>', lambda _e: root.destroy())
+    root.bind('<Escape>', lambda _e: close())
 
     root.update_idletasks()
-    height = root.winfo_reqheight()
-    x = (root.winfo_screenwidth() - width) // 2
-    y = max(60, root.winfo_screenheight() // 4 - height // 2)
-    root.geometry('%dx%d+%d+%d' % (width, height, x, y))
+    x = (root.winfo_screenwidth() - W) // 2
+    top = max(80, int(root.winfo_screenheight() * 0.22))
+    root.geometry('%dx%d+%d+%d' % (W, height, x, top))
+    try:
+        root.attributes('-alpha', 0.0)
+        root.attributes('-topmost', True)
+    except tk.TclError:
+        pass
     root.deiconify()
     if sys.platform == 'darwin':
-        _activate_mac()
-    root.lift()
-    root.focus_force()
-    entry.focus_set()
-    snapshot = os.environ.get('BEYIN_YAKALA_SNAPSHOT')
+        _style_mac(focus=not snapshot)
+    if not snapshot:
+        root.lift()
+        root.focus_force()
+        entry.focus_set()
+
+    def fade_in(alpha=0.0):
+        alpha = min(1.0, alpha + 0.2)
+        try:
+            root.attributes('-alpha', alpha)
+        except tk.TclError:
+            return
+        if alpha < 1.0:
+            root.after(14, fade_in, alpha)
+    fade_in()
     if snapshot and sys.platform == 'darwin':
-        # Development aid: capture only this window's rectangle, then close without saving.
+        # Development aid: capture only this window's rectangle without taking focus, then close.
         def shoot():
             region = '%d,%d,%d,%d' % (root.winfo_rootx(), root.winfo_rooty(), root.winfo_width(), root.winfo_height())
-            subprocess.run(['screencapture', '-x', '-R', region, snapshot], capture_output=True)
+            subprocess.run(['screencapture', '-x', '-o', '-R', region, snapshot], capture_output=True)
             root.destroy()
-        root.after(900, shoot)
+        root.after(700, shoot)
     root.mainloop()
     return result or {'status': 'vazgecildi'}
 
