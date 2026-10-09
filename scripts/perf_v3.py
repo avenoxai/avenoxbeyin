@@ -326,12 +326,28 @@ class Benchmark:
         os.utime(receipts, (FIXED_DATE.timestamp(), FIXED_DATE.timestamp()))
         with patch.dict(os.environ, self.env, clear=True):
             self.engine().sync()
+            self.warm_passages()
         self.pristine = self.root / 'pristine'
         shutil.copytree(self.root / 'work', self.pristine)
         self.commands = json.loads((self.vault / '.claude/settings.local.json').read_text(encoding='utf-8'))['hooks']
 
     def engine(self):
         return self.sync.SyncEngine(self.vault, self.state)
+
+    def warm_passages(self):
+        """Steady state: a complete passage index, as after the first turns of real use.
+
+        The per-turn hook builds a cold index in one-second steps and meanwhile falls back
+        to the note-level path; timing that transient would not describe a normal turn.
+        Same pool as beyin_v3_passage.context_for, built without a deadline.
+        """
+        passage = importlib.import_module('beyin_v3_passage')
+        store = self.engine().store
+        records = store._records()
+        eligible = store._eligible('internal', None, records=records)[0]
+        candidates = passage.pool(store, eligible, None, passage.settings(store.state_dir)['exclude'],
+                                  superseded=store._superseded_ids(records))
+        passage.build(store.state_dir, candidates, write=True, deadline=None)
 
     def reset(self):
         replace_tree(self.pristine, self.root / 'work')
