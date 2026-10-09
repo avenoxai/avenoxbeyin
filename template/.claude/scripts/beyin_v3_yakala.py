@@ -1128,6 +1128,12 @@ def listen_mac(vault, script, keycode=11, modifiers=0x1000 | 0x800):
     """Carbon RegisterEventHotKey: global, no Accessibility permission, standard library only."""
     import ctypes
     from ctypes import CFUNCTYPE, POINTER, Structure, byref, c_int32, c_uint32, c_void_p
+    try:
+        objc, send = _objc()
+        app = send(objc.objc_getClass(b'NSApplication'), b'sharedApplication')
+        send(app, b'setActivationPolicy:', ctypes.c_void_p, ctypes.c_long(2))  # prohibited: background daemon, no Dock icon
+    except Exception:
+        pass
     carbon = ctypes.CDLL('/System/Library/Frameworks/Carbon.framework/Carbon')
 
     class HotKeyID(Structure):
@@ -1342,7 +1348,7 @@ def install(vault, state, hotkey=True, spec=None):
         runner.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(script, runner)
         import plistlib
-        plist = {'Label': LAUNCH_LABEL, 'RunAtLoad': True, 'KeepAlive': {'SuccessfulExit': False},
+        plist = {'Label': LAUNCH_LABEL, 'RunAtLoad': True, 'KeepAlive': True,
                  'ProgramArguments': [sys.executable, str(runner), 'dinle', '--vault', str(vault),
                                       '--keycode', str(keycode), '--mods', str(modifiers)],
                  'ProcessType': 'Interactive', 'StandardErrorPath': str(state / 'yakala' / 'dinleyici.log'),
