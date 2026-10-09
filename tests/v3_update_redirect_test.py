@@ -178,12 +178,12 @@ class RedirectedChildrenTest(unittest.TestCase):
     def test_links_that_leave_the_root_are_still_rejected_under_the_redirected_view(self):
         self.state.mkdir(parents=True)
         self.container.parent.mkdir(parents=True)
+        (self.state / 'plain').mkdir()  # outside the try: a fixture error must fail, not skip
         try:
             os.symlink(self.local, self.container, target_is_directory=True)
             os.symlink(self.outside, self.state / 'escape', target_is_directory=True)
             os.symlink(self.outside / 'v3-install.json', self.state / 'leaf.json')
             os.symlink(self.outside, self.vault / '.claude', target_is_directory=True)
-            (self.state / 'plain').mkdir()
             os.symlink(self.outside, self.state / 'plain' / 'deeper', target_is_directory=True)
         except (OSError, NotImplementedError):
             self.skipTest('symlinks unavailable on this runner')

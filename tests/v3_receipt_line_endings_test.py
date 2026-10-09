@@ -135,7 +135,7 @@ class ReceiptLineEndingsTest(unittest.TestCase):
         state.mkdir(exist_ok=True)
         env = isolated_env(self.base / "home")
         env.update(GIT_ENV)
-        # isolated_env's PATH is the interpreter folder plus os.defpath; on Windows git lives
+        # isolated_env's PATH is the interpreter folder, Windows system folders and os.defpath; git lives
         # elsewhere (C:/Program Files/Git/cmd) and doctor would report `unavailable`.
         env["PATH"] = str(Path(shutil.which("git")).parent) + os.pathsep + env["PATH"]
         done = subprocess.run([sys.executable, str(ROOT / "scripts/beyin_v3.py"), "--vault", str(self.vault),
