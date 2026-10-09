@@ -127,6 +127,18 @@ class YakalaUnitTest(unittest.TestCase):
         self.assertTrue(all(prop['type'] in ('text', 'multitext', 'number', 'checkbox', 'date', 'datetime')
                             for prop in template['properties']))
 
+    def test_uninstall_leaves_another_vaults_listener(self):
+        import plistlib
+        agent = Path(self.tmp.name) / 'agent.plist'
+        agent.write_bytes(plistlib.dumps({'ProgramArguments': ['python3', 'x.py', 'dinle', '--vault', '/baska/vault']}))
+        state = Path(self.tmp.name) / 'state'
+        with patch.object(yakala, '_launch_agent', return_value=agent), patch.object(yakala.sys, 'platform', 'darwin'), \
+                patch.object(yakala.subprocess, 'run') as run:
+            result = yakala.uninstall(self.vault, state)
+        run.assert_not_called()
+        self.assertTrue(agent.exists())
+        self.assertNotIn('LaunchAgent', result['kaldirilan'])
+
     def test_clipper_card_with_quoted_yaml_is_pending(self):
         folder = self.vault / INBOX
         folder.mkdir(parents=True)

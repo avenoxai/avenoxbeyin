@@ -973,6 +973,16 @@ def _launch_agent():
     return Path.home() / 'Library/LaunchAgents' / (LAUNCH_LABEL + '.plist')
 
 
+def _agent_vault():
+    """Vault the installed LaunchAgent serves, or None when this home has none."""
+    import plistlib
+    try:
+        arguments = plistlib.loads(_launch_agent().read_bytes()).get('ProgramArguments', [])
+        return arguments[arguments.index('--vault') + 1]
+    except (OSError, ValueError, IndexError, plistlib.InvalidFileException):
+        return None
+
+
 def _windows_dirs():
     appdata = Path(os.environ.get('APPDATA', str(Path.home() / 'AppData/Roaming')))
     return appdata / 'Microsoft/Windows/Start Menu/Programs', appdata / 'Microsoft/Windows/SendTo'
@@ -1043,6 +1053,9 @@ def install(vault, state, hotkey=True):
                  'EnvironmentVariables': {'PATH': os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin'),
                                           'LANG': 'en_US.UTF-8'}}
         agent = _launch_agent()
+        previous = _agent_vault()
+        if previous and previous != str(vault):
+            done['onceki_vault'] = previous  # the hotkey moves to this vault
         agent.parent.mkdir(parents=True, exist_ok=True)
         domain = 'gui/' + str(os.getuid())
         subprocess.run(['launchctl', 'bootout', domain + '/' + LAUNCH_LABEL], capture_output=True)
@@ -1065,12 +1078,11 @@ def install(vault, state, hotkey=True):
 def uninstall(vault, state):
     state = Path(state).resolve()
     removed = []
-    if sys.platform == 'darwin':
-        agent = _launch_agent()
+    if sys.platform == 'darwin' and _agent_vault() == str(Path(vault).resolve()):
+        # Only the listener this vault installed: one hotkey serves one vault at a time.
         subprocess.run(['launchctl', 'bootout', 'gui/' + str(os.getuid()) + '/' + LAUNCH_LABEL], capture_output=True)
-        if agent.exists():
-            agent.unlink()
-            removed.append('LaunchAgent')
+        _launch_agent().unlink()
+        removed.append('LaunchAgent')
     elif os.name == 'nt':
         for folder in _windows_dirs():
             link = folder / 'Beyne At.lnk'
@@ -1102,7 +1114,7 @@ def uninstall(vault, state):
 def status(vault, state):
     installed = _state_path(state).is_file()
     running = None
-    if sys.platform == 'darwin' and installed:
+    if sys.platform == 'darwin' and _agent_vault() == str(Path(vault).resolve()):
         probe = subprocess.run(['launchctl', 'print', 'gui/' + str(os.getuid()) + '/' + LAUNCH_LABEL], capture_output=True)
         running = probe.returncode == 0
     return {'status': 'tamam', 'kurulu': installed, 'dinleyici_calisiyor': running,
