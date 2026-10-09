@@ -201,10 +201,19 @@ def load_engine():
     return module
 
 
-def load_sync():
+def _ensure_scripts_path():
+    """Put the runtime scripts directory first on sys.path without importing the sync engine.
+    Helpers that only need sibling modules (skills, preferences, the advisor client, compaction)
+    call this instead of load_sync(); the directory must stay first so `beyin_v3` resolves to the
+    runtime, never to this CLI file."""
     adjacent = Path(__file__).resolve().parent
-    directory = adjacent if (adjacent / "beyin_v3_sync.py").exists() else Path(__file__).resolve().parents[1] / "template/.claude/scripts"
-    sys.path.insert(0, str(directory))
+    directory = str(adjacent if (adjacent / "beyin_v3_sync.py").exists() else Path(__file__).resolve().parents[1] / "template/.claude/scripts")
+    if sys.path[:1] != [directory]:
+        sys.path.insert(0, directory)
+
+
+def load_sync():
+    _ensure_scripts_path()
     from beyin_v3_sync import SyncEngine
     return SyncEngine
 
@@ -230,7 +239,7 @@ ERROR_HINTS = {
 
 
 def jev_client():
-    load_sync()
+    _ensure_scripts_path()
     import beyin_v3_jev_client as client
     return client
 
@@ -347,7 +356,7 @@ def read_json(filename: str):
 
 
 def load_skills():
-    load_sync()
+    _ensure_scripts_path()
     import beyin_v3_skills
     return beyin_v3_skills
 
@@ -495,7 +504,7 @@ def main(argv=None, return_result=False):
             result = {"initialized": True, "state": str(state), "network": False,
                       "hooks_installed": False, "optional_provider": None}
         elif args.command == "preferences":
-            load_sync()
+            _ensure_scripts_path()
             import beyin_v3_preferences as preferences
             import beyin_v3_companion as companion
             limits = {name: value for name, value in (('Last-Session.md', args.last_session_chars),
@@ -788,7 +797,7 @@ def main(argv=None, return_result=False):
         elif args.command == "skill-import":
             result = load_skills().import_skill(vault, state, args.source, name=args.name)
         elif args.command == "companion-compact":
-            load_sync()
+            _ensure_scripts_path()
             import beyin_v3_compact
             result = beyin_v3_compact.compact(vault, state, dry_run=args.dry_run)
             if any(entry['status'] == 'compacted' for entry in result['files'].values()):

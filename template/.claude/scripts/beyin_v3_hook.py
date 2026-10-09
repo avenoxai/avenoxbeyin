@@ -484,8 +484,11 @@ def main():
                 return
             if process is not None and process.returncode:
                 raise RuntimeError("Source sync failed; metadata remains queued")
-            from beyin_v3_sync import SyncEngine
-            store = SyncEngine(vault, state).store
+            # Context only reads the store. SyncEngine adds the Markdown journal and the
+            # markdown_sources table, which the sync worker creates and every reader tolerates
+            # missing, so the foreground skips importing the sync engine.
+            from beyin_v3 import MemoryStore
+            store = MemoryStore(state, vault)
             query = prompt_text(payload)
             project = payload.get('project')
             project = project if isinstance(project, str) and project.strip() else None
