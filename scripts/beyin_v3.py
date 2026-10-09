@@ -110,6 +110,13 @@ def state_location(vault: Path, state: Path, windows=None) -> dict:
         report["pin_status"] = "present" if pinned else "unreadable"
     if pinned is None:
         return report
+    if not Path(pinned).expanduser().is_absolute():
+        report["warnings"].append(
+            "pinned_state_not_absolute: the pinned state root is not an absolute path on this "
+            "machine. The installer pins an absolute path, so this one was written by another OS "
+            "through a synced vault or edited by hand (#249); the installed beyin.py reads this "
+            "machine's default state instead. Installation files are per machine and stay out of "
+            "the sync; see docs/v3/MULTI-MACHINE.md.")
     try:
         resolved = Path(pinned).expanduser().resolve()
     except (OSError, ValueError, RuntimeError):
@@ -700,10 +707,14 @@ def main(argv=None):
                     'error': (type(exc).__name__ + ': ' + str(exc))[:240],
                 }
             # A rejection on a plain note leaves the claim in current context; sync stays healthy.
+            # Notes that link to a rejected inference are listed for review only and never raise
+            # the doctor status: citing a rejected claim can be legitimate (explaining why it fell).
             try:
                 result['validity'] = load_sync().reader(store).validity_health()
             except Exception as exc:
                 result['validity'] = {'ignored_rejection_count': 0, 'ignored_rejections': [], 'truncated': False,
+                                      'rejected_dependent_count': 0, 'rejected_dependents': [],
+                                      'ambiguous_rejected_link_count': 0, 'ambiguous_rejected_links': [],
                                       'error': (type(exc).__name__ + ': ' + str(exc))[:240]}
             # Information only: a supersedes link that retires nothing keeps the old note in
             # context, as before #206; it never raises the doctor status.
@@ -711,6 +722,11 @@ def main(argv=None):
                 result['supersedes'] = load_sync().reader(store).supersedes_health()
             except Exception as exc:
                 result['supersedes'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            # Information only: a note's own review_at date has come; never raises the doctor status.
+            try:
+                result['review'] = load_sync().reader(store).review_health()
+            except Exception as exc:
+                result['review'] = {'status': 'unavailable', 'error': type(exc).__name__}
             # Read-only information: each scan fails alone and never hides the rest of doctor.
             # The word cap and promotion reports follow the user's opt-in (state/hygiene.json):
             # a default install gets no new doctor lines and no whole-vault read.

@@ -107,6 +107,10 @@ def state_location_lines(location):
         lines.append(prefix + 'sabitlenmis yol bu surecte baska bir dizine cozumleniyor (' +
                      plain_text(location.get('pinned_resolves_here_to')) +
                      '). doctor komutunu paket icinden ve disindan calistirip karsilastir.')
+    if 'pinned_state_not_absolute' in codes:
+        lines.append(prefix + '.beyin-runtime.json icindeki state yolu bu makinede mutlak bir yol degil; baska bir'
+                     ' isletim sisteminden esitlenmis olabilir. beyin.py bu makinenin varsayilan state dizinini'
+                     ' kullaniyor. Kurulum dosyalari makineye ozeldir, esitleme: docs/v3/MULTI-MACHINE.md.')
     if 'pinned_state_empty' in codes:
         lines.append(prefix + 'sabitlenmis state kokunde kurulum bulunamadi. State tasindiysa kurucuyu yeni'
                      ' --state ile yeniden calistir.')
@@ -329,6 +333,15 @@ def human_result(result, command, installed_version=None):
                              '); ozel bir kopya tasiyor olabilir.')
             elif code in boundary_lines:
                 lines.append(boundary_lines[code])
+        review = result.get('review') or {}
+        if review.get('due_count'):
+            shown = ', '.join(plain_text(entry['source']) + ' (' + str(entry['days_overdue']) + ' gun)' for entry in review['due'][:3])
+            more = review['due_count'] - min(3, len(review['due']))
+            lines.append('Yeniden bakma tarihi gelen not (review_at, bilgi): ' + shown +
+                         (' ve ' + str(more) + ' tane daha' if more > 0 else '') + '.')
+        if review.get('invalid_count'):
+            lines.append('Gercek tarih olmayan review_at (bilgi): ' +
+                         ', '.join(plain_text(entry['source']) for entry in review['invalid'][:3]) + '.')
         closed = result.get('closed_tasks') or {}
         if closed.get('closed_count'):
             shown = ', '.join(plain_text(entry['source']) + ' (' + str(entry['days_old']) + ' gun)' for entry in closed.get('closed')[:3])
@@ -395,6 +408,14 @@ def human_result(result, command, installed_version=None):
     return message
 
 
+def load_cli(directory):
+    """The installed CLI module, loaded from its file like every other entry-point command."""
+    spec = importlib.util.spec_from_file_location('beyin_installed_cli', directory / 'beyin_v3_cli.py')
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    return cli
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     human = ('--human' in argv or sys.stdout.isatty()) and '--json' not in argv
@@ -415,9 +436,20 @@ def main(argv=None):
         if not config_path.is_file():
             raise ValueError('Kurulum ayari eksik; resmi V3 installer ile bu vault kurulumunu tamamlayin.')
         config = json.loads(config_path.read_text(encoding='utf-8'))
-        state = Path(config['state'])
         directory = vault / '.claude/scripts'
         sys.path.insert(0, str(directory))
+        cli = None
+        raw_state = config.get('state') if isinstance(config, dict) else None
+        if isinstance(raw_state, str) and raw_state and Path(raw_state).expanduser().is_absolute():
+            state = Path(raw_state)
+        else:
+            # The installer always pins a resolved absolute path. A pin that is not absolute
+            # here came from another OS through a synced vault (a Windows C:\ path on POSIX,
+            # a /home path on Windows, #249) or was edited by hand. Read as a relative path it
+            # would put the state under the working directory, so this machine's default
+            # state is used instead; doctor reports the pin it could not use.
+            cli = load_cli(directory)
+            state = cli.default_state(vault)
         if argv and argv[0] in ('update', 'rollback', 'recover'):
             import argparse
             import beyin_v3_update as updater
@@ -443,9 +475,7 @@ def main(argv=None):
             else: result = updater.recover(vault, state)
             print(human_result(result, command, installed_version) if human else json.dumps(result, ensure_ascii=True, indent=2))
             return 0
-        spec = importlib.util.spec_from_file_location('beyin_installed_cli', directory / 'beyin_v3_cli.py')
-        cli = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(cli)
+        cli = cli or load_cli(directory)
         cli_args = ['--vault', str(vault), '--state', str(state)] + (argv or ['doctor'])
         if not human:
             return cli.main(cli_args)
