@@ -16,7 +16,8 @@ _MODULE_DIR = str(Path(__file__).resolve().parent)
 if _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
-from beyin_v3 import HARNESSES, REJECTED_AT, MemoryStore, ReceiptConflict, RevisionConflict, _json, _path_redirected, resolve_supersedes
+from beyin_v3 import (HARNESSES, REJECTED_AT, RETIRED_STATUSES, MemoryStore, ReceiptConflict, RevisionConflict, _json,
+                      _path_redirected, _rejected_inference, _status_word, resolve_supersedes)
 from beyin_v3_projections import project_receipts
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
@@ -498,6 +499,36 @@ class SyncEngine:
                    for record in records
                    if record.get('validity') == 'rejected' and record.get('kind') not in ('inference', 'preference')]
         return {'ignored_rejection_count': len(ignored), 'ignored_rejections': ignored[:20], 'truncated': len(ignored) > 20}
+
+    def review_health(self, today=None):
+        """Notes whose own `review_at` date has come: an idea to revisit, not a task to do.
+
+        Only notes that set `review_at` are read; a retired or rejected note is not listed. An
+        ISO date (time ignored) on or before today (local) is due, oldest first; a value that is
+        not a real date is listed apart instead of being guessed. Information only.
+        """
+        today = today or datetime.now().date()
+        with self.store._connect() as db:
+            records = [json.loads(row[0]) for row in db.execute('SELECT payload FROM records ORDER BY id')]
+        due, invalid = [], []
+        for record in records:
+            if 'review_at' not in record or _rejected_inference(record) or _status_word(record) in RETIRED_STATUSES:
+                continue
+            value = record.get('review_at')
+            match = re.match(r'(\d{4})-(\d{2})-(\d{2})(?:$|[T ])', value) if isinstance(value, str) else None
+            try:
+                when = datetime(int(match[1]), int(match[2]), int(match[3])).date() if match else None
+            except ValueError:
+                when = None
+            if when is None:
+                invalid.append({'id': record.get('id'), 'source': record.get('source'), 'review_at': value})
+            elif when <= today:
+                due.append({'id': record.get('id'), 'source': record.get('source'), 'review_at': when.isoformat(),
+                            'days_overdue': (today - when).days})
+        due.sort(key=lambda entry: (-entry['days_overdue'], entry['source'] or ''))
+        invalid.sort(key=lambda entry: entry['source'] or '')
+        return {'due_count': len(due), 'due': due[:20], 'invalid_count': len(invalid), 'invalid': invalid[:20],
+                'truncated': len(due) > 20 or len(invalid) > 20}
 
     def supersedes_health(self):
         """Report supersedes values that retire nothing: unresolved, ambiguous or the note itself."""
