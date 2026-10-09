@@ -184,6 +184,15 @@ def human_result(result, command, installed_version=None):
                          ', terfi raporu ' + ('acik' if hygiene.get('promotion') else 'kapali'))
         if result.get('hygiene_notice'):
             lines.append(result['hygiene_notice'])
+        inbox = result.get('inbox_report') or {}
+        if inbox:
+            lines.append('Gelen kutusu raporu (varsayilan kapali): ' +
+                         ('acik (' + str(inbox.get('max_items')) + ' not / ' + str(inbox.get('max_days')) + ' gun; ' +
+                          ('klasorler: ' + ', '.join(plain_text(name) for name in inbox['folders'])
+                           if inbox.get('folders') else 'klasor adindan tanima') + ')'
+                          if inbox.get('enabled') else 'kapali'))
+        if result.get('inbox_report_notice'):
+            lines.append(result['inbox_report_notice'])
         if result.get('parallel_sessions'):
             lines.append('Paralel oturum bildirimi: ' + ('acik' if result['parallel_sessions'] == 'on' else 'kapali'))
         if result.get('parallel_sessions_notice'):
@@ -352,6 +361,13 @@ def human_result(result, command, installed_version=None):
         if promo.get('cold'):
             lines.append('Soguk klasorler (terfi karari senin): ' +
                          ', '.join(plain_text(entry['folder']) + ' (' + str(entry['days_quiet']) + ' gun)' for entry in promo['cold'][:3]))
+        waiting = [entry for entry in (result.get('inbox') or {}).get('folders') or []
+                   if entry.get('attention') or entry.get('error')]
+        if waiting:
+            lines.append('Gelen kutusunda bekleyen (bilgi, isleme karari senin): ' + ', '.join(
+                plain_text(entry['folder']) + (' (okunamadi: ' + plain_text(entry['error']) + ')' if entry.get('error') else
+                                               ' (' + str(entry['notes']) + ' not, en eskisi ' + str(entry['oldest_days']) + ' gun)')
+                for entry in waiting[:3]) + (' ve ' + str(len(waiting) - 3) + ' klasor daha' if len(waiting) > 3 else '') + '.')
         parallel = result.get('parallel_sessions') or {}
         if parallel.get('enabled'):
             lines.append('Paralel oturum bildirimi: acik (son 45 dakikada etkin ' + str(parallel.get('active', 0)) + ' oturum isareti)')

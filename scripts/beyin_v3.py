@@ -389,6 +389,13 @@ def parser():
                           help="Opt-in SessionStart question for a long-quiet top-level folder")
     settings.add_argument("--promotion", choices=("on", "off"),
                           help="Opt-in touch log for the doctor's hot/cold folder report")
+    settings.add_argument("--inbox-report", choices=("on", "off"),
+                          help="Opt-in doctor report of notes waiting in top-level inbox folders")
+    settings.add_argument("--inbox-max-items", type=int, help="Inbox report threshold in notes (1..100000, default 10)")
+    settings.add_argument("--inbox-max-days", type=int, help="Inbox report threshold in days (1..3650, default 7)")
+    settings.add_argument("--inbox-folder", action="append",
+                          help="Top-level inbox folder name for the report (repeat for several; replaces the "
+                               "generic name detection; an empty value returns to it)")
     settings.add_argument("--parallel-sessions", choices=("on", "off"),
                           help="Opt-in one-line notice when another session is open on this vault")
     compact = sub.add_parser("companion-compact", help="Move older Last-Session/Threads entries verbatim into a private archive; deletes nothing")
@@ -498,6 +505,16 @@ def main(argv=None):
                                if getattr(args, key) is not None}
             if args.max_words is not None:
                 hygiene_changes['max_words'] = args.max_words
+            inbox_changes = {key: value for key, value in (
+                ('enabled', None if args.inbox_report is None else args.inbox_report == 'on'),
+                ('max_items', args.inbox_max_items), ('max_days', args.inbox_max_days),
+                ('folders', None if args.inbox_folder is None else [name for name in args.inbox_folder if name]))
+                if value is not None}
+            if inbox_changes:  # validated before anything is saved
+                current_inbox, inbox_valid = hygiene.read_inbox_settings(state)
+                if not inbox_valid:
+                    raise ValueError('inbox-report.json in the runtime state is invalid; fix or remove it first')
+                hygiene.check_inbox_settings(dict(current_inbox, **inbox_changes))
             if hygiene_changes:  # validated before anything is saved, like the companion limits
                 current_hygiene, hygiene_valid = hygiene.read_settings(state)
                 if not hygiene_valid:
@@ -575,6 +592,13 @@ def main(argv=None):
                 result['hygiene'], hygiene_valid = hygiene.read_settings(state)
                 if not hygiene_valid:
                     result['hygiene_notice'] = 'hygiene.json gecersiz; tum hijyen sinyalleri kapali sayiliyor.'
+            if inbox_changes:
+                result['inbox_report'] = hygiene.save_inbox_settings(state, inbox_changes)
+                result['status'] = 'saved'
+            else:
+                result['inbox_report'], inbox_valid = hygiene.read_inbox_settings(state)
+                if not inbox_valid:
+                    result['inbox_report_notice'] = 'inbox-report.json gecersiz; gelen kutusu raporu kapali sayiliyor.'
             # Machine-local (#170): an older release would reject a new .beyin-preferences.json key.
             import beyin_v3_parallel as parallel
             if args.parallel_sessions is not None:
@@ -706,7 +730,7 @@ def main(argv=None):
             # Read-only information: each scan fails alone and never hides the rest of doctor.
             # The word cap and promotion reports follow the user's opt-in (state/hygiene.json):
             # a default install gets no new doctor lines and no whole-vault read.
-            for key in ('boundary', 'closed_tasks', 'word_cap', 'promotion'):
+            for key in ('boundary', 'closed_tasks', 'word_cap', 'promotion', 'inbox'):
                 try:
                     import beyin_v3_hygiene as hygiene
                     opted, _ = hygiene.read_settings(state)
@@ -715,6 +739,11 @@ def main(argv=None):
                                        if opted['word_cap_warning'] else {'enabled': False})
                     elif key == 'promotion':
                         result[key] = hygiene.promotion(vault, state) if opted['promotion'] else {'enabled': False}
+                    elif key == 'inbox':
+                        inbox, _ = hygiene.read_inbox_settings(state)
+                        result[key] = (hygiene.inbox_report(vault, state, inbox['max_items'], inbox['max_days'],
+                                                            folders=inbox['folders'])
+                                       if inbox['enabled'] else {'enabled': False})
                     else:
                         result[key] = getattr(hygiene, key)(vault)
                 except Exception as exc:

@@ -93,6 +93,22 @@ python3 beyin.py preferences --promotion on
 
 Companion klasörü, kasa sınıfı adlar (`Kasa`, `Şifreler`, `Müşteriler`, `Özel`, `Private` gibi, emoji ya da numara önekli yazımlar dahil), arşiv, şablon ve kod klasörleri bu sinyallerin hepsinden muaftır. Ayarlar, eski sürümler bilinmeyen tercih alanını reddettiği için `.beyin-preferences.json` içinde değil, runtime klasöründeki `hygiene.json` dosyasında tutulur; makineye özeldir, profil değişimi onlara dokunmaz ve rollback güvenlidir. Kapatmak için aynı seçeneği `off` ile ver.
 
+
+### Gelen kutusu raporu
+
+```bash
+python3 beyin.py preferences --inbox-report on --inbox-max-items 10 --inbox-max-days 7
+```
+
+Varsayılan kapalıdır. Açıkken `doctor`, adında `inbox` sözcüğü ya da `gelen kutusu` ifadesi geçen üst klasörlerdeki (`📥 000-Inbox`, `00_INBOX`, `Gelen Kutusu`) Markdown notlarını sayar ve en eski notun yaşını gösterir (`inbox` alanı). Yaş notun frontmatter `created` tarihinden alınır; tarih yoksa ya da gerçek bir tarih değilse dosya değişiklik zamanına düşer (klon ve eşitleme istemcileri bu zamanı sıfırlayabilir). Gelen kutun başka bir adla duruyorsa üst klasör adını kendin ver; liste ad tanımanın yerine geçer, büyük/küçük harf ve Unicode yazımı fark etmez:
+
+```bash
+python3 beyin.py preferences --inbox-folder "Yakalama" --inbox-folder "📥 Notlar"
+python3 beyin.py preferences --inbox-folder ""   # listeyi boşalt, ad tanımaya dön
+```
+
+Listede olup vault'ta bulunmayan klasör `error: not_found` ile gösterilir. Not sayısı `--inbox-max-items` değerine ya da en eski not `--inbox-max-days` gününe ulaşan klasör `attention` ile işaretlenir; bu yalnız bir sinyaldir, `doctor` durumunu değiştirmez. Hiçbir not taşınmaz, sınıflandırılmaz ve ajan başlatılmaz; işleme kararı senindir. Okunamayan klasör boş sayılmaz, `error` ile listelenir. Companion ve kasa sınıfı klasörler muaftır, nokta klasörler ve sembolik bağlar sayılmaz. Eski sürümler bilinmeyen `hygiene.json` anahtarını reddettiği için ayar runtime klasöründe ayrı bir `inbox-report.json` dosyasında tutulur; rollback diğer hijyen sinyallerini kapatmaz. Kapatmak için `--inbox-report off`.
+
 ## Paralel oturum bildirimi
 
 Aynı vault'ta birden çok oturum açıkken ajanlar ortak git index'ine, ortak geçici dosyalara ya da aynı nota dokunabilir. Kart tarafı companion protokolüyle çözülü; bu bildirim kartın dışında kalan ortak şeyler içindir (#170). Varsayılan kapalıdır:
