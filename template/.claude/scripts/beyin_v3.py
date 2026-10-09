@@ -150,7 +150,15 @@ def resolve_supersedes(records):
 
 
 _WIKI_LINK = re.compile(r"\[\[([^\[\]\n]+)\]\]")
-_MARKDOWN_LINK = re.compile(r"(?<!!)\[[^\]\n]*\]\(\s*<?([^()<>\s]+)>?(?:\s+\"[^\"]*\")?\s*\)")
+# A destination is <angle bracketed> (may hold spaces) or a bare path; an optional "title" may follow.
+_MARKDOWN_LINK = re.compile(r"(?<!!)\[[^\]\n]*\]\(\s*(?:<([^<>\n]+)>|([^()<>\s]+))(?:\s+\"[^\"]*\")?\s*\)")
+
+
+def _link_fold(value):
+    """Compare link targets and sources as NFC, case-folded, without .md: a macOS/iCloud
+    file name can be stored decomposed (NFD) while the link a person typed is composed."""
+    value = unicodedata.normalize("NFC", value)
+    return (value[:-3] if value.casefold().endswith(".md") else value).casefold()
 
 
 def _link_keys(record):
@@ -164,7 +172,7 @@ def _link_keys(record):
         keys.append((match.group(0), _supersedes_key(match.group(0))))
     folder = posixpath.dirname(str(record.get("source", "")).replace("\\", "/"))
     for match in _MARKDOWN_LINK.finditer(text):
-        target = urllib.parse.unquote(match.group(1).split("#", 1)[0])
+        target = urllib.parse.unquote((match.group(1) or match.group(2)).split("#", 1)[0]).strip()
         if not target or re.match(r"[A-Za-z][A-Za-z0-9+.-]*:", target):
             continue
         path = posixpath.normpath(target.lstrip("/") if target.startswith("/") else posixpath.join(folder, target))
@@ -182,11 +190,13 @@ def rejected_dependents(records):
     Links resolve like supersedes: a whole vault path (with or without .md), else a file name that
     exactly one note has; an ambiguous name that could be a rejected note is listed apart.
     Only the listing is produced: whether the citation still holds is the reader's call. A note
-    that is itself rejected or retired, or that supersedes the rejected note, is not listed.
+    that is itself rejected or retired (by status or by another note's supersedes), or that
+    supersedes the rejected note, is not listed.
     """
     records = [record for record in records if isinstance(record, dict)]
     if not any(_rejected_inference(record) for record in records):
         return [], []
+    superseded = resolve_supersedes(records)[0]
     by_id, by_path, by_name = {}, {}, {}
     for record in records:
         if isinstance(record.get("id"), str):
@@ -194,19 +204,20 @@ def rejected_dependents(records):
         source = str(record.get("source", "")).replace("\\", "/").strip("/")
         if not source:
             continue
-        path_key = (source[:-3] if source.casefold().endswith(".md") else source).casefold()
+        path_key = _link_fold(source)
         by_path.setdefault(path_key, []).append(record)
         by_name.setdefault(path_key.rsplit("/", 1)[-1], []).append(record)
 
     def matches_for(key):
-        folded = (key[:-3] if key.casefold().endswith(".md") else key).casefold()
+        folded = _link_fold(key)
         if not folded:
             return []
         return by_path.get(folded) or by_name.get(folded.rsplit("/", 1)[-1], [])
 
     dependents, ambiguous = {}, {}
     for record in records:
-        if _rejected_inference(record) or _status_word(record) in RETIRED_STATUSES:
+        if (_rejected_inference(record) or _status_word(record) in RETIRED_STATUSES or
+                record.get("id") in superseded):
             continue
         replaces = record.get("supersedes", [])
         replaces = [replaces] if isinstance(replaces, str) else replaces if isinstance(replaces, list) else []

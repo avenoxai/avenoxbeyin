@@ -190,6 +190,29 @@ class ContextRefreshTest(unittest.TestCase):
         self.assertEqual(validity['ignored_rejection_count'], 0)
         self.assertNotEqual(report['status'], 'needs_attention')
 
+    def test_rejected_dependents_fold_unicode_and_skip_notes_retired_by_supersedes(self):
+        import unicodedata
+
+        def write(relative, metadata, body):
+            path = self.vault / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('---\n' + json.dumps(metadata) + '\n---\n' + body + '\n', encoding='utf-8')
+        rejected = {'kind': 'inference', 'validity': 'rejected', 'rejected_reason': 'User corrected this.',
+                    'rejected_at': '2026-09-24'}
+        # macOS/iCloud can store a file name decomposed (NFD) while a typed link is composed (NFC).
+        write(unicodedata.normalize('NFD', 'profil/Çıkarım Özeti.md'), dict(rejected, id='ozet'), 'Synthetic claim.')
+        write('notes/typed.md', {'id': 'typed'}, 'Rests on [[' + unicodedata.normalize('NFC', 'çıkarım özeti') + ']].')
+        write('notes/angle.md', {'id': 'angle'}, 'Rests on [claim](<../profil/' + 'Çıkarım Özeti.md>).')
+        # The old plan is retired by the new one through supersedes, not by a status word.
+        write('notes/old-plan.md', {'id': 'old-plan'}, 'Old plan cited [[Çıkarım Özeti]].')
+        write('notes/new-plan.md', {'id': 'new-plan', 'supersedes': ['[[old-plan]]']}, 'New plan, no claim.')
+        synced = self.run_cli('sync')
+        self.assertEqual(json.loads(synced.stdout)['status'], 'succeeded', synced.stdout)
+        validity = json.loads(self.run_cli('doctor').stdout)['validity']
+        self.assertEqual(sorted(row['source'] for row in validity['rejected_dependents']),
+                         ['notes/angle.md', 'notes/typed.md'])
+        self.assertEqual(validity['ambiguous_rejected_links'], [])
+
     def test_history_syncs_edits_and_keeps_deleted_audit_trail(self):
         def write(name, **metadata):
             (self.vault / 'notes' / (name + '.md')).write_text(
