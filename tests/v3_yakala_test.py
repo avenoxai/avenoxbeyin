@@ -158,8 +158,8 @@ class YakalaUnitTest(unittest.TestCase):
 
     def test_bad_hotkey_writes_nothing(self):
         state = Path(self.tmp.name) / 'state'
-        platform = 'darwin' if sys.platform == 'darwin' else 'win32'
-        with patch.object(yakala.sys, 'platform', platform), patch.object(yakala.os, 'name', 'nt' if platform == 'win32' else 'posix'):
+        # The spec is parsed before any platform call, so the macOS branch rejects it on every OS.
+        with patch.object(yakala.sys, 'platform', 'darwin'):
             with self.assertRaises(ValueError):
                 yakala.install(self.vault, state, spec='hyper+b')
         self.assertFalse((self.vault / INBOX).exists())
