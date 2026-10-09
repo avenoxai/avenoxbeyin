@@ -110,6 +110,13 @@ def state_location(vault: Path, state: Path, windows=None) -> dict:
         report["pin_status"] = "present" if pinned else "unreadable"
     if pinned is None:
         return report
+    if not Path(pinned).expanduser().is_absolute():
+        report["warnings"].append(
+            "pinned_state_not_absolute: the pinned state root is not an absolute path on this "
+            "machine. The installer pins an absolute path, so this one was written by another OS "
+            "through a synced vault or edited by hand (#249); the installed beyin.py reads this "
+            "machine's default state instead. Installation files are per machine and stay out of "
+            "the sync; see docs/v3/MULTI-MACHINE.md.")
     try:
         resolved = Path(pinned).expanduser().resolve()
     except (OSError, ValueError, RuntimeError):
