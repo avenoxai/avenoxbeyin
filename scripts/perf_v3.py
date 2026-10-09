@@ -341,7 +341,12 @@ class Benchmark:
         to the note-level path; timing that transient would not describe a normal turn.
         Same pool as beyin_v3_passage.context_for, built without a deadline.
         """
-        passage = importlib.import_module('beyin_v3_passage')
+        directory = str(self.vault / '.claude/scripts')
+        sys.path.insert(0, directory)  # installed copy, as modules() does
+        try:
+            passage = importlib.import_module('beyin_v3_passage')
+        finally:
+            sys.path.remove(directory)
         store = self.engine().store
         records = store._records()
         eligible = store._eligible('internal', None, records=records)[0]
