@@ -10,7 +10,7 @@ V3'te Markdown kaynak, SQLite yerel indeks, Codex/Claude Code/Antigravity, [Herm
 
 Kurucu ortak motoru, `beyin`, `beyin-doktor`, `beyin-guncelle` skill'lerini, kurulu `beyin.py` girişini ve işletim sistemine uygun güncelleme kısayolunu dağıtır. Paket ZIP olarak açılıp kullanılabilir; Git gerekmez. Kurulu vault kaynak repo klasöründen bağımsız çalışır.
 
-[Son kararlı release](https://github.com/avenoxai/avenoxbeyin/releases/latest) ve içindeki `beyin-v3-X.Y.Z.zip` paketi stable dağıtım noktasıdır. V3.8.0 turunda 988 test ile 10/10 development ve 6/6 holdout semantik senaryosu geçti; CI aynı paketi Windows, macOS ve Linux'ta doğrular.
+[Son kararlı release](https://github.com/avenoxai/avenoxbeyin/releases/latest) ve içindeki `beyin-v3-X.Y.Z.zip` paketi stable dağıtım noktasıdır. V3.8.1 turunda 1012 test ile 10/10 development ve 6/6 holdout semantik senaryosu geçti; CI aynı paketi Windows, macOS ve Linux'ta doğrular.
 
 ## Davranış
 
