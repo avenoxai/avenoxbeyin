@@ -379,5 +379,25 @@ class WarmSyncTest(unittest.TestCase):
             self.assertEqual(errors[0], errors[1])
 
 
+    def test_unchanged_warm_sync_avoids_content_reads(self):
+        paths = [self.write(f'notes/note-{index}.md', id=f'note-{index}') for index in range(10)]
+        self.engine.sync()
+        now_ns = subject.time.time_ns()
+        with patch.object(subject.time, 'time_ns', return_value=now_ns + 5_000_000_000):
+            self.engine.sync()
+            read_calls = []
+            original_read = Path.read_bytes
+
+            def counted_read(p):
+                read_calls.append(p)
+                return original_read(p)
+
+            with patch.object(Path, 'read_bytes', counted_read):
+                result = self.engine.sync()
+            self.assertEqual(result['status'], 'succeeded')
+            self.assertEqual(result['indexed'], 10)
+            self.assertEqual(len(read_calls), 0)
+
+
 if __name__ == '__main__':
     unittest.main()

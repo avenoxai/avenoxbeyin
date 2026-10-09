@@ -273,9 +273,12 @@ def replace_tree(source, destination):
     shutil.copytree(source, destination)
 
 
-def wait_file(path, timeout=60):
+def wait_file(path, timeout=60, process=None):
     deadline = time.monotonic() + timeout
     while not path.exists():
+        if process and process.poll() is not None:
+            stdout, stderr = process.communicate()
+            raise RuntimeError(f'Process exited early ({process.returncode}):\n{stderr}')
         if time.monotonic() >= deadline:
             raise RuntimeError(f'Timed out waiting for {path.name}')
         time.sleep(0.01)
@@ -288,6 +291,10 @@ def lock_worker(vault, state, coordination, role):
     scheduler race of two fast compactions. Startup is excluded from lock wait.
     """
     modules(vault)
+    # modules() leaves sys.path as it found it; compact imports its siblings from the installed copy.
+    directory = str(Path(vault) / '.claude/scripts')
+    if directory not in sys.path:
+        sys.path.insert(0, directory)
     compact = importlib.import_module('beyin_v3_compact')
     original = compact._compact_lock
     coordination = Path(coordination)
@@ -455,7 +462,7 @@ class Benchmark:
                 processes.append(subprocess.Popen(command, cwd=self.vault, env=env,
                                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE))
                 if role == 'first':
-                    wait_file(coordination / 'first-held')
+                    wait_file(coordination / 'first-held', process=processes[0])
             for process in processes:
                 stdout, stderr = process.communicate(timeout=60)
                 if process.returncode:

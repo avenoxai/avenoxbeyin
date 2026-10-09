@@ -336,12 +336,13 @@ def project_receipts(engine, db, warnings=None):
     if outcomes:
         desired['knowledge/v3/outcomes.md'] = render({'generated': True, 'kind': 'receipt-index'}, '# Outcome source index\n\nThis index links semantic receipts. It is not an automatic knowledge compiler.\n\n'+''.join(outcomes))
     conflicts = []
+    tracked_views = dict(db.execute('SELECT path, hash FROM receipt_views'))
     for relative, content in desired.items():
         path = engine._path(relative)
         old = _hash(path.read_bytes()) if path.exists() else None
         desired_hash = _hash(content)
-        tracked = db.execute('SELECT hash FROM receipt_views WHERE path=?', (relative,)).fetchone()
-        if old != desired_hash and old is not None and (not tracked or old != tracked[0]):
+        tracked = tracked_views.get(relative)
+        if old != desired_hash and old is not None and (tracked is None or old != tracked):
             conflicts.append({'source': relative, 'reason': 'manual receipt view edit preserved'})
             continue
         if old != desired_hash:
@@ -350,7 +351,8 @@ def project_receipts(engine, db, warnings=None):
                 conflicts.append({'source': relative, 'reason': 'receipt view changed during projection'})
                 continue
             atomic(path, content)
-        db.execute('INSERT OR REPLACE INTO receipt_views VALUES (?,?)', (relative, desired_hash))
+        if tracked != desired_hash:
+            db.execute('INSERT OR REPLACE INTO receipt_views VALUES (?,?)', (relative, desired_hash))
     conflicts.extend(_retire_stale_views(engine, db, desired, _hash))
     refresh_gaps(engine, db)
     return conflicts

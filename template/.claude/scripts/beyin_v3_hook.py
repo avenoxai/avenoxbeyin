@@ -62,6 +62,24 @@ def is_synthetic_prompt(payload):
     return prompt_text(payload).lstrip().startswith(HARNESS_SYNTHETIC_PROMPT_PREFIXES)
 
 
+def _safe_replace(source, destination):
+    """os.replace, retried briefly only for a Windows sharing violation.
+
+    An antivirus scan, the search indexer or an editor can hold the target open for a few
+    milliseconds there (WinError 5/32/33). A POSIX PermissionError is a real EACCES/EPERM
+    and is raised at once, as is any other error.
+    """
+    attempts = 5 if os.name == "nt" else 1
+    for attempt in range(attempts):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError as exc:
+            if attempt == attempts - 1 or getattr(exc, "winerror", None) not in (5, 32, 33):
+                raise
+            time.sleep(0.015 * (2 ** attempt))
+
+
 def atomic(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
@@ -69,7 +87,7 @@ def atomic(path, data):
         json.dump(data, out, ensure_ascii=False)
         out.flush()
         os.fsync(out.fileno())
-    os.replace(temporary, path)
+    _safe_replace(temporary, path)
 
 
 def output_context(harness, event, text):
