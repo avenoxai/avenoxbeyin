@@ -406,5 +406,74 @@ class SettingsAndDoctorTest(unittest.TestCase):
         self.assertFalse((self.state / 'touch-log.tsv').exists())
 
 
+class InboxReportTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix='v3-hygiene-inbox-')
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.vault, self.state = root / 'vault', root / 'state'
+        self.now = time.time()
+        for relative, days in (('📥 000-Inbox/a.md', 1), ('📥 000-Inbox/Dump/b.md', 12), ('📥 000-Inbox/c.txt', 90),
+                               ('📥 000-Inbox/.gizli/d.md', 90), ('00_INBOX/e.md', 2), ('Gelen Kutusu/f.md', 0),
+                               ('Notes/g.md', 400), ('🔐 Kasa Inbox/h.md', 400), ('🔮 850-Companion/inbox.md', 400)):
+            path = self.vault / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('# not\n', encoding='utf-8')
+            os.utime(path, (self.now - days * 86400, self.now - days * 86400))
+
+    def cli(self, *args):
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
+                                 '--state', str(self.state), *args], capture_output=True, text=True,
+                                encoding='utf-8', env=inherited_env(BEYIN_V3_NO_SPAWN='1'), timeout=60)
+        return result
+
+    def test_counts_waiting_notes_and_marks_folders_over_a_threshold(self):
+        before = {path: path.stat().st_mtime_ns for path in self.vault.rglob('*')}
+        report = hygiene.inbox_report(self.vault, self.state, max_items=10, max_days=7, now=self.now)
+        rows = {row['folder']: row for row in report['folders']}
+        # Only inbox-named top-level folders; kasa-class and companion folders never appear.
+        self.assertEqual(sorted(rows), ['00_INBOX', 'Gelen Kutusu', '📥 000-Inbox'])
+        self.assertEqual((rows['📥 000-Inbox']['notes'], rows['📥 000-Inbox']['oldest_days']), (2, 12))
+        self.assertTrue(rows['📥 000-Inbox']['attention'], 'oldest note is past max_days')
+        self.assertFalse(rows['00_INBOX']['attention'])
+        self.assertTrue(report['attention'])
+        self.assertTrue(hygiene.inbox_report(self.vault, max_items=1, max_days=3650, now=self.now)['folders'][0]['attention'],
+                        'a folder at max_items is marked too')
+        self.assertEqual(before, {path: path.stat().st_mtime_ns for path in self.vault.rglob('*')}, 'report only')
+
+    def test_a_created_date_outlives_a_reset_mtime(self):
+        # A clone or sync client rewrites mtimes; the note's own date keeps its age.
+        folder = self.vault / 'Inbox'
+        folder.mkdir()
+        created = time.strftime('%Y-%m-%d', time.localtime(self.now - 20 * 86400))
+        (folder / 'kopya.md').write_text('---\ncreated: ' + created + '\n---\n# kopya\n', encoding='utf-8')
+        (folder / 'bozuk.md').write_text('---\ncreated: 2026-13-40\n---\n# bozuk\n', encoding='utf-8')
+        rows = {row['folder']: row for row in hygiene.inbox_report(self.vault, now=self.now)['folders']}
+        self.assertEqual((rows['Inbox']['notes'], rows['Inbox']['oldest_days']), (2, 20))
+        (folder / 'kopya.md').unlink()
+        rows = {row['folder']: row for row in hygiene.inbox_report(self.vault, now=self.now)['folders']}
+        self.assertEqual(rows['Inbox']['oldest_days'], 0, 'a malformed date falls back to the mtime')
+
+    def test_doctor_shows_it_only_after_opt_in_and_keeps_hygiene_json_untouched(self):
+        default = json.loads(self.cli('doctor').stdout)
+        self.assertEqual(default['inbox'], {'enabled': False})
+        shown = json.loads(self.cli('preferences').stdout)
+        self.assertEqual(shown['inbox_report'], {'enabled': False, 'max_items': 10, 'max_days': 7})
+        saved = json.loads(self.cli('preferences', '--inbox-report', 'on', '--inbox-max-days', '30').stdout)
+        self.assertEqual(saved['inbox_report'], {'enabled': True, 'max_items': 10, 'max_days': 30})
+        self.assertFalse((self.state / 'hygiene.json').exists(), 'an older release must still read hygiene.json')
+        report = json.loads(self.cli('doctor').stdout)['inbox']
+        self.assertFalse(report['attention'], 'no folder reaches 10 notes or 30 days')
+        before = (self.state / 'inbox-report.json').read_bytes()
+        refused = self.cli('preferences', '--inbox-max-items', '0', '--inbox-report', 'off')
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(before, (self.state / 'inbox-report.json').read_bytes(), 'an invalid value changes nothing')
+        (self.state / 'inbox-report.json').write_text('{"enabled": "yes"}', encoding='utf-8')
+        damaged = json.loads(self.cli('preferences').stdout)
+        self.assertFalse(damaged['inbox_report']['enabled'])
+        self.assertIn('inbox_report_notice', damaged)
+        self.assertEqual(json.loads(self.cli('doctor').stdout)['inbox'], {'enabled': False})
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
