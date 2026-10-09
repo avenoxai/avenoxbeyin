@@ -32,6 +32,11 @@ class LauncherTest(unittest.TestCase):
                                     capture_output=True, timeout=10)
             self.assertEqual(result.returncode, 23, 'Launcher must not mask updater failures')
             self.assertEqual(json.loads((vault / 'invoked.json').read_text()), ['update'])
+            if os.name == 'nt':
+                cmd_content = (vault / 'Beyni Guncelle.cmd').read_text(encoding='utf-8')
+                self.assertNotIn('powershell', cmd_content.lower())
+                self.assertIn('%~dp0beyin.py', cmd_content)
+                self.assertIn('chcp 65001', cmd_content)
             if sys.platform.startswith('linux'):
                 desktop = next(body.decode('utf-8') for name, body in plans.items() if name.endswith('.desktop'))
                 self.assertIn('Terminal=true', desktop)
