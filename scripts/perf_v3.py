@@ -290,10 +290,9 @@ def lock_worker(vault, state, coordination, role):
     A deterministic 250ms overlap after process two reaches the lock removes the
     scheduler race of two fast compactions. Startup is excluded from lock wait.
     """
-    directory = str(Path(vault) / '.claude/scripts')
-    if directory not in sys.path:
-        sys.path.insert(0, directory)
     modules(vault)
+    # modules() leaves sys.path as it found it; compact imports its siblings from the installed copy.
+    directory = str(Path(vault) / '.claude/scripts')
     if directory not in sys.path:
         sys.path.insert(0, directory)
     compact = importlib.import_module('beyin_v3_compact')

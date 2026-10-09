@@ -42,15 +42,22 @@ def allowed(name):
     return name in ('scripts/install_v3.py', 'scripts/beyin_v3.py', 'scripts/beyin_entry.py') or bool(re.fullmatch(r'template/\.claude/scripts/beyin_v3(?:_[a-z]+)*\.py', name)) or bool(re.fullmatch(r'template/\.agents/skills/(beyin|beyin-doktor|beyin-guncelle)/SKILL\.md', name))
 
 
-def _safe_replace(source, destination, max_attempts=5, delay=0.015):
-    for attempt in range(max_attempts):
+def _safe_replace(source, destination):
+    """os.replace, retried briefly only for a Windows sharing violation.
+
+    An antivirus scan, the search indexer or an editor can hold the target open for a few
+    milliseconds there (WinError 5/32/33). A POSIX PermissionError is a real EACCES/EPERM
+    and is raised at once, as is any other error.
+    """
+    attempts = 5 if os.name == 'nt' else 1
+    for attempt in range(attempts):
         try:
             os.replace(source, destination)
             return
-        except PermissionError:
-            if attempt == max_attempts - 1:
+        except PermissionError as exc:
+            if attempt == attempts - 1 or getattr(exc, 'winerror', None) not in (5, 32, 33):
                 raise
-            time.sleep(delay * (2 ** attempt))
+            time.sleep(0.015 * (2 ** attempt))
 
 
 def atomic(path, data):

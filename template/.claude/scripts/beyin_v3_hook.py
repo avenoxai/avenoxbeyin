@@ -62,15 +62,22 @@ def is_synthetic_prompt(payload):
     return prompt_text(payload).lstrip().startswith(HARNESS_SYNTHETIC_PROMPT_PREFIXES)
 
 
-def _safe_replace(source, destination, max_attempts=5, delay=0.015):
-    for attempt in range(max_attempts):
+def _safe_replace(source, destination):
+    """os.replace, retried briefly only for a Windows sharing violation.
+
+    An antivirus scan, the search indexer or an editor can hold the target open for a few
+    milliseconds there (WinError 5/32/33). A POSIX PermissionError is a real EACCES/EPERM
+    and is raised at once, as is any other error.
+    """
+    attempts = 5 if os.name == "nt" else 1
+    for attempt in range(attempts):
         try:
             os.replace(source, destination)
             return
-        except PermissionError:
-            if attempt == max_attempts - 1:
+        except PermissionError as exc:
+            if attempt == attempts - 1 or getattr(exc, "winerror", None) not in (5, 32, 33):
                 raise
-            time.sleep(delay * (2 ** attempt))
+            time.sleep(0.015 * (2 ** attempt))
 
 
 def atomic(path, data):
@@ -468,13 +475,11 @@ def main():
             options["start_new_session"] = True
         disabled = os.environ.get("BEYIN_V3_NO_SPAWN") == "1"
         due = False if disabled else claim_check(state, settings, event)
-        inject = settings['context_mode'] == 'turn' or (settings['context_mode'] == 'session' and event == 'SessionStart')
-        foreground_wait = inject and not args.metadata_only and event in ("SessionStart", "UserPromptSubmit") and not is_synthetic_prompt(payload)
-        in_process = foreground_wait and os.environ.get("BEYIN_V3_IN_PROCESS_SYNC") != "0"
-        process = subprocess.Popen(command, **options) if (due and not in_process) else None
+        process = subprocess.Popen(command, **options) if due else None
         # After enqueue, so reminder bookkeeping can never cost the queued checkpoint.
         # The global bridge (--metadata-only) discards stdout, so it keeps no reminder state.
         reminder = None if args.metadata_only else receipt_reminder(payload, state, args.harness, event, vault=vault)
+        inject = settings['context_mode'] == 'turn' or (settings['context_mode'] == 'session' and event == 'SessionStart')
         if not inject or args.metadata_only or (event == 'UserPromptSubmit' and is_synthetic_prompt(payload)):
             print(json.dumps(reminder) if reminder else (json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == 'antigravity' else '{}')))
             return
@@ -482,19 +487,14 @@ def main():
             if not due and not disabled:
                 print(json.dumps(output_context(args.harness, event, notice + 'V3 automatic check deferred by your interval preference. Read current sources or use beyin.py context for fresh information.')))
                 return
-            if in_process and due:
-                drain_result = drain_queue(vault, state)
-                if drain_result.get("failed"):
-                    raise RuntimeError("Source sync failed; metadata remains queued")
-            else:
-                try:
-                    if process is not None:
-                        process.wait(timeout=1.5)
-                except subprocess.TimeoutExpired:
-                    print(json.dumps(output_context(args.harness, event, notice + "V3 source sync is pending. Verify current Markdown sources before using prior context.")))
-                    return
-                if process is not None and process.returncode:
-                    raise RuntimeError("Source sync failed; metadata remains queued")
+            try:
+                if process is not None:
+                    process.wait(timeout=1.5)
+            except subprocess.TimeoutExpired:
+                print(json.dumps(output_context(args.harness, event, notice + "V3 source sync is pending. Verify current Markdown sources before using prior context.")))
+                return
+            if process is not None and process.returncode:
+                raise RuntimeError("Source sync failed; metadata remains queued")
             from beyin_v3_sync import SyncEngine
             store = SyncEngine(vault, state).store
             query = prompt_text(payload)
