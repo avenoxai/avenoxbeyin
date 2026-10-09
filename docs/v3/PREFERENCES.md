@@ -93,6 +93,25 @@ python3 beyin.py preferences --promotion on
 
 Companion klasörü, kasa sınıfı adlar (`Kasa`, `Şifreler`, `Müşteriler`, `Özel`, `Private` gibi, emoji ya da numara önekli yazımlar dahil), arşiv, şablon ve kod klasörleri bu sinyallerin hepsinden muaftır. Ayarlar, eski sürümler bilinmeyen tercih alanını reddettiği için `.beyin-preferences.json` içinde değil, runtime klasöründeki `hygiene.json` dosyasında tutulur; makineye özeldir, profil değişimi onlara dokunmaz ve rollback güvenlidir. Kapatmak için aynı seçeneği `off` ile ver.
 
+## Zamanlanmış sağlık denetimi
+
+Otomatik kontroller bir istemci olayıyla çalışır; hiçbir istemci açılmazsa `doctor` da bir sonraki oturuma kadar hiçbir şey görmez. `python3 beyin.py scheduled-check` bunu kendi kurduğun işletim sistemi zamanlayıcısıyla kapatır: önce `sync`, sonra `doctor` çalıştırır ve sonucu runtime klasöründeki `scheduled-check.json` dosyasına yazar. `doctor` son koşuyu `scheduled_check` alanında yaşıyla gösterir (hiç kurulmadıysa `never_run`); bu alan bilgi amaçlıdır ve durumu değiştirmez.
+
+Komut model çağırmaz, servis kurmaz, hiçbir şeyi onarmaz. Çıkış kodu: `0` sağlıklı, `2` dikkat gerekiyor (`doctor` `needs_attention` ya da sync `conflict`/`degraded`), `1` denetimin kendisi başarısız oldu, `3` başka bir denetim hâlâ çalışıyor. İki saatten eski bir kilit ölmüş bir koşudan kalmıştır; geri alınır ve kayıtta `reclaimed_stale_lock` görünür.
+
+Örnekler (yolları kendi vault'unla değiştir):
+
+```powershell
+schtasks /Create /TN "Beyin saglik" /SC DAILY /ST 20:00 /TR "py -3 \"C:\Users\SEN\Beynim\beyin.py\" scheduled-check"
+```
+
+```sh
+# crontab -e
+0 20 * * * cd "/Users/sen/Beynim" && /usr/bin/python3 beyin.py scheduled-check >/dev/null 2>&1
+```
+
+Kaldırmak için zamanlayıcı görevini sil; Beyin tarafında kapatılacak bir ayar yoktur.
+
 ## Paralel oturum bildirimi
 
 Aynı vault'ta birden çok oturum açıkken ajanlar ortak git index'ine, ortak geçici dosyalara ya da aynı nota dokunabilir. Kart tarafı companion protokolüyle çözülü; bu bildirim kartın dışında kalan ortak şeyler içindir (#170). Varsayılan kapalıdır:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import calendar
 import hashlib
 import importlib.util
 import json
@@ -202,6 +203,84 @@ def load_sync():
     return SyncEngine
 
 
+SCHEDULED_FILE = "scheduled-check.json"
+SCHEDULED_LOCK = "scheduled-check.lock"
+SCHEDULED_STALE_SECONDS = 2 * 3600
+
+
+def _utc(seconds):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(seconds))
+
+
+def scheduled_check(vault, state):
+    """(record, exit code): sync, then doctor, for an OS scheduler the user sets up themselves.
+
+    Runs this same CLI twice as child processes, so the report is exactly what `doctor`
+    prints by hand. No model call, no service installed, nothing repaired. The outcome goes
+    to the runtime folder for `doctor` to show. Exit codes: 0 ok, 2 needs attention,
+    1 the check itself failed, 3 another check holds the lock. A lock older than two
+    hours is from a run that died; it is reclaimed and the record says so.
+    """
+    state.mkdir(parents=True, exist_ok=True)
+    lock, started, reclaimed = state / SCHEDULED_LOCK, time.time(), False
+    try:
+        handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        try:
+            age = started - lock.stat().st_mtime
+        except OSError:
+            age = 0
+        if age < SCHEDULED_STALE_SECONDS:
+            return {"status": "already_running", "lock_age_seconds": int(age)}, 3
+        lock.unlink(missing_ok=True)
+        handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        reclaimed = True
+    try:
+        os.write(handle, str(os.getpid()).encode("ascii"))
+        os.close(handle)
+        record = {"schema": 1, "started_at": _utc(started)}
+        if reclaimed:
+            record["reclaimed_stale_lock"] = True
+        try:
+            outputs = {}
+            for command in ("sync", "doctor"):
+                ran = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--vault", str(vault),
+                                      "--state", str(state), command], capture_output=True, text=True,
+                                     encoding="utf-8", timeout=900)
+                if ran.returncode:
+                    raise RuntimeError(f"{command} exited {ran.returncode}: {ran.stderr.strip()[:200]}")
+                outputs[command] = json.loads(ran.stdout)
+            record["sync_status"] = outputs["sync"].get("status")
+            record["doctor_status"] = outputs["doctor"].get("status")
+            attention = (record["doctor_status"] == "needs_attention" or
+                         record["sync_status"] in ("conflict", "degraded"))
+            record["status"] = "needs_attention" if attention else "ok"
+        except Exception as exc:  # the record says why; a failed check is never reported as healthy
+            record["status"] = "error"
+            record["error"] = (type(exc).__name__ + ": " + str(exc))[:240]
+        record["finished_at"] = _utc(time.time())
+        temporary = state / (".scheduled-check-" + str(os.getpid()))
+        temporary.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, state / SCHEDULED_FILE)
+        return record, {"ok": 0, "needs_attention": 2}.get(record["status"], 1)
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def scheduled_status(state, now=None):
+    """The last scheduled-check record for doctor, with its age; information only."""
+    path = state / SCHEDULED_FILE
+    if not path.is_file():
+        return {"status": "never_run"}
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+        finished = calendar.timegm(time.strptime(record["finished_at"], "%Y-%m-%dT%H:%M:%SZ"))
+    except (OSError, ValueError, KeyError, TypeError):
+        return {"status": "unreadable"}
+    record["age_hours"] = max(0, int(((time.time() if now is None else now) - finished) // 3600))
+    return record
+
+
 # Mirror beyin_v3_jev_client.FEATURES and PROVIDERS and beyin_v3_laya.CHECKPOINTS; duplicated
 # so argument parsing never imports the optional client. tests/v3_jev_toggle_test.py pins them.
 JEV_FEATURES = ("context", "review", "answer", "auto_context")
@@ -354,6 +433,7 @@ def parser():
     sub.add_parser("sync", help="Reconcile Markdown sources into local state")
     sub.add_parser("skill-sync", help="Reconcile project-local shared skills")
     sub.add_parser("doctor", help="Read local hook health and pending metadata counts")
+    sub.add_parser("scheduled-check", help="Sync then doctor for an OS scheduler you set up; no model call, no service")
     recap = sub.add_parser("recap", help="Read recent source-linked outcomes without a model call")
     recap.add_argument("--days", type=int, default=7, help="Calendar days in UTC, including today (1..366)")
     recap.add_argument("--limit", type=int, default=20, help="Maximum recent receipts to return (1..100)")
@@ -605,6 +685,10 @@ def main(argv=None):
                     seen[event['harness']].add(event.get('event', 'unknown'))
             result['lifecycle'] = {name: {'status': 'observed_metadata' if events else 'never_seen', 'events': sorted(events)} for name, events in seen.items()}
             result['legacy_external_schedules'] = 'not_inspected; review custom OS/compiler schedules before migration'
+            try:  # information only: the last scheduled-check run, if the user set one up
+                result['scheduled_check'] = scheduled_status(state)
+            except Exception as exc:
+                result['scheduled_check'] = {'status': 'unavailable', 'error': type(exc).__name__}
             try:  # information only: a stale-path report must never hide the rest of doctor
                 result['hook_paths'] = hook_paths(vault)
             except Exception as exc:
@@ -738,6 +822,10 @@ def main(argv=None):
                             result['omp_global_hook'] = {'path': str(global_copy), 'stale': False}
             except Exception as exc:  # a stale-copy report must never hide the rest of doctor
                 result['omp_global_hook'] = {'status': 'unavailable', 'error': type(exc).__name__}
+        elif args.command == "scheduled-check":
+            result, code = scheduled_check(vault, state)
+            print(json.dumps(result, ensure_ascii=True, indent=2))
+            return code
         elif args.command == "skill-sync":
             result = load_skills().sync_skills(vault, state)
         elif args.command == "skill-import":

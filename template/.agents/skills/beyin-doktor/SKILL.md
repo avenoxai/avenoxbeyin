@@ -19,6 +19,8 @@ Kaynak değişikliği indekslenmemişse `python3 beyin.py sync`; skill dosyalar�
 
 `validity.ignored_rejections` içindeki kayıtlarda `validity: rejected` yazıyor ama `kind` inference ya da preference değil, bu yüzden iddia hala güncel bağlamda. Kullanıcı bu iddiayı gerçekten reddettiyse kaynağa `kind: inference` (ya da `preference`) ekle; reddetmediyse `validity` alanını kaldır. Kaynağı silme.
 
+`scheduled_check` kullanıcının kendi kurduğu zamanlayıcının son `scheduled-check` koşusunu gösterir. `never_run` bir arıza değildir; kullanıcı istemciler kapalıyken de denetim isterse `docs/v3/PREFERENCES.md` içindeki zamanlayıcı örneğini öner, kendiliğinden görev kurma. `error` ya da beklenenden büyük `age_hours` görürsen zamanlayıcının çalışmadığını söyle.
+
 Kullanıcıya üç şey söyle: çalışan kısım, doğrulanmamış/bozuk kısım, varsa tek sonraki düzeltme. Ham JSON yerine kısa ve somut bir sonuç ver. Kullanıcının mevcut onayı güvenli düzeltmeyi kapsıyorsa gereksiz tekrar onay isteme.
 
 V3.1: `doctor` içindeki `updates` en son sürüm kontrolünü gösterir; ağ hatası güncel olunduğunu kanıtlamaz. Yalnız sürüm sorusunda `beyin.py update --check --metadata-only` kullan. Güncelleme talebini beyin-guncelle skill'ine yönlendir.
