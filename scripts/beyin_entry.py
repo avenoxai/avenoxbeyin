@@ -450,6 +450,10 @@ def main(argv=None):
             # state is used instead; doctor reports the pin it could not use.
             cli = load_cli(directory)
             state = cli.default_state(vault)
+        if argv and argv[0] == 'yakala':
+            # Optional capture tool: its own small CLI, no index or sync engine.
+            import beyin_v3_yakala as yakala
+            return yakala.main(argv[1:], vault=vault, state=state)
         if argv and argv[0] in ('update', 'rollback', 'recover'):
             import argparse
             import beyin_v3_update as updater

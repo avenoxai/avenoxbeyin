@@ -88,6 +88,10 @@ python3 beyin.py doctor
 
 Windows'ta aynı komutun başında `py -3` kullan. Kurulumda özel runtime yolu seçtiysen kurulu `beyin.py` bunu zaten bilir.
 
+## İsteğe bağlı: tek tuşla beyne at
+
+Video, tweet, makale, mail ya da dosyayı gördüğün yerde yakala; ajanın metni çıkarıp dersleri `knowledge/` notlarına bağlasın. Kurulum bir kez: `python3 beyin.py yakala kur` (Windows'ta `py -3`). Sonra her uygulamada Mac'te `Control+Option+B`, Windows'ta `Ctrl+Alt+B`; tarayıcıda Obsidian Web Clipper'ın "Beyne at" şablonu. Tuşu değiştirmek için `beyin.py yakala kisayol 'cmd+"'`. Ajanına "yakalananları işle" demen yeter. YouTube'da önce altyazı, yoksa yalnız ses yerelde yazıya dökülür. Ayrıntı: [docs/v3/YAKALA.md](docs/v3/YAKALA.md).
+
 ## Tüketim ve kontrol sıklığı
 
 Ajanına **“ekonomik moda geç”**, **“otomatik kontrolleri kapat”** veya **“kontrol aralığını 30 dakika yap”** diyebilirsin. Üç istemci aynı vault tercihini kullanır; güncellemeler tercihini korur.
