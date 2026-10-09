@@ -48,9 +48,14 @@ class HookInstallerTest(unittest.TestCase):
         self.state = self.root / 'state outside vault'
         home = self.root / 'isolated-home'
         home.mkdir()
+        path_entries = [str(Path(sys.executable).parent)]
+        if sys.platform == 'win32':
+            win = os.environ.get('SYSTEMROOT', r'C:\Windows')
+            path_entries.extend([os.path.join(win, 'System32'), win, os.path.join(win, 'System32', 'WindowsPowerShell', 'v1.0')])
+        path_entries.append(os.defpath)
         self.env = {'HOME': str(home), 'USERPROFILE': str(home), 'APPDATA': str(home / 'appdata'),
                     'LOCALAPPDATA': str(home / 'localappdata'), 'TEMP': str(self.root), 'TMP': str(self.root),
-                    'PATH': os.defpath, 'PYTHONIOENCODING': 'utf-8', 'PYTHONDONTWRITEBYTECODE': '1',
+                    'PATH': os.pathsep.join(path_entries), 'PYTHONIOENCODING': 'utf-8', 'PYTHONDONTWRITEBYTECODE': '1',
                     'BEYIN_V3_NO_SPAWN': '1'}
         for key in ('SYSTEMROOT', 'WINDIR'):
             if key in os.environ:
