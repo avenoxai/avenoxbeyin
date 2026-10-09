@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """Vault-local entry point; configuration contains no credentials."""
-from contextlib import redirect_stdout, redirect_stderr
-import io
 import importlib.util
 import json
 from pathlib import Path
@@ -433,15 +431,21 @@ def main(argv=None):
         cli_args = ['--vault', str(vault), '--state', str(state)] + (argv or ['doctor'])
         if not human:
             return cli.main(cli_args)
-        output, error = io.StringIO(), io.StringIO()
-        with redirect_stdout(output), redirect_stderr(error):
-            code = cli.main(cli_args)
-        value = output.getvalue() if not code else error.getvalue()
-        try:
-            result = json.loads(value)
+        if hasattr(cli, 'main') and 'return_result' in getattr(getattr(cli, 'main'), '__code__', {}).co_varnames:
+            result, code = cli.main(cli_args, return_result=True)
             message = human_result(result, command, installed_version)
-        except (ValueError, TypeError, AttributeError):
-            message = 'Islem tamamlanamadi; ayrinti icin ayni komutu --json ile calistir.' if code else value.strip()
+        else:
+            from contextlib import redirect_stdout, redirect_stderr
+            import io
+            output, error = io.StringIO(), io.StringIO()
+            with redirect_stdout(output), redirect_stderr(error):
+                code = cli.main(cli_args)
+            value = output.getvalue() if not code else error.getvalue()
+            try:
+                result = json.loads(value)
+                message = human_result(result, command, installed_version)
+            except (ValueError, TypeError, AttributeError):
+                message = 'Islem tamamlanamadi; ayrinti icin ayni komutu --json ile calistir.' if code else value.strip()
         print(message, file=sys.stderr if code else sys.stdout)
         return code
     except Exception as exc:

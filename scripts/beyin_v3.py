@@ -438,7 +438,7 @@ def parser():
     return root
 
 
-def main(argv=None):
+def main(argv=None, return_result=False):
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8")
     argument_parser = parser()
@@ -850,6 +850,8 @@ def main(argv=None):
         else:
             payload = read_json(args.file)
             result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])
+        if return_result:
+            return result, 0
         print(json.dumps(result, ensure_ascii=True, indent=2))
         return 0
     except Exception as exc:
@@ -857,6 +859,8 @@ def main(argv=None):
         error = {"error": type(exc).__name__, "message": str(exc)}
         if isinstance(exc, ValueError) and str(exc) in ERROR_HINTS:
             error["hint"] = ERROR_HINTS[str(exc)]
+        if return_result:
+            return error, 1
         print(json.dumps(error, ensure_ascii=True), file=sys.stderr)
         return 1
 
