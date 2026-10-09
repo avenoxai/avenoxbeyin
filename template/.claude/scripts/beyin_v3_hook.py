@@ -336,13 +336,18 @@ def drain_queue(vault, state):
     if result.get("status") in ("ok", "succeeded", "synced", "degraded") and not result.get("conflicts"):
         (state / "hook-error.json").unlink(missing_ok=True)
         processed = 0
-        for path in pending:
-            (state / "hook-done").mkdir(parents=True, exist_ok=True)
-            try:
-                os.replace(path, state / "hook-done" / path.name)
-            except FileNotFoundError:
-                continue  # Another worker already atomically acknowledged this event.
-            processed += 1
+        # Acknowledge under the index's writer lock. On Windows two workers that both open a
+        # queued file before either moves it can both "succeed" (the second rename follows the
+        # moved file), so one event was counted twice once syncs got fast enough to overlap.
+        with engine.store._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            for path in pending:
+                (state / "hook-done").mkdir(parents=True, exist_ok=True)
+                try:
+                    os.replace(path, state / "hook-done" / path.name)
+                except FileNotFoundError:
+                    continue  # Another worker already atomically acknowledged this event.
+                processed += 1
         return {"processed": processed, "failed": 0, "pending": len(list((state / "hook-queue").glob("*.json")))}
     return {"processed": 0, "failed": len(pending), "pending": len(pending)}
 
