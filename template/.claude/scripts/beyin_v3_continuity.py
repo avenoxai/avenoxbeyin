@@ -11,7 +11,7 @@ from pathlib import Path
 import tempfile
 import time
 
-from beyin_v3 import HARNESSES, STOPWORDS, _tokens, pack_context
+from beyin_v3 import HARNESSES, STOPWORDS, _allowed_statuses, _status_allowed, _tokens, pack_context
 
 TTL_SECONDS = 1200
 MAX_SESSIONS = 128
@@ -59,9 +59,21 @@ def _read(path, now):
 
 
 def _current(store, saved):
-    # Reapply all source, index, supersession, retired-status, visibility, trust and project gates.
-    eligible = store._retrieve('', project=saved['project'], snapshot=True,
-                               limit=100000, budget_chars=10000000)['records']
+    if any(not isinstance(ref, dict) for ref in saved['refs']):
+        return []
+    indexed = store._records()
+    # Verify only the saved refs, through the same gates _retrieve applies to an empty
+    # snapshot query: visibility, trust, rejection, project scope and source freshness
+    # (_eligible), supersession resolved over every indexed record, so a hidden trusted
+    # superseder still retires its target, and the default retired-status filter. The
+    # previous whole-vault snapshot hashed every source to look up at most MAX_REFS ids,
+    # and in a vault over its 10M-character packing budget could drop a valid anchor.
+    ids = {ref.get('id') for ref in saved['refs']}
+    eligible, _ = store._eligible('internal', saved['project'], records=[r for r in indexed if r['id'] in ids])
+    superseded = store._superseded_ids(indexed)
+    allowed_statuses = _allowed_statuses(None)
+    eligible = [record for record in eligible if record['id'] not in superseded
+                and _status_allowed(record, allowed_statuses)]
     by_id = {r['id']: r for r in eligible if not r.get('text_truncated')}
     records = []
     for ref in saved['refs']:
@@ -83,6 +95,10 @@ def resolve(store, harness, session, query, local, *, budget_chars, project=None
     saved = _read(_path(store, harness, session), now)
     if saved is None or (project is not None and saved['project'] != project):
         return local, False
+    # This necessary predicate needs no records or source freshness checks.
+    continuation = bool(terms & DEICTIC or terms & ACTIONS) and len(terms) <= 16
+    if not continuation:
+        return local, False
     try:
         records = _current(store, saved)
     except (ValueError, OSError):
@@ -92,8 +108,7 @@ def resolve(store, harness, session, query, local, *, budget_chars, project=None
     vocabulary = set().union(*(_tokens(r.get('title', '') + ' ' + r['text']) for r in records))
     familiar = vocabulary | ACTIONS | DEICTIC | GENERIC
     # A command with a deictic, or an action referring only to the active subject.
-    continuation = bool(terms & DEICTIC or terms & ACTIONS) and len(terms) <= 16
-    if not continuation or terms - familiar:
+    if terms - familiar:
         return local, False
     return dict(pack_context(records, MAX_REFS, budget_chars), continuity='local_source_refs'), True
 
