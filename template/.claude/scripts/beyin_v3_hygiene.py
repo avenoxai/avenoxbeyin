@@ -720,7 +720,8 @@ def _inbox_folder(name, configured):
 
 
 def _capture_time(path):
-    """When a note was captured: a valid frontmatter `created` date, else the file mtime.
+    """When a note was captured: a valid frontmatter `created` date, else the file mtime; None for a
+    processed yakala card (`tur: yakala`, `durum: islendi`), which no longer waits.
 
     A clone, a sync client or a restore rewrites mtimes, so a week-old capture would read as new;
     the note's own date survives that. A missing or malformed date falls back to the mtime.
@@ -731,7 +732,10 @@ def _capture_time(path):
             head = handle.read(4096)
     except OSError:
         return modified
-    created = _front_values(head, ('created',)).get('created', '')
+    values = _front_values(head, ('created', 'tur', 'durum', 'yakalandi'))
+    if values.get('tur') == 'yakala' and values.get('durum') == 'islendi':
+        return None  # a capture card the agent already processed is no longer waiting
+    created = values.get('created') or (values.get('yakalandi', '') if values.get('tur') == 'yakala' else '')
     match = re.match(r'(\d{4})-(\d{2})-(\d{2})', created)
     if not match:
         return modified
@@ -789,6 +793,8 @@ def inbox_report(vault, state=None, max_items=10, max_days=7, now=None, folders=
                     modified = _capture_time(path)
                 except OSError as exc:
                     unreadable(exc)
+                    continue
+                if modified is None:
                     continue
                 count += 1
                 oldest = modified if oldest is None else min(oldest, modified)
