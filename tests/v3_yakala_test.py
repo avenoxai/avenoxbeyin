@@ -177,6 +177,16 @@ class YakalaUnitTest(unittest.TestCase):
         self.assertTrue(agent.exists())
         self.assertNotIn('LaunchAgent', result['kaldirilan'])
 
+    def test_inbox_report_skips_processed_cards(self):
+        import beyin_v3_hygiene as hygiene
+        waiting = yakala.capture(self.vault, url='https://ornek.com/a')
+        done = yakala.capture(self.vault, text='bitti')
+        card = yakala.find_card(self.vault, done['id'])
+        yakala.write_card(card['path'], dict(card['meta'], durum='islendi'), card['body'])
+        rows = hygiene.inbox_report(self.vault)['folders']
+        self.assertEqual([row['notes'] for row in rows if row['folder'] == '📥 000-Inbox'], [1])
+        self.assertTrue(waiting['id'])
+
     def test_clipper_card_with_quoted_yaml_is_pending(self):
         folder = self.vault / INBOX
         folder.mkdir(parents=True)
