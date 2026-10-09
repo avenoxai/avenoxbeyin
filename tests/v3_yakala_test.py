@@ -127,6 +127,44 @@ class YakalaUnitTest(unittest.TestCase):
         self.assertTrue(all(prop['type'] in ('text', 'multitext', 'number', 'checkbox', 'date', 'datetime')
                             for prop in template['properties']))
 
+    def test_hotkey_specs(self):
+        self.assertEqual(yakala.parse_hotkey('ctrl+alt+b'), (['ctrl', 'alt'], 'b'))
+        self.assertEqual(yakala.parse_hotkey('Option+Command+K'), (['alt', 'cmd'], 'K'))
+        self.assertEqual(yakala.parse_hotkey('⌘⇧space'), (['shift', 'cmd'], 'space'))
+        self.assertEqual(yakala.parse_hotkey('cmd++'), (['cmd'], '+'))
+        self.assertEqual(yakala.parse_hotkey('cmd+"'), (['cmd'], '"'))
+        self.assertEqual(yakala.parse_hotkey('f9'), ([], 'f9'))
+        for bad in ('', 'b', 'hyper+b', 'cmd+', 'cmd+pageup'):
+            with self.assertRaises(ValueError):
+                yakala.parse_hotkey(bad)
+        self.assertEqual(yakala.windows_hotkey('ctrl+alt+b'), ('CTRL+ALT+B', 'Ctrl+Alt+B'))
+        self.assertEqual(yakala.windows_hotkey('alt+shift+f2')[0], 'ALT+SHIFT+F2')
+        for bad in ('cmd+b', 'shift+b', 'ctrl+"'):
+            with self.assertRaises(ValueError):
+                yakala.windows_hotkey(bad)
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS key codes')
+    def test_mac_hotkey_codes(self):
+        self.assertEqual(yakala.mac_hotkey('ctrl+alt+b')[:2], (11, 0x1800))
+        self.assertEqual(yakala.mac_hotkey('cmd+shift+space'), (49, 0x300, '⇧⌘Space'))
+        self.assertEqual(yakala.mac_hotkey('alt+f5')[:2], (96, 0x800))
+
+    def test_vault_before_or_after_command(self):
+        yakala.capture(self.vault, url='https://ornek.com/a')
+        for argv in (['--vault', str(self.vault), '--json', 'liste'], ['liste', '--vault', str(self.vault), '--json']):
+            with patch('sys.stdout', new_callable=__import__('io').StringIO) as out:
+                yakala.main(argv)
+            self.assertEqual(json.loads(out.getvalue())['bekleyen'], 1)
+
+    def test_bad_hotkey_writes_nothing(self):
+        state = Path(self.tmp.name) / 'state'
+        platform = 'darwin' if sys.platform == 'darwin' else 'win32'
+        with patch.object(yakala.sys, 'platform', platform), patch.object(yakala.os, 'name', 'nt' if platform == 'win32' else 'posix'):
+            with self.assertRaises(ValueError):
+                yakala.install(self.vault, state, spec='hyper+b')
+        self.assertFalse((self.vault / INBOX).exists())
+        self.assertFalse(state.exists())
+
     def test_uninstall_leaves_another_vaults_listener(self):
         import plistlib
         agent = Path(self.tmp.name) / 'agent.plist'

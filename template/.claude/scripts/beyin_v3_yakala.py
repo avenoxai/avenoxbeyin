@@ -759,6 +759,14 @@ def _clipboard(root):
     return repair_mojibake(value) if isinstance(value, str) else ''
 
 
+def _hotkey_hint(vault):
+    try:
+        label = json.loads(_state_path(resolve_state(Path(vault))).read_text(encoding='utf-8')).get('kisayol')
+    except (OSError, ValueError, AttributeError):
+        label = None
+    return (label + ' ile her yerden açılır') if label else 'İkinci beynine kaydedilir'
+
+
 def popup(vault, context=None):
     """Command-palette window: what will be saved, one line for why, Enter saves, Esc closes."""
     context = dict(context or {})
@@ -885,7 +893,7 @@ def popup(vault, context=None):
     y += 8
     footer_y = y + 14
     status = canvas.create_text(pad, footer_y, anchor='w', fill=P['muted'], font=_font(12),
-                                text='Tab: panoyu ekle' if clip_text and (url or files) else 'İkinci beynine kaydedilir')
+                                text='Tab: panoyu ekle' if clip_text and (url or files) else _hotkey_hint(vault))
     right = W - pad
 
     def keycap(x_right, key, label):
@@ -988,9 +996,135 @@ def _popup_fallback(vault, context):
                    why=why if url or context.get('dosyalar') else '', app=context.get('uygulama'), title=context.get('baslik'))
 
 
+# ---------------------------------------------------------------- hotkey spec
+
+DEFAULT_HOTKEY = 'ctrl+alt+b'
+MODIFIERS = {'cmd': 'cmd', 'command': 'cmd', '⌘': 'cmd', 'super': 'cmd', 'win': 'cmd',
+             'ctrl': 'ctrl', 'control': 'ctrl', 'ctl': 'ctrl', '⌃': 'ctrl',
+             'alt': 'alt', 'opt': 'alt', 'option': 'alt', '⌥': 'alt',
+             'shift': 'shift', '⇧': 'shift'}
+MAC_BITS = {'cmd': 0x100, 'shift': 0x200, 'alt': 0x800, 'ctrl': 0x1000}
+MAC_SYMBOL = {'ctrl': '⌃', 'alt': '⌥', 'shift': '⇧', 'cmd': '⌘'}
+MAC_NAMED = {'space': 49, 'bosluk': 49, 'return': 36, 'enter': 36, 'tab': 48, 'esc': 53, 'escape': 53,
+             'f1': 122, 'f2': 120, 'f3': 99, 'f4': 118, 'f5': 96, 'f6': 97, 'f7': 98, 'f8': 100,
+             'f9': 101, 'f10': 109, 'f11': 103, 'f12': 111}
+# ANSI positions, used only when the live keyboard layout cannot be read.
+MAC_ANSI = dict(zip('asdfhgzxcv bqweryt123465=97-80]ou[ip lj\'k;\\,/nm.', range(50)))
+MAC_ANSI.pop(' ', None)
+
+
+def parse_hotkey(spec):
+    """'cmd+"' / 'ctrl+alt+b' / '⌘⇧K' -> (sorted modifiers, key). The key is the last part."""
+    text = str(spec or '').strip()
+    if not text:
+        raise ValueError('Kisayol bos olamaz; ornek: ctrl+alt+b ya da cmd+"')
+    for symbol in '⌘⌃⌥⇧':
+        text = text.replace(symbol, MAC_SYMBOL_REVERSE[symbol] + '+')
+    parts = text.split('+')
+    if text.endswith('++'):  # the key itself is '+'
+        parts = parts[:-2] + ['+']
+    key = parts[-1].strip()
+    mods = []
+    for part in parts[:-1]:
+        name = MODIFIERS.get(part.strip().lower())
+        if not name:
+            raise ValueError('Bilinmeyen tus: ' + part.strip() + ' (cmd, ctrl, alt/option, shift)')
+        if name not in mods:
+            mods.append(name)
+    if not key:
+        raise ValueError('Kisayolda tus eksik; ornek: cmd+"')
+    if len(key) > 1:
+        key = key.lower()
+        if key not in MAC_NAMED:
+            raise ValueError('Bilinmeyen tus adi: ' + key)
+    if not mods and not re.fullmatch(r'f\d{1,2}', key):
+        raise ValueError('En az bir degistirici tus gerekir (cmd, ctrl, alt, shift)')
+    order = ['ctrl', 'alt', 'shift', 'cmd']
+    return sorted(mods, key=order.index), key
+
+
+KEYPAD = {65, 67, 69, 71, 75, 76, 78, 81, 82, 83, 84, 85, 86, 87, 88, 89, 91, 92}
+MAC_SYMBOL_REVERSE = {'⌘': 'cmd', '⌃': 'ctrl', '⌥': 'alt', '⇧': 'shift'}
+
+
+def _mac_layout_keycode(char):
+    """Physical key that types `char` on the active layout (Turkish Q puts '"' left of 1)."""
+    import ctypes
+    from ctypes import POINTER, byref, c_uint8, c_uint16, c_uint32, c_ulong, c_void_p
+    carbon = ctypes.CDLL('/System/Library/Frameworks/Carbon.framework/Carbon')
+    cf = ctypes.CDLL('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation')
+    carbon.TISCopyCurrentKeyboardLayoutInputSource.restype = c_void_p
+    carbon.TISGetInputSourceProperty.restype = c_void_p
+    carbon.TISGetInputSourceProperty.argtypes = [c_void_p, c_void_p]
+    cf.CFDataGetBytePtr.restype = c_void_p
+    cf.CFDataGetBytePtr.argtypes = [c_void_p]
+    carbon.LMGetKbdType.restype = c_uint8
+    carbon.UCKeyTranslate.argtypes = [c_void_p, c_uint16, c_uint16, c_uint32, c_uint32, c_uint32,
+                                      POINTER(c_uint32), c_ulong, POINTER(c_ulong), POINTER(c_uint16)]
+    source = carbon.TISCopyCurrentKeyboardLayoutInputSource()
+    data = carbon.TISGetInputSourceProperty(source, c_void_p.in_dll(carbon, 'kTISPropertyUnicodeKeyLayoutData'))
+    if not data:
+        return None
+    layout, kind = cf.CFDataGetBytePtr(data), carbon.LMGetKbdType()
+    for shift in (0, 2):  # unshifted first; 2 = shiftKey >> 8
+        for code in (c for c in range(128) if c not in KEYPAD):
+            dead, length, buffer = c_uint32(0), c_ulong(0), (c_uint16 * 4)()
+            carbon.UCKeyTranslate(layout, code, 3, shift, kind, 1, byref(dead), 4, byref(length), buffer)
+            typed = ''.join(chr(buffer[i]) for i in range(length.value))
+            if typed == char or (len(char) == 1 and typed.lower() == char.lower() and char.isalpha() and not shift):
+                return code, bool(shift)
+    return None
+
+
+def mac_hotkey(spec):
+    """-> (keycode, carbon modifier bits, label such as ⌘\")."""
+    mods, key = parse_hotkey(spec)
+    shifted = False
+    if key in MAC_NAMED:
+        code = MAC_NAMED[key]
+    else:
+        found = None
+        try:
+            found = _mac_layout_keycode(key)
+        except (OSError, AttributeError, ValueError):
+            found = None
+        if found is None and key.lower() in MAC_ANSI:
+            found = (MAC_ANSI[key.lower()], False)
+        if found is None:
+            raise ValueError('Bu karakter etkin klavye duzeninde bir tusa karsilik gelmiyor: ' + key)
+        code, shifted = found
+    if shifted and 'shift' not in mods:
+        mods.append('shift')  # the character itself needs Shift on this layout
+    bits = sum(MAC_BITS[m] for m in mods)
+    label = ''.join(MAC_SYMBOL[m] for m in ('ctrl', 'alt', 'shift', 'cmd') if m in mods) + \
+        (key.upper() if len(key) == 1 else key.capitalize())
+    return code, bits, label
+
+
+def windows_hotkey(spec):
+    """Start-menu shortcut keys accept Ctrl/Alt/Shift with a letter, digit or F-key; no Windows key."""
+    mods, key = parse_hotkey(spec)
+    if 'cmd' in mods:
+        raise ValueError('Windows kisayolunda Win/Cmd tusu kullanilamaz; ctrl, alt ve shift kullan')
+    if not re.fullmatch(r'[a-z0-9]|f\d{1,2}', key.lower()):
+        raise ValueError('Windows kisayolunda yalniz harf, rakam ya da F tusu olabilir')
+    if len([m for m in mods if m in ('ctrl', 'alt')]) == 0:
+        raise ValueError('Windows kisayolu Ctrl ya da Alt icermeli')
+    names = {'ctrl': 'CTRL', 'alt': 'ALT', 'shift': 'SHIFT'}
+    value = '+'.join([names[m] for m in mods] + [key.upper()])
+    return value, '+'.join([m.capitalize() for m in mods] + [key.upper()])
+
+
+def saved_hotkey(state):
+    try:
+        return json.loads(_state_path(state).read_text(encoding='utf-8')).get('tus') or DEFAULT_HOTKEY
+    except (OSError, ValueError, AttributeError):
+        return DEFAULT_HOTKEY
+
+
 # ---------------------------------------------------------------- hotkey listener (macOS)
 
-def listen_mac(vault, script):
+def listen_mac(vault, script, keycode=11, modifiers=0x1000 | 0x800):
     """Carbon RegisterEventHotKey: global, no Accessibility permission, standard library only."""
     import ctypes
     from ctypes import CFUNCTYPE, POINTER, Structure, byref, c_int32, c_uint32, c_void_p
@@ -1027,9 +1161,9 @@ def listen_mac(vault, script):
     handler_ref, hotkey_ref = c_void_p(), c_void_p()
     if carbon.InstallEventHandler(target, callback, 1, byref(spec), None, byref(handler_ref)):
         raise SystemExit('Kisayol dinleyicisi kurulamadi')
-    # keycode 11 = B; controlKey 0x1000 | optionKey 0x800
-    if carbon.RegisterEventHotKey(11, 0x1000 | 0x800, HotKeyID(fourcc('BYKL'), 1), target, 0, byref(hotkey_ref)):
-        raise SystemExit(MAC_HOTKEY + ' baska bir uygulamada kayitli')
+    # Default keycode 11 = B with controlKey 0x1000 | optionKey 0x800; `kur --tus` passes others.
+    if carbon.RegisterEventHotKey(keycode, modifiers, HotKeyID(fourcc('BYKL'), 1), target, 0, byref(hotkey_ref)):
+        raise SystemExit('Kisayol baska bir uygulamada kayitli; beyin.py yakala kisayol ile degistir')
     carbon.RunApplicationEventLoop()
 
 
@@ -1120,6 +1254,14 @@ def _launch_agent():
     return Path.home() / 'Library/LaunchAgents' / (LAUNCH_LABEL + '.plist')
 
 
+def _listener_ok(wait=1.2):
+    """The listener exits at once when another app already owns the combination."""
+    import time
+    time.sleep(wait)
+    probe = subprocess.run(['launchctl', 'print', 'gui/' + str(os.getuid()) + '/' + LAUNCH_LABEL], capture_output=True)
+    return probe.returncode == 0 and b'state = running' in probe.stdout
+
+
 def _agent_vault():
     """Vault the installed LaunchAgent serves, or None when this home has none."""
     import plistlib
@@ -1157,8 +1299,14 @@ def _argline(values):
     return subprocess.list2cmdline([str(v) for v in values])
 
 
-def install(vault, state, hotkey=True):
+def install(vault, state, hotkey=True, spec=None):
     vault, state = Path(vault).resolve(), Path(state).resolve()
+    spec = spec or saved_hotkey(state)
+    # Validate before anything is written, so a bad key changes nothing.
+    if hotkey and sys.platform == 'darwin':
+        keycode, modifiers, label = mac_hotkey(spec)
+    elif hotkey and os.name == 'nt':
+        win_value, label = windows_hotkey(spec)
     folder = inbox(vault)
     folder.mkdir(parents=True, exist_ok=True)
     template = folder / (TEMPLATE_NAME.replace(' ', '-').lower() + '-web-clipper.json')
@@ -1195,7 +1343,8 @@ def install(vault, state, hotkey=True):
         shutil.copy2(script, runner)
         import plistlib
         plist = {'Label': LAUNCH_LABEL, 'RunAtLoad': True, 'KeepAlive': {'SuccessfulExit': False},
-                 'ProgramArguments': [sys.executable, str(runner), 'dinle', '--vault', str(vault)],
+                 'ProgramArguments': [sys.executable, str(runner), 'dinle', '--vault', str(vault),
+                                      '--keycode', str(keycode), '--mods', str(modifiers)],
                  'ProcessType': 'Interactive', 'StandardErrorPath': str(state / 'yakala' / 'dinleyici.log'),
                  'EnvironmentVariables': {'PATH': os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin'),
                                           'LANG': 'en_US.UTF-8'}}
@@ -1208,16 +1357,19 @@ def install(vault, state, hotkey=True):
         subprocess.run(['launchctl', 'bootout', domain + '/' + LAUNCH_LABEL], capture_output=True)
         agent.write_bytes(plistlib.dumps(plist))
         subprocess.run(['launchctl', 'bootstrap', domain, str(agent)], check=True, capture_output=True)
-        done['kisayol'] = MAC_HOTKEY
+        done['kisayol'] = label
+        done['kisayol_calisiyor'] = _listener_ok()
     elif hotkey and os.name == 'nt':
         pythonw = Path(sys.executable).with_name('pythonw.exe')
         target = pythonw if pythonw.is_file() else Path(sys.executable)
         programs, sendto = _windows_dirs()
-        _windows_shortcut(programs / 'Beyne At.lnk', target, _argline([script, 'pencere', '--vault', vault]), WIN_HOTKEY)
+        _windows_shortcut(programs / 'Beyne At.lnk', target, _argline([script, 'pencere', '--vault', vault]), win_value)
         _windows_shortcut(sendto / 'Beyne At.lnk', target, _argline([script, 'ekle', '--vault', vault, '--arac', 'gonder-menusu']))
-        done.update(kisayol='Ctrl+Alt+B', gonder_menusu=True)
+        done.update(kisayol=label, gonder_menusu=True)
     state.mkdir(parents=True, exist_ok=True)
-    _state_path(state).write_text(json.dumps({'schema': 1, 'session_notice': True, 'kisayol': done['kisayol']}) + '\n', encoding='utf-8')
+    _state_path(state).write_text(json.dumps({'schema': 1, 'session_notice': True, 'kisayol': done['kisayol'],
+                                              'tus': spec if done['kisayol'] else saved_hotkey(state)}, ensure_ascii=False) + '\n',
+                                  encoding='utf-8')
     done['araclar'] = {name: bool(path) for name, path in tools().items()}
     return done
 
@@ -1306,10 +1458,18 @@ def human(result, command):
     if command == 'liste':
         rows = result['kartlar']
         return '\n'.join('%-10s %-8s %s' % (r['durum'], r['kaynak_turu'], str(r['baslik'])[:70]) for r in rows) or 'Yakalanan kaynak yok.'
-    if command == 'kur':
-        lines = ['Yakala kuruldu.']
+    if command == 'kisayol' and result.get('status') == 'kisayol':
+        if not result.get('kurulu'):
+            return 'Yakala kurulu degil. Kurmak icin: beyin.py yakala kur'
+        return 'Kisayol: ' + str(result.get('kisayol') or 'yok') + '\nDegistirmek icin: beyin.py yakala kisayol \'cmd+"\''
+    if command in ('kur', 'kisayol'):
+        lines = ['Kisayol degisti.' if command == 'kisayol' else 'Yakala kuruldu.']
         if result.get('kisayol'):
             lines.append('Kisayol: ' + result['kisayol'] + ' (her uygulamada calisir).')
+        if result.get('kisayol_calisiyor') is False:
+            lines.append('UYARI: kisayol dinleyicisi baslamadi; bu tus baska bir uygulamada kayitli olabilir. Baska bir tus dene.')
+        if command == 'kisayol':
+            return '\n'.join(lines)
         if result.get('gonder_menusu'):
             lines.append('Dosyalar icin: sag tik > Gonder > Beyne At.')
         lines.append('Tarayici icin Obsidian Web Clipper eklentisini kur, Ayarlar > Sablonlar > Ice aktar ile su dosyayi sec:')
@@ -1331,11 +1491,16 @@ def human(result, command):
 
 
 def main(argv=None, vault=None, state=None):
-    common = argparse.ArgumentParser(add_help=False)
-    common.add_argument('--vault', type=Path, dest='vault_sub', default=None, help=argparse.SUPPRESS)
-    common.add_argument('--json', action='store_true', dest='force_json', help=argparse.SUPPRESS)
-    parser = argparse.ArgumentParser(prog='beyin.py yakala', description='Kaynak yakala ve ikinci beyne isle', parents=[common])
+    def shared(default):
+        # Subcommands must not reset a --vault/--json given before them, hence SUPPRESS there.
+        common = argparse.ArgumentParser(add_help=False)
+        common.add_argument('--vault', type=Path, dest='vault_sub', default=default, help=argparse.SUPPRESS)
+        common.add_argument('--json', action='store_true', dest='force_json',
+                            default=False if default is None else default, help=argparse.SUPPRESS)
+        return common
+    parser = argparse.ArgumentParser(prog='beyin.py yakala', description='Kaynak yakala ve ikinci beyne isle', parents=[shared(None)])
     sub = parser.add_subparsers(dest='command')
+    common = shared(argparse.SUPPRESS)
 
     def command_parser(name, **options):
         return sub.add_parser(name, parents=[common], **options)
@@ -1347,7 +1512,9 @@ def main(argv=None, vault=None, state=None):
     add.add_argument('--arac', default='komut')
     window = command_parser('pencere', help='Yakalama penceresini ac')
     window.add_argument('--baglam', help=argparse.SUPPRESS)
-    command_parser('dinle', help=argparse.SUPPRESS)
+    listen = command_parser('dinle', help=argparse.SUPPRESS)
+    listen.add_argument('--keycode', type=int, default=11)
+    listen.add_argument('--mods', type=int, default=0x1000 | 0x800)
     run = command_parser('isle', help='Bekleyen kaynaklarin metnini cikar (ag kullanir)')
     run.add_argument('ids', nargs='*')
     run.add_argument('--ses-yok', action='store_true', help='Altyazi yoksa sesi indirme')
@@ -1360,6 +1527,9 @@ def main(argv=None, vault=None, state=None):
     show.add_argument('--durum', choices=STATUSES)
     setup = command_parser('kur', help='Kisayolu, Web Clipper sablonunu, skill\'i ve oturum bildirimini kur')
     setup.add_argument('--kisayol-yok', action='store_true', help='Yalniz sablon, skill ve bildirim; kisayol kurulmaz')
+    setup.add_argument('--tus', help='Kisayol, ornek: ctrl+alt+b (varsayilan) ya da cmd+"')
+    keys = command_parser('kisayol', help='Kisayolu goster ya da degistir, ornek: kisayol \'cmd+"\'')
+    keys.add_argument('tus', nargs='?')
     command_parser('kaldir', help='Kisayolu ve bildirimi kaldir; notlara dokunmaz')
     command_parser('durum', help='Kurulum ve arac durumu')
     command_parser('sablon', help='Web Clipper sablonunu yazdir')
@@ -1375,7 +1545,7 @@ def main(argv=None, vault=None, state=None):
         context = json.loads(args.baglam) if getattr(args, 'baglam', None) else gather_context()
         result = popup(vault, context)
     elif command == 'dinle':
-        listen_mac(vault, Path(__file__).resolve())
+        listen_mac(vault, Path(__file__).resolve(), args.keycode, args.mods)
         return 0
     elif command == 'ekle':
         url, files, texts = None, [], []
@@ -1395,7 +1565,15 @@ def main(argv=None, vault=None, state=None):
     elif command == 'liste':
         result = listing(vault, args.durum)
     elif command == 'kur':
-        result = install(vault, state, hotkey=not args.kisayol_yok)
+        result = install(vault, state, hotkey=not args.kisayol_yok, spec=args.tus)
+    elif command == 'kisayol':
+        if args.tus:
+            result = install(vault, state, spec=args.tus)
+            result['status'] = 'kisayol_degisti'
+        else:
+            installed = json.loads(_state_path(state).read_text(encoding='utf-8')) if _state_path(state).is_file() else {}
+            result = {'status': 'kisayol', 'kisayol': installed.get('kisayol'), 'tus': installed.get('tus') or DEFAULT_HOTKEY,
+                      'kurulu': bool(installed)}
     elif command == 'kaldir':
         result = uninstall(vault, state)
     elif command == 'durum':

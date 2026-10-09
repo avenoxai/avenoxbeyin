@@ -26,6 +26,18 @@ Kısayol ek paket istemez; Python'un kendisiyle çalışır. Mac'te bir oturum a
 (LaunchAgent) tuşu dinler, Windows'ta Başlat menüsündeki kısayol tuşu kullanılır.
 Yalnız şablon ve skill istiyorsan: `python3 beyin.py yakala kur --kisayol-yok`.
 
+### Kısayolu değiştir
+
+```sh
+python3 beyin.py yakala kisayol 'cmd+"'
+```
+
+Tuşu yazdığın gibi tarif et: `cmd`, `ctrl`, `alt` (ya da `option`), `shift` ve en sonda tuş.
+Örnekler: `ctrl+alt+b` (varsayılan), `cmd+shift+space`, `alt+f5`, `⌘⇧K`. Mac'te karakter etkin klavye
+düzeninden bulunur; Türkçe Q'da `"` 1'in solundaki tuştur. Windows'ta Başlat menüsü kısayolu
+yalnız Ctrl/Alt/Shift ile harf, rakam ya da F tuşunu kabul eder. Argümansız `kisayol` mevcut tuşu
+gösterir. Seçtiğin tuşu başka bir uygulama zaten kullanıyorsa komut uyarır; başka bir tuş dene.
+
 ### Tarayıcı: Obsidian Web Clipper
 
 1. [Obsidian Web Clipper](https://obsidian.md/clipper) eklentisini kur (Chrome, Firefox, Safari, Edge, Arc, Brave).
@@ -87,5 +99,7 @@ beyin.py yakala ekle URL|DOSYA|METIN [--neden "..."]
 beyin.py yakala liste [--durum bekliyor|cikarildi|islendi|hata]
 beyin.py yakala isle [ID ...] [--ses-yok] [--tekrar]
 beyin.py yakala bitti ID --bilgi knowledge/concepts/x.md [--ozet "..."]
-beyin.py yakala kur [--kisayol-yok] | kaldir | durum | sablon
+beyin.py yakala kur [--kisayol-yok] [--tus 'ctrl+alt+b']
+beyin.py yakala kisayol ['cmd+"']
+beyin.py yakala kaldir | durum | sablon
 ```
