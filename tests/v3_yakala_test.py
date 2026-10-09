@@ -177,6 +177,19 @@ class YakalaUnitTest(unittest.TestCase):
         self.assertTrue(agent.exists())
         self.assertNotIn('LaunchAgent', result['kaldirilan'])
 
+    def test_mac_install_plist_keepalive(self):
+        state = Path(self.tmp.name) / 'mac-state'
+        agent = Path(self.tmp.name) / 'agent.plist'
+        with patch.object(yakala, '_launch_agent', return_value=agent), \
+                patch.object(yakala.sys, 'platform', 'darwin'), \
+                patch.object(yakala.os, 'getuid', return_value=501, create=True), \
+                patch.object(yakala, '_listener_ok', return_value=True), \
+                patch.object(yakala.subprocess, 'run'):
+            yakala.install(self.vault, state)
+            import plistlib
+            plist = plistlib.loads(agent.read_bytes())
+            self.assertIs(plist['KeepAlive'], True)
+
     def test_inbox_report_skips_processed_cards(self):
         import beyin_v3_hygiene as hygiene
         waiting = yakala.capture(self.vault, url='https://ornek.com/a')
