@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import stat
 import unicodedata
 
 
@@ -329,6 +330,16 @@ def _tokens(text):
 STOPWORDS = _tokens("the a an is are was were what which who when where how why of to in on at for from with and or does did do has have latest current please tell about my our this that it its project projects status decision decisions show find get ve veya bir bu su o ne kim nasil hangi nedir neydi mi mu icin ile bana benim bizim olarak olan oldu en son guncel soyle getir bul yok say ignore disregard no")
 
 
+def _path_redirected(path):
+    """Symlinks and Windows reparse points require a fresh realpath check."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        # Let the original resolver/type check decide missing or inaccessible paths.
+        return True
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_reparse_tag", 0))
+
+
 class MemoryStore:
     def __init__(self, state_dir, vault_root, read_only=False):
         self.read_only = bool(read_only)
@@ -408,17 +419,30 @@ class MemoryStore:
                 pass  # a real failure or a still-building index keeps the note-level path
         return shared_context(self, harness, query, **kwargs)
 
-    def _source(self, value):
+    def _source(self, value, *, _resolved=None):
         if not isinstance(value, str) or not value or Path(value).is_absolute():
             raise ValueError("source must be an existing vault-relative file")
         if ".." in Path(value).parts:
             raise ValueError("source traversal rejected")
-        target = (self.vault_root / value).resolve()
+        path = self.vault_root / value
+        target = _resolved if path.is_relative_to(self.vault_root) else None
+        if target is not None:
+            # A file or directory can become a symlink after the scan's first read.
+            # Reuse the realpath only while its vault-relative components stay real;
+            # otherwise resolve again, preserving _source's inside/outside decision.
+            cursor, boundary = str(path), str(self.vault_root.parent)
+            while cursor != boundary:
+                if _path_redirected(cursor):
+                    target = None
+                    break
+                cursor = os.path.dirname(cursor)
+        if target is None:
+            target = path.resolve()
         if not target.is_relative_to(self.vault_root) or not target.is_file():
             raise ValueError("source missing or outside vault")
         return Path(value).as_posix()
 
-    def _validate(self, record):
+    def _validate(self, record, *, _resolved_source=None):
         if not isinstance(record, dict):
             raise ValueError("record must be an object")
         record = json.loads(_json(record))
@@ -426,7 +450,9 @@ class MemoryStore:
             raise ValueError("record id required")
         if not isinstance(record.get("text"), str):
             raise ValueError("record text required")
-        record["source"] = self._source(record.get("source"))
+        # Sync shares its checked realpath; still recheck existence/type and reread
+        # the source here so edits during the scan cannot validate stale bytes.
+        record["source"] = self._source(record.get("source"), _resolved=_resolved_source)
         record["source_sha256"] = hashlib.sha256((self.vault_root / record["source"]).read_bytes()).hexdigest()
         current = record.get("updated_at")
         if current is None or (isinstance(current, str) and not current.strip()):

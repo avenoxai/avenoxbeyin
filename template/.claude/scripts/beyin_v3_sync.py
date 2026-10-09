@@ -16,7 +16,7 @@ _MODULE_DIR = str(Path(__file__).resolve().parent)
 if _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
-from beyin_v3 import HARNESSES, REJECTED_AT, MemoryStore, ReceiptConflict, RevisionConflict, _json, resolve_supersedes
+from beyin_v3 import HARNESSES, REJECTED_AT, MemoryStore, ReceiptConflict, RevisionConflict, _json, _path_redirected, resolve_supersedes
 from beyin_v3_projections import project_receipts
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
@@ -401,6 +401,25 @@ class SyncEngine:
             raise ValueError('source missing')
         return path
 
+    def _scan_path(self, relative):
+        """Prove a walk entry's realpath using the already resolved vault root."""
+        if not isinstance(relative, str) or Path(relative).is_absolute() or '..' in Path(relative).parts:
+            raise ValueError('relative source required')
+        path = self.root / relative
+        if not path.is_relative_to(self.root):
+            raise ValueError('source outside vault')
+        cursor, boundary = str(path), str(self.root.parent)
+        while cursor != boundary:
+            if _path_redirected(cursor):
+                # Preserve the original outside-vault vs symlink rejection reason.
+                checked = self._path(relative, existing=True)
+                return checked, checked.resolve()
+            cursor = os.path.dirname(cursor)
+        # Without symlinks or traversal, joining a resolved root is its realpath.
+        if not path.is_file():
+            raise ValueError('source missing')
+        return path, path
+
     @staticmethod
     def _source_identity(path):
         """One file under another spelling (case-insensitive volume) is one source."""
@@ -498,7 +517,7 @@ class SyncEngine:
                 path = Path(directory) / name
                 relative = path.relative_to(self.root).as_posix()
                 try:
-                    self._path(relative, existing=True)
+                    path, resolved = self._scan_path(relative)
                     raw = path.read_bytes()
                     text = raw.decode('utf-8')
                     if _has_conflict_markers(text):
@@ -511,7 +530,7 @@ class SyncEngine:
                     record = dict(metadata, source=relative, text=body)
                     record.setdefault('id', 'md-' + _hash(relative)[:24])
                     record.setdefault('kind', 'note')
-                    record = self.store._validate(record)
+                    record = self.store._validate(record, _resolved_source=resolved)
                     if record['source_sha256'] != _hash(raw):
                         raise ValueError('source changed while scanning')
                     if record['id'] in records:
@@ -637,33 +656,37 @@ class SyncEngine:
             records, warnings, conflicts = self._scan()
             warnings.extend(receipt_warnings)
             conflicts.extend(recovery_conflicts + receipt_conflicts)
-            old_owned = {row[0] for row in db.execute('SELECT id FROM markdown_sources')}
+            old_sources = dict(db.execute('SELECT id, source FROM markdown_sources ORDER BY id'))
+            # Match the old covering-ID scan's set construction and deletion event order.
+            old_owned = {id for id in old_sources}
+            old_payloads = dict(db.execute('SELECT id, payload FROM records'))
             deleted = 0
             for id in old_owned - records.keys():
-                row = db.execute('SELECT payload FROM records WHERE id=?', (id,)).fetchone()
-                if row:
-                    old = json.loads(row[0])
-                    db.execute("INSERT INTO events(event_type,record_id,revision,record) VALUES ('delete',?,?,?)", (id, old['revision'], row[0]))
+                previous_payload = old_payloads.get(id)
+                if previous_payload is not None:
+                    old = json.loads(previous_payload)
+                    db.execute("INSERT INTO events(event_type,record_id,revision,record) VALUES ('delete',?,?,?)", (id, old['revision'], previous_payload))
                     db.execute('DELETE FROM records WHERE id=?', (id,))
                     deleted += 1
                 db.execute('DELETE FROM markdown_sources WHERE id=?', (id,))
             for id, record in records.items():
-                row = db.execute('SELECT payload FROM records WHERE id=?', (id,)).fetchone()
-                if row and id in old_owned:
-                    previous = json.loads(row[0])
+                previous_payload = old_payloads.get(id)
+                if previous_payload is not None and id in old_owned:
+                    previous = json.loads(previous_payload)
                     if previous['source_sha256'] != record['source_sha256']:
                         record['revision'] = max(record['revision'], previous['revision'] + 1)
                     else:
                         record['revision'] = max(record['revision'], previous['revision'])
                 payload = _json(record)
-                if row and id not in old_owned and row[0] != payload:
+                if previous_payload is not None and id not in old_owned and previous_payload != payload:
                     conflicts.append({'id': id, 'reason': 'id already owned by another record'})
                     continue
-                if not row or row[0] != payload:
-                    event_type = 'update' if row else 'ingest'
+                if previous_payload != payload:
+                    event_type = 'update' if previous_payload is not None else 'ingest'
                     db.execute('INSERT OR REPLACE INTO records VALUES (?,?)', (id, payload))
                     db.execute('INSERT INTO events(event_type,record_id,revision,record) VALUES (?,?,?,?)', (event_type, id, record['revision'], payload))
-                db.execute('INSERT OR REPLACE INTO markdown_sources VALUES (?,?)', (id, record['source']))
+                if old_sources.get(id) != record['source']:
+                    db.execute('INSERT OR REPLACE INTO markdown_sources VALUES (?,?)', (id, record['source']))
             conflicts.extend(project_receipts(self, db, warnings))
             # A supersedes value that retires nothing is reported, not a degraded scan: no
             # source was excluded and the hook must not warn on every turn about it.
