@@ -77,10 +77,15 @@ def environment(home, tmp=None, nospawn=False):
     tmp = Path(tmp or home).resolve()
     home.mkdir(parents=True, exist_ok=True)
     tmp.mkdir(parents=True, exist_ok=True)
+    path_entries = [str(Path(sys.executable).parent)]
+    if sys.platform == 'win32':
+        win = os.environ.get('SYSTEMROOT', r'C:\Windows')
+        path_entries.extend([os.path.join(win, 'System32'), win, os.path.join(win, 'System32', 'WindowsPowerShell', 'v1.0')])
+    path_entries.append(os.defpath)
     env = {key: os.environ[key] for key in ('SYSTEMROOT', 'WINDIR') if key in os.environ}
     env.update(HOME=str(home), USERPROFILE=str(home), APPDATA=str(home / 'appdata'),
                LOCALAPPDATA=str(home / 'localappdata'), TEMP=str(tmp), TMP=str(tmp), TMPDIR=str(tmp),
-               PATH=str(Path(sys.executable).parent) + os.pathsep + os.defpath,
+               PATH=os.pathsep.join(path_entries),
                PYTHONIOENCODING='utf-8', PYTHONDONTWRITEBYTECODE='1',
                BEYIN_UPDATES_OFF='1', BEYIN_JEV_DISABLE='1', TZ='UTC')
     if nospawn:

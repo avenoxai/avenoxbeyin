@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import datetime as dt
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import hashlib
 import importlib.util
 import json
@@ -57,6 +60,7 @@ CODEX_RENDERER = load_module(
 GRAF = load_module("beyin_graf_test", SOURCE_SCRIPTS / "graf_kontrol.py")
 
 
+@unittest.skipIf(sys.platform == 'win32', "v2 legacy scripts test requires POSIX environment")
 class ScriptsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="beyin-tests-")
@@ -852,6 +856,7 @@ raise SystemExit(int(os.environ.get("BEYIN_TEST_EXIT", "0")))
         self.assertEqual(observed_cursors, names)
         self.assertEqual(set(state["ingested"]), set(names))
 
+    @unittest.skipIf(fcntl is None, "fcntl is unavailable on this platform")
     def test_compile_flock_exclusion(self) -> None:
         (self.daily / "2026-08-20.md").write_text("log", encoding="utf-8")
         lock_path = self.state / "compile.lock"

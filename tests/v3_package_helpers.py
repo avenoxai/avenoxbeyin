@@ -40,12 +40,23 @@ def clean_environ(**extra):
     return patch.dict(os.environ, inherited_env(**extra), clear=True)
 
 
+def isolated_path(*first):
+    """PATH for a cleared test environment: the given folders, then os.defpath. Windows adds
+    its own folders because cmd.exe resolves AutoRun commands (doskey) through PATH alone;
+    never the PowerShell folder, which installed commands must name by absolute path."""
+    entries = [str(folder) for folder in first]
+    if sys.platform == 'win32':
+        win = os.environ.get('SYSTEMROOT') or os.environ.get('WINDIR') or r'C:\Windows'
+        entries.extend([os.path.join(win, 'System32'), win])
+    return os.pathsep.join(entries + [os.defpath])
+
+
 def isolated_env(home):
     home = Path(home)
     home.mkdir(parents=True, exist_ok=True)
     env = {'HOME': str(home), 'USERPROFILE': str(home), 'APPDATA': str(home / 'appdata'),
            'LOCALAPPDATA': str(home / 'localappdata'), 'TEMP': str(home), 'TMP': str(home),
-           'PATH': str(Path(sys.executable).parent) + os.pathsep + os.defpath,
+           'PATH': isolated_path(Path(sys.executable).parent),
            'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONIOENCODING': 'utf-8', 'BEYIN_V3_NO_SPAWN': '1'}
     env.update(windows_runtime_env())
     return env

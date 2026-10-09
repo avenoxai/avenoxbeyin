@@ -141,9 +141,15 @@ class RuntimeContractTest(unittest.TestCase):
         record = self.record()
         outside = self.root / 'outside.md'
         outside.write_text('Synthetic outside source')
-        (self.vault / 'outside-link.md').symlink_to(outside)
+        try:
+            (self.vault / 'outside-link.md').symlink_to(outside)
+            linked = True
+        except OSError:  # unprivileged Windows: only the link case is skipped
+            linked = False
         for source in ['missing.md', '../outside.md', str(outside), 'outside-link.md']:
             with self.subTest(source=Path(source).name):
+                if source == 'outside-link.md' and not linked:
+                    self.skipTest('symlinks unavailable on this host')
                 with self.assertRaises(ValueError):
                     self.store.ingest(dict(record, source=source))
                 with self.assertRaises(ValueError):
@@ -155,7 +161,10 @@ class RuntimeContractTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.module.MemoryStore(state, self.vault)
         (self.vault / 'nested').mkdir()
-        (self.root / 'alias').symlink_to(self.vault / 'nested', target_is_directory=True)
+        try:
+            (self.root / 'alias').symlink_to(self.vault / 'nested', target_is_directory=True)
+        except OSError:
+            self.skipTest('symlinks unavailable on this host')
         with self.assertRaises(ValueError):
             self.module.MemoryStore(self.root / 'alias', self.vault)
 

@@ -1437,9 +1437,11 @@ def default_state(vault):
 def resolve_state(vault):
     config = Path(vault) / '.beyin-runtime.json'
     try:
-        return Path(json.loads(config.read_text(encoding='utf-8'))['state'])
-    except (OSError, ValueError, KeyError):
-        return default_state(Path(vault).resolve())
+        pinned = Path(json.loads(config.read_text(encoding='utf-8'))['state']).expanduser()
+    except (OSError, ValueError, KeyError, TypeError):
+        pinned = None
+    # A pin from another OS through a synced vault is not absolute here (#249).
+    return pinned if pinned and pinned.is_absolute() else default_state(Path(vault).resolve())
 
 
 def human(result, command):
