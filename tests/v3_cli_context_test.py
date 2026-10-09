@@ -157,6 +157,39 @@ class ContextRefreshTest(unittest.TestCase):
         self.assertEqual([(row['id'], row['kind']) for row in report['validity']['ignored_rejections']],
                          [('fact', 'fact'), ('plain', 'note')])
 
+    def test_doctor_lists_current_notes_that_link_to_a_rejected_inference(self):
+        def write(relative, metadata, body):
+            path = self.vault / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('---\n' + json.dumps(metadata) + '\n---\n' + body + '\n', encoding='utf-8')
+        rejected = {'kind': 'inference', 'validity': 'rejected', 'rejected_reason': 'User corrected this.',
+                    'rejected_at': '2026-09-24'}
+        write('profile/amber.md', dict(rejected, id='amber'), 'Synthetic user prefers amber diagrams.')
+        write('profile/teal.md', {'id': 'teal', 'kind': 'inference'}, 'Synthetic user prefers teal diagrams.')
+        write('profile/olive.md', dict(rejected, id='olive'), 'Synthetic user prefers olive diagrams.')
+        write('archive/olive.md', {'id': 'olive-old'}, 'An older olive note with the same file name.')
+        write('notes/wiki.md', {'id': 'wiki'}, 'Diagram choice.\n\n## Support\n\n- [[amber|the amber note]]')
+        write('projects/plan.md', {'id': 'plan'}, 'Plan rests on [amber](../profile/amber.md#claim).')
+        write('notes/current.md', {'id': 'current'}, 'Rests on [[teal]] and [web](https://example.com/amber.md).')
+        write('notes/replacement.md', {'id': 'replacement', 'supersedes': ['[[amber]]']}, 'Replaces [[amber]].')
+        write('notes/retired.md', {'id': 'retired', 'status': 'archived'}, 'Old plan, cited [[amber]].')
+        write('notes/unsure.md', {'id': 'unsure'}, 'Cites [[olive]] by a name two notes share.')
+        synced = self.run_cli('sync')
+        self.assertEqual(json.loads(synced.stdout)['status'], 'succeeded', synced.stdout)
+        doctor = self.run_cli('doctor')
+        self.assertEqual(doctor.returncode, 0, doctor.stderr)
+        report = json.loads(doctor.stdout)
+        validity = report['validity']
+        self.assertEqual([(row['source'], row['rejected_source'], row['link']) for row in validity['rejected_dependents']],
+                         [('notes/wiki.md', 'profile/amber.md', '[[amber|the amber note]]'),
+                          ('projects/plan.md', 'profile/amber.md', '[amber](../profile/amber.md#claim)')])
+        self.assertEqual(validity['rejected_dependent_count'], 2)
+        self.assertEqual([(row['source'], row['candidates']) for row in validity['ambiguous_rejected_links']],
+                         [('notes/unsure.md', ['archive/olive.md', 'profile/olive.md'])])
+        # A citation can be legitimate (it may explain why the claim fell): listed, never a health failure.
+        self.assertEqual(validity['ignored_rejection_count'], 0)
+        self.assertNotEqual(report['status'], 'needs_attention')
+
     def test_history_syncs_edits_and_keeps_deleted_audit_trail(self):
         def write(name, **metadata):
             (self.vault / 'notes' / (name + '.md')).write_text(

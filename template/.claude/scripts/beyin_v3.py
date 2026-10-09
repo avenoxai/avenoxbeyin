@@ -10,10 +10,12 @@ import json
 import math
 import os
 from pathlib import Path
+import posixpath
 import re
 import sqlite3
 import stat
 import unicodedata
+import urllib.parse
 
 
 # Every supported client. "manual" is accepted for receipts only.
@@ -145,6 +147,92 @@ def resolve_supersedes(records):
             else:
                 retired.add(target["id"])
     return retired, dead
+
+
+_WIKI_LINK = re.compile(r"\[\[([^\[\]\n]+)\]\]")
+_MARKDOWN_LINK = re.compile(r"(?<!!)\[[^\]\n]*\]\(\s*<?([^()<>\s]+)>?(?:\s+\"[^\"]*\")?\s*\)")
+
+
+def _link_keys(record):
+    """Vault-relative link targets in a record's text: [[wikilinks]] by name, Markdown links by path.
+
+    A Markdown link is resolved against the note's folder; URLs and in-page anchors are skipped.
+    """
+    text = record.get("text") if isinstance(record.get("text"), str) else ""
+    keys = []
+    for match in _WIKI_LINK.finditer(text):
+        keys.append((match.group(0), _supersedes_key(match.group(0))))
+    folder = posixpath.dirname(str(record.get("source", "")).replace("\\", "/"))
+    for match in _MARKDOWN_LINK.finditer(text):
+        target = urllib.parse.unquote(match.group(1).split("#", 1)[0])
+        if not target or re.match(r"[A-Za-z][A-Za-z0-9+.-]*:", target):
+            continue
+        path = posixpath.normpath(target.lstrip("/") if target.startswith("/") else posixpath.join(folder, target))
+        if path.startswith("../") or path == "..":
+            continue
+        keys.append((match.group(0), path))
+    return keys
+
+
+def rejected_dependents(records):
+    """Current notes that link to a rejected inference or preference, for a person to review.
+
+    Rejecting an inference keeps it out of context, but a note that cites it as support still
+    delivers the claim it rests on (MARKDOWN.md asks for those to be corrected separately).
+    Links resolve like supersedes: a whole vault path (with or without .md), else a file name that
+    exactly one note has; an ambiguous name that could be a rejected note is listed apart.
+    Only the listing is produced: whether the citation still holds is the reader's call. A note
+    that is itself rejected or retired, or that supersedes the rejected note, is not listed.
+    """
+    records = [record for record in records if isinstance(record, dict)]
+    if not any(_rejected_inference(record) for record in records):
+        return [], []
+    by_id, by_path, by_name = {}, {}, {}
+    for record in records:
+        if isinstance(record.get("id"), str):
+            by_id[record["id"]] = record
+        source = str(record.get("source", "")).replace("\\", "/").strip("/")
+        if not source:
+            continue
+        path_key = (source[:-3] if source.casefold().endswith(".md") else source).casefold()
+        by_path.setdefault(path_key, []).append(record)
+        by_name.setdefault(path_key.rsplit("/", 1)[-1], []).append(record)
+
+    def matches_for(key):
+        folded = (key[:-3] if key.casefold().endswith(".md") else key).casefold()
+        if not folded:
+            return []
+        return by_path.get(folded) or by_name.get(folded.rsplit("/", 1)[-1], [])
+
+    dependents, ambiguous = {}, {}
+    for record in records:
+        if _rejected_inference(record) or _status_word(record) in RETIRED_STATUSES:
+            continue
+        replaces = record.get("supersedes", [])
+        replaces = [replaces] if isinstance(replaces, str) else replaces if isinstance(replaces, list) else []
+        replaced = set()
+        for value in replaces:
+            key = _supersedes_key(value)
+            found = [by_id[key]] if key in by_id else matches_for(key)
+            if len(found) == 1:
+                replaced.add(id(found[0]))
+        for raw, key in _link_keys(record):
+            matches = matches_for(key)
+            rejected = [match for match in matches if _rejected_inference(match) and match is not record]
+            if not rejected:
+                continue
+            if len(matches) > 1:
+                ambiguous.setdefault((record.get("source", ""), raw), {
+                    "id": record.get("id"), "source": record.get("source", ""), "link": raw,
+                    "candidates": sorted(match.get("source", "") for match in matches)})
+                continue
+            target = rejected[0]
+            if id(target) in replaced:
+                continue
+            dependents.setdefault((record.get("source", ""), target.get("source", "")), {
+                "id": record.get("id"), "source": record.get("source", ""), "link": raw,
+                "rejected_id": target.get("id"), "rejected_source": target.get("source", "")})
+    return ([dependents[key] for key in sorted(dependents)], [ambiguous[key] for key in sorted(ambiguous)])
 
 
 # Opt-in project scope for vaults organized by folder. Without this file an explicit
