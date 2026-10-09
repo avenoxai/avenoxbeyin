@@ -180,6 +180,24 @@ class ContextRefreshTest(unittest.TestCase):
         self.assertEqual(sorted(row['id'] for row in review['invalid']), ['seed-number', 'seed-typo'])
         self.assertNotEqual(report['status'], 'needs_attention', 'a due review is information, not a fault')
 
+    def test_review_report_skips_empty_and_superseded_and_uses_the_date_grammar(self):
+        notes = self.vault / 'notes'
+        # Obsidian leaves `review_at:` when a date property is cleared; a template keeps a placeholder.
+        (notes / 'cleared.md').write_text('---\nid: cleared\nreview_at:\n---\nIdea.\n', encoding='utf-8')
+        (notes / 'template.md').write_text('---\nid: template\nreview_at: {{date:YYYY-MM-DD}}\n---\nIdea.\n',
+                                           encoding='utf-8')
+        (notes / 'old-idea.md').write_text('---\n{"id": "old-idea", "review_at": "2020-01-05"}\n---\nOld idea.\n',
+                                           encoding='utf-8')
+        (notes / 'new-idea.md').write_text('---\n{"id": "new-idea", "supersedes": ["[[old-idea]]"]}\n---\nNew.\n',
+                                           encoding='utf-8')
+        (notes / 'junk.md').write_text('---\n{"id": "junk", "review_at": "2020-01-05Tlater"}\n---\nIdea.\n',
+                                       encoding='utf-8')
+        synced = self.run_cli('sync')
+        self.assertEqual(json.loads(synced.stdout)['status'], 'succeeded', synced.stdout)
+        review = json.loads(self.run_cli('doctor').stdout)['review']
+        self.assertEqual(review['due'], [], 'a note retired by supersedes is not current')
+        self.assertEqual([row['id'] for row in review['invalid']], ['junk'])
+
     def test_history_syncs_edits_and_keeps_deleted_audit_trail(self):
         def write(name, **metadata):
             (self.vault / 'notes' / (name + '.md')).write_text(
