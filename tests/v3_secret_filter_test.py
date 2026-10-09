@@ -10,6 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'template/.claude/scripts'))
+sys.path.insert(0, str(ROOT/'extensions/laya'))
 from beyin_v3_preferences import save
 from beyin_v3_secrets import redact
 from beyin_v3_sync import SyncEngine

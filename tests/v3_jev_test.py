@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
+sys.path.insert(0, str(ROOT / 'extensions/laya'))
 import beyin_v3 as runtime
 import beyin_v3_jev as advisor
 
@@ -223,6 +224,8 @@ class InstalledAdvisorTest(unittest.TestCase):
             env = isolated_env(root / 'home')
             installed = install(vault, state, env)
             self.assertEqual(installed.returncode, 0, installed.stderr)
+            import shutil
+            shutil.copytree(ROOT / 'extensions', vault / 'extensions')
             source = vault / 'notes' / 'demo.md'
             source.parent.mkdir(exist_ok=True)
             source.write_text('---\n{"id":"demo-note","project":"demo","visibility":"internal"}\n---\nUse short demo notes.\n', encoding='utf-8')
@@ -253,6 +256,25 @@ class InstalledAdvisorTest(unittest.TestCase):
             self.assertTrue(checked['claims'][0]['mechanical_verified'])
             self.assertFalse(checked['memory_written'])
             self.assertEqual(source.read_bytes(), before)
+
+    def test_installed_cli_without_extension_reports_clear_error(self):
+        from v3_package_helpers import install, isolated_env, run_python
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            vault = root / 'vault'
+            vault.mkdir()
+            state = root / 'state'
+            env = isolated_env(root / 'home')
+            installed = install(vault, state, env)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            for f in (vault / '.claude/scripts').glob('*jev*'):
+                f.unlink()
+            entry = vault / 'beyin.py'
+            output = run_python(entry, ['context', 'demo', '--project', 'demo', '--jev', '--json'], vault, env)
+            self.assertEqual(output.returncode, 1)
+            err = json.loads(output.stderr)
+            self.assertEqual(err['error'], 'ModuleNotFoundError')
+            self.assertIn('extensions/laya', err['message'])
 
 
 if __name__ == '__main__':

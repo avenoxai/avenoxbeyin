@@ -56,6 +56,8 @@ def summarize(rows):
 def experiment(source, fixture, mode, ablation, repetitions):
     # Each process loads only one checkout, so canonical module names cannot mix versions.
     sys.path.insert(0, str(source / 'template/.claude/scripts'))
+    if (source / 'extensions/laya').exists():
+        sys.path.insert(0, str(source / 'extensions/laya'))
     import beyin_v3 as runtime
     import beyin_v3_hook as hook
     import beyin_v3_jev as advisor

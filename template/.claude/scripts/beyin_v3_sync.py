@@ -542,6 +542,7 @@ class SyncEngine:
                 path = Path(directory) / name
                 relative = path.relative_to(self.root).as_posix()
                 try:
+                    path, resolved = self._scan_path(relative)
                     st = path.stat()
                     mtime_ns, size = st.st_mtime_ns, st.st_size
                     cached = known_stats.get(relative)
@@ -549,14 +550,12 @@ class SyncEngine:
                             and cached[0] in records_by_id):
                         cached_record = records_by_id[cached[0]]
                         if cached_record.get('source_sha256') == cached[3]:
-                            self._scan_path(relative)
                             if cached_record['id'] in records:
                                 duplicate.add(cached_record['id'])
                             records[cached_record['id']] = cached_record
                             new_stats[relative] = cached
                             continue
 
-                    path, resolved = self._scan_path(relative)
                     raw = path.read_bytes()
                     text = raw.decode('utf-8')
                     if _has_conflict_markers(text):

@@ -14,6 +14,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
 sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(ROOT / 'extensions/laya'))
 import beyin_v3 as runtime  # noqa: E402
 import beyin_v3_jev as advisor  # noqa: E402
 import beyin_v3_passage as passage  # noqa: E402

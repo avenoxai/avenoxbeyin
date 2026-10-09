@@ -6,9 +6,11 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'template/.claude/scripts'))
+from unittest.mock import patch
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
+sys.path.insert(0, str(ROOT / 'extensions/laya'))
 import beyin_v3_jev_client as j
 
 class ClientTests(unittest.TestCase):

@@ -24,6 +24,7 @@ from v3_package_helpers import windows_runtime_env
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
 sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(ROOT / 'extensions/laya'))
 import beyin_v3 as runtime
 import beyin_v3_jev as advisor
 import beyin_v3_jev_client as client

@@ -2,6 +2,7 @@
 """Project-local lifecycle adapter; persists metadata, never transcript text."""
 import argparse
 import hashlib
+import importlib
 import json
 import os
 from pathlib import Path
@@ -545,7 +546,18 @@ def main():
                     remaining = HOOK_BUDGET - (time.monotonic() - started)
                     if remaining >= 0.8:
                         try:
-                            from beyin_v3_jev import auto_context
+                            script_dir = Path(__file__).resolve().parent
+                            candidate_dirs = [
+                                vault / 'extensions' / 'laya',
+                                vault / '.agents' / 'extensions' / 'laya',
+                                script_dir.parent.parent.parent / 'extensions' / 'laya',
+                                script_dir.parent.parent / 'extensions' / 'laya',
+                                script_dir.parent / 'extensions' / 'laya',
+                            ]
+                            for c in candidate_dirs:
+                                if c.is_dir() and str(c) not in sys.path:
+                                    sys.path.insert(0, str(c))
+                            auto_context = importlib.import_module("beyin_v3_jev").auto_context
                             context = auto_context(store, args.harness, query, context, budget_chars=limit,
                                                    timeout_cap=min(2.0, remaining), project=project)
                         except Exception:

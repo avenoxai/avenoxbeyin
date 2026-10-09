@@ -11,6 +11,7 @@ from v3_package_helpers import clean_environ
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
+sys.path.insert(0, str(ROOT / 'extensions/laya'))
 import beyin_v3 as runtime
 from beyin_v3_memory_assessment import assess_memory
 

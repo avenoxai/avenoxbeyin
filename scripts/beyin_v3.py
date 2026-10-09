@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import importlib.util
 import json
 import os
@@ -222,18 +223,58 @@ ERROR_HINTS = {
 }
 
 
-def jev_client():
+def _load_jev_module(module_name: str, vault: Path | None = None, state: Path | None = None):
+    try:
+        return importlib.import_module(module_name)
+    except ModuleNotFoundError:
+        pass
+
+    candidates = []
+    env_dir = os.environ.get("BEYIN_EXTENSIONS_DIR")
+    if env_dir:
+        cand = Path(env_dir) / "laya"
+        candidates.append(cand if cand.is_dir() else Path(env_dir))
+    if vault:
+        candidates.append(Path(vault) / "extensions" / "laya")
+        candidates.append(Path(vault) / ".agents" / "extensions" / "laya")
+    if state:
+        candidates.append(Path(state).resolve().parent / "extensions" / "laya")
+        candidates.append(Path(state).resolve().parent.parent / "extensions" / "laya")
+    script_dir = Path(__file__).resolve().parent
+    candidates.append(script_dir.parent / "extensions" / "laya")
+    candidates.append(script_dir.parent.parent / "extensions" / "laya")
+    candidates.append(script_dir.parent.parent.parent / "extensions" / "laya")
+    candidates.append(script_dir / "extensions" / "laya")
+
+    for candidate in candidates:
+        if candidate.is_dir():
+            cand_str = str(candidate.resolve())
+            if cand_str not in sys.path:
+                sys.path.insert(0, cand_str)
+            try:
+                return importlib.import_module(module_name)
+            except ModuleNotFoundError:
+                continue
+
+    raise ModuleNotFoundError(
+        f"Modul '{module_name}' bulunamadi. JEV/Laya ozellikleri 'extensions/laya' eklentisi gerektirir."
+    )
+
+
+def jev_client(state: Path | None = None, vault: Path | None = None):
     load_sync()
-    import beyin_v3_jev_client as client
-    return client
+    return _load_jev_module("beyin_v3_jev_client", vault=vault, state=state)
 
 
-def jev_status(state: Path):
+def jev_status(state: Path, vault: Path | None = None):
     """Doctor path: with no config and no kill switch the optional client is not imported."""
     if (not (state / "jev.json").exists() and not (state / "jev.disabled").exists()
             and os.environ.get("BEYIN_JEV_DISABLE") is None):
         return {"mode": "off", "configured": False}
-    return jev_client().status(state)
+    try:
+        return jev_client(state=state, vault=vault).status(state)
+    except ModuleNotFoundError:
+        return {"mode": "off", "configured": False, "installed": False}
 
 
 def jev_advice(result):
@@ -578,19 +619,27 @@ def main(argv=None, return_result=False):
             if not parallel_valid:
                 result['parallel_sessions_notice'] = 'parallel-sessions.json gecersiz; paralel oturum bildirimi kapali sayiliyor.'
         elif args.command == "jev":
+            client = jev_client(state=state, vault=vault)
             laya = {key: value for key, value in (("base_url", args.base_url), ("model", args.model)) if value is not None}
             if args.mode == "status":
                 if args.enable or args.disable or args.provider or laya:
                     raise ValueError("jev status reads only; use jev off/shadow/on with --enable/--disable/--provider")
-                result = jev_client().status(state)
+                result = client.status(state)
                 if args.check:
-                    result["server"] = jev_client().probe(state)
+                    result["server"] = client.probe(state)
                 result = jev_advice(result)
             else:
                 if args.check:
                     raise ValueError("--check works only with jev status")
-                result = jev_advice(jev_client().set_mode(state, args.mode, enable=args.enable, disable=args.disable,
-                                                          provider=args.provider, laya=laya or None))
+                kwargs = {}
+                import inspect
+                sig = inspect.signature(client.set_mode)
+                if "provider" in sig.parameters:
+                    kwargs["provider"] = args.provider
+                if "laya" in sig.parameters:
+                    kwargs["laya"] = laya or None
+                result = jev_advice(client.set_mode(state, args.mode, enable=args.enable, disable=args.disable,
+                                                    **kwargs))
                 result["changed"] = True
         elif args.command == "doctor":
             result = {"pending_events": len(list((state / "hook-queue").glob("*.json"))),
@@ -646,7 +695,7 @@ def main(argv=None, return_result=False):
                 result['instruction_references'] = references.check(vault)
             except Exception as exc:  # information only; never hides the rest of doctor
                 result['instruction_references'] = {'status': 'unavailable', 'error': type(exc).__name__}
-            result['jev'] = jev_status(state)
+            result['jev'] = jev_status(state, vault=vault)
             result['automatic_model_calls'] = result['jev'].get('automatic_model_calls', False)
             health = result['hook-health.json'] or {}
             gaps_info = result['receipt-gaps.json']
@@ -793,8 +842,8 @@ def main(argv=None, return_result=False):
                     raise RuntimeError('Context blocked: source sync '+str(refreshed.get('status', 'failed'))+'. Run sync with the same vault/state to inspect and reconcile source issues, then retry context.')
                 # Harness selection deliberately does not change retrieval semantics.
                 if args.jev:
-                    from beyin_v3_jev import advise_context
-                    result = advise_context(sync.store, **params)
+                    advisor = _load_jev_module("beyin_v3_jev", vault=vault, state=state)
+                    result = advisor.advise_context(sync.store, **params)
                 else:
                     result = sync.store.context_for(args.harness, **params)
                 if refreshed.get('status') == 'degraded':
@@ -807,7 +856,9 @@ def main(argv=None, return_result=False):
                         'truncated': len(warnings) > 20,
                     }
         elif args.command in ("jev-review", "jev-answer", "jev-memory"):
-            from beyin_v3_jev import review_candidate, verify_answer
+            advisor = _load_jev_module("beyin_v3_jev", vault=vault, state=state)
+            review_candidate = advisor.review_candidate
+            verify_answer = advisor.verify_answer
             max_chars = 32000 if args.command == "jev-answer" else 24000
             # Bounded read also applies to stdin; never echo raw proposal errors.
             if args.file == "-":
@@ -822,8 +873,8 @@ def main(argv=None, return_result=False):
                 raise ValueError("proposal_source_sync_incomplete")
             handler = verify_answer if args.command == "jev-answer" else review_candidate
             if args.command == "jev-memory":
-                from beyin_v3_memory_assessment import assess_memory
-                handler = assess_memory
+                mem_mod = _load_jev_module("beyin_v3_memory_assessment", vault=vault, state=state)
+                handler = mem_mod.assess_memory
             result = handler(sync.store, json.loads(raw), project=args.project)
         elif args.command == "receipt":
             if receipt_flags:

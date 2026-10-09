@@ -12,7 +12,9 @@ from unittest.mock import patch
 
 from v3_package_helpers import windows_runtime_env
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'template/.claude/scripts'))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
+sys.path.insert(0, str(ROOT / 'extensions/laya'))
 import beyin_v3_jev_client as client
 
 KEY = 'MARKERLOOPBACKKEY'

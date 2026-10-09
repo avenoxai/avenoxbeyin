@@ -17,6 +17,7 @@ ENTRY = ROOT / 'scripts/beyin_entry.py'
 SCRIPTS = ROOT / 'template/.claude/scripts'
 HOOK = SCRIPTS / 'beyin_v3_hook.py'
 sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(ROOT / 'extensions/laya'))
 import beyin_v3_jev_client as client
 import beyin_v3_laya as laya
 
