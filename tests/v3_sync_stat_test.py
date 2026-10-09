@@ -187,7 +187,7 @@ class StatSignatureTest(unittest.TestCase):
         path = self.write()
         self.settle()
         before = path.stat()
-        path.write_text(path.read_text(encoding='utf-8', newline='').replace('Alpha', 'Earlier clock'), encoding='utf-8')
+        path.write_text(path.read_text(encoding='utf-8').replace('Alpha', 'Earlier clock'), encoding='utf-8')
         os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns - 3600 * 1_000_000_000))
         with clock(-3600):
             result = self.engine.sync()
@@ -248,7 +248,7 @@ class StatSignatureTest(unittest.TestCase):
     def test_conflict_markers_stay_visible(self):
         path = self.write()
         self.settle()
-        path.write_text(path.read_text(encoding='utf-8', newline='') + '<<<<<<< ours\nA\n=======\nB\n>>>>>>> theirs\n', encoding='utf-8')
+        path.write_text(path.read_text(encoding='utf-8') + '<<<<<<< ours\nA\n=======\nB\n>>>>>>> theirs\n', encoding='utf-8')
         for _ in range(3):
             result = self.sync_both()
             self.assertEqual(result['warnings'], [{'source': 'notes/note.md',
@@ -272,7 +272,7 @@ class StatSignatureTest(unittest.TestCase):
         views = [path for path in self.vault.rglob('*.md') if 'v3' in path.parts]
         self.assertTrue(views)
         view = views[0]
-        view.write_text(view.read_text(encoding='utf-8', newline='') + '\nEdited by hand.\n', encoding='utf-8')
+        view.write_text(view.read_text(encoding='utf-8') + '\nEdited by hand.\n', encoding='utf-8')
         relative = view.relative_to(self.vault).as_posix()
         for _ in range(3):
             with self.later():
@@ -331,7 +331,7 @@ class StatSignatureTest(unittest.TestCase):
         path = self.write()
         self.settle()
         rolled_back = LegacySyncEngine(self.vault, self.state)
-        path.write_text(path.read_text(encoding='utf-8', newline='').replace('Alpha', 'Rolled back'), encoding='utf-8')
+        path.write_text(path.read_text(encoding='utf-8').replace('Alpha', 'Rolled back'), encoding='utf-8')
         with self.later():
             rolled_back.sync()
         self.sync_both()
