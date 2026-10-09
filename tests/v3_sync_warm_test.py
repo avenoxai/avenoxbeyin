@@ -244,7 +244,10 @@ class WarmSyncTest(unittest.TestCase):
         self.assertEqual(counts[1]['read'], 12)
         self.assertEqual(counts[1]['resolve'], 0)
         self.assertEqual(counts[0]['resolve'], 12)
-        self.assertLess(counts[1]['lstat'], counts[0]['lstat'])
+        if os.name != 'nt':
+            # Windows resolves through GetFinalPathNameByHandle, not lstat; there the
+            # comparison is the resolve count above.
+            self.assertLess(counts[1]['lstat'], counts[0]['lstat'])
 
     def test_windows_reparse_points_require_fresh_resolution(self):
         # Junctions can leave the vault without being reported as Unix symlinks.
