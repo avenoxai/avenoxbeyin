@@ -195,10 +195,16 @@ def load_engine():
     return module
 
 
-def load_sync():
+def _ensure_scripts_path():
     adjacent = Path(__file__).resolve().parent
     directory = adjacent if (adjacent / "beyin_v3_sync.py").exists() else Path(__file__).resolve().parents[1] / "template/.claude/scripts"
-    sys.path.insert(0, str(directory))
+    s_dir = str(directory)
+    if s_dir not in sys.path:
+        sys.path.insert(0, s_dir)
+
+
+def load_sync():
+    _ensure_scripts_path()
     from beyin_v3_sync import SyncEngine
     return SyncEngine
 
@@ -262,7 +268,7 @@ def _load_jev_module(module_name: str, vault: Path | None = None, state: Path | 
 
 
 def jev_client(state: Path | None = None, vault: Path | None = None):
-    load_sync()
+    _ensure_scripts_path()
     return _load_jev_module("beyin_v3_jev_client", vault=vault, state=state)
 
 
@@ -381,7 +387,7 @@ def read_json(filename: str):
 
 
 def load_skills():
-    load_sync()
+    _ensure_scripts_path()
     import beyin_v3_skills
     return beyin_v3_skills
 
@@ -522,7 +528,7 @@ def main(argv=None, return_result=False):
             result = {"initialized": True, "state": str(state), "network": False,
                       "hooks_installed": False, "optional_provider": None}
         elif args.command == "preferences":
-            load_sync()
+            _ensure_scripts_path()
             import beyin_v3_preferences as preferences
             import beyin_v3_companion as companion
             limits = {name: value for name, value in (('Last-Session.md', args.last_session_chars),
@@ -667,7 +673,7 @@ def main(argv=None, return_result=False):
             manifest_data = json.loads(manifest.read_text(encoding='utf-8')) if manifest.exists() else {}
             result['kept_legacy_runners'] = manifest_data.get('kept_legacy', [])
             result['excluded_components'] = manifest_data.get('excluded_components', [])
-            load_sync()
+            _ensure_scripts_path()
             import beyin_v3_exclusions as exclusions
             try:
                 configured_excluded = exclusions.read_exclusions(vault)
@@ -792,7 +798,7 @@ def main(argv=None, return_result=False):
         elif args.command == "skill-import":
             result = load_skills().import_skill(vault, state, args.source, name=args.name)
         elif args.command == "companion-compact":
-            load_sync()
+            _ensure_scripts_path()
             import beyin_v3_compact
             result = beyin_v3_compact.compact(vault, state, dry_run=args.dry_run)
             if any(entry['status'] == 'compacted' for entry in result['files'].values()):
