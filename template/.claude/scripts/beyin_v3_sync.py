@@ -17,7 +17,7 @@ if _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
 from beyin_v3 import (HARNESSES, REJECTED_AT, RETIRED_STATUSES, MemoryStore, ReceiptConflict, RevisionConflict, _json,
-                      _path_redirected, _rejected_inference, _status_word, resolve_supersedes)
+                      _path_redirected, _rejected_inference, _status_word, rejected_dependents, resolve_supersedes)
 from beyin_v3_projections import project_receipts
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
@@ -492,13 +492,18 @@ class SyncEngine:
                 'truncated': len(strict_issues) > 20 or len(legacy_done) > 20}
 
     def validity_health(self):
-        """Report `validity: rejected` that has no effect because the record is not an inference or preference."""
+        """Report `validity: rejected` that has no effect because the record is not an inference or preference,
+        and, for review only, current notes that link to a rejected inference or preference."""
         with self.store._connect() as db:
             records = [json.loads(row[0]) for row in db.execute('SELECT payload FROM records ORDER BY id')]
         ignored = [{'id': record.get('id'), 'source': record.get('source'), 'kind': record.get('kind')}
                    for record in records
                    if record.get('validity') == 'rejected' and record.get('kind') not in ('inference', 'preference')]
-        return {'ignored_rejection_count': len(ignored), 'ignored_rejections': ignored[:20], 'truncated': len(ignored) > 20}
+        dependents, ambiguous = rejected_dependents(records)
+        return {'ignored_rejection_count': len(ignored), 'ignored_rejections': ignored[:20],
+                'rejected_dependent_count': len(dependents), 'rejected_dependents': dependents[:20],
+                'ambiguous_rejected_link_count': len(ambiguous), 'ambiguous_rejected_links': ambiguous[:20],
+                'truncated': len(ignored) > 20 or len(dependents) > 20 or len(ambiguous) > 20}
 
     def review_health(self, today=None):
         """Notes whose own `review_at` date has come: an idea to revisit, not a task to do.

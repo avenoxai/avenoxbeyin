@@ -197,6 +197,18 @@ def semantic_unchanged(name, baseline, current, previous, kept=(), user_excluded
             return re.findall(pattern, baseline.decode(), re.S) == blocks
         if name == ".codex/config.toml":
             return bool(re.search(r"(?m)^hooks\s*=\s*true\s*$", current.decode()))
+        if name == ".beyin-runtime.json":
+            # The installer pins a resolved absolute path. A pin that is not absolute here was
+            # written by another OS through a synced vault (#249); it cannot name this machine's
+            # state, so the reinstall replaces it. Any other change still conflicts.
+            data, before = json.loads(current), json.loads(baseline)
+            if not isinstance(data, dict) or not isinstance(before, dict) or not isinstance(data.get("state"), str):
+                return False
+            try:
+                foreign = not Path(data["state"]).expanduser().is_absolute()
+            except RuntimeError:
+                return False
+            return foreign and dict(data, state=None) == dict(before, state=None)
         if name in (".claude/settings.local.json", ".claude/settings.json", ".codex/hooks.json", ".agents/hooks.json"):
             def owned(raw):
                 data = json.loads(raw)

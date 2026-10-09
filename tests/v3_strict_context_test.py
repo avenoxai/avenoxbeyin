@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from v3_package_helpers import isolated_path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
@@ -79,7 +80,7 @@ class StrictHookTest(unittest.TestCase):
         home.mkdir()
         self.env = {'HOME': str(home), 'USERPROFILE': str(home), 'APPDATA': str(home / 'appdata'),
                     'LOCALAPPDATA': str(home / 'localappdata'), 'TEMP': str(root), 'TMP': str(root),
-                    'PATH': os.defpath, 'PYTHONIOENCODING': 'utf-8', 'PYTHONDONTWRITEBYTECODE': '1',
+                    'PATH': isolated_path(), 'PYTHONIOENCODING': 'utf-8', 'PYTHONDONTWRITEBYTECODE': '1',
                     'BEYIN_V3_NO_SPAWN': '1'}
         for key in ('SYSTEMROOT', 'WINDIR'):
             if key in os.environ:
