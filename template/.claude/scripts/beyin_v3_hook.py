@@ -408,6 +408,13 @@ def main():
             from beyin_v3_releases import session_start
             notice = session_start(vault, state)
         settings = read(vault)
+        if event == 'SessionStart' and not args.metadata_only and (state / 'yakala.json').is_file():
+            # Opt-in capture queue (beyin.py yakala kur): one directory listing, never a model call.
+            try:
+                from beyin_v3_yakala import session_notice
+                notice += session_notice(vault)
+            except Exception:
+                pass
         if not args.metadata_only and event in ('SessionStart', 'PostToolUse') and (state / 'hygiene.json').is_file():
             # Opt-in hygiene signals (#130), machine-local in state/hygiene.json. Independent of the
             # performance profile, and never able to cost the session or the turn itself.

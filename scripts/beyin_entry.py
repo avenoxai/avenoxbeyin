@@ -402,6 +402,10 @@ def main(argv=None):
         state = Path(config['state'])
         directory = vault / '.claude/scripts'
         sys.path.insert(0, str(directory))
+        if argv and argv[0] == 'yakala':
+            # Optional capture tool: its own small CLI, no index or sync engine.
+            import beyin_v3_yakala as yakala
+            return yakala.main(argv[1:], vault=vault, state=state)
         if argv and argv[0] in ('update', 'rollback', 'recover'):
             import argparse
             import beyin_v3_update as updater
