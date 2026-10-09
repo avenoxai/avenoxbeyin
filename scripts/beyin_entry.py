@@ -399,9 +399,20 @@ def main(argv=None):
         if not config_path.is_file():
             raise ValueError('Kurulum ayari eksik; resmi V3 installer ile bu vault kurulumunu tamamlayin.')
         config = json.loads(config_path.read_text(encoding='utf-8'))
-        state = Path(config['state'])
         directory = vault / '.claude/scripts'
         sys.path.insert(0, str(directory))
+        raw_state = config.get('state', '') if isinstance(config, dict) else ''
+        if not isinstance(raw_state, str) or not raw_state:
+            from beyin_v3_cli import default_state
+            state = default_state(vault)
+        elif sys.platform != 'win32' and ('\\' in raw_state or ':' in raw_state):
+            from beyin_v3_cli import default_state
+            state = default_state(vault)
+        elif sys.platform == 'win32' and raw_state.startswith('/'):
+            from beyin_v3_cli import default_state
+            state = default_state(vault)
+        else:
+            state = Path(raw_state)
         if argv and argv[0] in ('update', 'rollback', 'recover'):
             import argparse
             import beyin_v3_update as updater
