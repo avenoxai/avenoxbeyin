@@ -21,7 +21,8 @@ from urllib.parse import parse_qs, urlparse
 
 sys.dont_write_bytecode = True
 
-INBOX = '📥 000-Inbox/Yakala'
+DEFAULT_INBOX = '📥 000-Inbox/Yakala'
+INBOX = DEFAULT_INBOX
 RAW = '.ham'
 FILES = 'dosyalar'
 STATE_FILE = 'yakala.json'
@@ -35,8 +36,34 @@ NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
 # ---------------------------------------------------------------- cards
 
-def inbox(vault):
-    return Path(vault) / INBOX
+def find_inbox(vault, preferred=None):
+    """Finds existing inbox folder (e.g. '000-Inbox/Yakala') or returns preferred/default."""
+    if preferred:
+        return preferred.replace('\\', '/').strip('/')
+    vault_path = Path(vault).resolve()
+    try:
+        state = resolve_state(vault_path)
+        state_file = _state_path(state)
+        if state_file.is_file():
+            saved = json.loads(state_file.read_text(encoding='utf-8')).get('klasor')
+            if saved and (vault_path / saved).is_dir():
+                return saved
+    except Exception:
+        pass
+    for candidate in ('📥 000-Inbox/Yakala', '000-Inbox/Yakala'):
+        if (vault_path / candidate).is_dir():
+            return candidate
+    try:
+        for entry in sorted(vault_path.iterdir()):
+            if entry.is_dir() and (entry.name.casefold().endswith(('000-inbox', 'inbox')) or 'inbox' in entry.name.casefold()):
+                return entry.name + '/Yakala'
+    except OSError:
+        pass
+    return DEFAULT_INBOX
+
+
+def inbox(vault, preferred=None):
+    return Path(vault) / find_inbox(vault, preferred)
 
 
 def now():
@@ -561,7 +588,8 @@ def session_notice(vault):
     count = pending(vault)
     if not count:
         return ''
-    return ('Yakalanan ' + str(count) + ' kaynak bekliyor (' + INBOX + '). Kullanici isterse beyin-yakala skill\'iyle isle; '
+    folder = find_inbox(vault)
+    return ('Yakalanan ' + str(count) + ' kaynak bekliyor (' + folder + '). Kullanici isterse beyin-yakala skill\'iyle isle; '
             'kendiliginden baslama.\n')
 
 
@@ -1217,13 +1245,13 @@ Windows'ta komutlardaki `python3` yerine `py -3` yaz.
 '''
 
 
-def clipper_template():
+def clipper_template(inbox_path=None):
     return {
         'schemaVersion': '0.1.0',
         'name': TEMPLATE_NAME,
         'behavior': 'create',
         'noteNameFormat': '{{date|date:"YYYY-MM-DD-HHmm"}}-{{title|safe_name|lower|slice:0,48}}',
-        'path': INBOX,
+        'path': inbox_path or INBOX,
         'noteContentFormat': '# {{title}}\n\n## Neden\n\n\n\n## Kaynak\n\n{{url}}\n\n## Secim\n\n{{selection}}\n\n## Icerik\n\n{{content}}\n',
         'properties': [
             {'name': 'tur', 'value': 'yakala', 'type': 'text'},
@@ -1299,7 +1327,7 @@ def _argline(values):
     return subprocess.list2cmdline([str(v) for v in values])
 
 
-def install(vault, state, hotkey=True, spec=None):
+def install(vault, state, hotkey=True, spec=None, folder_spec=None):
     vault, state = Path(vault).resolve(), Path(state).resolve()
     spec = spec or saved_hotkey(state)
     # Validate before anything is written, so a bad key changes nothing.
@@ -1307,12 +1335,13 @@ def install(vault, state, hotkey=True, spec=None):
         keycode, modifiers, label = mac_hotkey(spec)
     elif hotkey and os.name == 'nt':
         win_value, label = windows_hotkey(spec)
-    folder = inbox(vault)
+    folder = inbox(vault, preferred=folder_spec)
     folder.mkdir(parents=True, exist_ok=True)
+    inbox_rel = folder.relative_to(vault).as_posix()
     template = folder / (TEMPLATE_NAME.replace(' ', '-').lower() + '-web-clipper.json')
-    template.write_text(json.dumps(clipper_template(), ensure_ascii=False, indent='\t') + '\n', encoding='utf-8')
+    template.write_text(json.dumps(clipper_template(inbox_rel), ensure_ascii=False, indent='\t') + '\n', encoding='utf-8')
     script = Path(__file__).resolve()
-    done = {'status': 'kuruldu', 'klasor': INBOX, 'web_clipper_sablonu': template.relative_to(vault).as_posix(),
+    done = {'status': 'kuruldu', 'klasor': inbox_rel, 'web_clipper_sablonu': template.relative_to(vault).as_posix(),
             'kisayol': None, 'gonder_menusu': False, 'skill': []}
     # A vault without the beyin.py entry (standalone use) gets the direct module command.
     if (vault / 'beyin.py').is_file():
@@ -1325,16 +1354,16 @@ def install(vault, state, hotkey=True, spec=None):
         skill = vault / root / 'skills/beyin-yakala/SKILL.md'
         if skill.exists() and SKILL_MARK not in skill.read_text(encoding='utf-8', errors='ignore'):
             continue  # the user's own skill with this name stays untouched
-        folder = skill.parent
-        if root == '.claude' and not os.path.lexists(folder) and _links_skills(folder.parent):
+        folder_skill = skill.parent
+        if root == '.claude' and not os.path.lexists(folder_skill) and _links_skills(folder_skill.parent):
             try:  # vaults that keep one source under .agents and link it from .claude
-                folder.symlink_to(Path('../../.agents/skills/beyin-yakala'), target_is_directory=True)
-                done['skill'].append(folder.relative_to(vault).as_posix() + ' -> .agents')
+                folder_skill.symlink_to(Path('../../.agents/skills/beyin-yakala'), target_is_directory=True)
+                done['skill'].append(folder_skill.relative_to(vault).as_posix() + ' -> .agents')
                 continue
             except OSError:
                 pass
-        folder.mkdir(parents=True, exist_ok=True)
-        skill.write_text(SKILL_MD.replace('python3 beyin.py yakala', prefix), encoding='utf-8', newline='\n')
+        folder_skill.mkdir(parents=True, exist_ok=True)
+        skill.write_text(SKILL_MD.replace('python3 beyin.py yakala', prefix).replace('📥 000-Inbox/Yakala', inbox_rel), encoding='utf-8', newline='\n')
         done['skill'].append(skill.relative_to(vault).as_posix())
     if hotkey and sys.platform == 'darwin':
         # The listener runs from a copy outside the vault: a synced folder may evict the original.
@@ -1368,7 +1397,8 @@ def install(vault, state, hotkey=True, spec=None):
         done.update(kisayol=label, gonder_menusu=True)
     state.mkdir(parents=True, exist_ok=True)
     _state_path(state).write_text(json.dumps({'schema': 1, 'session_notice': True, 'kisayol': done['kisayol'],
-                                              'tus': spec if done['kisayol'] else saved_hotkey(state)}, ensure_ascii=False) + '\n',
+                                              'tus': spec if done['kisayol'] else saved_hotkey(state),
+                                              'klasor': inbox_rel}, ensure_ascii=False) + '\n',
                                   encoding='utf-8')
     done['araclar'] = {name: bool(path) for name, path in tools().items()}
     return done
@@ -1417,7 +1447,7 @@ def status(vault, state):
         probe = subprocess.run(['launchctl', 'print', 'gui/' + str(os.getuid()) + '/' + LAUNCH_LABEL], capture_output=True)
         running = probe.returncode == 0
     return {'status': 'tamam', 'kurulu': installed, 'dinleyici_calisiyor': running,
-            'bekleyen': pending(vault), 'klasor': INBOX,
+            'bekleyen': pending(vault), 'klasor': find_inbox(vault),
             'araclar': {name: bool(path) for name, path in tools().items()}}
 
 
@@ -1530,6 +1560,7 @@ def main(argv=None, vault=None, state=None):
     setup = command_parser('kur', help='Kisayolu, Web Clipper sablonunu, skill\'i ve oturum bildirimini kur')
     setup.add_argument('--kisayol-yok', action='store_true', help='Yalniz sablon, skill ve bildirim; kisayol kurulmaz')
     setup.add_argument('--tus', help='Kisayol, ornek: ctrl+alt+b (varsayilan) ya da cmd+"')
+    setup.add_argument('--klasor', help='Gelen kutusu klasoru (ornek: 000-Inbox/Yakala)')
     keys = command_parser('kisayol', help='Kisayolu goster ya da degistir, ornek: kisayol \'cmd+"\'')
     keys.add_argument('tus', nargs='?')
     command_parser('kaldir', help='Kisayolu ve bildirimi kaldir; notlara dokunmaz')
@@ -1567,7 +1598,7 @@ def main(argv=None, vault=None, state=None):
     elif command == 'liste':
         result = listing(vault, args.durum)
     elif command == 'kur':
-        result = install(vault, state, hotkey=not args.kisayol_yok, spec=args.tus)
+        result = install(vault, state, hotkey=not args.kisayol_yok, spec=args.tus, folder_spec=args.klasor)
     elif command == 'kisayol':
         if args.tus:
             result = install(vault, state, spec=args.tus)
@@ -1581,7 +1612,7 @@ def main(argv=None, vault=None, state=None):
     elif command == 'durum':
         result = status(vault, state)
     else:
-        result = clipper_template()
+        result = clipper_template(find_inbox(vault))
     if sys.stdout is None:
         return 0
     print(json.dumps(result, ensure_ascii=False, indent=2) if as_json or command == 'sablon' else human(result, command))

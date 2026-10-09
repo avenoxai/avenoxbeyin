@@ -194,6 +194,19 @@ class YakalaUnitTest(unittest.TestCase):
         (folder / 'b.md').write_text('---\ntur: not\ndurum: bekliyor\n---\n', encoding='utf-8')
         self.assertEqual(yakala.pending(self.vault), 1)
 
+    def test_emojiless_inbox_detection_and_install(self):
+        vault = Path(self.tmp.name) / 'emojiless-vault'
+        vault.mkdir(parents=True)
+        (vault / '000-Inbox').mkdir()
+        state = Path(self.tmp.name) / 'emojiless-state'
+        self.assertEqual(yakala.find_inbox(vault), '000-Inbox/Yakala')
+        res = yakala.install(vault, state, hotkey=False)
+        self.assertEqual(res['klasor'], '000-Inbox/Yakala')
+        self.assertTrue((vault / '000-Inbox/Yakala').is_dir())
+        self.assertFalse((vault / '📥 000-Inbox').exists())
+        st = yakala.status(vault, state)
+        self.assertEqual(st['klasor'], '000-Inbox/Yakala')
+
 
 class YakalaInstalledTest(unittest.TestCase):
     def setUp(self):
