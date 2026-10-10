@@ -752,6 +752,14 @@ def repair_mojibake(text):
 
 
 def _clipboard(root):
+    if shutil.which('wl-paste') and os.environ.get('WAYLAND_DISPLAY'):
+        try:
+            out = subprocess.run(['wl-paste', '--no-newline', '--type', 'text'], capture_output=True, text=True,
+                                 timeout=2)
+            if out.returncode == 0 and out.stdout:
+                return repair_mojibake(out.stdout)
+        except (OSError, subprocess.SubprocessError):
+            pass
     try:
         value = root.clipboard_get()
     except Exception:

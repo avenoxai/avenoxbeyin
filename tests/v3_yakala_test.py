@@ -32,6 +32,22 @@ class YakalaUnitTest(unittest.TestCase):
         self.assertEqual(yakala.canonical('https://twitter.com/a/status/42'), yakala.canonical('https://x.com/b/status/42?s=20'))
         self.assertNotEqual(yakala.canonical('https://a.com/x'), yakala.canonical('https://a.com/y'))
 
+    def test_clipboard_prefers_wl_paste_on_wayland(self):
+        class Tk:
+            def clipboard_get(self):
+                raise RuntimeError('XWayland cannot see the Wayland clipboard')
+
+        done = subprocess.CompletedProcess([], 0, stdout='https://example.com/x', stderr='')
+        with patch.dict('os.environ', {'WAYLAND_DISPLAY': 'wayland-1'}), \
+                patch.object(yakala.shutil, 'which', return_value='/usr/bin/wl-paste'), \
+                patch.object(yakala.subprocess, 'run', return_value=done):
+            self.assertEqual(yakala._clipboard(Tk()), 'https://example.com/x')
+        empty = subprocess.CompletedProcess([], 1, stdout='', stderr='Nothing is copied')
+        with patch.dict('os.environ', {'WAYLAND_DISPLAY': 'wayland-1'}), \
+                patch.object(yakala.shutil, 'which', return_value='/usr/bin/wl-paste'), \
+                patch.object(yakala.subprocess, 'run', return_value=empty):
+            self.assertEqual(yakala._clipboard(Tk()), '')
+
     def test_kind_and_slug(self):
         self.assertEqual(yakala.kind_of('https://m.youtube.com/watch?v=1'), 'youtube')
         self.assertEqual(yakala.kind_of('https://x.com/a/status/1'), 'x')
