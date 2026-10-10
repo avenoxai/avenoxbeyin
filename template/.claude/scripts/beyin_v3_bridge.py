@@ -14,10 +14,16 @@ import sys
 
 sys.dont_write_bytecode = True
 EVENTS = ('SessionStart', 'Stop', 'PreCompact', 'SessionEnd')
+# Antigravity has no SessionEnd/PreCompact; its first invocation and idle Stop are the boundaries.
+ANTIGRAVITY = {'PreInvocation': 'SessionStart', 'Stop': 'Stop'}
 
 
 def working_directory(payload, harness):
     value = payload.get('cwd')
+    if value is None and harness == 'antigravity':
+        # Antigravity runs the hook in the hooks.json folder; the project is the first workspace.
+        paths = payload.get('workspacePaths')
+        value = paths[0] if isinstance(paths, list) and paths else ''
     if value is None:
         value = os.environ.get('CLAUDE_PROJECT_DIR') if harness == 'claude' else None
     if value is None:
@@ -177,13 +183,15 @@ def project_context(vault, state, project_id, project_name, budget=1200, today_i
     return text if len(text) <= budget else ''
 
 
-def eligible(cwd, vault, roots):
-    if cwd is None or not cwd.is_dir() or cwd.is_relative_to(vault):
-        return False
-    if not any(cwd.is_relative_to(root) for root in roots):
-        return False
+def vault_owned(path, vault):
     # Another installed vault owns its own local events too.
-    return not any((p / '.beyin-runtime.json').exists() for p in (cwd, *cwd.parents))
+    return path.is_relative_to(vault) or any((p / '.beyin-runtime.json').exists() for p in (path, *path.parents))
+
+
+def eligible(cwd, vault, roots):
+    if cwd is None or not cwd.is_dir() or vault_owned(cwd, vault):
+        return False
+    return any(cwd.is_relative_to(root) for root in roots)
 
 
 def shell_command(argv):
@@ -204,12 +212,15 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--vault', type=Path, required=True)
     parser.add_argument('--state', type=Path, help='Defaults to the installed vault runtime locator')
-    parser.add_argument('--harness', choices=('claude', 'codex'), required=True)
+    parser.add_argument('--harness', choices=('claude', 'codex', 'antigravity'), required=True)
+    parser.add_argument('--native-event', choices=tuple(ANTIGRAVITY), help='Antigravity hook event; set by --print-config')
     parser.add_argument('--project-root', type=Path, action='append', required=True)
     parser.add_argument('--context-chars', type=int, default=1500, help='Startup instructions only; 0 disables injection')
     parser.add_argument('--event', choices=EVENTS, action='append', help='Allowed events; default all four lifecycle boundaries')
     parser.add_argument('--print-config', action='store_true', help='Print hook groups to merge into global JSON; changes nothing')
     args = parser.parse_args(argv)
+    # Antigravity's Stop contract expects a decision; "stop" lets the agent finish as usual.
+    quiet = '{"decision":"stop"}' if args.harness == 'antigravity' and args.native_event == 'Stop' else '{}'
     try:
         vault = args.vault.expanduser().resolve()
         if not vault.is_dir() or not 0 <= args.context_chars <= 4000:
@@ -224,6 +235,10 @@ def main(argv=None):
         if any(not p.is_dir() for p in roots):
             raise ValueError('Project roots must exist')
         events = list(dict.fromkeys(args.event or EVENTS))
+        if args.harness == 'antigravity':
+            events = [event for event in events if event in ANTIGRAVITY.values()]
+            if not events:
+                raise ValueError('Antigravity offers only SessionStart and Stop')
         if args.print_config:
             command = [sys.executable, str(Path(__file__).resolve()), '--vault', str(vault),
                        '--state', str(state), '--harness', args.harness, '--context-chars', str(args.context_chars)]
@@ -231,6 +246,13 @@ def main(argv=None):
                 command.extend(['--project-root', str(root)])
             for event in events:
                 command.extend(['--event', event])
+            if args.harness == 'antigravity':
+                # One named hook with flat handler lists, as in the vault's .agents/hooks.json.
+                print(json.dumps({'beyin-v3-bridge': {native: [{
+                    'type': 'command', 'command': shell_command(command + ['--native-event', native]),
+                    'timeout': 20 if os.name == 'nt' else 5}] for native, event in ANTIGRAVITY.items()
+                    if event in events}}, indent=2))
+                return 0
             shell = shell_command(command)
             print(json.dumps({'hooks': {event: [{'hooks': [{'type': 'command', 'command': shell,
                               'timeout': 3 if event == 'SessionEnd' else 5}]}] for event in events}}, indent=2))
@@ -239,24 +261,36 @@ def main(argv=None):
         payload = json.loads(sys.stdin.read(1_000_000) or '{}')
         if not isinstance(payload, dict):
             raise ValueError('Invalid hook payload')
+        if args.harness == 'antigravity':
+            # Same boundaries as the vault adapter: first invocation of a run, fully idle Stop.
+            first = (payload.get('invocationNum') == 0 if args.native_event == 'PreInvocation'
+                     else payload.get('fullyIdle') is True)
+            paths = payload.get('workspacePaths')
+            # A vault among the workspaces runs its own local hooks; do not count the session twice.
+            if (not first or not isinstance(paths, list) or not all(isinstance(p, str) and Path(p).is_absolute() for p in paths)
+                    or any(vault_owned(Path(p).resolve(), vault) for p in paths)):
+                print(quiet); return 0
+            payload.update(hook_event_name=ANTIGRAVITY[args.native_event], session_id=payload.get('conversationId'))
         event = payload.get('hook_event_name')
         if event not in events or payload.get('no_memory') is True or os.environ.get('BEYIN_V3_INTERNAL') or os.environ.get('BEYIN_V3_SKIP') == '1':
-            print('{}'); return 0
+            print(quiet); return 0
         cwd = working_directory(payload, args.harness)
         if not isinstance(payload.get('session_id'), str) or payload['session_id'] in ('', 'unknown'):
-            print('{}'); return 0
+            print(quiet); return 0
         if not eligible(cwd, vault, roots):
-            print('{}'); return 0
+            print(quiet); return 0
         from beyin_v3_preferences import read
         settings = read(vault)
         if not settings['auto_sync']:
-            print('{}'); return 0
+            print(quiet); return 0
         # Stable per-project session namespace prevents identical session IDs in
         # two external projects from satisfying each other's receipt checkpoints.
         payload['cwd'] = str(cwd)
         payload['session_id'] = json.dumps([str(cwd), payload.get('session_id', 'unknown')])
         if payload.get('event_id'):
             payload['event_id'] = json.dumps([args.harness, str(cwd), event, payload['event_id']])
+        # The hook reads Antigravity's session from conversationId; keep the namespaced one.
+        payload['conversationId'] = payload['session_id']
         session = hashlib.sha256(payload['session_id'].encode()).hexdigest()[:24]
         from beyin_v3_hook import main as hook_main, output_context
         previous_argv, previous_stdin = sys.argv, sys.stdin
@@ -271,7 +305,7 @@ def main(argv=None):
         # Never inject Companion/history into an unrelated repository. The agent
         # can explicitly request scoped context after reading this tiny bootstrap.
         if event != 'SessionStart' or not args.context_chars or settings['context_mode'] == 'off':
-            print('{}'); return 0
+            print(quiet); return 0
         cli = [sys.executable, str(vault / 'beyin.py')]
         command = ('& ' + ' '.join("'" + v.replace("'", "''") + "'" for v in cli)
                    if os.name == 'nt' else shlex.join(cli))
@@ -299,7 +333,7 @@ def main(argv=None):
         if args.print_config:
             print('Bridge configuration invalid; verify paths and budget.', file=sys.stderr)
             return 1
-        print('{}')  # Never block the host or expose a path/payload in an error.
+        print(quiet)  # Never block the host or expose a path/payload in an error.
         return 0
 
 
