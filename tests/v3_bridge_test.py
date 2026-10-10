@@ -140,6 +140,50 @@ class BridgeTest(unittest.TestCase):
         self.assertIn('hookSpecificOutput', self.invoke(payload, harness='codex'))
         self.assertEqual(self.invoke(dict(self.payload, cwd=123)), {})
 
+    def agy(self, native, workspaces, cwd=None, **fields):
+        # Antigravity sends camelCase fields, no cwd, and runs the hook in the hooks.json folder.
+        payload = dict(conversationId='agy-conversation', workspacePaths=[str(p) for p in workspaces], **fields)
+        return self.invoke(payload, extra=['--native-event', native], harness='antigravity', cwd=cwd or self.home)
+
+    def test_antigravity_first_workspace_is_the_project_and_only_boundaries_count(self):
+        result = self.agy('PreInvocation', [self.project], invocationNum=0)
+        text = result['injectSteps'][0]['ephemeralMessage']
+        self.assertIn('receipt --harness antigravity', text)
+        self.assertEqual(self.agy('PreInvocation', [self.project], invocationNum=1), {})
+        self.assertEqual(self.agy('Stop', [self.project], fullyIdle=False), {'decision': 'stop'})
+        self.assertEqual(self.agy('Stop', [self.project], fullyIdle=True), {'decision': 'stop'})
+        events = self.queued()
+        self.assertEqual(sorted(e['event'] for e in events), ['SessionStart', 'Stop'])
+        self.assertEqual({e['harness'] for e in events}, {'antigravity'})
+        self.assertEqual({e['project'] for e in events}, {self.project.name})
+        # Same conversation id in another project is a different receipt session.
+        other = self.root / 'Projects' / 'other'; other.mkdir()
+        self.agy('PreInvocation', [other], invocationNum=0)
+        self.assertEqual(len({e['session'] for e in self.queued()}), 2)
+
+    def test_antigravity_needs_an_allowed_workspace_and_none_owned_by_a_vault(self):
+        # The hook process runs in the hooks.json folder; it never stands in for the project.
+        for workspaces in ([], [self.vault], [self.project, self.vault]):
+            self.assertEqual(self.agy('PreInvocation', workspaces, cwd=self.project, invocationNum=0), {})
+        self.assertEqual(self.invoke(dict(conversationId='agy-conversation', invocationNum=0),
+                                     extra=['--native-event', 'PreInvocation'], harness='antigravity'), {})
+        self.assertEqual(self.queued(), [])
+
+    def test_antigravity_config_is_a_named_hook_whose_command_runs(self):
+        config = self.invoke(extra=['--print-config'], harness='antigravity')
+        self.assertEqual(list(config), ['beyin-v3-bridge'])
+        self.assertEqual(set(config['beyin-v3-bridge']), {'PreInvocation', 'Stop'})
+        command = config['beyin-v3-bridge']['PreInvocation'][0]['command']
+        payload = dict(conversationId='agy-config', invocationNum=0, workspacePaths=[str(self.project)])
+        result = subprocess.run(command, shell=True, input=json.dumps(payload), capture_output=True,
+                                text=True, encoding='utf-8', env=self.env, cwd=self.home, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Receipt session=', json.loads(result.stdout)['injectSteps'][0]['ephemeralMessage'])
+        narrowed = self.invoke(extra=['--print-config', '--event', 'SessionStart'], harness='antigravity')
+        self.assertEqual(set(narrowed['beyin-v3-bridge']), {'PreInvocation'})
+        with self.assertRaises(AssertionError):
+            self.invoke(extra=['--print-config', '--event', 'SessionEnd'], harness='antigravity')
+
     def test_gap_projection_preserves_project_and_receipt_clears_gap(self):
         self.invoke()
         self.invoke(dict(self.payload, hook_event_name='Stop', event_id='stop'))

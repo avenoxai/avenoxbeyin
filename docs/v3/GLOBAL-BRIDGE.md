@@ -25,6 +25,9 @@ dosyanın mevcut olay listelerine bir kez ekleyin:
 
 - Claude Code: `~/.claude/settings.json`; özel `CLAUDE_CONFIG_DIR` kullanılıyorsa o dizindeki ayar dosyası.
 - Codex: `$CODEX_HOME/hooks.json`, varsayılan `~/.codex/hooks.json`. JSON'u `--harness codex` ile yeniden üretin.
+- Antigravity: kullanıcı düzeyindeki `~/.gemini/config/hooks.json`. JSON'u `--harness antigravity`
+  ile yeniden üretin; çıktı `hooks` yerine tek bir adlandırılmış hook (`beyin-v3-bridge`) verir,
+  bu anahtarı dosyanın kökündeki diğer hook adlarının yanına ekleyin.
 
 Önce mevcut ayarı yedekleyin. Dosyanın tamamını bu çıktıyla değiştirmeyin; diğer
 ayarları ve hook'ları koruyun. Aynı köprüyü iki kez eklemeyin; bir proje için tek
@@ -44,6 +47,11 @@ kurulumdan sonra her istemcide aşağıdaki geri okumayı yapın.
 - Yalnız `SessionStart`, `Stop`, `PreCompact`, `SessionEnd` iletilir.
   `UserPromptSubmit` ve `PostToolUse` hiç iletilmez.
 - `--event SessionStart --event SessionEnd` ile olay kümesi daraltılabilir.
+- Antigravity'de `PreCompact` ve `SessionEnd` yoktur. Vault adaptörüyle aynı sınırlar kullanılır:
+  `PreInvocation` yalnız `invocationNum: 0` iken `SessionStart`, `Stop` yalnız `fullyIdle: true`
+  iken `Stop` sayılır. Hook komutu `hooks.json` klasöründe çalıştığı için proje, payload'daki ilk
+  `workspacePaths` girdisidir; işlem çalışma dizinine düşülmez. Çalışma alanlarından biri vault
+  veya kurulu başka bir vault ise köprü sessiz kalır, olaylar o vault'un yerel hook'larına kalır.
 - `--context-chars 1500` başlangıç talimatı sınırıdır (0–4000). `0` enjeksiyonu
   kapatır. Tam talimat sığmazsa kesik komut yerine boş çıktı verilir.
 - Başlangıçta proje etiketi, receipt oturum kimliği, mutlak CLI yolu ve kaynaklı
@@ -62,7 +70,8 @@ kurulumdan sonra her istemcide aşağıdaki geri okumayı yapın.
   vault'lar atlanır. Gerçek yollar çözülür; symlink ile kapsam dışına çıkılmaz.
   Ayrı vault kurulumu olmadan özel yerel hook bağladıysanız aynı projeye global
   köprüyü ayrıca bağlamayın.
-- Cwd önceliği: payload, Claude için `CLAUDE_PROJECT_DIR`, işlem çalışma dizini.
+- Cwd önceliği: payload, Claude için `CLAUDE_PROJECT_DIR`, işlem çalışma dizini
+  (Antigravity için yalnız ilk `workspacePaths` girdisi).
   Geçersiz/izin dışı cwd ve eksik oturum kimliği kayıt oluşturmaz.
 - Kuyruk yalnız olay/harness/oturum hash'i, sınırlı proje etiketi, proje yolunun
   hash'i ve zamanı saklar. Tam cwd, prompt ve transcript saklanmaz. Aynı adlı
@@ -93,7 +102,7 @@ görüldüğünü gösterir; iş sonucu veya görev tamamlanması değildir.
 ve `project_id` bulunur. Prompt olayları alınmadığı için her turun eksiksiz
 receipt kapsamı iddia edilmez. Ajan kayıt yazmadan kapanırsa worker özet uydurmaz.
 
-İzole testler iki harness, kapsam/çift tetiklenme korumaları, proje kökeni,
+İzole testler üç harness, kapsam/çift tetiklenme korumaları, proje kökeni,
 idempotence, eski checkpoint tablosu geçişi, receipt ile gap kapanması ve gerçek
 kurulu ZIP'ten üretilen komutun harici cwd'de yürütülmesini kapsar. Kişisel global
 ayarlar testlerde değiştirilmez. Gerçek istemcide yeni oturum açıp `doctor`
