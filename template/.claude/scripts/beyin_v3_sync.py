@@ -239,6 +239,40 @@ def render(metadata, body):
 
 EXCLUDED_FILES = {'agents.md', 'claude.md', 'gemini.md', 'skill.md', 'hooks.md', 'config.md', 'settings.md', 'instructions.md', 'codex.md', 'setup.md', 'install.md'}
 EXCLUDED_DIRS = {'node_modules', 'receipts', '__pycache__'}
+# Directories that are almost always vendored or generated, whatever their language or build
+# system. A vault that keeps a checkout, submodule or build tree inside a project folder gets
+# that tree's own README/CLAUDE/SECURITY/CONTRIBUTING documents indexed as if they were notes,
+# and the real notes drown in them. These are pruned by bare name at any depth, like node_modules.
+VENDORED_DIRS = {'3rdparty', 'third_party', 'thirdparty', 'vendor', 'vendored', 'external'}
+SYSCONFIG_NAME = 'index.json'
+MAX_SYSCONFIG_BYTES = 65536
+MAX_EXCLUDED_DIRS = 64
+
+
+def excluded_dirs(state_dir):
+    """VENDORED_DIRS plus the user's own `excluded_dirs`, read from <state>/index.json.
+
+    An absent, unreadable or malformed file means VENDORED_DIRS alone; a bad config must never
+    break a sync. Mirrors the optional-config shape of beyin_v3_passage.settings().
+    """
+    result = set(VENDORED_DIRS)
+    path = Path(state_dir) / SYSCONFIG_NAME
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_SYSCONFIG_BYTES:
+            return result
+        value = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return result
+    if not isinstance(value, dict):
+        return result
+    extra = value.get('excluded_dirs')
+    if (isinstance(extra, list) and len(extra) <= MAX_EXCLUDED_DIRS and
+            all(isinstance(item, str) and item.strip() and '/' not in item and '\\' not in item and
+                item not in ('.', '..') and len(item) <= 256 for item in extra)):
+        result |= {item.casefold() for item in extra}
+    return result
+
+
 COMPLETION_FIELDS = {'completion_contract', 'completion_criterion', 'evidence_refs'}
 TASK_STATUSES = ('inbox', 'active', 'waiting', 'blocked', 'done', 'cancelled')
 
@@ -559,8 +593,10 @@ class SyncEngine:
     def _scan(self):
         records, warnings, conflicts = {}, [], []
         duplicate = set()
+        # Read once per sync, not per directory: the config cannot change mid-walk.
+        skipped_dirs = EXCLUDED_DIRS | excluded_dirs(self.state)
         for directory, dirs, files in os.walk(self.root, followlinks=False):
-            dirs[:] = sorted(d for d in dirs if not d.startswith('.') and d.casefold() not in EXCLUDED_DIRS and not (Path(directory) / d).is_symlink())
+            dirs[:] = sorted(d for d in dirs if not d.startswith('.') and d.casefold() not in skipped_dirs and not (Path(directory) / d).is_symlink())
             for name in sorted(files):
                 if name.startswith('.') or not name.lower().endswith('.md') or name.casefold() in EXCLUDED_FILES or name.casefold().startswith('setup-'):
                     continue
