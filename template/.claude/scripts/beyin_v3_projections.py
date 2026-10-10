@@ -396,16 +396,31 @@ _FRONTMATTER_UPDATED = re.compile(_FRONTMATTER_KEY % '(?:updated|modified)' +
                                   r'["\']?([0-9]{4}-[0-9]{2}-[0-9]{2}(?:[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2})?)?)', re.M)
 
 
+# Agent concepts live in knowledge/; the official template keeps human-curated notes in 500-Knowledge/.
+# The Stop hook imports these, so its reminder and doctor count the same notes.
+DISTILLATION_ROOTS = ('knowledge/', '🧠 500-Knowledge/', '500-Knowledge/')
+# Generated views and the V2 compiler seeds change without any agent distilling.
+NOT_DISTILLATION = ('knowledge/v3/', 'knowledge/index.md', 'knowledge/log.md')
+
+
+def is_distilled_note(relative):
+    relative = relative.replace('\\', '/')
+    return (relative.startswith(DISTILLATION_ROOTS) and relative.endswith('.md') and
+            not any(relative == item or relative.startswith(item) for item in NOT_DISTILLATION))
+
+
 def knowledge_freshness(vault, db, now=None):
     """Diagnose knowledge distillation recency and count receipts since then."""
     if now is None:
         now = time.time()
     vault = Path(vault)
-    knowledge_dir = vault / 'knowledge'
     latest_mtime = None
     latest_source = None
 
-    if knowledge_dir.is_dir():
+    for root in DISTILLATION_ROOTS:
+        knowledge_dir = vault / root
+        if not knowledge_dir.is_dir():
+            continue
         for path in sorted(knowledge_dir.rglob('*.md')):
             if path.is_symlink() or not path.is_file():
                 continue
@@ -413,8 +428,7 @@ def knowledge_freshness(vault, db, now=None):
                 relative = path.relative_to(vault).as_posix()
             except ValueError:
                 continue
-            # Generated views and the V2 compiler seeds are not distillation.
-            if relative.startswith('knowledge/v3/') or relative in ('knowledge/index.md', 'knowledge/log.md'):
+            if not is_distilled_note(relative):
                 continue
             try:
                 mtime = path.stat().st_mtime
