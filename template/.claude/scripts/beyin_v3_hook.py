@@ -180,33 +180,22 @@ def _has_declared_learning(summary):
     return False
 
 
-# Agent concepts live in knowledge/; the official template keeps human-curated notes in 500-Knowledge/.
-_DISTILLATION_ROOTS = ("knowledge/", "🧠 500-Knowledge/", "500-Knowledge/")
-# Generated views and the V2 compiler seeds change without any agent distilling.
-_NOT_DISTILLATION = ("knowledge/v3/", "knowledge/index.md", "knowledge/log.md")
-
-
-def _is_distilled_note(relative):
-    relative = relative.replace("\\", "/")
-    return (relative.startswith(_DISTILLATION_ROOTS) and relative.endswith(".md") and
-            not any(relative == item or relative.startswith(item) for item in _NOT_DISTILLATION))
-
-
 def _has_knowledge_update(vault, receipt, since):
     if not receipt:
         return False
-    if any(isinstance(ref, str) and _is_distilled_note(ref) for ref in receipt.get("refs", [])):
+    from beyin_v3_projections import DISTILLATION_ROOTS, is_distilled_note
+    if any(isinstance(ref, str) and is_distilled_note(ref) for ref in receipt.get("refs", [])):
         return True
     if not vault:
         return False
-    for root in _DISTILLATION_ROOTS:
+    for root in DISTILLATION_ROOTS:
         k_dir = Path(vault) / root
         if not k_dir.is_dir():
             continue
         for path in k_dir.rglob("*.md"):
             try:
                 if (path.is_file() and not path.is_symlink() and path.stat().st_mtime >= since and
-                        _is_distilled_note(path.relative_to(vault).as_posix())):
+                        is_distilled_note(path.relative_to(vault).as_posix())):
                     return True
             except (ValueError, OSError):
                 continue

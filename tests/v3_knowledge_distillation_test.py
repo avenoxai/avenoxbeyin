@@ -128,6 +128,57 @@ class KnowledgeDistillationTest(unittest.TestCase):
         self.assertEqual(freshness['latest_source'], 'knowledge/concepts/json.md')
         self.assertGreaterEqual(freshness['days_ago'], 106)
 
+    def test_knowledge_freshness_counts_template_knowledge_root(self):
+        """The official template keeps notes in 🧠 500-Knowledge/; the Stop hook already counts them (#197)."""
+        engine = SyncEngine(self.vault, self.state)
+        note = self.vault / '🧠 500-Knowledge/Araştırmalar/wal.md'
+        note.parent.mkdir(parents=True)
+        note.write_text('# WAL\n', encoding='utf-8')
+        with engine.store._connect() as db:
+            freshness = knowledge_freshness(self.vault, db)
+        self.assertIsNotNone(freshness['last_distilled_at'])
+        self.assertEqual(freshness['latest_source'], '🧠 500-Knowledge/Araştırmalar/wal.md')
+        text = beyin_entry.human_result({'knowledge_freshness': freshness}, 'doctor')
+        self.assertIn('Son bilgi damitmasi: bugun', text)
+
+    def test_knowledge_freshness_still_skips_generated_views_with_all_roots(self):
+        engine = SyncEngine(self.vault, self.state)
+        (self.vault / 'knowledge/v3').mkdir(parents=True)
+        (self.vault / 'knowledge/v3/outcomes.md').write_text('# Outcomes\n', encoding='utf-8')
+        (self.vault / 'knowledge/index.md').write_text('# İndeks\n', encoding='utf-8')
+        (self.vault / '🧠 500-Knowledge').mkdir()
+        (self.vault / '🧠 500-Knowledge/.gitkeep').touch()
+        with engine.store._connect() as db:
+            freshness = knowledge_freshness(self.vault, db)
+        self.assertIsNone(freshness['last_distilled_at'])
+        self.assertIsNone(freshness['latest_source'])
+
+    def test_stop_hook_and_doctor_count_the_same_notes(self):
+        spec = importlib.util.spec_from_file_location('v3_distillation_hook', ROOT / 'template/.claude/scripts/beyin_v3_hook.py')
+        hook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook)
+        cases = {
+            'knowledge/concepts/a.md': True,
+            '🧠 500-Knowledge/b.md': True,
+            '500-Knowledge/alan/c.md': True,
+            'knowledge/v3/outcomes.md': False,
+            'knowledge/index.md': False,
+            'knowledge/log.md': False,
+            'knowledge/concepts/d.txt': False,
+            '📥 000-Inbox/e.md': False,
+        }
+        for index, (relative, counted) in enumerate(cases.items()):
+            with self.subTest(relative=relative):
+                vault = Path(self.tmp.name) / ('case-%d' % index)
+                note = vault / relative
+                note.parent.mkdir(parents=True)
+                note.write_text('# not\n', encoding='utf-8')
+                engine = SyncEngine(vault, Path(self.tmp.name) / ('state-%d' % index))
+                with engine.store._connect() as db:
+                    doctor_counts = knowledge_freshness(vault, db)['latest_source'] == relative
+                hook_counts = hook._has_knowledge_update(vault, {'refs': []}, 0)
+                self.assertEqual((doctor_counts, hook_counts), (counted, counted))
+
     def test_doctor_renders_unavailable_freshness_as_unmeasured(self):
         text = beyin_entry.human_result(
             {'knowledge_freshness': {'status': 'unavailable', 'error': 'OperationalError'}}, 'doctor')
