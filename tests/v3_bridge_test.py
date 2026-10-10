@@ -169,6 +169,15 @@ class BridgeTest(unittest.TestCase):
                                      extra=['--native-event', 'PreInvocation'], harness='antigravity'), {})
         self.assertEqual(self.queued(), [])
 
+    def test_antigravity_relative_workspace_is_never_resolved_against_the_hook_folder(self):
+        # A relative entry would resolve against the hooks.json folder, so its vault check is meaningless.
+        other = self.root / 'Projects' / 'other'; other.mkdir()
+        for workspaces in (['Projects/other'], [str(self.project), 'Projects/other']):
+            self.assertEqual(self.invoke(dict(conversationId='agy-relative', invocationNum=0, workspacePaths=workspaces),
+                                         extra=['--native-event', 'PreInvocation'], harness='antigravity',
+                                         cwd=self.root), {})
+        self.assertEqual(self.queued(), [])
+
     def test_antigravity_config_is_a_named_hook_whose_command_runs(self):
         config = self.invoke(extra=['--print-config'], harness='antigravity')
         self.assertEqual(list(config), ['beyin-v3-bridge'])
