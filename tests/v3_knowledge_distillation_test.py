@@ -179,6 +179,25 @@ class KnowledgeDistillationTest(unittest.TestCase):
                 hook_counts = hook._has_knowledge_update(vault, {'refs': []}, 0)
                 self.assertEqual((doctor_counts, hook_counts), (counted, counted))
 
+    def test_stop_hook_receipt_refs_use_the_shared_filter(self):
+        """Receipt refs skip the *.md glob, so the filter alone decides which refs count."""
+        spec = importlib.util.spec_from_file_location('v3_distillation_hook_refs', ROOT / 'template/.claude/scripts/beyin_v3_hook.py')
+        hook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook)
+        empty = Path(self.tmp.name) / 'empty-vault'
+        empty.mkdir()
+        cases = {
+            'knowledge/concepts/a.md': True,
+            '🧠 500-Knowledge/b.md': True,
+            'knowledge/concepts/d.txt': False,
+            'knowledge/v3/outcomes.md': False,
+            'knowledge/log.md': False,
+            '📥 000-Inbox/e.md': False,
+        }
+        for ref, counted in cases.items():
+            with self.subTest(ref=ref):
+                self.assertEqual(hook._has_knowledge_update(empty, {'refs': [ref]}, time.time() + 3600), counted)
+
     def test_doctor_renders_unavailable_freshness_as_unmeasured(self):
         text = beyin_entry.human_result(
             {'knowledge_freshness': {'status': 'unavailable', 'error': 'OperationalError'}}, 'doctor')
