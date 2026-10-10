@@ -17,13 +17,41 @@ Kurulum şunları yapar:
 
 | | Mac | Windows |
 |---|---|---|
-| Her uygulamada kısayol | `Control+Option+B` | `Ctrl+Alt+B` |
+| Her uygulamada kısayol | `Control+Option+B` | `Ctrl+Alt+B` (Linux'ta da) |
 | Dosya gönderme | Finder'da dosyayı seç, kısayola bas | Sağ tık > Gönder > Beyne At |
 | Tarayıcı | Obsidian Web Clipper şablonu | Obsidian Web Clipper şablonu |
 | Ajan | `beyin-yakala` skill'i | `beyin-yakala` skill'i |
 
 Kısayol ek paket istemez; Python'un kendisiyle çalışır. Mac'te bir oturum açılış servisi
 (LaunchAgent) tuşu dinler, Windows'ta Başlat menüsündeki kısayol tuşu kullanılır.
+### Linux
+
+`kur`, `~/.local/share/applications/beyne-at.desktop` dosyasını (`XDG_DATA_HOME` varsa orada) yazar;
+komut `python3 <kopya> pencere --vault <vault>` olur ve betiğin bir kopyası state klasöründe durur.
+Kısayol `Ctrl+Alt+B` (ya da `--tus`) masaüstüne göre kaydedilir:
+
+- **KDE Plasma:** `kwriteconfig6` (yoksa `kwriteconfig5`) ile `kglobalshortcutsrc` içine yazılır,
+  `gdbus` ile oturum kapatmadan etkinleştirilir. Çıktıdaki `kisayol_calisiyor` tuşun gerçekten
+  alındığını gösterir. Sınır: kısayol daha önce başka bir komutla kurulduysa (vault taşındı, Python
+  değişti) KDE çalışan oturumda eski komutu çalıştırmayı sürdürebilir; oturumu kapatıp açınca yenisi
+  geçerli olur. İlk kurulumda bu sorun yok.
+- **GNOME:** `gsettings` ile özel bir kısayol (`custom-keybindings`) eklenir; senin mevcut
+  kısayolların korunur.
+- **Diğerleri:** `.desktop` dosyası yazılır, kısayol kurulmaz; `kur` çıktısındaki komutu masaüstü
+  ayarlarında bir kısayola bağla.
+
+Kaldırınca `.desktop` dosyası ve kısayol silinir. Pencere neyi kaydedeceğini panodan okur: bunun için
+Wayland'da `wl-clipboard` (`wl-paste`), X11'de `xclip` ya da `xsel` gerekir; yoksa pano okunamaz.
+Panodaki bağlantı, kopyalanan dosyalar (`file://`) ya da düz metin yakalanır.
+
+Tam pencere `tkinter` ister. Arch tabanlı dağıtımlarda Python'un `tk` paketi ayrıdır
+(`sudo pacman -S tk`); yoksa pencere yerine `kdialog` ya da `zenity` ile yalnız "neden" sorulur
+(ikisi de yoksa neden sorulmadan kaydedilir).
+
+Doğrulamak için: `python3 beyin.py yakala durum` (`Kisayol dinleyicisi: calisiyor`), KDE'de
+`gdbus call --session -d org.kde.kglobalaccel -o /component/beyne_at_desktop -m org.kde.kglobalaccel.Component.isActive`
+(`(true,)` beklenir), sonra kısayola bas.
+
 Yalnız şablon ve skill istiyorsan: `python3 beyin.py yakala kur --kisayol-yok`.
 
 ### Kısayolu değiştir

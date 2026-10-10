@@ -177,6 +177,115 @@ class YakalaUnitTest(unittest.TestCase):
         self.assertTrue(agent.exists())
         self.assertNotIn('LaunchAgent', result['kaldirilan'])
 
+    def test_linux_hotkey_specs(self):
+        self.assertEqual(yakala.linux_hotkey('ctrl+alt+b'), ('Ctrl+Alt+B', 201326658, '<Control><Alt>b', 'Ctrl+Alt+B'))
+        self.assertEqual(yakala.linux_hotkey('ctrl+shift+f5'), ('Ctrl+Shift+F5', 0x04000000 + 0x02000000 + 0x01000034,
+                                                                '<Control><Shift>F5', 'Ctrl+Shift+F5'))
+        self.assertEqual(yakala.linux_hotkey('super+space'), ('Meta+Space', 0x10000020, '<Super>space', 'Super+Space'))
+        for bad in ('shift+b', 'ctrl+f13', 'ctrl+"', 'ctrl+enter', 'f5'):
+            with self.assertRaises(ValueError):
+                yakala.linux_hotkey(bad)
+
+    def _linux_env(self, desktop, gnome_list="@as []"):
+        """Patched Linux session: records every external call, answers the few the code reads."""
+        home = Path(self.tmp.name) / 'home'
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append([str(part) for part in command])
+            out = ''
+            if command[:3] == ['gsettings', 'get', yakala.GNOME_KEYS]:
+                out = self.gnome_list
+            elif command[:2] == ['gsettings', 'set'] and command[3] == 'custom-keybindings':
+                self.gnome_list = command[4]
+            elif command[-1] == 'org.kde.kglobalaccel.Component.isActive':
+                out = '(true,)'
+            elif command[-1] == '201326658':
+                out = "([(['beyne-at.desktop', '_launch'], [201326658])],)"
+            return subprocess.CompletedProcess(command, 0, out.encode(), b'')
+        self.gnome_list = gnome_list
+        patches = [patch.object(yakala.sys, 'platform', 'linux'), patch.object(yakala.subprocess, 'run', fake_run),
+                   patch.object(yakala, '_which', lambda *names: '/usr/bin/' + names[0]),
+                   patch.dict(yakala.os.environ, {'HOME': str(home), 'XDG_DATA_HOME': str(home / 'data'),
+                                                  'XDG_CURRENT_DESKTOP': desktop})]
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+        return home / 'data/applications/beyne-at.desktop', calls
+
+    def test_linux_install_kde_and_uninstall(self):
+        entry, calls = self._linux_env('KDE')
+        state = Path(self.tmp.name) / 'state'
+        done = yakala.install(self.vault, state, spec='ctrl+alt+b')
+        self.assertEqual((done['kisayol'], done['kisayol_calisiyor']), ('Ctrl+Alt+B', True))
+        text = entry.read_text(encoding='utf-8')
+        self.assertIn('pencere --vault', text)
+        self.assertIn(str(state.resolve() / 'yakala'), text)
+        write = next(c for c in calls if 'kwriteconfig' in c[0])
+        for part in ('services', 'beyne-at.desktop', '_launch', 'Ctrl+Alt+B'):
+            self.assertIn(part, write)
+        keys = next(c for c in calls if 'org.kde.KGlobalAccel.setShortcutKeys' in c)
+        self.assertEqual(keys[-2:], ['[([201326658],)]', '6'])
+        self.assertTrue(yakala.status(self.vault, state)['dinleyici_calisiyor'])
+        removed = yakala.uninstall(self.vault, state)['kaldirilan']
+        self.assertIn('beyne-at.desktop', removed)
+        self.assertFalse(entry.exists())
+        self.assertTrue(any('--delete' in c for c in calls))
+        self.assertTrue(any('org.kde.KGlobalAccel.unregister' in c for c in calls))
+
+    def test_linux_install_gnome_keeps_existing_bindings(self):
+        entry, calls = self._linux_env('ubuntu:GNOME', "['/org/other/custom0/']")
+        state = Path(self.tmp.name) / 'state'
+        for _ in range(2):
+            self.assertEqual(yakala.install(self.vault, state)['kisayol'], 'Ctrl+Alt+B')
+        self.assertEqual(yakala._gnome_list(), ['/org/other/custom0/', yakala.GNOME_PATH])
+        binding = [c for c in calls if c[:2] == ['gsettings', 'set'] and c[-2] == 'binding']
+        self.assertEqual(binding[-1][-1], '<Control><Alt>b')
+        yakala.uninstall(self.vault, state)
+        self.assertEqual(yakala._gnome_list(), ['/org/other/custom0/'])
+        self.assertFalse(entry.exists())
+
+    def test_linux_install_other_desktop_gives_hint(self):
+        entry, _ = self._linux_env('XFCE')
+        done = yakala.install(self.vault, Path(self.tmp.name) / 'state')
+        self.assertIsNone(done['kisayol'])
+        self.assertIn('pencere --vault', done['ipucu'])
+        self.assertTrue(entry.is_file())
+        self.assertIn(done['ipucu'], yakala.human(done, 'kur'))
+
+    def test_desktop_exec_quotes_spaces(self):
+        self.assertEqual(yakala._desktop_quote('/tmp/a b/x'), '"/tmp/a b/x"')
+        self.assertEqual(yakala._desktop_quote('/tmp/x'), '/tmp/x')
+
+    def test_linux_fallback_saves_clipboard_text_with_reason(self):
+        with patch.object(yakala.sys, 'platform', 'linux'), patch.object(yakala, '_which', lambda *n: '/usr/bin/' + n[0]), \
+                patch.object(yakala, '_try', return_value=(0, 'tek satir neden\n')) as ask:
+            result = yakala._popup_fallback(self.vault, {'metin': 'kopyalanan paragraf'})
+        self.assertEqual(ask.call_args[0][0][0], 'kdialog')
+        self.assertIn('kopyalanan paragraf', ask.call_args[0][0][4])
+        self.assertEqual(result['status'], 'yakalandi')
+        card = yakala.cards(self.vault)[0]
+        self.assertIn('kopyalanan paragraf', card['body'])
+        self.assertIn('tek satir neden', card['body'])
+
+    def test_linux_fallback_cancel(self):
+        with patch.object(yakala.sys, 'platform', 'linux'), patch.object(yakala, '_which', lambda *n: '/usr/bin/' + n[0]), \
+                patch.object(yakala, '_try', return_value=(1, '')):
+            self.assertEqual(yakala._popup_fallback(self.vault, {'metin': 'x'}), {'status': 'vazgecildi'})
+        self.assertEqual(yakala.cards(self.vault), [])
+
+    def test_linux_context_reads_clipboard(self):
+        def context(clip):
+            with patch.object(yakala.sys, 'platform', 'linux'), patch.object(yakala, '_which', lambda *n: '/usr/bin/' + n[0]), \
+                    patch.dict(yakala.os.environ, {'WAYLAND_DISPLAY': 'wayland-0'}), patch.object(yakala, '_try', return_value=(0, clip)):
+                return yakala.gather_context()
+        note = Path(self.tmp.name) / 'a b.txt'
+        note.write_text('x', encoding='utf-8')
+        self.assertEqual(context('https://ornek.com/a\nikinci'), {'url': 'https://ornek.com/a'})
+        self.assertEqual(context(note.as_uri() + '\n'), {'dosyalar': [str(note)]})
+        self.assertEqual(context('duz metin'), {'metin': 'duz metin'})
+        self.assertEqual(context('  \n'), {})
+
     def test_inbox_report_skips_processed_cards(self):
         import beyin_v3_hygiene as hygiene
         waiting = yakala.capture(self.vault, url='https://ornek.com/a')

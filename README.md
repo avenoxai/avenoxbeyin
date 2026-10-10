@@ -4,7 +4,7 @@ Claude Code, Codex veya Google Antigravity ile kullanabileceğin yerel ikinci be
 
 Python **3.11 veya üzeri** yeterli. Git, pip, Mem0 hesabı, API anahtarı veya sürekli açık sunucu gerekmez. Kullandığın AI istemcisinin kendi kurulumu ve hesabı ayrı olarak gerekir.
 
-> **V3.9.0:** Yeni, isteğe bağlı **yakala** aracı: gördüğün yerde tek tuşla (Mac'te `Control+Option+B`, Windows'ta `Ctrl+Alt+B`, değiştirilebilir) video, tweet, makale, mail ya da dosya yakala; ajanın metni çıkarıp dersleri notlarına bağlasın. Kurmak için `python3 beyin.py yakala kur`. Mevcut kurulumda vault içinde `python3 beyin.py update` çalıştır; V3.1.0 ve sonrasında yeni sürümleri oturum başında görürsün. [Sürüm notları](docs/v3/releases/3.9.0.md) · [Yakala](docs/v3/YAKALA.md) · [Güncelleme rehberi](docs/v3/UPDATE.md).
+> **V3.9.0:** Yeni, isteğe bağlı **yakala** aracı: gördüğün yerde tek tuşla (Mac'te `Control+Option+B`, Windows ve Linux'ta `Ctrl+Alt+B`, değiştirilebilir) video, tweet, makale, mail ya da dosya yakala; ajanın metni çıkarıp dersleri notlarına bağlasın. Kurmak için `python3 beyin.py yakala kur`. Mevcut kurulumda vault içinde `python3 beyin.py update` çalıştır; V3.1.0 ve sonrasında yeni sürümleri oturum başında görürsün. [Sürüm notları](docs/v3/releases/3.9.0.md) · [Yakala](docs/v3/YAKALA.md) · [Güncelleme rehberi](docs/v3/UPDATE.md).
 
 ## En kolay kurulum: bir klasör, bir mesaj
 
