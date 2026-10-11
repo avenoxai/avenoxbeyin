@@ -36,30 +36,27 @@ class GitBashProbe(base.HookInstallerTest):
         bashes = [p for p in (r'C:\Program Files\Git\bin\bash.exe', r'C:\Program Files\Git\usr\bin\bash.exe')
                   if os.path.exists(p)]
         say('git bash candidates:', bashes, '| which bash:', shutil.which('bash'))
-        python = sys.executable.replace('\\', '/')
+        say('PATHEXT on runner:', os.environ.get('PATHEXT'), '| COMSPEC:', os.environ.get('COMSPEC'))
+        say('runner-only env names:', sorted(set(os.environ) - set(self.env)))
         full_env = dict(os.environ, **self.env)
-        noconv = dict(self.env, MSYS_NO_PATHCONV='1', MSYS2_ARG_CONV_EXCL='*')
-        runs = []
-        for name, command in commands.items():
-            runs.append((name + ' | cmd shell=True', command, True, self.env))
-            for bash in bashes:
-                tag = name + ' | ' + ('usr-bin' if '\\usr\\' in bash else 'bin')
-                runs += [(tag + ' -c', [bash, '-c', command], False, self.env),
-                         (tag + ' -lc', [bash, '-lc', command], False, self.env),
-                         (tag + ' -c full-env', [bash, '-c', command], False, full_env),
-                         (tag + ' -lc full-env', [bash, '-lc', command], False, full_env),
-                         (tag + ' -c noconv', [bash, '-c', command], False, noconv)]
-        launcher = next(iter(commands.values())).split(' -NoProfile ')[0] if commands else 'powershell.exe'
-        for bash in bashes:
-            tag = 'diag | ' + ('usr-bin' if '\\usr\\' in bash else 'bin')
-            stdin_python = '"' + python + '" -c "import sys; print(len(sys.stdin.buffer.read()))"'
-            stdin_ps = launcher + " -NoProfile -NonInteractive -Command '[Console]::In.ReadToEnd().Length'"
-            runs += [(tag + ' -c stdin-len-python', [bash, '-c', stdin_python], False, self.env),
-                     (tag + ' -lc stdin-len-python', [bash, '-lc', stdin_python], False, self.env),
-                     (tag + ' -c stdin-len-powershell', [bash, '-c', stdin_ps], False, self.env),
-                     (tag + ' -lc stdin-len-powershell', [bash, '-lc', stdin_ps], False, self.env),
-                     (tag + ' -c pwd', [bash, '-c', 'pwd; echo "flags=$-"'], False, self.env),
-                     (tag + ' -lc pwd', [bash, '-lc', 'pwd; echo "flags=$-"'], False, self.env)]
+        command = commands['claude']
+        bash = bashes[0]
+
+        def plus(*names):
+            return dict(self.env, **{name: os.environ[name] for name in names if name in os.environ})
+
+        def minus(*names):
+            return {key: value for key, value in full_env.items() if key.upper() not in names}
+
+        runs = [('round2 | isolated', [bash, '-c', command], False, self.env),
+                ('round2 | isolated + PATHEXT', [bash, '-c', command], False, plus('PATHEXT')),
+                ('round2 | isolated + COMSPEC', [bash, '-c', command], False, plus('COMSPEC')),
+                ('round2 | isolated + PSModulePath', [bash, '-c', command], False, plus('PSModulePath')),
+                ('round2 | isolated + SystemDrive + ProgramFiles + ProgramData', [bash, '-c', command], False,
+                 plus('SystemDrive', 'ProgramFiles', 'ProgramData', 'ProgramFiles(x86)', 'ProgramW6432')),
+                ('round2 | full - PATHEXT', [bash, '-c', command], False, minus('PATHEXT')),
+                ('round2 | full - COMSPEC', [bash, '-c', command], False, minus('COMSPEC')),
+                ('round2 | full', [bash, '-c', command], False, full_env)]
         for label, argv, shell, env in runs:
             started = time.time()
             try:
