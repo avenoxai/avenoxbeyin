@@ -438,6 +438,12 @@ def human_result(result, command, installed_version=None):
     elif command == 'context':
         records = result.get('records', [])
         message = '\n\n'.join(str(r.get('source', '')) + '\n' + str(r.get('text', '')) for r in records) or 'Eslesen kaynak bulunamadi.'
+    elif command == 'triage':
+        try:
+            import beyin_v3_triage as triage_module
+            message = triage_module.format_human(result)
+        except Exception:
+            message = json.dumps(result, ensure_ascii=True, indent=2)
     else:
         message = 'Islem sonucu: ' + str(status or 'tamamlandi')
         if command == 'sync':

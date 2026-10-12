@@ -513,6 +513,13 @@ def parser():
     update.add_argument("--file", default="-", help="JSON {id, expected_revision, changes}")
     history = sub.add_parser("history", help="Read ordered revision snapshots for a record")
     history.add_argument("record_id")
+    triage_parser = sub.add_parser("triage", help="Triage and digestion routines: inbox scanning, stale tasks, digest")
+    triage_parser.add_argument("--stale-days", type=int, default=14, help="Days before an open task is considered stale (default 14)")
+    triage_parser.add_argument("--days", dest="digest_days", type=int, default=7, help="Days for weekly knowledge digest (default 7)")
+    ingest_server = sub.add_parser("ingest-server", help="Local-first HTTP ingest server for mobile captures")
+    ingest_server.add_argument("--host", default="127.0.0.1", help="Host interface to bind (default 127.0.0.1)")
+    ingest_server.add_argument("--port", type=int, default=8484, help="Port to listen on (default 8484)")
+    ingest_server.add_argument("--token", help="Optional Bearer token for authentication")
     return root
 
 
@@ -996,6 +1003,15 @@ def main(argv=None, return_result=False):
             if refreshed.get('status') == 'conflict':
                 raise RuntimeError('History blocked: source sync conflict. Run sync with the same vault/state to inspect and reconcile source issues, then retry history.')
             result = sync.store.history(args.record_id)
+        elif args.command == "triage":
+            _ensure_scripts_path()
+            import beyin_v3_triage
+            result = beyin_v3_triage.triage(vault, state=state, stale_days=args.stale_days, digest_days=args.digest_days)
+        elif args.command == "ingest-server":
+            _ensure_scripts_path()
+            import beyin_v3_ingest_server
+            beyin_v3_ingest_server.run_server(vault, host=args.host, port=args.port, token=args.token)
+            return 0
         else:
             payload = read_json(args.file)
             result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])

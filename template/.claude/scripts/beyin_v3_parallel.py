@@ -109,10 +109,16 @@ def _ago(seconds):
     return 'az once' if minutes < 1 else str(minutes) + ' dk once'
 
 
-def line(others, now):
+def line(others, now, current_harness=None):
     """ASCII Turkish, like the other hook lines. `others` is newest first."""
-    shown = ', '.join('#' + item['session'][:8] + ' (' + _ago(max(0, now - item['last_at'])) + ')'
-                      for item in others[:MAX_SHOWN])
+    def _format_item(item):
+        base = '#' + item['session'][:8]
+        h = item.get('harness')
+        if h and current_harness and h != current_harness:
+            base += ' [' + h + ']'
+        return base + ' (' + _ago(max(0, now - item['last_at'])) + ')'
+
+    shown = ', '.join(_format_item(item) for item in others[:MAX_SHOWN])
     rest = len(others) - MAX_SHOWN
     return ("[Paralel oturum] Bu vault'ta " + str(len(others)) + ' oturum daha acik: ' + shown +
             (' ve ' + str(rest) + ' tane daha' if rest > 0 else '') +
@@ -174,7 +180,7 @@ def touch(state, harness, session_id, now=None):
                   'announced': (announced + [item['key'] for item in fresh])[-MAX_MARKERS:]}
         if not _write(own, marker):
             return ''  # never announce what could not be recorded: no repeat on the next prompt
-        return line(fresh, now) if fresh else ''
+        return line(fresh, now, current_harness=harness) if fresh else ''
     except Exception:
         return ''
 
