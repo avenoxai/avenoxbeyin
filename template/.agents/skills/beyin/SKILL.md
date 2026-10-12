@@ -37,8 +37,9 @@ de aynı oturumdaki ikinci güncelleme yeni kayıt eklemez, mevcut kaydı yerind
   güncellemede yeni tarihli paragraf ekleme. Biten konuyu kapalı bölümüne kısa bir satırla
   al. Başlıklardan ibaret bir listeye indirgeme. Varsayılan sınır 8.000 karakter.
 - Kurallar.md: kullanıcı açıkça düzelttiğinde kuralı bir iki satırda, tarih ve kapsamıyla kaydet.
-  Bu dosya her oturum başında karakter bütçesiyle yüklenir; uzun dosyada önce gerekçeler, sonra
-  ortadaki kurallar kırpılır. Gerekçe, kullanıcının cümlesi ve olayın anlatımı gerekiyorsa
+  Belirli bir projeye özgü kuralı `[scope: proje]` veya `[kapsam: proje]` ile etiketle; genel kurallar
+  etiketsiz kalır. Bu dosya her oturum başında karakter bütçesiyle yüklenir; uzun dosyada önce gerekçeler,
+  sonra ortadaki kurallar kırpılır. Gerekçe, kullanıcının cümlesi ve olayın anlatımı gerekiyorsa
   companion klasöründe ayrı bir nota (ör. `Kurallar-Detay.md`) gider; kurala bağlantısını bırak.
   Tek seferlik biçim isteğini evrensel kişilik kuralı yapma. Çelişen eski kuralı açıklayarak düzelt.
 - Core.md / Soul.md: kullanıcı hakkında yeni, kalıcı ve açıkça desteklenen tercih varsa
@@ -87,6 +88,8 @@ başlatmadan bu öğrenmeyi mevcut konuşma içinde tamamla.
 Kullanıcının reddettiği `kind: inference` veya `kind: preference` kaydını silme: kaynak frontmatter'ında `validity: rejected`, `rejected_reason` ve `rejected_at` (ISO tarih ya da zaman damgası) tut. Eski `status: rejected` çıkarım/tercih kayıtları da güncel bağlama girmez. Geçmişi bilinçli incelemek için `python3 beyin.py history KAYIT_ID` kullan; geçmişteki iddiayı geçerli tercih diye uygulama. Aynı iddia `Core.md` gibi daha geniş bir güncel kaynakta da yazılıysa o kaynağı ayrıca düzelt. Geçerli bir çıkarıma dayanarak bir seçeneği elemeden önce kullanıcıya o andaki niyetini ayıran tarafsız bir soru sor; kullanıcı soru sorulmamasını veya açık kapsamı istediyse bu isteğe uy.
 
 Kullanıcı "son günlerde ne yaptık" gibi yakın dönem sorusu sorarsa `python3 beyin.py recap --days 7` çalıştır. Sonuç ajanların yazdığı receipt iddialarıdır, doğrulanmış olgu değildir; gerekiyorsa listelenen kaynağı aç. Özel kaynak bağlantıları gizlenir ve sayılır; gizleneni tahmin etme.
+
+Kullanıcı "kasada ne var", "bekleyen işler", "sindirim yapalım", "triage" veya "haftalık durum" gibi periyodik gözden geçirme istediğinde `python3 beyin.py triage` (Windows'ta `py -3 beyin.py triage`) çalıştır. Komut `000-Inbox/` ve `sources/` içindeki bekleyen kaynakları, 14 günden eski hareketsiz görevleri ve son 7 günde üretilen bilgi/karar notlarını özetler, eyleme dönük tavsiyeler verir.
 
 ## Not ve görev yazma
 
@@ -139,6 +142,11 @@ Hook bağlamında `Receipt session=...` verilmişse `--session` ile (JSON modund
 refs mevcut vault-relative dosyalardır. Aynı gönderimi yeniden denerken aynı event_id ve gövdeyi kullan; farklı sonuç için yeni ID seç. Geçici JSON'u kullanıcı içerik klasörüne dağıtma. Günlük/knowledge otomatik görünümlerini CLI/worker üretir; kaynağını düzenle. Son kaydı ve gerektiğinde `doctor` çıktısını kontrol et; failed/pending/conflict durumunu başarı diye sunma.
 
 Basit soru veya selamlaşma için gereksiz kayıt yazma. Kullanıcının no-memory, no-tools ve dosya sınırları bu akıştan önceliklidir. Kendi skill kurallarını konuşma transkriptinden kendiliğinden değiştirme.
+
+
+## Mobil ve harici yakalama
+
+Masaüstü dışındayken telefon veya harici cihazlardan gelen kutusuna hızlı not fırlatmak için `beyin.py ingest-server` (`--port`, `--token`) çalıştırılabilir. Sunucu gelen verileri tek yönlü (append-only) olarak `000-Inbox/` klasörüne zaman damgalı Markdown kartları olarak yazar ve dışarıya sıfır veri sızdırır. Ayrıntılar için `docs/v3/INGEST-SERVER.md` kılavuzuna bakın.
 
 
 ## Tüketim ve otomatik kontrol tercihleri
