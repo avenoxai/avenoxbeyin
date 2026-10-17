@@ -1472,12 +1472,52 @@ def _uia_address_bar(window, class_name):
             ctypes.windll.ole32.CoUninitialize()
 
 
-def _uia_link_at_cursor(window, at=None, limit=4000):
+POST_PERMALINKS = (
+    # X/Twitter: a post and its photo/video/analytics sub-pages all name the same post.
+    (re.compile(r'^https://(?:www\.|mobile\.)?(?:x|twitter)\.com/([A-Za-z0-9_]{1,15})/status/(\d+)(?:[/?#]|$)', re.I),
+     lambda m: 'https://x.com/%s/status/%s' % (m.group(1), m.group(2))),
+    # Instagram: a post or a reel, with or without the author's name before it.
+    (re.compile(r'^https://(?:www\.)?instagram\.com/(?:[A-Za-z0-9_.]{1,30}/)?(p|reels?)/([A-Za-z0-9_-]{5,})(?:[/?#]|$)', re.I),
+     lambda m: 'https://www.instagram.com/%s/%s/' % ('p' if m.group(1).lower() == 'p' else 'reel', m.group(2))),
+)
+
+
+def _post_permalink(href):
+    """The canonical address of the post a link belongs to, or None when it is no post link."""
+    for pattern, build in POST_PERMALINKS:
+        match = pattern.match(href or '')
+        if match:
+            return build(match)
+    return None
+
+
+def _post_title(post, article, link=''):
+    """A short card title for a post read from its article.
+
+    X reads an article as "<name> <badge> @<handle> <time> <text>"; the time is the post's own
+    link, so the text after it, prefixed by the handle, is the title. Other sites keep the text.
+    """
+    text = re.sub(r'\s+', ' ', article or '').strip()
+    link = re.sub(r'\s+', ' ', link or '').strip()
+    handle = re.match(r'^https://x\.com/([A-Za-z0-9_]{1,15})/status/', post or '')
+    if handle and link and link in text:
+        body = text.split(link, 1)[1].strip()
+        text = '@%s: %s' % (handle.group(1), body) if body else '@' + handle.group(1)
+    return text[:200]
+
+
+def _uia_link_at_cursor(window, at=None, limit=4000, root=None):
     """The link under the mouse pointer inside `window` as {'value': href, 'name': text}, else None.
+
+    `root` optionally scopes UIA to a validated renderer child; pointer ownership stays top-level.
 
     A hovered YouTube card plays its preview above the link, so the element at the point is not the
     link itself: every Hyperlink of the window is asked for its bounding rectangle instead and the
     one containing the pointer wins. Values come from the page (ValuePattern), never from a guess.
+
+    A post's text or video is no link on X or in the Instagram feed. When no link holds the
+    pointer, the innermost ARIA article (one post) under it is taken and its own permalink, the
+    first post link inside it, is returned; a second distinct one is the quoted post ('quote').
     """
     import ctypes
     import uuid
@@ -1523,14 +1563,103 @@ def _uia_link_at_cursor(window, at=None, limit=4000):
     if started < 0:
         return None
     uia, element, condition, found = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p()
+    role_condition, articles = ctypes.c_void_p(), ctypes.c_void_p()
+    oleaut32.SysAllocString.argtypes, oleaut32.SysAllocString.restype = [ctypes.c_wchar_p], ctypes.c_void_p
 
     def prop(obj, ident, value):
         _com_call(obj, 10, ident, ctypes.byref(value), argtypes=(ctypes.c_int, ctypes.POINTER(VARIANT)))  # GetCurrentPropertyValue
 
+    def elements(array):
+        """Each element of an IUIAutomationElementArray, in document order; the caller releases it."""
+        count = ctypes.c_int()
+        _com_call(array, 3, ctypes.byref(count), argtypes=(ctypes.POINTER(ctypes.c_int),))  # get_Length
+        for index in range(min(count.value, limit)):
+            item = ctypes.c_void_p()
+            _com_call(array, 4, index, ctypes.byref(item), argtypes=(ctypes.c_int, out))  # GetElement
+            if item:
+                yield item
+
+    def area(item):
+        """Width*height when the element's rectangle holds the pointer, else 0."""
+        box = VARIANT()
+        try:
+            prop(item, 30001, box)  # BoundingRectangle: SAFEARRAY of left, top, width, height
+            upper = ctypes.c_long()
+            if box.vt == 0x2005 and box.v1 and not oleaut32.SafeArrayGetUBound(box.v1, 1, ctypes.byref(upper)) \
+                    and upper.value == 3:
+                data = ctypes.c_void_p()
+                if not oleaut32.SafeArrayAccessData(box.v1, ctypes.byref(data)):
+                    try:
+                        left, top, wide, high = ctypes.cast(data, ctypes.POINTER(ctypes.c_double * 4)).contents
+                    finally:
+                        oleaut32.SafeArrayUnaccessData(box.v1)
+                    if wide > 0 and high > 0 and left <= point.x < left + wide and top <= point.y < top + high:
+                        return wide * high
+            return 0
+        finally:
+            oleaut32.VariantClear(ctypes.byref(box))
+
+    def strings(item):
+        value, name = VARIANT(), VARIANT()
+        try:
+            prop(item, 30045, value)  # Value
+            prop(item, 30005, name)  # Name
+            return (ctypes.wstring_at(value.v1) if value.vt == 8 and value.v1 else '',
+                    ctypes.wstring_at(name.v1) if name.vt == 8 and name.v1 else '')
+        finally:
+            oleaut32.VariantClear(ctypes.byref(value))
+            oleaut32.VariantClear(ctypes.byref(name))
+
+    def article_post():
+        """The permalink of the innermost ARIA article (one post) under the pointer."""
+        role = VARIANT(vt=8, v1=oleaut32.SysAllocString('article'))  # VT_BSTR
+        try:
+            _com_call(uia, 23, 30101, role, ctypes.byref(role_condition),  # CreatePropertyCondition, AriaRole
+                      argtypes=(ctypes.c_int, VARIANT, out))
+        finally:
+            oleaut32.VariantClear(ctypes.byref(role))
+        _com_call(element, 6, 4, role_condition, ctypes.byref(articles), argtypes=(ctypes.c_int, ctypes.c_void_p, out))
+        if not articles:
+            return None
+        best, best_area = None, 0
+        for item in elements(articles):
+            size = area(item)
+            if size and (best is None or size < best_area):
+                if best:
+                    _com_call(best, 2)
+                best, best_area = item, size
+            else:
+                _com_call(item, 2)
+        if not best:
+            return None
+        links = ctypes.c_void_p()
+        try:
+            _com_call(best, 6, 4, condition, ctypes.byref(links), argtypes=(ctypes.c_int, ctypes.c_void_p, out))
+            posts, first = [], ''
+            for item in (elements(links) if links else ()):
+                try:
+                    href, label = strings(item)
+                    post = _post_permalink(href)
+                    if post and post not in posts:
+                        first = first if posts else label  # the post's own link: X's time stamp
+                        posts.append(post)
+                finally:
+                    _com_call(item, 2)
+            if not posts:
+                return None
+            result = {'value': posts[0], 'name': _post_title(posts[0], strings(best)[1], first)}
+            if len(posts) > 1:
+                result['quote'] = posts[1]
+            return result
+        finally:
+            if links:
+                _com_call(links, 2)
+            _com_call(best, 2)
+
     try:
         ctypes.oledll.ole32.CoCreateInstance(ctypes.byref(guid('ff48dba4-60ef-4201-aa87-54103eef594e')), None, 1,
                                              ctypes.byref(guid('30cbe57d-d9d0-452a-ab13-7ac5ac4825ee')), ctypes.byref(uia))
-        _com_call(uia, 6, wintypes.HWND(window), ctypes.byref(element), argtypes=(wintypes.HWND, out))  # ElementFromHandle
+        _com_call(uia, 6, wintypes.HWND(root or window), ctypes.byref(element), argtypes=(wintypes.HWND, out))  # ElementFromHandle
         link_type = VARIANT(vt=3, v1=50005)  # VT_I4, UIA_HyperlinkControlTypeId
         _com_call(uia, 23, 30003, link_type, ctypes.byref(condition),  # CreatePropertyCondition, ControlType
                   argtypes=(ctypes.c_int, VARIANT, out))
@@ -1538,51 +1667,184 @@ def _uia_link_at_cursor(window, at=None, limit=4000):
                   argtypes=(ctypes.c_int, ctypes.c_void_p, out))
         if not found:
             return None
-        count = ctypes.c_int()
-        _com_call(found, 3, ctypes.byref(count), argtypes=(ctypes.POINTER(ctypes.c_int),))  # get_Length
-        for index in range(min(count.value, limit)):
-            item = ctypes.c_void_p()
-            _com_call(found, 4, index, ctypes.byref(item), argtypes=(ctypes.c_int, out))  # GetElement
-            if not item:
-                continue
+        for item in elements(found):
             try:
-                box = VARIANT()
-                try:
-                    prop(item, 30001, box)  # BoundingRectangle: SAFEARRAY of left, top, width, height
-                    inside = False
-                    upper = ctypes.c_long()
-                    if box.vt == 0x2005 and box.v1 and not oleaut32.SafeArrayGetUBound(box.v1, 1, ctypes.byref(upper)) \
-                            and upper.value == 3:
-                        data = ctypes.c_void_p()
-                        if not oleaut32.SafeArrayAccessData(box.v1, ctypes.byref(data)):
-                            try:
-                                left, top, wide, high = ctypes.cast(data, ctypes.POINTER(ctypes.c_double * 4)).contents
-                            finally:
-                                oleaut32.SafeArrayUnaccessData(box.v1)
-                            inside = wide > 0 and high > 0 and left <= point.x < left + wide and top <= point.y < top + high
-                finally:
-                    oleaut32.VariantClear(ctypes.byref(box))
-                if not inside:
+                if not area(item):
                     continue
-                value, name = VARIANT(), VARIANT()
-                try:
-                    prop(item, 30045, value)  # Value
-                    prop(item, 30005, name)  # Name
-                    href = ctypes.wstring_at(value.v1) if value.vt == 8 and value.v1 else ''
-                    text = ctypes.wstring_at(name.v1) if name.vt == 8 and name.v1 else ''
-                finally:
-                    oleaut32.VariantClear(ctypes.byref(value))
-                    oleaut32.VariantClear(ctypes.byref(name))
+                href, text = strings(item)
                 if re.match(r'https?://', href, re.I):
-                    return {'value': href, 'name': text}
+                    return {'value': _post_permalink(href) or href, 'name': text}
             finally:
                 _com_call(item, 2)
-        return None
+        return article_post()
     finally:
-        for obj in (found, condition, element, uia):
+        for obj in (articles, role_condition, found, condition, element, uia):
             if obj:
                 _com_call(obj, 2)  # Release
         ctypes.windll.ole32.CoUninitialize()
+
+
+
+def _opera_renderer(window):
+    """One visible renderer owned by this foreground Opera window; ambiguity yields nothing."""
+    import ctypes as C
+    from ctypes import wintypes as W
+    user = C.WinDLL('user32')
+    user.GetForegroundWindow.restype = C.c_void_p
+    user.IsWindow.argtypes, user.IsWindow.restype = [C.c_void_p], W.BOOL
+    user.IsWindowVisible.argtypes, user.IsWindowVisible.restype = [C.c_void_p], W.BOOL
+    user.IsHungAppWindow.argtypes, user.IsHungAppWindow.restype = [C.c_void_p], W.BOOL
+    user.IsChild.argtypes, user.IsChild.restype = [C.c_void_p, C.c_void_p], W.BOOL
+    user.GetAncestor.argtypes, user.GetAncestor.restype = [C.c_void_p, C.c_uint], C.c_void_p
+    user.GetClassNameW.argtypes = [C.c_void_p, C.c_wchar_p, C.c_int]
+    user.GetWindowThreadProcessId.argtypes = [C.c_void_p, C.POINTER(W.DWORD)]
+    if not window or not user.IsWindow(window) or user.GetForegroundWindow() != window or user.IsHungAppWindow(window):
+        return None
+    owner = W.DWORD()
+    if not user.GetWindowThreadProcessId(window, C.byref(owner)) or not owner.value:
+        return None
+    found, invalid = [], []
+    callback_type = C.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
+
+    def visit(child, _):
+        if not user.IsWindowVisible(child):
+            return True
+        name = C.create_unicode_buffer(256)
+        user.GetClassNameW(child, name, len(name))
+        if name.value != 'Chrome_RenderWidgetHostHWND':
+            return True
+        pid = W.DWORD()
+        user.GetWindowThreadProcessId(child, C.byref(pid))
+        if not user.IsChild(window, child) or user.GetAncestor(child, 2) != window or pid.value != owner.value:
+            invalid.append(True)
+        else:
+            found.append(int(child))
+        return True
+
+    callback = callback_type(visit)
+    user.EnumChildWindows.argtypes = [W.HWND, callback_type, W.LPARAM]
+    user.EnumChildWindows(window, callback, 0)
+    if invalid or len(found) != 1 or user.GetForegroundWindow() != window:
+        return None
+    return found[0], owner.value
+
+
+
+def _opera_url(value):
+    """Opera's document/link provider must supply an explicit public HTTP(S) URL."""
+    if not isinstance(value, str) or not re.match(r'https?://', value, re.I):
+        return None
+    try:
+        return _safe_source_url(value)
+    except ValueError:
+        return None
+
+
+def _msaa_document(window):
+    """Committed renderer document only: MSAA CHILDID_SELF, never editable address text.
+
+    IAccessible inherits IDispatch: get_accName=10, get_accValue=11,
+    get_accRole=13 and get_accState=14 (Windows SDK oleacc.h).
+    """
+    import ctypes as C
+    import uuid
+    from ctypes import wintypes as W
+
+    class GUID(C.Structure):
+        _fields_ = [('a', C.c_uint32), ('b', C.c_uint16), ('c', C.c_uint16), ('d', C.c_ubyte * 8)]
+
+    class VARIANT(C.Structure):
+        _fields_ = [('vt', C.c_ushort), ('r1', C.c_ushort), ('r2', C.c_ushort), ('r3', C.c_ushort),
+                    ('v1', C.c_void_p), ('v2', C.c_void_p)]
+
+    uid = uuid.UUID('618736e0-3c3d-11cf-810c-00aa00389b71')
+    iid = GUID(uid.time_low, uid.time_mid, uid.time_hi_version, (C.c_ubyte * 8)(*uid.bytes[8:]))
+    out = C.POINTER(C.c_void_p)
+    ole, auto, access = C.windll.ole32, C.windll.oleaut32, C.windll.oleacc
+    ole.CoInitializeEx.argtypes, ole.CoInitializeEx.restype = [C.c_void_p, C.c_ulong], C.c_int32
+    auto.VariantClear.argtypes = [C.c_void_p]
+    auto.SysFreeString.argtypes = [C.c_void_p]
+    access.AccessibleObjectFromWindow.argtypes = [W.HWND, W.DWORD, C.POINTER(GUID), out]
+    access.AccessibleObjectFromWindow.restype = C.c_int32
+    started = ole.CoInitializeEx(None, 0)
+    if started < 0:
+        return {}
+    obj = C.c_void_p()
+    child = VARIANT(vt=3, v1=0)  # VT_I4, CHILDID_SELF
+
+    def integer(slot):
+        value = VARIANT()
+        try:
+            hr = _com_call(obj, slot, child, C.byref(value), argtypes=(VARIANT, C.POINTER(VARIANT)))
+            return int(value.v1 or 0) & 0xffffffff if hr >= 0 and value.vt == 3 else None
+        finally:
+            auto.VariantClear(C.byref(value))
+
+    def text(slot):
+        value = C.c_void_p()
+        try:
+            hr = _com_call(obj, slot, child, C.byref(value), argtypes=(VARIANT, out))
+            return C.wstring_at(value) if hr >= 0 and value else ''
+        finally:
+            if value:
+                auto.SysFreeString(value)
+
+    try:
+        hr = access.AccessibleObjectFromWindow(window, W.DWORD(0xfffffffc), C.byref(iid), C.byref(obj))  # OBJID_CLIENT
+        if hr < 0 or not obj:
+            return {}
+        role, state = integer(13), integer(14)
+        if role != 15 or state is None or state & (0x8000 | 0x10000):  # DOCUMENT; INVISIBLE or OFFSCREEN
+            return {}
+        value = _opera_url(text(11))
+        if not value:
+            return {}
+        return {'value': value, 'name': re.sub(r'\s+', ' ', text(10)).strip()}
+    finally:
+        try:
+            if obj:
+                _com_call(obj, 2)
+        finally:
+            ole.CoUninitialize()
+
+
+def _opera_snapshot(window, at=None):
+    """Page and hovered link from one stable foreground renderer, inside the timed reader."""
+    identity = _opera_renderer(window)
+    if not identity:
+        return {}
+    first = _msaa_document(identity[0])
+    if not first.get('value'):
+        return {}
+    try:
+        hovered = _uia_link_at_cursor(window, at, root=identity[0]) or {}
+        # A same-title navigation can reuse its renderer HWND. Keep a link only when
+        # the provider returns the same link twice, bracketed by stable document reads.
+        if hovered and _uia_link_at_cursor(window, at, root=identity[0]) != hovered:
+            hovered = {}
+    except Exception:
+        hovered = {}
+    second = _msaa_document(identity[0])
+    if second != first or _opera_renderer(window) != identity:
+        return {}
+    result = dict(first)
+    value = _opera_url(hovered.get('value'))
+    if value:
+        result['hover_value'] = value
+        result['hover_name'] = re.sub(r'\s+', ' ', str(hovered.get('name') or '')).strip()
+        quote = _opera_url(hovered.get('quote'))
+        if quote and quote != value:
+            result['hover_quote'] = quote
+    return result
+
+
+def _windows_opera_snapshot(window, at=None, timeout=ADDRESS_TIMEOUT, cancel=None):
+    if not window:
+        return {}
+    request = {'hwnd': int(window)}
+    if at is not None:
+        request['at'] = [int(at[0]), int(at[1])]
+    return _windows_read('opera', request, timeout, cancel)
 
 
 def tab_url(value):
@@ -1603,7 +1865,7 @@ def tab_url(value):
 
 
 def windows_browser_url(window, app, timeout=ADDRESS_TIMEOUT, cancel=None):
-    """Only an unfocused, stable, explicit address; a fresh helper owns each COM apartment."""
+    """A committed page URL: an unfocused omnibox, or Opera's stable renderer document."""
     name = WIN_CHROMIUM.get((app or '').lower())
     if not name or not window:
         return None
@@ -1615,23 +1877,35 @@ def windows_browser_url(window, app, timeout=ADDRESS_TIMEOUT, cancel=None):
             return None
     except AttributeError:
         pass
+    if (app or '').lower() == 'opera':
+        return _opera_url(_windows_opera_snapshot(window, timeout=timeout, cancel=cancel).get('value'))
     result = _windows_read('uia', {'hwnd': int(window), 'class': name}, timeout, cancel)
     return tab_url(result.get('value'))
 
 
-def windows_hovered_link(window, app, at=None, timeout=ADDRESS_TIMEOUT, cancel=None):
+def windows_hovered_link(window, app, at=None, timeout=ADDRESS_TIMEOUT, cancel=None, extra=None):
     """(url, text) of the link under the pointer in a Chromium window, e.g. a video card on a home page.
 
     `at` is the pointer position recorded at the key press (physical pixels); without it the current one.
+    A quoted post inside the pointed post is stored as extra['quote'] when `extra` is a dict.
     """
     if not WIN_CHROMIUM.get((app or '').lower()) or not window:
         return None, None
-    request = {'hwnd': int(window)}
-    if at is not None:
-        request['at'] = [int(at[0]), int(at[1])]
-    result = _windows_read('uia_link', request, timeout, cancel)
-    url = tab_url(result.get('value'))
+    if (app or '').lower() == 'opera':
+        snapshot = _windows_opera_snapshot(window, at, timeout, cancel)
+        result = {'value': snapshot.get('hover_value'), 'name': snapshot.get('hover_name'),
+                  'quote': snapshot.get('hover_quote')}
+    else:
+        request = {'hwnd': int(window)}
+        if at is not None:
+            request['at'] = [int(at[0]), int(at[1])]
+        result = _windows_read('uia_link', request, timeout, cancel)
+    check = _opera_url if (app or '').lower() == 'opera' else tab_url
+    url = check(result.get('value'))
     text = re.sub(r'\s+', ' ', str(result.get('name') or '')).strip()
+    quote = check(result.get('quote')) if url and result.get('quote') else None
+    if isinstance(extra, dict) and quote and quote != url:
+        extra['quote'] = quote
     return (url, text or None) if url else (None, None)
 
 
@@ -1703,14 +1977,27 @@ def windows_enrich(context, cancel=None):
     if context.get('dosyalar') or not _win_browser(app):
         return context
     title = _win_page_title(context.get('pencere'), app, context.get('profil'))
-    if not context.get('url'):
-        context['url'] = windows_browser_url(hwnd, app, cancel=cancel)
-    try:
-        hovered, hovered_title = windows_hovered_link(hwnd, app, context.get('imlec'), cancel=cancel)
-    except Exception:
-        hovered = hovered_title = None
+    if (app or '').lower() == 'opera':
+        for key in ('url_imlec', 'baslik_imlec', 'baslik', 'url_alinti'):
+            context.pop(key, None)
+        snapshot = _windows_opera_snapshot(hwnd, context.get('imlec'), cancel=cancel)
+        context['url'] = _opera_url(snapshot.get('value'))
+        hovered = _opera_url(snapshot.get('hover_value'))
+        hovered_title = re.sub(r'\s+', ' ', str(snapshot.get('hover_name') or '')).strip() or None
+        quote = _opera_url(snapshot.get('hover_quote')) if hovered else None
+    else:
+        if not context.get('url'):
+            context['url'] = windows_browser_url(hwnd, app, cancel=cancel)
+        extra = {}
+        try:
+            hovered, hovered_title = windows_hovered_link(hwnd, app, context.get('imlec'), cancel=cancel, extra=extra)
+        except Exception:
+            hovered = hovered_title = None
+        quote = extra.get('quote') if hovered else None
     if hovered and hovered != context.get('url'):
         context['url_imlec'], context['baslik_imlec'] = hovered, hovered_title
+    if quote and quote not in (hovered, context.get('url')):
+        context['url_alinti'] = quote
     if context.get('url') or context.get('url_imlec'):
         try:
             # A tab switch keeps the window and process: the title is what tells the page changed.
@@ -1719,7 +2006,7 @@ def windows_enrich(context, cancel=None):
         except Exception:
             same = False
         if not same:
-            for key in ('url', 'baslik', 'url_imlec', 'baslik_imlec'):
+            for key in ('url', 'baslik', 'url_imlec', 'baslik_imlec', 'url_alinti'):
                 context.pop(key, None)
         elif context.get('url'):
             context['baslik'] = title
@@ -1915,6 +2202,7 @@ def windows_sources(context, clip, fresh, image=None, shot=None):
     copied = clipboard_leads and bool(clip)
     add('url', hovered, 'İmlecin altındaki bağlantı', True, 'i', context.get('baslik_imlec'))
     add('url', page, 'Etkin sayfa', not hovered, 's', context.get('baslik'))
+    add('url', context.get('url_alinti'), 'Alıntılanan gönderi', False, 'a')
     same = next((source for source in sources if source['kind'] == 'url' and source['value'] == copied_url), None)
     if copied_url and not same:
         add('url', copied_url, 'Pano bağlantısı', clipboard_leads, 'p')
@@ -1991,14 +2279,22 @@ def _windows_source_cards(canvas, root, sources, y, width, pad):
     return y
 
 
-def _escape_scope(front, source, popup, focused, elapsed):
-    return not focused and bool(source) and front == source and front != popup
+def _escape_scope(front, source, popup):
+    """What a global Esc does while the popup is open: None (Tk's own binding handles it, or no
+    window), 'consume' (the source page is in front: close the popup, keep Esc from the page) or
+    'pass' (another window was clicked: close the popup and let that window see Esc too)."""
+    if not front or front == popup:
+        return None
+    return 'consume' if source and front == source else 'pass'
 
 
 def _win_escape_guard(root, popup, source, dismiss):
-    """Keep an event fallback while the refused-focus source stays foreground; stop on any switch."""
+    """Esc closes the open popup wherever the keyboard focus went, until the popup closes.
+
+    The popup may have been refused focus, or the user may have clicked the page or another
+    window after it opened; either way Tk no longer receives the key, so a low-level hook does.
+    """
     import ctypes
-    import time
     user32 = ctypes.WinDLL('user32', use_last_error=True)
     handle = ctypes.c_void_p
     callback_type = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t)
@@ -2006,50 +2302,31 @@ def _win_escape_guard(root, popup, source, dismiss):
     user32.CallNextHookEx.argtypes, user32.CallNextHookEx.restype = [handle, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t], ctypes.c_ssize_t
     user32.UnhookWindowsHookEx.argtypes = [handle]
     user32.GetForegroundWindow.restype = handle
-    started, pressed, hook = time.monotonic(), threading.Event(), None
-    foreground_hook = None
-    active = {'on': True, 'switched': False}
-
-    def in_scope():
-        return active['on'] and not active['switched'] and _escape_scope(user32.GetForegroundWindow(), source, popup, False, time.monotonic() - started)
+    pressed, hook = threading.Event(), None
+    active = {'on': True}
 
     @callback_type
     def callback(code, message, data):
-        if code >= 0 and message in (0x100, 0x104) and in_scope():  # WM_KEYDOWN / WM_SYSKEYDOWN
+        if code >= 0 and active['on'] and message in (0x100, 0x104):  # WM_KEYDOWN / WM_SYSKEYDOWN
             if ctypes.cast(data, ctypes.POINTER(ctypes.c_uint32))[0] == 0x1B:
-                pressed.set()
-                return 1  # this Esc dismisses our pending/visible popup, not the application behind it
+                scope = _escape_scope(user32.GetForegroundWindow(), source, popup)
+                if scope:
+                    pressed.set()
+                    if scope == 'consume':
+                        return 1  # this Esc dismisses our popup, not the page behind it
         return user32.CallNextHookEx(hook, code, message, data)
 
     kernel32 = ctypes.WinDLL('kernel32')
     kernel32.GetModuleHandleW.argtypes, kernel32.GetModuleHandleW.restype = [ctypes.c_wchar_p], handle
     hook = user32.SetWindowsHookExW(13, callback, kernel32.GetModuleHandleW(None), 0)  # WH_KEYBOARD_LL
 
-    event_type = ctypes.WINFUNCTYPE(None, handle, ctypes.c_uint32, handle, ctypes.c_int32,
-                                   ctypes.c_int32, ctypes.c_uint32, ctypes.c_uint32)
-
-    @event_type
-    def foreground_changed(_hook, _event, hwnd, _object, _child, _thread, _time):
-        if hwnd != source:
-            active['switched'] = True
-
-    user32.SetWinEventHook.argtypes = [ctypes.c_uint32, ctypes.c_uint32, handle, event_type,
-                                      ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32]
-    user32.SetWinEventHook.restype = handle
-    user32.UnhookWinEvent.argtypes = [handle]
-    if hook:
-        foreground_hook = user32.SetWinEventHook(3, 3, None, foreground_changed, 0, 0, 0)
-
     def stop():
-        nonlocal hook, foreground_hook
+        nonlocal hook
         active['on'] = False
-        if foreground_hook:
-            user32.UnhookWinEvent(foreground_hook)
-            foreground_hook = None
         if hook:
             user32.UnhookWindowsHookEx(hook)
             hook = None
-        _ = callback, foreground_changed  # keep both native callbacks alive through unhook
+        _ = callback  # keep the native callback alive through unhook
 
     def check():
         if not active['on']:
@@ -2057,11 +2334,9 @@ def _win_escape_guard(root, popup, source, dismiss):
         if pressed.is_set():
             stop()
             dismiss()
-        elif not in_scope():
-            stop()
         else:
             root.after(10, check)
-    stop.armed = bool(hook and foreground_hook)
+    stop.armed = bool(hook)
     if stop.armed:
         root.after(10, check)
     else:
@@ -2939,12 +3214,13 @@ def popup(vault, context=None, state=None, root=None, session=None):
             try:
                 root.lift()
                 hwnd = _win_hwnd(root)
-                if _win_focus(hwnd):
+                focused = _win_focus(hwnd)
+                if focused:
                     entry.focus_set()
-                else:
-                    stop_escape = _win_escape_guard(root, hwnd, source_hwnd, dismiss)
-                    if not getattr(stop_escape, 'armed', True):
-                        canvas.itemconfigure(status, text='Odak alınamadı; tıklayın veya Kapat düğmesini kullanın.')
+                # Armed either way: a click on the page or elsewhere takes the key away from Tk.
+                stop_escape = _win_escape_guard(root, hwnd, source_hwnd, dismiss)
+                if not focused and not getattr(stop_escape, 'armed', True):
+                    canvas.itemconfigure(status, text='Odak alınamadı; tıklayın veya Kapat düğmesini kullanın.')
             except Exception:
                 canvas.itemconfigure(status, text='Odak alınamadı; tıklayın veya Kapat düğmesini kullanın.')
         if session:
@@ -3653,6 +3929,13 @@ def _windows_reader_main(kind):
             if type(hwnd) is not int or hwnd <= 0 or name not in set(WIN_CHROMIUM.values()):
                 raise ValueError('request-uia')
             result = {'value': _uia_address_bar(hwnd, name)}
+        elif kind == 'opera':
+            hwnd, at = request.get('hwnd'), request.get('at')
+            if type(hwnd) is not int or hwnd <= 0:
+                raise ValueError('request-window')
+            if at is not None and not (isinstance(at, list) and len(at) == 2 and all(type(v) is int for v in at)):
+                raise ValueError('request-point')
+            result = _opera_snapshot(hwnd, at)
         elif kind == 'uia_link':
             hwnd = request.get('hwnd')
             if type(hwnd) is not int or hwnd <= 0:

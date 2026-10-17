@@ -138,9 +138,26 @@ Chromium şemayı gizlediği için şemasız adrese `https://` eklenir. Kısayol
 sayfa **Alt+S**, imlecin altındaki link **Alt+I** ile seçilir. Okuma sırasında pencere veya sekme
 değişirse (başlık değişir) iki link de atılır. Link yoksa kaynak pencerenin görüntüsü sunulur
 (önce Windows.Graphics.Capture, olmazsa PrintWindow). Görüntü kapalı gelir; **Alt+W** veya satıra
-tıklama ile eklenir, çünkü `isle` görseli ajana olduğu gibi okutur. Opera Air adres çubuğunu ve sayfa içeriğini
-göstermediğinde URL tahmini yapılmaz; History/oturum veritabanı okunmaz. Localhost/özel IP için mevcut ağ
-güvenliği sınırı korunur. Opera Air adres desteği ayrı çalışmadır.
+tıklama ile eklenir, çünkü `isle` görseli ajana olduğu gibi okutur. History/oturum veritabanı okunmaz;
+localhost/özel IP için mevcut ağ güvenliği sınırı korunur.
+
+**Gönderiler (X, Instagram):** Tweet metni veya akıştaki video bir link değildir. İmleç bir
+linkin üstünde değilse, altındaki en içteki ARIA `article` öğesi (tek gönderi) alınır ve içindeki
+ilk gönderi bağlantısı (`x.com/<kullanıcı>/status/<id>`, `instagram.com/p|reel/<kod>/`) imleç
+linki olur. Aynı gönderideki ikinci, farklı gönderi bağlantısı alıntılanan gönderidir; **Alt+A**
+ile seçilebilir, varsayılan seçili değildir. X'in fotoğraf/video/analytics alt sayfaları gönderi
+adresine indirgenir. Bağlantı sayfanın kendisinden okunur; gönderi adresi üretilmez.
+
+**Opera Air:** Sayfanın ayrı Chromium alt penceresi okunur. Sayfa URL'si MSAA Document
+nesnesinin gerçek değerinden, imleç bağlantısı aynı alt pencerenin UI Automation bağlantılarından
+alınır. Adres çubuğundaki taslak okunmaz; açık sayfanın yüklenmiş adresi kullanılır.
+Eklenti, yeniden başlatma veya erişilebilirlik başlatma bayrağı gerekmez. Tek görünür renderer,
+pencere/süreç sahipliği ve okuma öncesi/sonrası sayfa URL'si doğrulanır. Birden fazla görünür
+renderer, görünmeyen belge, değişen sayfa veya zaman aşımı varsa URL verilmez. Bağlantı iki
+okumada değişirse yalnız imleç bağlantısı atılır. Instagram'da da yalnız gerçek bir bağlantının
+üzerindeyken gönderi URL'si alınır; bağlantı taşımayan görselden gönderi adresi üretilmez.
+Opera Air 136.0.6008.70 üzerinde bayraksız ayrı profilde temel sağlayıcı yolu ölçüldü;
+oturum açılmış YouTube/Instagram akışlarında kullanıcı kabul testi ayrıca yapılmalıdır.
 
 Tarayıcıdan okunan link (imlecin altındaki ya da açık sayfa) varsa varsayılan odur; pano içeriği
 yalnız seçenek olarak, işaretsiz sunulur. Link yoksa dinleyicinin başlangıcından itibaren gözlenen,
