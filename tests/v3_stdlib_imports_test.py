@@ -45,6 +45,27 @@ class StdlibImportTest(unittest.TestCase):
                      for path in PACKAGED for line, name in imported(path) if not allowed(name)]
         self.assertEqual(offenders, [])
 
+    def test_dynamic_third_party_import_is_confined_to_isolated_pdf_reader(self):
+        # M03 permits one pinned wheel in the reader subprocess. A dynamic import
+        # must not quietly move third-party code into the stdlib core.
+        offenders = []
+        for path in PACKAGED:
+            tree = ast.parse(path.read_text(encoding='utf-8'))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                function = node.func
+                dynamic = (isinstance(function, ast.Name) and function.id == '__import__' or
+                           isinstance(function, ast.Attribute) and function.attr == 'import_module')
+                if not dynamic:
+                    continue
+                name = node.args[0].value if node.args and isinstance(node.args[0], ast.Constant) else None
+                if isinstance(name, str) and (allowed(name.split('.')[0]) or
+                        path.name == 'beyin_v3_extract_reader.py' and name == 'pypdf'):
+                    continue
+                offenders.append(f'{path.name}:{node.lineno} {name!r}')
+        self.assertEqual(offenders, [])
+
     def test_the_guard_rejects_model_runtimes(self):
         for name in ('torch', 'laya', 'transformers', 'numpy', 'requests'):
             self.assertFalse(allowed(name), name)

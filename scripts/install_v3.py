@@ -500,7 +500,15 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
             if name.endswith('.sh'): stub = b'#!/bin/sh\n' + stub
             add(name, stub)
     for source in sorted((ROOT / "template/.claude/scripts").glob("beyin_v3*.py")):
+        if source.name == 'beyin_v3_parser_assets.py':
+            # Package transport only. Do not keep a second encoded wheel in the vault.
+            continue
         add(".claude/scripts/" + source.name, source.read_bytes())
+    parser_assets = ROOT / 'template/.claude/scripts/beyin_v3_parser_assets.py'
+    spec = importlib.util.spec_from_file_location('beyin_release_parser_assets', parser_assets)
+    assets = importlib.util.module_from_spec(spec); spec.loader.exec_module(assets)
+    for name, content in assets.managed_files().items():
+        add(name, content)
     add("beyin.py", (ROOT / "scripts/beyin_entry.py").read_bytes())
     add(".beyin-runtime.json", jbytes({"state": str(state), "schema": 1}))
     add(".beyin-version", (version + "\n").encode())
@@ -886,6 +894,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--vault", required=True, type=Path)
     parser.add_argument("--state", type=Path)
+    parser.add_argument("--workspace-documents", action="store_true",
+                        help="probe document/OCR prerequisites and report concrete system package steps; never installs system software")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--uninstall", action="store_true")
     mode.add_argument("--plan", action="store_true", help="report what an install would do; change nothing")
@@ -899,6 +909,8 @@ def main():
     parser.add_argument("--include-component", action="append", default=[], metavar="COMPONENT",
                         help="re-enable a previously excluded component; repeatable")
     args = parser.parse_args()
+    if args.workspace_documents and (args.uninstall or args.reconcile_hooks):
+        parser.error('--workspace-documents is for install/plan, not uninstall/reconcile-hooks')
     spec = importlib.util.spec_from_file_location("beyin_cli_defaults", ROOT / "scripts/beyin_v3.py")
     defaults = importlib.util.module_from_spec(spec); spec.loader.exec_module(defaults)
     default_state = defaults.default_state
@@ -922,11 +934,21 @@ def main():
                          plan_only=args.plan, accept_customized=accepted, keep_customized=kept,
                          exclude_components=excluded,
                          include_components=included)
-        print(json.dumps(plan_report(result) if args.plan else result))
+        report = plan_report(result) if args.plan else result
+        if args.workspace_documents:
+            sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
+            try:
+                from beyin_v3_document_setup import document_setup
+                report['workspace_documents'] = document_setup(args.vault)
+                report['workspace_documents']['readiness_scope'] = 'current_installation'
+            finally:
+                sys.path.pop(0)
+        print(json.dumps(report))
     except Exception as exc:
         print(json.dumps({"error": type(exc).__name__, "message": str(exc)}), file=sys.stderr)
         return 1
-    return 0
+    # Technical files being installed is separate from document readiness.
+    return 5 if args.workspace_documents and report['workspace_documents']['status'] != 'ready' else 0
 
 
 if __name__ == "__main__":
