@@ -8,9 +8,10 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import sqlite3
 import unittest
 
-from v3_package_helpers import inherited_env
+from v3_package_helpers import isolated_env
 
 ROOT = Path(os.environ.get('BEYIN_TEST_REPO', Path(__file__).resolve().parents[1]))
 START, END = '<!-- beyin-v3:start -->', '<!-- beyin-v3:end -->'
@@ -28,7 +29,7 @@ class UninstallKeepsUserTextTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix='beyin-uninstall-user-text-')
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)
-        self.env = inherited_env(BEYIN_V3_NO_SPAWN='1', PYTHONDONTWRITEBYTECODE='1', PYTHONIOENCODING='utf-8')
+        self.env = isolated_env(self.base / 'home')
         self.count = 0
         self.fresh()
 
@@ -236,6 +237,33 @@ class UninstallKeepsUserTextTest(unittest.TestCase):
                 self.path(name).write_bytes(saved)
         self.uninstall()
         self.assertEqual(agents.read_text(encoding='utf-8'), NOTE)
+
+    def test_workspace_pending_or_update_journal_blocks_uninstall_without_writes(self):
+        self.install()
+        for name in ('workspace-provision/pending.json', 'update-journal.json'):
+            marker = self.state / name
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text('{}', encoding='utf-8')
+            before = self.snapshot()
+            manifest = (self.state / 'v3-install.json').read_bytes()
+            result = self.run_cli(ROOT / 'scripts/install_v3.py', '--vault', self.vault, '--state', self.state, '--uninstall')
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(self.snapshot(), before)
+            self.assertEqual((self.state / 'v3-install.json').read_bytes(), manifest)
+            marker.unlink()
+
+    def test_actual_update_lock_blocks_uninstall_without_writes(self):
+        self.install()
+        before = self.snapshot()
+        db = sqlite3.connect(self.state / 'update-lock.sqlite3')
+        try:
+            db.execute('BEGIN IMMEDIATE')
+            result = self.run_cli(ROOT / 'scripts/install_v3.py', '--vault', self.vault, '--state', self.state, '--uninstall')
+        finally:
+            db.close()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.snapshot(), before)
+        self.assertTrue((self.state / 'v3-install.json').exists())
 
 
 if __name__ == '__main__':

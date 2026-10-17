@@ -836,11 +836,21 @@ def install(vault, state, uninstall=False, plan_only=False, version=None, legacy
         legacy_skill_hashes = package.get('legacy_skill_hashes', {})
     else:
         version = version or '3.0.0'
-    if plan_only or uninstall:
+    if plan_only:
         return _install(vault, state, uninstall, plan_only, version, legacy_hashes, legacy_skill_hashes,
                         accept_customized=accept_customized, keep_customized=keep_customized,
                         exclude_components=exclude_components, include_components=include_components)
     directory = ROOT / 'template/.claude/scripts'
+    if uninstall:
+        spec = importlib.util.spec_from_file_location('beyin_uninstall_transaction', directory / 'beyin_v3_update.py')
+        updater = importlib.util.module_from_spec(spec); spec.loader.exec_module(updater)
+        vault, state = updater.roots(vault, state)
+        with updater.locked(vault, state):
+            if (state / 'update-journal.json').exists():
+                raise ValueError('Pending installation; recover or rollback before uninstall')
+            return _install(vault, state, True, False, version, legacy_hashes, legacy_skill_hashes,
+                            accept_customized=accept_customized, keep_customized=keep_customized,
+                            exclude_components=exclude_components, include_components=include_components)
     if (Path(state).resolve() / 'update-journal.json').exists():
         spec = importlib.util.spec_from_file_location('beyin_install_recovery', directory / 'beyin_v3_update.py')
         updater = importlib.util.module_from_spec(spec); spec.loader.exec_module(updater)
