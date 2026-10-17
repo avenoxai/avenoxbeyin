@@ -156,6 +156,37 @@ Tam ekran oyunlar, DRM/korumalı pencere, güvenli UAC masaüstü, UIPI/yetki fa
 kilidi ve HDR renk doğruluğu evrensel başarı kapsamı değildir. WGC yolu SDR BGRA8 üretir;
 HDR ton eşleme eklenmemiştir. Koruma aşılmaz, hata halinde ekran BitBlt'a dönülmez. [S08, S21]
 
+## Opera Air: renderer ve MSAA okuma
+
+15 Ekim 2026 eklemesi. Opera'nın üst pencere UIA ağacı sayfa bağlantılarını göstermese de
+`EnumChildWindows` ile bulunan `Chrome_RenderWidgetHostHWND` kendi erişilebilirlik
+sağlayıcısını sunabilir. Görünür tek aday, `IsChild`, `GetAncestor(GA_ROOT)` ve pencere
+PID'si ile sınırlandırılır; foreground ve renderer kimliği okumadan sonra yeniden doğrulanır.
+
+`AccessibleObjectFromWindow(HWND, OBJID_CLIENT=0xfffffffc, IID_IAccessible, void**)`;
+IID `618736e0-3c3d-11cf-810c-00aa00389b71`. `IAccessible`, IDispatch'i miras alır:
+
+| Slot | Metot | Argüman/sonuç |
+|---|---|---|
+| 10 | get_accName | CHILDID_SELF (`VARIANT VT_I4=0`), BSTR* |
+| 11 | get_accValue | CHILDID_SELF, BSTR*; açık HTTP(S) URL |
+| 13 | get_accRole | CHILDID_SELF, VARIANT*; VT_I4, ROLE_SYSTEM_DOCUMENT=15 |
+| 14 | get_accState | CHILDID_SELF, VARIANT*; INVISIBLE=0x8000 / OFFSCREEN=0x10000 reddedilir |
+
+VT_I4 yalnız alt 32 bitten okunur; BSTR `SysFreeString`, VARIANT `VariantClear`, nesne
+`Release` ile bırakılır. Başarılı CoInitializeEx/S_FALSE, CoUninitialize ile dengelenir.
+API ve slot kaynağı: [Microsoft Windows SDK oleacc.h](https://raw.githubusercontent.com/microsoft/win32metadata/main/generation/WinSDK/RecompiledIdlHeaders/um/oleacc.h).
+
+Opera sayfa+imleç okuması aynı sonlandırılabilir `opera` yardımcı sürecinde, mevcut 1 saniye
+bütçesinde yapılır. İmleç fiziksel koordinatı üst pencereye karşı doğrulanır; bağlantı araması
+renderer HWND'sinin UIA ağacında yapılır. Belge değeri iki okumada, bulunan bağlantı da iki
+okumada doğrulanır. Başka sekmenin/iframe'in URL'sini bulmak için belge ağacı taranmaz.
+
+Birim model testleri: `tests/v3_yakala_opera_test.py`. Canlı kabul: Opera Air'de YouTube
+ana sayfasındaki gerçek video bağlantısı, önizleme açıkken aynı kart, Instagram gönderi
+bağlantısı, adres çubuğu taslağı, pencere/sekme değişimi ve iki monitör. Hiçbir test History
+veritabanından tahmin üretmemelidir; belirsizlikte bağlantı yerine mevcut görüntü yolu kalır.
+
 ## Kaynaklar
 
 Aşağıdaki SDK/web kaynakları 13 Ekim 2026'da incelendi; yayımlanma tarihi bilinmeyenleri

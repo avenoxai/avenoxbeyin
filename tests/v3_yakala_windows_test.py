@@ -307,10 +307,10 @@ class WindowsCaptureModelTest(unittest.TestCase):
         for url in ('http://localhost:3000', 'http://192.168.1.20', 'https://örnek.com', 'file:///C:/secret'):
             self.assertIsNone(yakala.tab_url(url))
 
-    def test_opera_uses_the_omnibox_class_never_generic_edit_fields(self):
+    def test_opera_uses_the_verified_document_reader_never_generic_edit_fields(self):
         with patch.object(yakala, '_windows_read', return_value={'value': None}) as read:
             self.assertIsNone(yakala.windows_browser_url(42, 'opera'))
-        self.assertEqual(read.call_args.args[1]['class'], 'OmniboxViewViews')
+        self.assertEqual(read.call_args.args[0:2], ('opera', {'hwnd': 42}))
 
     def test_legacy_context_must_match_foreground_title(self):
         user = Mock()
@@ -371,11 +371,12 @@ class WindowsCaptureModelTest(unittest.TestCase):
         user.AttachThreadInput.assert_not_called()
         user.SetForegroundWindow.assert_called_once_with(99)
 
-    def test_escape_guard_covers_failed_focus_without_an_arbitrary_expiry(self):
-        self.assertTrue(yakala._escape_scope(42, 42, 99, False, 0.1))
-        self.assertTrue(yakala._escape_scope(42, 42, 99, False, 60))
-        self.assertFalse(yakala._escape_scope(50, 42, 99, False, 0.1))
-        self.assertFalse(yakala._escape_scope(99, 42, 99, True, 0.1))
+    def test_escape_scope_follows_the_foreground_while_the_popup_is_open(self):
+        self.assertEqual(yakala._escape_scope(42, 42, 99), 'consume')  # source page in front
+        self.assertEqual(yakala._escape_scope(50, 42, 99), 'pass')  # another window was clicked
+        self.assertIsNone(yakala._escape_scope(99, 42, 99))  # the popup's own Tk binding handles it
+        self.assertIsNone(yakala._escape_scope(None, 42, 99))
+        self.assertEqual(yakala._escape_scope(50, 0, 99), 'pass')
 
     def test_popup_position_uses_negative_monitor_work_area(self):
         self.assertEqual(yakala._popup_position((-1920, 0, 0, 1040), 640, 400), (-1280, 228))

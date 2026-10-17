@@ -138,9 +138,26 @@ Chromium şemayı gizlediği için şemasız adrese `https://` eklenir. Kısayol
 sayfa **Alt+S**, imlecin altındaki link **Alt+I** ile seçilir. Okuma sırasında pencere veya sekme
 değişirse (başlık değişir) iki link de atılır. Link yoksa kaynak pencerenin görüntüsü sunulur
 (önce Windows.Graphics.Capture, olmazsa PrintWindow). Görüntü kapalı gelir; **Alt+W** veya satıra
-tıklama ile eklenir, çünkü `isle` görseli ajana olduğu gibi okutur. Opera Air adres çubuğunu ve sayfa içeriğini
-göstermediğinde URL tahmini yapılmaz; History/oturum veritabanı okunmaz. Localhost/özel IP için mevcut ağ
-güvenliği sınırı korunur. Opera Air adres desteği ayrı çalışmadır.
+tıklama ile eklenir, çünkü `isle` görseli ajana olduğu gibi okutur. History/oturum veritabanı okunmaz;
+localhost/özel IP için mevcut ağ güvenliği sınırı korunur.
+
+**Gönderiler (X, Instagram):** Tweet metni veya akıştaki video bir link değildir. İmleç bir
+linkin üstünde değilse, altındaki en içteki ARIA `article` öğesi (tek gönderi) alınır ve içindeki
+ilk gönderi bağlantısı (`x.com/<kullanıcı>/status/<id>`, `instagram.com/p|reel/<kod>/`) imleç
+linki olur. Aynı gönderideki ikinci, farklı gönderi bağlantısı alıntılanan gönderidir; **Alt+A**
+ile seçilebilir, varsayılan seçili değildir. X'in fotoğraf/video/analytics alt sayfaları gönderi
+adresine indirgenir. Bağlantı sayfanın kendisinden okunur; gönderi adresi üretilmez.
+
+**Opera Air:** Sayfanın ayrı Chromium alt penceresi okunur. Sayfa URL'si MSAA Document
+nesnesinin gerçek değerinden, imleç bağlantısı aynı alt pencerenin UI Automation bağlantılarından
+alınır. Adres çubuğundaki taslak okunmaz; açık sayfanın yüklenmiş adresi kullanılır.
+Eklenti, yeniden başlatma veya erişilebilirlik başlatma bayrağı gerekmez. Tek görünür renderer,
+pencere/süreç sahipliği ve okuma öncesi/sonrası sayfa URL'si doğrulanır. Birden fazla görünür
+renderer, görünmeyen belge, değişen sayfa veya zaman aşımı varsa URL verilmez. Bağlantı iki
+okumada değişirse yalnız imleç bağlantısı atılır. Instagram'da da yalnız gerçek bir bağlantının
+üzerindeyken gönderi URL'si alınır; bağlantı taşımayan görselden gönderi adresi üretilmez.
+Opera Air 136.0.6008.70 üzerinde bayraksız ayrı profilde temel sağlayıcı yolu ölçüldü;
+oturum açılmış YouTube/Instagram akışlarında kullanıcı kabul testi ayrıca yapılmalıdır.
 
 Tarayıcıdan okunan link (imlecin altındaki ya da açık sayfa) varsa varsayılan odur; pano içeriği
 yalnız seçenek olarak, işaretsiz sunulur. Link yoksa dinleyicinin başlangıcından itibaren gözlenen,
@@ -244,6 +261,313 @@ python3 beyin.py yakala kur --klasor "Notlar/Yakala"
 - Seçim bu makinenin durum klasöründe saklanır. Aynı vault'u başka bir makinede de kullanıyorsan
   orada da aynı komutu çalıştır.
 - Kayıtlı klasör silinir ya da adı değişirse yukarıdaki kurala dönülür; `durum` kullanılan klasörü söyler.
+
+## İsteğe bağlı: kaydet ve ajana ver
+
+**Varsayılan kapalıdır.** Açtığında **Enter** yine yalnız kartı kaydeder. **Ctrl+Enter** veya
+penceredeki **Kaydet ve ajana ver** satırı, önce kartı kaydeder, sonra bu kart için ayrı bir
+Claude Code ya da Codex oturumu başlatır. Ajan vault içinde çalışır; sonucu kaynak bağlantılarıyla
+hafızaya kaydeder. Pencere kapanabilir, başka bir ajan oturumunda çalışmaya devam edebilirsin.
+
+Bu yol tam Tk penceresinde vardır. Linux'taki `kdialog`/`zenity` yedek pencereleri yalnız
+yakalama yapar; kaydedilmiş kartı aşağıdaki `ajan-gonder` komutuyla gönderebilirsin.
+
+### Aç, kullan, kapat
+
+Vault klasöründe, Windows için:
+
+```sh
+py -3 beyin.py yakala kur --ajan claude
+py -3 beyin.py yakala ajan
+```
+
+Codex seçmek için `--ajan codex` kullan. Yakala zaten kuruluysa `py -3 beyin.py yakala ajan claude`
+veya `py -3 beyin.py yakala ajan codex` yeterlidir. Mac/Linux'ta `py -3` yerine `python3` yaz.
+Bu Windows sürümüne ilk geçişte `kur` komutunu yeniden çalıştır: state'teki dinleyici kopyası da
+ajan işinin popup'tan ayrılmasını sağlayan yeni süreç ayarını almalıdır.
+
+**Görünüm: gizli ya da pencere.** Claude ve Windows'ta ajanın nasıl çalışacağını seçebilirsin:
+
+- `gizli` (varsayılan): iş arka planda başsız bir oturumda çalışır, bitince bildirim gelir.
+- `pencere`: Ctrl+Enter ekranda normal bir Claude Code penceresi açar; ajanın ne yaptığını canlı
+  izlersin, gerekirse aynı pencerede yazarak yön verirsin. Araç sınırı gizli çalışmayla aynıdır
+  (genel kabuk yok, yalnız Yakala araçları ve web araması). İş, ajan `complete` çağırınca biter;
+  receipt ve kart güncellemesi yine çalışan tarafından yapılır, pencere açık kalır ve konuşma
+  sürdürülebilir. Pencereyi sonuç bırakmadan kapatırsan iş `onay-bekliyor` olur. Tur ve bütçe
+  sınırları yalnız gizli çalışmada uygulanır; zaman sınırı ikisinde de geçerlidir.
+
+```sh
+py -3 beyin.py yakala kur --ajan claude --ajan-gorunum pencere
+py -3 beyin.py yakala ajan claude --gorunum gizli
+```
+
+`kur --ajan claude` bir terminalde `--ajan-gorunum` olmadan çalıştırılırsa hangisini istediğini
+sorar. Kurulumu bir ajana yaptırıyorsan ajan bu seçimi sana sormalıdır.
+
+1. Kısayola bas, kaynağı seç ve **Neden** alanına yapılacak işi yaz. Özellik açıkken altta
+   `Ctrl+Enter · Kaydet ve ajana ver (claude)` veya `(codex)` görünür. Kapalıyken bu satır
+   görünmez; Ctrl+Enter bir ajan işi başlatmaz ve yanlışlıkla düz Enter kaydına dönüşmez.
+2. **Ctrl+Enter**'a bas. Boş istek gönderilmez; pencere `Ajana vereceğin isteği yaz` der.
+   Başarılı kayıt ve kuyruğa ekleme sonrasında `Kaydedildi · Ajan sırasında` görünür, pencere kapanır.
+   Kuyruk doluysa veya bağımsız süreç açılamazsa kart korunur, pencerede kayıt ile ajan hatası
+   ayrı belirtilir. Aynı URL'nin yeni isteği, karta daha önce eklenmiş eski isteklerle karıştırılmaz.
+3. İş gerçekten başladığında **Beyin ajanı başladı** bildirimi gelir. Kuyrukta bekleme, modelin
+   çalışmaya başladığı anlamına gelmez. Bir makinedeki bu vault kuyruğu aynı anda **bir iş** çalıştırır.
+4. Doğrulanmış sonuç, receipt ve Last-Session kaydı tamamlanınca **Beyin ajanı bitirdi** görünür.
+   Bir engel varsa **Beyin ajanı onay bekliyor**, çalışma hatasında **Beyin ajanı tamamlayamadı**
+   görünür. Kartın `ajan_notu` alanı ve günlük nedenini söyler.
+
+Yeni işleri kapatmak için:
+
+```sh
+py -3 beyin.py yakala ajan kapali
+```
+
+Çalışan iş ayarı yeniden okuduğunda durdurulur; oluşmuş dosyalar geri alınmaz. Bekleyen işler
+yeniden uyandırıldığında otomatik çalıştırılmaz. Kapalıyken yakalama ve düz Enter çalışmayı sürdürür.
+İstemciyi değiştirmek daha önce kuyruğa alınmış işlerin kayıtlı istemcisini veya sınırlarını değiştirmez.
+
+Kaydedilmiş tek bir kart için açık bir istek de verebilirsin:
+
+```sh
+py -3 beyin.py yakala ajan-gonder KART_ID --istek "Bu kaynağı incele, üç önemli bulguyu kaynaklarıyla not et"
+py -3 beyin.py yakala ajan-devam
+py -3 beyin.py yakala ajan-serbest KART_ID
+```
+
+`ajan-devam` kalıcı kuyruğu uyandırır; kesilmiş bir işi tekrar çalıştırma izni vermez.
+`ajan-serbest`, incelediğin `hata` veya `onay-bekliyor` kartını `bekliyor` yaparak normal
+`isle`/`bitti` akışına bırakır. Çalışan kartı serbest bırakamazsın. Bu komut yeni bir ajan işi
+başlatmaz ve geniş araç izni vermez. Yeniden otomatik deneme istersen önce kısmi sonuçları incele,
+sonra `ajan-gonder` ile yeni, açık bir istek ver.
+
+### Kart, oturum ve hafıza
+
+| Kartın `durum` değeri | Anlamı |
+|---|---|
+| `bekliyor` | Normal yakalama; ajan işi verilmedi veya kullanıcı normal işleme bıraktı |
+| `ajanda` | Bu karta ait iş sırada ya da çalışıyor; `ajan_asama` ayrıntıyı verir |
+| `islendi` | Sonuç ve hafıza kapanışı doğrulandı |
+| `hata` | Çalışma tamamlanamadı; kart ve mevcut sonuçlar korunur |
+| `onay-bekliyor` | İzin, kurulum, belirsiz kesilme veya hafıza doğrulaması insan incelemesi gerektiriyor |
+
+Normal bekleyen listesi `ajanda` kartlarını tekrar işleme almaz. `isle` ve `bitti` bu kartı
+başka oturumdan kapatmaz; oturum bildirimi ayrılmış ve onay bekleyen kartları ayrıca bildirir.
+Aynı kartın yakalanması yeni notu korur; devam eden iş ikinci kez başlatılmaz.
+
+Karttaki `ajan_isi` iş UUID'sidir; `ajan_oturum` istemcinin oturum UUID'sidir. Claude için UUID
+başlamadan üretilir ve `--session-id` ile verilir; başarı için CLI çıktısında aynı gerçek oturumun
+görülmesi gerekir. Başlamamış bir Claude işinde ayrılmış UUID'nin yazması, oturumun oluştuğunu
+kanıtlamaz. Codex UUID'si ilk `thread.started` olayının `thread_id` alanından alınır; iş UUID'si
+Codex oturumu yerine kullanılmaz. [belge: aşağıdaki CLI ve başsız çalışma kaynakları]
+
+Vault klasöründeki terminalden aynı oturumu açmak için:
+
+```sh
+claude --resume OTURUM_UUID
+codex resume OTURUM_UUID
+```
+
+Sonuç notları kart klasörünün `Ajan/<iş-UUID>/` altına yeni dosyalar olarak yazılır. Kart, sonuç,
+kaynak ve varsa indirilen dosyanın yolu birlikte kaydedilir. `ajan_sonuc` ile `ajan_receipt`
+kapanış kayıtlarını gösterir. Last-Session'a bunların bağlantıları eklenir. Sonraki oturumda
+"o indirdiğin müzik" gibi bir isteği bu kaynak kayıtları üzerinden bulmak mümkündür; bunun için
+normal vault hafıza kurallarının ve hook'larının kurulmuş olması gerekir.
+
+**Receipt entegrasyonu — varsayım:** Bu modül `beyin.py receipt` uygulamasını içermez. Adaptör,
+yerel `receipt --help` çıktısında `--file`, `--harness` ve `--session` desteğini arar; `--json`
+ile makinece okunur yanıt bekler. Dosya girdisinin `event_id`, `summary`, `refs`, `session`
+alanlarını kabul etmesi; yanıtın aynı `event_id`, başarı durumu ve vault içindeki gerçek `source`
+yolunu vermesi beklenen entegrasyon sözleşmesidir. Kod boş olmayan bir `status` ister ve yaygın
+hata durumlarını reddeder; başarı durumlarının tam enum'u bu eklerde doğrulanmamıştır.
+Kaynak dosyası geri okunarak olay kimliği
+kontrol edilir. Bu JSON şemasının ve yerel başarı durumunun upstream runtime ile kabul testinde
+eşleşmesi gerekir; yardım çıktısı tek başına veri şemasını kanıtlamaz. Sözleşme, receipt veya
+Last-Session doğrulanamazsa indirilmiş dosya ve notlar korunur, kart tamamlandı sayılmaz.
+
+### Gelişmiş JSON ayarı
+
+Ayarlar makinedeki `<state>/yakala/ajan/config.json` içinde saklanır. Vault'a ve kullanıcıya ait
+CLI oturumuna bağlıdır; başka makinede kendiliğinden etkinleşmez. Ayar dosyasında değiştirmek
+istediğin alanları ver, ardından istemciyi açıkça seç:
+
+```json
+{
+  "timeout_seconds": 600,
+  "max_queue": 8,
+  "max_budget_usd": 1.0,
+  "extra_args": ["--model", "sonnet"]
+}
+```
+
+```sh
+py -3 beyin.py yakala ajan claude --ayar yakala-ajan.json
+```
+
+| Alan | Varsayılan ve sınır |
+|---|---|
+| `client` | `kapali`; CLI üzerinden `claude`, `codex` veya `kapali` seçilir |
+| `timeout_seconds` | 900 saniye; 30–3600. CLI çalışma süresidir; hazırlık ve hafıza kapanışı ayrıca sürebilir |
+| `max_queue` | 32; çalışan dahil 1–32 aktif iş. Eşzamanlı çalışma sınırı sabit 1'dir |
+| `max_budget_usd` | 1.0; 0.05–20. Claude'un tahmini harcama sınırıdır; Codex'e uygulanmaz, kesin fatura tavanı değildir |
+| `extra_args` | `[]`; yalnız `--model DEĞER` ve Claude için `--effort DEĞER`, her biri en fazla bir kez |
+| `executable` | `null`; PATH'ten bulunur. Özelleştirilecekse tek bir mutlak executable veya tanınan npm shim yolu |
+| `downloads_dir` | İlk kurulumda işletim sisteminin İndirilenler klasörü, bulunamazsa `~/Downloads`; mutlak yerel klasör |
+| `last_session_path` | `null`; vault'ta tek `Last-Session.md` aranır. Belirsizse mevcut notun vault-göreli yolunu ver |
+| `schema`, `vault` | Modülün sürüm ve vault sahipliği alanları; başka vault'a taşımak için değiştirme |
+
+JSON en fazla 16 KiB olabilir; bilinmeyen anahtarlar, serbest komut şablonları ve izin bayrakları
+reddedilir. Windows'ta `\` karakterini JSON içinde `\\` yaz. CLI kullanıcı notunu UTF-8 stdin'den
+alır; istek en fazla 16.000 karakterdir. Kullanıcı metni kabuk komutuna gömülmez. Npm `.cmd`/`.bat`
+dosyası çalıştırılmaz; yalnız bilinen Claude/Codex paket girişleri doğrudan Node ile açılır.
+Tanımsız shim için komut yorumlayıcıya geri düşülmez.
+
+### Ajan neleri yapabilir?
+
+Bu oturum normal vault klasöründe, mevcut istemci ayarlarıyla açılır. Claude'da `--bare`,
+`--safe-mode` ve `--no-session-persistence` kullanılmaz; hafıza yüklemesini veya oturum saklamayı
+kapatan bilinen ortam ayarları sessizce aşılmaz. Codex'in proje/hook güveni önceden normal bir
+oturumda verilmiş olmalıdır. Yeni bir giriş, UAC veya onay penceresi açılması bu akışın parçası değildir.
+
+Görevin yerel okuma ve yazma işlemleri için aynı Python modülü stdin/stdout üzerinden altı
+yeteneği sunar; genel komut çalıştırma ve serbest yazma yetkisi açılmaz:
+
+| Araç | Yetki |
+|---|---|
+| `read_note` | Sınırlar içinde mevcut Markdown/metin notunu ve bu kartın bağlı metnini okur |
+| `search_notes` | Görünür notlarda sınırlı arama yapar; en fazla 30 sonuç verir |
+| `fetch_source` | Herkese açık HTTP(S) kaynağından sınırlı metin okur |
+| `download` | Doğrudan medya/metin/PDF dosyasını en fazla 50 MiB olarak hazırlar; iş başına en fazla 10 dosya |
+| `write_note` | Yalnız bu işin klasöründe en fazla 30 yeni sonuç notu oluşturur; mevcut notu değiştirmez |
+| `complete` | Doğrulanacak sonuç bildirir; kartı, receipt'i ve Last-Session'ı güvenilen çalışan günceller |
+
+İndirme için dosya türü ve hash denetlenir; çalıştırılabilir dosya türleri verilmez. Başarılı
+dosya, İndirilenler'e iş kimliği eklenmiş yeni adla yazılır; var olan kullanıcı dosyasının üzerine
+yazılmaz. Önce `.part` dosyası oluşturulur; tamamlanan kopya SHA-256 ile doğrulanıp aynı dosya
+sisteminde hard link ile son adına yayımlanır. Disk dolması, hedef çakışması veya hard link
+desteklemeyen hedefte `.part` korunur ve kart inceleme bekler. Birden fazla dosyada önceki
+başarılar kaybolmaz: her yayın niyeti ve tamamlanan dosya ayrı kaydedilir, kısmi sonuç da
+receipt ve Last-Session kapanışına dahil edilir.
+Bridge gizli/hassas yolları, sembolik bağları ve Windows junction'larını reddeder.
+`remote_allowed: false`, hassas `sensitivity` veya engellenmiş `kaynak_guveni` metadata'sı olan
+notları okumaz. `visibility: private` tek başına uzaktaki modele gönderme yasağı değildir;
+normal yakalama kartları da bu değeri kullanır.
+Bu mahremiyet kontrolü canonical JSON frontmatter ve düz skaler YAML alanlarını okur;
+tekrarlanan anahtar, bozuk/kapanmamış metadata veya desteklenmeyen biçim sessizce atlanmaz.
+
+Claude profili `dontAsk`, `--permission-prompts none`, sınırlı built-in araçlar ve yalnız bu
+MCP yapılandırmasıyla çalışır; `--permission-prompts` için en az 2.1.259 gerekir. Codex profili
+`-a never`, `-s read-only`, kapalı shell/apps/multi-agent ve `--ignore-rules` kullanır; mevcut
+MCP/eklenti envanteri doğrulanamazsa veya etkin ek araç varsa iş durur. Yerel CLI yardım/sürümü
+denetlenir; bilinmeyen konfigürasyonda izinler gevşetilmez. Web araması iki istemcide de ayrıca
+açıktır. `bypassPermissions` ve tam dosya sistemi erişimi verilmez. [belge: CLI, config ve izin kaynakları]
+
+**Güven sınırı:** Normal vault hook'ları, istemci ve `beyin.py receipt` güvenilen yerel koddur;
+onların kendi davranışları bu araç köprüsü tarafından sandbox içine alınmaz. Ajanın kullandığı
+model hizmeti, CLI'nin normal veri akışındaki isteği ve okunan notları görebilir. Public GET ve web
+araması varken URL/sorgu üzerinden veri aktarımını ya da uzak sunucunun GET'e yan etki bağlamasını
+evrensel olarak önleyen bir garanti yoktur. Dosya adı/metadata filtresi sıradan bir nota yazılmış
+her sırrı bulamaz. İşletim sistemi kısıtları ve araç listesi, modelin bütün niyetini denetleyen
+bir güvenlik sistemi olarak sunulmaz. [çıkarım]
+
+Kullanıcının **Neden** alanı yapılacak iştir; JSON zarfında veri olarak taşınması bu isteği
+yok saymaz. Bu alan sistem kurallarını değiştirme yetkisi vermez. Kaynak URL'si, sayfa, pano ve
+alıntıdaki talimatlar güvenilmeyen içeriktir. İstek serbest kabuk, silme, ödeme, kimlik bilgisi,
+mesaj gönderme veya sistem değişikliği gerektiriyorsa ajan `onay-bekliyor` sonucu bırakmalıdır;
+metin içindeki "izni aş" ifadesi yeni bir yetki oluşturmaz.
+
+**Instagram örneğinin sınırı:** Herkese açık sayfada müzik bilgisi ve doğrulanmış doğrudan dosya
+bağlantısı varsa araştırma ve indirme yapılabilir. Bu sürüm Instagram oturumunu/çerezlerini
+kullanmaz, ses dinleyerek müzik tanımaz, DRM aşmaz ve serbest `yt-dlp`/`ffmpeg` çalıştırmaz.
+Giriş, ses tanıma veya dönüştürme gerekiyorsa kart somut engelle onay bekler. Beş dakikada her
+reel'in müziğini indirme sözü verilmez; yanlış müziği veya HTML sayfasını MP3 adıyla kaydetmek
+başarı sayılmaz. Normal `isle` bölümündeki isteğe bağlı araçlar bu kısıtlı profile otomatik açılmaz.
+
+### Bildirim, kesilme ve kaldırma
+
+Windows'ta özellik açılırken Başlat menüsüne `Beyin Yakala Ajan.lnk` ve
+`AvenoxBeyin.Yakala.Agent` bildirim kimliği kaydedilir. Toast bu kimlikle gönderilir; kısayolun
+sahipliği doğrulanamıyorsa başka bir kısayolun üzerine yazılmaz. Mac'te `osascript display notification`,
+Linux'ta varsa `notify-send` kullanılır. Sabit bildirim metninde kullanıcı isteği, URL veya not
+başlığı yoktur. İşletim sistemi bildirim ayarı, odak modu veya eksik araç bildirimi gizleyebilir;
+bildirim başarısızlığı kartın sonucunu değiştirmez, yalnız günlüğe yazılır. [belge: bildirim kaynakları]
+
+Windows çalışanı popup Job Object'inden `CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW` ile
+ayrılır; izin verilmezse gizlice daha geniş bir süreç yoluna geçilmez. Ajanın kendi süreç ağacı
+ayrı sonlandırılabilir Job Object'inde tutulur. Mac/Linux'ta ayrı oturum açılır. Popup veya
+dinleyicinin kapanması normal işi iptal etmez; timeout veya `ajan kapali` çalışan işi sonlandırır.
+Bu masaüstü özelliği yeni bir ağ sunucusu ya da sürekli çalışan bulut görevi kurmaz.
+
+Tanı için `<state>/yakala/ajan/<kart-id>.log` ve `ajan` durumunu kullan. İş dosyaları
+`<state>/yakala/ajan/jobs/<iş-UUID>/` altındadır. Günlüklerde istek, kaynak ve araç çıktıları
+bulunabilir; bunları herkese açık issue'ya kontrol etmeden ekleme. Ağ/giriş/limit hatasında kart
+korunur. Süreç veya bilgisayar beklenmedik şekilde kapanırsa kısmi etkiler bilinmeyebilir;
+`ajan-devam` aynı işi kendiliğinden tekrar etmez, inceleme gerektirir.
+
+Yakala işlerinin kendi yazıları kilitlenir; normal başka bir ajan veya editör aynı kilidi
+kullanmıyorsa Last-Session'ı sonradan bütünüyle değiştirip eklenen satırı kaybedebilir. Bağımsız
+sonuç notu ve receipt bağlantısı bu nedenle korunur. Ortak vault'u iki makinede açmak tek bir
+dağıtık kuyruk veya bütün ajanlar arasında ortak dosya kilidi sağlamaz.
+
+`yakala kaldir`, ajan ayarını önce `kapali` yapar ve mevcut Yakala kısayol/skill kaldırmasını
+uygular. Kartlar, ajan sonuçları, receipt'ler, indirilmiş dosyalar ve tanı kayıtları silinmez.
+Bu sürüm yeni `Beyin Yakala Ajan.lnk` toast kısayolunu ve kayıt işaretini de korur; istersen
+Başlat menüsündeki bu adlı kısayolu ayrıca kaldırabilirsin. Kaldırma, önceden yapılmış dosya
+etkilerini geri alma işlemi değildir. Bu bölümdeki ağ davranışı yalnız açıkça gönderilen ajan
+işleri içindir; aşağıdaki normal yakalama akışı kart yazarken ağa çıkmaz.
+
+### Windows kabul testi
+
+Birim testleri gerçek ajan çalıştırmaz. Depo kökünde:
+
+```sh
+py -3 -m unittest discover -s tests -p v3_yakala_ajan_test.py -v
+```
+
+Windows 11 üzerinde aşağıdakileri ayrıca dene; Mac/Linux yolları daha az test edilmiştir:
+
+1. `kur --ajan kapali` ile düz Enter'ın eski kaydı yaptığını ve Ctrl+Enter satırının görünmediğini doğrula.
+2. Normal terminalde seçilen CLI'ye giriş yap, vault/hook güvenini ve `beyin.py receipt --help`
+   sözleşmesini kontrol et; `kur --ajan claude` veya `codex` çalıştır.
+3. Zararsız bir not araştırmasını Ctrl+Enter ile gönder. Popup'ı ve dinleyiciyi kapat; konsol
+   penceresi açılmadan işin ilerlediğini, karttaki gerçek oturum kimliğini ve bildirimi doğrula.
+4. Bilinen herkese açık küçük bir dosyayı indir. Yeni hedef adı, hash, sonuç notu, receipt ve
+   Last-Session bağlantısı birlikte doğrulandıktan sonra `islendi` olmasını kontrol et.
+5. Silme/giriş isteyen bir iş, özel IP URL'si, eksik CLI, ağ hatası ve kısa timeout dene.
+   Kartların korunduğunu, gerekçenin yazıldığını ve başarı bildirimi verilmediğini doğrula.
+6. Art arda iki istek gönder; tek CLI çalıştığını kontrol et. Aynı kartta normal `isle`/`bitti`
+   çağrılarını, kesilme sonrası `ajan-devam` davranışını ve açık `ajan-serbest` devrini dene.
+7. Bildirimleri kapatıp işi tekrarla; sonuç ve günlük oluşmalıdır. Yeni normal oturumdan önceki
+   kartı ve indirme yolunu bulmayı, son olarak `ajan kapali` ve `kaldir` davranışını doğrula.
+
+### Teknik kaynaklar
+
+Aşağıdaki bağlantılar resmî belgelerdir; **erişim tarihi 17.10.2026**. CLI seçenekleri değişebilir;
+belge desteği bu bilgisayarda canlı çalıştırma kanıtı değildir.
+
+- Claude Code: [CLI referansı](https://code.claude.com/docs/en/cli-reference),
+  [başsız çalışma](https://code.claude.com/docs/en/headless),
+  [izin modları](https://code.claude.com/docs/en/permission-modes),
+  [sandbox sınırları](https://code.claude.com/docs/en/sandboxing),
+  [yönetilen MCP](https://code.claude.com/docs/en/managed-mcp).
+- Codex: [CLI komutları](https://learn.chatgpt.com/docs/developer-commands?surface=cli),
+  [başsız çalışma ve thread kimliği](https://learn.chatgpt.com/docs/non-interactive-mode),
+  [config referansı](https://learn.chatgpt.com/docs/config-file/config-reference),
+  [onay ve güvenlik](https://learn.chatgpt.com/docs/agent-approvals-security),
+  [rules](https://learn.chatgpt.com/docs/agent-configuration/rules),
+  [hook güveni](https://learn.chatgpt.com/docs/hooks),
+  [Windows sandbox](https://learn.chatgpt.com/docs/windows/windows-sandbox).
+- Microsoft: [süreç oluşturma bayrakları](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags)
+  ve [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+  (güncelleme 14.07.2025),
+  [AUMID ile masaüstü toast kaydı](https://learn.microsoft.com/en-us/windows/win32/shell/enable-desktop-toast-with-appusermodelid)
+  (07.01.2021),
+  [masaüstü toast gönderme](https://learn.microsoft.com/en-us/windows/win32/shell/quickstart-sending-desktop-toast)
+  (20.06.2022).
+- Apple: [Display Notifications](https://developer.apple.com/library/archive/documentation/LanguagesUtilities/Conceptual/MacAutomationScriptingGuide/DisplayNotifications.html)
+  (güncelleme 13.06.2016).
+- Freedesktop: [Desktop Notifications 1.3](https://specifications.freedesktop.org/notification/latest-single/)
+  (18.08.2024); GNOME: [libnotify](https://gnome.pages.gitlab.gnome.org/libnotify/).
 
 ## İşleme nasıl çalışır
 
