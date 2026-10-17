@@ -36,7 +36,10 @@ Pi hook JSON kullanmaz. Aynı kapsamlı bridge için vault-owned extension'ı
 ile yükleyin. Birden çok kök, olay seçimi ve context bütçesi de Pi flag'leriyle
 ayarlanabilir; [Pi belgesi](PI.md#explicit-bridge-from-another-project). Bu da
 aynı startup/metadata sınırını kullanır; aşağıdaki dış-proje kapsamı Pi için de
-geçerlidir. `--print-config --harness pi` kullanılmaz.
+geçerlidir. `--print-config --harness pi` kullanılmaz. Pi desteği olmayan bir
+sürüme (3.11.0 ve öncesi) `rollback` veya `uninstall` yapmadan önce bu `-e` yolunu
+kişisel Pi ayarından ve takma adlardan kaldırın; extension dosyası silinince Pi
+`--beyin-project-root` bayrağını tanımaz ve açılmaz.
 
 Önce mevcut ayarı yedekleyin. Dosyanın tamamını bu çıktıyla değiştirmeyin; diğer
 ayarları ve hook'ları koruyun. Aynı köprüyü iki kez eklemeyin; bir proje için tek

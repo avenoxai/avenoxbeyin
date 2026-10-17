@@ -43,9 +43,14 @@ while the native/live gates remain open.
 ## Vault-local use
 
 Install V3 normally, open Pi in the vault, review the generated extension and grant
-project trust. Pi loads `.pi/extensions/` only after that trust decision. Start a new
-session (or `/reload` after an update). The shared skills are already installed in
-`.agents/skills/`, which Pi discovers; no duplicate `.pi/skills/` tree is needed.
+project trust. Pi loads `.pi/extensions/` only after that trust decision. Choosing
+"Trust" in the interactive prompt saves the decision in `~/.pi/agent/trust.json`;
+print, JSON and RPC modes cannot ask and skip project resources without a saved
+decision or `--approve`. A folder trusted before this update (the installed
+`.agents/skills/` already asks for trust) loads the new extension without a new
+prompt. Start a new session (or `/reload` after an update). The shared skills are
+already installed in `.agents/skills/`, which Pi discovers; no duplicate
+`.pi/skills/` tree is needed.
 Pi reads the existing `AGENTS.md` companion instructions.
 
 The installer owns the extension, including its original bytes and checksum in
@@ -54,6 +59,14 @@ uninstall restore/remove it through the existing transaction system.
 `--exclude-component adapters/pi` (or `preferences --exclude-component adapters/pi`,
 followed by install/update) excludes this adapter; `adapters` excludes it with the
 other optional adapters. User-owned `.pi/settings.json` is never rewritten.
+
+Releases up to 3.11.0 do not know Pi. Before a rollback or uninstall to such a
+release, remove the extension path from personal Pi settings and `pi -e` aliases
+(a removed file makes Pi reject `--beyin-project-root` and exit) and re-include
+`adapters/pi` if you excluded it (the older installer rejects the unknown name).
+Receipts written with `--harness pi` stay on disk and in the receipt views, but the
+older `sync` reports them as `invalid harness: pi` (`degraded`, doctor
+`needs_attention`) until the next update.
 
 The extension pins the vault and Python interpreter at install time. `BEYIN_PYTHON`
 can override the interpreter. State is read from `.beyin-runtime.json` and must be
