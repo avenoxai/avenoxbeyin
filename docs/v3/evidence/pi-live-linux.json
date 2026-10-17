@@ -1,0 +1,82 @@
+{
+  "date": "2026-10-17",
+  "status": "passed_local_linux",
+  "base_commit": "5328094",
+  "platform": "linux",
+  "python": "3.14.8",
+  "pi_version": "1.3.0",
+  "model": {"provider": "openai", "id": "gpt-6.1-sol"},
+  "fixture": "Independent synthetic vault installed from this working tree; no operator notes or account files copied into the fixture or repository",
+  "launch": "Pi RPC with explicit installer-generated extension, invocation-only approval of synthetic project settings, read/write/edit/bash, no other extensions, no skills, no context files; private session directory",
+  "checks": {
+    "cold_source_backed_context_without_tool_calls": true,
+    "private_sentinel_absent_from_injected_context": true,
+    "real_write_and_edit_tools": true,
+    "post_edit_hygiene_notice_in_tool_result": true,
+    "receipt_reminder_persisted_once_and_continued_model": true,
+    "model_submitted_receipt_with_pi_harness_and_hashed_real_session": true,
+    "receipt_refs_existing_edited_source": true,
+    "real_rpc_compact_with_model_summary_and_persisted_compaction_entry": true,
+    "post_compaction_source_backed_answer_without_tool_calls": true,
+    "no_duplicate_receipt_after_compaction": true,
+    "orderly_shutdown": true,
+    "all_six_shared_lifecycle_events_acknowledged": true,
+    "existing_synthetic_note_preserved_by_sha256": true,
+    "no_memory_live_run_has_no_context_or_lifecycle_events": true,
+    "outside_scope_live_run_has_no_context_or_lifecycle_events": true,
+    "scoped_external_bridge_delivers_only_startup_bootstrap_and_three_lifecycle_events": true,
+    "shell_note_create_opens_real_pi_session_edit_window_without_editor_event": true,
+    "separate_once_only_learning_reminder_continues_model": true,
+    "model_writes_source_linked_knowledge_note_and_settles_without_duplicate_receipt": true
+  },
+  "lifecycle": {
+    "events": ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "PreCompact", "SessionEnd"],
+    "acknowledged_events": 12,
+    "pending_events": 0,
+    "hook_error": null,
+    "additional_scoped_bridge_acknowledged_events": 3,
+    "separate_shell_learning_fixture_acknowledged_events": 7
+  },
+  "offline_checks": {
+    "pi_contract_suite": {"run": 20, "skipped": 0, "status": "passed", "actual_pi_loader_runner_enabled": true},
+    "shared_hygiene_suite": {"run": 35, "status": "passed"},
+    "v3_suite": {
+      "run": 1645,
+      "passed": 1615,
+      "skipped": 30,
+      "status": "passed",
+      "excluded": [],
+      "environment": "Tcl/Tk 8.6 available after the operator installed the missing library",
+      "previous_environment_error": "Missing libtk8.6.so caused the Yakala font test to fail identically in the working tree and unchanged 5328094 baseline; the targeted test and complete unfiltered suite now pass"
+    },
+    "frozen_retrieval_evaluator": {"development": 10, "holdout": 6, "status": "passed"},
+    "release_verifier": {
+      "status": "passed",
+      "baseline": "Locally built 5328094 source, test-only version 3.10.0",
+      "candidate": "Corrected working tree, test-only version 3.10.1",
+      "candidate_sha256": "893023ffb734f679ea655ed6f8ef863026d19d40410547ba3962704499d6cfda",
+      "checks": ["clean_install", "released_baseline_update", "read_only_check", "same_version_noop", "doctor", "preferences", "no_sync", "rollback_old_preferences", "interrupted_recover", "user_notes_preserved"],
+      "published_release": false
+    },
+    "git_diff_check": "passed"
+  },
+  "failure_driven_fix": {
+    "before": "Real completed assistant replies had context.canContinue=false before the reminder was added. Gating on that value suppressed receipt reminders despite successful edits.",
+    "regression": "Both generated-handler and actual Pi ExtensionRunner tests failed before the fix and passed after it. The runner preview now starts non-continuable and becomes continuable when a custom-message draft is added.",
+    "after": "Only completed outcomes request reminder continuation; aborted/error outcomes record Stop without spending the reminder. Pi validates the updated context. A fresh paid-model run passed write/edit, receipt, compaction and continuation."
+  },
+  "source_sha256": {
+    "template/.claude/scripts/beyin_v3_pi.py": "c2d8542438e39aa7379359182e64691f913e87b794b3780557c6bc68848c4fc0",
+    "template/.claude/scripts/beyin_v3_hook.py": "f85bd3f02fd58deb27c85a83dd362834e2a3c8c4816b70d39ed507312457c86d",
+    "scripts/beyin_v3.py": "d56e9091fc70a4760e03530aed314f6831139c26268bf863d16fede25620e4be",
+    "scripts/install_v3.py": "0065522318a199992ef5379492e4543bfbaf8e6b3dfa21378a9a2e6e297a11c8"
+  },
+  "raw_evidence": "Synthetic RPC commands, output, session JSONL, receipt, final doctor and assertions retained in private local temporary files; not committed",
+  "boundaries": [
+    "Linux CLI/RPC with explicit extension loading, not proof of interactive TUI discovery or project-trust UI",
+    "Native Windows/macOS and remote CI were not run",
+    "Provider failures, process crashes, transport timeout, preferences and distribution boundaries have offline contract tests, not a live paid-model matrix",
+    "This test did not redeploy the fixed adapter into the operator's existing central vault",
+    "No release was published"
+  ]
+}

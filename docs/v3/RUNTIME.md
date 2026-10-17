@@ -61,7 +61,7 @@ V3 writes exclusively to its explicit managed vault files:
 - Scripts: `.claude/scripts/beyin_v3*.py`.
 - Managed starter skills: `.agents/skills/{beyin,beyin-doktor,beyin-guncelle}/`, `.claude/skills/...`, and `.kiro/skills/...`.
 - Platform launchers: `Beyni Guncelle.cmd`, `Beyni Güncelle.sh`, `Beyni Guncelle.command`, `Beyni Güncelle.desktop`.
-- Adapter shims: `.claude/hermes-plugin/`, `.claude/scripts/beyin_v3_kiro.py`, `.opencode/plugins/`, `.omp/hooks/`.
+- Adapter shims: `.claude/hermes-plugin/`, `.claude/scripts/beyin_v3_kiro.py`, `.opencode/plugins/`, `.omp/hooks/`, `.pi/extensions/beyin-v3.ts`.
 - Harness hook declarations: `.claude/settings.local.json`, `.codex/hooks.json`, `.codex/config.toml`, `.agents/hooks.json`, `.kiro/hooks/beyin-v3.json`.
 - Companion instruction blocks: `AGENTS.md`, `CLAUDE.md`.
 
