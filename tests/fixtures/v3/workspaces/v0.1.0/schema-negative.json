@@ -1,0 +1,1264 @@
+{
+  "fixture_version": "workspace/0.1.0",
+  "cases": [
+    {
+      "id": "unknown-security-field",
+      "document": {
+        "contract_version": "workspace/0.1.0",
+        "type": "WorkspaceProfile",
+        "data": {
+          "id": "academic",
+          "revision": 1,
+          "name": "Algoritmalar dersi",
+          "purpose": "Derslerimi, ödevlerimi ve sonuçlardan öğrendiklerimi birlikte takip et.",
+          "lifecycle": "active",
+          "source_ids": [
+            "academic-vault",
+            "academic-materials",
+            "academic-extra"
+          ],
+          "note_roots": [
+            "notes",
+            "knowledge"
+          ],
+          "working_rules": [
+            {
+              "id": "topic-rule",
+              "text": "Sonucu kaynakla bağla; eksik bilgiyi üretme.",
+              "subject_refs": [
+                {
+                  "workspace_id": "academic",
+                  "record_id": "academic-topic"
+                }
+              ]
+            }
+          ],
+          "memory_policy": {
+            "prefer_update_existing": true,
+            "new_note": "distinct_only",
+            "automatic_learning": "enabled"
+          },
+          "access_policy": {
+            "cross_workspace": "explicit_grant",
+            "external_sources": "read_only",
+            "automatic_audience": "internal",
+            "allow_all": true
+          },
+          "record_types": [
+            {
+              "id": "course",
+              "label": "course",
+              "fields": {}
+            },
+            {
+              "id": "assignment",
+              "label": "assignment",
+              "fields": {}
+            },
+            {
+              "id": "grade_feedback",
+              "label": "grade_feedback",
+              "fields": {}
+            },
+            {
+              "id": "learning",
+              "label": "learning",
+              "fields": {}
+            }
+          ],
+          "relation_types": [
+            "belongs_to",
+            "result_of",
+            "learned_from"
+          ],
+          "workflows": [
+            {
+              "id": "result-to-learning",
+              "revision": 1,
+              "name": "Sonuçtan işe ve öğrenime",
+              "trigger": {
+                "event_kind": "record_changed",
+                "entity_type": "grade_feedback"
+              },
+              "conditions": [],
+              "steps": [
+                {
+                  "id": "propose",
+                  "depends_on": [],
+                  "action": "propose_memory_write",
+                  "inputs": {
+                    "result": {
+                      "ref": "event.record.id"
+                    },
+                    "target": {
+                      "literal": "academic-learning"
+                    },
+                    "task_id": {
+                      "literal": "academic-task"
+                    }
+                  }
+                },
+                {
+                  "id": "persist",
+                  "depends_on": [
+                    "propose"
+                  ],
+                  "action": "apply_memory_write",
+                  "inputs": {
+                    "intent": {
+                      "ref": "steps.propose.intent_ref"
+                    }
+                  }
+                },
+                {
+                  "id": "verify",
+                  "depends_on": [
+                    "persist"
+                  ],
+                  "action": "verify_readback",
+                  "inputs": {
+                    "intent": {
+                      "ref": "steps.propose.intent_ref"
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "extensions": {}
+        }
+      }
+    },
+    {
+      "id": "portable-local-path",
+      "document": {
+        "contract_version": "workspace/0.1.0",
+        "type": "WorkspaceProfile",
+        "data": {
+          "id": "academic",
+          "revision": 1,
+          "name": "Algoritmalar dersi",
+          "purpose": "Derslerimi, ödevlerimi ve sonuçlardan öğrendiklerimi birlikte takip et.",
+          "lifecycle": "active",
+          "source_ids": [
+            "academic-vault",
+            "academic-materials",
+            "academic-extra"
+          ],
+          "note_roots": [
+            "notes",
+            "knowledge"
+          ],
+          "working_rules": [
+            {
+              "id": "topic-rule",
+              "text": "Sonucu kaynakla bağla; eksik bilgiyi üretme.",
+              "subject_refs": [
+                {
+                  "workspace_id": "academic",
+                  "record_id": "academic-topic"
+                }
+              ]
+            }
+          ],
+          "memory_policy": {
+            "prefer_update_existing": true,
+            "new_note": "distinct_only",
+            "automatic_learning": "enabled"
+          },
+          "access_policy": {
+            "cross_workspace": "explicit_grant",
+            "external_sources": "read_only",
+            "automatic_audience": "internal"
+          },
+          "record_types": [
+            {
+              "id": "course",
+              "label": "course",
+              "fields": {}
+            },
+            {
+              "id": "assignment",
+              "label": "assignment",
+              "fields": {}
+            },
+            {
+              "id": "grade_feedback",
+              "label": "grade_feedback",
+              "fields": {}
+            },
+            {
+              "id": "learning",
+              "label": "learning",
+              "fields": {}
+            }
+          ],
+          "relation_types": [
+            "belongs_to",
+            "result_of",
+            "learned_from"
+          ],
+          "workflows": [
+            {
+              "id": "result-to-learning",
+              "revision": 1,
+              "name": "Sonuçtan işe ve öğrenime",
+              "trigger": {
+                "event_kind": "record_changed",
+                "entity_type": "grade_feedback"
+              },
+              "conditions": [],
+              "steps": [
+                {
+                  "id": "propose",
+                  "depends_on": [],
+                  "action": "propose_memory_write",
+                  "inputs": {
+                    "result": {
+                      "ref": "event.record.id"
+                    },
+                    "target": {
+                      "literal": "academic-learning"
+                    },
+                    "task_id": {
+                      "literal": "academic-task"
+                    }
+                  }
+                },
+                {
+                  "id": "persist",
+                  "depends_on": [
+                    "propose"
+                  ],
+                  "action": "apply_memory_write",
+                  "inputs": {
+                    "intent": {
+                      "ref": "steps.propose.intent_ref"
+                    }
+                  }
+                },
+                {
+                  "id": "verify",
+                  "depends_on": [
+                    "persist"
+                  ],
+                  "action": "verify_readback",
+                  "inputs": {
+                    "intent": {
+                      "ref": "steps.propose.intent_ref"
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "extensions": {},
+          "locator": "/user/home"
+        }
+      }
+    },
+    {
+      "id": "workflow-shell",
+      "document": {
+        "contract_version": "workspace/0.1.0",
+        "type": "WorkspaceProfile",
+        "data": {
+          "id": "academic",
+          "revision": 1,
+          "name": "Algoritmalar dersi",
+          "purpose": "Derslerimi, ödevlerimi ve sonuçlardan öğrendiklerimi birlikte takip et.",
+          "lifecycle": "active",
+          "source_ids": [
+            "academic-vault",
+            "academic-materials",
+            "academic-extra"
+          ],
+          "note_roots": [
+            "notes",
+            "knowledge"
+          ],
+          "working_rules": [
+            {
+              "id": "topic-rule",
+              "text": "Sonucu kaynakla bağla; eksik bilgiyi üretme.",
+              "subject_refs": [
+                {
+                  "workspace_id": "academic",
+                  "record_id": "academic-topic"
+                }
+              ]
+            }
+          ],
+          "memory_policy": {
+            "prefer_update_existing": true,
+            "new_note": "distinct_only",
+            "automatic_learning": "enabled"
+          },
+          "access_policy": {
+            "cross_workspace": "explicit_grant",
+            "external_sources": "read_only",
+            "automatic_audience": "internal"
+          },
+          "record_types": [
+            {
+              "id": "course",
+              "label": "course",
+              "fields": {}
+            },
+            {
+              "id": "assignment",
+              "label": "assignment",
+              "fields": {}
+            },
+            {
+              "id": "grade_feedback",
+              "label": "grade_feedback",
+              "fields": {}
+            },
+            {
+              "id": "learning",
+              "label": "learning",
+              "fields": {}
+            }
+          ],
+          "relation_types": [
+            "belongs_to",
+            "result_of",
+            "learned_from"
+          ],
+          "workflows": [
+            {
+              "id": "result-to-learning",
+              "revision": 1,
+              "name": "Sonuçtan işe ve öğrenime",
+              "trigger": {
+                "event_kind": "record_changed",
+                "entity_type": "grade_feedback"
+              },
+              "conditions": [],
+              "steps": [
+                {
+                  "id": "propose",
+                  "depends_on": [],
+                  "action": "shell",
+                  "inputs": {
+                    "result": {
+                      "ref": "event.record.id"
+                    },
+                    "target": {
+                      "literal": "academic-learning"
+                    },
+                    "task_id": {
+                      "literal": "academic-task"
+                    }
+                  }
+                },
+                {
+                  "id": "persist",
+                  "depends_on": [
+                    "propose"
+                  ],
+                  "action": "apply_memory_write",
+                  "inputs": {
+                    "intent": {
+                      "ref": "steps.propose.intent_ref"
+                    }
+                  }
+                },
+                {
+                  "id": "verify",
+                  "depends_on": [
+                    "persist"
+                  ],
+                  "action": "verify_readback",
+                  "inputs": {
+                    "intent": {
+                      "ref": "steps.propose.intent_ref"
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "extensions": {}
+        }
+      }
+    },
+    {
+      "id": "workflow-eval",
+      "document": {
+        "contract_version": "workspace/0.1.0",
+        "type": "WorkspaceProfile",
+        "data": {
+          "id": "academic",
+          "revision": 1,
+          "name": "Algoritmalar dersi",
+          "purpose": "Derslerimi, ödevlerimi ve sonuçlardan öğrendiklerimi birlikte takip et.",
+          "lifecycle": "active",
+          "source_ids": [
+            "academic-vault",
+            "academic-materials",
+            "academic-extra"
+          ],
+          "note_roots": [
+            "notes",
+            "knowledge"
+          ],
+          "working_rules": [
+            {
+              "id": "topic-rule",
+              "text": "Sonucu kaynakla bağla; eksik bilgiyi üretme.",
+              "subject_refs": [
+                {
+                  "workspace_id": "academic",
+                  "record_id": "academic-topic"
+                }
+              ]
+            }
+          ],
+          "memory_policy": {
+            "prefer_update_existing": true,
+            "new_note": "distinct_only",
+            "automatic_learning": "enabled"
+          },
+          "access_policy": {
+            "cross_workspace": "explicit_grant",
+            "external_sources": "read_only",
+            "automatic_audience": "internal"
+          },
+          "record_types": [
+            {
+              "id": "course",
+              "label": "course",
+              "fields": {}
+            },
+            {
+              "id": "assignment",
+              "label": "assignment",
+              "fields": {}
+            },
+            {
+              "id": "grade_feedback",
+              "label": "grade_feedback",
+              "fields": {}
+            },
+            {
+              "id": "learning",
+              "label": "learning",
+              "fields": {}
+            }
+          ],
+          "relation_types": [
+            "belongs_to",
+            "result_of",
+            "learned_from"
+          ],
+          "workflows": [
+            {
+              "id": "result-to-learning",
+              "revision": 1,
+              "name": "Sonuçtan işe ve öğrenime",
+              "trigger": {
+                "event_kind": "record_changed",
+                "entity_type": "grade_feedback"
+              },
+              "conditions": [],
+              "steps": [
+                {
+                  "id": "propose",
+                  "depends_on": [],
+                  "action": "propose_memory_write",
+                  "inputs": {
+                    "result": {
+                      "ref": "event.record.id"
+                    },
+                    "target": {
+                      "literal": "academic-learning"
+                    },
+                    "task_id": {
+                      "literal": "academic-task"
+                    },
+                    "code": {
+                      "eval": "delete_all()"
+                    }
+                  }
+                },
+                {
+                  "id": "persist",
+                  "depends_on": [
+                    "propose"
+                  ],
+                  "action": "apply_memory_write",
+                  "inputs": {
+                    "intent": {
+                      "ref": "steps.propose.intent_ref"
+                    }
+                  }
+                },
+                {
+                  "id": "verify",
+                  "depends_on": [
+                    "persist"
+                  ],
+                  "action": "verify_readback",
+                  "inputs": {
+                    "intent": {
+                      "ref": "steps.propose.intent_ref"
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "extensions": {}
+        }
+      }
+    },
+    {
+      "id": "path-escape",
+      "document": {
+        "contract_version": "workspace/0.1.0",
+        "type": "WorkspaceProfile",
+        "data": {
+          "id": "academic",
+          "revision": 1,
+          "name": "Algoritmalar dersi",
+          "purpose": "Derslerimi, ödevlerimi ve sonuçlardan öğrendiklerimi birlikte takip et.",
+          "lifecycle": "active",
+          "source_ids": [
+            "academic-vault",
+            "academic-materials",
+            "academic-extra"
+          ],
+          "note_roots": [
+            "../outside"
+          ],
+          "working_rules": [
+            {
+              "id": "topic-rule",
+              "text": "Sonucu kaynakla bağla; eksik bilgiyi üretme.",
+              "subject_refs": [
+                {
+                  "workspace_id": "academic",
+                  "record_id": "academic-topic"
+                }
+              ]
+            }
+          ],
+          "memory_policy": {
+            "prefer_update_existing": true,
+            "new_note": "distinct_only",
+            "automatic_learning": "enabled"
+          },
+          "access_policy": {
+            "cross_workspace": "explicit_grant",
+            "external_sources": "read_only",
+            "automatic_audience": "internal"
+          },
+          "record_types": [
+            {
+              "id": "course",
+              "label": "course",
+              "fields": {}
+            },
+            {
+              "id": "assignment",
+              "label": "assignment",
+              "fields": {}
+            },
+            {
+              "id": "grade_feedback",
+              "label": "grade_feedback",
+              "fields": {}
+            },
+            {
+              "id": "learning",
+              "label": "learning",
+              "fields": {}
+            }
+          ],
+          "relation_types": [
+            "belongs_to",
+            "result_of",
+            "learned_from"
+          ],
+          "workflows": [
+            {
+              "id": "result-to-learning",
+              "revision": 1,
+              "name": "Sonuçtan işe ve öğrenime",
+              "trigger": {
+                "event_kind": "record_changed",
+                "entity_type": "grade_feedback"
+              },
+              "conditions": [],
+              "steps": [
+                {
+                  "id": "propose",
+                  "depends_on": [],
+                  "action": "propose_memory_write",
+                  "inputs": {
+                    "result": {
+                      "ref": "event.record.id"
+                    },
+                    "target": {
+                      "literal": "academic-learning"
+                    },
+                    "task_id": {
+                      "literal": "academic-task"
+                    }
+                  }
+                },
+                {
+                  "id": "persist",
+                  "depends_on": [
+                    "propose"
+                  ],
+                  "action": "apply_memory_write",
+                  "inputs": {
+                    "intent": {
+                      "ref": "steps.propose.intent_ref"
+                    }
+                  }
+                },
+                {
+                  "id": "verify",
+                  "depends_on": [
+                    "persist"
+                  ],
+                  "action": "verify_readback",
+                  "inputs": {
+                    "intent": {
+                      "ref": "steps.propose.intent_ref"
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "extensions": {}
+        }
+      }
+    },
+    {
+      "id": "negative-revision",
+      "document": {
+        "contract_version": "workspace/0.1.0",
+        "type": "WorkspaceProfile",
+        "data": {
+          "id": "academic",
+          "revision": 0,
+          "name": "Algoritmalar dersi",
+          "purpose": "Derslerimi, ödevlerimi ve sonuçlardan öğrendiklerimi birlikte takip et.",
+          "lifecycle": "active",
+          "source_ids": [
+            "academic-vault",
+            "academic-materials",
+            "academic-extra"
+          ],
+          "note_roots": [
+            "notes",
+            "knowledge"
+          ],
+          "working_rules": [
+            {
+              "id": "topic-rule",
+              "text": "Sonucu kaynakla bağla; eksik bilgiyi üretme.",
+              "subject_refs": [
+                {
+                  "workspace_id": "academic",
+                  "record_id": "academic-topic"
+                }
+              ]
+            }
+          ],
+          "memory_policy": {
+            "prefer_update_existing": true,
+            "new_note": "distinct_only",
+            "automatic_learning": "enabled"
+          },
+          "access_policy": {
+            "cross_workspace": "explicit_grant",
+            "external_sources": "read_only",
+            "automatic_audience": "internal"
+          },
+          "record_types": [
+            {
+              "id": "course",
+              "label": "course",
+              "fields": {}
+            },
+            {
+              "id": "assignment",
+              "label": "assignment",
+              "fields": {}
+            },
+            {
+              "id": "grade_feedback",
+              "label": "grade_feedback",
+              "fields": {}
+            },
+            {
+              "id": "learning",
+              "label": "learning",
+              "fields": {}
+            }
+          ],
+          "relation_types": [
+            "belongs_to",
+            "result_of",
+            "learned_from"
+          ],
+          "workflows": [
+            {
+              "id": "result-to-learning",
+              "revision": 1,
+              "name": "Sonuçtan işe ve öğrenime",
+              "trigger": {
+                "event_kind": "record_changed",
+                "entity_type": "grade_feedback"
+              },
+              "conditions": [],
+              "steps": [
+                {
+                  "id": "propose",
+                  "depends_on": [],
+                  "action": "propose_memory_write",
+                  "inputs": {
+                    "result": {
+                      "ref": "event.record.id"
+                    },
+                    "target": {
+                      "literal": "academic-learning"
+                    },
+                    "task_id": {
+                      "literal": "academic-task"
+                    }
+                  }
+                },
+                {
+                  "id": "persist",
+                  "depends_on": [
+                    "propose"
+                  ],
+                  "action": "apply_memory_write",
+                  "inputs": {
+                    "intent": {
+                      "ref": "steps.propose.intent_ref"
+                    }
+                  }
+                },
+                {
+                  "id": "verify",
+                  "depends_on": [
+                    "persist"
+                  ],
+                  "action": "verify_readback",
+                  "inputs": {
+                    "intent": {
+                      "ref": "steps.propose.intent_ref"
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "extensions": {}
+        }
+      }
+    },
+    {
+      "id": "missing-update-cas",
+      "document": {
+        "contract_version": "workspace/0.1.0",
+        "type": "MemoryWriteIntent",
+        "data": {
+          "intent_id": "academic-intent",
+          "workspace_id": "academic",
+          "context_token": "fixture-context-academic",
+          "profile_revision": 1,
+          "binding_snapshot_sha256": "a51b2661e2cd35e531314c7d7c2b7514385dedfb88916f780fc196f6cdf1bdd8",
+          "idempotency_key": "academic/result-1/write",
+          "reason": "Sonuçtan çıkarılan kalıcı öğrenim mevcut kaydı geliştiriyor.",
+          "changes": [
+            {
+              "id": "learning-update",
+              "action": "update_note",
+              "target": {
+                "record_id": "academic-learning",
+                "source_id": "academic-vault",
+                "relative_path": "notes/academic-learning.md",
+                "expected_revision": 1,
+                "expected_source_sha256": null
+              },
+              "body": "Karmaşıklık açıklamasını örnek girdi ve gerekçeyle yaz.\nYeni sonuç kaynağıyla karşılaştırıldı.",
+              "metadata_changes": {},
+              "relation_changes": [],
+              "evidence_refs": [
+                {
+                  "source_id": "academic-vault",
+                  "relative_path": "notes/academic-result.md",
+                  "content_sha256": "3430bdec54c807a0cf5d67a6b5b878bd1828e5cacae45d44807b33a3b9a392ad",
+                  "fragment": {
+                    "kind": "whole"
+                  },
+                  "extractor": {
+                    "id": "markdown",
+                    "version": "fixture-1",
+                    "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                  }
+                },
+                {
+                  "source_id": "academic-materials",
+                  "relative_path": "material.txt",
+                  "content_sha256": "59d6bd58d0e7e9062df195f78e866bdd62ccec64ba5df83df8cff9d3e427bdcc",
+                  "fragment": {
+                    "kind": "lines",
+                    "start": 1,
+                    "end": 2
+                  },
+                  "extractor": {
+                    "id": "text",
+                    "version": "fixture-1",
+                    "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                  }
+                }
+              ]
+            },
+            {
+              "id": "task-progress",
+              "action": "update_task",
+              "target": {
+                "record_id": "academic-task",
+                "source_id": "academic-vault",
+                "relative_path": "tasks/academic-task.md",
+                "expected_revision": 1,
+                "expected_source_sha256": "96d01d786605ec2f90faa6c330cd94d5a209dbebbb20636b40136597d9cf7998"
+              },
+              "body": "",
+              "metadata_changes": {
+                "next_action": "Geri bildirimle bir sonraki denemeyi hazırla"
+              },
+              "relation_changes": [
+                {
+                  "id": "academic-result-task",
+                  "workspace_id": "academic",
+                  "type": "result_of",
+                  "from": {
+                    "workspace_id": "academic",
+                    "record_id": "academic-result"
+                  },
+                  "to": {
+                    "workspace_id": "academic",
+                    "record_id": "academic-task"
+                  },
+                  "evidence_refs": [
+                    {
+                      "source_id": "academic-vault",
+                      "relative_path": "notes/academic-result.md",
+                      "content_sha256": "3430bdec54c807a0cf5d67a6b5b878bd1828e5cacae45d44807b33a3b9a392ad",
+                      "fragment": {
+                        "kind": "whole"
+                      },
+                      "extractor": {
+                        "id": "markdown",
+                        "version": "fixture-1",
+                        "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "evidence_refs": [
+                {
+                  "source_id": "academic-vault",
+                  "relative_path": "notes/academic-result.md",
+                  "content_sha256": "3430bdec54c807a0cf5d67a6b5b878bd1828e5cacae45d44807b33a3b9a392ad",
+                  "fragment": {
+                    "kind": "whole"
+                  },
+                  "extractor": {
+                    "id": "markdown",
+                    "version": "fixture-1",
+                    "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "metadata-authority",
+      "document": {
+        "contract_version": "workspace/0.1.0",
+        "type": "MemoryWriteIntent",
+        "data": {
+          "intent_id": "academic-intent",
+          "workspace_id": "academic",
+          "context_token": "fixture-context-academic",
+          "profile_revision": 1,
+          "binding_snapshot_sha256": "a51b2661e2cd35e531314c7d7c2b7514385dedfb88916f780fc196f6cdf1bdd8",
+          "idempotency_key": "academic/result-1/write",
+          "reason": "Sonuçtan çıkarılan kalıcı öğrenim mevcut kaydı geliştiriyor.",
+          "changes": [
+            {
+              "id": "learning-update",
+              "action": "update_note",
+              "target": {
+                "record_id": "academic-learning",
+                "source_id": "academic-vault",
+                "relative_path": "notes/academic-learning.md",
+                "expected_revision": 1,
+                "expected_source_sha256": "f284b4e21dd2b5a40a4f92b8335b894990142cd6b9dcd9b1baf6760ebb0050b2"
+              },
+              "body": "Karmaşıklık açıklamasını örnek girdi ve gerekçeyle yaz.\nYeni sonuç kaynağıyla karşılaştırıldı.",
+              "metadata_changes": {
+                "remote_allowed": true
+              },
+              "relation_changes": [],
+              "evidence_refs": [
+                {
+                  "source_id": "academic-vault",
+                  "relative_path": "notes/academic-result.md",
+                  "content_sha256": "3430bdec54c807a0cf5d67a6b5b878bd1828e5cacae45d44807b33a3b9a392ad",
+                  "fragment": {
+                    "kind": "whole"
+                  },
+                  "extractor": {
+                    "id": "markdown",
+                    "version": "fixture-1",
+                    "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                  }
+                },
+                {
+                  "source_id": "academic-materials",
+                  "relative_path": "material.txt",
+                  "content_sha256": "59d6bd58d0e7e9062df195f78e866bdd62ccec64ba5df83df8cff9d3e427bdcc",
+                  "fragment": {
+                    "kind": "lines",
+                    "start": 1,
+                    "end": 2
+                  },
+                  "extractor": {
+                    "id": "text",
+                    "version": "fixture-1",
+                    "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                  }
+                }
+              ]
+            },
+            {
+              "id": "task-progress",
+              "action": "update_task",
+              "target": {
+                "record_id": "academic-task",
+                "source_id": "academic-vault",
+                "relative_path": "tasks/academic-task.md",
+                "expected_revision": 1,
+                "expected_source_sha256": "96d01d786605ec2f90faa6c330cd94d5a209dbebbb20636b40136597d9cf7998"
+              },
+              "body": "",
+              "metadata_changes": {
+                "next_action": "Geri bildirimle bir sonraki denemeyi hazırla"
+              },
+              "relation_changes": [
+                {
+                  "id": "academic-result-task",
+                  "workspace_id": "academic",
+                  "type": "result_of",
+                  "from": {
+                    "workspace_id": "academic",
+                    "record_id": "academic-result"
+                  },
+                  "to": {
+                    "workspace_id": "academic",
+                    "record_id": "academic-task"
+                  },
+                  "evidence_refs": [
+                    {
+                      "source_id": "academic-vault",
+                      "relative_path": "notes/academic-result.md",
+                      "content_sha256": "3430bdec54c807a0cf5d67a6b5b878bd1828e5cacae45d44807b33a3b9a392ad",
+                      "fragment": {
+                        "kind": "whole"
+                      },
+                      "extractor": {
+                        "id": "markdown",
+                        "version": "fixture-1",
+                        "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "evidence_refs": [
+                {
+                  "source_id": "academic-vault",
+                  "relative_path": "notes/academic-result.md",
+                  "content_sha256": "3430bdec54c807a0cf5d67a6b5b878bd1828e5cacae45d44807b33a3b9a392ad",
+                  "fragment": {
+                    "kind": "whole"
+                  },
+                  "extractor": {
+                    "id": "markdown",
+                    "version": "fixture-1",
+                    "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "false-ready",
+      "document": {
+        "contract_version": "workspace/0.1.0",
+        "type": "OperationResult",
+        "data": {
+          "operation_id": "academic-operation",
+          "operation_status": "applied",
+          "workspace_health": "ready",
+          "parts": [
+            {
+              "id": "profile",
+              "state": "applied"
+            },
+            {
+              "id": "learning",
+              "state": "pending"
+            },
+            {
+              "id": "task",
+              "state": "pending"
+            }
+          ],
+          "capabilities": [
+            {
+              "name": "text",
+              "state": "not_tested"
+            },
+            {
+              "name": "markdown",
+              "state": "not_tested"
+            },
+            {
+              "name": "pdf_text",
+              "state": "not_tested"
+            },
+            {
+              "name": "docx_text",
+              "state": "not_tested"
+            },
+            {
+              "name": "workflow",
+              "state": "not_tested"
+            }
+          ],
+          "verification": [
+            {
+              "check": "source_read",
+              "state": "pending",
+              "evidence_refs": []
+            },
+            {
+              "check": "related_records",
+              "state": "pending",
+              "evidence_refs": []
+            },
+            {
+              "check": "canonical_update",
+              "state": "pending",
+              "evidence_refs": []
+            },
+            {
+              "check": "index_readback",
+              "state": "pending",
+              "evidence_refs": []
+            },
+            {
+              "check": "fresh_session",
+              "state": "pending",
+              "evidence_refs": []
+            },
+            {
+              "check": "workflow_resume",
+              "state": "pending",
+              "evidence_refs": []
+            }
+          ],
+          "issues": [],
+          "next_action": "C3/C4/D2 gerçek servisleriyle günlük akışı doğrula."
+        }
+      }
+    },
+    {
+      "id": "false-workflow-completion",
+      "document": {
+        "contract_version": "workspace/0.1.0",
+        "type": "WorkflowRun",
+        "data": {
+          "run_id": "5ae5b8dcc40f8db825771930379a2804f141e19f38d31e8cbefb85c5d7a7b7a8",
+          "workspace_id": "academic",
+          "workflow_id": "result-to-learning",
+          "workflow_revision": 1,
+          "definition_sha256": "2a95add789bdfa8fa6fa4cea35e236d185c4d2b83df5f792149b0fc426b09751",
+          "event_id": "academic/result-1",
+          "context_token": "fixture-context-academic",
+          "status": "completed",
+          "steps": [
+            {
+              "step_id": "propose",
+              "idempotency_key": "5ae5b8dcc40f8db825771930379a2804f141e19f38d31e8cbefb85c5d7a7b7a8/propose",
+              "state": "awaiting_agent",
+              "result_ref": null
+            },
+            {
+              "step_id": "persist",
+              "idempotency_key": "5ae5b8dcc40f8db825771930379a2804f141e19f38d31e8cbefb85c5d7a7b7a8/persist",
+              "state": "pending",
+              "result_ref": null
+            },
+            {
+              "step_id": "verify",
+              "idempotency_key": "5ae5b8dcc40f8db825771930379a2804f141e19f38d31e8cbefb85c5d7a7b7a8/verify",
+              "state": "pending",
+              "result_ref": null
+            }
+          ],
+          "next_action": "Aktif ajan mevcut bağlamda kaynaklı MemoryWriteIntent önerir; ardından policy/CAS doğrulanır."
+        }
+      }
+    },
+    {
+      "id": "unknown-contract",
+      "document": {
+        "contract_version": "workspace/99.0.0",
+        "type": "WorkspaceProfile",
+        "data": {
+          "id": "academic",
+          "revision": 1,
+          "name": "Algoritmalar dersi",
+          "purpose": "Derslerimi, ödevlerimi ve sonuçlardan öğrendiklerimi birlikte takip et.",
+          "lifecycle": "active",
+          "source_ids": [
+            "academic-vault",
+            "academic-materials",
+            "academic-extra"
+          ],
+          "note_roots": [
+            "notes",
+            "knowledge"
+          ],
+          "working_rules": [
+            {
+              "id": "topic-rule",
+              "text": "Sonucu kaynakla bağla; eksik bilgiyi üretme.",
+              "subject_refs": [
+                {
+                  "workspace_id": "academic",
+                  "record_id": "academic-topic"
+                }
+              ]
+            }
+          ],
+          "memory_policy": {
+            "prefer_update_existing": true,
+            "new_note": "distinct_only",
+            "automatic_learning": "enabled"
+          },
+          "access_policy": {
+            "cross_workspace": "explicit_grant",
+            "external_sources": "read_only",
+            "automatic_audience": "internal"
+          },
+          "record_types": [
+            {
+              "id": "course",
+              "label": "course",
+              "fields": {}
+            },
+            {
+              "id": "assignment",
+              "label": "assignment",
+              "fields": {}
+            },
+            {
+              "id": "grade_feedback",
+              "label": "grade_feedback",
+              "fields": {}
+            },
+            {
+              "id": "learning",
+              "label": "learning",
+              "fields": {}
+            }
+          ],
+          "relation_types": [
+            "belongs_to",
+            "result_of",
+            "learned_from"
+          ],
+          "workflows": [
+            {
+              "id": "result-to-learning",
+              "revision": 1,
+              "name": "Sonuçtan işe ve öğrenime",
+              "trigger": {
+                "event_kind": "record_changed",
+                "entity_type": "grade_feedback"
+              },
+              "conditions": [],
+              "steps": [
+                {
+                  "id": "propose",
+                  "depends_on": [],
+                  "action": "propose_memory_write",
+                  "inputs": {
+                    "result": {
+                      "ref": "event.record.id"
+                    },
+                    "target": {
+                      "literal": "academic-learning"
+                    },
+                    "task_id": {
+                      "literal": "academic-task"
+                    }
+                  }
+                },
+                {
+                  "id": "persist",
+                  "depends_on": [
+                    "propose"
+                  ],
+                  "action": "apply_memory_write",
+                  "inputs": {
+                    "intent": {
+                      "ref": "steps.propose.intent_ref"
+                    }
+                  }
+                },
+                {
+                  "id": "verify",
+                  "depends_on": [
+                    "persist"
+                  ],
+                  "action": "verify_readback",
+                  "inputs": {
+                    "intent": {
+                      "ref": "steps.propose.intent_ref"
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "extensions": {}
+        }
+      }
+    }
+  ]
+}

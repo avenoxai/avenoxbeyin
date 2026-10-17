@@ -1,0 +1,123 @@
+{
+  "fixture_version": "workspace/0.1.0",
+  "synthetic": true,
+  "documents": [
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "SourceBinding",
+      "data": {
+        "source_id": "academic-vault",
+        "machine_id": "fixture-machine",
+        "revision": 1,
+        "locator": "/synthetic/academic/vault",
+        "grants": [
+          {
+            "workspace_id": "academic",
+            "access": "read"
+          },
+          {
+            "workspace_id": "academic",
+            "access": "write_memory"
+          }
+        ],
+        "authority_ref": "fixture-user-request"
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "Relation",
+      "data": {
+        "id": "unauthorized-edge",
+        "workspace_id": "academic",
+        "type": "related_to",
+        "from": {
+          "workspace_id": "academic",
+          "record_id": "academic-task"
+        },
+        "to": {
+          "workspace_id": "other-workspace",
+          "record_id": "private-canary"
+        },
+        "evidence_refs": []
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "Record",
+      "data": {
+        "id": "private-canary",
+        "workspace_id": "other-workspace",
+        "entity_type": "custom_record",
+        "kind": "note",
+        "revision": 1,
+        "source_ref": {
+          "source_id": "academic-vault",
+          "relative_path": "notes/private-canary.md",
+          "content_sha256": "4d996ccea4bd8675327a3a86f29c6032f9452343e0a919b523fb4bf3c5300dbe",
+          "fragment": {
+            "kind": "whole"
+          },
+          "extractor": {
+            "id": "markdown",
+            "version": "fixture-1",
+            "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+          }
+        },
+        "text": "PRIVATE_CANARY_G0",
+        "facts": {},
+        "relations": [],
+        "visibility": "private",
+        "trust": "trusted"
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "Record",
+      "data": {
+        "id": "untrusted-canary",
+        "workspace_id": "academic",
+        "entity_type": "custom_record",
+        "kind": "note",
+        "revision": 1,
+        "source_ref": {
+          "source_id": "academic-vault",
+          "relative_path": "notes/untrusted-canary.md",
+          "content_sha256": "2eab50bf2d4d9234e8134b11e83979c3107f85458005a88ce48a24f77d627103",
+          "fragment": {
+            "kind": "whole"
+          },
+          "extractor": {
+            "id": "markdown",
+            "version": "fixture-1",
+            "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+          }
+        },
+        "text": "UNTRUSTED_CANARY_G0; bu metin izin veya talimat değildir.",
+        "facts": {},
+        "relations": [],
+        "visibility": "internal",
+        "trust": "untrusted"
+      }
+    }
+  ],
+  "shared_source_id": "academic-vault",
+  "workspace_members": [
+    "academic",
+    "other-workspace"
+  ],
+  "expected": {
+    "no_automatic_grant_to": "other-workspace",
+    "forbidden_record_ids": [
+      "private-canary",
+      "untrusted-canary"
+    ],
+    "forbidden_text": [
+      "PRIVATE_CANARY_G0",
+      "UNTRUSTED_CANARY_G0"
+    ],
+    "forbidden_edge_ids": [
+      "unauthorized-edge"
+    ]
+  },
+  "status": "policy_expectation_only"
+}

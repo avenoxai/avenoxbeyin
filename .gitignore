@@ -9,3 +9,23 @@ __pycache__/
 
 # Yerel release çıktıları GitHub Release varlığı olarak yayınlanır
 release/
+
+# Yerel geliştirme ve ajan çalışma dosyaları
+/.codex/
+/.local-dev/
+/AGENTS.md
+/AGENTS.local.md
+/CODEX.md
+/docs/v3/workspaces/archive/
+/docs/v3/workspaces/AUDIT.md
+/docs/v3/workspaces/HANDOFF.md
+/docs/v3/workspaces/DECISIONS.md
+/docs/v3/workspaces/STATUS.md
+/docs/v3/workspaces/CONTRIBUTING.md
+/docs/v3/workspaces/P0-C-*.md
+/docs/v3/workspaces/v0.1.0/VERIFICATION.json
+/docs/v3/WORKSPACE-BUILDER-CONTINUE.md
+/docs/v3/WORKSPACE-BUILDER-INTEGRATION.md
+/docs/v3/WORKSPACE-BUILDER-PAUSE.md
+/docs/v3/WORKSPACE-BUILDER-UPSTREAM.md
+/docs/v3/WORKSPACE-PARSER-PROTOTYPE.md

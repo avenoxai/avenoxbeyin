@@ -1,0 +1,8 @@
+{
+  "fixture_version": "workspace/0.1.0",
+  "synthetic": true,
+  "expected_source_sha256": "234d22e4c8c0dc2fc66e279fbbc82842db5131a9c3590025b35af57660c006fd",
+  "actual_source_sha256": "8ba834d17d07f66a7f1f12e86c118acde5c9c4eb86dbc33e47a218fb7a40f5a6",
+  "expected_result": "conflict",
+  "preserve": "boundary/files/manual/after-user-edit.md"
+}

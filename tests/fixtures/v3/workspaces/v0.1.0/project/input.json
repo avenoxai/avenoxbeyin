@@ -1,0 +1,375 @@
+{
+  "fixture_version": "workspace/0.1.0",
+  "synthetic": true,
+  "split": "development",
+  "case_id": "project",
+  "natural_setup_request": "Proje dosyası, görev, karar ve teknik öğrenimimi birlikte tut.",
+  "natural_daily_request": "Güncel dosya ve önceki kararla göreve devam edelim.",
+  "documents": [
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "RegistryFormat",
+      "data": {
+        "registry_id": "synthetic-brain",
+        "layout": "per_workspace_json"
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "RegistrySnapshot",
+      "data": {
+        "registry_id": "synthetic-brain",
+        "snapshot_sha256": "93ca970803eb0f4cd644aac6dd1b3e8075819adb66943cab8682744d96f34542",
+        "files": [
+          {
+            "relative_path": ".beyin-workspaces/format.json",
+            "content_sha256": "dbbcc63cbe0264e5c416369166182cc9b0858c9da84f6aa3b50e73b3eaf403f1"
+          }
+        ],
+        "profiles": [],
+        "sources": []
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "WorkspaceSpec",
+      "data": {
+        "spec_id": "project-setup",
+        "user_goal": "Proje dosyası, görev, karar ve teknik öğrenimimi birlikte tut.",
+        "desired_profile": {
+          "id": "project",
+          "revision": 1,
+          "name": "Sentetik kod projesi",
+          "purpose": "Proje dosyası, görev, karar ve teknik öğrenimimi birlikte tut.",
+          "lifecycle": "active",
+          "source_ids": [
+            "project-vault",
+            "project-materials",
+            "project-extra"
+          ],
+          "note_roots": [
+            "notes",
+            "knowledge"
+          ],
+          "working_rules": [
+            {
+              "id": "topic-rule",
+              "text": "Sonucu kaynakla bağla; eksik bilgiyi üretme.",
+              "subject_refs": [
+                {
+                  "workspace_id": "project",
+                  "record_id": "project-topic"
+                }
+              ]
+            }
+          ],
+          "memory_policy": {
+            "prefer_update_existing": true,
+            "new_note": "distinct_only",
+            "automatic_learning": "enabled"
+          },
+          "access_policy": {
+            "cross_workspace": "explicit_grant",
+            "external_sources": "read_only",
+            "automatic_audience": "internal"
+          },
+          "record_types": [
+            {
+              "id": "repository",
+              "label": "repository",
+              "fields": {}
+            },
+            {
+              "id": "implementation_task",
+              "label": "implementation_task",
+              "fields": {}
+            },
+            {
+              "id": "decision",
+              "label": "decision",
+              "fields": {}
+            },
+            {
+              "id": "technical_learning",
+              "label": "technical_learning",
+              "fields": {}
+            }
+          ],
+          "relation_types": [
+            "belongs_to",
+            "result_of",
+            "learned_from"
+          ],
+          "workflows": [
+            {
+              "id": "result-to-learning",
+              "revision": 1,
+              "name": "Sonuçtan işe ve öğrenime",
+              "trigger": {
+                "event_kind": "record_changed",
+                "entity_type": "decision"
+              },
+              "conditions": [],
+              "steps": [
+                {
+                  "id": "propose",
+                  "depends_on": [],
+                  "action": "propose_memory_write",
+                  "inputs": {
+                    "result": {
+                      "ref": "event.record.id"
+                    },
+                    "target": {
+                      "literal": "project-learning"
+                    },
+                    "task_id": {
+                      "literal": "project-task"
+                    }
+                  }
+                },
+                {
+                  "id": "persist",
+                  "depends_on": [
+                    "propose"
+                  ],
+                  "action": "apply_memory_write",
+                  "inputs": {
+                    "intent": {
+                      "ref": "steps.propose.intent_ref"
+                    }
+                  }
+                },
+                {
+                  "id": "verify",
+                  "depends_on": [
+                    "persist"
+                  ],
+                  "action": "verify_readback",
+                  "inputs": {
+                    "intent": {
+                      "ref": "steps.propose.intent_ref"
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "extensions": {}
+        },
+        "sources": [
+          {
+            "id": "project-vault",
+            "kind": "vault",
+            "label": "Sentetik vault"
+          },
+          {
+            "id": "project-materials",
+            "kind": "directory",
+            "label": "Materyaller A"
+          },
+          {
+            "id": "project-extra",
+            "kind": "directory",
+            "label": "Materyaller B"
+          }
+        ],
+        "binding_requests": [
+          {
+            "source_id": "project-vault",
+            "machine_id": "fixture-machine",
+            "revision": 1,
+            "locator": "/synthetic/project/vault",
+            "grants": [
+              {
+                "workspace_id": "project",
+                "access": "read"
+              },
+              {
+                "workspace_id": "project",
+                "access": "write_memory"
+              }
+            ],
+            "authority_ref": "fixture-user-request"
+          },
+          {
+            "source_id": "project-materials",
+            "machine_id": "fixture-machine",
+            "revision": 1,
+            "locator": "/synthetic/project/source-a",
+            "grants": [
+              {
+                "workspace_id": "project",
+                "access": "read"
+              }
+            ],
+            "authority_ref": "fixture-user-request"
+          },
+          {
+            "source_id": "project-extra",
+            "machine_id": "fixture-machine",
+            "revision": 1,
+            "locator": "/synthetic/project/source-b",
+            "grants": [
+              {
+                "workspace_id": "project",
+                "access": "read"
+              }
+            ],
+            "authority_ref": "fixture-user-request"
+          }
+        ],
+        "adopt_record_refs": [
+          {
+            "workspace_id": "project",
+            "record_id": "project-topic"
+          },
+          {
+            "workspace_id": "project",
+            "record_id": "project-task"
+          },
+          {
+            "workspace_id": "project",
+            "record_id": "project-result"
+          },
+          {
+            "workspace_id": "project",
+            "record_id": "project-learning"
+          }
+        ],
+        "required_capabilities": [
+          "text",
+          "markdown",
+          "pdf_text",
+          "docx_text",
+          "workflow"
+        ],
+        "unresolved": [],
+        "authority_ref": "fixture-user-request"
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "RequestContext",
+      "data": {
+        "request_id": "project-request",
+        "session_id": "fixture-session-project",
+        "client": "fixture-codex",
+        "query": "Güncel dosya ve önceki kararla göreve devam edelim.",
+        "grant_ref": "fixture-user-request",
+        "audience": "internal",
+        "no_memory": false,
+        "signals": [
+          {
+            "kind": "conversation_subject",
+            "workspace_id": "project",
+            "subject_refs": [
+              {
+                "workspace_id": "project",
+                "record_id": "project-task"
+              }
+            ]
+          }
+        ],
+        "budget_chars": 8000
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "WorkflowEvent",
+      "data": {
+        "event_id": "project/result-1",
+        "workspace_id": "project",
+        "event_kind": "record_changed",
+        "record": {
+          "id": "project-result",
+          "kind": "note",
+          "revision": 1,
+          "visibility": "internal",
+          "facts": {
+            "fixture": true,
+            "observation": "Kayıtlı ölçüm"
+          },
+          "entity_type": "decision",
+          "workspace_id": "project",
+          "text": "Yeni kaynak sürümünde hata yeniden üretildi.",
+          "source_ref": {
+            "source_id": "project-vault",
+            "relative_path": "notes/project-result.md",
+            "content_sha256": "53633943115a7bd291a072b2cd7fb37dc6e37700158a33f0f18451ff3a56e3e7",
+            "fragment": {
+              "kind": "whole"
+            },
+            "extractor": {
+              "id": "markdown",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          },
+          "trust": "trusted",
+          "relations": [
+            {
+              "id": "project-result-topic",
+              "workspace_id": "project",
+              "type": "belongs_to",
+              "from": {
+                "workspace_id": "project",
+                "record_id": "project-result"
+              },
+              "to": {
+                "workspace_id": "project",
+                "record_id": "project-topic"
+              },
+              "evidence_refs": []
+            }
+          ]
+        },
+        "evidence_refs": [
+          {
+            "source_id": "project-vault",
+            "relative_path": "notes/project-result.md",
+            "content_sha256": "53633943115a7bd291a072b2cd7fb37dc6e37700158a33f0f18451ff3a56e3e7",
+            "fragment": {
+              "kind": "whole"
+            },
+            "extractor": {
+              "id": "markdown",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "source_files": [
+    {
+      "path": "files/source-a/material.txt",
+      "content_sha256": "dc12ea4a8eeecd0b13dab1d74db168f00657e855049ac88154e40ebff960b75e"
+    },
+    {
+      "path": "files/source-b/material.txt",
+      "content_sha256": "a7ae1b86fe474427bef524303655955e1fb05d91f74331e43127254270fe0cfc"
+    },
+    {
+      "path": "files/vault/notes/project-topic.md",
+      "content_sha256": "3cffc98a64a0a97b2f0c224a6741bf6e8d76919278132f3ee88a363b534a71ae"
+    },
+    {
+      "path": "files/vault/tasks/project-task.md",
+      "content_sha256": "6f25e97bbfeb7193f89670877d593682858b234cf6a5e7db63457a89fc087138"
+    },
+    {
+      "path": "files/vault/notes/project-result.md",
+      "content_sha256": "53633943115a7bd291a072b2cd7fb37dc6e37700158a33f0f18451ff3a56e3e7"
+    },
+    {
+      "path": "files/vault/notes/project-learning.md",
+      "content_sha256": "751ea18500a12fec02f67fb8f5ff315f38d4de2347e1203234d10407c6c6456d"
+    }
+  ],
+  "locator_remap": {
+    "/synthetic/project/vault": "files/vault",
+    "/synthetic/project/source-a": "files/source-a",
+    "/synthetic/project/source-b": "files/source-b"
+  }
+}

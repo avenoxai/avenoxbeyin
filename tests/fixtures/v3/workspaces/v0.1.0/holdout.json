@@ -1,0 +1,24 @@
+{
+  "fixture_version": "workspace/0.1.0",
+  "split": "holdout",
+  "synthetic": true,
+  "user_goal": "Seramik denemelerimin reçetelerini, pişirim işlerini, sonuçlarını ve öğrendiklerimi birlikte tut.",
+  "entity_types": [
+    "recipe",
+    "firing_task",
+    "test_result",
+    "lesson"
+  ],
+  "events": [
+    "Son denemede yüzey çatladı.",
+    "Önceki reçeteyi ve pişirim sonucunu karşılaştır."
+  ],
+  "required_behavior": [
+    "same WorkspaceProfile/WorkflowDefinition schema",
+    "no ceramics-specific module or skill",
+    "existing lesson update",
+    "fresh session source-backed recall",
+    "replay creates no extra effect"
+  ],
+  "not_yet_executed": true
+}
