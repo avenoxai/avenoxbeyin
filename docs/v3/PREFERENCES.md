@@ -51,6 +51,13 @@ Açılışta hafıza dosyaları kırpılıyorsa sorgusuz seçilen ilgisiz bir no
 bütçe kırpılan dosyalara döner. Dosyalar tam sığıyorsa en fazla 1.500 karakterlik bir
 güncel not eklenebilir.
 
+`Kurallar.md`'nin bu bütçede en fazla kaç karakterinin tam geldiğini `doctor`
+`companion_rules_opening` altında söyler; kurallar kırpılıyorsa `--human` çıktısı bunu tek
+satırla bildirir (#374). Sayı öbür companion dosyalarının boyutuyla ve receipt'le değişir.
+Core 544, Last-Session 1.743, Threads 543 karakter ve bir receipt taşıyan örnek bir kasada
+varsayılan 5.000 karakterlik açılış yaklaşık 1.550-1.750, 8.000 yaklaşık 3.050-3.300
+karakter gösterir; satır başına ~50 karakterlik kurallarla bu 30 ile 60 kural arasıdır.
+
 ## Opt-in sır süzgeci
 
 `python3 beyin.py preferences --secret-filter on` komutu receipt özeti, note-create ve task-create gövdesi, bu komutların ve task-update değişikliklerinin `title`, `next_action`, `completion_criterion` ve `facts` alanlarında yaygın erişim anahtarı biçimlerini yazmadan önce `[REDACTED]` ile değiştirir. Varsayılan kapalıdır; profil değişikliği bu bağımsız tercihi değiştirmez. Kapatmak için `--secret-filter off` kullan.
@@ -212,6 +219,25 @@ python3 beyin.py preferences --parallel-sessions on
 - İşaret runtime klasöründe `session-markers/<sha256(harness + "\0" + session_id)>.json` dosyasıdır ve yalnız `schema, harness, session, first_at, last_at, announced` taşır: istem metni ve çalışma klasörü yazılmaz. Runtime klasörü vault başına ve makineye özel olduğundan başka vault'taki ya da başka makinedeki oturumlar sayılmaz.
 - SessionEnd kendi işaretini siler (`/clear` sonrası hayalet oturum kalmaz). Her yazımda 24 saatten eski işaretler silinir ve en fazla 128 işaret tutulur. Okunamayan işaret yok sayılır; işaret hatası hook'u düşürmez, yalnız satır düşer.
 - Ayar, eski sürümler bilinmeyen tercih alanını reddettiği için `.beyin-preferences.json` içinde değil, runtime klasöründeki `parallel-sessions.json` dosyasında tutulur; rollback güvenlidir. Kapalıyken hook çıktısı değişmez ve işaret yazılmaz. `doctor` açıkken etkin işaret sayısını salt okunur olarak yazar. Kapatmak için `--parallel-sessions off`.
+
+## Oturum içi bağlam tekrarını önleme (`--context-dedupe`)
+
+`context_mode: turn` açıkken kanca her kullanıcı isteminde leksikal arama yapar. Uzun ve odaklı oturumlarda aynı notların her mesajda tekrar tekrar modele iletilmesi bağlam penceresini gereksiz yere doldurur (#363). Oturum içi tekrar önleme (de-duplication) etkinleştirildiğinde:
+
+```bash
+python3 beyin.py preferences --context-dedupe on
+```
+
+- Kanca, bu oturumda daha önce teslim ettiği kayıtları (`id`, `source_sha256` ve metin penceresi) runtime klasöründe `session-delivery/<sha256(harness + "\0" + session_id)>.json` dosyasında tutar. Oturum kimliğinin kendisi yazılmaz.
+- Mesaj bağlamı pasaj tabanlıdır: uzun bir notun başka bir bölümü (aynı `id`, farklı pencere) yeni sayılır ve teslim edilir; aynı pencere kısaltılmış olsa da tekrar sayılır. Geri tutulan kayıtların bütçesi yeni kayıtlara kalır.
+- Arama sonucunda gelen not daha önce iletildiyse ve dosya diskte değişmediyse filtrelenir; mesajda yalnızca yeni ya da güncellenen notlar modele teslim edilir.
+- Notların ardından eklenen son receipt bloğu da aynı defterle izlenir; defterde receipt metninin yalnız sha256 değeri tutulur. Aynı receipt oturumda bir kez verilir; yeni bir receipt yazılınca ya da receipt dosyası değişince ve sıkıştırmadan sonra yeniden verilir. Bütçeye sığmadığı için gösterilmeyen receipt teslim edilmiş sayılmaz.
+- Bir istemde hiç yeni not kalmazsa kanca boş ek bağlam (`{}`) döner; gereksiz token tüketimi ve dikkat dağınıklığı önlenir. Eşleşen notların hepsi geri tutulduğu halde son receipt bu oturum için yeniyse yalnız receipt verilir. Hiç not eşleşmeyen istemde, tekrar önleme kapalıyken olduğu gibi receipt de eklenmez.
+- **Sıkıştırma (Compaction):** Model bağlamı sıkıştırdığında (`PreCompact` veya Claude Code `SessionStart` olayında `source: compact`), eski notlar pencereden düştüğü için teslimat defteri otomatik sıfırlanır.
+- `SessionEnd` oturumun teslimat defterini temizler. Dosya diskte düzenlenirse `source_sha256` değiştiği için not yeni sayılır ve tekrar teslim edilir.
+- Tümü tekrar sayılan bir istem süreklilik çapasını (`topic-refs`) silmez; sıkıştırmadan sonra gelen kısa bir devam mesajı konuyu kaybetmez.
+- Defter oturum başına en çok 512 kayıt ve kayıt başına 8 pencere tutar (en eskisi düşer). Her yazımda 24 saatten eski defterler silinir ve en fazla 128 defter tutulur.
+- Ayar, rollback güvenliği için `.beyin-preferences.json` içinde değil, runtime klasöründeki `context-dedupe.json` dosyasında tutulur (varsayılan kapalı). Kapatmak için `--context-dedupe off`.
 
 ## Stop'ta receipt hatırlatması
 

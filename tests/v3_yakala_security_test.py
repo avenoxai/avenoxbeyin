@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import threading
+import types
 import zipfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import socket
@@ -30,6 +31,104 @@ class YakalaSecurityTest(unittest.TestCase):
         self.vault = self.root / 'vault'
         self.vault.mkdir()
         self.no_tools = {key: None for key in ('npx', 'yt_dlp', 'whisper', 'pdftotext', 'ffmpeg')}
+
+    def windows(self):
+        return patch.object(yakala, 'os', types.SimpleNamespace(**{**vars(os), 'name': 'nt'}))
+
+    def test_windows_url_selection_is_private_on_new_and_existing_cards(self):
+        with self.windows():
+            first = yakala.capture(self.vault, url='https://example.com/a', text='musteri adresi')
+            self.assertEqual(yakala.find_card(self.vault, first['id'])['meta']['visibility'], 'private')
+            second = yakala.capture(self.vault, url='https://example.com/b')
+            yakala.capture(self.vault, url='https://example.com/b', text='ozel secim')
+            card = yakala.find_card(self.vault, second['id'])
+            self.assertEqual(card['meta']['visibility'], 'private')
+            self.assertIn('ozel secim', card['body'])
+
+    def test_windows_recapture_copies_and_links_attachments(self):
+        source = self.root / 'belge.txt'
+        source.write_text('dosya icerigi', encoding='utf-8')
+        with self.windows():
+            first = yakala.capture(self.vault, url='https://example.com/a')
+            result = yakala.capture(self.vault, url='https://example.com/a', files=[source])
+            card = yakala.find_card(self.vault, first['id'])
+            self.assertEqual(result['status'], 'mevcut_karta_eklendi')
+            self.assertIn('/dosyalar/belge.txt]]', card['body'])
+            self.assertEqual(card['meta']['visibility'], 'private')
+            target = card['path'].parent / 'dosyalar/belge.txt'
+            self.assertEqual(target.read_text(encoding='utf-8'), 'dosya icerigi')
+
+    def test_windows_missing_vault_is_not_recreated(self):
+        absent = self.root / 'old-vault'
+        with self.windows(), self.assertRaisesRegex(ValueError, 'Vault bulunamadi'):
+            yakala.capture(absent, text='yeni not')
+        self.assertFalse(absent.exists())
+
+    def test_windows_one_locked_card_does_not_stop_the_queue(self):
+        with self.windows():
+            first = yakala.capture(self.vault, text='first')
+            second = yakala.capture(self.vault, text='second')
+            original = yakala.write_card
+
+            def write(path, *args):
+                if path.stem == first['id']:
+                    raise PermissionError('locked card')
+                return original(path, *args)
+            with patch.object(yakala, 'tools', return_value=self.no_tools), \
+                    patch.object(yakala, 'write_card', side_effect=write):
+                result = yakala.process(self.vault, [first['id'], second['id']])
+            self.assertEqual([row['durum'] for row in result['kartlar']], ['hata', 'cikarildi'])
+            self.assertIn('locked card', result['kartlar'][0]['not'])
+
+    def test_windows_locked_raw_file_does_not_stop_the_queue(self):
+        with self.windows():
+            first = yakala.capture(self.vault, text='first')
+            second = yakala.capture(self.vault, text='second')
+            original = yakala.os.replace
+
+            def write(temporary, path, *args, **kwargs):
+                path = Path(path)
+                if path.parent.name == '.ham' and path.stem == first['id']:
+                    raise PermissionError('locked raw')
+                return original(temporary, path, *args, **kwargs)
+            with patch.object(yakala, 'tools', return_value=self.no_tools), patch.object(yakala.os, 'replace', write):
+                result = yakala.process(self.vault, [first['id'], second['id']])
+            self.assertEqual([row['durum'] for row in result['kartlar']], ['hata', 'cikarildi'])
+
+    def test_windows_shared_state_is_not_removed_by_another_vault(self):
+        state = self.root / 'shared-state'
+        runner = state / 'yakala' / Path(yakala.__file__).name
+        runner.parent.mkdir(parents=True)
+        runner.write_text('other vault runner', encoding='utf-8')
+        config = state / yakala.STATE_FILE
+        config.write_text(json.dumps({'vault': str(self.root / 'other-vault')}), encoding='utf-8')
+        directories = [self.root / name for name in ('programs', 'sendto', 'startup')]
+        for directory in directories:
+            directory.mkdir()
+        with self.windows(), patch.object(yakala.sys, 'platform', 'win32'), \
+                patch.object(yakala, '_windows_stop_listener'), \
+                patch.object(yakala, '_windows_dirs', return_value=directories), \
+                patch.object(yakala, '_windows_listener_link', return_value=directories[-1] / 'own.lnk'):
+            yakala.uninstall(self.vault, state)
+        self.assertEqual(runner.read_text(encoding='utf-8'), 'other vault runner')
+        self.assertTrue(config.exists())
+
+    def test_entry_forwards_explicit_json_even_for_a_tty(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('yakala_entry_test', ROOT / 'scripts/beyin_entry.py')
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        (self.vault / '.beyin-runtime.json').write_text(json.dumps({'state': str(self.root / 'state')}), encoding='utf-8')
+        cli = types.SimpleNamespace(resolve_state=lambda _vault, state: state)
+        original_path = sys.path[:]
+        try:
+            with patch.object(entry, '__file__', str(self.vault / 'beyin.py')), \
+                    patch.object(entry, 'load_cli', return_value=cli), \
+                    patch.object(entry.sys.stdout, 'isatty', return_value=True), patch.object(yakala, 'main', return_value=0) as main:
+                self.assertEqual(entry.main(['yakala', 'liste', '--json']), 0)
+            self.assertEqual(main.call_args.args[0], ['--json', 'liste'])  # before the subcommand, never after a `--`
+        finally:
+            sys.path[:] = original_path
 
     def test_file_cards_reject_reserved_names_when_both_apis_are_removed(self):
         valid = self.vault / 'valid.txt'

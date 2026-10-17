@@ -4,7 +4,7 @@ Claude Code, Codex, Google Antigravity veya Kiro ile kullanabileceğin yerel iki
 
 Python **3.11 veya üzeri** yeterli. Git, pip, Mem0 hesabı, API anahtarı veya sürekli açık sunucu gerekmez. Kullandığın AI istemcisinin kendi kurulumu ve hesabı ayrı olarak gerekir.
 
-> **V3.10.0:** Yakala Linux'a geldi (KDE Plasma, GNOME), Windows'ta kısayol arka plan dinleyicisiyle hemen çalışıyor ve ekran görüntüsünü yakalıyor; dublajlı videolarda konuşulan dilin transkripti alınıyor. Sıcak senkron 1.500 notta yarıdan fazla kısaldı, `recap --since/--until` ve indeks dışı klasör listesi eklendi. Mevcut kurulumda vault içinde `python3 beyin.py update` çalıştır; yakala'yı 3.9.0 ile kurduysan ardından bir kez `python3 beyin.py yakala kur`. [Sürüm notları](docs/v3/releases/3.10.0.md) · [Yakala](docs/v3/YAKALA.md) · [Güncelleme rehberi](docs/v3/UPDATE.md).
+> **V3.11.0:** Aynı oturumda aynı notu yeniden göndermeyen isteğe bağlı bağlam modu (`preferences --context-dedupe on`), Kiro desteği, Windows'ta tarayıcı ve imleç bağlantısını ya da pencere görüntüsünü kaydeden yakala, zamanlanmış sağlık denetimi (`scheduled-check`) ve hassas adlı klasörlerin indeks dışında kalması geldi; uzun `Kurallar.md` açılışta başını kaybetmiyor, `--uninstall` kullanıcı metnini koruyor. Mevcut kurulumda vault içinde `python3 beyin.py update` çalıştır; yakala kullanıyorsan ardından bir kez `python3 beyin.py yakala kur`. [Sürüm notları](docs/v3/releases/3.11.0.md) · [Yakala](docs/v3/YAKALA.md) · [Güncelleme rehberi](docs/v3/UPDATE.md).
 
 ## En kolay kurulum: bir klasör, bir mesaj
 

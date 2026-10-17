@@ -342,6 +342,10 @@ def record_checkpoints(engine, events):
         for event in sorted(events, key=lambda item: item.get('at', 0)):
             if not event.get('session') or event.get('no_memory'):
                 continue
+            if event.get('synthetic') and event.get('event') in ('UserPromptSubmit', 'SessionStart'):
+                # A harness or app turn no person typed (task notification, Codex Desktop suggestion fork)
+                # opens no checkpoint and moves no turn boundary, so it cannot reopen finished work (#373).
+                continue
             values = (event['harness'], event['session'], event['at'])
             if event.get('event') == 'UserPromptSubmit' or (event.get('event') == 'SessionStart' and event.get('prompted')):
                 db.execute('INSERT INTO receipt_checkpoints(harness,session,at,turn_at,prompt_at) VALUES (?,?,0,?,?) ON CONFLICT(harness,session) DO UPDATE SET turn_at=MAX(turn_at,excluded.turn_at), prompt_at=MAX(prompt_at,excluded.prompt_at)',

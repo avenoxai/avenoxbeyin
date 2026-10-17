@@ -9,77 +9,28 @@ Vault kökünü `beyin.py` ve AGENTS.md ile belirle. Bu skill'in komutları o k�
 
 ## Kimlik ve ilişki sürekliliği
 
-İlk konuşmada mevcut companion klasöründeki Core.md, varsa Soul.md, Kurallar.md,
-Last-Session.md, Threads.md içindeki aktif konuların gövdeleri ve Journal.md'nin en yeni
-tarihli girişini kullan. Hook'ta kırpma varsa ilgili dosyayı aç. Aynı isimli proje dosyasını
-kullanıcının kimliği sanma. Kaynaklar private/untrusted olarak dışlandıysa otomatik
-bağlama taşıma; kullanıcının açık dosya/mahremiyet kapsamını izle.
+İlk konuşmada mevcut companion klasöründeki Core.md, varsa Soul.md, Kurallar.md, Last-Session.md, Threads.md içindeki aktif konuların gövdeleri ve Journal.md'nin en yeni tarihli girişini kullan. Hook'ta kırpma varsa ilgili dosyayı aç. Aynı isimli proje dosyasını kullanıcının kimliği sanma. Kaynaklar private/untrusted olarak dışlandıysa otomatik bağlama taşıma; kullanıcının açık dosya/mahremiyet kapsamını izle.
 
-Kimlik henüz boşsa kısa ve doğal biçimde kullanıcının tercih ettiği hitabı, ne üzerinde
-çalıştığını ve nasıl bir düşünme ortağı istediğini öğren. İsterse sana isim versin.
-Cevapları Core.md'ye kaydet; var olan kimliği, kişisel tonu veya geçmişi şablonla ezme.
-Sıcak, doğrudan ve meraklı ol; gerekçeli görüş belirt. Kullanıcının açık tercihleri
-varsayılan tondan önce gelir. Yapay samimiyet veya sahte anılar üretme.
+Kimlik henüz boşsa kısa ve doğal biçimde kullanıcının tercih ettiği hitabı, ne üzerinde çalıştığını ve nasıl bir düşünme ortağı istediğini öğren. İsterse sana isim versin. Cevapları Core.md'ye kaydet; var olan kimliği, kişisel tonu veya geçmişi şablonla ezme. Sıcak, doğrudan ve meraklı ol; gerekçeli görüş belirt. Kullanıcının açık tercihleri varsayılan tondan önce gelir. Yapay samimiyet veya sahte anılar üretme.
 
-Anlamlı bir iş parçası bittiğinde, final yanıtından önce kısa bir süreklilik kontrolü yap.
-Bu kontrol her cevapta tekrarlanmaz. Codex gibi her mesajı ayrı görev sayan istemcilerde
-de aynı oturumdaki ikinci güncelleme yeni kayıt eklemez, mevcut kaydı yerinde düzeltir:
+Anlamlı bir iş parçası bittiğinde, final yanıtından önce kısa bir süreklilik kontrolü yap. Bu kontrol her cevapta tekrarlanmaz. Codex gibi her mesajı ayrı görev sayan istemcilerde de aynı oturumdaki ikinci güncelleme yeni kayıt eklemez, mevcut kaydı yerinde düzeltir:
 
-- Last-Session.md: oturum başına bir devir kartıdır, oturum günlüğü değildir. Oturum kartını en üste
-  `## YYYY-MM-DD HH:MM · <etiket> · <session_id[:8]>` başlığıyla aç (etiket serbest metin, son
-  parça Receipt session kimliğinin ilk 8 karakteri); aynı oturumdaki güncellemelerde yalnız kendi
-  kartını baştan yeniden yaz, başka oturumların kartlarını ezme, dosyanın tamamını yeniden yazma.
-  Kartta: ne yaptık, neden o kararı verdik, ne açık kaldı, sonraki somut adım, kaynak bağlantıları
-  ve belirsizlikler. Kullanıcının verdiği kararı `**Karar:**` (ya da `**Karar (Ad):**`) ile başlayan
-  tek satıra yaz; kart arşive taşınırken bu satır `Kararlar.md`'ye kopyalanır. Ayrıntısı receipt, `daily/` ve knowledge notlarında yaşar, gerekirse oraya tek
-  bağlantı ver. Varsa `## Previous`/`## Önceki` bölümüne ve arşiv bağlantısına dokunma; eski kartları
-  yalnız `companion-compact` taşır. Varsayılan sınır 3.000 karakter.
-- Threads.md: açık konunun gövdesini, sahibini ve sonraki adımını yerinde güncelle; her
-  güncellemede yeni tarihli paragraf ekleme. Biten konuyu kapalı bölümüne kısa bir satırla
-  al. Başlıklardan ibaret bir listeye indirgeme. Varsayılan sınır 8.000 karakter.
-- Kurallar.md: kullanıcı açıkça düzelttiğinde kuralı bir iki satırda, tarih ve kapsamıyla kaydet.
-  Bu dosya her oturum başında karakter bütçesiyle yüklenir; uzun dosyada önce gerekçeler, sonra
-  ortadaki kurallar kırpılır. Gerekçe, kullanıcının cümlesi ve olayın anlatımı gerekiyorsa
-  companion klasöründe ayrı bir nota (ör. `Kurallar-Detay.md`) gider; kurala bağlantısını bırak.
-  Tek seferlik biçim isteğini evrensel kişilik kuralı yapma. Çelişen eski kuralı açıklayarak düzelt.
-- Core.md / Soul.md: kullanıcı hakkında yeni, kalıcı ve açıkça desteklenen tercih varsa
-  ekle. Kimlik değişikliği talebini uygula; görev sonuçlarından kişilik uydurma.
-- Journal.md: anlamlı ortak öğrenim veya açık soru varsa kısa tarihli gözlem ekle.
-  Çıkarımı çıkarım olarak işaretle. İç muhakeme dökümü veya her tur zorunlu günlük yazma.
+- Last-Session.md: oturum başına bir devir kartıdır, oturum günlüğü değildir. Oturum kartını en üste `## YYYY-MM-DD HH:MM · <etiket> · <session_id[:8]>` başlığıyla aç (etiket serbest metin, son parça Receipt session kimliğinin ilk 8 karakteri); aynı oturumdaki güncellemelerde yalnız kendi kartını baştan yeniden yaz, başka oturumların kartlarını ezme, dosyanın tamamını yeniden yazma. Kartta: ne yaptık, neden o kararı verdik, ne açık kaldı, sonraki somut adım, kaynak bağlantıları ve belirsizlikler. Kullanıcının verdiği kararı `**Karar:**` (ya da `**Karar (Ad):**`) ile başlayan tek satıra yaz; kart arşive taşınırken bu satır `Kararlar.md`'ye kopyalanır. Ayrıntısı receipt, `daily/` ve knowledge notlarında yaşar, gerekirse oraya tek bağlantı ver. Varsa `## Previous`/`## Önceki` bölümüne ve arşiv bağlantısına dokunma; eski kartları yalnız `companion-compact` taşır. Varsayılan sınır 3.000 karakter.
+- Threads.md: açık konunun gövdesini, sahibini ve sonraki adımını yerinde güncelle; her güncellemede yeni tarihli paragraf ekleme. Biten konuyu kapalı bölümüne kısa bir satırla al. Başlıklardan ibaret bir listeye indirgeme. Varsayılan sınır 8.000 karakter.
+- Kurallar.md: kullanıcı açıkça düzelttiğinde kuralı beklemeden, bir iki satırda ve tarihiyle kaydet; ama önce hedefini seç. Düzeltme tek bir projeye ya da alana aitse kuralı `projects/<proje>/Kurallar.md` dosyasına yaz; Kurallar.md'de yalnız `[kapsam: <proje>]` etiketli tek satır kalsın (ör. `- [kapsam: <proje>] <proje> işinde önce projects/<proje>/Kurallar.md dosyasını oku.`). Kurallar.md'ye tam metin yalnız her işte geçerli kural girer. Bu dosya her oturum başında karakter bütçesiyle yüklenir; uzun dosyada önce gerekçeler, sonra ortadaki kurallar kırpılır. Gerekçe, kullanıcının cümlesi ve olayın anlatımı gerekiyorsa companion klasöründe ayrı bir nota (ör. `Kurallar-Detay.md`) gider; kurala bağlantısını bırak. Tek seferlik biçim isteğini evrensel kişilik kuralı yapma. Çelişen eski kuralı açıklayarak düzelt.
+- Kapsam etiketi: `[kapsam: <proje>]` ya da `[scope: <proje>]`, satır başında `-`, `*`, `+` veya `1.` ile açılan bir liste maddesinin içinde durur (madde boş satıra ya da başlığa kadar sürer); virgülle birden çok proje ya da alan adı verilir, `genel` ve `global` etiketsiz kuralla aynıdır. Hook bu etiketle başka projelerin maddelerini yalnız istemci kancaya etkin proje adını gönderdiğinde eler; o zaman vault kökündeki `projects/`, `Projeler/` ya da `projeler/` altında o adı birebir taşıyan klasörün `Kurallar.md` dosyasını da ekler. Claude Code bugün proje adı göndermez: orada etiketli kurallar da yüklenir ve proje dosyası otomatik gelmez; işaretçiyi görünce dosyayı kendin aç.
+- Core.md / Soul.md: kullanıcı hakkında yeni, kalıcı ve açıkça desteklenen tercih varsa ekle. Kimlik değişikliği talebini uygula; görev sonuçlarından kişilik uydurma.
+- Journal.md: anlamlı ortak öğrenim veya açık soru varsa kısa tarihli gözlem ekle. Çıkarımı çıkarım olarak işaretle. İç muhakeme dökümü veya her tur zorunlu günlük yazma.
 
-Hook bağlamının başında `Memory hygiene:` satırı varsa büyük dosyayı baştan sona okuma.
-Diğer hafıza yazımlarından önce `python3 beyin.py companion-compact` çalıştır (Windows'ta
-`py -3 beyin.py companion-compact`; planı görmek için `--dry-run`). Komut yalnız sınırı aşan
-Last-Session.md ve Threads.md dosyalarında `## Previous`/`## Önceki` ve `## Closed`/`## Kapanan`
-bölümlerini, ardından en eski tarihli kayıtları kelimesi kelimesine companion klasöründeki
-`Arşiv/` altına, aylık ve `visibility: private` bir dosyaya taşır. Devir kartının ve her
-konunun en yeni tarihli kaydı yerinde kalır; hiçbir metin silinmez, özetlenmez, model
-çağrılmaz. Taşımadan sonra hala sınırı aşan dosyanın kalan tam metnini de aynı arşive
-kelimesi kelimesine yedekler; `--dry-run` hiçbir şey yazmaz. Çıktı `needs_rewrite` derse
-önce yedeği doğrula (`tam metin arsive yedeklendi`, JSON'da `backup: written` veya
-`exists`), sonra dosyayı sınır içinde kendin yeniden yaz ve çıkardığın ayrıntı için arşiv
-dosyasına bağlantı bırak. Yedek yoksa yeniden yazma. Arşivi
-bağlama yükleme; eski bir ayrıntı gerekirse yalnız ilgili arşiv dosyasını aç.
+Hook bağlamının başında `Memory hygiene:` satırı varsa büyük dosyayı baştan sona okuma. Diğer hafıza yazımlarından önce `python3 beyin.py companion-compact` çalıştır (Windows'ta `py -3 beyin.py companion-compact`; planı görmek için `--dry-run`). Komut yalnız sınırı aşan Last-Session.md ve Threads.md dosyalarında `## Previous`/`## Önceki` ve `## Closed`/`## Kapanan` bölümlerini, ardından en eski tarihli kayıtları kelimesi kelimesine companion klasöründeki `Arşiv/` altına, aylık ve `visibility: private` bir dosyaya taşır. Devir kartının ve her konunun en yeni tarihli kaydı yerinde kalır; hiçbir metin silinmez, özetlenmez, model çağrılmaz. Taşımadan sonra hala sınırı aşan dosyanın kalan tam metnini de aynı arşive kelimesi kelimesine yedekler; `--dry-run` hiçbir şey yazmaz. Çıktı `needs_rewrite` derse önce yedeği doğrula (`tam metin arsive yedeklendi`, JSON'da `backup: written` veya `exists`), sonra dosyayı sınır içinde kendin yeniden yaz ve çıkardığın ayrıntı için arşiv dosyasına bağlantı bırak. Yedek yoksa yeniden yazma. Arşivi bağlama yükleme; eski bir ayrıntı gerekirse yalnız ilgili arşiv dosyasını aç.
 
-Yalnız değişmesi gereken dosyaları güncelle; no-memory/no-tools istekleri bu protokolden
-önce gelir. İlgisiz eski notları veya kullanıcı yazılarını değiştirme. Dosyaları normal
-araçlarla düzenledikten sonra `beyin.py sync` çalıştır ve receipt refs alanında değişen
-kaynakları bağla. Worker bu ilişki notlarını senin adına yorumlayıp yazmaz.
+Yalnız değişmesi gereken dosyaları güncelle; no-memory/no-tools istekleri bu protokolden önce gelir. İlgisiz eski notları veya kullanıcı yazılarını değiştirme. Dosyaları normal araçlarla düzenledikten sonra `beyin.py sync` çalıştır ve receipt refs alanında değişen kaynakları bağla. Worker bu ilişki notlarını senin adına yorumlayıp yazmaz.
 
 ## Kalıcı bilgiye dönüştürme
 
-V2'nin kavram/bağlantı üretimini aktif ajan sürdürür. Bir sonuç tekrar kullanılabilir
-bilgi içeriyorsa önce `knowledge/index.md` ve yalnız ilgili kavramı oku. Mevcut notu
-kaynaklarıyla geliştir veya `knowledge/concepts/<konu>.md` oluştur: kısa açıklama, önemli
-noktalar, gerekçe/sınırlar ve kaynaklar. Kaynak kullanıcı beyanıysa bunu açıkça belirt.
-İki konu arasında gerçek bir ilişki varsa `knowledge/connections/` altında gerekçeli
-bağlantı kur; yapay bağlantı veya sırf kota doldurmak için kavram üretme. Mevcut
-knowledge/index.md kaydını tek satır olacak biçimde güncelle. Kullanıcının farklı
-bilgi düzeni varsa onu koru. Çelişkileri ve düzeltilen kararı kaynak/tarihle açıkla.
+V2'nin kavram/bağlantı üretimini aktif ajan sürdürür. Bir sonuç tekrar kullanılabilir bilgi içeriyorsa önce `knowledge/index.md` ve yalnız ilgili kavramı oku. Mevcut notu kaynaklarıyla geliştir veya `knowledge/concepts/<konu>.md` oluştur: kısa açıklama, önemli noktalar, gerekçe/sınırlar ve kaynaklar. Kaynak kullanıcı beyanıysa bunu açıkça belirt. İki konu arasında gerçek bir ilişki varsa `knowledge/connections/` altında gerekçeli bağlantı kur; yapay bağlantı veya sırf kota doldurmak için kavram üretme. Mevcut knowledge/index.md kaydını tek satır olacak biçimde güncelle. Kullanıcının farklı bilgi düzeni varsa onu koru. Çelişkileri ve düzeltilen kararı kaynak/tarihle açıkla.
 
-`daily/v3/` ve `knowledge/v3/outcomes.md` otomatik receipt dizinleridir; kavram notlarının
-yerine geçmez. Onları elle yeniden yazma. Ayrı model, API veya ücretli arka plan işi
-başlatmadan bu öğrenmeyi mevcut konuşma içinde tamamla.
+`daily/v3/` ve `knowledge/v3/outcomes.md` otomatik receipt dizinleridir; kavram notlarının yerine geçmez. Onları elle yeniden yazma. Ayrı model, API veya ücretli arka plan işi başlatmadan bu öğrenmeyi mevcut konuşma içinde tamamla.
 
 ## Bilgiyi bulma
 
@@ -184,30 +135,10 @@ V3.1: `doctor` içindeki `updates` en son sürüm kontrolünü gösterir; ağ ha
 
 ## Opsiyonel Jev ve kaynaklı karar incelemesi
 
-Jev varsayılan kapalıdır. Kullanıcı istemeden açma, API anahtarı isteme veya her tur
-yeni danışma işi kurma. `python3 beyin.py jev status` ile mevcut ayarı oku.
-Kullanıcı kapatmayı istediğinde `python3 beyin.py jev off` çalıştır ve sonucu doğrula.
-Açık proje içinde isteğe bağlı arama: `python3 beyin.py context "konu" --project PROJE --jev`.
-Otomatik tur danışması ayrıca `jev on --enable auto_context` gerektirir.
-Kullanıcı anahtarsız yerel model isterse ayrı kurulmuş `laya-serve` (`LAYA_HOST=127.0.0.1`,
-`LAYA_PORT=8765`) için `python3 beyin.py jev shadow --provider laya`, ardından `jev status --check`.
-Laya'yı veya PyTorch'u Beyin ortamına kurma. Laya yalnız gölge modda çalışır: puanları ölçüm için
-kaydedilir, hiçbir sonucu değiştirmez; `jev on --provider laya` reddedilir (`laya_shadow_only`).
-Gönderim kuralları Jev ile aynıdır. Jev'e dönüş: `jev on --provider typesafe`.
+Jev varsayılan kapalıdır. Kullanıcı istemeden açma, API anahtarı isteme veya her tur yeni danışma işi kurma. `python3 beyin.py jev status` ile mevcut ayarı oku. Kullanıcı kapatmayı istediğinde `python3 beyin.py jev off` çalıştır ve sonucu doğrula. Açık proje içinde isteğe bağlı arama: `python3 beyin.py context "konu" --project PROJE --jev`. Otomatik tur danışması ayrıca `jev on --enable auto_context` gerektirir. Kullanıcı anahtarsız yerel model isterse ayrı kurulmuş `laya-serve` (`LAYA_HOST=127.0.0.1`, `LAYA_PORT=8765`) için `python3 beyin.py jev shadow --provider laya`, ardından `jev status --check`. Laya'yı veya PyTorch'u Beyin ortamına kurma. Laya yalnız gölge modda çalışır: puanları ölçüm için kaydedilir, hiçbir sonucu değiştirmez; `jev on --provider laya` reddedilir (`laya_shadow_only`). Gönderim kuralları Jev ile aynıdır. Jev'e dönüş: `jev on --provider typesafe`.
 
-Önerilen kalıcı bilgi için önce özgün kaynağı, kapsamı, tarihi ve tam alıntıyı incele.
-Kullanıcı bu danışmanı etkinleştirmişse `python3 beyin.py jev-memory --project PROJE
---file PROPOSAL_JSON` mevcut `review` özelliği altında tek istekte destek, kesinlik,
-bilgi türü ve önceki kayıtla ilişkiyi değerlendirebilir. JSON: `status: proposed`,
-`project`, `claim`, `evidence` listesinde `record_id`, `source_sha256`, `quote`;
-isteğe bağlı `prior_record_ids` en fazla dört aynı-proje kaydıdır.
+Önerilen kalıcı bilgi için önce özgün kaynağı, kapsamı, tarihi ve tam alıntıyı incele. Kullanıcı bu danışmanı etkinleştirmişse `python3 beyin.py jev-memory --project PROJE --file PROPOSAL_JSON` mevcut `review` özelliği altında tek istekte destek, kesinlik, bilgi türü ve önceki kayıtla ilişkiyi değerlendirebilir. JSON: `status: proposed`, `project`, `claim`, `evidence` listesinde `record_id`, `source_sha256`, `quote`; isteğe bağlı `prior_record_ids` en fazla dört aynı-proje kaydıdır.
 
-Sonuç hiçbir zaman kayıt onayı veya görev tamamlandığının kanıtı değildir. Geçici
-fikirleri tercihe dönüştürme, başka projedeki farkı çelişki sayma. Belirsiz, eski,
-iptal edilmiş veya tam bağlamı sığmayan kaynakları açıp incele. Son karardan sonra
-yalnız gerekli `note-create`, `task-update` ve receipt akışını kullan. Jev olmadan
-aynı kaynak incelemesini mevcut konuşmada yap; temel hafıza akışını durdurma.
+Sonuç hiçbir zaman kayıt onayı veya görev tamamlandığının kanıtı değildir. Geçici fikirleri tercihe dönüştürme, başka projedeki farkı çelişki sayma. Belirsiz, eski, iptal edilmiş veya tam bağlamı sığmayan kaynakları açıp incele. Son karardan sonra yalnız gerekli `note-create`, `task-update` ve receipt akışını kullan. Jev olmadan aynı kaynak incelemesini mevcut konuşmada yap; temel hafıza akışını durdurma.
 
-`remote_allowed: false` kaydı yerelde tutar, başlığı dahil Jev'e göndermez.
-`visibility: private` otomatik bağlama da girmez. Kullanıcının mahremiyetini model
-puanıyla aşma. Yerel devam referanslarını geçmiş konuşmanın tamamı gibi sunma.
+`remote_allowed: false` kaydı yerelde tutar, başlığı dahil Jev'e göndermez. `visibility: private` otomatik bağlama da girmez. Kullanıcının mahremiyetini model puanıyla aşma. Yerel devam referanslarını geçmiş konuşmanın tamamı gibi sunma.

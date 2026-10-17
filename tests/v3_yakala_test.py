@@ -28,6 +28,42 @@ sys.path.insert(0, str(SCRIPTS))
 import beyin_v3_yakala as yakala  # noqa: E402
 
 
+class WindowsSourceDecisionTest(unittest.TestCase):
+    def test_fresh_sources_win_without_losing_alternatives(self):
+        image = {'path': 'clipboard.png', 'on': False}
+        shot = {'path': 'window.png', 'on': True}
+        context = {'url': 'https://example.com/page'}
+        for fresh in (True, False):  # the browser's link leads; the copied one stays an alternative
+            sources = yakala.windows_sources(context, 'https://example.com/copied', fresh, shot=shot)
+            self.assertEqual(yakala._source_arguments(sources)['url'], 'https://example.com/page')
+            self.assertEqual(len(sources), 3)
+        sources = yakala.windows_sources(context, '', True, image, shot)
+        self.assertEqual(yakala._source_arguments(sources)['files'], [])
+        self.assertEqual(yakala._source_arguments(sources)['url'], 'https://example.com/page')
+        self.assertEqual(len(sources), 3)
+        sources = yakala.windows_sources({}, 'https://example.com/copied', True, shot=shot)
+        self.assertEqual(yakala._source_arguments(sources)['url'], 'https://example.com/copied')  # no browser link
+
+    def test_stale_clipboard_does_not_depend_on_a_successful_screenshot(self):
+        for clip in ('private note', 'https://example.com/old'):
+            for shot in (None, {'path': 'window.png', 'on': True}):
+                sources = yakala.windows_sources({}, clip, False, shot=shot)
+                chosen = yakala._source_arguments(sources)
+                self.assertIsNone(chosen['text'])
+                self.assertIsNone(chosen['url'])
+                self.assertEqual(chosen['files'], [])  # a window picture waits for Alt+W, like the stale clipboard
+
+    def test_url_toggle_excludes_other_urls_but_preserves_text_and_images(self):
+        sources = yakala.windows_sources({'url': 'https://example.com/page'},
+                                         'copied text', True, {'path': 'image.png', 'on': True})
+        for key in ('m', 'g'):  # clipboard text and picture are offered off next to a link; switch them on
+            yakala._source_toggle(sources, next(source for source in sources if source['key'] == key))
+        chosen = yakala._source_arguments(sources)
+        self.assertEqual(chosen['url'], 'https://example.com/page')
+        self.assertEqual(chosen['text'], 'copied text')
+        self.assertEqual(chosen['files'], ['image.png'])
+
+
 def public_dns_fixture(test):
     # Helpers below are real offline subprocess stand-ins, so DNS must also stay deterministic.
     patcher = patch.object(socket, 'getaddrinfo', return_value=[
@@ -783,6 +819,12 @@ class YakalaUnitTest(unittest.TestCase):
         self.assertEqual((card['meta']['url'], card['meta']['baslik'], card['meta']['uygulama']),
                          ('https://ornek.com/mac', 'Başlık', 'Safari'))
         self.assertIn('mac nedeni', card['body'])
+
+    def test_windows_fallback_never_saves_a_found_source_unasked(self):
+        context = {'url': 'https://ornek.com/sayfa', 'baslik': 'Sayfa', 'uygulama': 'opera', 'metin': 'pano'}
+        with patch.object(yakala.os, 'name', 'nt'), patch.object(yakala.sys, 'platform', 'win32'):
+            self.assertEqual(yakala._popup_fallback(self.vault, context), {'status': 'vazgecildi'})
+        self.assertEqual(yakala.cards(self.vault), [])
 
     def test_desktop_entry_round_trips_any_vault_path(self):
         vaults = ['/home/ayşe/İkinci Beyin', '/home/u/📥 Beyin', '/home/u/100% Beyin %U %%f', '/home/u/$HOME `id` $(id)',

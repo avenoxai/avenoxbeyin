@@ -247,6 +247,17 @@ class PreferencesTest(unittest.TestCase):
         self.cli('preferences', '--project-context', 'off')
         self.assertEqual(self.cli('preferences')['project_context'], 'off')
 
+    def test_context_dedupe_preference_is_machine_local_and_rollback_safe(self):
+        self.assertEqual(self.cli('preferences')['context_dedupe'], 'off')
+        self.assertFalse((self.vault / '.beyin-preferences.json').exists())
+        saved = self.cli('preferences', '--context-dedupe', 'on')
+        self.assertEqual(saved['status'], 'saved')
+        self.assertEqual(saved['context_dedupe'], 'on')
+        self.assertFalse((self.vault / '.beyin-preferences.json').exists(), 'must not modify vault preference schema')
+        self.assertTrue((self.state / 'context-dedupe.json').exists())
+        self.cli('preferences', '--context-dedupe', 'off')
+        self.assertEqual(self.cli('preferences')['context_dedupe'], 'off')
+
     def test_hygiene_opt_ins_are_machine_local_and_rollback_safe(self):
         # V3.5.1 and older validate() reject any other .beyin-preferences.json key, so a
         # rollback after enabling hygiene must find only these keys (maintainer change).

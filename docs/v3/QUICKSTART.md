@@ -287,7 +287,11 @@ python3 scripts/install_v3.py --vault /absolute/path/to/vault --uninstall
 ```
 
 Use the same `--state` if installation used an override. Uninstall refuses files
-changed since installation rather than overwriting edits. Source notes, receipt
+whose managed part changed since installation rather than overwriting edits. Text
+you added outside that part (below the block in `AGENTS.md`, permissions in
+`.claude/settings.local.json`, tables in `.codex/config.toml`) stays, also after a
+reinstall or update; a file the installer created is removed only when nothing
+else is left in it. Source notes, receipt
 notes, canonical skills and the memory database remain. Reverted Codex definitions
 may require renewed `/hooks` trust review.
 

@@ -266,6 +266,10 @@ def human_result(result, command, installed_version=None):
             lines.append('Paralel oturum bildirimi: ' + ('acik' if result['parallel_sessions'] == 'on' else 'kapali'))
         if result.get('parallel_sessions_notice'):
             lines.append(result['parallel_sessions_notice'])
+        if result.get('context_dedupe'):
+            lines.append('Oturum ici tekrar onleme: ' + ('acik' if result['context_dedupe'] == 'on' else 'kapali'))
+        if result.get('context_dedupe_notice'):
+            lines.append(result['context_dedupe_notice'])
         hermes_p = result.get('hermes_platforms') or {}
         if hermes_p.get('attended') or hermes_p.get('unattended'):
             h_parts = []
@@ -400,6 +404,13 @@ def human_result(result, command, installed_version=None):
             lines.append('Hafiza hijyeni: ' + name + ' ' + str(entry['chars']) + ' karakter (sinir ' + str(entry['limit']) +
                          '). Ajanina "' + ('py -3' if sys.platform == 'win32' else 'python3') +
                          ' beyin.py companion-compact" calistirmasini soyle; eski kayitlar arsive tasinir, metin silinmez.')
+        rules_opening = result.get('companion_rules_opening') or {}
+        if rules_opening.get('status') == 'clipped':
+            lines.append('Kurallar.md acilista kirpiliyor (bilgi): kural metni ' + str(rules_opening['chars']) +
+                         ' karakter; Claude Code acilisi bu ayarlarla (' + str(rules_opening['budget']) +
+                         ' karakter) en fazla ' + str(rules_opening['share']) + ' karakterini tam gosterir, aradaki kurallar atlanir' +
+                         (' (gerekceler de cikarildi)' if rules_opening.get('reasons_omitted') else '') +
+                         '. Kurallari kisa tut; uzun gerekceyi ve ayrintiyi ayri bir nota (or. Kurallar-Detay.md) tasi.')
         references = result.get('instruction_references') or {}
         if references.get('dead_count'):
             shown = ', '.join(entry['file'] + ':' + str(entry['line']) + ' -> ' + entry['target']
@@ -467,6 +478,11 @@ def human_result(result, command, installed_version=None):
             lines.append('Paralel oturum bildirimi: acik (son 45 dakikada etkin ' + str(parallel.get('active', 0)) + ' oturum isareti)')
         elif parallel.get('valid') is False:
             lines.append('parallel-sessions.json gecersiz; paralel oturum bildirimi kapali sayiliyor.')
+        dedupe = result.get('context_dedupe') or {}
+        if dedupe.get('enabled'):
+            lines.append('Oturum ici tekrar onleme: acik (' + str(dedupe.get('sessions', 0)) + ' oturum defteri)')
+        elif dedupe.get('valid') is False:
+            lines.append('context-dedupe.json gecersiz; oturum ici tekrar onleme kapali sayiliyor.')
         index_scope = result.get('index_exclusions') or {}
         lines += index_exclusion_lines(index_scope)
         hint = index_scope.get('vendored_hint') or {}
@@ -596,7 +612,8 @@ def load_cli(directory):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    human = ('--human' in argv or sys.stdout.isatty()) and '--json' not in argv
+    force_json = '--json' in argv
+    human = ('--human' in argv or sys.stdout.isatty()) and not force_json
     argv = [arg for arg in argv if arg not in ('--human', '--json')]
     if human:
         # A piped or redirected Windows console uses a legacy code page (cp1252 has no s-cedilla);
@@ -640,7 +657,7 @@ def main(argv=None):
         if argv and argv[0] == 'yakala':
             # Optional capture tool: its own small CLI, no index or sync engine.
             import beyin_v3_yakala as yakala
-            return yakala.main(argv[1:], vault=vault, state=state)
+            return yakala.main((['--json'] if force_json else []) + argv[1:], vault=vault, state=state)
         if argv and argv[0] in ('update', 'rollback', 'recover'):
             import argparse
             import beyin_v3_update as updater

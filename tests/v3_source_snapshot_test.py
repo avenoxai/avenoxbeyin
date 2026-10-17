@@ -80,31 +80,47 @@ def original_snapshot(self, source_names, audience="internal", budget_chars=3000
         return {"records": [], "citations": [], "requested_sources": list(source_names),
                 "missing_sources": list(source_names), "stale_excluded": stale_count,
                 "truncated": bool(chosen)}
+    # Budget fitting below mirrors the production code (#374 changed it there and here alike);
+    # this oracle pins the candidate scan and selection, not the fitting rules.
     share = available // max(1, len(chosen))
-    tail_names = {"Journal.md", "Kurallar.md"}
+    lengths, left = sorted(len(record["text"]) for record in chosen), available
+    for index, length in enumerate(lengths[:-1]):
+        if length > share:
+            break
+        left -= length
+        share = left // (len(lengths) - index - 1)
     marker = "[truncated]"
     for record in chosen:
         text = record["text"]
         if len(text) > share:
             keep = max(0, share - len(marker) - 1)
+            name = Path(record["source"]).name
             if not keep:
                 record["text"] = marker
-            elif Path(record["source"]).name in tail_names:
+            elif name == "Journal.md":
                 record["text"] = marker + "\n" + text[-keep:]
+            elif name == "Kurallar.md" and keep > 1:
+                keep -= 1
+                record["text"] = text[:keep - keep // 2] + "\n" + marker + "\n" + text[len(text) - keep // 2:]
             else:
                 record["text"] = text[:keep] + "\n" + marker
             result["truncated"] = True
-    while len(_json(result)) > budget_chars and any(record["text"] for record in chosen):
+    prefix, suffix, middle = marker + "\n", "\n" + marker, "\n" + marker + "\n"
+    while any(record["text"] for record in chosen):
+        over = len(_json(result)) - budget_chars
+        if over <= 0:
+            break
         record = max(chosen, key=lambda item: len(item["text"]))
         text = record["text"]
-        prefix = marker + "\n"
-        suffix = "\n" + marker
         if text.startswith(prefix) and len(text) > len(prefix):
-            record["text"] = prefix + text[len(prefix) + 1:]
+            record["text"] = prefix + text[len(prefix) + over:]
         elif text.endswith(suffix) and len(text) > len(suffix):
-            record["text"] = text[:-len(suffix) - 1] + suffix
+            record["text"] = text[:max(0, len(text) - len(suffix) - over)] + suffix
+        elif Path(record["source"]).name == "Kurallar.md" and text.find(middle) > 0:
+            head, tail = text.split(middle, 1)
+            record["text"] = head[:max(0, len(head) - over)] + middle + tail
         else:
-            record["text"] = text[:-1]
+            record["text"] = text[:max(0, len(text) - over)]
         result["truncated"] = True
     return result
 

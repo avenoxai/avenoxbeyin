@@ -215,6 +215,25 @@ class WarmWindowTest(unittest.TestCase):
         self.assertEqual(child.wait(15), 0)
 
 
+class LegacyListenerWindowTest(unittest.TestCase):
+    """After an update the running listener is still the old state copy until `yakala kur`, but it
+    starts the vault's new module with `--hazir` and no `--instance`, then writes one context line."""
+
+    def test_protocol_only_with_an_instance(self):
+        with patch.object(yakala.os, 'name', 'nt'), \
+                patch.object(yakala, '_windows_warm_popup', return_value={'status': 'protokol'}) as new, \
+                patch.object(yakala, '_context_line_popup', return_value={'status': 'satir'}) as old:
+            self.assertEqual(yakala.warm_popup('v', 's', 'a' * 32), {'status': 'protokol'})
+            self.assertEqual(yakala.warm_popup('v', 's'), {'status': 'satir'})
+        new.assert_called_once_with('v', 's', 'a' * 32)
+        old.assert_called_once_with('v', 's')
+
+    def test_a_legacy_context_line_is_not_a_protocol_message(self):
+        # What a 3.10 listener writes: without the line path, the new window aborts on it and no popup opens.
+        legacy = {'uygulama': 'chrome', 'pencere': 'Sayfa - Google Chrome', 'url': 'https://example.com/'}
+        self.assertFalse(yakala._protocol_valid(legacy, 'a' * 32, ('ACTIVATE', 'FOCUS', 'STOP')))
+
+
 class BrowserUrlTest(unittest.TestCase):
     """The active tab's link comes from the browser's own address bar; anything else is not a link."""
 
@@ -226,52 +245,34 @@ class BrowserUrlTest(unittest.TestCase):
             self.assertIsNone(yakala.tab_url(value), value)
 
     def test_a_private_browser_tab_does_not_override_clipboard_capture(self):
-        with patch.object(yakala, '_uia_address_bar', return_value='http://127.0.0.1:8080/panel'):
+        with patch.object(yakala, '_windows_read', return_value={'value': 'http://127.0.0.1:8080/panel'}):
             self.assertIsNone(yakala.windows_browser_url(42, 'chrome'))
 
     def test_each_browser_is_asked_for_its_own_address_bar_class(self):
-        with patch.object(yakala, '_uia_address_bar', return_value='github.com/avenoxai') as read:
+        with patch.object(yakala, '_windows_read', return_value={'value': 'https://github.com/avenoxai'}) as read:
             self.assertEqual(yakala.windows_browser_url(42, 'Brave'), 'https://github.com/avenoxai')
             self.assertEqual(yakala.windows_browser_url(42, 'msedge'), 'https://github.com/avenoxai')
             self.assertIsNone(yakala.windows_browser_url(42, 'firefox'))
-        self.assertEqual([c.args for c in read.call_args_list], [(42, 'BraveOmniboxViewViews'), (42, 'OmniboxViewViews')])
+        self.assertEqual([c.args[1]['class'] for c in read.call_args_list], ['BraveOmniboxViewViews', 'OmniboxViewViews'])
 
     def test_reader_failure_falls_back_to_the_clipboard(self):
-        with patch.object(yakala, '_uia_address_bar', side_effect=OSError('UI Automation yok')):
-            self.assertIsNone(yakala.windows_browser_url(42, 'chrome'))
-        with patch.object(yakala, '_uia_address_bar', return_value=None):
-            self.assertIsNone(yakala.windows_browser_url(42, 'chrome'))  # no omnibox found
+        for returned in ({'error': 'timeout'}, {'value': None}, {'value': 'chrome://settings'}):
+            with patch.object(yakala, '_windows_read', return_value=returned):
+                self.assertIsNone(yakala.windows_browser_url(42, 'chrome'))
 
-    def test_a_slow_browser_costs_at_most_the_timeout(self):
-        release, finished = threading.Event(), threading.Event()
-
-        def slow(*_):
-            release.wait(10)
-            finished.set()
-            return 'late.example.com'
-        with patch.object(yakala, '_uia_address_bar', side_effect=slow) as read:
-            try:
-                started = time.monotonic()
-                self.assertIsNone(yakala.windows_browser_url(42, 'chrome', timeout=0.1))
-                self.assertLess(time.monotonic() - started, 2)
-                # A timed-out COM provider keeps only its original worker. Repeated hotkeys return
-                # immediately instead of leaking one daemon/apartment on every press.
-                for _ in range(10):
-                    self.assertIsNone(yakala.windows_browser_url(42, 'chrome', timeout=0.1))
-                self.assertEqual(read.call_count, 1)
-            finally:
-                release.set()
-                self.assertTrue(finished.wait(2))
-                self.assertTrue(wait_until(lambda: not any(t.name == 'yakala-adres' for t in threading.enumerate()), 2))
-        with patch.object(yakala, '_uia_address_bar', return_value='github.com/avenoxai'):
-            self.assertEqual(yakala.windows_browser_url(42, 'chrome'), 'https://github.com/avenoxai')
+    def test_timeout_is_passed_to_an_independent_reader_each_time(self):
+        with patch.object(yakala, '_windows_read', side_effect=[{'error': 'timeout'}, {'value': 'https://example.com/'}]) as read:
+            self.assertIsNone(yakala.windows_browser_url(42, 'chrome', timeout=0.1))
+            self.assertEqual(yakala.windows_browser_url(42, 'chrome', timeout=0.1), 'https://example.com/')
+        self.assertEqual(read.call_count, 2)
+        self.assertEqual([c.args[2] for c in read.call_args_list], [0.1, 0.1])
 
     @unittest.skipUnless(WINDOWS, 'IsHungAppWindow is Windows only')
     def test_a_hung_window_is_not_asked_at_all(self):
         with patch.object(ctypes.windll.user32, 'IsHungAppWindow', return_value=1), \
-                patch.object(yakala, '_uia_address_bar') as read:
+                patch.object(yakala, '_windows_read') as read:
             self.assertIsNone(yakala.windows_browser_url(42, 'chrome'))
-        read.assert_not_called()
+        read.assert_not_called()  # the isolated reader process is never started
 
     @unittest.skipUnless(WINDOWS, 'UI Automation is Windows only')
     def test_real_ui_automation_with_a_dead_window_gives_nothing_and_releases_com(self):
@@ -289,6 +290,200 @@ class BrowserUrlTest(unittest.TestCase):
         worker.start()
         worker.join(10)
         self.assertEqual(seen.get('again'), 0)
+
+
+class WindowsCaptureModelTest(unittest.TestCase):
+    def test_title_suffixes_and_known_edge_profile(self):
+        for title, app, profile, expected in (
+                ('Video - YouTube - Opera Air', 'opera', None, 'Video - YouTube'),
+                ('Sayfa — Mozilla Firefox', 'firefox', None, 'Sayfa'),
+                ('Sayfa - İş - Microsoft Edge', 'msedge', 'İş', 'Sayfa'),
+                ('Sayfa – Microsoft Edge – İş', 'msedge', None, 'Sayfa')):
+            self.assertEqual(yakala._win_page_title(title, app, profile), expected)
+
+    def test_public_ip_and_punycode_follow_upstream_boundary(self):
+        for url in ('https://8.8.8.8/path', 'https://example.xn--p1ai/'):
+            self.assertEqual(yakala.tab_url(url), url)
+        for url in ('http://localhost:3000', 'http://192.168.1.20', 'https://örnek.com', 'file:///C:/secret'):
+            self.assertIsNone(yakala.tab_url(url))
+
+    def test_opera_uses_the_omnibox_class_never_generic_edit_fields(self):
+        with patch.object(yakala, '_windows_read', return_value={'value': None}) as read:
+            self.assertIsNone(yakala.windows_browser_url(42, 'opera'))
+        self.assertEqual(read.call_args.args[1]['class'], 'OmniboxViewViews')
+
+    def test_legacy_context_must_match_foreground_title(self):
+        user = Mock()
+        user.GetForegroundWindow.return_value = 42
+        user.GetWindowTextW.side_effect = lambda _h, buffer, _n: setattr(buffer, 'value', 'Current') or 7
+        with patch.object(ctypes, 'WinDLL', return_value=user, create=True):
+            self.assertEqual(yakala._win_foreground({'pencere': 'Current'}), 42)
+            self.assertEqual(yakala._win_foreground({'pencere': 'Previous'}), 0)
+            self.assertEqual(yakala._win_foreground({'hwnd': 7, 'pencere': 'Current'}), 0)
+            self.assertEqual(yakala._win_foreground({}), 0)
+        with patch.object(yakala, '_win_foreground', return_value=0), \
+                patch.object(yakala, 'windows_browser_url') as uia:
+            context = yakala.windows_enrich({'url': 'https://example.com', 'uygulama': 'opera'})
+            self.assertNotIn('url', context)
+            uia.assert_not_called()
+
+    def test_printwindow_and_both_gdi_selections_are_checked(self):
+        for selection, copied, foreground, expected in (([4, 3], 1, [42, 42], True),
+                ([0], 1, [42], False), ([4, 0], 1, [42], False),
+                ([4, ctypes.c_void_p(-1).value], 1, [42], False),
+                ([4, 3], 0, [42], False), ([4, 3], 1, [42, 7], False)):
+            user, gdi = Mock(), Mock()
+            user.GetForegroundWindow.side_effect = foreground
+            user.IsIconic.return_value = 0
+            user.GetDC.return_value = 1
+
+            def rect(_hwnd, pointer):
+                pointer._obj.left, pointer._obj.top = -100, 0
+                pointer._obj.right, pointer._obj.bottom = -98, 2
+                return 1
+            user.GetWindowRect.side_effect = rect
+            user.PrintWindow.return_value = copied
+            gdi.CreateCompatibleDC.return_value, gdi.CreateCompatibleBitmap.return_value = 2, 3
+            gdi.SelectObject.side_effect = selection
+            gdi.GetDIBits.return_value = 2
+            cleanup = []
+            gdi.DeleteDC.side_effect = lambda _h: cleanup.append('dc')
+            gdi.DeleteObject.side_effect = lambda _h: cleanup.append('bitmap')
+            with self.subTest(selection=selection, copied=copied), \
+                    patch.object(ctypes, 'WinDLL', side_effect=lambda name: user if name == 'user32' else gdi, create=True), \
+                    patch.object(yakala, 'dib_to_png', return_value=(b'png', 2, 2)):
+                self.assertEqual(bool(yakala._win_window_png(42)), expected)
+            self.assertEqual(cleanup, ['dc', 'bitmap'])
+            gdi.BitBlt.assert_not_called()
+            if expected:
+                user.PrintWindow.assert_called_once_with(42, 2, 2)
+
+    def test_foreground_switch_prevents_window_capture(self):
+        with patch.object(yakala, '_win_foreground', return_value=0), patch.object(yakala, '_windows_read') as capture:
+            self.assertIsNone(yakala.window_image({'hwnd': 42}))
+        capture.assert_not_called()  # no capture process for a window that is no longer in front
+
+    def test_focus_does_not_attach_input_queues(self):
+        user = Mock()
+        user.GetForegroundWindow.return_value = 99
+        with patch.object(ctypes, 'WinDLL', return_value=user, create=True):
+            self.assertTrue(yakala._win_focus(99))
+        user.AttachThreadInput.assert_not_called()
+        user.SetForegroundWindow.assert_called_once_with(99)
+
+    def test_escape_guard_covers_failed_focus_without_an_arbitrary_expiry(self):
+        self.assertTrue(yakala._escape_scope(42, 42, 99, False, 0.1))
+        self.assertTrue(yakala._escape_scope(42, 42, 99, False, 60))
+        self.assertFalse(yakala._escape_scope(50, 42, 99, False, 0.1))
+        self.assertFalse(yakala._escape_scope(99, 42, 99, True, 0.1))
+
+    def test_popup_position_uses_negative_monitor_work_area(self):
+        self.assertEqual(yakala._popup_position((-1920, 0, 0, 1040), 640, 400), (-1280, 228))
+        self.assertEqual(yakala._popup_position((0, -1080, 1920, -40), 640, 400), (640, -852))
+
+    def test_monitor_uses_source_window_and_work_area(self):
+        user = Mock()
+        user.MonitorFromWindow.return_value = 55
+
+        def info(_handle, pointer):
+            work = pointer._obj.work
+            work.left, work.top, work.right, work.bottom = -1920, 0, 0, 1040
+            return 1
+        user.GetMonitorInfoW.side_effect = info
+        with patch.object(ctypes, 'WinDLL', return_value=user, create=True):
+            self.assertEqual(yakala._win_monitor(42), (-1920, 0, 0, 1040))
+        user.MonitorFromWindow.assert_called_once_with(42, 2)
+
+    def test_clipboard_reads_never_share_a_stuck_worker_gate(self):
+        with patch.object(yakala, '_windows_read', side_effect=[{'error': 'timeout'}, {'text': 'new', 'sequence': 8}]) as read:
+            self.assertEqual(yakala._windows_clipboard(), {'error': 'timeout'})
+            self.assertEqual(yakala._windows_clipboard()['text'], 'new')
+        self.assertEqual(read.call_count, 2)
+
+    def test_stop_timeout_and_failed_signal_are_errors(self):
+        kernel = Mock()
+        kernel.OpenEventW.return_value = 42
+        kernel.SetEvent.return_value = 1
+        with patch.object(yakala, '_win32', return_value=(Mock(), kernel)):
+            with self.assertRaises(TimeoutError):
+                yakala._windows_stop_listener(timeout=0)
+            kernel.SetEvent.return_value = 0
+            with self.assertRaises(OSError):
+                yakala._windows_stop_listener(timeout=0)
+
+    def test_job_assignment_precedes_resume_and_timeout_closes_job(self):
+        kernel, process = Mock(), Mock()
+        process._handle, process.pid = 12, 123
+        process.wait.side_effect = [subprocess.TimeoutExpired('helper', 1), None]
+        process.poll.return_value = None
+        events = []
+        kernel.AssignProcessToJobObject.side_effect = lambda *_: events.append('assign') or True
+        kernel.CloseHandle.side_effect = lambda *_: events.append('close')
+        with patch.object(yakala, '_windows_job', return_value=(kernel, 42)), \
+                patch.object(yakala, '_windows_resume', side_effect=lambda _pid: events.append('resume')), \
+                patch.object(yakala.subprocess, 'Popen', return_value=process) as popen:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                yakala._windows_run(['helper'], 1, None, {})
+        self.assertEqual(events, ['assign', 'resume', 'close'])
+        self.assertTrue(popen.call_args.kwargs['creationflags'] & 4)
+        process.kill.assert_called_once()
+
+    def test_clipboard_snapshot_uses_a_killable_reader(self):
+        with patch.object(yakala, '_windows_read', return_value={'text': 'copied'}) as read:
+            self.assertEqual(yakala._windows_clipboard(), {'text': 'copied'})
+        read.assert_called_once_with('clipboard', {'snapshot': True}, 1.0, None)
+
+    def test_job_creation_failure_does_not_start_a_helper(self):
+        with patch.object(yakala, '_windows_job', side_effect=OSError('job refused')), \
+                patch.object(yakala.subprocess, 'Popen') as popen:
+            with self.assertRaises(OSError):
+                yakala._windows_run(['helper'], 1, None, {})
+        popen.assert_not_called()
+
+    @unittest.skipUnless(WINDOWS, 'ctypes callback ABI; Win32 itself is mocked')
+    def test_escape_event_is_seen_once_and_hook_is_removed(self):
+        user, kernel, root, dismiss = Mock(), Mock(), Mock(), Mock()
+        user.GetForegroundWindow.return_value = 42
+        user.SetWindowsHookExW.return_value = 100
+        user.CallNextHookEx.return_value = 0
+        kernel.GetModuleHandleW.return_value = 1
+        with patch.object(ctypes, 'WinDLL', side_effect=lambda name, **_kw: user if name == 'user32' else kernel):
+            stop = yakala._win_escape_guard(root, 99, 42, dismiss)
+            callback = user.SetWindowsHookExW.call_args.args[1]
+            key = ctypes.c_uint32(0x1B)
+            callback(0, 0x100, ctypes.addressof(key))
+            root.after.call_args.args[1]()
+            stop()
+        dismiss.assert_called_once()
+        user.UnhookWindowsHookEx.assert_called_once_with(100)
+
+
+@unittest.skipUnless(WINDOWS, 'Windows Job Objects; no desktop or clipboard access')
+class WindowsJobTest(unittest.TestCase):
+    def test_timeout_terminates_helper_and_grandchild(self):
+        # The killed processes release their working folder a moment after they report exit.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            pid_file = Path(directory) / 'child.pid'
+            script = ('import subprocess, sys, time; from pathlib import Path; '
+                      'p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], '
+                      'creationflags=subprocess.CREATE_NO_WINDOW); '
+                      'Path(sys.argv[1]).write_text(str(p.pid)); time.sleep(60)')
+            with self.assertRaises(subprocess.TimeoutExpired):
+                yakala._windows_run([sys.executable, '-c', script, str(pid_file)], 3, directory, dict(os.environ))
+            self.assertTrue(pid_file.exists(), 'helper must start before the timeout')
+            kernel = ctypes.WinDLL('kernel32')
+            kernel.OpenProcess.argtypes, kernel.OpenProcess.restype = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32], ctypes.c_void_p
+            kernel.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+            kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+            handle = kernel.OpenProcess(0x1000, False, int(pid_file.read_text()))
+            if handle:
+                try:
+                    code = ctypes.c_uint32()
+                    def stopped():
+                        return kernel.GetExitCodeProcess(handle, ctypes.byref(code)) and code.value != 259
+                    self.assertTrue(wait_until(stopped, 3), 'grandchild survived the closed job')
+                finally:
+                    kernel.CloseHandle(handle)
 
 
 class FakeSession:
@@ -406,6 +601,19 @@ class FakeSession:
         self.calls.append(('foreground', pid))
         return 1
 
+    def GetCurrentThreadId(self):
+        return threading.get_ident()
+
+    def PostThreadMessageW(self, thread, message, _wparam, _lparam):
+        with self.changed:
+            self.queues.setdefault(thread, []).append(message)
+            self.changed.notify_all()
+        return 1
+
+    def WaitForSingleObject(self, handle, _timeout):
+        with self.changed:
+            return 0 if self.objects[self.handles[handle]][2] else 0x102  # WAIT_TIMEOUT
+
     def press(self, modifiers, key):
         """The user presses a registered combination: WM_HOTKEY lands in its owner's queue."""
         with self.changed:
@@ -427,6 +635,11 @@ class ListenerFlowTest(unittest.TestCase):
                         patch.object(ctypes, 'set_last_error', self.session.set_error, create=True)):
             patcher.start()
             self.addCleanup(patcher.stop)
+        self.broker = Mock(error=None)
+        self.broker.press.return_value = True
+        broker_patch = patch.object(yakala, '_WindowsPopupBroker', return_value=self.broker)
+        self.broker_factory = broker_patch.start()
+        self.addCleanup(broker_patch.stop)
         self.listeners = []
         self.addCleanup(self.stop_all)
 
@@ -449,97 +662,63 @@ class ListenerFlowTest(unittest.TestCase):
         return thread, result
 
     def test_registers_reports_opens_the_window_and_stops_by_name(self):
-        windows = [Mock(pid=4321), Mock(pid=4322)]
-        spawn_patch = patch.object(yakala.subprocess, 'Popen', side_effect=windows)
-        spawn = spawn_patch.start()
-        self.addCleanup(spawn_patch.stop)
-        self.addCleanup(self.stop_all)  # stop the listener while the Popen/Win32 fakes are still installed
         thread, result = self.listen(self.vault)
-        self.assertTrue(wait_until(lambda: yakala._windows_listener_running(self.vault), 10))
+        self.assertTrue(wait_until(lambda: self.broker_factory.called, 5))
         self.assertEqual(list(self.session.hotkeys), [(0x4003, ord('B'))])
+        self.assertTrue(yakala._windows_listener_running(self.vault))
         self.assertFalse(yakala._windows_listener_running(self.other))
-        # The mutex `durum` reads exists only once the key is registered.
-        order = [name for name, _detail in self.session.calls]
+        order = [name for name, _ in self.session.calls]
         self.assertLess(order.index('register'), order.index('create-mutex'))
-        # A window is already waiting before the first key, past Python, the module and Tk.
-        self.assertTrue(wait_until(lambda: spawn.call_count == 1, 10))
-        argv = spawn.call_args.args[0]
-        self.assertEqual(argv[1:], [str(MODULE.resolve()), 'pencere', '--vault', str(self.vault.resolve()), '--hazir'])
-        self.assertEqual(spawn.call_args.kwargs['stdin'], subprocess.PIPE)
-        context = {'uygulama': 'chrome', 'pencere': 'Şifre & Müşteri'}
-        windows[0].stdin.write.side_effect = lambda _line: self.session.calls.append(('wake', 4321))
-        with patch.object(yakala, 'windows_context', return_value=context):
+        context = {'schema': 2, 'hwnd': 42, 'uygulama': 'chrome', 'pencere': 'Şifre & Müşteri'}
+        with patch.object(yakala, 'windows_context', return_value=context) as read:
             self.session.press(0x4003, ord('B'))
-            self.assertTrue(wait_until(lambda: ('wake', 4321) in self.session.calls, 10))
-        # The foreground right is handed over before the window wakes, never after.
-        self.assertLess(self.session.calls.index(('foreground', 4321)), self.session.calls.index(('wake', 4321)))
-        # The key hands the context to the waiting window and readies the next one.
-        line = windows[0].stdin.write.call_args.args[0]
-        self.assertEqual(json.loads(line.decode('utf-8')), context)
-        self.assertTrue(line.endswith(b'\n') and windows[0].stdin.close.called)
-        self.assertTrue(wait_until(lambda: spawn.call_count == 2, 10))
-        self.assertIn('--hazir', spawn.call_args.args[0])
-        yakala._windows_stop_listener(self.other, timeout=1)  # another vault's uninstall
-        self.assertTrue(thread.is_alive() and yakala._windows_listener_running(self.vault))
-        self.assertFalse(windows[1].stdin.close.called)
+            self.assertTrue(wait_until(lambda: self.broker.press.called, 5))
+        read.assert_called_once_with(read_url=False)
+        self.broker.press.assert_called_once_with(context)
+        command = self.broker_factory.call_args.args[0]('--hazir', '--instance', 'a' * 32)
+        self.assertEqual(command[1:3], [str(MODULE.resolve()), 'pencere'])
+        self.assertNotIn('--baglam', command)
+        yakala._windows_stop_listener(self.other, timeout=1)
+        self.assertTrue(thread.is_alive())
+        self.broker.close.assert_not_called()
         yakala._windows_stop_listener(self.vault, timeout=5)
-        thread.join(10)
+        thread.join(5)
         self.assertEqual(result, {'code': 0})
-        # Stopping closes the pipe of the window still waiting, which ends it without a window.
-        self.assertTrue(windows[1].stdin.close.called)
-        windows[1].stdin.write.assert_not_called()
+        self.broker.close.assert_called_once()
         self.assertEqual((self.session.hotkeys, self.session.objects, self.session.handles), ({}, {}, {}))
-        yakala._windows_stop_listener(self.vault, timeout=1)  # twice is harmless
 
-    def test_a_dead_waiting_window_falls_back_to_a_fresh_one(self):
-        dead, fresh, next_one = Mock(pid=1), Mock(pid=4321), Mock(pid=2)
-        dead.stdin.write.side_effect = BrokenPipeError
-        spawn_patch = patch.object(yakala.subprocess, 'Popen', side_effect=[dead, fresh, next_one])
-        spawn = spawn_patch.start()
-        self.addCleanup(spawn_patch.stop)
-        self.addCleanup(self.stop_all)  # stop the listener while the Popen/Win32 fakes are still installed
-        self.listen(self.vault)
-        self.assertTrue(wait_until(lambda: spawn.call_count == 1, 10))
-        context = {'uygulama': 'code', 'pencere': 'not'}
-        with patch.object(yakala, 'windows_context', return_value=context):
+    def test_protocol_failure_stops_listener_instead_of_using_legacy_context(self):
+        self.broker.error = 'IPC version mismatch'
+        self.broker.press.return_value = False
+        thread, result = self.listen(self.vault)
+        self.assertTrue(wait_until(lambda: self.broker_factory.called, 5))
+        with patch.object(yakala, 'windows_context', return_value={'schema': 2, 'hwnd': 42}):
             self.session.press(0x4003, ord('B'))
-            self.assertTrue(wait_until(lambda: ('foreground', 4321) in self.session.calls, 10))
-        argv = spawn.call_args_list[1].args[0]
-        self.assertEqual(json.loads(argv[argv.index('--baglam') + 1]), context)
-        self.assertTrue(wait_until(lambda: spawn.call_count == 3, 10))
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result['code'], 'IPC version mismatch')
+        self.assertEqual(self.broker_factory.call_count, 1)
 
-    def test_quick_presses_each_get_their_own_window(self):
-        windows = [Mock(pid=4321 + n) for n in range(4)]
-        spawn_patch = patch.object(yakala.subprocess, 'Popen', side_effect=windows)
-        spawn = spawn_patch.start()
-        self.addCleanup(spawn_patch.stop)
-        self.addCleanup(self.stop_all)  # stop the listener while the Popen/Win32 fakes are still installed
+    def test_quick_presses_reuse_one_broker(self):
         self.listen(self.vault)
-        self.assertTrue(wait_until(lambda: spawn.call_count == 1, 10))
-        with patch.object(yakala, 'windows_context', side_effect=[{'pencere': 'bir'}, {'pencere': 'iki'}, {'pencere': 'uc'}]):
-            for _ in range(3):  # back to back: the next window may still be starting, it is still the one used
+        self.assertTrue(wait_until(lambda: self.broker_factory.called, 5))
+        with patch.object(yakala, 'windows_context', return_value={'schema': 2, 'hwnd': 42}):
+            for _ in range(3):
                 self.session.press(0x4003, ord('B'))
-            self.assertTrue(wait_until(lambda: spawn.call_count == 4, 10))
-        sent = [json.loads(w.stdin.write.call_args.args[0])['pencere'] for w in windows[:3]]
-        self.assertEqual(sent, ['bir', 'iki', 'uc'])
-        self.assertEqual([('foreground', w.pid) in self.session.calls for w in windows], [True, True, True, False])
+            self.assertTrue(wait_until(lambda: self.broker.press.call_count == 3, 5))
+        self.assertEqual(self.broker_factory.call_count, 1)
 
-    def test_context_failure_keeps_the_waiting_child_and_shutdown_reaps_it(self):
-        waiting = Mock(pid=4321)
-        with patch.object(yakala.subprocess, 'Popen', return_value=waiting) as spawn:
-            thread, result = self.listen(self.vault)
-            self.assertTrue(wait_until(lambda: spawn.called, 10))
-            with patch.object(yakala, 'windows_context', side_effect=RuntimeError('provider failed')) as read:
-                self.session.press(0x4003, ord('B'))
-                self.assertTrue(wait_until(lambda: read.called, 10))
-                # Let pressed() finish before checking that it did not abandon the ready child.
-                self.assertTrue(wait_until(lambda: not self.session.queues.get(thread.native_id), 10))
-                yakala._windows_stop_listener(self.vault, timeout=5)
-                thread.join(10)
-            self.assertEqual(result, {'code': 0})
-            self.assertEqual(spawn.call_count, 1)
-            waiting.stdin.close.assert_called_once()
-            waiting.wait.assert_called_once_with(timeout=2)
+    def test_context_failure_keeps_the_broker_and_shutdown_closes_it(self):
+        thread, result = self.listen(self.vault)
+        self.assertTrue(wait_until(lambda: self.broker_factory.called, 5))
+        with patch.object(yakala, 'windows_context', side_effect=RuntimeError('provider failed')) as read:
+            self.session.press(0x4003, ord('B'))
+            self.assertTrue(wait_until(lambda: read.called, 5))
+            yakala._windows_stop_listener(self.vault, timeout=5)
+            thread.join(5)
+        self.assertEqual(result, {'code': 0})
+        self.broker.press.assert_not_called()
+        self.broker.close.assert_called_once()
 
     def test_a_taken_key_never_looks_like_a_running_listener(self):
         self.session.hotkeys[(0x4003, ord('B'))] = -1  # another application owns the combination
@@ -642,6 +821,32 @@ class FakeListenerProcess:
         return None if self.thread.is_alive() else self.code
 
 
+class ListenerReadyTest(unittest.TestCase):
+    """`kur` reports a working key only when the capture window answered READY, never on the mutex alone."""
+
+    def test_install_check_waits_for_ready_and_fails_when_the_listener_leaves(self):
+        session = FakeSession()
+        vault = Path(tempfile.gettempdir()) / 'v3-yakala-ready-model'
+        with patch.object(yakala, '_WIN32', (session, session)):
+            mutex = session.CreateMutexW(None, False, yakala._windows_mutex(vault))
+            ready = session.CreateEventW(None, True, False, yakala._windows_ready_event(vault))
+            alive = Mock(**{'poll.return_value': None})
+            self.assertFalse(yakala._windows_listener_ok(vault, alive, timeout=0.2))  # key held, window not ready
+            session.SetEvent(ready)
+            self.assertTrue(yakala._windows_listener_ok(vault, alive, timeout=0.2))
+            gone = Mock(**{'poll.return_value': 1})
+            self.assertFalse(yakala._windows_listener_ok(vault, gone, timeout=0.2))
+            session.CloseHandle(ready)
+            session.CloseHandle(mutex)
+
+    def test_broker_failure_wakes_the_listener(self):
+        posted = []
+        broker = yakala._WindowsPopupBroker.__new__(yakala._WindowsPopupBroker)
+        broker.log, broker.on_failure = Mock(), lambda: posted.append(True)
+        broker._failure('Pencere baslatilamadi')
+        self.assertEqual((broker.error, posted), ('Pencere baslatilamadi', [True]))
+
+
 class InstallFlowTest(unittest.TestCase):
     """install(), uninstall() and status() on their Windows branches, on every OS: the session
     is the model above and a shortcut is a small JSON file instead of a .lnk."""
@@ -664,6 +869,10 @@ class InstallFlowTest(unittest.TestCase):
                         patch.object(yakala, 'sys', WindowsEyes(sys, platform='win32')),
                         patch.object(yakala, '_windows_shortcut', shortcut),
                         patch.object(yakala.subprocess, 'Popen', FakeListenerProcess),
+                        # The model's capture window is a Mock that cannot speak the window protocol: the
+                        # broker is a stand-in here, and readiness has its own test (ListenerReadyTest).
+                        patch.object(yakala, '_WindowsPopupBroker', return_value=Mock(error=None)),
+                        patch.object(yakala, '_windows_listener_ready', return_value=True),
                         patch.dict(os.environ, {'APPDATA': str(self.root / 'appdata'),
                                                 'LOCALAPPDATA': str(self.root / 'localappdata')})):
             patcher.start()
@@ -748,7 +957,7 @@ class InstallFlowTest(unittest.TestCase):
         self.assertIs(self.running(vault, state), False)  # installed for this vault, and not running
         self.assertIn('durmus', yakala.human(yakala.status(vault, state), 'durum'))
 
-    def test_a_3_9_0_install_reports_no_listener_and_is_removed_whole(self):
+    def test_a_3_9_0_install_keeps_state_without_an_owner(self):
         vault, state = self.vault('Örnek Beyin')
         for path in self.shared:  # what 3.9.0 wrote: the key lived in the Start menu entry's .Hotkey
             yakala._windows_shortcut(path, 'pythonw.exe', 'pencere', 'CTRL+ALT+B')
@@ -758,7 +967,19 @@ class InstallFlowTest(unittest.TestCase):
         status = yakala.status(vault, state)
         self.assertEqual((status['kurulu'], status['dinleyici_calisiyor']), (True, None))
         self.assertNotIn('dinleyici', yakala.human(status, 'durum'))
-        self.assertEqual(yakala.uninstall(vault, state)['kaldirilan'], ['Beyne At.lnk', 'Beyne At.lnk', 'yakala.json'])
+        self.assertEqual(yakala.uninstall(vault, state)['kaldirilan'], ['Beyne At.lnk', 'Beyne At.lnk'])
+        self.assertTrue((state / 'yakala.json').exists())
+
+    def test_stop_timeout_aborts_install_before_any_writes(self):
+        vault, state = self.vault('Örnek Beyin')
+        before = snapshot(vault)
+        with patch.object(yakala, '_windows_stop_listener', side_effect=TimeoutError('still running')), \
+                patch.object(yakala, '_windows_shortcut') as shortcut:
+            with self.assertRaises(TimeoutError):
+                yakala.install(vault, state)
+        shortcut.assert_not_called()
+        self.assertEqual(snapshot(vault), before)
+        self.assertFalse(state.exists())
 
 
 class ShortcutWriterTest(unittest.TestCase):
@@ -773,8 +994,12 @@ class ShortcutWriterTest(unittest.TestCase):
         encoded = run.call_args.args[0][-1]
         return base64.b64decode(encoded).decode('utf-16le')
 
+    def shell_save(self, command, **_options):
+        for temporary in self.link.parent.glob('.yakala-*.lnk'):
+            temporary.write_bytes(b'shell-link')
+
     def test_the_link_object_that_keeps_unicode_writes_the_file(self):
-        with patch.object(yakala.subprocess, 'run') as run:
+        with patch.object(yakala.subprocess, 'run', side_effect=self.shell_save) as run:
             yakala._windows_shortcut(self.link, 'pythonw.exe', 'dinle --vault "Şifre\'nin ’ 📥 kasası"')
         text = self.script(run)
         self.assertIn('Shell.Application', text)
@@ -782,7 +1007,7 @@ class ShortcutWriterTest(unittest.TestCase):
         self.assertIn("$ErrorActionPreference = 'Stop'", text)
         self.assertIn("'dinle --vault \"Şifre\'\'nin ’’ 📥 kasası\"'", text)
         self.assertNotIn('.Hotkey', text)
-        self.assertEqual(self.link.read_bytes(), b'')  # the object fills the empty file it was given
+        self.assertEqual(self.link.read_bytes(), b'shell-link')
 
     def test_an_old_key_is_written_as_the_number_a_link_stores(self):
         self.assertEqual(yakala._windows_link_hotkey('CTRL+ALT+B'), 0x0600 | ord('B'))
@@ -792,7 +1017,7 @@ class ShortcutWriterTest(unittest.TestCase):
         for bad in ('CTRL+ALT+Ş', 'CTRL+ALT+F25', 'CTRL+ALT+BB'):
             with self.assertRaises(ValueError):
                 yakala._windows_link_hotkey(bad)
-        with patch.object(yakala.subprocess, 'run') as run:
+        with patch.object(yakala.subprocess, 'run', side_effect=self.shell_save) as run:
             yakala._windows_shortcut(self.link, 'pythonw.exe', 'pencere', hotkey='CTRL+ALT+B')
         self.assertIn('$l.Hotkey = ' + str(0x0642), self.script(run))
 
@@ -802,6 +1027,15 @@ class ShortcutWriterTest(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError):
                 yakala._windows_shortcut(self.link, 'pythonw.exe', 'pencere')
         self.assertFalse(self.link.exists())
+
+    def test_failed_or_empty_rewrite_preserves_the_previous_link(self):
+        self.link.parent.mkdir()
+        self.link.write_bytes(b'old-link')
+        for error in (subprocess.TimeoutExpired('powershell', 60), OSError('COM failed'), None):
+            with patch.object(yakala.subprocess, 'run', side_effect=error), self.assertRaises((OSError, subprocess.TimeoutExpired)):
+                yakala._windows_shortcut(self.link, 'pythonw.exe', 'pencere')
+            self.assertEqual(self.link.read_bytes(), b'old-link')
+            self.assertEqual(list(self.link.parent.glob('.yakala-*.lnk')), [])
 
 
 def powershell(script):
@@ -948,30 +1182,30 @@ class WindowsListenerTest(unittest.TestCase):
     def test_key_press_opens_the_window(self):
         self.need_hotkeys()
         result = {}
-
         def run():
             try:
                 result['code'] = yakala.listen_windows(self.vault, MODULE, KEY, self.state)
             except SystemExit as exc:
                 result['code'] = exc.code
-        waiting = Mock(pid=os.getpid())
-        with patch.object(yakala.subprocess, 'Popen', return_value=waiting) as spawn:
+        broker = Mock(error=None)
+        broker.press.return_value = True
+        with patch.object(yakala, '_WindowsPopupBroker', return_value=broker) as factory:
             thread = threading.Thread(target=run, daemon=True)
             thread.start()
-            self.assertTrue(wait_until(lambda: yakala._windows_listener_running(self.vault) or not thread.is_alive()))
-            self.assertTrue(thread.is_alive(), result)
-            self.assertTrue(wait_until(lambda: spawn.called, 30))
-            # WM_HOTKEY as the system posts it to the registering thread; no synthetic key press needed.
-            self.assertTrue(hotkey_user32().PostThreadMessageW(thread.native_id, 0x0312, 1, 0))
-            self.assertTrue(wait_until(lambda: waiting.stdin.write.called, 30))
-            yakala._windows_stop_listener(self.vault, timeout=30)
-            thread.join(60)
+            try:
+                self.assertTrue(wait_until(lambda: factory.called, 10))
+                self.assertTrue(hotkey_user32().PostThreadMessageW(thread.native_id, 0x0312, 1, 0))
+                self.assertTrue(wait_until(lambda: broker.press.called, 10))
+            finally:
+                yakala._windows_stop_listener(self.vault, timeout=10)
+                thread.join(10)
         self.assertEqual(result, {'code': 0})
-        argv = spawn.call_args_list[0].args[0]
-        self.assertEqual(argv[1:], [str(MODULE.resolve()), 'pencere', '--vault', str(self.vault.resolve()), '--hazir'])
-        # The warm-window context also carries an active Chromium tab's URL and title.
-        line = waiting.stdin.write.call_args_list[0].args[0]
-        self.assertLessEqual(set(json.loads(line.decode('utf-8'))), {'pencere', 'uygulama', 'url', 'baslik'})
+        sent = broker.press.call_args.args[0]
+        self.assertEqual(sent.get('schema'), 2)
+        self.assertIn('hwnd', sent)
+        self.assertIn('pid', sent)
+        self.assertNotIn('url', sent)  # the hotkey thread never calls UIA
+        broker.close.assert_called_once()
 
     def test_shortcut_content_and_clean_rewrite(self):
         link = self.root / 'kısayollar' / 'Beyne At Dinleyici deneme.lnk'

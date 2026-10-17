@@ -808,6 +808,8 @@ def parser():
                           help="Remove a name from the index exclusion list (repeatable)")
     settings.add_argument("--parallel-sessions", choices=("on", "off"),
                           help="Opt-in one-line notice when another session is open on this vault")
+    settings.add_argument("--context-dedupe", choices=("on", "off"),
+                          help="Prevent re-injecting already delivered records within the same session (#363)")
     settings.add_argument("--hermes-attended-platform", action="append", default=[], metavar="PLATFORM",
                           help="Treat platform as attended/interactive in Hermes (e.g. slack); repeatable")
     settings.add_argument("--hermes-unattended-platform", action="append", default=[], metavar="PLATFORM",
@@ -1066,6 +1068,15 @@ def main(argv=None, return_result=False):
             result['parallel_sessions'] = 'on' if parallel_on else 'off'
             if not parallel_valid:
                 result['parallel_sessions_notice'] = 'parallel-sessions.json gecersiz; paralel oturum bildirimi kapali sayiliyor.'
+            # Machine-local context deduplication (#363)
+            import beyin_v3_dedupe as dedupe
+            if args.context_dedupe is not None:
+                dedupe.save_settings(state, args.context_dedupe == 'on')
+                result['status'] = 'saved'
+            dedupe_on, dedupe_valid = dedupe.read_settings(state)
+            result['context_dedupe'] = 'on' if dedupe_on else 'off'
+            if not dedupe_valid:
+                result['context_dedupe_notice'] = 'context-dedupe.json gecersiz; oturum ici tekrar onleme kapali sayiliyor.'
             # Machine-local Hermes platform settings (state/hermes-platforms.json, #350)
             try:
                 import beyin_v3_hermes as hermes_settings
@@ -1155,6 +1166,23 @@ def main(argv=None, return_result=False):
                 result['companion_hygiene'] = companion.hygiene(vault, state)
             except Exception as exc:  # a size report must never hide the rest of doctor
                 result['companion_hygiene'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            # Information only (#374): how much of Kurallar.md the Claude Code opening shows whole.
+            # The hook's own render on a read-only store; never raises the doctor status.
+            try:
+                import beyin_v3_companion as companion
+                prefs = result['preferences']
+                if prefs['context_mode'] == 'off':
+                    result['companion_rules_opening'] = {'status': 'context_off'}
+                else:
+                    from beyin_v3_hook import receipt_context
+                    budget = companion.client_budget('claude', companion.opening_budget(state, prefs['context_chars']))
+                    rules = companion.rules_opening(engine.MemoryStore(state, vault, read_only=True), budget,
+                                                    receipt_context(vault, state))
+                    result['companion_rules_opening'] = dict(
+                        rules or {}, status='clipped' if rules and rules['clipped'] else 'ok' if rules else 'no_rules',
+                        budget=budget, harness='claude')
+            except Exception as exc:  # never hides the rest of doctor
+                result['companion_rules_opening'] = {'status': 'unavailable', 'error': type(exc).__name__}
             try:
                 import beyin_v3_references as references
                 result['instruction_references'] = references.check(vault)
@@ -1238,6 +1266,11 @@ def main(argv=None, return_result=False):
                 result['parallel_sessions'] = parallel.doctor(state, vault=vault)
             except Exception as exc:
                 result['parallel_sessions'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            try:  # read-only report of context deduplication (#363)
+                import beyin_v3_dedupe as dedupe
+                result['context_dedupe'] = dedupe.doctor(state)
+            except Exception as exc:
+                result['context_dedupe'] = {'status': 'unavailable', 'error': type(exc).__name__}
             # Information only: the user's index exclusions, an index.json that is not applied, and
             # indexed trees that look vendored. Reads the index and one small file; no vault walk.
             try:
