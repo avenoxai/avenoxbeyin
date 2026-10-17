@@ -13,7 +13,8 @@ Kullanıcı bu dosyayı takip etmeni istediğinde mevcut desteklenen istemci otu
 5. Codex kullanılıyorsa vault klasöründe yeni oturum açıp `/hooks` üzerinden yeni hook tanımlarını incele ve güven. Trust hashlerini elle yazma; kurulumda trust bypass kullanma. Claude için yeni oturum aç. Antigravity içinde vault klasörünü workspace olarak açıp klasöre güven; headless çalıştırırken `--add-dir "VAULT_YOLU"` kullan. Kiro IDE veya CLI V3 için vault klasörünü aç, Agent Hooks panelinde veya `/hooks` ile Beyin hook'larını incele ve yeni oturum başlat ([Kiro kurulumu](docs/v3/KIRO.md)). Modelden, sentetik bir nottaki bilgiyi yalnız hook context üzerinden döndürmesini isteyerek bağlantıyı doğrula. Gerçek özel veriyi test çıktısına alma. Hermes Agent için hook JSON yerine eklenti bağlantısı gerekir: `docs/v3/HERMES.md` içindeki link + `hermes plugins enable beyin-v3` + yeniden başlatma adımlarını uygula. OpenCode için güven adımı yok; vault klasöründe OpenCode açmak eklentiyi yükler (`docs/v3/OPENCODE.md`). OMP için de güven adımı yok; vault klasöründe OMP açmak `.omp/hooks/pre/beyin-v3.ts` hook'unu yükler (`docs/v3/OMP.md`).
 6. Kurucu `beyin`, `beyin-doktor` ve `beyin-guncelle` başlangıç skill'lerini kurar. Skill'lerin ortak erişim noktası `.agents/skills/`; Claude karşılığı `.claude/skills/`, Kiro karşılığı `.kiro/skills/`. Mevcut skill'ler korunur. Ek skill için yalnız kullanıcının seçtiği dizini `skill-import --source "SKILL_DIZINI"` ile al. Farklı değişiklik varsa kullanıcı metnini koruyup conflict bildir.
 7. Mevcut companion kimliğini koru. Yeni kurulumdaki Core boşsa kısa konuşmayla hitap, çalışma alanı ve düşünme ortağından beklentileri öğren; beyin skill'inin kimlik/süreklilik protokolüyle notlara işle. Mevcut kullanıcıya yeniden onboarding yapma. Kurucu başlangıç notlarını yalnız bir kez oluşturur; bunlar kullanıcıya aittir ve güncellemede ezilmez.
-8. İş bitince kullanıcıya yalnız vault yolu, çalışan istemci bağlantıları ve varsa tek sonraki adımı söyle. JSON/debug dökümü, global ayarlar veya kişisel bilgileri sohbet çıktısına taşıma.
+8. Kullanıcı çalışma alanlarını kurmak/geliştirmek istiyorsa aynı beyin skill'indeki “Alan kurma ve geliştirme” protokolünü kullan. Verilmiş ihtiyacı yeniden sorma; alanın kaynak/iş/sonuç/öğrenim döngüsünü sade önizlemeyle anlat. Kurulu sürümde ortak planner/apply yoksa hazırlığı açıkça ayır; alternatif registry/izin şeması veya yayımlanmamış komut uydurma. Gerçek PDF/DOCX içerik araması, günlük update/readback ve yeni istemci oturumu ayrı doğrulanır; eksik yetenek tam başarı değildir.
+9. İş bitince kullanıcıya yalnız vault yolu, çalışan istemci bağlantıları ve varsa tek sonraki adımı söyle. JSON/debug dökümü, global ayarlar veya kişisel bilgileri sohbet çıktısına taşıma.
 
 ## Kullanıcıya açıklanacak sınır
 
@@ -24,6 +25,20 @@ Basit scalar YAML ve JSON frontmatter desteklenir. Karmaşık YAML görünür uy
 İsteğe bağlı Jev danışmanı kurulumun parçası değildir: varsayılan kapalıdır, yalnız kendi TypeSafe API anahtarı olan kullanıcılar içindir ve kurucu bunu sormaz. Yerel Laya sağlayıcısı da aynı şekilde isteğe bağlıdır ve yalnız gölge modda çalışır (`jev shadow --provider laya`; `jev on --provider laya` reddedilir); Laya'yı veya PyTorch'u Beyin'in ortamına kurma, kullanıcı isterse JEV.md'deki ayrı kurulum adımlarını izle. Kullanıcı açıkça istemedikçe gündeme getirme; isterse `python3 beyin.py jev status` durumu gösterir, `jev shadow`/`jev on`/`jev off` değiştirir. Anahtarı komuta yazma. Sınırlar: [docs/v3/JEV.md](docs/v3/JEV.md).
 
 Güncelleme: vault içinde `python3 beyin.py update`; yalnız kontrol için `update --check`. Geri alma: `python3 beyin.py rollback`. Kesilen güncellemeyi sürdürmek için `python3 beyin.py recover`. Windows'ta `py -3` kullan. Değiştirilmiş yönetilen dosyada conflict varsa kullanıcı değişikliğini koru; `git reset` veya elle dosya kopyalayarak geçme. İlk temiz kurulum geri alınınca giriş komutu da kaldırılır; tekrar kurmak için resmi ZIP installer'ını kullan. Ayrıntılar: [güncelleme rehberi](docs/v3/UPDATE.md).
+
+
+Workspace belge kurulumu için ajan aynı installer'a `--workspace-documents` ekler.
+Bu seçenek mevcut kurulumdaki PDF/DOCX/TR+EN OCR içeriğini ve konumunu gerçek
+reader ile sınar; eksik sistem paketi varsa `workspace_documents.system_actions`
+içinde somut argv adımlarını verir. Paket yöneticisi çalıştırmaz veya kurmaz.
+Teknik dosyalar kurulmuş olsa bile belge yeteneği doğrulanmadıysa exit 5 döner.
+`--plan --workspace-documents` yalnız mevcut kurulumu okur; planlanan dosyaların
+şimdiden kurulmuş olduğunu iddia etmez. Mevcut yetki içindeki sistem paket
+adımlarını ajan yürütür ve probe'u yeniden çalıştırır; kullanıcıdan Python/parser
+ortamı yönetmesi istenmez. Kurulum sonrası aynı rapor kurulu
+`beyin_v3_document_setup.document_setup(vault)` ile alınabilir. Sistem paketleri
+OS paket yöneticisine aittir; vault rollback bunları kaldırmaz. Offline temiz
+makine mevcut sistem paket önbelleği/deposu ister; ZIP native binary içermez.
 
 Platform kanıtı ve kalan doğrulamalar: [docs/v3/PLATFORM-TESTS.md](docs/v3/PLATFORM-TESTS.md).
 

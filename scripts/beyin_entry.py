@@ -169,6 +169,17 @@ def rewrite_note(entry):
 
 
 def human_result(result, command, installed_version=None):
+    if result.get('contract_version')=='workspace/0.1.0':
+        data=result['data']
+        if result['type']=='WorkContext':
+            return 'Calisma baglami: '+str(data['state'])+'; '+str(len(data['records']))+' kaynak/kayit.'
+        if result['type']=='WorkflowRun':
+            return 'Surec: '+str(data['status'])+('. '+data['next_action'] if data.get('next_action') else '')
+        return 'Islem: '+str(data['operation_status'])+'; alan durumu: '+str(data['workspace_health'])+('. '+data['next_action'] if data.get('next_action') else '')
+    if command=='workspace-builder':
+        preview=result.get('preview',result)
+        if isinstance(preview,dict) and isinstance(preview.get('text'),str):
+            return '\n'.join(plain_text(line) for line in preview['text'].splitlines())
     status = result.get('status', '')
     if command == 'scheduled-check' and 'status' in result:
         # Exit 4 (needs attention) prints here like a finished check: the check ran and found something.

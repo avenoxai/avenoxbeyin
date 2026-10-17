@@ -12,5 +12,8 @@ Sözleşmenin alan, yetki veya hata anlamı değişirse sürümlü fark hazırla
 
 ## Kullanım
 
+- [Kaynak ve plan yetkisi](AUTHORITY-CLI.md)
 - [Ortak PDF/DOCX/OCR okuyucusu](SHARED-DOCUMENT-READER.md)
+- [Kurulum ve konuşmalı yönetim](../WORKSPACE-BUILDER.md)
+- [Sentetik kullanım senaryoları](../WORKSPACE-BUILDER-CONVERSATIONS.md)
 - [OCR önkoşulları](../WORKSPACE-BUILDER-OCR.md)

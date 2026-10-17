@@ -64,6 +64,10 @@ def probe_capabilities(vault,*,ocr_probe=None):
     from beyin_v3_parser_probe import document_capabilities
     capabilities={c['name']:c['state'] for c in document_capabilities(vault)}
     capabilities.update(text='ready',markdown='ready')
+    try:
+        from beyin_v3_workspace_workflow import WorkflowRunner
+        capabilities['workflow']='ready' if callable(WorkflowRunner.advance) else 'failed'
+    except ImportError:capabilities['workflow']='missing_dependency'
     return capabilities
 
 

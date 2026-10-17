@@ -641,10 +641,27 @@ class MemoryStore:
         if self.read_only:
             raise ValueError("read-only runtime does not permit writes")
 
+    def _workspace_allowed(self, record, audience='internal'):
+        # Old standalone installs do not import optional new modules. A local
+        # activation marker must fail closed if the workspace package is absent.
+        try:
+            from beyin_v3_workspace_context import record_allowed
+        except ImportError:
+            return not (self.state_dir / 'workspace-runtime.json').exists()
+        return record_allowed(self, record, audience)
+
     def close(self):
         """Connections are scoped to each operation; provided for callers."""
 
     def context_for(self, harness, query, **kwargs):
+        try:
+            from beyin_v3_workspace_context import enabled, CURRENT, WorkspaceRuntime
+        except ImportError:
+            if (self.state_dir / 'workspace-runtime.json').exists():
+                raise ValueError('workspace_package_unavailable')
+        else:
+            if enabled(self.vault_root, self.state_dir) and CURRENT.get() is None:
+                return WorkspaceRuntime(self.vault_root,self.state_dir,store=self).legacy_context(harness,query,**kwargs)
         if kwargs.get("strict") is True and self.STRICT_PASSAGES:
             try:
                 from beyin_v3_passage import context_for as passage_context
@@ -810,6 +827,8 @@ class MemoryStore:
         if not rows or (not current and rows[-1][1] != "delete"):
             return []
         boundary = json.loads(current[0] if current else rows[-1][4])
+        if not self._workspace_allowed(boundary, audience):
+            return []
         # A formerly indexed receipt view cannot authorize its own leaked audit
         # trail. Later clean notes at a retired path have sequences past the cutoff.
         if rows[-1][0] <= quarantined.get(boundary.get("source"), 0):
@@ -828,6 +847,7 @@ class MemoryStore:
                 return []
         return [{"sequence": row[0], "event_type": row[1], "record_id": row[2], "revision": row[3], "record": record}
                 for row in rows if (record := json.loads(row[4])).get("visibility") in allowed and
+                self._workspace_allowed(record, audience) and
                 row[0] > quarantined.get(record.get("source"), 0) and
                 record.get("trust") != "untrusted" and record.get("trusted") is not False and
                 record.get("status") != "untrusted" and record.get("kind") != "untrusted"]
@@ -915,6 +935,8 @@ class MemoryStore:
         stale_count = 0
         for record in records:
             if sensitive_source(record.get("source")):
+                continue
+            if not self._workspace_allowed(record, audience):
                 continue
             if (record.get("visibility") not in allowed or record.get("trust") == "untrusted" or
                     record.get("trusted") is False or record.get("status") == "untrusted" or
@@ -1117,6 +1139,8 @@ class MemoryStore:
         eligible = []
         stale_count = 0
         for record in records:
+            if not self._workspace_allowed(record, audience):
+                continue
             # Old indexes can still hold these notes until the next sync. Never deliver them.
             if sensitive_source(record.get("source")):
                 continue

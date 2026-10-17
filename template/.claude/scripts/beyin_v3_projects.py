@@ -187,9 +187,13 @@ def _save_project_scopes(vault_root, data):
                 pass
 
 
-def manage(vault_root, action, folder=None, project=None, shared_unscoped=None):
+def manage(vault_root, action, folder=None, project=None, shared_unscoped=None, workspace_state=None):
     """CLI handler for beyin.py project-scope list|add|remove|prune."""
     vault_root = Path(vault_root)
+    if action!='list' and (vault_root/'.beyin-workspaces').exists():
+        if workspace_state is None:raise ValueError('workspace_state_required_for_legacy_mutation')
+        from beyin_v3_workspace_context import enabled
+        if enabled(vault_root,workspace_state):raise ValueError('active_workspace_requires_provision_plan')
     path = vault_root / PROJECT_SCOPES_FILE
 
     if action == "list":
