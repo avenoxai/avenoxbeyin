@@ -267,7 +267,7 @@ def receipt_reminder(payload, state, harness, event, vault=None):
     If a receipt declared learnings but no note under knowledge/ was touched,
     Stop reminds once to distill into knowledge/concepts/.
     """
-    if harness not in ("claude", "codex") or event not in ("UserPromptSubmit", "PostToolUse", "Stop"):
+    if harness not in ("claude", "codex", "pi") or event not in ("UserPromptSubmit", "PostToolUse", "Stop"):
         return None
     if os.environ.get("BEYIN_V3_NO_RECEIPT_REMINDER") == "1":
         return None
@@ -430,7 +430,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--vault", required=True, type=Path)
     parser.add_argument("--state", required=True, type=Path)
-    parser.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro"), required=True)
+    parser.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro", "pi"), required=True)
     parser.add_argument("--event")
     parser.add_argument("--worker", action="store_true")
     parser.add_argument("--drain-queue", action="store_true")
@@ -512,7 +512,7 @@ def main():
                     if hygiene['promotion']:
                         touch_log(state, vault, payload)
                     if hygiene['word_cap_warning']:
-                        # Harness-gated inside: only Claude and Codex receive PostToolUse context.
+                        # Harness-gated inside: only adapters with tested PostToolUse delivery receive context.
                         notice += hook_cap_warning(vault, payload, cap=hygiene['max_words'],
                                                    harness=args.harness, state=state)
             except Exception:

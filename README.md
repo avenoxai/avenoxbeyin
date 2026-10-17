@@ -46,6 +46,8 @@ OpenCode için ek adım yok: installer vault içine eklentisini yazar, OpenCode 
 
 OMP (Oh My Pi) için ek adım yok: installer vault içine `.omp/hooks/pre/beyin-v3.ts` yazar, OMP vault klasöründe açılınca aynı motora bağlanır. Dosyayı global agentDir'e kopyalama; vault dışında işe yaramaz. Adımlar: [docs/v3/OMP.md](docs/v3/OMP.md).
 
+Pi için installer `.pi/extensions/beyin-v3.ts` üretir; vault klasöründe Pi'yi açıp extension için proje güvenini onayla. Pi ve OMP farklı istemcilerdir. Başka proje klasöründen merkezi vault'a erişim yalnız açık `--beyin-project-root` kapsamıyla etkinleşir. Kurulum, receipt ve kapsam ayrıntıları: [docs/v3/PI.md](docs/v3/PI.md).
+
 Kiro IDE 1.x ve CLI V3 için bu kaynak checkout'u `.kiro/hooks/beyin-v3.json` ve `.kiro/skills/` kurar. Kiro'da vault'u açıp hook'ları inceleyerek yeni oturum başlat. Eski ZIP paketlerinde bu dosyalar bulunmayabilir; kaynak kurulum adımları ve istemci sınırları: [docs/v3/KIRO.md](docs/v3/KIRO.md).
 
 ## İlk konuşma

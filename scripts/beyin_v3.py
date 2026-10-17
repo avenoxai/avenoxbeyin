@@ -31,14 +31,12 @@ SOURCE_WRITE_COMMANDS = ("note-create", "task-create", "task-update")
 
 
 def mark_session_edit(state: Path) -> None:
-    """Open the Stop reminder's edit window for the Claude Code session that ran this write (#212).
+    """Open the Stop edit window for a CLI write from Claude or Pi's shell tool (#212).
 
-    Bash is not a PostToolUse matcher, so a note or task written through `beyin.py` from the Bash
-    tool was invisible to the receipt reminder. Claude Code sets CLAUDE_CODE_SESSION_ID in Bash
-    subprocesses to the session_id its hooks receive, so the marker names that exact session;
-    other shells and harnesses do not set it and nothing is guessed. Never costs the write itself.
+    Shell writes have no editor PostToolUse event. Both clients expose the real session ID to
+    shell subprocesses; never guess an ID in a plain shell. Bookkeeping cannot cost the write.
     """
-    session = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID")
     if not session or os.environ.get("BEYIN_V3_NO_RECEIPT_REMINDER") == "1":
         return
     try:
@@ -832,7 +830,7 @@ def parser():
     context = sub.add_parser("context", help="Retrieve source-backed shared context")
     context.add_argument("query", nargs="?", help="Query; alternatively use --file")
     context.add_argument("--file", help="JSON retrieval arguments, or - for stdin")
-    context.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro"), default="codex")
+    context.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro", "pi"), default="codex")
     context.add_argument("--project")
     context.add_argument("--audience", choices=("internal", "public"), default="internal")
     context.add_argument("--status", action="append", dest="statuses")
@@ -859,7 +857,7 @@ def parser():
     answer.add_argument("--project", required=True)
     receipt = sub.add_parser("receipt", help="Submit an idempotent source-linked receipt")
     receipt.add_argument("--file", help="JSON input path, or - for stdin (default without receipt flags)")
-    receipt.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro"), default="codex")
+    receipt.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro", "pi"), default="codex")
     receipt.add_argument("--event-id", help="Required receipt event identifier in flag mode")
     receipt.add_argument("--summary", help="Receipt summary text, preserving literal newlines")
     receipt.add_argument("--summary-file", type=Path, metavar="PATH", help="Read the receipt summary from a UTF-8 file")
@@ -1119,7 +1117,7 @@ def main(argv=None, return_result=False):
         elif args.command == "doctor":
             _ensure_scripts_path()
             from beyin_v3_hook_done import summary as hook_done_summary
-            done = hook_done_summary(state, ('codex', 'claude', 'antigravity', 'hermes', 'opencode', 'omp', 'kiro'))
+            done = hook_done_summary(state, ('codex', 'claude', 'antigravity', 'hermes', 'opencode', 'omp', 'kiro', 'pi'))
             result = {"pending_events": len(list((state / "hook-queue").glob("*.json"))),
                       **done}
             for filename in ("hook-health.json", "hook-error.json", "receipt-gaps.json"):

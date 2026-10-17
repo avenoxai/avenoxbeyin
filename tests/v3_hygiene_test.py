@@ -284,9 +284,9 @@ class HarnessGateTest(unittest.TestCase):
         self.note.write_text('kelime ' * 600, encoding='utf-8')
         self.payload = {'hook_event_name': 'PostToolUse', 'tool_input': {'file_path': str(self.note)}}
 
-    def test_only_claude_and_codex_receive_the_warning(self):
-        self.assertIn('Bolum SINYALI', hygiene.hook_cap_warning(self.vault, self.payload, harness='claude'))
-        self.assertIn('Bolum SINYALI', hygiene.hook_cap_warning(self.vault, self.payload, harness='codex'))
+    def test_only_verified_adapters_receive_the_warning(self):
+        for harness in ('claude', 'codex', 'pi'):
+            self.assertIn('Bolum SINYALI', hygiene.hook_cap_warning(self.vault, self.payload, harness=harness))
         for harness in ('antigravity', 'opencode', 'omp', 'hermes'):
             self.assertEqual(hygiene.hook_cap_warning(self.vault, self.payload, harness=harness), '')
 

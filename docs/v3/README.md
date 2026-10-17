@@ -2,7 +2,7 @@
 
 Vault dışındaki seçili proje oturumları için: [opsiyonel global köprü](GLOBAL-BRIDGE.md).
 
-V3'te Markdown kaynak, SQLite yerel indeks, Codex/Claude Code/Antigravity, [Hermes Agent](HERMES.md), [OpenCode](OPENCODE.md), [OMP](OMP.md) ve [Kiro](KIRO.md) ise aynı motora bağlanan istemcilerdir. Python 3.11+ dışında ek Python paketi gerekmez. Varsayılan akışta Mem0, API anahtarı, daemon veya ayrı sunucu kurulmaz. [Jev danışmanı](JEV.md) isteğe bağlıdır ve varsayılan kapalıdır; `beyin.py jev` ile açılmadıkça normal arama ve hook akışını değiştirmez. Aynı danışman ayrı kurulan yerel Laya sunucusunu da yalnız gölge modda, ölçüm için kullanabilir (`jev shadow --provider laya`).
+V3'te Markdown kaynak, SQLite yerel indeks, Codex/Claude Code/Antigravity, [Hermes Agent](HERMES.md), [OpenCode](OPENCODE.md), [OMP](OMP.md), [Kiro](KIRO.md) ve [Pi](PI.md) ise aynı motora bağlanan istemcilerdir. Python 3.11+ dışında ek Python paketi gerekmez. Varsayılan akışta Mem0, API anahtarı, daemon veya ayrı sunucu kurulmaz. [Jev danışmanı](JEV.md) isteğe bağlıdır ve varsayılan kapalıdır; `beyin.py jev` ile açılmadıkça normal arama ve hook akışını değiştirmez. Aynı danışman ayrı kurulan yerel Laya sunucusunu da yalnız gölge modda, ölçüm için kullanabilir (`jev shadow --provider laya`).
 
 [Yeni kullanıcı başlangıcı](../../README.md) · [Ajanla kurulum](../../SETUP-V3.md) · [Güncelleme/geri alma](UPDATE.md) · [Birden çok makine](MULTI-MACHINE.md) · [Kaynak şeması](MARKDOWN.md) · [Runtime](RUNTIME.md)
 

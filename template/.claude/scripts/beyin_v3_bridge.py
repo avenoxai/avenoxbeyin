@@ -219,7 +219,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--vault', type=Path, required=True)
     parser.add_argument('--state', type=Path, help='Defaults to the installed vault runtime locator')
-    parser.add_argument('--harness', choices=('claude', 'codex', 'antigravity'), required=True)
+    parser.add_argument('--harness', choices=('claude', 'codex', 'antigravity', 'pi'), required=True)
     parser.add_argument('--native-event', choices=tuple(ANTIGRAVITY), help='Antigravity hook event; set by --print-config')
     parser.add_argument('--project-root', type=Path, action='append', required=True)
     parser.add_argument('--context-chars', type=int, default=1500, help='Startup instructions only; 0 disables injection')
@@ -247,6 +247,8 @@ def main(argv=None):
             if not events:
                 raise ValueError('Antigravity offers only SessionStart and Stop')
         if args.print_config:
+            if args.harness == 'pi':
+                raise ValueError('Pi uses the installed extension with --beyin-project-root, not hook JSON')
             command = [sys.executable, str(Path(__file__).resolve()), '--vault', str(vault),
                        '--state', str(state), '--harness', args.harness, '--context-chars', str(args.context_chars)]
             for root in roots:
