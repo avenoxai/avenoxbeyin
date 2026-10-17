@@ -31,6 +31,13 @@ dosyanın mevcut olay listelerine bir kez ekleyin:
   3.9.0 ve öncesinin köprüsü `--harness antigravity` tanımaz; o sürümlere `rollback`
   yapmadan önce bu anahtarı dosyadan kaldırın, yoksa komut her çağrıda hata koduyla biter.
 
+Pi hook JSON kullanmaz. Aynı kapsamlı bridge için vault-owned extension'ı
+`pi -e /tam/yol/Beynim/.pi/extensions/beyin-v3.ts --beyin-project-root /tam/yol/Projelerim`
+ile yükleyin. Birden çok kök, olay seçimi ve context bütçesi de Pi flag'leriyle
+ayarlanabilir; [Pi belgesi](PI.md#explicit-bridge-from-another-project). Bu da
+aynı startup/metadata sınırını kullanır; aşağıdaki dış-proje kapsamı Pi için de
+geçerlidir. `--print-config --harness pi` kullanılmaz.
+
 Önce mevcut ayarı yedekleyin. Dosyanın tamamını bu çıktıyla değiştirmeyin; diğer
 ayarları ve hook'ları koruyun. Aynı köprüyü iki kez eklemeyin; bir proje için tek
 hedef Beyin seçin. Komutlar mevcut Python ve kurulu scriptin mutlak yolunu taşır;

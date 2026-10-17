@@ -48,3 +48,26 @@ jobs:
         run: python -m unittest discover -s tests -p "v3_*test.py"
       - name: Frozen development and holdout retrieval gates
         run: python scripts/evaluate_v3.py
+
+  pi-extension:
+    name: Pi generated extension / ${{ matrix.os }} / Bun
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONIOENCODING: utf-8
+      BEYIN_V3_NO_SPAWN: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.3'
+      - name: Pi lifecycle, scope, receipt and package contracts
+        run: python -m unittest discover -s tests -p 'v3_pi_test.py'

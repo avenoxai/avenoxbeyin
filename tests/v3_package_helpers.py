@@ -24,11 +24,11 @@ def windows_runtime_env():
 # from a configured shell or an agent session must not inherit them. Only the values the suite
 # itself inherited are dropped: one a test sets in os.environ (BEYIN_PYTHON for a missing
 # interpreter) still reaches its child, as does one passed explicitly.
-# CLAUDE_CODE_SESSION_ID names the agent session running the suite; a CLI write in a fixture must
-# not open that session's receipt-reminder window (#212).
+# CLAUDE_CODE_SESSION_ID / PI_SESSION_ID name the agent running the suite; a CLI write in a
+# fixture must not open that session's receipt-reminder window (#212).
 USER_ENV_PREFIX = 'BEYIN_'
 _INHERITED = {key: value for key, value in os.environ.items()
-              if key.upper().startswith(USER_ENV_PREFIX) or key.upper() == 'CLAUDE_CODE_SESSION_ID'}
+              if key.upper().startswith(USER_ENV_PREFIX) or key.upper() in ('CLAUDE_CODE_SESSION_ID', 'PI_SESSION_ID')}
 
 
 def inherited_env(**extra):

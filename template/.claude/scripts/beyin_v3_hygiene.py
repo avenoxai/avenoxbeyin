@@ -456,12 +456,12 @@ def hook_cap_warning(vault, payload, cap=DEFAULT_CAP, harness=None, state=None):
     """PostToolUse warning lines for the just-written notes that cross the cap.
 
     Opt-in: the caller only invokes this when word_cap_warning is on.
-    Harness gate (#130 decision): only Claude and Codex are wired; their
-    PostToolUse `additionalContext` shape is tested in v3_hook_test. Other
+    Harness gate (#130 decision): Claude/Codex receive additionalContext;
+    Pi appends it to the editor result, preserving structured output. Other
     harnesses stay silent until their adapter behavior is proven.
     A split signal, not a split action - the wording is MMS's on purpose.
     """
-    if harness is not None and harness not in ('claude', 'codex'):
+    if harness is not None and harness not in ('claude', 'codex', 'pi'):
         return ''
     if payload.get('hook_event_name') != 'PostToolUse':
         return ''
