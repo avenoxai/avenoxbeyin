@@ -119,7 +119,12 @@ sets the startup budget (0–4000, default 1500; 0 suppresses injection), and
 names make the external adapter inert rather than broadening its scope.
 No global Pi configuration is changed. You may explicitly add the extension path
 to your personal Pi settings, but still supply a scoped root; the installer will
-not maintain a copied global extension.
+not maintain a copied global extension. Pi refuses to start when two extension
+files register the same flag, so when several Beyin extensions load in one Pi
+process (that personal path plus another trusted vault in cwd), the first one owns
+the flags and lends them to the others over `pi.events`. Each vault still serves
+only its own exact cwd, only the flag owner runs the external bridge, and a second
+copy of an already loaded vault stays inert.
 
 This mode uses `beyin_v3_bridge.py --harness pi`. Like the other global bridges it
 records SessionStart/Stop/PreCompact/SessionEnd metadata and delivers only the small

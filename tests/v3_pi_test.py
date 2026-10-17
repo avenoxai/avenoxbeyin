@@ -37,6 +37,46 @@ for (const step of steps) {
 console.log(JSON.stringify(result))
 '''
 
+# Pi 1.3 loads every extension of one process against a shared event bus, gives a flag to the first
+# path that registers it, answers getFlag only for the registering extension and exits at startup
+# when a second extension path registers the same flag (resource-loader detectExtensionConflicts).
+MULTI_DRIVER = r'''
+import { EventEmitter } from "node:events"
+import { pathToFileURL } from "node:url"
+const bus = new EventEmitter()
+const events = { emit: (channel, data) => { bus.emit(channel, data) },
+  on: (channel, handler) => { bus.on(channel, handler); return () => bus.off(channel, handler) } }
+const flags = JSON.parse(process.env.PI_FLAGS || "{}")
+const owners = new Map()
+const conflicts = []
+const loaded = []
+for (const path of JSON.parse(process.env.PLUGIN_PATHS)) {
+  const handlers = {}
+  const own = new Set()
+  const pi = {
+    on: (name, handler) => { handlers[name] = handler },
+    registerFlag: (name) => {
+      if (owners.has(name) && owners.get(name) !== path) conflicts.push(name)
+      else owners.set(name, path)
+      own.add(name)
+    },
+    getFlag: (name) => own.has(name) ? flags[name] : undefined,
+    events,
+  }
+  const mod = await import(pathToFileURL(path).href)
+  mod.default(pi)
+  loaded.push(handlers)
+}
+const ctx = { cwd: process.env.PI_CWD, sessionManager: { getSessionId: () => "pi-multi" } }
+const outputs = []
+for (const step of JSON.parse(process.env.PI_STEPS || "[]")) {
+  const values = []
+  for (const handlers of loaded) values.push((await handlers[step.event]?.(step.payload || {}, ctx)) ?? null)
+  outputs.push(values)
+}
+console.log(JSON.stringify({ conflicts, keys: loaded.map((handlers) => Object.keys(handlers).length), outputs }))
+'''
+
 
 class PiHarnessTest(unittest.TestCase):
     def setUp(self):
@@ -297,6 +337,59 @@ class PiHarnessTest(unittest.TestCase):
         result = self.drive([dict(event='before_agent_start', payload=dict(messageType='custom', message={'content': 'klima'}))])
         self.assertEqual(result['outputs'], [None])
         self.assertEqual(self.queued(), [])
+
+    def drive_many(self, plugins, steps, cwd, flags=None):
+        driver = self.base / 'multi-driver.ts'
+        driver.write_text(MULTI_DRIVER, encoding='utf-8')
+        result = subprocess.run([BUN, 'run', str(driver)],
+                                env=dict(self.env, PLUGIN_PATHS=json.dumps([str(p) for p in plugins]),
+                                         PI_CWD=str(cwd), PI_FLAGS=json.dumps(flags or {}), PI_STEPS=json.dumps(steps)),
+                                capture_output=True, text=True, encoding='utf-8', timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout.strip().splitlines()[-1])
+
+    @unittest.skipUnless(BUN, 'bun is required to execute the generated Pi extension')
+    def test_two_installed_vaults_in_one_pi_process_do_not_conflict(self):
+        # A personal-settings or -e path to one vault plus the trusted vault in cwd: Pi must start,
+        # and only the vault that owns cwd injects and queues.
+        other = self.base / 'Diğer Kasa'
+        other.mkdir()
+        other_state = self.base / 'other-state'
+        self.assertEqual(install(other, other_state, isolated_env(self.base / 'other-home')).returncode, 0)
+        other_plugin = other / '.pi/extensions/beyin-v3.ts'
+        steps = [dict(event='session_start'),
+                 dict(event='before_agent_start', payload=dict(messageType='user', prompt='klima kargo DHL'))]
+        for order in ([self.plugin, other_plugin], [other_plugin, self.plugin]):
+            with self.subTest(first=order[0].parent.parent.parent.name):
+                result = self.drive_many(order, steps, self.vault)
+                self.assertEqual(result['conflicts'], [], 'Pi exits at startup on a duplicate flag')
+                mine = order.index(self.plugin)
+                prompt = result['outputs'][1]
+                self.assertIn('notes/klima.md', prompt[mine]['message']['content'])
+                self.assertIsNone(prompt[1 - mine], 'The other vault must stay inert in this vault')
+        self.assertEqual({e['harness'] for e in self.queued()}, {'pi'})
+        self.assertFalse((other_state / 'hook-queue').exists() and any((other_state / 'hook-queue').iterdir()))
+        # The process-wide opt-out reaches the instance that did not register the flag.
+        before = len(self.queued())
+        for order in ([self.plugin, other_plugin], [other_plugin, self.plugin]):
+            result = self.drive_many(order, steps, self.vault, flags={'beyin-no-memory': True})
+            self.assertEqual(result['conflicts'], [])
+            self.assertTrue(all(value is None for values in result['outputs'] for value in values))
+        self.assertEqual(len(self.queued()), before)
+
+    @unittest.skipUnless(BUN, 'bun is required to execute the generated Pi extension')
+    def test_same_vault_loaded_through_two_paths_acts_once(self):
+        alias = self.base / 'alias'
+        try:
+            alias.symlink_to(self.vault, target_is_directory=True)
+        except OSError:
+            self.skipTest('symlinks unavailable')
+        steps = [dict(event='session_start'),
+                 dict(event='before_agent_start', payload=dict(messageType='user', prompt='klima kargo DHL'))]
+        result = self.drive_many([self.plugin, alias / '.pi/extensions/beyin-v3.ts'], steps, self.vault)
+        self.assertEqual(result['conflicts'], [])
+        self.assertEqual(sum(value is not None for value in result['outputs'][1]), 1, 'Context must not be injected twice')
+        self.assertEqual(sorted(e['event'] for e in self.queued()), ['SessionStart', 'UserPromptSubmit'])
 
     @unittest.skipUnless(BUN, 'bun is required to execute the generated Pi extension')
     def test_failed_stop_preserves_reminder_until_completed_assistant_boundary(self):

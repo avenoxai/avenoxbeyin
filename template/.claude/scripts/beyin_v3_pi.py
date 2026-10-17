@@ -29,46 +29,70 @@ function runtimeState() {
   } catch { return null }
 }
 
+// Pi exits at startup when two extension files register one flag, e.g. a personal-settings
+// path to one vault plus the trusted vault in cwd. The first Beyin instance owns the flags and
+// lends its reader over pi.events; later instances serve only their own vault cwd, and a
+// second copy of an already loaded vault stays inert.
+const INSTANCE_CHANNEL = "beyin-v3:pi-instance"
+
 export default function (pi) {
-  pi.registerFlag("beyin-project-root", {
-    description: "Opt in to the scoped Beyin bridge outside the vault (absolute project root)",
-    type: "string",
-  })
-  pi.registerFlag("beyin-project-roots", {
-    description: "Opt in to multiple Beyin bridge roots (JSON array of absolute paths)", type: "string",
-  })
-  pi.registerFlag("beyin-bridge-context-chars", {
-    description: "External bridge startup budget, 0–4000 characters (default 1500)", type: "string",
-  })
-  pi.registerFlag("beyin-bridge-events", {
-    description: "External bridge events, comma-separated (default all four lifecycle boundaries)", type: "string",
-  })
-  pi.registerFlag("beyin-no-memory", {
-    description: "Disable all Beyin context and lifecycle bookkeeping for this invocation",
-    type: "boolean", default: false,
-  })
+  const vaultKey = canonical(VAULT)
+  const probe = { vault: vaultKey, getFlag: undefined, duplicate: false }
+  try { pi.events?.emit(INSTANCE_CHANNEL, probe) } catch {}
+  if (probe.duplicate === true) return
+  const borrowed = typeof probe.getFlag === "function"
+  const getFlag = borrowed ? probe.getFlag : (name) => pi.getFlag(name)
+  if (!borrowed) {
+    pi.registerFlag("beyin-project-root", {
+      description: "Opt in to the scoped Beyin bridge outside the vault (absolute project root)",
+      type: "string",
+    })
+    pi.registerFlag("beyin-project-roots", {
+      description: "Opt in to multiple Beyin bridge roots (JSON array of absolute paths)", type: "string",
+    })
+    pi.registerFlag("beyin-bridge-context-chars", {
+      description: "External bridge startup budget, 0–4000 characters (default 1500)", type: "string",
+    })
+    pi.registerFlag("beyin-bridge-events", {
+      description: "External bridge events, comma-separated (default all four lifecycle boundaries)", type: "string",
+    })
+    pi.registerFlag("beyin-no-memory", {
+      description: "Disable all Beyin context and lifecycle bookkeeping for this invocation",
+      type: "boolean", default: false,
+    })
+    const claimed = new Set([vaultKey])
+    try {
+      pi.events?.on(INSTANCE_CHANNEL, (request) => {
+        if (!request || typeof request !== "object" || typeof request.vault !== "string") return
+        if (claimed.has(request.vault)) { request.duplicate = true; return }
+        claimed.add(request.vault)
+        request.getFlag = getFlag
+      })
+    } catch {}
+  }
   const state = runtimeState()
   if (!state) return
-  const vaultKey = canonical(VAULT)
   let pinned = ""
   let firstPromptSeen = false
 
   function scope(ctx) {
-    if (pi.getFlag("beyin-no-memory") === true) return null
+    if (getFlag("beyin-no-memory") === true) return null
     const cwd = canonical(ctx?.cwd)
     if (!cwd) return null
     if (cwd === vaultKey) return { external: false }
-    const root = pi.getFlag("beyin-project-root")
-    const rawRoots = pi.getFlag("beyin-project-roots")
+    // The bridge flags belong to the owning instance; one bridge per process.
+    if (borrowed) return null
+    const root = getFlag("beyin-project-root")
+    const rawRoots = getFlag("beyin-project-roots")
     let roots
     try { roots = rawRoots === undefined ? [] : JSON.parse(rawRoots) }
     catch { return null }
     if (!Array.isArray(roots)) return null
     if (root !== undefined) roots.push(root)
     if (!roots.length || !roots.every((path) => typeof path === "string" && isAbsolute(path))) return null
-    const rawBudget = pi.getFlag("beyin-bridge-context-chars") ?? "1500"
+    const rawBudget = getFlag("beyin-bridge-context-chars") ?? "1500"
     if (typeof rawBudget !== "string" || !/^\d+$/.test(rawBudget) || Number(rawBudget) > 4000) return null
-    const rawEvents = pi.getFlag("beyin-bridge-events")
+    const rawEvents = getFlag("beyin-bridge-events")
     const events = rawEvents === undefined ? ["SessionStart", "Stop", "PreCompact", "SessionEnd"]
       : typeof rawEvents === "string" ? rawEvents.split(",").map((event) => event.trim()) : []
     if (!events.length || !events.every((event) => ["SessionStart", "Stop", "PreCompact", "SessionEnd"].includes(event))) return null
