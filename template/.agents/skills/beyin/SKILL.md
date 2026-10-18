@@ -167,26 +167,8 @@ Sonuç hiçbir zaman kayıt onayı veya görev tamamlandığının kanıtı değ
 
 ## Kısa workspace kurulumu ve Markdown görünümü
 
-Kullanıcı teknik JSON hazırlamaz. Doğal amaçtan ajan küçük bir istek üretir:
-`{workspace_id,name,purpose,sources:[{path,name}]}`. `workspace-setup catalog`
-yalnız açık kaynak köklerinin sınırlı metadata özetini, `workspace-setup prepare`
-mevcut G0 spec/plan ve insan önizlemesini üretir; ikisi de no-write'tır ve parser
-probe çalıştırmaz. CLI `--file` UTF-8 JSON dosyasını ajan hazırlar. Sonuç mevcut
-OperationResult'tır; `issues[code=setup_artifacts].detail` JSON'unda çıktılar vardır.
+Kullanıcı teknik JSON hazırlamaz. Doğal amaçtan ajan küçük bir istek üretir: `{workspace_id,name,purpose,sources:[{path,name}]}`. `workspace-setup catalog` yalnız açık kaynak köklerinin sınırlı metadata özetini, `workspace-setup prepare` mevcut G0 spec/plan ve insan önizlemesini üretir; ikisi de no-write'tır ve parser probe çalıştırmaz. CLI `--file` UTF-8 JSON dosyasını ajan hazırlar. Sonuç mevcut OperationResult'tır; `issues[code=setup_artifacts].detail` JSON'unda çıktılar vardır.
 
-Planı ve kaynak kapsamını göster; `authority_ref` insan onayı değildir. Mevcut
-`workspace-authority` ve `workspace-builder apply` yollarıyla gerçek yetkiyi ve
-exact-plan onayını tamamla. Hazır planı snapshot değişince sessizce yeniden
-onaylama. Birden çok workspace'i güncel snapshot'tan sırayla hazırla.
+Planı ve kaynak kapsamını göster; `authority_ref` insan onayı değildir. Mevcut `workspace-authority` ve `workspace-builder apply` yollarıyla gerçek yetkiyi ve exact-plan onayını tamamla. Hazır planı snapshot değişince sessizce yeniden onaylama. Birden çok workspace'i güncel snapshot'tan sırayla hazırla.
 
-JSON teknik profil olarak kalır; basit workspace tek `notes/workspaces/<id>.md`
-sayfası kullanır, kaynaklar taşınmaz. Mevcut ana sayfa ancak açık scope/adoption
-ve canonical writer izinleriyle kullanılabilir. `workspace-setup organize`
-`{intent:MemoryWriteIntent,idempotency_key}` alır; esas intent'i yeniden uygulamaz,
-mevcut yetkili context üzerinden yalnız yönetilen görünümü kanonik yazarla üretir.
-Başarılı kanonik değişiklik sonrası yönetilen blok yenilenir; blok dışı kullanıcı
-gövdesi korunur. Bozuk/yinelenen marker, izin kaybı veya CAS değişimi conflict;
-yenileme doğrulanmadıysa `managed_view_stale`/`verification_pending` göster.
-Dataview/Bases
-zorunlu değildir. Global/proje Kurallar.md ve JSON working_rules yerinde kalır;
-bu kurallar scope, erişim ve onay sınırlarını gevşetmez.
+JSON teknik profil olarak kalır; basit workspace tek `notes/workspaces/<id>.md` sayfası kullanır, kaynaklar taşınmaz. Mevcut ana sayfa ancak açık scope/adoption ve canonical writer izinleriyle kullanılabilir. `workspace-setup organize` `{intent:MemoryWriteIntent,idempotency_key}` alır; esas intent'i yeniden uygulamaz, mevcut yetkili context üzerinden yalnız yönetilen görünümü kanonik yazarla üretir. Başarılı kanonik değişiklik sonrası yönetilen blok yenilenir; blok dışı kullanıcı gövdesi korunur. Bozuk/yinelenen marker, izin kaybı veya CAS değişimi conflict; yenileme doğrulanmadıysa `managed_view_stale`/`verification_pending` göster. Dataview/Bases zorunlu değildir. Global/proje Kurallar.md ve JSON working_rules yerinde kalır; bu kurallar scope, erişim ve onay sınırlarını gevşetmez.

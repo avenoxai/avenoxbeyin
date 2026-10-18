@@ -1968,7 +1968,15 @@
                 }
               },
               "next_action": {
-                "type": "null"
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^managed_view_stale: .+"
+                  }
+                ]
               }
             }
           }
