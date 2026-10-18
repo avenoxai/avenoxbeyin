@@ -56,6 +56,105 @@ class WorkspaceWorkflowTest(unittest.TestCase):
         done=self.runner.advance(self.event,'result-to-learning',m.request)['data']
         self.assertEqual(done['status'],'completed')
 
+    def _self_task_workflow(self,action='update_task'):
+        m=memory_tests.WorkspaceMemoryTest();m.setUp();self.addCleanup(m.tmp.cleanup)
+        profile=copy.deepcopy(m.spec['desired_profile']);profile['revision']+=1
+        wf=profile['workflows'][0]
+        wf.update(trigger={'event_kind':'task_changed','entity_type':'assignment'},conditions=[],
+            steps=[{'id':'effect','depends_on':[],'action':'update_task','inputs':{}}])
+        if action=='apply_memory_write':
+            wf['steps']=[{'id':'propose','depends_on':[],'action':'propose_memory_write',
+                'inputs':{'result':{'ref':'event.record.id'}}},
+                {'id':'effect','depends_on':['propose'],'action':'apply_memory_write',
+                    'inputs':{'intent':{'ref':'steps.propose.intent_ref'}}}]
+        path=m.runtime.registry.vault/'.beyin-workspaces/workspaces/academic.json'
+        m.runtime.registry.compare_and_save(envelope('WorkspaceProfile',profile),content_hash(path.read_bytes()))
+        m.request['data']['signals']=[{'kind':'explicit_user','workspace_id':'academic',
+            'subject_refs':[{'workspace_id':'academic','record_id':'academic-task'}]}]
+        m.context=m.runtime.context(m.request)['data']
+        record=next(r for r in m.context['records'] if r['id']=='academic-task')
+        event=envelope('WorkflowEvent',{'event_id':'self-task-change','workspace_id':'academic',
+            'event_kind':'task_changed','record':record,'evidence_refs':[copy.deepcopy(record['source_ref'])]})
+        runid=content_hash(canonical_bytes(['academic',wf['id'],wf['revision'],event['data']['event_id']]))
+        intent=m._self_evidence_task_intent()
+        intent['data'].update(context_token=m.context['context_token'],profile_revision=profile['revision'],
+            binding_snapshot_sha256=m.context['binding_snapshot_sha256'],idempotency_key=runid+'/effect')
+        return m,WorkflowRunner(m.runtime),event,wf['id'],intent,runid
+
+    def test_self_trigger_task_recovers_owned_effect_at_each_checkpoint(self):
+        for phase in ('prepared','before_writer','writer_returned','checkpoint','effect_returned'):
+            with self.subTest(phase=phase):
+                m,runner,event,wid,intent,runid=self._self_task_workflow()
+                def crash(at,step=None):
+                    if at==phase:raise RuntimeError('self-trigger crash')
+                seam='beyin_v3_workspace_workflow.transaction_hook' if phase=='effect_returned' else 'beyin_v3_workspace_memory.transaction_hook'
+                with patch(seam,crash),self.assertRaisesRegex(RuntimeError,'self-trigger crash'):
+                    runner.advance(event,wid,m.request,proposals={'effect':intent})
+                complete=runner.resume(runid,m.request)['data']
+                self.assertEqual(complete['status'],'completed')
+                target=intent['data']['changes'][0]['target'];path=m.runtime.registry.vault/target['relative_path']
+                from beyin_v3_sync import parse
+                self.assertEqual(parse(path.read_bytes().decode('utf-8'))[0]['revision'],target['expected_revision']+1)
+                after=path.read_bytes()
+                self.assertEqual(runner.resume(runid,m.request)['data']['status'],'completed')
+                self.assertEqual(path.read_bytes(),after)
+
+    def test_apply_memory_self_trigger_checkpoints_owned_intent_before_writer(self):
+        m,runner,event,wid,intent,runid=self._self_task_workflow(action='apply_memory_write')
+        def crash(phase,index=None):
+            if phase=='writer_returned':raise RuntimeError('effect before workflow checkpoint')
+        with patch('beyin_v3_workspace_memory.transaction_hook',crash),self.assertRaisesRegex(RuntimeError,'effect before workflow checkpoint'):
+            runner.advance(event,wid,m.request,proposals={'propose':intent})
+        saved=json.loads((m.runtime.registry.state/'workspace-workflow'/(runid+'.json')).read_bytes())
+        self.assertEqual(saved['outputs']['effect']['intent_ref'],intent)
+        self.assertNotIn('operation_ref',saved['outputs']['effect'])
+        self.assertEqual(runner.resume(runid,m.request)['data']['status'],'completed')
+        path=m.runtime.registry.vault/intent['data']['changes'][0]['target']['relative_path'];after=path.read_bytes()
+        self.assertEqual(runner.resume(runid,m.request)['data']['status'],'completed')
+        self.assertEqual(path.read_bytes(),after)
+
+    def test_self_trigger_recovery_rejects_external_changes_and_forged_ownership(self):
+        failures=('manual','synced-manual','revoked','request','event','run-id','step-key','missing-journal','definition','unrelated-evidence')
+        for failure in failures:
+            with self.subTest(failure=failure):
+                m,runner,event,wid,intent,runid=self._self_task_workflow()
+                if failure=='unrelated-evidence':
+                    # Select the unrelated source explicitly, preserving the run's request.
+                    source=copy.deepcopy(next(r for r in m.service.engine.store._records() if r['id']=='academic-result'))
+                    ref=copy.deepcopy(event['data']['record']['source_ref'])
+                    ref.update(relative_path=source['source'],content_sha256=source['source_sha256'])
+                    event['data']['evidence_refs'].append(ref)
+                    intent['data']['changes'][0]['evidence_refs'].append(copy.deepcopy(ref))
+                runner.advance(event,wid,m.request,proposals={'effect':intent})
+                target=intent['data']['changes'][0]['target'];path=m.runtime.registry.vault/target['relative_path']
+                if failure in ('manual','synced-manual'):
+                    path.write_bytes(path.read_bytes()+b'External user edit\n')
+                    if failure=='synced-manual':m.service.engine.sync()
+                elif failure=='revoked':m.runtime.authority.revoke('academic-user')
+                elif failure=='request':m.request['data']['query']+=' changed'
+                elif failure=='event':event['data']['record']['text']+=' forged'
+                elif failure in ('run-id','step-key'):
+                    saved_path=m.runtime.registry.state/'workspace-workflow'/(runid+'.json')
+                    saved=json.loads(saved_path.read_bytes())
+                    if failure=='run-id':saved['run']['run_id']='0'*64
+                    else:saved['outputs']['effect']['intent_ref']['data']['idempotency_key']='unowned/effect'
+                    saved_path.write_text(json.dumps(saved),encoding='utf-8')
+                elif failure=='missing-journal':
+                    journal=m.runtime.registry.state/'workspace-write-intents'/(content_hash(intent['data']['idempotency_key'])+'.json')
+                    journal.unlink()
+                elif failure=='definition':
+                    profile=copy.deepcopy(m.spec['desired_profile']);profile['revision']+=2
+                    profile['workflows'][0].update(trigger={'event_kind':'task_changed','entity_type':'assignment'},conditions=[],
+                        name='Changed definition',steps=[{'id':'effect','depends_on':[],'action':'update_task','inputs':{}}])
+                    profile_path=m.runtime.registry.vault/'.beyin-workspaces/workspaces/academic.json'
+                    m.runtime.registry.compare_and_save(envelope('WorkspaceProfile',profile),content_hash(profile_path.read_bytes()))
+                else:
+                    unrelated=m.runtime.registry.vault/'notes/academic-result.md'
+                    unrelated.write_bytes(unrelated.read_bytes()+b'Unrelated source edit\n')
+                before=path.read_bytes()
+                with self.assertRaises(WorkspaceError):runner.advance(event,wid,m.request)
+                self.assertEqual(path.read_bytes(),before)
+
     def test_forged_event_no_memory_and_self_trigger_are_denied(self):
         m=self.memory;forged=copy.deepcopy(self.event);forged['data']['record']['facts']['score']=100
         with self.assertRaisesRegex(WorkspaceError,'forged'):self.runner.advance(forged,'result-to-learning',m.request)

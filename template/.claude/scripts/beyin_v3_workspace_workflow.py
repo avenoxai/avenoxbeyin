@@ -75,6 +75,45 @@ class WorkflowRunner:
                     if exc.code!='workflow_condition_not_met':raise
         return results
 
+    def _validate_saved_run(self,saved,event_document,workflow,request_document,run_id):
+        run=saved['run'];event=event_document['data']
+        validate_document(envelope('WorkflowRun',run))
+        if (run['run_id']!=run_id or run['workspace_id']!=event['workspace_id']
+                or run['workflow_id']!=workflow['id'] or run['workflow_revision']!=workflow['revision']
+                or run['event_id']!=event['event_id']
+                or run['definition_sha256']!=content_hash(canonical_bytes(workflow))
+                or saved['event']!=event_document
+                or saved['event_sha256']!=content_hash(canonical_bytes(event_document))
+                or saved.get('request')!=request_document
+                or saved.get('request_sha256')!=content_hash(canonical_bytes(request_document))
+                or [(step['step_id'],step['idempotency_key']) for step in run['steps']]
+                    !=[(step['id'],run_id+'/'+step['id']) for step in workflow['steps']]):
+            raise WorkspaceError('workflow_idempotency_collision')
+
+    def _recover_trigger(self,saved,workflow,event_document,request_document):
+        """Only a saved executing step's exact writer journal may age its event."""
+        if saved is None:return None
+        event=event_document['data'];run=saved['run'];owners=[]
+        steps={step['step_id']:step for step in run['steps']}
+        service=MemoryIntentService(self.runtime)
+        for definition in workflow['steps']:
+            if definition['action'] not in ('update_task','link_records','apply_memory_write'):continue
+            step=steps[definition['id']]
+            if step['state'] not in ('running','completed'):continue
+            proposed=saved['outputs'].get(definition['id'],{}).get('intent_ref')
+            if not isinstance(proposed,dict):continue
+            validate_document(proposed)
+            if (proposed['type']!='MemoryWriteIntent' or proposed['data']['workspace_id']!=event['workspace_id']
+                    or proposed['data']['idempotency_key']!=step['idempotency_key']
+                    or proposed['data']['context_token']!=run['context_token']):
+                raise WorkspaceError('workflow_idempotency_collision')
+            context=service._context(proposed['data'])
+            if context['request']!=request_document['data']:raise WorkspaceError('workflow_idempotency_collision')
+            if service.prove_owned_after(proposed,event['record']['source_ref'],
+                    record_id=event['record']['id'],revision=event['record']['revision']):owners.append(proposed)
+        if len(owners)!=1:raise WorkspaceError('stale_or_forged_workflow_event')
+        return owners[0]
+
     def advance(self,event_document,workflow_id,request_document,*,proposals=None,causal_run_id=None):
         validate_document(event_document);validate_document(request_document)
         if event_document['type']!='WorkflowEvent' or request_document['type']!='RequestContext':raise WorkspaceError('invalid_schema')
@@ -87,28 +126,38 @@ class WorkflowRunner:
         if not workflow or workflow['trigger']!={'event_kind':event['event_kind'],'entity_type':event['record']['entity_type']}:
             raise WorkspaceError('workflow_trigger_mismatch')
         if profile['memory_policy']['automatic_learning']!='enabled':raise WorkspaceError('automatic_learning_disabled')
-        context=self.runtime.context(request_document)['data']
-        if context['workspace_id']!=event['workspace_id']:raise WorkspaceError('scope_denied')
-        actual=next((r for r in context['records'] if r['id']==event['record']['id']),None)
-        if (not actual or actual['revision']!=event['record']['revision'] or actual['source_ref']['content_sha256']!=event['record']['source_ref']['content_sha256']
-                or any(actual.get(k)!=event['record'].get(k) for k in ('text','entity_type','kind','facts','status'))):raise WorkspaceError('stale_or_forged_workflow_event')
-        self.runtime.resolver.read(actual['source_ref'],event['workspace_id'],request['grant_ref'],audience=request['audience'])
-        for evidence in event['evidence_refs']:
-            self.runtime.resolver.read(evidence,event['workspace_id'],request['grant_ref'],audience=request['audience'])
-        for condition in workflow['conditions']:
-            value=event
-            for key in condition['field'].split('.')[1:]:value=value.get(key) if isinstance(value,dict) else None
-            match=value is not None if condition['operator']=='exists' else value==condition['value']
-            if not match:raise WorkspaceError('workflow_condition_not_met')
         run_id=content_hash(canonical_bytes([event['workspace_id'],workflow_id,workflow['revision'],event['event_id']]))
         if causal_run_id==run_id:raise WorkspaceError('workflow_self_retrigger')
         definition_hash=content_hash(canonical_bytes(workflow));event_hash=content_hash(canonical_bytes(event_document))
         path=safe_path(self.registry.state,'workspace-workflow/'+run_id+'.json');proposals=proposals or {}
         with self.registry.coordinated():
-            if path.exists():
-                saved=parse_document(path.read_bytes());run=saved['run']
-                if saved['event_sha256']!=event_hash or run['definition_sha256']!=definition_hash:raise WorkspaceError('workflow_idempotency_collision')
-                outputs=saved['outputs']
+            saved=parse_document(path.read_bytes()) if path.exists() else None
+            if saved is not None:self._validate_saved_run(saved,event_document,workflow,request_document,run_id)
+            context=self.runtime.context(request_document)['data']
+            if context['workspace_id']!=event['workspace_id']:raise WorkspaceError('scope_denied')
+            actual=next((r for r in context['records'] if r['id']==event['record']['id']),None)
+            matches=(actual is not None and actual['revision']==event['record']['revision']
+                and actual['source_ref']==event['record']['source_ref']
+                and all(actual.get(k)==event['record'].get(k) for k in ('text','entity_type','kind','facts','status')))
+            owner=None
+            if not matches:
+                if actual is None:raise WorkspaceError('stale_or_forged_workflow_event')
+                owner=self._recover_trigger(saved,workflow,event_document,request_document)
+                if owner is None:raise WorkspaceError('stale_or_forged_workflow_event')
+            self.runtime.resolver.read(actual['source_ref'],event['workspace_id'],request['grant_ref'],audience=request['audience'])
+            for evidence in event['evidence_refs']:
+                try:self.runtime.resolver.read(evidence,event['workspace_id'],request['grant_ref'],audience=request['audience'])
+                except WorkspaceError as exc:
+                    if (exc.code!='stale_source' or owner is None or evidence!=event['record']['source_ref']
+                            or not MemoryIntentService(self.runtime).prove_owned_after(owner,evidence,
+                                record_id=event['record']['id'],revision=event['record']['revision'])):raise
+            for condition in workflow['conditions']:
+                value=event
+                for key in condition['field'].split('.')[1:]:value=value.get(key) if isinstance(value,dict) else None
+                match=value is not None if condition['operator']=='exists' else value==condition['value']
+                if not match:raise WorkspaceError('workflow_condition_not_met')
+            if saved is not None:
+                run=saved['run'];outputs=saved['outputs']
                 if run['status']=='completed':
                     for output in outputs.values():
                         if isinstance(output,dict) and 'intent_ref' in output:
@@ -207,8 +256,9 @@ class WorkflowRunner:
                         proposed=inputs.get('intent')
                         if not isinstance(proposed,dict):raise WorkspaceError('workflow_intent_required')
                         if proposed['data']['idempotency_key']!=step['idempotency_key']:raise WorkspaceError('workflow_step_key_required')
+                        outputs[step['step_id']]={'intent_ref':copy.deepcopy(proposed)};checkpoint()
                         result=MemoryIntentService(self.runtime).apply(proposed,_coordinated=True)
-                        outputs[step['step_id']]={'operation_ref':result}
+                        outputs[step['step_id']]['operation_ref']=result
                     elif action=='verify_readback':
                         proposed=inputs.get('intent')
                         if not isinstance(proposed,dict):

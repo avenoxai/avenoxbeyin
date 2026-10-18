@@ -110,6 +110,74 @@ class MemoryIntentService:
             intended=render(metadata,old_body if action in ('update_task','link') else text if (_preserve_body or text.endswith('\n')) else text+'\n')
         return {'source':target['relative_path'],'after_sha256':content_hash(intended),'updates':updates,'metadata':metadata,'text':text,'done':False}
 
+    def _load_journal(self,document,*,preserve_body=False):
+        intent=document['data']
+        path=safe_path(self.registry.state,'workspace-write-intents/'+content_hash(intent['idempotency_key'])+'.json')
+        if not path.exists():return path,None
+        journal=parse_document(path.read_bytes())
+        if (journal['payload_sha256']!=content_hash(canonical_bytes(document))
+                or journal.get('preserve_body',False)!=preserve_body):raise WorkspaceError('idempotency_collision')
+        if len(journal['parts'])!=len(intent['changes']):raise WorkspaceError('invalid_write_journal')
+        for change,part in zip(intent['changes'],journal['parts']):
+            if change['action'] in ('skip','review'):
+                if part!={'skip':change['action'],'done':True}:raise WorkspaceError('invalid_write_journal')
+            elif (part.get('source')!=change['target']['relative_path']
+                    or ('target' in part and part['target']!=change['target'])
+                    or ('action' in part and part['action']!=change['action'])):
+                raise WorkspaceError('invalid_write_journal')
+            elif 'before_refs' in part:
+                refs=[ref for item in intent['changes'] for ref in item['evidence_refs']
+                    if ref['source_id']==change['target']['source_id'] and ref['relative_path']==part['source']
+                    and ref['content_sha256']==change['target']['expected_source_sha256']]
+                if part['before_refs']!=refs:raise WorkspaceError('invalid_write_journal')
+        return path,journal
+
+    def _owned_after(self,change,part,evidence,context,*,record_id=None,revision=None):
+        """Prove one exact journaled before-ref now has its owned after-state.
+
+        No checkpoint flag substitutes for source/index readback. Older journals
+        without the full target and before-ref cannot authorize stale evidence.
+        """
+        target=change['target']
+        if (change['action'] in ('skip','review') or part.get('target')!=target
+                or part.get('action')!=change['action'] or evidence not in part.get('before_refs',[])
+                or evidence['source_id']!=target['source_id'] or evidence['relative_path']!=target['relative_path']
+                or evidence['content_sha256']!=target['expected_source_sha256']
+                or target['expected_revision'] is None
+                or (record_id is not None and target['record_id']!=record_id)
+                or (revision is not None and target['expected_revision']!=revision)):
+            return False
+        after_revision=target['expected_revision']+1
+        if (part['metadata'].get('id')!=target['record_id'] or part['metadata'].get('revision')!=after_revision):
+            raise WorkspaceError('invalid_write_journal')
+        self.runtime.resolver.resolve(context['workspace_id'],target['source_id'],target['relative_path'],
+            context['request']['grant_ref'],access='write_memory',audience=context['request']['audience'])
+        fresh=copy.deepcopy(evidence);fresh['content_sha256']=part['after_sha256']
+        self.runtime.resolver.read(fresh,context['workspace_id'],context['request']['grant_ref'],audience=context['request']['audience'])
+        record=next((r for r in self.engine.store._records() if r['id']==target['record_id']),None)
+        if (not record or record['source']!=target['relative_path'] or record['revision']!=after_revision
+                or record['source_sha256']!=part['after_sha256']):raise WorkspaceError('readback_conflict')
+        return True
+
+    def prove_owned_after(self,document,evidence,*,record_id=None,revision=None):
+        """Read-only ownership proof for a saved workflow effect; never apply it."""
+        validate_document(document)
+        if document['type']!='MemoryWriteIntent':raise WorkspaceError('invalid_schema')
+        context=self._context(document['data'])
+        _,journal=self._load_journal(document)
+        if journal is None:return False
+        with request_scope(context['workspace_id'],context['request']['grant_ref']):
+            return any(self._owned_after(change,part,evidence,context,record_id=record_id,revision=revision)
+                for change,part in zip(document['data']['changes'],journal['parts']))
+
+    def _read_evidence(self,evidence,context,intent,journal):
+        try:
+            self.runtime.resolver.read(evidence,context['workspace_id'],context['request']['grant_ref'],audience=context['request']['audience'])
+        except WorkspaceError as exc:
+            if exc.code!='stale_source' or journal is None:raise
+            if not any(self._owned_after(change,part,evidence,context)
+                    for change,part in zip(intent['changes'],journal['parts'])):raise
+
     def apply(self,document,*,_coordinated=False,_refresh_views=True,_preserve_body=False):
         if type(_preserve_body) is not bool:raise WorkspaceError('invalid_body_mode')
         validate_document(document)
@@ -117,25 +185,35 @@ class MemoryIntentService:
         intent=document['data'];context=self._context(intent)
         if len({(c['target']['source_id'],c['target']['relative_path']) for c in intent['changes']})!=len(intent['changes']):
             raise WorkspaceError('duplicate_write_target')
-        key=content_hash(intent['idempotency_key']);journal_path=safe_path(self.registry.state,'workspace-write-intents/'+key+'.json')
         payload_hash=content_hash(canonical_bytes(document));replay=False;parts=[]
         with (nullcontext() if _coordinated else self.registry.coordinated()),request_scope(context['workspace_id'],context['request']['grant_ref']):
             context=self._context(intent)
             preflight_create_targets(intent['changes'])
+            journal_path,journal=self._load_journal(document,preserve_body=_preserve_body)
             for change in intent['changes']:
                 for evidence in change['evidence_refs']:
-                    self.runtime.resolver.read(evidence,context['workspace_id'],context['request']['grant_ref'],audience=context['request']['audience'])
-            if journal_path.exists():
-                journal=parse_document(journal_path.read_bytes())
-                if journal['payload_sha256']!=payload_hash or journal.get('preserve_body',False)!=_preserve_body:raise WorkspaceError('idempotency_collision')
+                    self._read_evidence(evidence,context,intent,journal)
+            if journal is not None:
                 replay=all(p.get('done') for p in journal['parts'])
             else:
                 journal={'payload_sha256':payload_hash,'preserve_body':_preserve_body,'parts':[{'skip':c['action'],'done':True} if c['action'] in ('skip','review') else self._prepare(c,context,_preserve_body=_preserve_body) for c in intent['changes']]}
+                for change,part in zip(intent['changes'],journal['parts']):
+                    if 'skip' in part:continue
+                    part.update(target=copy.deepcopy(change['target']),action=change['action'],before_refs=[copy.deepcopy(ref)
+                        for item in intent['changes'] for ref in item['evidence_refs']
+                        if ref['source_id']==change['target']['source_id'] and ref['relative_path']==part['source']
+                        and ref['content_sha256']==change['target']['expected_source_sha256']])
                 atomic(journal_path,json.dumps(journal,ensure_ascii=False,allow_nan=False));transaction_hook('prepared')
             for index,(change,part) in enumerate(zip(intent['changes'],journal['parts'])):
                 if 'skip' in part:parts.append({'id':change['id'],'state':'skipped'});continue
                 self._context(intent)
-                path=safe_path(self.registry.vault,part['source']);actual=content_hash(path.read_bytes()) if path.exists() else None
+                target=change['target']
+                path,_,_=self.runtime.resolver.resolve(context['workspace_id'],target['source_id'],part['source'],
+                    context['request']['grant_ref'],access='write_memory',audience=context['request']['audience'])
+                if path.exists():
+                    self.runtime.resolver.resolve(context['workspace_id'],target['source_id'],part['source'],
+                        context['request']['grant_ref'],access='read',audience=context['request']['audience'])
+                actual=content_hash(path.read_bytes()) if path.exists() else None
                 if actual!=part['after_sha256']:
                     if part['done'] or actual!=change['target']['expected_source_sha256']:raise WorkspaceError('revision_conflict')
                     action=change['action'];target=change['target'];transaction_hook('before_writer',index)
@@ -153,7 +231,8 @@ class MemoryIntentService:
                     transaction_hook('writer_returned',index)
                 self.engine.sync()
                 indexed=next((r for r in self.engine.store._records() if r['id']==change['target']['record_id']),None)
-                if not indexed or indexed['source_sha256']!=part['after_sha256'] or content_hash(path.read_bytes())!=part['after_sha256']:raise WorkspaceError('readback_conflict')
+                if (not indexed or indexed['source']!=part['source'] or indexed['revision']!=part['metadata']['revision']
+                        or indexed['source_sha256']!=part['after_sha256'] or content_hash(path.read_bytes())!=part['after_sha256']):raise WorkspaceError('readback_conflict')
                 part['done']=True;atomic(journal_path,json.dumps(journal,ensure_ascii=False,allow_nan=False));transaction_hook('checkpoint',index)
                 parts.append({'id':change['id'],'state':'verified'})
         workflow_issues=[]

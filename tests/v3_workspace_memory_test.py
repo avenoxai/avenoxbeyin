@@ -105,6 +105,73 @@ class WorkspaceMemoryTest(unittest.TestCase):
         self.assertEqual(replay['parts'][0]['state'], 'verified')
         self.assertEqual(path.read_bytes(), after)
 
+    def _self_evidence_task_intent(self):
+        intent=copy.deepcopy(self.intent)
+        change=next(c for c in intent['data']['changes'] if c['action']=='update_task')
+        record=next(r for r in self.context['records'] if r['id']==change['target']['record_id'])
+        change.update(relation_changes=[],evidence_refs=[copy.deepcopy(record['source_ref'])])
+        intent['data']['changes']=[change]
+        return intent
+
+    def test_self_evidence_recovers_before_and_after_writer_checkpoint(self):
+        for phase in ('prepared','before_writer','writer_returned','checkpoint'):
+            with self.subTest(phase=phase):
+                m=WorkspaceMemoryTest();m.setUp();self.addCleanup(m.tmp.cleanup)
+                intent=m._self_evidence_task_intent();target=intent['data']['changes'][0]['target']
+                path=m.runtime.registry.vault/target['relative_path']
+                def crash(at,index=None):
+                    if at==phase:raise RuntimeError('synthetic crash')
+                with patch('beyin_v3_workspace_memory.transaction_hook',crash),self.assertRaisesRegex(RuntimeError,'synthetic crash'):
+                    m.service.apply(intent,_coordinated=True,_refresh_views=False)
+                result=m.service.apply(intent,_coordinated=True,_refresh_views=False)['data']
+                self.assertEqual(result['parts'],[{'id':intent['data']['changes'][0]['id'],'state':'verified'}])
+                from beyin_v3_sync import parse
+                self.assertEqual(parse(path.read_bytes().decode('utf-8'))[0]['revision'],target['expected_revision']+1)
+                after=path.read_bytes()
+                replay=m.service.apply(intent,_coordinated=True,_refresh_views=False)['data']
+                self.assertEqual(replay['operation_status'],'replayed');self.assertEqual(path.read_bytes(),after)
+
+    def test_owned_proof_requires_the_full_original_source_reference(self):
+        intent=self._self_evidence_task_intent()
+        self.service.apply(intent,_coordinated=True,_refresh_views=False)
+        change=intent['data']['changes'][0];ref=change['evidence_refs'][0]
+        self.assertTrue(self.service.prove_owned_after(intent,ref,record_id=change['target']['record_id'],
+            revision=change['target']['expected_revision']))
+        for field in ('fragment','extractor'):
+            forged=copy.deepcopy(ref)
+            if field=='fragment':forged[field]={'kind':'lines','start':1,'end':1}
+            else:forged[field]['version']='different-extractor'
+            self.assertFalse(self.service.prove_owned_after(intent,forged,record_id=change['target']['record_id'],
+                revision=change['target']['expected_revision']))
+
+    def test_owned_self_evidence_never_hides_external_edits_or_revocation(self):
+        for failure in ('manual','synced-manual','revoked','journal-target','journal-revision','payload','unrelated-evidence'):
+            with self.subTest(failure=failure):
+                m=WorkspaceMemoryTest();m.setUp();self.addCleanup(m.tmp.cleanup)
+                intent=m._self_evidence_task_intent()
+                if failure=='unrelated-evidence':
+                    intent['data']['changes'][0]['evidence_refs'].append(copy.deepcopy(next(
+                        r for r in m.context['records'] if r['id']=='academic-result')['source_ref']))
+                m.service.apply(intent,_coordinated=True,_refresh_views=False)
+                target=intent['data']['changes'][0]['target'];path=m.runtime.registry.vault/target['relative_path']
+                if failure in ('manual','synced-manual'):
+                    path.write_bytes(path.read_bytes()+b'External edit\n')
+                    if failure=='synced-manual':m.service.engine.sync()
+                elif failure=='revoked':m.runtime.authority.revoke('academic-user')
+                elif failure.startswith('journal-'):
+                    journal_path=m.runtime.registry.state/'workspace-write-intents'/(content_hash(intent['data']['idempotency_key'])+'.json')
+                    journal=json.loads(journal_path.read_bytes())
+                    if failure=='journal-target':journal['parts'][0]['target']['record_id']='another-record'
+                    else:journal['parts'][0]['metadata']['revision']+=1
+                    journal_path.write_text(json.dumps(journal),encoding='utf-8')
+                elif failure=='payload':intent['data']['reason']+=' changed'
+                else:
+                    evidence_path=m.runtime.registry.vault/'notes/academic-result.md'
+                    evidence_path.write_bytes(evidence_path.read_bytes()+b'Unrelated edit\n')
+                before=path.read_bytes()
+                with self.assertRaises(WorkspaceError):m.service.apply(intent,_coordinated=True,_refresh_views=False)
+                self.assertEqual(path.read_bytes(),before)
+
     def test_replay_and_idempotency_collision(self):
         self.service.apply(self.intent)
         self.assertEqual(self.service.apply(self.intent)['data']['operation_status'],'replayed')

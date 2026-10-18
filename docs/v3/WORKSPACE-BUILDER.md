@@ -42,3 +42,7 @@ PDF pypdf ile izole okuyucu sürecinde, DOCX stdlib ZIP/XML ile okunur. TR/EN OC
 Markdown görünümü kaynak bağlantıları, işler ve notları içerir. Başarılı kanonik değişiklik yapılandırılmış ana sayfadaki beyin-workspace marker çiftinin arasını yeniler; dışındaki kullanıcı gövdesi korunur. Bozuk/yinelenen marker, iptal edilmiş yetki veya eşzamanlı kullanıcı edit'i açık hata üretir. Görünüm yenilenemediğinde esas kayıt başarı sonucu korunur ve managed_view_stale bildirilir; journal ve yeni yetkili bağlamla yeniden yenileme gerekir.
 
 [#397](https://github.com/avenoxai/avenoxbeyin/issues/397) kapsamındaki alana özel panolar ve ortak proje/kural yükleme entegrasyonu açık kalır. [Sentetik kullanım senaryoları](WORKSPACE-BUILDER-CONVERSATIONS.md) kabul girdileridir; yazılmış olmaları kabulün tamamlandığını göstermez.
+
+## Tekrar ve recovery sınırı
+
+Aynı request ve workflow kimliğiyle tekrar, yalnız o run'ın writer journal'ında birebir doğrulanmış before→after geçişi için devam edebilir. Grant iptali ve sonradan yapılan kullanıcı edit'i reddedilir. Eski eksik journal'lar ve aynı hedefte ardışık birden fazla geçiş otomatik onarılmaz; hata sonrası mevcut kayıtları koruyarak yetkili inceleme gerekir. Ortak internal ana sayfa private kayıt metadata'sını içermez. Ayrıntılar [sözleşmede](workspaces/v0.1.0/CONTRACT.md).
