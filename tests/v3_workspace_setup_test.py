@@ -135,6 +135,53 @@ class SetupTest(unittest.TestCase):
         self.assertEqual(result['data']['parts'], canonical_parts)
         self.assertEqual(page.read_bytes(), before)
 
+    def test_private_request_keeps_shared_homepage_at_internal_audience(self):
+        prepared, _ = setup.execute(self.vault, self.state, 'prepare', self.payload)
+        data = artifacts(prepared); spec = data['spec']['data']
+        registry = Registry(self.vault, self.state); authority = LocalAuthority(registry)
+        permissions = [dict(workspace_id='sample', source_id=b['source_id'], locator=b['locator'], access=g['access'])
+            for b in spec['binding_requests'] for g in b['grants']]
+        authority.record_approval('setup-review', machine_id=spec['binding_requests'][0]['machine_id'],
+            permissions=permissions, audiences=('internal', 'private'), evidence='Explicit synthetic private read approval')
+        authority.approve_plan(data['plan'], evidence='Explicit synthetic exact plan approval')
+        provisioner(self.vault, self.state).apply(data['plan'], 'private-setup')
+        for visibility in ('public', 'internal', 'private'):
+            metadata = dict(id=visibility + '-item', kind='note', revision=1, workspace_id='sample',
+                visibility=visibility, title=visibility + '-TITLE-CANARY', status=visibility + '-STATUS-CANARY')
+            path = self.vault / ('notes/workspaces/' + visibility + '-PATH-CANARY.md')
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(render(metadata, visibility + ' body\n').encode('utf-8'))
+        SyncEngine(self.vault, self.state).sync()
+        runtime = WorkspaceRuntime(self.vault, self.state, readers={})
+        request = envelope('RequestContext', dict(request_id='private-request', session_id='synthetic', client='test', query='İşler',
+            grant_ref='setup-review', audience='private', no_memory=False, budget_chars=10000,
+            signals=[dict(kind='explicit_user', workspace_id='sample',
+                subject_refs=[dict(workspace_id='sample', record_id='private-item')])]))
+        context = runtime.context(request)['data']
+        self.assertIn('private-item', [record['id'] for record in context['records']])
+        source_id = next(source['id'] for source in spec['sources'] if source['kind'] == 'vault')
+        intent = envelope('MemoryWriteIntent', dict(intent_id='private-organize', workspace_id='sample',
+            context_token=context['context_token'], profile_revision=1, binding_snapshot_sha256=context['binding_snapshot_sha256'],
+            idempotency_key='private-organize', reason='Explicit synthetic refresh', changes=[]))
+        # The selection gate must use the destination audience for source metadata too.
+        allows = runtime.authority.allows
+        def destination_audience(reference, binding, wid, access='read', audience='internal'):
+            if binding['source_id'] != source_id and audience == 'internal':
+                return False
+            return allows(reference, binding, wid, access, audience)
+        with patch.object(runtime.authority, 'allows', side_effect=destination_audience):
+            result = organize(runtime, intent, 'private-view')
+        self.assertEqual(result['data']['operation_status'], 'applied')
+        metadata, body = parse((self.vault / data['homepage']).read_bytes().decode('utf-8'))
+        self.assertEqual(metadata['visibility'], 'internal')
+        for visibility in ('public', 'internal'):
+            self.assertIn(visibility + '-TITLE-CANARY', body)
+            self.assertIn(visibility + '-PATH-CANARY.md', body)
+            self.assertIn(visibility + '-STATUS-CANARY', body)
+        for canary in ('private-item', 'private-TITLE-CANARY', 'private-PATH-CANARY.md', 'private-STATUS-CANARY',
+                       'Belgeler', self.source.as_uri()):
+            self.assertNotIn(canary, body)
+
     def test_marker_conflict_and_exact_outside_body_preservation(self):
         body = 'Kullanıcı üst\n<!-- beyin-workspace:sample:start -->\neski\n<!-- beyin-workspace:sample:end -->\nKullanıcı alt\n'
         merged = merge_block(body, 'sample', 'yeni\n')

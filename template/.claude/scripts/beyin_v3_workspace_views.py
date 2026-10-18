@@ -89,7 +89,8 @@ def organize(runtime, intent_document, idempotency_key, *, _coordinated=False):
         runtime.resolver.resolve(wid, vault_source, homepage, context['request']['grant_ref'],
             access='read', audience=context['request']['audience'])
     with request_scope(wid, context['request']['grant_ref']):
-        records, stale_count = runtime.store._eligible(context['request']['audience'])
+        # The shared homepage is internal even for an explicitly private request.
+        records, stale_count = runtime.store._eligible('internal')
     if stale_count:
         raise WorkspaceError('stale_source')
     records = [r for r in records if wid in scope_ids(runtime.registry, r) and r['source'] != homepage
@@ -106,7 +107,7 @@ def organize(runtime, intent_document, idempotency_key, *, _coordinated=False):
     else:
         raw, body = None, ''
     visible_sources = [s for s in snapshot['sources'] if s['id'] in bindings and
-        runtime.authority.allows(context['request']['grant_ref'], bindings[s['id']], wid, audience=context['request']['audience'])]
+        runtime.authority.allows(context['request']['grant_ref'], bindings[s['id']], wid, audience='internal')]
     merged = merge_block(body, wid, _render(profile, records, visible_sources, homepage, bindings))
     protected, _ = service.engine._protect(merged)
     if protected != merged:
