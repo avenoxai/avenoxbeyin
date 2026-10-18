@@ -7,6 +7,7 @@ import sys
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'template/.claude/scripts'))
 from beyin_v3_workspaces import Registry,LocalAuthority,envelope,render_document
+from v3_workspace_test_io import load_utf8_json
 from beyin_v3_workspace_context import WorkspaceRuntime
 from beyin_v3_sync import SyncEngine
 
@@ -15,7 +16,7 @@ FIX=ROOT/'tests/fixtures/v3/workspaces/v0.1.0'
 
 def install_fixture(base,case):
     base=Path(base).resolve();vault=base/'vault';vault.mkdir(exist_ok=True);state=base/'state'
-    inp=json.loads((FIX/case/'input.json').read_text());docs={d['type']:d['data'] for d in inp['documents']}
+    inp=load_utf8_json(FIX/case/'input.json');docs={d['type']:d['data'] for d in inp['documents']}
     spec=copy.deepcopy(docs['WorkspaceSpec']);reference=case+'-user'
     registry=Registry(vault,state)
     if registry.snapshot() is None:registry.compare_and_save(envelope('RegistryFormat',docs['RegistryFormat']),None)

@@ -105,7 +105,7 @@ class MemoryIntentService:
             if not record or record['revision']!=target['expected_revision'] or record['source']!=target['relative_path']:
                 raise WorkspaceError('revision_conflict')
             if (record.get('visibility')=='private' and context['request']['audience']!='private') or record.get('trust')=='untrusted':raise WorkspaceError('scope_denied')
-            metadata,old_body=parse(path.read_bytes().decode('utf-8') if _preserve_body and action=='update_note' else path.read_text(encoding='utf-8'))
+            metadata,old_body=parse(path.read_bytes().decode('utf-8'))
             metadata.update(updates);metadata['revision']=target['expected_revision']+1
             intended=render(metadata,old_body if action in ('update_task','link') else text if (_preserve_body or text.endswith('\n')) else text+'\n')
         return {'source':target['relative_path'],'after_sha256':content_hash(intended),'updates':updates,'metadata':metadata,'text':text,'done':False}
@@ -147,7 +147,7 @@ class MemoryIntentService:
                         record=next(r for r in self.engine.store._records() if r['id']==target['record_id'])
                         if record.get('kind')=='task':self.engine.update_task(target['record_id'],target['expected_revision'],part['updates'])
                         else:
-                            _,body=parse(path.read_text());self.engine.update_note(target['record_id'],target['expected_revision'],target['expected_source_sha256'],body,part['updates'])
+                            _,body=parse(path.read_bytes().decode('utf-8'));self.engine.update_note(target['record_id'],target['expected_revision'],target['expected_source_sha256'],body,part['updates'])
                     transaction_hook('writer_returned',index)
                 self.engine.sync()
                 indexed=next((r for r in self.engine.store._records() if r['id']==change['target']['record_id']),None)

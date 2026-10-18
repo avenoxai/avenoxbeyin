@@ -166,13 +166,13 @@ def main():
             import resource
             resource.setrlimit(resource.RLIMIT_AS,(1024*1024*1024,1024*1024*1024))
         except (ImportError,ValueError,OSError):pass
-        request=json.loads(sys.stdin.buffer.read(MAX_SOURCE*4//3+4096))
+        request=json.loads(sys.stdin.buffer.read(MAX_SOURCE*4//3+4096).decode('utf-8'))
         if set(request)!={'format','bytes_base64','source_sha256','limits'}:raise ValueError('invalid_request')
         raw=base64.b64decode(request['bytes_base64'],validate=True)
         if len(raw)>MAX_SOURCE or hashlib.sha256(raw).hexdigest()!=request['source_sha256']:raise ValueError('invalid_source_bytes')
         value=extract_docx(raw) if request['format']=='docx' else extract_pdf(raw,args.wheel,ocr=args.ocr) if request['format']=='pdf' else result('unsupported',issues=['unsupported'])
     except (ValueError,TypeError,KeyError):value=result('failed',issues=['invalid_reader_request'])
-    sys.stdout.write(json.dumps(value,ensure_ascii=False,allow_nan=False))
+    sys.stdout.buffer.write(json.dumps(value,ensure_ascii=False,allow_nan=False).encode('utf-8'))
 
 
 if __name__=='__main__':main()

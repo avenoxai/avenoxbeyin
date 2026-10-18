@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 
 from beyin_v3_workspaces import (Registry, LocalAuthority, WorkspaceError, envelope,
-    content_hash, safe_path, validate_document)
+    content_hash, safe_path, validate_document, _valid_local_locator, local_root_matches)
 from beyin_v3_builder import plan, _failure
 
 
@@ -24,13 +24,14 @@ def _root(value):
     if not isinstance(value, str) or not Path(value).is_absolute():
         raise WorkspaceError('invalid_source_root')
     path = Path(value)
-    # Reject aliases and every redirected ancestor before metadata discovery.
-    if '..' in path.parts or str(path.resolve()) != str(path):
-        raise WorkspaceError('redirected_path')
-    safe_path(Path(path.anchor), path.relative_to(path.anchor).as_posix())
+    # Accept only validated OS aliases; reject redirected source roots.
     if not path.is_dir():
         raise WorkspaceError('source_unavailable')
-    return path
+    if not _valid_local_locator(path):
+        raise WorkspaceError('redirected_path')
+    resolved = path.resolve()
+    safe_path(Path(resolved.anchor), resolved.relative_to(resolved.anchor).as_posix())
+    return resolved
 
 
 def _sources(value):
@@ -142,7 +143,7 @@ def _prepare(vault, state, payload):
     sources, requests, ids = [], [], []
     for root, label in requested:
         kind = 'vault' if root == Path(vault).resolve() else 'directory'
-        match = next((sid for sid, binding in bindings.items() if binding['locator'] == str(root)
+        match = next((sid for sid, binding in bindings.items() if local_root_matches(binding['locator'], root)
                       and descriptors[sid]['kind'] == kind), None)
         sid = match or ('memory-' if kind == 'vault' else 'source-') + content_hash(str(root))[:24]
         if sid in ids:
@@ -156,7 +157,7 @@ def _prepare(vault, state, payload):
             if grant not in grants:
                 grants.append(grant)
         binding = dict(source_id=sid, machine_id=previous['machine_id'] if previous else machine,
-            revision=previous['revision'] if previous else 1, locator=str(root), grants=grants,
+            revision=previous['revision'] if previous else 1, locator=previous['locator'] if previous else str(root), grants=grants,
             authority_ref=previous['authority_ref'] if previous else authority)
         if previous and binding != previous:
             binding['revision'] += 1

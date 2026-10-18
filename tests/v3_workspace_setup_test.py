@@ -98,7 +98,7 @@ class SetupTest(unittest.TestCase):
         self.assertEqual(refreshed['data']['parts'], canonical_parts)
         self.assertEqual(result['data']['parts'], canonical_parts)
         page = self.vault / data['homepage']; self.assertTrue(page.is_file())
-        self.assertIn('[Örnek iş](item.md)', page.read_text())
+        self.assertIn('[Örnek iş](item.md)', page.read_text(encoding='utf-8'))
         before = page.read_bytes()
         refresh_after_apply(runtime, intent, result)
         self.assertEqual(page.read_bytes(), before)

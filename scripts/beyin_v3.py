@@ -269,6 +269,24 @@ def _ensure_scripts_path():
         sys.path.insert(0, directory)
 
 
+def write_json(value, *, stream=None, indent=2):
+    _ensure_scripts_path()
+    try:
+        from beyin_v3_output import write_json as emit
+    except (ImportError, OSError, SyntaxError):
+        # A partial install must still report its real result/error as JSON.
+        # Only helper loading is optional; serialization and I/O errors propagate.
+        stream = sys.stdout if stream is None else stream
+        text = json.dumps(value, ensure_ascii=True, indent=indent) + '\n'
+        buffer = getattr(stream, 'buffer', None)
+        if buffer is None:
+            stream.write(text)
+        else:
+            stream.flush(); buffer.write(text.encode('utf-8')); buffer.flush()
+        return
+    emit(value, stream=stream, indent=indent)
+
+
 def load_sync():
     _ensure_scripts_path()
     from beyin_v3_sync import SyncEngine
@@ -968,7 +986,7 @@ def workspace_metadata_cli(args, return_result=False):
         result, code = workspace_failure(exc, 'workspace-metadata')
     if return_result:
         return result, code
-    print(json.dumps(result, ensure_ascii=True, indent=2))
+    write_json(result)
     return code
 
 
@@ -1000,7 +1018,7 @@ def workspace_builder_cli(args,return_result=False):
                 'next_action':'Repair the managed workspace builder modules before retrying.'}}
             code=5
     if return_result:return result,code
-    print(json.dumps(result,ensure_ascii=True,indent=2));return code
+    write_json(result);return code
 
 
 def main(argv=None, return_result=False):
@@ -1013,9 +1031,6 @@ def main(argv=None, return_result=False):
     receipt_flags = args.command == "receipt" and any(
         getattr(args, name) is not None for name in ("event_id", "summary", "summary_file", "ref", "link", "session"))
     if receipt_flags:
-        for stream in (sys.stdout, sys.stderr):
-            if hasattr(stream, "reconfigure"):
-                stream.reconfigure(encoding="utf-8")
         if args.file is not None:
             argument_parser.error("--file cannot be combined with receipt flags")
         if args.event_id is None:
@@ -1456,7 +1471,7 @@ def main(argv=None, return_result=False):
             result, code = scheduled.run(vault, state, Path(__file__).resolve(), notify=args.notify)
             if return_result:
                 return result, code
-            print(json.dumps(result, ensure_ascii=True, indent=2))
+            write_json(result)
             return code
         elif args.command == "skill-sync":
             result = load_skills().sync_skills(vault, state)
@@ -1613,12 +1628,12 @@ def main(argv=None, return_result=False):
             if refreshed.get('status') == 'conflict':
                 raise RuntimeError('History blocked: source sync conflict. Run sync with the same vault/state to inspect and reconcile source issues, then retry history.')
             result = sync.store.history(args.record_id)
-            if refreshed.get('status') == 'degraded':
+            if refreshed.get('status') == 'degraded' and not return_result:
                 # The public stdout contract remains a JSON list.
                 warnings = refreshed.get('warnings', [])
-                print(json.dumps({'source_sync': {'status': 'degraded', 'warnings': warnings[:20],
-                                                  'warning_count': len(warnings), 'truncated': len(warnings) > 20}},
-                                 ensure_ascii=True), file=sys.stderr)
+                write_json({'source_sync': {'status': 'degraded', 'warnings': warnings[:20],
+                                             'warning_count': len(warnings), 'truncated': len(warnings) > 20}},
+                           stream=sys.stderr, indent=None)
         else:
             payload = read_json(args.file)
             result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])
@@ -1628,20 +1643,20 @@ def main(argv=None, return_result=False):
         exit_code=5 if view_stale else 0
         if return_result:
             return result, exit_code
-        print(json.dumps(result, ensure_ascii=True, indent=2))
+        write_json(result)
         return exit_code
     except Exception as exc:
         if args.command in ('workspace-context','workspace-write','workspace-workflow'):
             error,exit_code=workspace_failure(exc)
             if return_result:return error,exit_code
-            print(json.dumps(error,ensure_ascii=True));return exit_code
+            write_json(error);return exit_code
         # No traceback or raw input dump: callers retain their local source files.
         error = {"error": type(exc).__name__, "message": str(exc)}
         if isinstance(exc, ValueError) and str(exc) in ERROR_HINTS:
             error["hint"] = ERROR_HINTS[str(exc)]
         if return_result:
             return error, 1
-        print(json.dumps(error, ensure_ascii=True), file=sys.stderr)
+        write_json(error, stream=sys.stderr)
         return 1
 
 

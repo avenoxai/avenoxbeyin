@@ -648,6 +648,29 @@ def human_result(result, command, installed_version=None):
     return message
 
 
+def write_json(value, *, stream=None):
+    # The installer and release builder include all managed beyin_v3*.py helpers.
+    entry = Path(__file__).resolve()
+    directory = (entry.parents[1] / 'template/.claude/scripts' if entry.name == 'beyin_entry.py'
+                 and entry.parent.name == 'scripts' else entry.parent / '.claude/scripts')
+    try:
+        spec = importlib.util.spec_from_file_location('beyin_entry_output', directory / 'beyin_v3_output.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except (ImportError, OSError, SyntaxError):
+        # Bootstrap errors must remain reportable even without managed modules.
+        # Catch only loading failures, before serialization or any output occurs.
+        stream = sys.stdout if stream is None else stream
+        text = json.dumps(value, ensure_ascii=True, indent=2) + '\n'
+        buffer = getattr(stream, 'buffer', None)
+        if buffer is None:
+            stream.write(text)
+        else:
+            stream.flush(); buffer.write(text.encode('utf-8')); buffer.flush()
+        return
+    module.write_json(value, stream=stream)
+
+
 def load_cli(directory):
     """The installed CLI module, loaded from its file like every other entry-point command."""
     spec = importlib.util.spec_from_file_location('beyin_installed_cli', directory / 'beyin_v3_cli.py')
@@ -662,11 +685,15 @@ def main(argv=None):
     human = ('--human' in argv or sys.stdout.isatty()) and not force_json
     argv = [arg for arg in argv if arg not in ('--human', '--json')]
     if human:
-        # A piped or redirected Windows console uses a legacy code page (cp1252 has no s-cedilla);
-        # an unencodable character must print as '?' instead of failing the whole command.
+        # Interactive text follows the terminal's own encoding. For redirected
+        # --human output, UTF-8 is the explicit pipe format, independent of the
+        # Windows legacy code page. Never silently replace user-visible text.
         for stream in (sys.stdout, sys.stderr):
             if hasattr(stream, 'reconfigure'):
-                stream.reconfigure(errors='replace')
+                if stream.isatty():
+                    stream.reconfigure(errors='backslashreplace')
+                else:
+                    stream.reconfigure(encoding='utf-8', errors='strict')
     command = argv[0] if argv else 'doctor'
     vault = Path(__file__).resolve().parent
     stamp = vault / '.beyin-version'
@@ -727,7 +754,10 @@ def main(argv=None):
                 else: result = updater.update(vault, state, args.package, args.check)
             elif args.command == 'rollback': result = updater.rollback(vault, state)
             else: result = updater.recover(vault, state)
-            print(human_result(result, command, installed_version) if human else json.dumps(result, ensure_ascii=True, indent=2))
+            if human:
+                print(human_result(result, command, installed_version))
+            else:
+                write_json(result)
             return 0
         cli = cli or load_cli(directory)
         cli_args = ['--vault', str(vault), '--state', str(state)] + (argv or ['doctor'])
@@ -758,7 +788,10 @@ def main(argv=None):
         return code
     except Exception as exc:
         error = {'error': type(exc).__name__, 'message': str(exc)}
-        print(human_result(error, command, installed_version) if human else json.dumps(error, ensure_ascii=True), file=sys.stderr)
+        if human:
+            print(human_result(error, command, installed_version), file=sys.stderr)
+        else:
+            write_json(error, stream=sys.stderr)
         return 1
 
 

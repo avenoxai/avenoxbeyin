@@ -3,12 +3,12 @@ import copy
 import json
 from pathlib import Path
 import shutil
-import subprocess
 import sys
 import tempfile
 import unittest
 
 from v3_workspace_helpers import FIX,ROOT
+from v3_workspace_test_io import load_utf8_json, run_json_cli
 from beyin_v3_workspaces import Registry,LocalAuthority,envelope,validate_for_provision,content_hash,canonical_bytes
 from beyin_v3_workspace_plan import plan_workspace
 from beyin_v3_provision import Provisioner
@@ -23,7 +23,7 @@ from beyin_v3_sources import probe_capabilities
 
 def provision_fixture(base,case,*,activate=True):
     base=Path(base).resolve();vault=base/'vault';vault.mkdir(exist_ok=True);state=base/'state'
-    docs={d['type']:d['data'] for d in json.loads((FIX/case/'input.json').read_text())['documents']}
+    docs={d['type']:d['data'] for d in load_utf8_json(FIX/case/'input.json')['documents']}
     spec=copy.deepcopy(docs['WorkspaceSpec']);reference=case+'-user';spec['authority_ref']=reference
     shutil.copytree(FIX/case/'files/vault',vault,dirs_exist_ok=True)
     permissions=[]
@@ -53,7 +53,7 @@ def provision_fixture(base,case,*,activate=True):
 
 
 def bound_intent(case,context):
-    document=copy.deepcopy(next(d for d in json.loads((FIX/case/'golden.json').read_text())['documents'] if d['type']=='MemoryWriteIntent'))
+    document=copy.deepcopy(next(d for d in load_utf8_json(FIX/case/'golden.json')['documents'] if d['type']=='MemoryWriteIntent'))
     data=document['data'];data.update(context_token=context['context_token'],binding_snapshot_sha256=context['binding_snapshot_sha256'],profile_revision=context['profile_revision'])
     records={r['id']:r for r in context['records']};evidence=records[case+'-result']['source_ref']
     for change in data['changes']:
@@ -82,9 +82,9 @@ class WorkspaceIntegrationTest(unittest.TestCase):
             complete=WorkflowRunner(runtime).advance(event,wf['id'],request,proposals={'propose':intent})['data']
             self.assertEqual(complete['status'],'completed');self.assertEqual(set(runtime.registry.vault.rglob('*.md')),before)
             updated=runtime.context(request)['data'];self.assertTrue(any(r['id']==case+'-learning' and r['revision']==2 for r in updated['records']))
-            request_path=self.base/(case+'-request.json');request_path.write_text(json.dumps(request))
-            cli=subprocess.run([sys.executable,str(ROOT/'scripts/beyin_v3.py'),'--vault',str(runtime.registry.vault),'--state',str(runtime.registry.state),
-                'workspace-context','--file',str(request_path)],capture_output=True,text=True)
+            request_path=self.base/(case+'-request.json');request_path.write_text(json.dumps(request, ensure_ascii=False), encoding='utf-8')
+            cli=run_json_cli([sys.executable,str(ROOT/'scripts/beyin_v3.py'),'--vault',str(runtime.registry.vault),'--state',str(runtime.registry.state),
+                'workspace-context','--file',str(request_path)],capture_output=True)
             self.assertEqual(cli.returncode,0,cli.stderr);self.assertTrue(any(r['id']==case+'-learning' and r['revision']==2 for r in json.loads(cli.stdout)['data']['records']))
 
     def test_disconnect_archive_restore_preserve_sources_and_require_revert_authority(self):

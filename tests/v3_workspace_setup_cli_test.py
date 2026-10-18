@@ -29,7 +29,7 @@ class WorkspaceSetupCliTest(unittest.TestCase):
                 for action in ('catalog','prepare','organize'):
                     observed,code=cli.main(['--vault',str(vault),'--state',str(state),'workspace-setup',action,'--file',str(request)],return_result=True)
                     self.assertEqual(observed,result);self.assertEqual(code,0)
-                    module.execute.assert_called_with(vault,state,action,{'compact':'PRIVATE_REQUEST'})
+                    module.execute.assert_called_with(vault.resolve(),state.resolve(),action,{'compact':'PRIVATE_REQUEST'})
             self.assertFalse(state.exists());self.assertEqual(list(vault.iterdir()),[])
 
     def test_human_preflight_error_displays_code_and_change_target(self):

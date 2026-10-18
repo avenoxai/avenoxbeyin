@@ -1237,7 +1237,7 @@ class SyncEngine:
     def _workspace_write_guard(self, source, record=None):
         try:
             from beyin_v3_workspace_context import CURRENT,enabled,scope_ids
-            from beyin_v3_workspaces import Registry,WorkspaceError
+            from beyin_v3_workspaces import Registry,WorkspaceError,local_root_matches
             from beyin_v3_sources import SourceResolver
         except ImportError:
             if (self.state/'workspace-runtime.json').exists():raise ValueError('workspace_package_unavailable')
@@ -1249,7 +1249,7 @@ class SyncEngine:
         if record is not None and current['workspace_id'] not in scope_ids(registry,record):raise WorkspaceError('scope_denied')
         snapshot=registry.snapshot();bindings,_=registry.bindings(snapshot)
         for descriptor in snapshot['sources']:
-            if descriptor['kind']=='vault' and descriptor['id'] in bindings and Path(bindings[descriptor['id']]['locator'])==self.root:
+            if descriptor['kind']=='vault' and descriptor['id'] in bindings and local_root_matches(bindings[descriptor['id']]['locator'],self.root):
                 try:
                     SourceResolver(registry).resolve(current['workspace_id'],descriptor['id'],source,current['grant_ref'],access='write_memory')
                     return

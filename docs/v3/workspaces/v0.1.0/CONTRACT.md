@@ -14,6 +14,13 @@ Her belge `{ "contract_version": "workspace/0.1.0", "type": "WorkspaceProfile", 
 
 Workspace/source/workflow kimlikleri ASCII stable ID'dir; kullanıcı adı ve dosya adı kimlik değildir. Mevcut kayıt/task `id` değerleri korunur. Explicit ID'li not rename'de aynı kalır. Bugünkü path-derived `md-*` kimliği rename'de değişir: G0 bunun tersini vaat etmez. C5 adoption gerektiğinde kullanıcı edit'ini koruyan planla explicit kimlik ekler; geçmişi topluca yeniden yazmaz.
 
+### Metin kodlama ve terminal sınırları
+
+- Workspace sözleşme JSON'u, registry/journal/cache dosyaları ve uygulamanın ürettiği Markdown UTF-8'dir. Kanonik hash'ler **baytlar** üzerinden hesaplanır; platforma özgü satır sonu veya konsol kodlaması dönüşümü bu baytları değiştiremez. Geçersiz baytlar sessizce düzeltilmez.
+- İzole PDF/DOCX okuyucusunun stdin/stdout JSON protokolü UTF-8 bayttır. Üst süreç stdout'u katı biçimde doğrular; yanlış kodlanmış yanıt başarısız olur. OCR/yerel araç stderr'i aynı protokolün parçası değildir.
+- Makineye yönelik CLI JSON çıktısı kodlamadan bağımsız ASCII-escaped JSON'dur; girdi JSON dosyaları ve stdin UTF-8 kabul edilir. Kurulu `beyin.py --human` çıktısı gerçek terminalde terminalin kodlamasını kullanır; başka programa yönlendirildiğinde UTF-8 üretir. Terminalde temsil edilemeyen karakterler yalnızca görünür escape biçimine düşer, sessizce `?` ile kaybedilmez.
+- Kullanıcının dış kaynak dosyalarına bu kural zorla uygulanmaz: özgün baytlar değiştirilmez. Mevcut düz-metin çıkarıcısı UTF-8 (isteğe bağlı BOM) bekler; geçersiz metin `partial / invalid_text_encoding` olarak raporlanır. Kodlama tahmini veya otomatik başka kodlamaya dönüştürme yapılmaz. Alternatif kodlama desteği ayrı ve açık bir kullanıcı seçimi/policy gerektirir.
+
 ## M01: workspace başına JSON ve yerel sahiplik
 
 Önerilmiş tek registry JSON yerine kullanıcı **workspace başına JSON** seçti. Bu sürümün dosya düzeni:
@@ -119,3 +126,5 @@ Planlama saf okumadır. Fixture planı mevcut kayıtları benimser, descriptor/b
 Registry yokken V3 korunur. C1 dormant/opt-in okuyucu/validator ile başlar; bütün retrieval/snapshot/passage/companion/bridge/advisor/yazma yollarında ortak policy tamamlanmadan yeni mod etkinleştirilmez. Legacy `project` ve folder mutasyonları C5'te tek truth adapter'ına bağlanır. G0 source/task/frontmatter alanlarını topluca yeniden yazmaz; indeks migration'ı yapmaz. Bilinmeyen workspace/global durum sessizce paylaşılmaz. Şemayı anlamayan eski sürüme downgrade açık restore gerektirir; güvenlik garantisi varsayılmaz.
 
 I1: D gerçek serviste alanı kurar; C kaynak+iş+geçmişle çalışır, mevcut not/task'ı günceller ve yeni sorguda bulur; süreç aynı event'i tekrarsız yürütür. Q1: PDF/DOCX, seçilmiş OCR ve canlı/platform matrisi, holdout custom, scope/freshness/manuel edit/kesinti testleri tamamlanır. G0, bu kabulleri fixture okuyarak geçmiş saymaz. Tolerans: yetkisiz içerik/metadata sızıntısı, özgün kaynak silme ve kullanıcı edit'ini ezme sıfırdır.
+
+Local source roots use the same validation during approval, context/adoption, reading, cataloging and canonical writing. Only validated OS path aliases (macOS /var and Windows spelling aliases) compare as the same root; exact grant locator strings remain unchanged. Parent traversal and additional symlink/junction redirects are rejected.

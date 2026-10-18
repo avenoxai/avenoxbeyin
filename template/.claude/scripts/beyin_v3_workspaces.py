@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
+import sys
 import unicodedata
 
 from beyin_v3_workspace_schema import SCHEMA
@@ -48,6 +49,8 @@ def parse_document(raw):
     if len(raw) > MAX_BYTES:
         raise WorkspaceError('document_too_large')
     try:
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode('utf-8')
         return json.loads(raw, object_pairs_hook=_pairs,
                           parse_constant=lambda _: (_ for _ in ()).throw(WorkspaceError('invalid_number')))
     except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
@@ -382,6 +385,40 @@ class Registry:
         return files
 
 
+def _valid_local_locator(path):
+    """Allow macOS's OS-owned /var alias, but not arbitrary symlink redirects."""
+    if not path.is_absolute() or '..' in path.parts or not path.is_dir():
+        return False
+    resolved = path.resolve()
+    if sys.platform == 'win32':
+        # Windows resolves 8.3 short names (RUNNER~1) to long names.
+        # Accept spelling normalization, never a symlink or junction redirect.
+        cursor = Path(path.anchor)
+        for component in path.parts[1:]:
+            cursor = cursor / component
+            info = cursor.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_reparse_tag', 0):
+                return False
+        return True
+    if resolved == path:
+        return True
+    if (sys.platform == 'darwin' and path.parts[:2] == ('/', 'var')
+            and Path('/var').is_symlink()
+            and Path('/var').resolve() == Path('/private/var')):
+        # /var -> /private/var is a system alias; any *additional* redirect fails.
+        return resolved == Path('/private') / path.relative_to('/')
+    return False
+
+
+def local_root_matches(locator, root):
+    """Compare validated local aliases without changing exact grant locators."""
+    try:
+        path = Path(locator)
+        return _valid_local_locator(path) and path.resolve() == Path(root).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 class LocalAuthority:
     """Privileged approval adapter; not inferred from profiles, sources or model refs.
 
@@ -411,9 +448,9 @@ class LocalAuthority:
             if set(permission)!={'workspace_id','source_id','locator','access'} or permission['access'] not in ('read','write_memory'):
                 raise WorkspaceError('invalid_local_permission')
             path=Path(permission['locator'])
-            if not path.is_absolute() or str(path.resolve())!=str(path) or not path.is_dir():
+            if not _valid_local_locator(path):
                 raise WorkspaceError('invalid_local_locator')
-            if permission['access']=='write_memory' and path!=self.registry.vault:
+            if permission['access']=='write_memory' and path.resolve()!=self.registry.vault:
                 raise WorkspaceError('external_source_write_denied')
         if set(audiences)-{'public','internal','private'}:
             raise WorkspaceError('invalid_audience')

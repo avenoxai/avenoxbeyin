@@ -1,5 +1,8 @@
+import base64
+import hashlib
 import io
 import json
+import os
 import shutil
 from unittest.mock import patch
 from pathlib import Path
@@ -40,6 +43,24 @@ def docx_bytes(body,extra=None):
     return buffer.getvalue()
 
 
+class ReaderInputEncodingTest(unittest.TestCase):
+    def test_reader_requires_utf8_request_bytes(self):
+        raw = b'synthetic source'
+        request = {'format': 'unsupported', 'bytes_base64': base64.b64encode(raw).decode('ascii'),
+                   'source_sha256': hashlib.sha256(raw).hexdigest(), 'limits': {}}
+        text = json.dumps(request)
+        command = [sys.executable, '-I', '-S', '-B',
+                   str(Path(__file__).resolve().parents[1]/'template/.claude/scripts/beyin_v3_extract_reader.py')]
+        for encoding in ('utf-8', 'utf-16', 'utf-16-le', 'utf-16-be', 'utf-32', 'utf-32-le', 'utf-32-be'):
+            with self.subTest(encoding=encoding):
+                process = subprocess.run(command, input=text.encode(encoding), capture_output=True, timeout=5)
+                self.assertEqual(process.returncode, 0, process.stderr)
+                value = json.loads(process.stdout.decode('utf-8'))
+                expected = {'state': 'unsupported', 'chunks': [], 'issues': [{'code': 'unsupported'}]} if encoding == 'utf-8' else {
+                    'state': 'failed', 'chunks': [], 'issues': [{'code': 'invalid_reader_request'}]}
+                self.assertEqual(value, expected)
+
+
 class WorkspaceDocumentsTest(unittest.TestCase):
     def setUp(self):
         # Reuse isolated setup only, without importing a second TestCase into discovery.
@@ -48,6 +69,20 @@ class WorkspaceDocumentsTest(unittest.TestCase):
         for name,raw in managed_files().items():
             path=self.h.vault/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(raw)
         self.resolver=SourceResolver(self.h.registry)
+
+    def test_isolated_docx_reader_emits_utf8_under_legacy_console_encoding(self):
+        raw = docx_bytes('<w:p><w:r><w:t>Türkçe öğrenim — ödev</w:t></w:r></w:p>')
+        request = {'format':'docx', 'bytes_base64':base64.b64encode(raw).decode('ascii'),
+                   'source_sha256':hashlib.sha256(raw).hexdigest(), 'limits':{}}
+        command = [sys.executable, '-S', '-B',
+                   str(Path(__file__).resolve().parents[1]/'template/.claude/scripts/beyin_v3_extract_reader.py')]
+        env = dict(os.environ, PYTHONIOENCODING='cp1252:strict')
+        process = subprocess.run(command, input=json.dumps(request).encode('utf-8'),
+                                 capture_output=True, env=env, timeout=20)
+        self.assertEqual(process.returncode, 0, process.stderr.decode('utf-8', 'replace'))
+        result = json.loads(process.stdout.decode('utf-8'))
+        self.assertEqual(result['state'], 'ready')
+        self.assertEqual(result['chunks'][0]['text'], 'Türkçe öğrenim — ödev')
 
     def test_real_pdf_tr_en_page_and_docx_table_locations(self):
         expected='Türkçe ölçüm öğrenim ödev — English quartz.'

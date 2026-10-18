@@ -2,7 +2,6 @@
 import copy
 import json
 from pathlib import Path
-import subprocess
 import sys
 import unittest
 import tempfile
@@ -11,6 +10,7 @@ from unittest.mock import patch
 
 import v3_workspace_builder_c1_test as c1
 from beyin_v3_workspaces import validate_document
+from v3_workspace_test_io import run_json_cli
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -23,8 +23,8 @@ class AuthorityCliTest(unittest.TestCase):
             'audiences':['internal'],'evidence':'Explicit synthetic human consent to this exact local source.'}
 
     def call(self,action,payload,command='workspace-authority',raw=None):
-        process=subprocess.run([sys.executable,'-B',str(ROOT/'scripts/beyin_v3.py'),'--vault',str(self.h.vault),'--state',str(self.h.state),
-            command,action,'--file','-'],input=json.dumps(payload) if raw is None else raw,capture_output=True,text=True,timeout=30)
+        process=run_json_cli([sys.executable,'-B',str(ROOT/'scripts/beyin_v3.py'),'--vault',str(self.h.vault),'--state',str(self.h.state),
+            command,action,'--file','-'],input=json.dumps(payload, ensure_ascii=False) if raw is None else raw,capture_output=True,timeout=30)
         result=json.loads(process.stdout);validate_document(result)
         return process,result
 
@@ -59,8 +59,8 @@ class AuthorityCliTest(unittest.TestCase):
             self.assertEqual(installed.returncode,0,installed.stderr.decode(errors='replace'))
             notes={p:p.read_bytes() for p in self.h.vault.rglob('*.md')}
             indexed=(self.h.state/'memory.sqlite3').read_bytes() if (self.h.state/'memory.sqlite3').exists() else None
-            process=subprocess.run([sys.executable,'-I','-B',str(self.h.vault/'beyin.py'),'workspace-authority','grant','--file','-','--json'],
-                input=json.dumps(self.grant),cwd=root,env=env,capture_output=True,text=True,timeout=30)
+            process=run_json_cli([sys.executable,'-I','-B',str(self.h.vault/'beyin.py'),'workspace-authority','grant','--file','-','--json'],
+                input=json.dumps(self.grant, ensure_ascii=False),cwd=root,env=env,capture_output=True,timeout=30)
             self.assertEqual(process.returncode,0,process.stderr);result=json.loads(process.stdout);validate_document(result)
             self.assertEqual(result['data']['operation_id'],'workspace-authority')
             self.assertEqual(notes,{p:p.read_bytes() for p in self.h.vault.rglob('*.md')})

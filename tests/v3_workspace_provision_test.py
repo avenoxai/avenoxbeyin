@@ -261,7 +261,7 @@ class ProvisionTest(unittest.TestCase):
             root = self.h.root / type(exception).__name__; root.mkdir()
             harness = Harness(root)
             def fail(path, raw):
-                if str(path).endswith('sources/material.json'): raise exception
+                if Path(path).parts[-2:] == ('sources', 'material.json'): raise exception
                 return original_atomic(path, raw)
             with patch.object(updater, 'atomic', fail):
                 with self.assertRaises(type(exception)):

@@ -13,6 +13,7 @@ import unittest
 import zipfile
 
 from v3_package_helpers import build_package, isolated_env, run_python
+from v3_workspace_test_io import load_utf8_json, run_json_cli
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -55,7 +56,7 @@ class WorkspacePackageTest(unittest.TestCase):
             (vault / 'Core.md').write_bytes(b'PRESERVE SYNTHETIC IDENTITY')
             installed = run_python(package / 'scripts/install_v3.py', ['--vault', vault, '--state', state], base, env)
             self.assertEqual(installed.returncode, 0, installed.stderr.decode(errors='replace'))
-            documents = {d['type']: copy.deepcopy(d) for d in json.loads((fixture_root / 'input.json').read_text())['documents']}
+            documents = {d['type']: copy.deepcopy(d) for d in load_utf8_json(fixture_root / 'input.json')['documents']}
             spec = documents['WorkspaceSpec']; permissions = []
             for binding, suffix in zip(spec['data']['binding_requests'], ('vault', 'source-a', 'source-b')):
                 locator = vault if suffix == 'vault' else base / suffix
@@ -68,7 +69,7 @@ class WorkspacePackageTest(unittest.TestCase):
             docx.write_bytes(docx_bytes('<w:p><w:r><w:t>Türkçe quartz DOCX öğrenim</w:t></w:r></w:p>'
                 '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>quartz Sonuç 82</w:t></w:r></w:p></w:tc></w:tr></w:tbl>'))
             original_sources = {p: p.read_bytes() for p in (pdf, docx)}
-            intent = next(d for d in json.loads((fixture_root / 'golden.json').read_text())['documents'] if d['type'] == 'MemoryWriteIntent')
+            intent = next(d for d in load_utf8_json(fixture_root / 'golden.json')['documents'] if d['type'] == 'MemoryWriteIntent')
             request = documents['RequestContext']; request['data']['query'] += ' quartz'
             inputs = base / 'inputs.json'; inputs.write_text(json.dumps(dict(spec=spec, request=request, intent=intent,
                 permissions=permissions), ensure_ascii=False), encoding='utf-8')
@@ -195,10 +196,10 @@ assert 'docx' not in sys.modules and 'lxml' not in sys.modules
             self.assertEqual(installed.returncode,0,installed.stderr.decode(errors='replace'))
             # Child -I resolves product modules only from the installed vault;
             # fixture directory contains data, never a source-module search path.
-            run=subprocess.run([sys.executable,'-I',str(ROOT/'tests/workspace_installed_scenario.py'),
+            run=run_json_cli([sys.executable,'-I',str(ROOT/'tests/workspace_installed_scenario.py'),
                 str(vault),str(state),str(ROOT/'tests/fixtures/v3/workspaces/v0.1.0'),str(package/'scripts/beyin_v3.py'),
                 'require-ocr' if native_ocr_ready() else 'text-only'],
-                cwd=root,env=env,capture_output=True,text=True,timeout=90)
+                cwd=root,env=env,capture_output=True,timeout=90)
             self.assertEqual(run.returncode,0,run.stderr)
             observed=json.loads(run.stdout)
             self.assertEqual([r['case'] for r in observed['scenarios']],['academic','ceramics'])

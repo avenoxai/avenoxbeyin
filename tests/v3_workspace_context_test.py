@@ -28,8 +28,8 @@ class WorkspaceContextTest(unittest.TestCase):
     def test_custom_uses_same_runtime_and_cross_workspace_relation_gives_no_access(self):
         install_fixture(self.base,'custom')
         path=self.runtime.registry.vault/'notes/academic-result.md'
-        text=path.read_text().replace('"workspace_relations": [','"workspace_relations": [{"id":"forbidden-edge","workspace_id":"academic","type":"belongs_to","from":{"workspace_id":"academic","record_id":"academic-task"},"to":{"workspace_id":"custom","record_id":"custom-topic"},"evidence_refs":[]},')
-        path.write_text(text);SyncEngine(self.runtime.registry.vault,self.runtime.registry.state).sync()
+        text=path.read_text(encoding='utf-8').replace('"workspace_relations": [','"workspace_relations": [{"id":"forbidden-edge","workspace_id":"academic","type":"belongs_to","from":{"workspace_id":"academic","record_id":"academic-task"},"to":{"workspace_id":"custom","record_id":"custom-topic"},"evidence_refs":[]},')
+        path.write_text(text, encoding='utf-8');SyncEngine(self.runtime.registry.vault,self.runtime.registry.state).sync()
         academic=self.runtime.context(self.request)['data']
         self.assertFalse(any(r['workspace_id']=='custom' for r in academic['records']))
         self.assertNotIn('forbidden-edge',canonical_bytes(academic).decode())
@@ -69,7 +69,7 @@ class WorkspaceContextTest(unittest.TestCase):
         from beyin_v3_sync import render
         vault=self.runtime.registry.vault;state=self.runtime.registry.state
         path=vault/'notes/general-method.md'
-        path.write_text(render({'id':'general-method','kind':'note','revision':1,'visibility':'internal'},'Compare evidence before changing a method.'))
+        path.write_text(render({'id':'general-method','kind':'note','revision':1,'visibility':'internal'},'Compare evidence before changing a method.'), encoding='utf-8')
         SyncEngine(vault,state).sync()
         for spec in (self.spec,custom_spec):
             adopted=copy.deepcopy(spec);adopted['adopt_record_refs']=[{'workspace_id':spec['desired_profile']['id'],'record_id':'general-method'}]

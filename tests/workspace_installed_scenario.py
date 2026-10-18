@@ -25,7 +25,7 @@ assert all(capabilities.get(k)=='ready' for k in ('text','markdown','pdf_text','
 results=[]
 for case in ('academic','ceramics'):
     source_case='academic' if case=='academic' else 'custom'
-    docs={d['type']:d['data'] for d in json.loads((fixtures/source_case/'input.json').read_text())['documents']}
+    docs={d['type']:d['data'] for d in json.loads((fixtures/source_case/'input.json').read_text(encoding='utf-8'))['documents']}
     spec=copy.deepcopy(docs['WorkspaceSpec'])
     replacements={'custom':case,'shooting_topic':'recipe','shooting_task':'firing_task','shooting_result':'test_result','technique':'lesson'} if case=='ceramics' else {}
     def transform(value):
@@ -36,18 +36,18 @@ for case in ('academic','ceramics'):
         return value
     spec=transform(spec)
     if case=='ceramics':
-        holdout=json.loads((fixtures/'holdout.json').read_text());spec['user_goal']=holdout['user_goal']
+        holdout=json.loads((fixtures/'holdout.json').read_text(encoding='utf-8'));spec['user_goal']=holdout['user_goal']
         if ocr_enabled:spec['required_capabilities'].append('ocr_tr_en')
         spec['desired_profile'].update(name='Seramik denemeleri',purpose=holdout['user_goal'])
     reference=case+'-user';spec['authority_ref']=reference
     for original in (fixtures/source_case/'files/vault').rglob('*.md'):
         relative=transform(original.relative_to(fixtures/source_case/'files/vault').as_posix())
         path=vault/relative;path.parent.mkdir(parents=True,exist_ok=True)
-        metadata,body=parse(original.read_text());metadata=transform(metadata)
+        metadata,body=parse(original.read_text(encoding='utf-8'));metadata=transform(metadata)
         if case=='ceramics':
             body={'topic':'Reçete A; pişirim 1040 derece.', 'result':'Son denemede yüzey çatladı. Pişirim sonucu kaynaklı gözlem.',
                   'learning':'Önceki reçeteyi ve pişirim sonucunu karşılaştır.', 'task':'Sonraki kontrollü pişirimi hazırla.'}[original.stem.split('-')[-1]]+'\n'
-        path.write_text(render(metadata,body))
+        path.write_text(render(metadata,body), encoding='utf-8')
     permissions=[]
     for binding,suffix in zip(spec['binding_requests'],('vault','source-a','source-b')):
         path=vault if suffix=='vault' else state.parent/(case+'-'+suffix)
@@ -70,7 +70,7 @@ for case in ('academic','ceramics'):
     context=runtime.context(request)['data']
     if case=='ceramics' and ocr_enabled:assert any(r['source_ref']['relative_path']=='tarama.pdf' and 'Türkçe öğrenim' in r['text'] for r in context['records'])
     records={r['id']:r for r in context['records']}
-    intent=transform(copy.deepcopy(next(d for d in json.loads((fixtures/source_case/'golden.json').read_text())['documents'] if d['type']=='MemoryWriteIntent')))
+    intent=transform(copy.deepcopy(next(d for d in json.loads((fixtures/source_case/'golden.json').read_text(encoding='utf-8'))['documents'] if d['type']=='MemoryWriteIntent')))
     data=intent['data'];data.update(context_token=context['context_token'],binding_snapshot_sha256=context['binding_snapshot_sha256'],profile_revision=context['profile_revision'])
     evidence=records[case+'-result']['source_ref']
     for change in data['changes']:
@@ -87,8 +87,8 @@ for case in ('academic','ceramics'):
     assert runner.advance(event,wf['id'],request,proposals={'propose':intent})['data']['status']=='completed'
     assert runner.advance(event,wf['id'],request)['data']['status']=='completed'
     assert set(vault.rglob('*.md'))==before
-    request_path=state.parent/(case+'-request.json');request_path.write_text(json.dumps(request))
-    recall=subprocess.run([sys.executable,'-I',str(cli),'--vault',str(vault),'--state',str(state),'workspace-context','--file',str(request_path)],capture_output=True,text=True,timeout=30)
+    request_path=state.parent/(case+'-request.json');request_path.write_text(json.dumps(request, ensure_ascii=False), encoding='utf-8')
+    recall=subprocess.run([sys.executable,'-I',str(cli),'--vault',str(vault),'--state',str(state),'workspace-context','--file',str(request_path)],capture_output=True,text=True,encoding='utf-8',timeout=30)
     assert recall.returncode==0,recall.stderr
     recalled=json.loads(recall.stdout)['data'];learning=next(r for r in recalled['records'] if r['id']==case+'-learning')
     assert learning['revision']==2 and learning['source_ref']['content_sha256']
@@ -100,4 +100,4 @@ for case in ('academic','ceramics'):
     assert source.read_bytes()==raw
     assert not any(r['source_id']==case+'-materials' for r in runtime.context(request)['data']['source_refs'])
     results.append({'case':case,'workflow':'completed','fresh_process_revision':learning['revision'],'disconnect_preserved_source':True})
-print(json.dumps({'capabilities':capabilities,'scenarios':results},ensure_ascii=False))
+sys.stdout.buffer.write(json.dumps({'capabilities':capabilities,'scenarios':results}, ensure_ascii=False).encode('utf-8'))

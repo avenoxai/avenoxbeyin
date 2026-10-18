@@ -31,7 +31,7 @@ class SharedDocumentReaderTest(unittest.TestCase):
                 self.assertEqual(result['kartlar'][0]['cikarim_durumu'],'ready')
                 processed=yakala.find_card(self.vault,captured['id'])
                 self.assertIsInstance(processed['meta']['belge_cikarim'],list)
-                raw_path=self.vault/result['kartlar'][0]['ham'];stored=raw_path.read_text()
+                raw_path=self.vault/result['kartlar'][0]['ham'];stored=raw_path.read_text(encoding='utf-8')
                 self.assertIn('visibility: private',stored);self.assertIn('trust: untrusted',stored)
                 self.assertIn('Güvenilmeyen kaynak metni',stored);self.assertEqual(path.read_bytes(),raw)
 

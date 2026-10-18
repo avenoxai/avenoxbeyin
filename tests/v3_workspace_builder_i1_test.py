@@ -16,6 +16,7 @@ from beyin_v3_provision import Provisioner
 from beyin_v3_workspace_context import WorkspaceRuntime
 from beyin_v3_workspace_memory import MemoryIntentService
 from beyin_v3_sync import SyncEngine
+from v3_workspace_test_io import load_utf8_json
 
 FIX = ROOT / 'tests/fixtures/v3/workspaces/v0.1.0'
 
@@ -31,7 +32,7 @@ class BuilderI1Test(unittest.TestCase):
                 base = Path(tmp); vault = base / 'Vault'; state = base / 'State'
                 shutil.copytree(FIX / case / 'files/vault', vault)
                 (vault / 'Core.md').write_bytes(b'PRESERVE SYNTHETIC IDENTITY')
-                docs = {d['type']: copy.deepcopy(d) for d in json.loads((FIX / case / 'input.json').read_text())['documents']}
+                docs = {d['type']: copy.deepcopy(d) for d in load_utf8_json(FIX / case / 'input.json')['documents']}
                 spec = docs['WorkspaceSpec']; data = spec['data']; reference = case + '-user'
                 # Deliberately narrow the synthetic early I1 request to the actual
                 # text-source capability. Never claim mandatory PDF/DOCX final acceptance.
@@ -64,7 +65,7 @@ class BuilderI1Test(unittest.TestCase):
                 ids = {r['id'] for r in context['records']}
                 self.assertTrue({case + '-topic', case + '-task', case + '-result', case + '-learning'} <= ids)
                 self.assertTrue(context['source_refs']); self.assertTrue(context['relations'])
-                intent = copy.deepcopy(next(d for d in json.loads((FIX / case / 'golden.json').read_text())['documents']
+                intent = copy.deepcopy(next(d for d in load_utf8_json(FIX / case / 'golden.json')['documents']
                     if d['type'] == 'MemoryWriteIntent'))
                 intent['data'].update(context_token=context['context_token'], binding_snapshot_sha256=context['binding_snapshot_sha256'])
                 records = {r['id']: r for r in context['records']}
@@ -79,10 +80,10 @@ class BuilderI1Test(unittest.TestCase):
                 self.assertTrue(all(p['state'] == 'verified' for p in observed['parts']))
                 self.assertEqual(service.apply(intent)['data']['operation_status'], 'replayed')
                 self.assertEqual(set(vault.rglob('*.md')), before)
-                requestfile = base / 'request.json'; requestfile.write_text(json.dumps(request))
+                requestfile = base / 'request.json'; requestfile.write_text(json.dumps(request, ensure_ascii=False), encoding='utf-8')
                 code = ('import json,sys;sys.path.insert(0,sys.argv[1]);'
                         'from beyin_v3_workspace_context import WorkspaceRuntime;'
-                        'print(json.dumps(WorkspaceRuntime(sys.argv[2],sys.argv[3]).context(json.load(open(sys.argv[4])))))')
+                        'print(json.dumps(WorkspaceRuntime(sys.argv[2],sys.argv[3]).context(json.load(open(sys.argv[4],encoding="utf-8")))))')
                 fresh = subprocess.run([sys.executable, '-I', '-B', '-c', code, str(ROOT / 'template/.claude/scripts'),
                     str(vault), str(state), str(requestfile)], capture_output=True, timeout=30, check=True)
                 found = json.loads(fresh.stdout)['data']['records']

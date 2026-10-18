@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from beyin_v3_workspaces import (Registry,LocalAuthority,WorkspaceError,canonical_bytes,content_hash,
-    envelope,parse_document,safe_path,validate_document)
+    envelope,parse_document,safe_path,validate_document,local_root_matches)
 from beyin_v3_sources import SourceResolver
 
 CURRENT=ContextVar('beyin_workspace_request',default=None)
@@ -43,7 +43,7 @@ def record_allowed(store,record,audience='internal'):
     for source in snapshot['sources']:
         if source['kind']=='vault' and source['id'] in profile['source_ids']:
             binding=bindings.get(source['id'])
-            if binding and Path(binding['locator'])==registry.vault and authority.allows(current['grant_ref'],binding,profile['id'],audience=audience):
+            if binding and local_root_matches(binding['locator'],registry.vault) and authority.allows(current['grant_ref'],binding,profile['id'],audience=audience):
                 return True
     return False
 
@@ -100,7 +100,7 @@ class WorkspaceRuntime:
         snapshot=self.registry.snapshot();profile=next((p for p in snapshot['profiles'] if p['id']==wid),None)
         if profile!=spec['desired_profile']:raise WorkspaceError('profile_changed')
         records={r['id']:r for r in self.store._records()};bindings,_=self.registry.bindings(snapshot)
-        vault_bindings=[b for id,b in bindings.items() if id in profile['source_ids'] and Path(b['locator'])==self.registry.vault]
+        vault_bindings=[b for id,b in bindings.items() if id in profile['source_ids'] and local_root_matches(b['locator'],self.registry.vault)]
         if not any(self.authority.allows(spec['authority_ref'],b,wid) for b in vault_bindings):raise WorkspaceError('scope_denied')
         ids=[]
         for reference in spec['adopt_record_refs']:
@@ -168,7 +168,7 @@ class WorkspaceRuntime:
                 if {a,b}&selected_ids:selected_ids.update((a,b))
         records=[];sources=[];remaining=min(request['budget_chars'],20000)
         vault_sources=[s['id'] for s in snapshot['sources'] if s['kind']=='vault' and s['id'] in profile['source_ids']
-                       and s['id'] in bindings and Path(bindings[s['id']]['locator'])==self.registry.vault]
+                       and s['id'] in bindings and local_root_matches(bindings[s['id']]['locator'],self.registry.vault)]
         if not vault_sources and selected_ids:raise WorkspaceError('source_unbound')
         for id in sorted(selected_ids,key=lambda id:(id not in subject_ids,id))[:128]:
             record=by_id[id]

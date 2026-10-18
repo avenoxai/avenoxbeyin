@@ -41,7 +41,7 @@ class WorkspaceWorkflowTest(unittest.TestCase):
         with patch.dict(sys.modules,{'beyin_v3_workspace_views':module}):
             complete=self.runner.advance(self.event,'result-to-learning',self.memory.request,proposals={'propose':self.memory.intent})['data']
         self.assertEqual(complete['status'],'completed');self.assertIn('managed_view_stale:',complete['next_action'])
-        saved=json.loads((self.memory.runtime.registry.state/'workspace-workflow'/(complete['run_id']+'.json')).read_text())
+        saved=json.loads((self.memory.runtime.registry.state/'workspace-workflow'/(complete['run_id']+'.json')).read_text(encoding='utf-8'))
         self.assertEqual(saved['run']['next_action'],complete['next_action'])
         operations=[output['operation_ref']['data'] for output in saved['outputs'].values() if 'operation_ref' in output]
         self.assertTrue(operations);self.assertTrue(all(operation['operation_status'] in ('applied','replayed') for operation in operations))
@@ -65,7 +65,7 @@ class WorkspaceWorkflowTest(unittest.TestCase):
 
     def test_completed_run_cannot_hide_later_manual_edit(self):
         m=self.memory;self.runner.advance(self.event,'result-to-learning',m.request,proposals={'propose':m.intent})
-        path=m.runtime.registry.vault/'notes/academic-learning.md';path.write_text(path.read_text()+'Yeni kullanıcı düzenlemesi.\n')
+        path=m.runtime.registry.vault/'notes/academic-learning.md';path.write_text(path.read_text(encoding='utf-8')+'Yeni kullanıcı düzenlemesi.\n', encoding='utf-8')
         before=path.read_bytes()
         with self.assertRaisesRegex(WorkspaceError,'revision_conflict'):self.runner.advance(self.event,'result-to-learning',m.request)
         self.assertEqual(path.read_bytes(),before)
@@ -73,15 +73,15 @@ class WorkspaceWorkflowTest(unittest.TestCase):
     def test_natural_sync_change_dispatch_and_no_memory(self):
         m=self.memory
         path=m.runtime.registry.vault/'notes/academic-result.md'
-        path.write_text(path.read_text()+'Yeni kaynaklı geribildirim.\n')
+        path.write_text(path.read_text(encoding='utf-8')+'Yeni kaynaklı geribildirim.\n', encoding='utf-8')
         result=m.runtime.sync(m.request)
         self.assertEqual(len(result['workflow_runs']),1)
         run=result['workflow_runs'][0]['data'];self.assertEqual(run['status'],'awaiting_agent')
-        saved=json.loads((m.runtime.registry.state/'workspace-workflow'/(run['run_id']+'.json')).read_text())
+        saved=json.loads((m.runtime.registry.state/'workspace-workflow'/(run['run_id']+'.json')).read_text(encoding='utf-8'))
         self.assertEqual(saved['event']['data']['record']['id'],'academic-result')
         self.assertEqual(m.runtime.sync(m.request)['workflow_runs'],[])
         no=copy.deepcopy(m.request);no['data']['no_memory']=True
-        path.write_text(path.read_text()+'No-memory change.\n')
+        path.write_text(path.read_text(encoding='utf-8')+'No-memory change.\n', encoding='utf-8')
         before=set((m.runtime.registry.state/'workspace-workflow').glob('*.json'))
         self.assertEqual(m.runtime.sync(no)['workflow_runs'],[])
         self.assertEqual(set((m.runtime.registry.state/'workspace-workflow').glob('*.json')),before)
@@ -104,10 +104,10 @@ class WorkspaceWorkflowTest(unittest.TestCase):
                 intent['data']['idempotency_key']=runid+'/effect'
                 taskpath=m.runtime.registry.vault/'tasks/academic-task.md'
                 from beyin_v3_sync import parse
-                oldbody=parse(taskpath.read_text())[1]
+                oldbody=parse(taskpath.read_text(encoding='utf-8'))[1]
                 runner=WorkflowRunner(m.runtime)
                 self.assertEqual(runner.advance(event,wf['id'],m.request,proposals={'effect':intent})['data']['status'],'completed')
-                self.assertEqual(parse(taskpath.read_text())[1],oldbody)
+                self.assertEqual(parse(taskpath.read_text(encoding='utf-8'))[1],oldbody)
                 self.assertEqual(runner.advance(event,wf['id'],m.request)['data']['status'],'completed')
 
     def test_request_user_input_resumes_without_grant_or_side_effect(self):
@@ -123,7 +123,7 @@ class WorkspaceWorkflowTest(unittest.TestCase):
 
     def test_sync_dispatch_retry_after_index_commit_keeps_original_baseline(self):
         m=self.memory;path=m.runtime.registry.vault/'notes/academic-result.md'
-        path.write_text(path.read_text()+'Durable event retry.\n')
+        path.write_text(path.read_text(encoding='utf-8')+'Durable event retry.\n', encoding='utf-8')
         with patch.object(WorkflowRunner,'dispatch',side_effect=RuntimeError('dispatch crash')),self.assertRaisesRegex(RuntimeError,'dispatch crash'):
             m.runtime.sync(m.request)
         self.assertTrue(list((m.runtime.registry.state/'workspace-sync-events').glob('*.json')))
@@ -152,7 +152,7 @@ class WorkspaceWorkflowTest(unittest.TestCase):
         waiting=self.runner.advance(self.event,'result-to-learning',m.request,proposals={'design':spec})['data']
         self.assertEqual(waiting['status'],'awaiting_user')
         path=m.runtime.registry.state/'workspace-workflow'/(waiting['run_id']+'.json')
-        saved=json.loads(path.read_text());plan=saved['outputs']['design']['plan_ref']
+        saved=json.loads(path.read_text(encoding='utf-8'));plan=saved['outputs']['design']['plan_ref']
         m.runtime.authority.approve_plan(plan,evidence='Explicit exact workflow plan preview')
         complete=self.runner.resume(waiting['run_id'],m.request)['data']
         self.assertEqual(complete['status'],'completed')
@@ -163,7 +163,7 @@ class WorkspaceWorkflowTest(unittest.TestCase):
     def test_provision_crash_after_replace_recovers_pending_publication(self):
         m=self.memory;spec=self._provision_workflow()
         waiting=self.runner.advance(self.event,'result-to-learning',m.request,proposals={'design':spec})['data']
-        saved=json.loads((m.runtime.registry.state/'workspace-workflow'/(waiting['run_id']+'.json')).read_text())
+        saved=json.loads((m.runtime.registry.state/'workspace-workflow'/(waiting['run_id']+'.json')).read_text(encoding='utf-8'))
         m.runtime.authority.approve_plan(saved['outputs']['design']['plan_ref'],evidence='Explicit synthetic crash plan')
         def crash(phase,index=None):
             if phase=='after_replace':raise RuntimeError('D2 crash')

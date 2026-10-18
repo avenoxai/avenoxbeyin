@@ -3,12 +3,12 @@ import copy
 import importlib.util
 import json
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
 import unittest
 
 from v3_workspace_helpers import ROOT,FIX
+from v3_workspace_test_io import load_utf8_json, run_json_cli
 from beyin_v3_workspaces import render_document,envelope,validate_document
 
 
@@ -24,13 +24,13 @@ class WorkspaceMetadataCliTest(unittest.TestCase):
         self.root=Path(self.tmp.name);self.vault=self.root/'vault';self.vault.mkdir();self.state=self.root/'state'
 
     def call(self,*args):
-        process=subprocess.run([sys.executable,'-B',str(ROOT/'scripts/beyin_v3.py'),
-            '--vault',str(self.vault),'--state',str(self.state),'workspace',*args],capture_output=True,text=True,timeout=15)
+        process=run_json_cli([sys.executable,'-B',str(ROOT/'scripts/beyin_v3.py'),
+            '--vault',str(self.vault),'--state',str(self.state),'workspace',*args],capture_output=True,timeout=15)
         self.assertFalse(process.stderr,process.stderr)
         return process,json.loads(process.stdout)
 
     def install_registry(self):
-        documents=json.loads((FIX/'academic/input.json').read_text())['documents']
+        documents=load_utf8_json(FIX/'academic/input.json')['documents']
         spec=next(d['data'] for d in documents if d['type']=='WorkspaceSpec')
         base=self.vault/'.beyin-workspaces';(base/'workspaces').mkdir(parents=True);(base/'sources').mkdir()
         (base/'format.json').write_bytes(render_document(envelope('RegistryFormat',{'registry_id':'fixture','layout':'per_workspace_json'})))

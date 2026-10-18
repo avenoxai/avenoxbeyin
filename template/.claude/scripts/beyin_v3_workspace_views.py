@@ -4,7 +4,7 @@ import posixpath
 from urllib.parse import quote
 from pathlib import Path
 
-from beyin_v3_workspaces import WorkspaceError, content_hash, envelope, safe_path, validate_document
+from beyin_v3_workspaces import WorkspaceError, content_hash, envelope, safe_path, validate_document, local_root_matches
 from beyin_v3_workspace_context import request_scope, scope_ids
 from beyin_v3_workspace_memory import MemoryIntentService
 from beyin_v3_sync import parse
@@ -77,7 +77,7 @@ def organize(runtime, intent_document, idempotency_key, *, _coordinated=False):
     path = safe_path(runtime.registry.vault, homepage)
     bindings, binding_hash = runtime.registry.bindings(snapshot)
     vault_source = next((s['id'] for s in snapshot['sources'] if s['kind'] == 'vault' and s['id'] in profile['source_ids']
-        and s['id'] in bindings and Path(bindings[s['id']]['locator']) == runtime.registry.vault), None)
+        and s['id'] in bindings and local_root_matches(bindings[s['id']]['locator'], runtime.registry.vault)), None)
     if vault_source is None:
         raise WorkspaceError('source_unbound')
     target_record = next((r for r in runtime.store._records() if r['source'] == homepage), None)

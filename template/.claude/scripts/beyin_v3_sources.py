@@ -12,7 +12,7 @@ import threading
 import sys
 
 from beyin_v3_workspaces import (Registry, LocalAuthority, WorkspaceError, canonical_bytes,
-    content_hash, envelope, parse_document, safe_path, validate_document)
+    content_hash, envelope, parse_document, safe_path, validate_document, _valid_local_locator, local_root_matches)
 
 MAX_SOURCE_BYTES=32*1024*1024
 MAX_OUTPUT_BYTES=4*1024*1024
@@ -99,7 +99,10 @@ def run_reader(command,request,timeout=20):
         for thread in threads:thread.join(timeout=1)
     if overflow or process.returncode!=0:
         raise WorkspaceError('extractor_failed')
-    return parse_document(bytes(output))
+    try:
+        return parse_document(bytes(output).decode('utf-8'))
+    except UnicodeDecodeError as exc:
+        raise WorkspaceError('invalid_extractor_output') from exc
 
 
 def extract_document_bytes(vault,raw,format,*,readers=None):
@@ -148,10 +151,10 @@ class SourceResolver:
         if binding is None:raise WorkspaceError('source_unbound')
         if not self.authority.allows(grant_ref,binding,workspace_id,access,audience):raise WorkspaceError('scope_denied')
         root=Path(binding['locator'])
-        if not root.is_absolute() or str(root.resolve())!=str(root) or not root.is_dir():
+        if not _valid_local_locator(root):
             raise WorkspaceError('source_unavailable')
         if access=='write_memory':
-            if descriptors[source_id]['kind']!='vault' or root!=self.registry.vault:
+            if descriptors[source_id]['kind']!='vault' or not local_root_matches(root,self.registry.vault):
                 raise WorkspaceError('external_source_write_denied')
             if not any(name.startswith(r.rstrip('/')+'/') for r in profile['note_roots']) and not name.startswith('tasks/'):
                 raise WorkspaceError('write_root_denied')
@@ -237,7 +240,7 @@ class SourceResolver:
         root=Path(binding['locator']);found=[]
         profiles={p['id']:p for p in snapshot['profiles']};profile=profiles.get(workspace_id)
         if (not profile or (profile['lifecycle']!='active' and not (archived and profile['lifecycle']=='archived')) or source_id not in profile['source_ids']
-                or not root.is_absolute() or str(root.resolve())!=str(root) or not root.is_dir()):
+                or not _valid_local_locator(root)):
             raise WorkspaceError('scope_denied')
         # os.walk with pruned names avoids traversing symlink trees or dependency dirs.
         import os
