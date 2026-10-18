@@ -1276,6 +1276,103 @@ class SyncEngine:
                 'source_sync': {'status': result['status'], 'warnings': result['warnings'],
                                 'conflicts': result['conflicts']}}
 
+    def note_update(self, source, expected_hash, text=None, metadata=None):
+        if not isinstance(source, str) or not source.startswith(('notes/', 'knowledge/')) or not source.endswith('.md'):
+            raise ValueError('semantic note updates belong under notes/ or knowledge/')
+        if not isinstance(expected_hash, str) or len(expected_hash.strip()) < 8:
+            raise ValueError('expected_hash required as hex string')
+        if text is not None:
+            if not isinstance(text, str):
+                raise ValueError('note text must be a string')
+            if text.lstrip().startswith('---'):
+                raise ValueError('text must be body only; put frontmatter fields in metadata')
+        if metadata is not None and not isinstance(metadata, dict):
+            raise ValueError('metadata must be a dictionary')
+        self._refuse_excluded(source)
+
+        path = self._path(source, existing=True)
+        current_raw = path.read_bytes()
+        actual_hash = _hash(current_raw)
+
+        exp = expected_hash.strip().lower()
+        if not (actual_hash.lower() == exp or actual_hash.lower().startswith(exp)):
+            raise RevisionConflict('source changed; sync and reread')
+
+        curr_meta, curr_body = parse(current_raw.decode('utf-8'))
+
+        merged_meta = dict(curr_meta)
+        if metadata:
+            for field in ('project', 'kind', 'status', 'updated_at'):
+                if field in metadata:
+                    if metadata[field] is None:
+                        merged_meta.pop(field, None)
+                    elif not isinstance(metadata[field], str):
+                        raise ValueError(field + ' must be a string')
+                    else:
+                        merged_meta[field] = metadata[field]
+            for allowed_field in ('title', 'area', 'facts', 'supersedes', 'visibility', 'revision'):
+                if allowed_field in metadata:
+                    merged_meta[allowed_field] = metadata[allowed_field]
+
+        if 'id' in merged_meta and (not isinstance(merged_meta['id'], str) or not merged_meta['id'].strip()):
+            raise ValueError('record id must be nonempty text')
+        if 'facts' in merged_meta and not isinstance(merged_meta['facts'], dict):
+            raise ValueError('facts must be an object')
+        if 'revision' in merged_meta:
+            if type(merged_meta['revision']) is not int or merged_meta['revision'] < 1:
+                raise ValueError('positive revision required')
+        if merged_meta.get('visibility', 'internal') not in ('public', 'internal', 'private'):
+            raise ValueError('invalid visibility')
+        supersedes = merged_meta.get('supersedes', [])
+        if isinstance(supersedes, str):
+            supersedes = [supersedes]
+        if not isinstance(supersedes, list) or not all(isinstance(value, str) for value in supersedes):
+            raise ValueError('supersedes must contain record ids')
+        if merged_meta.get('id') in supersedes:
+            raise ValueError('record cannot supersede itself')
+        if merged_meta.get('kind') == 'task':
+            raise ValueError('use task-update for tasks')
+        if merged_meta.get('generated') or merged_meta.get('kind') == 'receipt':
+            raise ValueError('managed note kinds require their dedicated command')
+
+        target_body = text if text is not None else curr_body
+        target_body, redacted = self._protect(target_body)
+        merged_meta, meta_redacted = self._protect_metadata(merged_meta)
+        redacted += meta_redacted
+
+        intended = render(merged_meta, target_body if target_body.endswith('\n') else target_body + '\n')
+        intended_hash = _hash(intended)
+
+        if intended_hash == actual_hash:
+            return {'status': 'succeeded', 'source': source, 'noop': True, 'idempotent': True,
+                    'source_sha256': actual_hash, 'redacted': redacted, 'secrets_redacted': redacted}
+
+        with self.store._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            disk_hash = _hash(path.read_bytes())
+            if disk_hash != actual_hash:
+                raise RevisionConflict('source changed before replace')
+            self._intent(source, actual_hash, intended, 'note')
+
+        result = self.sync()
+        record_id = merged_meta.get('id', 'md-' + _hash(source)[:24])
+        if self._source_issues(result, source, record_id):
+            raise RevisionConflict('note requires projection review')
+        with self.store._connect() as db:
+            row = db.execute('SELECT payload FROM records WHERE id=?', (record_id,)).fetchone()
+        if not row:
+            raise RevisionConflict('updated note missing from projection')
+        record = json.loads(row[0])
+        if record.get('source') != source or record.get('source_sha256') != intended_hash or path.read_bytes() != intended.encode('utf-8'):
+            raise RevisionConflict('updated note source readback mismatch')
+        self._record_redactions(redacted)
+        return {'status': 'succeeded', 'source': source, 'noop': False, 'idempotent': False,
+                'source_sha256': intended_hash, 'redacted': redacted,
+                'secrets_redacted': redacted, 'warnings': result['warnings'],
+                'conflicts': result['conflicts'],
+                'source_sync': {'status': result['status'], 'warnings': result['warnings'],
+                                'conflicts': result['conflicts']}}
+
     def task_create(self, source, text, metadata):
         if not isinstance(source, str) or not source.startswith('tasks/') or not source.endswith('.md'):
             raise ValueError('task-create source must be a tasks/ Markdown path')

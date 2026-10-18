@@ -27,7 +27,7 @@ def default_state(vault: Path) -> Path:
     return base / "beyin-v3" / key
 
 
-SOURCE_WRITE_COMMANDS = ("note-create", "task-create", "task-update")
+SOURCE_WRITE_COMMANDS = ("note-create", "note-update", "task-create", "task-update")
 
 
 def mark_session_edit(state: Path) -> None:
@@ -827,6 +827,8 @@ def parser():
     ingest.add_argument("--file", default="-", help="JSON input path, or - for stdin")
     note = sub.add_parser("note-create", help="Create a semantic Markdown source without overwriting")
     note.add_argument("--file", default="-", help="JSON {source, text, metadata}")
+    note_update = sub.add_parser("note-update", help="Safely update an existing semantic note with expected SHA-256 hash")
+    note_update.add_argument("--file", default="-", help="JSON {source, expected_hash, text, metadata}")
     task = sub.add_parser("task-create", help="Create and verify an explicit new task")
     task.add_argument("--file", default="-", help="JSON {source: tasks/name.md, text, metadata: {id,status,owner}}")
     context = sub.add_parser("context", help="Retrieve source-backed shared context")
@@ -929,7 +931,7 @@ def main(argv=None, return_result=False):
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
         engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server") else None
         store = engine.MemoryStore(state, vault, read_only=read_only_context) if engine else None
-        sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
+        sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-update", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
         if args.command == "ingest-server":
             _ensure_scripts_path()
             import beyin_v3_ingest_server
@@ -1384,6 +1386,9 @@ def main(argv=None, return_result=False):
         elif args.command == "note-create":
             payload = read_json(args.file)
             result = sync.note_create(payload['source'], payload['text'], payload.get('metadata'))
+        elif args.command == "note-update":
+            payload = read_json(args.file)
+            result = sync.note_update(payload['source'], payload['expected_hash'], text=payload.get('text'), metadata=payload.get('metadata'))
         elif args.command == "task-create":
             payload = read_json(args.file)
             result = sync.task_create(payload['source'], payload['text'], payload['metadata'])
