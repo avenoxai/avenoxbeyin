@@ -363,7 +363,6 @@ class EscapeHookTest(unittest.TestCase):
             'SetWinEventHook', 'UnhookWinEvent')})
         user.GetForegroundWindow.return_value = 42
         user.SetWindowsHookExW.return_value = 100
-        user.SetWinEventHook.return_value = 101
         user.CallNextHookEx.return_value = 7
         kernel = types.SimpleNamespace(GetModuleHandleW=Mock(return_value=200))
         root, dismiss = Mock(), Mock()
@@ -375,7 +374,7 @@ class EscapeHookTest(unittest.TestCase):
             finally:
                 stop()
 
-    def test_escape_is_consumed_once_and_both_hooks_are_released(self):
+    def test_escape_is_consumed_once_and_the_hook_is_released(self):
         with self.hooks() as (user, root, dismiss, stop):
             callback = user.SetWindowsHookExW.call_args.args[1]
             key = C.c_uint32(27)
@@ -385,19 +384,24 @@ class EscapeHookTest(unittest.TestCase):
             check()
             dismiss.assert_called_once_with()
             user.UnhookWindowsHookEx.assert_called_once_with(100)
-            user.UnhookWinEvent.assert_called_once_with(101)
 
-    def test_switch_away_and_back_permanently_disarms_this_guard(self):
+    def test_escape_after_clicking_another_window_closes_and_passes_through(self):
         with self.hooks() as (user, root, dismiss, stop):
             callback = user.SetWindowsHookExW.call_args.args[1]
-            foreground = user.SetWinEventHook.call_args.args[3]
-            foreground(101, 3, 77, 0, 0, 1, 1)
-            foreground(101, 3, 42, 0, 0, 1, 2)
+            user.GetForegroundWindow.return_value = 77
+            key = C.c_uint32(27)
+            self.assertEqual(callback(0, 0x100, C.addressof(key)), 7)
+            root.after.call_args.args[1]()
+            dismiss.assert_called_once_with()
+
+    def test_escape_in_the_focused_popup_is_left_to_tk(self):
+        with self.hooks() as (user, root, dismiss, stop):
+            callback = user.SetWindowsHookExW.call_args.args[1]
+            user.GetForegroundWindow.return_value = 99
             key = C.c_uint32(27)
             self.assertEqual(callback(0, 0x100, C.addressof(key)), 7)
             root.after.call_args.args[1]()
             dismiss.assert_not_called()
-            user.UnhookWindowsHookEx.assert_called_once()
 
     def test_other_keys_and_negative_hook_codes_pass_through(self):
         with self.hooks() as (user, root, dismiss, stop):

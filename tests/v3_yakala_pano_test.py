@@ -797,6 +797,23 @@ class PopupWiringTest(ScreenshotFiles, unittest.TestCase):
         self.assertTrue(any('Alt+M' in text for text in root.seen[0][1]))
         self.assertFalse(Path(shot['folder']).exists())
 
+    def test_windows_escape_guard_is_armed_even_when_the_popup_got_focus(self):
+        # A click on the page after the popup opened takes the key away from Tk, so the Esc hook
+        # must already be there; it was armed only when focus was refused before (#383).
+        guards = []
+
+        def hwnd(_root):
+            guards.append(yakala._win_escape_guard)  # the model's guard mock, live inside popup()
+            return 99
+        with patch.object(yakala, '_win_hwnd', side_effect=hwnd):
+            result, root, _ = self.popup('', None, [('key', '<Escape>')], {'hwnd': 42}, windows=True)
+        self.assertEqual(result, {'status': 'vazgecildi'})
+        self.assertFalse(root.alive)
+        guard = guards[-1]
+        guard.assert_called_once()
+        self.assertEqual(guard.call_args.args[1:3], (99, 42))  # popup frame, source window
+        guard.return_value.assert_called()  # and stopped again when the popup closed
+
     def test_windows_cancel_does_not_consume_sequence_and_double_enter_saves_once(self):
         state = Path(self.tmp.name) / 'state/yakala/pano-sira.txt'
         result, root, _ = self.popup('new', None, [('key', '<Escape>')], windows=True, fresh=True)

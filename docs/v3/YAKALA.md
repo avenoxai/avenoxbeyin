@@ -138,9 +138,32 @@ Chromium şemayı gizlediği için şemasız adrese `https://` eklenir. Kısayol
 sayfa **Alt+S**, imlecin altındaki link **Alt+I** ile seçilir. Okuma sırasında pencere veya sekme
 değişirse (başlık değişir) iki link de atılır. Link yoksa kaynak pencerenin görüntüsü sunulur
 (önce Windows.Graphics.Capture, olmazsa PrintWindow). Görüntü kapalı gelir; **Alt+W** veya satıra
-tıklama ile eklenir, çünkü `isle` görseli ajana olduğu gibi okutur. Opera Air adres çubuğunu ve sayfa içeriğini
-göstermediğinde URL tahmini yapılmaz; History/oturum veritabanı okunmaz. Localhost/özel IP için mevcut ağ
-güvenliği sınırı korunur. Opera Air adres desteği ayrı çalışmadır.
+tıklama ile eklenir, çünkü `isle` görseli ajana olduğu gibi okutur. History/oturum veritabanı okunmaz;
+localhost/özel IP için mevcut ağ güvenliği sınırı korunur.
+
+**Gönderiler (X, Instagram):** Tweet metni veya akıştaki video bir link değildir. Açık sayfa
+X (`x.com`, `twitter.com`) ya da Instagram ise ve imleç bir linkin üstünde değilse, altındaki en
+içteki ARIA `article` öğesi (tek gönderi) alınır ve içindeki ilk gönderi bağlantısı
+(`x.com/<kullanıcı>/status/<id>`, `instagram.com/p|reel/<kod>/`) imleç linki olur. Başka sitelerde
+bu yol çalışmaz: bir haber sayfasının gövdesi de tek bir `article` olabilir ve metnin andığı tweet,
+imlecin üstünde durduğu gönderi değildir; orada kaynak açık sayfa kalır. Sayfa adresi
+okunamazsa da bu yol kapalıdır. Aynı gönderideki ikinci, farklı gönderi bağlantısı alıntılanan
+gönderidir; **Alt+A** ile seçilebilir, varsayılan seçili değildir. X'in fotoğraf/video/analytics
+alt sayfaları gönderi adresine indirgenir; Instagram ses sayfası (`/reels/audio/<id>/`) gönderi
+sayılmaz. Bağlantı sayfanın kendisinden okunur; gönderi adresi görselden veya kullanıcı adından
+üretilmez.
+
+**Opera (Opera Air dahil):** Süreç adı `opera` olan pencerede adres çubuğu okunmaz; sayfanın ayrı
+Chromium alt penceresi okunur. Sayfa URL'si MSAA Document nesnesinin gerçek değerinden, imleç
+bağlantısı aynı alt pencerenin UI Automation bağlantılarından alınır. Adres çubuğundaki taslak
+okunmaz; açık sayfanın yüklenmiş adresi kullanılır. Eklenti, yeniden başlatma veya
+erişilebilirlik başlatma bayrağı gerekmez. Tek görünür renderer, pencere/süreç sahipliği ve
+okuma öncesi/sonrası sayfa URL'si doğrulanır. Birden fazla görünür renderer, görünmeyen belge,
+değişen sayfa veya zaman aşımı varsa URL verilmez. Bağlantı iki okumada değişirse yalnız imleç
+bağlantısı atılır. Sayfa ve imleç okuması tek bir yardımcı süreçte, 1 saniyelik bütçe içinde
+yapılır.
+Opera Air 136.0.6008.70 üzerinde bayraksız ayrı profilde temel sağlayıcı yolu ölçüldü;
+oturum açılmış YouTube/Instagram akışlarında kullanıcı kabul testi ayrıca yapılmalıdır.
 
 Tarayıcıdan okunan link (imlecin altındaki ya da açık sayfa) varsa varsayılan odur; pano içeriği
 yalnız seçenek olarak, işaretsiz sunulur. Link yoksa dinleyicinin başlangıcından itibaren gözlenen,
@@ -150,8 +173,9 @@ seçenek olarak kalır. Snipping Tool dosya zamanı tek başına otomatik tazeli
 olduysa yeni içerik kendiliğinden kaynak seçilmez. Metin/görüntü aynı pano oturumundan
 kopyalanır; gecikmeli veya tutarsız okuma güvenli biçimde atlanır.
 
-Seçim yolları: **Alt+I** imlecin altındaki bağlantı, **Alt+S** etkin sayfa, **Alt+P** pano
-bağlantısı, **Alt+M** metin, **Alt+G** pano görüntüsü, **Alt+W** pencere görüntüsü.
+Seçim yolları: **Alt+I** imlecin altındaki bağlantı, **Alt+S** etkin sayfa, **Alt+A** alıntılanan
+gönderi, **Alt+P** pano bağlantısı, **Alt+M** metin, **Alt+G** pano görüntüsü, **Alt+W** pencere
+görüntüsü.
 Alternatifler birbirini silmez. Bir URL seçimi diğer URL'yi kapatır. Pano metni/dosya eklenen
 mevcut URL kartı da `private` olur. Aynı popup'ın kayıt kimliği tekrar oynatılsa bile ikinci
 commit yapılmaz.
@@ -174,10 +198,13 @@ Job Object üzerinden sonlandırılır. Başka bir vault'a ait state silinmez.
 
 Popup kaynak monitörde açılır. Windows tarafında Tk yönetilen pencere kullanır; özel
 palet/canvas görünümü korunmak üzere yerel başlık/çerçeve stili kaldırılır. **Esc** yerel
-odakta hemen iptal eder. Odak reddedilirse kısa callback'li olay desteği yalnız kaynak
-pencere önde kaldığı sürece aktiftir; eski 1,5 saniyelik keyfi kesilme yoktur. Kullanıcı
-başka pencereye geçtiğinde kapsam kalıcı kapanır. Yeniden hotkey yeni odak kapsamını kurar,
-eski yakalama içeriğini değiştirmez. `AttachThreadInput` veya `GetAsyncKeyState` kullanılmaz.
+odakta hemen iptal eder. Kaynaklar okunurken ve popup açık olduğu sürece, odak nerede olursa
+olsun, düşük seviyeli bir klavye kancası (`WH_KEYBOARD_LL`) yalnız Esc'e bakar: popup öndeyse
+Esc'i Tk işler; kaynak pencere öndeyse (odak reddedildi ya da sayfaya tıklandı) Esc tüketilir ve
+popup kapanır; başka bir pencere öndeyse popup kapanır ve Esc o pencereye de iletilir. Kanca
+popup kapanınca (kayıt, Esc, Kapat, Alt+F4, hata) kaldırılır; sonrasında hiçbir uygulamanın
+Esc'i tutulmaz. Yeniden hotkey kancayı yeni kaynak pencereyle yeniden kurar, eski yakalama
+içeriğini değiştirmez. `AttachThreadInput` veya `GetAsyncKeyState` kullanılmaz.
 Görünür **Kapat** ve Alt+F4 da iptaldir. Windows güvenli masaüstü/UIPI/hook reddi için
 her durumda global Esc garantisi yoktur. Kartın disk commit'i başladıysa Esc kaydedilmiş
 veriyi geriye dönük iptal etmez; yavaş disk I/O'su sırasında arayüz yanıtı gecikebilir.
