@@ -690,6 +690,45 @@ class HookInstallerTest(unittest.TestCase):
         self.assertEqual(write('opted-out', 'opted-out').returncode, 0)
         self.assertFalse((self.state / 'receipt-reminders' / (hashlib.sha256(b'opted-out').hexdigest() + '.edited')).exists())
 
+    def test_stop_receipt_reminder_sees_raw_shell_edits_via_transcript_gate(self):
+        # #212: Raw shell edits (e.g. sed, cat >>, scripts) made without beyin.py CLI are
+        # detected at Stop through a light transcript gate and dirty Markdown check.
+        transcript = self.vault / 'transcript.jsonl'
+        transcript.write_text(json.dumps({
+            'type': 'assistant',
+            'message': {
+                'role': 'assistant',
+                'content': [{'type': 'tool_use', 'name': 'Bash', 'input': {'command': 'cat >> notes/raw.md'}}]
+            }
+        }) + '\n', encoding='utf-8')
+
+        self.lifecycle('UserPromptSubmit', 'raw-shell-session', 'claude', prompt='kabuk ile not yaz')
+        (self.vault / 'notes').mkdir(parents=True, exist_ok=True)
+        (self.vault / 'notes/raw.md').write_text('# Shell Note\n', encoding='utf-8')
+
+        # Stop hook blocks because Bash was called and a markdown file was modified
+        res = self.lifecycle('Stop', 'raw-shell-session', 'claude', transcript_path=str(transcript))
+        self.assertEqual(res.get('decision'), 'block')
+
+        # Negative control 1: Transcript only contains read-only commands and no unreceipted Bash edits
+        ro_transcript = self.vault / 'ro_transcript.jsonl'
+        ro_transcript.write_text(json.dumps({
+            'type': 'assistant',
+            'message': {
+                'role': 'assistant',
+                'content': [{'type': 'tool_use', 'name': 'Bash', 'input': {'command': 'ls -la'}},
+                            {'type': 'tool_use', 'name': 'Bash', 'input': {'command': 'python3 beyin.py receipt --summary ok'}}]
+            }
+        }) + '\n', encoding='utf-8')
+        self.lifecycle('UserPromptSubmit', 'ro-shell-session', 'claude', prompt='yalnizca listele')
+        res_ro = self.lifecycle('Stop', 'ro-shell-session', 'claude', transcript_path=str(ro_transcript))
+        self.assertEqual(res_ro, {})
+
+        # Negative control 2: No transcript_path provided (or non-claude harness) does not crash or block
+        self.lifecycle('UserPromptSubmit', 'no-transcript-session', 'claude', prompt='sessiz cikis')
+        res_none = self.lifecycle('Stop', 'no-transcript-session', 'claude', transcript_path=None)
+        self.assertEqual(res_none, {})
+
     def test_antigravity_start_only_first_invocation_and_final_idle_stop(self):
         self.seed()
         payload = {'hook_event_name': 'PreInvocation', 'conversationId': 'synthetic-agy',

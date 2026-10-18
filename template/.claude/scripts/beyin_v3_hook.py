@@ -258,6 +258,93 @@ def _edits_knowledge(vault, payload):
     return False
 
 
+def _detect_shell_vault_edits(payload, vault, state, harness, session_id):
+    """Detect unreceipted vault edits made via shell (Bash) during this session (#212).
+
+    Only runs at Stop for Claude Code when no editor window was opened.
+    Reads transcript tail to check if Bash was called, then confirms dirty Markdown in vault.
+    Fails open (returns False) on any error or missing transcript.
+    """
+    tpath = payload.get("transcript_path")
+    if not tpath:
+        return False
+    try:
+        tfile = Path(tpath)
+        if not tfile.is_file() or tfile.is_symlink():
+            return False
+        size = tfile.stat().st_size
+        if size == 0:
+            return False
+        with tfile.open("rb") as f:
+            if size > 131072:
+                f.seek(size - 131072)
+            tail_bytes = f.read()
+        tail = tail_bytes.decode("utf-8", errors="replace")
+
+        # Check if Bash was used in the transcript tail
+        if not ('"name": "Bash"' in tail or '"name":"Bash"' in tail or '"tool_name": "Bash"' in tail or '"name": "bash"' in tail):
+            return False
+
+        # If Bash was called, did it run after the last receipt?
+        last_bash_pos = max(tail.rfind('"name": "Bash"'), tail.rfind('"name":"Bash"'), tail.rfind('"name": "bash"'))
+        last_receipt_pos = tail.rfind('receipt')
+        if last_receipt_pos > last_bash_pos:
+            return False
+
+        # Confirm if vault actually has modified or dirty Markdown files
+        if vault is not None:
+            vpath = Path(vault).resolve()
+            # 1. Try git status --porcelain -uno if git repo
+            if (vpath / ".git").is_dir():
+                try:
+                    proc = subprocess.run(
+                        ["git", "status", "--porcelain", "-uno"],
+                        cwd=str(vpath),
+                        capture_output=True,
+                        text=True,
+                        timeout=1.0,
+                    )
+                    if proc.returncode == 0:
+                        for line in proc.stdout.splitlines():
+                            parts = line.strip().split(maxsplit=1)
+                            if len(parts) == 2:
+                                rel_path = parts[1].strip().strip('"').replace("\\", "/")
+                                if rel_path.endswith(".md") and not rel_path.startswith((".claude/", ".presence/", ".tmp")):
+                                    return True
+                        return False
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+
+            # 2. Non-git fallback: determine session prompt timestamp and check mtime of markdown files
+            since_time = 0.0
+            digest24 = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:24]
+            if state is not None:
+                for qdir in (Path(state) / "hook-queue", Path(state) / "hook-done"):
+                    if qdir.is_dir():
+                        for evt_path in qdir.glob("*.json"):
+                            try:
+                                evt = json.loads(evt_path.read_text(encoding="utf-8"))
+                                if evt.get("session") in (session_id[:24], digest24) and evt.get("event") in ("UserPromptSubmit", "SessionStart"):
+                                    since_time = max(since_time, float(evt.get("at", 0.0)))
+                            except (ValueError, OSError):
+                                continue
+            if since_time == 0.0:
+                since_time = time.time() - 900.0
+
+            for cand in vpath.rglob("*.md"):
+                try:
+                    rel = cand.relative_to(vpath).as_posix()
+                    if rel.startswith((".claude/", ".presence/", ".tmp")):
+                        continue
+                    if not cand.is_symlink() and cand.stat().st_mtime >= (since_time - 1.0):
+                        return True
+                except (ValueError, OSError):
+                    continue
+        return False
+    except Exception:
+        return False
+
+
 def receipt_reminder(payload, state, harness, event, vault=None):
     """Track edits per session and return a one-time Stop block, or None.
 
@@ -296,8 +383,14 @@ def receipt_reminder(payload, state, harness, event, vault=None):
                 if marker.get("knowledge") is not True:
                     atomic(edited, dict(marker, knowledge=True))
             return None
-        if payload.get("stop_hook_active") is True or not edited.exists():
+        if payload.get("stop_hook_active") is True:
             return None
+        if not edited.exists():
+            if event == "Stop" and harness == "claude" and vault is not None:
+                if _detect_shell_vault_edits(payload, vault, state, harness, session_id):
+                    atomic(edited, {"at": 0.0, "source": "shell"})
+            if not edited.exists():
+                return None
         marker = json.loads(edited.read_text(encoding="utf-8"))
         since = float(marker["at"])
         session = digest[:24]  # the queued checkpoint's session value
