@@ -147,7 +147,9 @@ class MemoryIntentService:
                         record=next(r for r in self.engine.store._records() if r['id']==target['record_id'])
                         if record.get('kind')=='task':self.engine.update_task(target['record_id'],target['expected_revision'],part['updates'])
                         else:
-                            _,body=parse(path.read_bytes().decode('utf-8'));self.engine.update_note(target['record_id'],target['expected_revision'],target['expected_source_sha256'],body,part['updates'])
+                            # Metadata-only links must preserve the original body,
+                            # including its missing final LF, just as preparation hashes it.
+                            _,body=parse(path.read_bytes().decode('utf-8'));self.engine.update_note(target['record_id'],target['expected_revision'],target['expected_source_sha256'],body,part['updates'],_preserve_body=True)
                     transaction_hook('writer_returned',index)
                 self.engine.sync()
                 indexed=next((r for r in self.engine.store._records() if r['id']==change['target']['record_id']),None)

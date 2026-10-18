@@ -71,6 +71,40 @@ class WorkspaceMemoryTest(unittest.TestCase):
         self.assertEqual(updated_meta['revision'], record['revision'] + 1)
         self.assertEqual(updated_body, crlf_body)
 
+    def test_metadata_only_note_link_preserves_crlf_without_final_lf(self):
+        from beyin_v3_sync import parse, render
+        path = self.runtime.registry.vault/'notes/academic-learning.md'
+        metadata,body = parse(path.read_bytes().decode('utf-8'))
+        crlf_body = body.replace('\n', '\r\n').rstrip('\r\n')
+        self.assertFalse(crlf_body.endswith('\n'))
+        self.assertIn('\r\n', crlf_body)
+        path.write_bytes(render(metadata, crlf_body).encode('utf-8'))
+        self.service.engine.sync()
+        context = self.runtime.context(self.request)['data']
+        record = next(r for r in context['records'] if r['id']=='academic-learning')
+        # The manual CRLF edit is a separate synced revision before the link.
+        self.assertEqual(record['revision'], metadata['revision'] + 1)
+        intent = copy.deepcopy(self.intent)
+        change = copy.deepcopy(intent['data']['changes'][0])
+        change.update(action='link', body='', metadata_changes={}, relation_changes=[])
+        change['target'].update(expected_revision=record['revision'],
+                                expected_source_sha256=record['source_ref']['content_sha256'])
+        intent['data'].update(
+            changes=[change],
+            context_token=context['context_token'],
+            binding_snapshot_sha256=context['binding_snapshot_sha256'])
+        result = self.service.apply(intent, _refresh_views=False)['data']
+        self.assertEqual(result['operation_status'], 'applied')
+        self.assertEqual(result['parts'][0]['state'], 'verified')
+        updated_meta, updated_body = parse(path.read_bytes().decode('utf-8'))
+        self.assertEqual(updated_meta['revision'], record['revision'] + 1)
+        self.assertEqual(updated_body, crlf_body)
+        after = path.read_bytes()
+        replay = self.service.apply(intent, _refresh_views=False)['data']
+        self.assertEqual(replay['operation_status'], 'replayed')
+        self.assertEqual(replay['parts'][0]['state'], 'verified')
+        self.assertEqual(path.read_bytes(), after)
+
     def test_replay_and_idempotency_collision(self):
         self.service.apply(self.intent)
         self.assertEqual(self.service.apply(self.intent)['data']['operation_status'],'replayed')
