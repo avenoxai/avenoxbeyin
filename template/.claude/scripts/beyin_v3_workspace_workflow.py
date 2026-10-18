@@ -112,7 +112,7 @@ class WorkflowRunner:
                 if run['status']=='completed':
                     for output in outputs.values():
                         if isinstance(output,dict) and 'intent_ref' in output:
-                            MemoryIntentService(self.runtime).apply(output['intent_ref'],_coordinated=True)
+                            output['operation_ref']=MemoryIntentService(self.runtime).apply(output['intent_ref'],_coordinated=True)
                         if isinstance(output,dict) and 'applied_plan_ref' in output:
                             self._provisioner().apply(output['applied_plan_ref'],output['operation_key'],_coordinated=True)
             else:
@@ -222,7 +222,7 @@ class WorkflowRunner:
                             step['state']='completed';step['result_ref']=run_id+'/'+step['step_id'];checkpoint();continue
                         result=MemoryIntentService(self.runtime).apply(proposed,_coordinated=True)
                         if not all(p['state'] in ('verified','skipped') for p in result['data']['parts']):raise WorkspaceError('workflow_verification_failed')
-                        outputs[step['step_id']]={'verified':True}
+                        outputs[step['step_id']]={'verified':True,'operation_ref':result}
                     elif action in self.handlers and action not in ('apply_provision','propose_provision'):
                         outputs[step['step_id']]=self.handlers[action](inputs,step['idempotency_key'],context)
                     else:
@@ -230,5 +230,9 @@ class WorkflowRunner:
                         checkpoint();return envelope('WorkflowRun',run)
                     transaction_hook('effect_returned',step['step_id'])
                     step['state']='completed';step['result_ref']=run_id+'/'+step['step_id'];checkpoint()
-            run['status']='completed';run['next_action']=None;checkpoint()
+            view_stale=any(isinstance(output,dict) and any(issue.get('code')=='managed_view_stale'
+                for issue in output.get('operation_ref',{}).get('data',{}).get('issues',[])) for output in outputs.values())
+            run['status']='completed'
+            run['next_action']=('managed_view_stale: Canonical changes are saved; inspect and retry the authorized managed view refresh.' if view_stale else None)
+            checkpoint()
         return envelope('WorkflowRun',run)

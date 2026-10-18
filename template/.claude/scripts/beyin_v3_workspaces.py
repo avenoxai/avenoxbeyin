@@ -215,6 +215,38 @@ def validate_for_provision(document):
     validate_document(document)
 
 
+def workspace_metadata(vault, state, action, workspace_id=None, *, limit=20):
+    """Registry metadata only: no bindings, source reads, store, sync or writes.
+
+    This is deliberately not a WorkContext or a capability/authority check.
+    The existing snapshot reader keeps its pending-operation barrier.
+    """
+    if action not in ('list', 'inspect') or type(limit) is not int or not 1 <= limit <= 100:
+        raise WorkspaceError('invalid_metadata_request')
+    if (action == 'list' and workspace_id is not None) or (action == 'inspect' and
+            (not isinstance(workspace_id, str) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,95}', workspace_id))):
+        raise WorkspaceError('invalid_metadata_request')
+    snapshot = Registry(vault, state).snapshot()
+    profiles = sorted((snapshot or {}).get('profiles', []), key=lambda profile: profile['id'])
+    if action == 'inspect':
+        profiles = [profile for profile in profiles if profile['id'] == workspace_id]
+        if not profiles:
+            raise WorkspaceError('workspace_not_found')
+    items = []
+    for profile in profiles[:limit]:
+        item = {key: profile[key] for key in ('id', 'name', 'revision', 'lifecycle')}
+        item.update(source_count=len(profile['source_ids']), note_root_count=len(profile['note_roots']),
+                    working_rule_count=len(profile['working_rules']), workflow_count=len(profile['workflows']))
+        if action == 'inspect':
+            # Only portable configuration identifiers, never local locators or note bodies.
+            item.update(source_ids=profile['source_ids'][:20], note_roots=profile['note_roots'][:20])
+        items.append(item)
+    return {'workspace_metadata': {'action': action, 'read_only': True,
+        'registry_id': (snapshot or {}).get('registry_id'),
+        'snapshot_sha256': (snapshot or {}).get('snapshot_sha256'),
+        'workspaces': items, 'total': len(profiles), 'truncated': len(profiles) > limit}}
+
+
 class Registry:
     def __init__(self, vault, state):
         self.vault, self.state = Path(vault).resolve(), Path(state).resolve()

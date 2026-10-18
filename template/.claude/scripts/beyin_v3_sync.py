@@ -1256,17 +1256,22 @@ class SyncEngine:
                 except WorkspaceError:continue
         raise WorkspaceError('scope_denied')
 
-    def update_note(self, id, expected_revision, expected_source_sha256, text, changes=None):
+    def update_note(self, id, expected_revision, expected_source_sha256, text, changes=None, *, _preserve_body=False):
         """Narrow canonical update through the existing source journal and sync.
 
         Existing metadata is preserved; policy-changing metadata is not accepted.
         Expected revision/hash protect manual edits and explicit IDs survive renames.
         """
+        # Internal managed-view calls may retain exact body bytes (including
+        # CRLF / missing final LF). The ordinary canonical update stays unchanged.
+        if type(_preserve_body) is not bool:raise ValueError('invalid body mode')
         allowed={'title','facts','next_action','status','due_at','workspace_relations'}
         changes=dict(changes or {})
         if set(changes)-allowed or not isinstance(text,str) or not text.strip() or text.lstrip().startswith('---'):
             raise ValueError('invalid note update')
+        original_text=text
         text,redacted=self._protect(text)
+        if _preserve_body and text!=original_text:raise ValueError('managed view body requires review')
         changes,meta_redacted=self._protect_metadata(changes);redacted+=meta_redacted
         self._check_workspace_relations(changes.get('workspace_relations',[]))
         with self.store._connect() as db:
@@ -1283,7 +1288,7 @@ class SyncEngine:
             metadata,body=parse(raw.decode('utf-8'))
             if metadata.get('id')!=id:raise RevisionConflict('explicit stable id required for canonical update')
             metadata.update(changes);metadata['revision']=expected_revision+1
-            intended=render(metadata,text if text.endswith('\n') else text+'\n')
+            intended=render(metadata,text if (_preserve_body or text.endswith('\n')) else text+'\n')
             self._intent(record['source'],expected_source_sha256,intended,'note')
         result=self.sync()
         if self._write_blockers(result,record['source']):raise RevisionConflict('note projection conflict')

@@ -840,9 +840,16 @@ def parser():
     note.add_argument("--file", default="-", help="JSON {source, text, metadata}")
     task = sub.add_parser("task-create", help="Create and verify an explicit new task")
     task.add_argument("--file", default="-", help="JSON {source: tasks/name.md, text, metadata: {id,status,owner}}")
+    metadata = sub.add_parser('workspace', help='Read workspace registry metadata without sources, index or sync')
+    metadata.add_argument('action', choices=('list', 'inspect'))
+    metadata.add_argument('workspace_id', nargs='?', help='Workspace ID required for inspect')
+    metadata.add_argument('--limit', type=int, default=20, help='List at most 1-100 workspaces (default 20)')
     builder = sub.add_parser('workspace-builder', help='Plan, preview and execute approved workspace configuration')
     builder.add_argument('action', choices=('plan','preview','apply','recover','revert'))
     builder.add_argument('--file', default='-', help='Agent-prepared JSON input or - for stdin')
+    setup = sub.add_parser('workspace-setup', help='Catalog sources, prepare a compact workspace plan, or organize an approved view')
+    setup.add_argument('action', choices=('catalog', 'prepare', 'organize'))
+    setup.add_argument('--file', default='-', help='Compact agent-prepared setup JSON or - for stdin')
     authority = sub.add_parser('workspace-authority', help='Record explicit trusted-agent source/plan/revert authority or revoke it')
     authority.add_argument('action', choices=('grant','approve-plan','approve-revert','revoke'))
     authority.add_argument('--file', default='-', help='Bounded JSON with explicit human evidence, or - for stdin')
@@ -907,6 +914,64 @@ def parser():
     return root
 
 
+def workspace_failure(exc, operation='workspace-operation'):
+    """Stable symbolic errors only; never dump source, OS paths or tracebacks."""
+    from beyin_v3_workspaces import envelope
+    known = {
+        'runtime/updater busy; retry after active work finishes': 'busy',
+        'workspace provisioning pending; recover or revert that operation first': 'operation_pending',
+        'new semantic notes belong under notes/ or knowledge/': 'invalid_create_note_target',
+        'task-create source must be a tasks/ Markdown path': 'invalid_create_task_target',
+    }
+    code = getattr(exc, 'code', None)
+    if code is None:
+        code = known.get(str(exc)) if isinstance(exc, ValueError) else None
+    if not isinstance(code, str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,95}', code):
+        code = 'source_unavailable' if isinstance(exc, OSError) else ('revision_conflict' if type(exc).__name__ == 'RevisionConflict' else 'workspace_operation_failed')
+    denied = code.endswith(('_denied', '_authority_required')) or code in ('source_unbound', 'authority_required', 'no_memory', 'workspace_context_required')
+    conflict = any(word in code for word in ('conflict', 'changed', 'collision', 'pending', 'busy', 'stale'))
+    invalid = code.startswith(('invalid_', 'unsupported_contract')) or code in ('duplicate_json_key', 'invalid_number', 'document_too_large', 'document_too_deep')
+    parts = []
+    issue = {'code': code}
+    if code in ('invalid_create_note_target', 'invalid_create_task_target'):
+        change_id = getattr(exc, 'change_id', None)
+        if isinstance(change_id, str) and re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,95}', change_id):
+            parts = [{'id': change_id, 'state': 'failed'}]
+        roots = 'notes/ or knowledge/' if code == 'invalid_create_note_target' else 'tasks/'
+        issue['detail'] = 'The canonical create writer requires a Markdown target under ' + roots + '.'
+        next_action = ('Choose an approved .md target under ' + roots +
+                       '; obtain a fresh context and approval if scope changes. ' +
+                       ('The whole intent was rejected before source writes.' if parts else 'Inspect the journal before retrying; previous source changes may exist.'))
+    else:
+        next_action = ('Verify explicit source scope and user authority before retrying.' if denied else
+                       'Read the current context and pending journal; recover or revert the existing operation before retrying.' if conflict else
+                       'Correct the bounded request using the workspace command help; do not retry by bypassing the CLI.' if invalid else
+                       'Inspect dependencies and pending operations. This error does not undo already journaled source changes.')
+    result = envelope('OperationResult', {'operation_id': operation,
+        'operation_status': 'denied' if denied else 'conflict' if conflict else 'failed',
+        'workspace_health': 'verification_pending', 'parts': parts, 'capabilities': [], 'verification': [],
+        'issues': [issue], 'next_action': next_action})
+    return result, 4 if denied else 3 if conflict else 2 if invalid else 5
+
+
+def workspace_metadata_cli(args, return_result=False):
+    # Dispatch before MemoryStore/SyncEngine and suppress import bytecode too.
+    sys.dont_write_bytecode = True
+    _ensure_scripts_path()
+    try:
+        from beyin_v3_workspaces import workspace_metadata
+        vault = args.vault.expanduser().resolve()
+        state = (args.state.expanduser() if args.state else default_state(vault)).resolve()
+        result = workspace_metadata(vault, state, args.action, args.workspace_id, limit=args.limit)
+        code = 0
+    except Exception as exc:
+        result, code = workspace_failure(exc, 'workspace-metadata')
+    if return_result:
+        return result, code
+    print(json.dumps(result, ensure_ascii=True, indent=2))
+    return code
+
+
 def workspace_builder_cli(args,return_result=False):
     # Planning/preview must not initialize MemoryStore, SyncEngine or bytecode.
     sys.dont_write_bytecode=True
@@ -915,6 +980,8 @@ def workspace_builder_cli(args,return_result=False):
         from beyin_v3_builder import execute,_failure
         if args.command=='workspace-authority':
             from beyin_v3_workspaces import execute_authority as execute
+        elif args.command=='workspace-setup':
+            from beyin_v3_workspace_setup import execute
         vault=args.vault.expanduser().resolve()
         if not vault.is_dir():raise ValueError('invalid_builder_request')
         state=(args.state.expanduser() if args.state else default_state(vault)).resolve()
@@ -923,7 +990,7 @@ def workspace_builder_cli(args,return_result=False):
     except Exception as exc:
         try:
             from beyin_v3_builder import _failure
-            result,code=_failure(exc)
+            result,code=(workspace_failure(exc,args.command) if args.command=='workspace-setup' else _failure(exc))
             result['data']['operation_id']=args.command
             if getattr(exc,'code',None) in ('document_too_large','document_too_deep'):code=2
         except ImportError:
@@ -941,7 +1008,8 @@ def main(argv=None, return_result=False):
         sys.stdin.reconfigure(encoding="utf-8-sig")
     argument_parser = parser()
     args = argument_parser.parse_args(argv)
-    if args.command in ('workspace-builder','workspace-authority'):return workspace_builder_cli(args,return_result)
+    if args.command=='workspace':return workspace_metadata_cli(args,return_result)
+    if args.command in ('workspace-builder','workspace-authority','workspace-setup'):return workspace_builder_cli(args,return_result)
     receipt_flags = args.command == "receipt" and any(
         getattr(args, name) is not None for name in ("event_id", "summary", "summary_file", "ref", "link", "session"))
     if receipt_flags:
@@ -1556,21 +1624,15 @@ def main(argv=None, return_result=False):
             result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])
         if args.command in SOURCE_WRITE_COMMANDS or (args.command=='workspace-write' and result.get('data',{}).get('operation_status')=='applied'):
             mark_session_edit(state)
+        view_stale=(args.command=='workspace-write' and any(issue.get('code')=='managed_view_stale' for issue in result.get('data',{}).get('issues',[]))) or (args.command=='workspace-workflow' and (result.get('data',{}).get('next_action') or '').startswith('managed_view_stale:'))
+        exit_code=5 if view_stale else 0
         if return_result:
-            return result, 0
+            return result, exit_code
         print(json.dumps(result, ensure_ascii=True, indent=2))
-        return 0
+        return exit_code
     except Exception as exc:
         if args.command in ('workspace-context','workspace-write','workspace-workflow'):
-            code=getattr(exc,'code','source_unavailable' if isinstance(exc,OSError) else 'workspace_failed')
-            denied=code in ('scope_denied','source_unbound','authority_required','no_memory','workspace_context_required')
-            conflict=any(word in code for word in ('conflict','changed','collision','pending','busy','stale'))
-            invalid=code in ('invalid_schema','invalid_json','duplicate_json_key','invalid_number','invalid_context','document_too_large','document_too_deep')
-            exit_code=4 if denied else 3 if conflict else 2 if invalid else 5
-            error={'contract_version':'workspace/0.1.0','type':'OperationResult','data':{
-                'operation_id':'workspace-operation','operation_status':'denied' if denied else 'conflict' if conflict else 'failed',
-                'workspace_health':'verification_pending','parts':[],'capabilities':[],'verification':[],
-                'issues':[{'code':code}],'next_action':'Inspect current sources and pending operations before retry; an error does not cancel already journaled source changes.'}}
+            error,exit_code=workspace_failure(exc)
             if return_result:return error,exit_code
             print(json.dumps(error,ensure_ascii=True));return exit_code
         # No traceback or raw input dump: callers retain their local source files.

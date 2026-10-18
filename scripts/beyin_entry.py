@@ -169,13 +169,48 @@ def rewrite_note(entry):
 
 
 def human_result(result, command, installed_version=None):
+    if 'workspace_metadata' in result:
+        data = result['workspace_metadata']
+        lines = []
+        for item in data['workspaces']:
+            lines.append(plain_text(item['id']) + ' · ' + plain_text(item['name']) +
+                         ' · ' + plain_text(item['lifecycle']) + ' · r' + str(item['revision']) +
+                         ' · ' + str(item['source_count']) + ' kaynak')
+            if data['action'] == 'inspect':
+                lines.append('Not kokleri: ' + ', '.join(plain_text(root) for root in item['note_roots']))
+                lines.append('Kural: ' + str(item['working_rule_count']) + '; surec: ' + str(item['workflow_count']))
+        if not lines:
+            lines.append('Kayitli workspace yok.')
+        if data['truncated']:
+            lines.append('Gosterilen: ' + str(len(data['workspaces'])) + '/' + str(data['total']) + '; --limit ile genislet.')
+        return '\n'.join(lines)
+    if command == 'workspace-setup' and result.get('contract_version') == 'workspace/0.1.0':
+        for issue in result['data'].get('issues', []):
+            if issue.get('code') != 'setup_artifacts':
+                continue
+            try:
+                artifacts = json.loads(issue['detail'])
+            except (ValueError, KeyError, TypeError):
+                break
+            preview = artifacts.get('preview') if isinstance(artifacts, dict) else None
+            if isinstance(preview, dict) and isinstance(preview.get('text'), str):
+                return '\n'.join(plain_text(line) for line in preview['text'].splitlines())
+            if isinstance(artifacts, dict) and isinstance(artifacts.get('catalog'), list):
+                return ('Kaynak katalogu: ' + str(len(artifacts['catalog'])) + ' kayit.' +
+                        (' Sinira ulasildi; daha dar kokler sec.' if artifacts.get('truncated') else '') +
+                        (' ' + plain_text(result['data']['next_action']) if result['data'].get('next_action') else ''))
     if result.get('contract_version')=='workspace/0.1.0':
         data=result['data']
         if result['type']=='WorkContext':
             return 'Calisma baglami: '+str(data['state'])+'; '+str(len(data['records']))+' kaynak/kayit.'
         if result['type']=='WorkflowRun':
             return 'Surec: '+str(data['status'])+('. '+data['next_action'] if data.get('next_action') else '')
-        return 'Islem: '+str(data['operation_status'])+'; alan durumu: '+str(data['workspace_health'])+('. '+data['next_action'] if data.get('next_action') else '')
+        line='Islem: '+str(data['operation_status'])+'; alan durumu: '+str(data['workspace_health'])
+        codes=[plain_text(issue['code']) for issue in data.get('issues',[]) if issue.get('code')!='setup_artifacts']
+        failed=[plain_text(part['id']) for part in data.get('parts',[]) if part['state'] in ('failed','conflict')]
+        if codes:line+='; kod: '+', '.join(codes)
+        if failed:line+='; hedef degisiklik: '+', '.join(failed)
+        return line+('. '+plain_text(data['next_action']) if data.get('next_action') else '')
     if command=='workspace-builder':
         preview=result.get('preview',result)
         if isinstance(preview,dict) and isinstance(preview.get('text'),str):

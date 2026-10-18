@@ -268,3 +268,11 @@ dosyasina goturur; ayni paketler dogrudan
 kurulumdan sonra vault kokunde `<python> beyin.py update --check` ile surumun guncel
 oldugunu dogrula. Bu yol otomatik kurulumun yerine gecen son care yoludur; ilk tercih
 degildir.
+
+Workspace kurulumu: Kullanıcı doğal amacı ve kaynakları söyler; ajan kısa
+`workspace-setup catalog/prepare` girdisini hazırlar. Büyük profil JSON'u kullanıcıya
+yüklenmez. Kaynaklar taşınmadan bağlanır, basit alan tek Markdown sayfasında görünür;
+JSON teknik profil olarak kalır. Onaylı kanonik kayıt değişiklikleri yalnız yönetilen
+blokları yeniler; kullanıcı metni korunur. Yenileme doğrulanamazsa stale/pending
+raporlanır. Global/proje Kurallar.md ve workspace working_rules erişim veya onay
+sınırını gevşetmez. Dataview/Bases zorunlu değildir.

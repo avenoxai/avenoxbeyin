@@ -47,3 +47,27 @@ Platform kanıtı ve kalan doğrulamalar: [docs/v3/PLATFORM-TESTS.md](docs/v3/PL
 Kurulumdan sonra kullanıcı isterse beyin skill'i ile Normal/Ekonomik/Manuel tercihini uygula. Varsayılanı sormadan değiştirme. “15 dakikada kontrol” yerel olay kontrolleri arasındaki minimum aralıktır; model çağıran periyodik iş kurma. `beyin.py preferences` mevcut ayarı gösterir. [Tercihler](docs/v3/PREFERENCES.md).
 
 Yeni kurulum ve V3.1 güncellemesi sonrası sürüm bildirimi varsayılan açık: günde en fazla bir kez GitHub sürüm bilgisi okunur, not gönderilmez, otomatik kurulum yapılmaz. Kapatma: `python3 beyin.py preferences --update-notifications off`. Eski V3.0.2 için ilk geçiş `python3 beyin.py update` komutudur.
+
+## Workspace'i kısa girdiden hazırlama
+
+Kullanıcıdan teknik profil JSON'u istemeyin. Ajan `workspace-setup catalog --file
+istek.json` ile açık kaynak köklerinin sınırlı metadata özetini alır; ardından
+`workspace-setup prepare --file istek.json` için şu küçük girdiyi hazırlar:
+
+```json
+{"workspace_id":"ornek","name":"Örnek alan","purpose":"Kaynakları ve işleri izlemek","sources":[{"path":"/absolute/source","name":"Kaynaklar"}]}
+```
+
+Bu iki işlem salt okunurdur; izin üretmez, içerik çıkarmaz ve probe çalıştırmaz.
+`setup_artifacts` issue'sunun JSON `detail` alanında spec, exact plan ve preview
+bulunur. Mevcut authority/plan onayından sonra builder apply kullanılır. Birden
+çok alan için her apply sonrası güncel snapshot'tan sonraki planı hazırlayın.
+
+Teknik profil JSON, insanın gördüğü düzen Markdown'dır. Varsayılan tek sayfa
+`notes/workspaces/<id>.md`; ihtiyaç halinde not kökleri açıkça seçilir. Kaynaklar
+yerinde kalır. `organize` mevcut yetkili intent context'ini kullanır, esas intent'i
+tekrarlamaz. Başarılı kanonik yazıdan sonra yalnız yönetilen blok yenilenir;
+`managed_view_stale` görünümün doğrulanamadığını bildirir. Blok dışı kullanıcı
+gövdesi CRLF ve son satır sonu dahil byte düzeyinde korunur; frontmatter metadata
+kanonik writer tarafından revision ile yeniden üretilir. Mevcut proje ana sayfası için adoption ve canonical writer yetkisi
+gerekir; keyfi proje dosyası doğrudan yazılmaz. Dataview/Bases gerekmez.

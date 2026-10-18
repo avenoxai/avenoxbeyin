@@ -2,8 +2,9 @@
 
 Bütün isimler, yollar ve olaylar sentetiktir. Bunlar kullanıcı hakkında kişisel bilgi
 değildir. G0 fixture'larının yerini almaz; doğal ihtiyaç→önizleme kabul girdileridir.
-JSON formu veya alan başına skill kullanıcıya gösterilmez. Komut adları G0/runtime
-entegrasyonundan önce uydurulmaz. Uygulama henüz yokken aşağıdaki metinler öneridir.
+JSON formu veya alan başına skill kullanıcıya gösterilmez. Aşağıdaki metinler
+mevcut altyapı ve kısa kurulum düzeltmesi için kabul senaryolarıdır; otomatik
+plan/önizleme veya günlük kullanım kabulünün geçtiği anlamına gelmez.
 
 ## Bir mesajda akademik ve kariyer
 

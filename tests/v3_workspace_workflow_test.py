@@ -32,6 +32,21 @@ class WorkspaceWorkflowTest(unittest.TestCase):
         records=m.runtime.context(m.request)['data']['records']
         self.assertEqual(next(r for r in records if r['id']=='academic-learning')['revision'],2)
 
+    def test_view_refresh_failure_is_checkpointed_without_losing_canonical_success(self):
+        import sys
+        import types
+        module=types.ModuleType('beyin_v3_workspace_views')
+        def failed(*args,**kwargs):raise OSError('PRIVATE_VIEW_PATH')
+        module.refresh_after_apply=failed
+        with patch.dict(sys.modules,{'beyin_v3_workspace_views':module}):
+            complete=self.runner.advance(self.event,'result-to-learning',self.memory.request,proposals={'propose':self.memory.intent})['data']
+        self.assertEqual(complete['status'],'completed');self.assertIn('managed_view_stale:',complete['next_action'])
+        saved=json.loads((self.memory.runtime.registry.state/'workspace-workflow'/(complete['run_id']+'.json')).read_text())
+        self.assertEqual(saved['run']['next_action'],complete['next_action'])
+        operations=[output['operation_ref']['data'] for output in saved['outputs'].values() if 'operation_ref' in output]
+        self.assertTrue(operations);self.assertTrue(all(operation['operation_status'] in ('applied','replayed') for operation in operations))
+        self.assertNotIn('PRIVATE',json.dumps(saved['run']))
+
     def test_crash_after_effect_resumes_once(self):
         m=self.memory
         def fail(phase,step=None):
