@@ -55,6 +55,28 @@ class SearchBenchmarkTest(unittest.TestCase):
         self.assertEqual(strict["categories"]["clean_baseline"]["recall_at_1"], 1.0)
         self.assertEqual(non_strict["categories"]["clean_baseline"]["recall_at_1"], 1.0)
 
+    def test_percentile_calculations(self):
+        """Test percentile helper function across edge cases, sorting, and rounding."""
+        # Empty input
+        self.assertIsNone(evaluator.percentile([], 0.5))
+        self.assertIsNone(evaluator.percentile([], 0.95))
+
+        # Single element
+        self.assertEqual(evaluator.percentile([42.1234], 0.5), 42.12)
+        self.assertEqual(evaluator.percentile([42.1234], 0.0), 42.12)
+        self.assertEqual(evaluator.percentile([42.1234], 1.0), 42.12)
+
+        # Unsorted list
+        vals = [10.0, 1.0, 5.0, 8.0, 3.0]
+        # Sorted: [1.0, 3.0, 5.0, 8.0, 10.0], len = 5
+        self.assertEqual(evaluator.percentile(vals, 0.0), 1.0)
+        self.assertEqual(evaluator.percentile(vals, 0.5), 5.0)  # ceil(5*0.5)-1 = 2 -> 5.0
+        self.assertEqual(evaluator.percentile(vals, 0.95), 10.0)  # ceil(5*0.95)-1 = 4 -> 10.0
+        self.assertEqual(evaluator.percentile(vals, 1.0), 10.0)
+
+        # Precision rounding
+        self.assertEqual(evaluator.percentile([1.111, 2.229, 3.333], 0.5), 2.23)
+
     def test_reranked_search_improves_salience_and_recall(self):
         """Field-weighted reranking floors: Recall@1 >= 0.90 and MRR >= 0.90."""
         report = evaluator.evaluate(modes=["reranked"])

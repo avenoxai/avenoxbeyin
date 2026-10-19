@@ -93,6 +93,39 @@ class UsageReport(unittest.TestCase):
     def report(self, **options):
         return usage.build(self.vault, projects_dir=options.pop('projects_dir', self.folder), **options)
 
+    def test_utf16_units_helper(self):
+        self.assertEqual(usage.utf16_units('a'), [97])
+        self.assertEqual(usage.utf16_units('Ş'), [0x015E])
+        self.assertEqual(usage.utf16_units('🔮'), [55357, 56622])
+
+    def test_sanitized_pure_string_rules(self):
+        self.assertEqual(usage.sanitized('project123'), 'project123')
+        self.assertEqual(usage.sanitized('/Users/dev/my project!'), '-Users-dev-my-project-')
+        self.assertEqual(usage.sanitized('C:\\Users\\dev\\project'), 'C--Users-dev-project')
+
+        self.assertEqual(usage.sanitized('Kasa_Şube_ıöç'), 'Kasa--ube----')
+        self.assertEqual(usage.sanitized('Kasa Şube'), 'Kasa--ube')
+        self.assertEqual(usage.sanitized('🔮'), '--')
+        self.assertEqual(usage.sanitized('hello🔮world🚀'), 'hello--world--')
+
+        exact_199 = 'a' * 199
+        self.assertEqual(usage.sanitized(exact_199), exact_199)
+
+        exact_200 = 'a' * 200
+        self.assertEqual(usage.sanitized(exact_200), exact_200)
+
+        exact_201 = 'a' * 201
+        res_201 = usage.sanitized(exact_201)
+        self.assertTrue(res_201.startswith('a' * 200 + '-'))
+        self.assertGreater(len(res_201), 201)
+
+        long_path = '/project/' + 'x' * 210
+        sanitized_long = usage.sanitized(long_path)
+        self.assertEqual(sanitized_long[:200], ('-project-' + 'x' * 210)[:200])
+        self.assertIn('-', sanitized_long[200:])
+        hash_part = sanitized_long.rsplit('-', 1)[1]
+        self.assertTrue(hash_part.isalnum() and hash_part.islower())
+
     def test_folder_name_follows_claude_code_rule(self):
         self.assertEqual(usage.sanitized('/Users/ada/Belgeler/Kasa Şube/🔮 Notlar'), '-Users-ada-Belgeler-Kasa--ube----Notlar')
         self.assertEqual(usage.sanitized('C:\\Users\\ada\\kasa'), 'C--Users-ada-kasa')

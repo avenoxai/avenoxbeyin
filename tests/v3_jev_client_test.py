@@ -326,4 +326,14 @@ class ClientTests(unittest.TestCase):
                 self.assertEqual(second['diagnostics'], ['configuration_changed'])
                 self.assertNotIn('cache_unavailable', second['diagnostics'])
 
+    def test_no_redirect_refuses_redirects(self):
+        handler = j._NoRedirect()
+        with self.assertRaises(ValueError) as ctx:
+            handler.redirect_request(None, None, 302, 'Found', {}, 'http://example.com')
+        self.assertEqual(str(ctx.exception), 'redirect_rejected')
+        with self.assertRaises(ValueError) as ctx:
+            handler.redirect_request()
+        self.assertEqual(str(ctx.exception), 'redirect_rejected')
+
+
 if __name__=='__main__': unittest.main()

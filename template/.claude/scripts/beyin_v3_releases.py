@@ -53,8 +53,12 @@ class OfficialRedirect(urllib.request.HTTPRedirectHandler):
     max_redirections = 3
     max_repeats = 2
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return super().redirect_request(req, fp, code, msg, headers, safe_url(newurl))
+    def redirect_request(self, *args, **kwargs):
+        if args:
+            args = args[:-1] + (safe_url(args[-1]),)
+        if 'newurl' in kwargs:
+            kwargs['newurl'] = safe_url(kwargs['newurl'])
+        return super().redirect_request(*args, **kwargs)
 
 
 def request_bytes(url, limit, etag=None):

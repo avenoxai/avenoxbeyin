@@ -317,7 +317,7 @@ def _endpoint(base):
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
+    def redirect_request(self, *args, **kwargs):
         raise ValueError('redirect_rejected')
 
 

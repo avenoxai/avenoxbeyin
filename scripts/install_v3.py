@@ -25,6 +25,16 @@ CLAUDE_IMPORT = b"@AGENTS.md\n"
 LEGACY_HOOK_FILES = tuple(name + suffix for name in ("session-start", "session-end", "pre-compact", "prompt-counter") for suffix in (".sh", ".ps1"))
 LEGACY = tuple(".claude/hooks/" + name for name in LEGACY_HOOK_FILES)
 LEGACY_RUNNERS = LEGACY + (".claude/scripts/flush.py", ".claude/scripts/compile.py")
+RELEASED_V2_HOOK_HASHES = {
+    ".claude/hooks/session-start.sh": "92dd2ce61777cc80034894fc8e0e053cebcec3bfc3c2455e5c1783b7bbae4088",
+    ".claude/hooks/session-start.ps1": "c90f93b3bd21deae6289504646b56b0aeb91a5ba38401b8188053d73eb1edcee",
+    ".claude/hooks/session-end.sh": "3f079c8b64a907fc81b58187d32317b1db182e14190d600498d6cd48b1fbb92a",
+    ".claude/hooks/session-end.ps1": "8fbf8f92572d01eb5b71582ae4e05df392c0aa69e60cfc57d5f3686c5251471c",
+    ".claude/hooks/pre-compact.sh": "19e39f72f431203374fe3f26b94c4ceae0f031949617d8a5bfdcb9b93964ffd8",
+    ".claude/hooks/pre-compact.ps1": "1af3b730efbe4148444cf9e6ea0421ca03b49d8588a43c7ed1760c1c5712c835",
+    ".claude/hooks/prompt-counter.sh": "3494e2a7282c0278372496c08a51c0e605879d16146ffe184a71e218721a40c0",
+    ".claude/hooks/prompt-counter.ps1": "bcb6375090dcbf716c62e0232f61772a69d83ced289ad5ed7d37126246237cde",
+}
 STARTER_SKILLS = ("beyin", "beyin-doktor", "beyin-guncelle")
 SKILL_ROOTS = (".agents", ".claude", ".kiro")
 # The planner mirrors the .agents template bytes into each client root. Without its
@@ -494,7 +504,10 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
             continue
         path = vault / name
         if path.exists() and name not in manifest['files']:
-            if digest(path.read_bytes()) != expected:
+            valid = {expected} if isinstance(expected, str) else set(expected)
+            if name in RELEASED_V2_HOOK_HASHES:
+                valid.add(RELEASED_V2_HOOK_HASHES[name])
+            if digest(path.read_bytes()) not in valid:
                 raise ValueError('Customized legacy runner requires review ' + name)
             stub = RETIRED_STUB + (b'raise SystemExit(0)\n' if name.endswith('.py') else b'exit 0\n')
             if name.endswith('.sh'): stub = b'#!/bin/sh\n' + stub
@@ -696,7 +709,10 @@ Use Markdown source files as truth; run `python3 beyin.py sync` in the vault roo
                                  " (" + conflict_case(current) + ")")
         elif not item and current is not None and not line_endings_only(planned[name], current):
             semantic = name in ("AGENTS.md", "CLAUDE.md", ".claude/settings.local.json", ".claude/settings.json", ".codex/hooks.json", ".agents/hooks.json", ".codex/config.toml", ".beyin-version")
-            legacy = digest(current) in legacy_skill_hashes.get(name, []) or legacy_hashes.get(name) == digest(current)
+            valid_legacy = {legacy_hashes[name]} if isinstance(legacy_hashes.get(name), str) else set(legacy_hashes.get(name, ()))
+            if name in RELEASED_V2_HOOK_HASHES:
+                valid_legacy.add(RELEASED_V2_HOOK_HASHES[name])
+            legacy = digest(current) in legacy_skill_hashes.get(name, []) or digest(current) in valid_legacy
             if not semantic and not legacy:
                 raise ValueError("Unmanaged file conflict " + name)
     # A file an excluded component installed earlier is planned as None (delete) when untouched,
