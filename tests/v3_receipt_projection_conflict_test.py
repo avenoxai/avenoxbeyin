@@ -38,7 +38,7 @@ class ReceiptProjectionConflictTest(unittest.TestCase):
         # Projection assertions need completed sync, while the production prompt hook
         # may return after 1.5 s with its detached worker still owning the SQLite file.
         # Queue without spawning, drain in a waited child, then inspect hook context.
-        env = dict(self.env, BEYIN_V3_NO_SPAWN='1')
+        env = dict(self.env, BEYIN_V3_NO_SPAWN='1', PYTHONIOENCODING='utf-8')
         payload = {
             'hook_event_name': 'UserPromptSubmit',
             'session_id': 'isolated-session',
@@ -49,17 +49,22 @@ class ReceiptProjectionConflictTest(unittest.TestCase):
         command = [sys.executable, str(scripts / 'beyin_v3_hook.py'), '--vault', str(vault),
                    '--state', str(state), '--harness', 'codex']
         queued = subprocess.run(command + ['--metadata-only'], input=json.dumps(payload),
-                                text=True, capture_output=True, env=env, timeout=20)
+                                text=True, encoding='utf-8', capture_output=True, env=env, timeout=20)
         self.assertEqual(queued.returncode, 0, queued.stderr)
-        drained = subprocess.run(command + ['--drain-queue'], text=True, capture_output=True,
+        drained = subprocess.run(command + ['--drain-queue'], text=True, encoding='utf-8', capture_output=True,
                                  env=env, timeout=20)
         self.assertEqual(drained.returncode, 0, drained.stderr)
         self.assertEqual(json.loads(drained.stdout), {'processed': 1, 'failed': 0, 'pending': 0})
-        return subprocess.run(command, input=json.dumps(payload), text=True,
+        return subprocess.run(command, input=json.dumps(payload), text=True, encoding='utf-8',
                               capture_output=True, env=env, timeout=20)
 
     def test_clean_control(self):
         """Clean control: canary note indexed, seed and second receipts succeed, hook contains canary."""
+        # The fixture protocol owns both ends even under a conflicting inherited stdio setting.
+        self.env['PYTHONIOENCODING'] = 'cp1252'
+        unicode_canary = 'İğne ölçüm şüphe 日本語 🧠'
+        with (self.vault / 'notes/canary.md').open('a', encoding='utf-8') as out:
+            out.write(unicode_canary + '\n')
         engine = SyncEngine(self.vault, self.state)
         sync1 = engine.sync()
         self.assertEqual(sync1['status'], 'succeeded')
@@ -73,6 +78,10 @@ class ReceiptProjectionConflictTest(unittest.TestCase):
         hook = self._invoke_hook(self.vault, self.state)
         self.assertEqual(hook.returncode, 0)
         self.assertIn('NC-7319', hook.stdout)
+        context = json.loads(hook.stdout)['hookSpecificOutput']['additionalContext']
+        source_context, _ = json.JSONDecoder().raw_decode(context[context.index('{'):])
+        self.assertTrue(any(unicode_canary in record.get('text', '')
+                            for record in source_context['records']))
         pending = list((self.state / 'hook-queue').glob('*.json'))
         self.assertEqual(len(pending), 0)
 
