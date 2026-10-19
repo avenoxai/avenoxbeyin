@@ -648,7 +648,7 @@ def human_result(result, command, installed_version=None):
     return message
 
 
-def write_json(value, *, stream=None):
+def write_json(value, *, stream=None, indent=2):
     # The installer and release builder include all managed beyin_v3*.py helpers.
     entry = Path(__file__).resolve()
     directory = (entry.parents[1] / 'template/.claude/scripts' if entry.name == 'beyin_entry.py'
@@ -661,14 +661,14 @@ def write_json(value, *, stream=None):
         # Bootstrap errors must remain reportable even without managed modules.
         # Catch only loading failures, before serialization or any output occurs.
         stream = sys.stdout if stream is None else stream
-        text = json.dumps(value, ensure_ascii=True, indent=2) + '\n'
+        text = json.dumps(value, ensure_ascii=True, indent=indent) + '\n'
         buffer = getattr(stream, 'buffer', None)
         if buffer is None:
             stream.write(text)
         else:
             stream.flush(); buffer.write(text.encode('utf-8')); buffer.flush()
         return
-    module.write_json(value, stream=stream)
+    module.write_json(value, stream=stream, indent=indent)
 
 
 def load_cli(directory):
@@ -791,7 +791,7 @@ def main(argv=None):
         if human:
             print(human_result(error, command, installed_version), file=sys.stderr)
         else:
-            write_json(error, stream=sys.stderr)
+            write_json(error, stream=sys.stderr, indent=None)
         return 1
 
 

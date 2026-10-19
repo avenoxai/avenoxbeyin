@@ -75,7 +75,7 @@ class WorkspaceMemoryTest(unittest.TestCase):
         from beyin_v3_sync import parse, render
         path = self.runtime.registry.vault/'notes/academic-learning.md'
         metadata,body = parse(path.read_bytes().decode('utf-8'))
-        crlf_body = body.replace('\n', '\r\n').rstrip('\r\n')
+        crlf_body = 'Karmaşıklık açıklamasını örnek girdiyle yaz.\r\nİkinci satır gerekçeyi korur.'
         self.assertFalse(crlf_body.endswith('\n'))
         self.assertIn('\r\n', crlf_body)
         path.write_bytes(render(metadata, crlf_body).encode('utf-8'))

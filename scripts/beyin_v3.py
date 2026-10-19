@@ -1656,7 +1656,7 @@ def main(argv=None, return_result=False):
             error["hint"] = ERROR_HINTS[str(exc)]
         if return_result:
             return error, 1
-        write_json(error, stream=sys.stderr)
+        write_json(error, stream=sys.stderr, indent=None)
         return 1
 
 
