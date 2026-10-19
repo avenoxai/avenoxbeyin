@@ -76,8 +76,8 @@ jobs:
   verify:
     needs: build
     runs-on: ${{ matrix.os }}
-    # Allow the full Windows suite and package lifecycle to finish on slower runners.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 40 || 15 }}
+    # Full offline and retrieval/package checks exceeded 15 minutes on macOS.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 40 || 25 }}
     strategy:
       fail-fast: false
       matrix:
