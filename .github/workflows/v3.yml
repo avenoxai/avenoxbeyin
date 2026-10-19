@@ -6,6 +6,7 @@ on:
       - 'template/.claude/scripts/beyin_v3*.py'
       - 'scripts/*v3*.py'
       - 'scripts/beyin_entry.py'
+      - 'scripts/audit_text_encoding.py'
       - 'template/.agents/skills/**'
       - 'tests/v3_*.py'
       - 'tests/fixtures/v3/**'
@@ -16,6 +17,7 @@ on:
       - 'template/.claude/scripts/beyin_v3*.py'
       - 'scripts/*v3*.py'
       - 'scripts/beyin_entry.py'
+      - 'scripts/audit_text_encoding.py'
       - 'template/.agents/skills/**'
       - 'tests/v3_*.py'
       - 'tests/fixtures/v3/**'
@@ -44,6 +46,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - name: Verify natural locale with UTF-8 mode disabled
+        env:
+          PYTHONUTF8: '0'
+        run: python -c "import locale, sys; print('utf8_mode=', sys.flags.utf8_mode, 'locale=', locale.getpreferredencoding(False)); assert sys.flags.utf8_mode == 0"
+      - name: Explicit text encoding gate
+        run: python scripts/audit_text_encoding.py
+      - name: Encoding boundary regressions with strict warnings
+        env:
+          PYTHONUTF8: '0'
+        run: python -X warn_default_encoding -W error::EncodingWarning -m unittest discover -s tests -p "v3_encoding_contract_test.py"
+      - name: Natural-locale onboarding with strict warnings
+        env:
+          PYTHONUTF8: '0'
+        run: python -X warn_default_encoding -W error::EncodingWarning -m unittest discover -s tests -p "v3_workspace_onboarding_test.py"
       - name: Offline source, runtime, lifecycle and skill contracts
         run: python -m unittest discover -s tests -p "v3_*test.py"
       - name: Frozen development and holdout retrieval gates
