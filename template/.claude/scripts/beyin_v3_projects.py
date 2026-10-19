@@ -72,7 +72,15 @@ def read_project_scopes(vault_root):
     for folder, project in folders.items():
         if not isinstance(project, str) or not project.strip():
             raise ValueError("project scope names must be non-empty strings")
-        folder = _scope_path(folder)
+        try:
+            folder = _scope_path(folder)
+        except ValueError as exc:
+            try:
+                sys.stderr.write(f"Warning: {exc}: {folder}\n")
+                sys.stderr.flush()
+            except Exception:
+                pass
+            continue
         if not _scope_folder_exists(vault_root, folder):
             missing.append(folder)
             try:

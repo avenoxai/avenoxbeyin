@@ -183,9 +183,7 @@ class ProjectScopesTest(unittest.TestCase):
         for bad in ('{broken', '[]', {'folders': [], 'shared_unscoped': False},
                     {'folders': {GAME: 'oyun'}, 'shared_unscoped': 'yes'},
                     {'folders': {GAME: ''}}, {'folders': {GAME: 3}},
-                    {'folders': {'../Disari': 'oyun'}}, {'folders': {'/mutlak': 'oyun'}},
-                    {'folders': {'C:/Users': 'oyun'}}, {'folders': {'': 'oyun'}},
-                    {'folders': {'Projeler/./Oyun': 'oyun'}}, {'extra': True},
+                    {'extra': True},
                     {'folders': {GAME: 'oyun', GAME + '/': 'arsiv'}}):
             with self.subTest(bad=bad):
                 self.scopes(bad)

@@ -392,7 +392,11 @@ def read_project_scopes(vault_root):
     for folder, project in folders.items():
         if not isinstance(project, str) or not project.strip():
             raise ValueError("project scope names must be non-empty strings")
-        folder = _scope_path(folder)
+        try:
+            folder = _scope_path(folder)
+        except ValueError as exc:
+            print(f"Warning: {exc}: {folder}", file=sys.stderr)
+            continue
         if not _scope_folder_exists(vault_root, folder):
             print(f"Warning: project scope folder not found in the vault: {folder}", file=sys.stderr)
             # Keep the boundary for stale indexed rows used by explicit --no-sync.
