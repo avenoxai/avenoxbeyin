@@ -39,14 +39,14 @@ def verify(candidate, baseline):
             with zipfile.ZipFile(package) as archive: archive.extractall(root / name)
         result = run_python(root / 'old/scripts/install_v3.py', ['--vault', vault, '--state', state], root, env)
         assert result.returncode == 0, result.stderr
-        assert (vault / '.beyin-version').read_text().strip() == old['version']
+        assert (vault / '.beyin-version').read_text(encoding='ascii').strip() == old['version']
         note = vault / 'user-note.md'; note.write_text('Synthetic release proof quartz note.\n', encoding='utf-8')
         original = note.read_bytes()
         before = snapshot(vault), snapshot(state)
         assert cli('update', '--check', '--package', candidate)['status'] == 'available'
         assert before == (snapshot(vault), snapshot(state)), 'check mutated installation'
         assert cli('update', '--package', candidate)['status'] == 'updated'
-        assert (vault / '.beyin-version').read_text().strip() == new['version']
+        assert (vault / '.beyin-version').read_text(encoding='ascii').strip() == new['version']
         assert cli('update', '--package', candidate)['status'] == 'noop'
         assert 'updates' in cli('doctor')
         cli('preferences', '--update-notifications', 'off')
@@ -57,7 +57,7 @@ def verify(candidate, baseline):
         assert before == (snapshot(vault), snapshot(state)), 'no-sync mutated installation'
         after = vault / 'after-update.md'; after.write_text('Synthetic user work after update.\n', encoding='utf-8')
         assert cli('rollback')['status'] == 'rolled_back'
-        assert (vault / '.beyin-version').read_text().strip() == old['version']
+        assert (vault / '.beyin-version').read_text(encoding='ascii').strip() == old['version']
         cli('preferences')  # Old parser must still accept its untouched settings.
         cli('doctor')
         assert note.read_bytes() == original and after.is_file()
@@ -80,7 +80,7 @@ else: raise AssertionError('fault did not fire')
         assert (state / 'update-journal.json').is_file()
         assert cli('recover')['status'] == 'recovered'
         cli('recover')
-        assert (vault / '.beyin-version').read_text().strip() == new['version']
+        assert (vault / '.beyin-version').read_text(encoding='ascii').strip() == new['version']
         assert note.read_bytes() == original and after.is_file()
         # Clean install from the identical candidate bytes, not the source checkout.
         clean = root / 'Clean Vault'; clean.mkdir()

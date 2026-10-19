@@ -223,7 +223,7 @@ def receipt_line_endings(vault: Path) -> dict:
     Read-only, information only; a vault that is not a git work tree reports not_applicable.
     """
     def git(*args):
-        done = subprocess.run(("git", "-C", str(vault)) + args, capture_output=True, text=True, timeout=10)
+        done = subprocess.run(("git", "-C", str(vault)) + args, capture_output=True, text=True, encoding='locale', timeout=10)
         return done.returncode, done.stdout.strip()
     try:
         code, inside = git("rev-parse", "--is-inside-work-tree")

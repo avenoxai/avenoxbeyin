@@ -18,7 +18,7 @@ CANARY = 'SYNTHETIC_PRIVATE_CANARY'
 
 def read_fixture():
     raw = FIXTURE.read_bytes()
-    expected = HASH.read_text().split()[0]
+    expected = HASH.read_text(encoding='ascii').split()[0]
     actual = hashlib.sha256(raw).hexdigest()
     if expected != actual:
         raise ValueError('frozen-fixture-hash-mismatch')
