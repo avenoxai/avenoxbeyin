@@ -35,7 +35,10 @@ class ReceiptProjectionConflictTest(unittest.TestCase):
         )
 
     def _invoke_hook(self, vault, state, prompt='What is the Nebula memory canary code?', scripts=SCRIPTS):
-        env = self.env
+        # Projection assertions need completed sync, while the production prompt hook
+        # may return after 1.5 s with its detached worker still owning the SQLite file.
+        # Queue without spawning, drain in a waited child, then inspect hook context.
+        env = dict(self.env, BEYIN_V3_NO_SPAWN='1')
         payload = {
             'hook_event_name': 'UserPromptSubmit',
             'session_id': 'isolated-session',
@@ -43,14 +46,17 @@ class ReceiptProjectionConflictTest(unittest.TestCase):
             'cwd': str(vault),
             'prompt': prompt,
         }
-        return subprocess.run(
-            [sys.executable, str(scripts / 'beyin_v3_hook.py'), '--vault', str(vault), '--state', str(state), '--harness', 'codex'],
-            input=json.dumps(payload),
-            text=True,
-            capture_output=True,
-            env=env,
-            timeout=20,
-        )
+        command = [sys.executable, str(scripts / 'beyin_v3_hook.py'), '--vault', str(vault),
+                   '--state', str(state), '--harness', 'codex']
+        queued = subprocess.run(command + ['--metadata-only'], input=json.dumps(payload),
+                                text=True, capture_output=True, env=env, timeout=20)
+        self.assertEqual(queued.returncode, 0, queued.stderr)
+        drained = subprocess.run(command + ['--drain-queue'], text=True, capture_output=True,
+                                 env=env, timeout=20)
+        self.assertEqual(drained.returncode, 0, drained.stderr)
+        self.assertEqual(json.loads(drained.stdout), {'processed': 1, 'failed': 0, 'pending': 0})
+        return subprocess.run(command, input=json.dumps(payload), text=True,
+                              capture_output=True, env=env, timeout=20)
 
     def test_clean_control(self):
         """Clean control: canary note indexed, seed and second receipts succeed, hook contains canary."""
