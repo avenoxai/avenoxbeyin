@@ -441,7 +441,13 @@ class LocalAuthority:
         from beyin_v3_sync import atomic
         atomic(safe_path(self.registry.state,'workspace-authorities.json'),canonical_bytes(data).decode())
 
-    def record_approval(self, reference, *, machine_id, permissions, audiences=('internal',), evidence):
+    def record_approval(self, reference, *, machine_id, permissions, audiences=('internal',), evidence,
+                        preserve_current=False, expected_grant_sha256=None):
+        if type(preserve_current) is not bool or (expected_grant_sha256 is not None and
+                (not isinstance(expected_grant_sha256,str) or not re.fullmatch(r'[a-f0-9]{64}',expected_grant_sha256))):
+            raise WorkspaceError('invalid_authority_request')
+        if not preserve_current and expected_grant_sha256 is not None:
+            raise WorkspaceError('invalid_authority_request')
         if not reference or not evidence or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,95}',machine_id):
             raise WorkspaceError('explicit_authority_required')
         for permission in permissions:
@@ -458,9 +464,23 @@ class LocalAuthority:
             data=self._load()
             if data['machine_id'] not in (None,machine_id):
                 raise WorkspaceError('binding_machine_conflict')
+            if preserve_current:
+                previous=data['grants'].get(reference)
+                actual=content_hash(canonical_bytes(previous)) if previous is not None else None
+                if actual!=expected_grant_sha256:
+                    raise WorkspaceError('grant_changed')
+                # Compare and merge under the same authority lock. A stale
+                # preparation must never resurrect a revoked/replaced grant.
+                merged=[dict(p) for p in previous['permissions']] if previous else []
+                for permission in permissions:
+                    if permission not in merged:merged.append(dict(permission))
+                permissions=merged
+                audiences=list(dict.fromkeys([*(previous['audiences'] if previous else []),*audiences]))
             data['machine_id']=machine_id
-            data['grants'][reference]={'permissions':permissions,'audiences':list(audiences),'evidence':evidence}
+            written={'permissions':permissions,'audiences':list(audiences),'evidence':evidence}
+            data['grants'][reference]=written
             self._save(data)
+            return written
 
     def revoke(self,reference):
         with self.registry.coordinated(_authority_control=True):
@@ -567,8 +587,13 @@ def execute_authority(vault,state,action,payload):
     fields={'grant':{'reference','machine_id','permissions','audiences','evidence'},
             'approve-plan':{'plan','evidence'},'approve-revert':{'plan','evidence'},
             'revoke':{'reference','evidence'}}
-    if action not in fields or not isinstance(payload,dict) or set(payload)!=fields[action]:
+    if action not in fields or not isinstance(payload,dict):
         raise WorkspaceError('invalid_authority_request')
+    optional={'preserve_current','expected_grant_sha256'}
+    if set(payload)!=fields[action]:
+        if (action!='grant' or set(payload)!=fields[action]|optional
+                or payload.get('preserve_current') is not True):
+            raise WorkspaceError('invalid_authority_request')
     evidence=payload['evidence']
     if not isinstance(evidence,str) or not evidence.strip() or len(evidence)>4096:
         raise WorkspaceError('explicit_authority_required')
@@ -588,9 +613,11 @@ def execute_authority(vault,state,action,payload):
                 raise WorkspaceError('invalid_authority_request')
     authority=LocalAuthority(Registry(vault,state))
     if action=='grant':
-        authority.record_approval(payload['reference'],machine_id=payload['machine_id'],permissions=permissions,audiences=audiences,evidence=evidence)
+        written=authority.record_approval(payload['reference'],machine_id=payload['machine_id'],permissions=permissions,
+            audiences=audiences,evidence=evidence,preserve_current=payload.get('preserve_current',False),
+            expected_grant_sha256=payload.get('expected_grant_sha256'))
         current=authority._load()['grants'].get(payload['reference'])
-        verified=current=={'permissions':permissions,'audiences':audiences,'evidence':evidence}
+        verified=current==written
     elif action=='revoke':
         authority.revoke(payload['reference'])
         verified=payload['reference'] not in authority._load()['grants']

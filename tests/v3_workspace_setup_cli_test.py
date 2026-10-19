@@ -26,7 +26,7 @@ class WorkspaceSetupCliTest(unittest.TestCase):
             from unittest.mock import Mock
             module.execute=Mock(return_value=(result,0))
             with patch.dict(sys.modules,{'beyin_v3_workspace_setup':module}),patch.object(cli,'load_engine',side_effect=AssertionError('store forbidden')),patch.object(cli,'load_sync',side_effect=AssertionError('sync forbidden')):
-                for action in ('catalog','prepare','organize'):
+                for action in ('catalog','discover','design','prepare','stage','complete','resume','status','organize'):
                     observed,code=cli.main(['--vault',str(vault),'--state',str(state),'workspace-setup',action,'--file',str(request)],return_result=True)
                     self.assertEqual(observed,result);self.assertEqual(code,0)
                     module.execute.assert_called_with(vault.resolve(),state.resolve(),action,{'compact':'PRIVATE_REQUEST'})
@@ -40,6 +40,17 @@ class WorkspaceSetupCliTest(unittest.TestCase):
         line=entry.human_result(result,'workspace-write')
         self.assertIn('invalid_create_note_target',line);self.assertIn('invalid-note',line)
         self.assertIn('notes/',line)
+
+    def test_missing_input_file_has_actionable_sanitized_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);vault=root/'vault';vault.mkdir()
+            result,code=load_cli().main(['--vault',str(vault),'--state',str(root/'state'),
+                'workspace-setup','complete','--file',str(root/'PRIVATE_MISSING.json')],return_result=True)
+            self.assertEqual(code,5)
+            self.assertEqual(result['data']['issues'][0]['code'],'input_file_unavailable')
+            self.assertIn('stdin',result['data']['next_action'])
+            self.assertNotIn('PRIVATE_MISSING',json.dumps(result))
+            self.assertFalse((root/'state').exists())
 
     def test_human_prepare_displays_existing_preview_and_sanitizes_controls(self):
         spec=importlib.util.spec_from_file_location('workspace_setup_entry',ROOT/'scripts/beyin_entry.py')

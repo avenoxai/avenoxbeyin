@@ -134,9 +134,20 @@ def extract_document_bytes(vault,raw,format,*,readers=None):
 
 
 class SourceResolver:
-    def __init__(self,registry,*,readers=None,cache_write=True):
+    def __init__(self,registry,*,readers=None,cache_write=True,max_source_bytes=MAX_SOURCE_BYTES):
+        if type(max_source_bytes) is not int or not 1<=max_source_bytes<=MAX_SOURCE_BYTES:
+            raise WorkspaceError('invalid_source_budget')
+        self.max_source_bytes=max_source_bytes
         self.cache_write=bool(cache_write)
         self.registry=registry;self.authority=LocalAuthority(registry);self.readers=default_readers(registry.vault) if readers is None else readers
+
+    def _read_bytes(self,path):
+        # Enforce the bound on the actual read, including frontmatter reads.
+        # stat alone cannot constrain a source that grows before extraction.
+        with path.open('rb') as stream:
+            raw=stream.read(self.max_source_bytes+1)
+        if len(raw)>self.max_source_bytes:raise WorkspaceError('source_too_large')
+        return raw
 
     def resolve(self,workspace_id,source_id,name,grant_ref,*,access='read',audience='internal',archived=False):
         snapshot=self.registry.snapshot()
@@ -166,7 +177,7 @@ class SourceResolver:
             from beyin_v3 import sensitive_source,_rejected_inference
             from beyin_v3_sync import parse
             if sensitive_source(name):raise WorkspaceError('scope_denied')
-            metadata,_=parse(path.read_text(encoding='utf-8'))
+            metadata,_=parse(self._read_bytes(path).decode('utf-8'))
             if (metadata.get('trust')=='untrusted' or metadata.get('trusted') is False
                     or metadata.get('kind')=='untrusted' or metadata.get('status')=='untrusted'
                     or _rejected_inference(metadata) or (metadata.get('visibility')=='private' and audience!='private')
@@ -182,24 +193,24 @@ class SourceResolver:
         validate_document(envelope('SourceRef',source_ref))
         path,_,_=self.resolve(workspace_id,source_ref['source_id'],source_ref['relative_path'],grant_ref,audience=audience,archived=archived)
         if path.stat().st_size>MAX_SOURCE_BYTES:raise WorkspaceError('source_too_large')
-        raw=path.read_bytes()
+        raw=self._read_bytes(path)
         if content_hash(raw)!=source_ref['content_sha256']:raise WorkspaceError('stale_source')
         fresh,_,_=self.resolve(workspace_id,source_ref['source_id'],source_ref['relative_path'],grant_ref,audience=audience,archived=archived)
-        if content_hash(fresh.read_bytes())!=source_ref['content_sha256']:raise WorkspaceError('stale_source')
+        if content_hash(self._read_bytes(fresh))!=source_ref['content_sha256']:raise WorkspaceError('stale_source')
         return raw
 
     def extract(self,workspace_id,source_id,name,grant_ref,*,audience='internal',archived=False):
         path,_,_=self.resolve(workspace_id,source_id,name,grant_ref,audience=audience,archived=archived)
         if path.stat().st_size>MAX_SOURCE_BYTES:raise WorkspaceError('source_too_large')
-        raw=path.read_bytes();digest=content_hash(raw);suffix=path.suffix.lower()
+        raw=self._read_bytes(path);digest=content_hash(raw);suffix=path.suffix.lower()
         config=self.readers.get(suffix)
         if suffix in TEXT_SUFFIXES:
             extractor={'id':'markdown' if suffix=='.md' else 'text','version':'1','settings_sha256':content_hash(b'{}')}
         elif suffix in ('.pdf','.docx'):
             if config is None:
-                return {'state':'missing_dependency','chunks':[],'source_sha256':digest,'issues':[{'code':'missing_dependency'}]}
+                return {'state':'missing_dependency','chunks':[],'source_sha256':digest,'source_bytes':len(raw),'issues':[{'code':'missing_dependency'}]}
             extractor={k:config[k] for k in ('id','version','settings_sha256')}
-        else:return {'state':'unsupported','chunks':[],'source_sha256':digest,'issues':[{'code':'unsupported'}]}
+        else:return {'state':'unsupported','chunks':[],'source_sha256':digest,'source_bytes':len(raw),'issues':[{'code':'unsupported'}]}
         key=content_hash(canonical_bytes([source_id,name,digest,extractor]))
         cache=safe_path(self.registry.state,'workspace-extraction/'+key+'.json')
         result=None
@@ -229,8 +240,8 @@ class SourceResolver:
             chunks.append({'text':chunk['text'],'source_ref':sr})
         # Cache, extraction and even a completed process cannot preserve revoked access.
         fresh,_,_=self.resolve(workspace_id,source_id,name,grant_ref,audience=audience,archived=archived)
-        if content_hash(fresh.read_bytes())!=digest:raise WorkspaceError('stale_source')
-        return {'state':result['state'],'chunks':chunks,'source_sha256':digest,'issues':result.get('issues',[])}
+        if content_hash(self._read_bytes(fresh))!=digest:raise WorkspaceError('stale_source')
+        return {'state':result['state'],'chunks':chunks,'source_sha256':digest,'source_bytes':len(raw),'issues':result.get('issues',[])}
 
     def files(self,workspace_id,source_id,grant_ref,*,limit=1000,audience='internal',archived=False):
         snapshot=self.registry.snapshot();bindings,_=self.registry.bindings(snapshot)

@@ -68,7 +68,34 @@ def organize(runtime, intent_document, idempotency_key, *, _coordinated=False):
     original = intent_document['data']
     service = MemoryIntentService(runtime)
     context = service._context(original)
-    wid = original['workspace_id']
+    return _organize_context(runtime, context, original['context_token'], idempotency_key,
+        _coordinated=_coordinated)
+
+
+def initialize(runtime, request_document, idempotency_key, *, before_apply=None):
+    """Initialize a homepage from a fresh real request, without a pretend write.
+
+    The callback may durably checkpoint the exact generated intent before the
+    canonical writer runs, allowing its own journal to resume after interruption.
+    This operation records no approval and never activates global runtime policy.
+    """
+    validate_document(request_document)
+    if request_document['type'] != 'RequestContext':
+        raise WorkspaceError('invalid_schema')
+    request = request_document['data']
+    if request['no_memory']:
+        raise WorkspaceError('no_memory')
+    resolved = runtime.context(request_document)['data']
+    if resolved['state'] not in ('ready', 'partial') or resolved['workspace_id'] is None:
+        raise WorkspaceError('workspace_context_required')
+    context = dict(request=request, workspace_id=resolved['workspace_id'])
+    return _organize_context(runtime, context, resolved['context_token'], idempotency_key,
+        before_apply=before_apply)
+
+
+def _organize_context(runtime, context, context_token, idempotency_key, *, _coordinated=False, before_apply=None):
+    service = MemoryIntentService(runtime)
+    wid = context['workspace_id']
     snapshot = runtime.registry.snapshot()
     profile = next(p for p in snapshot['profiles'] if p['id'] == wid)
     homepage = profile['extensions'].get('setup_homepage')
@@ -122,11 +149,13 @@ def organize(runtime, intent_document, idempotency_key, *, _coordinated=False):
         expected_revision=target_record['revision'] if target_record else None,
         expected_source_sha256=content_hash(raw) if raw is not None else None)
     view_intent = envelope('MemoryWriteIntent', dict(intent_id='view-' + content_hash(idempotency_key)[:24],
-        workspace_id=wid, context_token=original['context_token'], profile_revision=profile['revision'],
+        workspace_id=wid, context_token=context_token, profile_revision=profile['revision'],
         binding_snapshot_sha256=binding_hash, idempotency_key=idempotency_key,
         reason='Refresh only the managed workspace Markdown block.',
         changes=[dict(id='managed-homepage', action='update_note' if target_record else 'create_note', target=target,
             body=merged, metadata_changes={} if target_record else {'title': profile['name']}, relation_changes=[], evidence_refs=[])]))
+    if before_apply is not None:
+        before_apply(view_intent)
     return service.apply(view_intent, _coordinated=_coordinated, _refresh_views=False, _preserve_body=True)
 
 

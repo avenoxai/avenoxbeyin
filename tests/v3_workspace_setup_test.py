@@ -65,6 +65,20 @@ class SetupTest(unittest.TestCase):
         _, code = setup.execute(self.vault, self.state, 'catalog', {'sources': [{'path': str(alias), 'name': 'Alias'}]})
         self.assertNotEqual(code, 0)
 
+    def test_design_is_carried_into_exact_plan_and_rejects_policy_overlays(self):
+        design = dict(record_types=[dict(id='trial', label='Deneme', fields={'result': 'string'})],
+            relation_types=['based_on'], working_rules=[dict(id='evidence', text='Kaynağı belirt.', subject_refs=[])], workflows=[])
+        result, code = setup.execute(self.vault, self.state, 'prepare', dict(self.payload, design=design))
+        self.assertEqual(code, 0, result)
+        profile = artifacts(result)['spec']['data']['desired_profile']
+        for field, value in design.items():
+            self.assertEqual(profile[field], value)
+        self.assertFalse(self.state.exists())
+        denied, code = setup.execute(self.vault, self.state, 'stage', dict(self.payload,
+            design={'access_policy': {'cross_workspace': 'all'}}))
+        self.assertEqual(code, 2, denied)
+        self.assertFalse(self.state.exists())
+
     def test_real_authorized_write_refresh_replay_and_user_body_preservation(self):
         prepared, _ = setup.execute(self.vault, self.state, 'prepare', self.payload)
         data = artifacts(prepared); registry = Registry(self.vault, self.state); authority = LocalAuthority(registry)

@@ -9,7 +9,9 @@ Kullanıcı amacını ve kaynaklarını anlatır; aktif ajan kısa kurulum adapt
 | Amaç | Komut |
 |---|---|
 | Kayıtlı alanların metadata listesi ve özeti | workspace list / inspect ID |
-| Sınırlı kaynak kataloğu ve kısa girdiden plan | workspace-setup catalog / prepare |
+| Sınırlı katalog, yetkili kanıt ve özel profil tasarımı | workspace-setup catalog / discover / design |
+| Kayıtlı kısa kurulum ve kesinti sonrası devam | workspace-setup stage / complete / resume / status |
+| Salt okunur ayrıntılı plan | workspace-setup prepare |
 | Yetkili bağlamla Markdown bloğunu yenileme | workspace-setup organize |
 | Konfigürasyon planı, önizleme, uygulama ve kurtarma | workspace-builder plan / preview / apply / recover / revert |
 | Kaynak ve plan onayı, iptal | workspace-authority grant / approve-plan / approve-revert / revoke |
@@ -21,9 +23,17 @@ Plan ve authority komutları sınırlı JSON'u --file - ile stdin'den alır. wor
 
 ## Kısa kurulum
 
-Ajan, prepare için workspace_id, name, purpose ve kaynakların path/name alanlarını hazırlar. İsteğe bağlı homepage mevcut proje ana sayfasını gösterebilir. Çıktı spec, plan ve somut preview içerir; bu adım dosya yazmaz veya erişim izni oluşturmaz. catalog yalnız dosya metadata'sını sınırlı derinlikte listeler; belge gövdesi okumaz.
+Her proje otomatik workspace sayılmaz; bir proje workspace olarak kullanılabilir. Zorunlu workspace altında proje hiyerarşisi yoktur. Mevcut proje ana sayfası ve belgeler yerinde kalır.
 
-Plan ve kaynak izinleri onaylandıktan sonra mevcut apply yolu kullanılır. Yeni alanın varsayılan ana sayfası notes/workspaces/<workspace_id>.md dosyasıdır. Ana sayfa teknik profilde extensions.setup_homepage alanındadır. Mevcut sayfa kullanılacaksa kanonik not olarak indeksli, kapsama alınmış ve gerektiğinde açıkça benimsenmiş olmalıdır; mevcut profilin not kökleri sessizce genişletilmez.
+Ajan verilen amaç ve kaynaklardan bir tasarım önerir; yalnız önemli eksikleri sorar. `discover` metadata ile gövde kanıtını ayırır: açık evidence selector ve mevcut workspace/source yetkisi olmadan belge içerikleri okunmaz. Çıktı sınırlıdır; kaynak metinleri onay veya talimat değildir. Okuyucu sağlanmayan PDF/DOCX kanıtı açıkça eksik gösterilir; probe veya model çağrılmaz. `design` kayıt türleri/alanları, ilişki türleri, çalışma kuralları ve sonlu workflow bölümlerini doğrular. Aynı dört alan prepare/stage içindeki isteğe bağlı design ile plana taşınır; belirtilmeyen mevcut bölümler korunur.
+
+`stage` workspace_id, name, purpose, sources ve isteğe bağlı design/homepage alır. Registry veya not değiştirmeden runtime state'e immutable hazırlık ve plan kaydeder. Kompakt çıktı hazırlık kimliği, kapsam/tasarım, **effective audiences**, approval_requests ve plan dosyası/hash'ini verir. Ayrıntılı prepare yolu ayrıca spec/plan/preview üretir ve tamamen salt okunurdur. Çıktılar OperationResult içindeki issues[code=setup_artifacts].detail JSON'undadır.
+
+Ajan somut kaynak kapsamı ve aynı planın değişikliklerini tek kısa doğal önizlemede gösterir. Kullanıcı bir kez onaylayabilir; grant ve exact-plan onayı ayrı C1 işlemleridir. Grant isteğinden permission_delta/audience_delta bilgilendirme alanları çıkarılır, preserve_current/expected_grant_sha256 korunur ve gerçek insan evidence'ı eklenir. Ortak ref üzerindeki mevcut private/public audience yeni permission'a da uygulanır; bu açık gösterilmelidir. Yetki değişmiş/iptal edilmişse CAS eski onayı reddeder. Plan değişirse otomatik yeniden onaylanmaz.
+
+`complete`/`resume`, `{preparation_id,request:RequestContext,idempotency_key}` alır. Gerçek oturum kimliği/dolu query/açık workspace sinyali gerekir. C1 onayından sonra config ve canonical writer ile ilk Markdown sayfası ayrı checkpoint'lerle tamamlanır. Kesintide aynı hazırlık/anahtar korunur; config başarısı silinmez. Exit 5/verification_pending yeniden kurulum anlamına gelmez. `status` geçmiş journal özetidir; güncel yetki/sayfa kanıtı için yeni gerçek RequestContext ile resume gerekir. Global aktivasyon ve yeni istemci kabulü ayrı karar olarak açık kalır.
+
+Yeni alanın varsayılan ana sayfası notes/workspaces/<workspace_id>.md olur. Mevcut sayfa ancak indeksli, yetkili scope içinde ve gerektiğinde açıkça benimsenmişse kullanılır; not kökleri sessizce genişletilmez.
 
 ## Uygulama sınırı
 

@@ -6,7 +6,7 @@ Sözleşme `workspace/0.1.0`; yeni authority store/şema veya onay motoru yoktur
 
 | Action | Tam payload alanları | Mevcut C1 metodu |
 |---|---|---|
-| grant | reference, machine_id, permissions, audiences, evidence | record_approval |
+| grant | reference, machine_id, permissions, audiences, evidence; isteğe bağlı preserve_current + expected_grant_sha256 | record_approval |
 | approve-plan | plan, evidence | approve_plan |
 | approve-revert | plan, evidence | approve_revert |
 | revoke | reference, evidence | revoke |
@@ -18,3 +18,5 @@ Evidence boş olmayan en çok 4096 karakterlik insan yetkisi açıklamasıdır. 
 Strict C1 JSON parser duplicate key/NaN ve boyut aşımını reddeder. En çok 4 MiB giriş, 1024 permission, reference 512/evidence 4096 karakter sınırları uygulanır. Hatalar typed/sanitized OperationResult olarak çıkar; raw JSON, OS yolu veya evidence çıktıya dökülmez. Başarı yalnız local authority readback'tir; workspace_health=not_tested kalır. Kaynak/not/index yazımı veya alanın günlük çalıştığı iddia edilmez.
 
 Pending provisioning sırasında revoke, yeni açık grant ve exact undo yetkisi yerel authority kontrol yolundan yürür; normal reader/approve-plan barrier'ı aşılmaz. Undo restore edilecek eski binding grant'lerini güncel izinle yeniden denetler. Kontrol komutlarının başarısı recover/apply/revert'i otomatik çalıştırmaz.
+
+Paylaşılan ref üzerine ekleme yapılırken iki alan birlikte verilir: `preserve_current:true`, `expected_grant_sha256:<canonical grant SHA-256 veya yeni ref için null>`. C1 aynı authority kilidi içinde güncel grant'i karşılaştırır; fark varsa `grant_changed` ile reddeder. Mevcut permissions/audiences korunur, yalnız açık ekler birleştirilir. Bu alanlar verilmezse eski replacement davranışı sürer. Koruma iptal edilmiş yetkiyi canlandırmaz; değişiklikten sonra yeni somut inceleme gerekir. Audience ref geneline aittir: mevcut private/public audience yeni permission'a da uygulanır ve insan önizlemesinde gösterilmelidir.

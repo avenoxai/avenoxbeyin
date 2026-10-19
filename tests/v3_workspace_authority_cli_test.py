@@ -9,7 +9,7 @@ import zipfile
 from unittest.mock import patch
 
 import v3_workspace_builder_c1_test as c1
-from beyin_v3_workspaces import validate_document
+from beyin_v3_workspaces import validate_document, canonical_bytes, content_hash
 from v3_workspace_test_io import run_json_cli
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -73,6 +73,43 @@ class AuthorityCliTest(unittest.TestCase):
         changed=copy.deepcopy(self.h.plan);changed['data']['verify_steps'].append('fresh_session')
         process,_=self.call('approve-plan',{'plan':changed,'evidence':'Changed payload is not the original exact plan'})
         self.assertEqual(process.returncode,3);self.assertFalse(self.h.auth._load()['plans'])
+
+    def test_preserved_grant_keeps_existing_permissions_with_exact_baseline(self):
+        self.call('grant',self.grant)
+        original=self.h.auth._load()['grants']['user-request']
+        delta=copy.deepcopy(self.grant)
+        delta['permissions'][0]['workspace_id']='another-workspace'
+        delta.update(preserve_current=True,expected_grant_sha256=content_hash(canonical_bytes(original)),
+                     evidence='Explicit additional workspace read; preserve the existing reviewed scope')
+        process,_=self.call('grant',delta);self.assertEqual(process.returncode,0)
+        current=self.h.auth._load()['grants']['user-request']
+        self.assertEqual(current['permissions'],original['permissions']+delta['permissions'])
+        self.assertEqual(current['audiences'],original['audiences'])
+        self.assertFalse((self.h.state/'memory.sqlite3').exists())
+
+    def test_stale_preservation_cannot_resurrect_revoked_or_replaced_grant(self):
+        self.call('grant',self.grant)
+        original=self.h.auth._load()['grants']['user-request']
+        stale=dict(self.grant,preserve_current=True,expected_grant_sha256=content_hash(canonical_bytes(original)))
+        self.call('revoke',{'reference':'user-request','evidence':'Human revokes the previous grant'})
+        process,result=self.call('grant',stale)
+        self.assertEqual(process.returncode,3)
+        self.assertEqual(result['data']['issues'][0]['code'],'grant_changed')
+        self.assertNotIn('user-request',self.h.auth._load()['grants'])
+        replacement=dict(self.grant,evidence='A fresh replacement authorization')
+        self.call('grant',replacement)
+        before=self.h.auth._load()
+        process,_=self.call('grant',stale);self.assertEqual(process.returncode,3)
+        self.assertEqual(self.h.auth._load(),before)
+
+    def test_preservation_requires_both_typed_options_and_empty_baseline_for_new_ref(self):
+        for invalid in (dict(self.grant,preserve_current=True),dict(self.grant,expected_grant_sha256=None),
+                        dict(self.grant,preserve_current=False,expected_grant_sha256=None),
+                        dict(self.grant,preserve_current=True,expected_grant_sha256='not-a-hash')):
+            process,_=self.call('grant',invalid);self.assertEqual(process.returncode,2)
+        self.assertFalse(self.h.state.exists())
+        process,_=self.call('grant',dict(self.grant,preserve_current=True,expected_grant_sha256=None))
+        self.assertEqual(process.returncode,0)
 
     def test_pending_revoke_and_undo_remain_available(self):
         self.h.approve()

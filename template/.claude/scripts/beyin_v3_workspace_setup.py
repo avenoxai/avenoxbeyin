@@ -94,7 +94,7 @@ def _catalog(payload):
 
 def _prepare(vault, state, payload):
     required = {'workspace_id', 'name', 'purpose', 'sources'}
-    if not required <= set(payload) or set(payload) - required - {'homepage', 'note_roots', 'registry_id', 'machine_id', 'authority_ref'}:
+    if not required <= set(payload) or set(payload) - required - {'homepage', 'note_roots', 'registry_id', 'machine_id', 'authority_ref', 'design'}:
         raise WorkspaceError('invalid_setup_request')
     wid = payload['workspace_id']
     if not isinstance(wid, str) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,95}', wid):
@@ -123,6 +123,10 @@ def _prepare(vault, state, payload):
     homepage = payload.get('homepage', profile['extensions'].get('setup_homepage', 'notes/workspaces/' + wid + '.md'))
     safe_path(Path(vault), homepage)
     profile.update(name=payload['name'], purpose=payload['purpose'])
+    if 'design' in payload:
+        from beyin_v3_workspace_discovery import design
+        checked = design(vault, state, {key: payload[key] for key in ('workspace_id', 'name', 'purpose', 'design')})
+        profile.update(checked['profile_design'])
     unresolved = []
     if 'note_roots' in payload:
         profile['note_roots'] = payload['note_roots']
@@ -182,6 +186,12 @@ def execute(vault, state, action, payload):
             return _catalog(payload)
         if action == 'prepare':
             return _prepare(vault, state, payload)
+        if action in ('discover', 'design'):
+            from beyin_v3_workspace_discovery import discover, design
+            return _result((discover if action == 'discover' else design)(vault, state, payload))
+        if action in ('stage', 'complete', 'resume', 'status'):
+            from beyin_v3_workspace_onboarding import execute as onboarding
+            return onboarding(vault, state, action, payload)
         if action == 'organize' and set(payload) == {'intent', 'idempotency_key'}:
             from beyin_v3_workspace_context import WorkspaceRuntime
             from beyin_v3_workspace_views import organize

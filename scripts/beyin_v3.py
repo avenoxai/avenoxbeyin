@@ -866,7 +866,7 @@ def parser():
     builder.add_argument('action', choices=('plan','preview','apply','recover','revert'))
     builder.add_argument('--file', default='-', help='Agent-prepared JSON input or - for stdin')
     setup = sub.add_parser('workspace-setup', help='Catalog sources, prepare a compact workspace plan, or organize an approved view')
-    setup.add_argument('action', choices=('catalog', 'prepare', 'organize'))
+    setup.add_argument('action', choices=('catalog', 'discover', 'design', 'prepare', 'stage', 'complete', 'resume', 'status', 'organize'))
     setup.add_argument('--file', default='-', help='Compact agent-prepared setup JSON or - for stdin')
     authority = sub.add_parser('workspace-authority', help='Record explicit trusted-agent source/plan/revert authority or revoke it')
     authority.add_argument('action', choices=('grant','approve-plan','approve-revert','revoke'))
@@ -960,6 +960,8 @@ def workspace_failure(exc, operation='workspace-operation'):
         next_action = ('Choose an approved .md target under ' + roots +
                        '; obtain a fresh context and approval if scope changes. ' +
                        ('The whole intent was rejected before source writes.' if parts else 'Inspect the journal before retrying; previous source changes may exist.'))
+    elif code == 'input_file_unavailable':
+        next_action = 'Create the UTF-8 request file before invoking the command, or pass its JSON on stdin with --file -.'
     else:
         next_action = ('Verify explicit source scope and user authority before retrying.' if denied else
                        'Read the current context and pending journal; recover or revert the existing operation before retrying.' if conflict else
@@ -1004,7 +1006,12 @@ def workspace_builder_cli(args,return_result=False):
         if not vault.is_dir():raise ValueError('invalid_builder_request')
         state=(args.state.expanduser() if args.state else default_state(vault)).resolve()
         if state==vault or vault in state.parents:raise ValueError('invalid_builder_request')
-        result,code=execute(vault,state,args.action,read_workspace_json(args.file))
+        try:
+            payload=read_workspace_json(args.file)
+        except OSError as exc:
+            from beyin_v3_workspaces import WorkspaceError
+            raise WorkspaceError('input_file_unavailable') from exc
+        result,code=execute(vault,state,args.action,payload)
     except Exception as exc:
         try:
             from beyin_v3_builder import _failure
