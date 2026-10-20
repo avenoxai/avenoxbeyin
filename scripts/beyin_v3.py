@@ -2,6 +2,10 @@
 """Local-first CLI for the shared V3 memory foundation."""
 from __future__ import annotations
 
+# Source checkouts also support truly read-only navigation commands.
+import sys
+sys.dont_write_bytecode = True
+
 import argparse
 import base64
 import hashlib
@@ -968,6 +972,12 @@ def parser(note_namespace=None, is_json=False):
     sync_parser.add_argument("--recover-views", action="store_true",
                              help="Archive conflicting receipt views and regenerate from immutable receipts")
     sub.add_parser("recover-views", help="Archive conflicting receipt views and regenerate from immutable receipts")
+    lint = sub.add_parser("lint", help="Read-only visible Markdown wikilink checks (legacy vault mode)")
+    lint.add_argument("--folder")
+    moc = sub.add_parser("moc", help="Update a MOC through the hash-checked note writer (legacy vault mode)")
+    moc.add_argument("--folder", default="knowledge")
+    moc.add_argument("--moc-file", default="MOC.md")
+    moc.add_argument("--dry-run", action="store_true", help="Preview the note-edit request without writing")
     sub.add_parser("skill-sync", help="Reconcile project-local shared skills")
     sub.add_parser("doctor", help="Read local hook health and pending metadata counts")
     scheduled = sub.add_parser("scheduled-check", help="Sync then doctor for an OS scheduler you set up; no model call, no service")
@@ -1241,6 +1251,41 @@ def workspace_builder_cli(args,return_result=False):
     write_json(result);return code
 
 
+def knowledge_cli(args, return_result=False):
+    # Even a source checkout must leave no bytecode, DB, locks or state on a read.
+    sys.dont_write_bytecode = True
+    try:
+        _ensure_scripts_path()
+        from beyin_v3_lint import lint_vault, plan_moc, generate_moc
+        vault = args.vault.expanduser().resolve()
+        if not vault.is_dir():
+            raise ValueError("--vault must be an existing directory")
+        state = (args.state.expanduser() if args.state else default_state(vault)).resolve()
+        if state == vault or vault in state.parents:
+            raise ValueError("--state must be outside the vault")
+        # A raw vault walk cannot establish workspace authority; refuse before reading notes.
+        from beyin_v3_workspace_context import enabled
+        if enabled(vault, state):
+            raise ValueError('active_workspace_requires_scoped_context')
+        if args.command == 'lint':
+            result = lint_vault(vault, args.folder, state=state)
+        elif args.dry_run:
+            result = plan_moc(vault, args.folder, args.moc_file, state=state)
+        else:
+            result = generate_moc(load_sync()(vault, state), args.folder, args.moc_file)
+        code = 0 if result['status'] != 'issues_found' else 1
+    except Exception as exc:
+        if str(exc) == 'active_workspace_requires_scoped_context':
+            from beyin_v3_workspaces import WorkspaceError
+            result, code = workspace_failure(WorkspaceError('workspace_context_required'), 'knowledge-navigation')
+        else:
+            result, code = dict(status='error', error=type(exc).__name__, message=str(exc)), 2
+    if return_result:
+        return result, code
+    write_json(result)
+    return code
+
+
 def main(argv=None, return_result=False):
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8-sig")
@@ -1249,6 +1294,7 @@ def main(argv=None, return_result=False):
     argument_parser = parser(note_namespace=args, is_json="--json" in args_list)
     try:
         args = argument_parser.parse_args(args_list, namespace=args)
+        if args.command in ("lint", "moc"): return knowledge_cli(args, return_result)
         if args.command == "workspace": return workspace_metadata_cli(args, return_result)
         if args.command in ("workspace-builder", "workspace-authority", "workspace-setup"): return workspace_builder_cli(args, return_result)
         receipt_flags = args.command == "receipt" and any(
