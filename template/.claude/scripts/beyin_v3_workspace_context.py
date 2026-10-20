@@ -21,6 +21,44 @@ def enabled(vault,state):
     return value['enabled']
 
 
+def bound_project_for_cwd(vault, state, cwd):
+    """Resolve a local binding with existing read authority; names grant nothing."""
+    try:
+        current = Path(cwd).resolve(strict=True)
+        registry = Registry(vault, state)
+        snapshot = registry.snapshot()
+        if not snapshot:
+            return None
+        bindings, _ = registry.bindings(snapshot)
+        authority = LocalAuthority(registry)
+        candidates = []
+        for profile in snapshot['profiles']:
+            if profile['lifecycle'] != 'active':
+                continue
+            for sid in profile['source_ids']:
+                binding = bindings.get(sid)
+                if not binding:
+                    continue
+                root = Path(binding['locator'])
+                if not root.is_absolute() or not root.is_dir():
+                    continue
+                root = root.resolve(strict=True)
+                if current.is_relative_to(root) and authority.allows(binding['authority_ref'], binding, profile['id']):
+                    candidates.append((len(root.parts), profile['id']))
+        if not candidates:
+            return None
+        depth = max(n for n, _ in candidates)
+        selected = {wid for n, wid in candidates if n == depth}
+        if len(selected) != 1:
+            return None
+        wid = selected.pop()
+        mapping = safe_path(state, 'workspace-legacy-map.json')
+        aliases = [name for name, target in parse_document(mapping.read_bytes()).items() if target == wid] if mapping.exists() else []
+        return aliases[0] if len(aliases) == 1 else wid
+    except (OSError, ValueError, RuntimeError, WorkspaceError):
+        return None
+
+
 def scope_ids(registry,record):
     declared=record.get('workspace_id')
     if isinstance(declared,str) and declared:return {declared}
@@ -122,7 +160,7 @@ class WorkspaceRuntime:
             profile_revision=None,snapshot_sha256=snapshot['snapshot_sha256'],binding_snapshot_sha256=bindings_hash,
             subject_refs=[],rules=[],records=[],relations=[],source_refs=[],missing_facts=[],issues=[])
 
-    def context(self,document,*,include_archived=False):
+    def context(self,document,*,include_archived=False,rules_project=None):
         validate_document(document)
         if document['type']!='RequestContext':raise WorkspaceError('invalid_schema')
         request=document['data'];snapshot=self.registry.snapshot()
@@ -166,7 +204,9 @@ class WorkspaceRuntime:
             for relation in relations:
                 a,b=relation['from']['record_id'],relation['to']['record_id']
                 if {a,b}&selected_ids:selected_ids.update((a,b))
-        records=[];sources=[];remaining=min(request['budget_chars'],20000)
+        rules, rules_truncated = self.behavior_rules(profile, request, selected_ids, rules_project)
+        if rules_truncated:result['issues'].append({'code':'rules_truncated'})
+        records=[];sources=[];remaining=max(0,min(request['budget_chars'],20000)-sum(len(r['text']) for r in rules))
         vault_sources=[s['id'] for s in snapshot['sources'] if s['kind']=='vault' and s['id'] in profile['source_ids']
                        and s['id'] in bindings and local_root_matches(bindings[s['id']]['locator'],self.registry.vault)]
         if not vault_sources and selected_ids:raise WorkspaceError('source_unbound')
@@ -208,7 +248,7 @@ class WorkspaceRuntime:
             except WorkspaceError as exc:result['issues'].append({'code':exc.code})
         result.update(records=records,source_refs=sources,subject_refs=[{'workspace_id':wid,'record_id':id} for id in sorted(subject_ids)],
             relations=[r for r in relations if r['from']['record_id'] in {x['id'] for x in records} and r['to']['record_id'] in {x['id'] for x in records}],
-            rules=[r for r in profile['working_rules'] if not r['subject_refs'] or any(x['workspace_id']==wid and x['record_id'] in selected_ids for x in r['subject_refs'])])
+            rules=rules)
         if result['issues']:result['state']='partial'
         if self.registry.snapshot()['snapshot_sha256']!=snapshot['snapshot_sha256'] or self.registry.bindings()[1]!=binding_hash:
             raise WorkspaceError('snapshot_changed')
@@ -223,7 +263,66 @@ class WorkspaceRuntime:
             'profile_revision':profile['revision'],'snapshot_sha256':snapshot['snapshot_sha256'],'binding_snapshot_sha256':binding_hash}).decode())
         return envelope('WorkContext',result)
 
-    def auto_context(self,client,query,*,session_id,project=None,audience='internal',budget_chars=8000,no_memory=False):
+    def behavior_rules(self, profile, request, selected_ids, project=None):
+        """Project > workspace > global; every source passes existing workspace gates."""
+        from beyin_v3_companion import directory, project_rule_directory, filter_scoped_rules
+        from beyin_v3_projects import read_project_scopes, _scope_key
+        wid = profile['id']
+        mapping = safe_path(self.registry.state, 'workspace-legacy-map.json')
+        aliases = parse_document(mapping.read_bytes()) if mapping.exists() else {}
+        # A rules-only query signal must describe this authorized workspace.
+        if project and aliases.get(project, project) != wid:
+            project = None
+        if not project:
+            names = [name for name, target in aliases.items() if target == wid]
+            project = names[0] if len(names) == 1 else wid
+        project_dirs = []
+        scopes = read_project_scopes(self.registry.vault)
+        for folder, name in (scopes or {}).get('folders', []):
+            if _scope_key(name) == _scope_key(project):
+                project_dirs.append(project_rule_directory(self.registry.vault, folder))
+        for folder in ('projects', 'Projeler', 'projeler'):
+            project_dirs.append(project_rule_directory(self.registry.vault, folder+'/'+project))
+        def source_rules(directories):
+            result=[];seen=set()
+            for folder in directories:
+                if folder is None:
+                    continue
+                relative=folder.relative_to(self.registry.vault).as_posix()
+                snapshot=self.store.source_snapshot(['Kurallar.md','.rules.md','rules.md'], source_directory=relative,
+                    budget_chars=20000, text_transform=lambda name,text: filter_scoped_rules(text,project))
+                for record in snapshot['records']:
+                    if record['source'] not in seen:
+                        seen.add(record['source'])
+                        result.append(dict(id='source-'+content_hash(record['source'])[:24],
+                            text='['+record['source']+'] '+record['text'],subject_refs=[]))
+            return result
+        with request_scope(wid,request['grant_ref']):
+            specific=source_rules(project_dirs)
+            general=source_rules([directory(self.registry.vault)])
+        workspace=[r for r in profile['working_rules'] if not r['subject_refs'] or any(
+            x['workspace_id']==wid and x['record_id'] in selected_ids for x in r['subject_refs'])]
+        layers=[('project',specific),('workspace',workspace),('global',general)]
+        layers=[(name,rules) for name,rules in layers if rules]
+        remaining=min(3000,request['budget_chars']//4);result=[];truncated=False
+        for index,(name,rules) in enumerate(layers):
+            share=remaining//(len(layers)-index)
+            for rule in rules:
+                item=copy.deepcopy(rule)
+                overhead=len(json.dumps(dict(item,text=''),ensure_ascii=False))+2
+                if share<=overhead+14:
+                    truncated=True
+                    break
+                text='['+name+'] '+item['text']
+                capacity=share-overhead
+                if len(text)>capacity:
+                    text=text[:max(0,capacity-14)]+' [truncated]';truncated=True
+                item['text']=text
+                used=len(json.dumps(item,ensure_ascii=False))+2
+                result.append(item);share-=used;remaining-=used
+        return result,truncated
+
+    def auto_context(self,client,query,*,session_id,project=None,audience='internal',budget_chars=8000,no_memory=False,rules_project=None):
         """Use existing grants and per-session continuity; never infer new authority."""
         from beyin_v3 import _tokens,STOPWORDS
         snapshot=self.registry.snapshot();bindings,_=self.registry.bindings(snapshot)
@@ -257,7 +356,7 @@ class WorkspaceRuntime:
             result=self._base(request,snapshot,self.registry.bindings(snapshot)[1],'ambiguous' if options else 'denied')
             result['issues']=[{'code':'ambiguous_context' if options else 'scope_denied'}]
             return envelope('WorkContext',result)
-        context=self.context(envelope('RequestContext',request))
+        context=self.context(envelope('RequestContext',request),rules_project=rules_project)
         from beyin_v3_sync import atomic
         if not no_memory and not self.read_only:atomic(path,canonical_bytes({'workspace_id':choice[1]}).decode())
         return context
@@ -268,7 +367,7 @@ class WorkspaceRuntime:
         from beyin_v3 import pack_context
         session_id=kwargs.pop('workspace_session',None) or os.environ.get('CODEX_THREAD_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID') or 'manual-'+uuid.uuid4().hex
         budget=kwargs.get('budget_chars',8000)
-        context=self.auto_context(client,query,session_id=session_id,project=kwargs.get('project'),audience=kwargs.get('audience','internal'),budget_chars=budget)['data']
+        context=self.auto_context(client,query,session_id=session_id,project=kwargs.get('project'),audience=kwargs.get('audience','internal'),budget_chars=budget,rules_project=kwargs.get('rules_project'))['data']
         records=[]
         for source in context['records']:
             r=copy.deepcopy(source);sr=r['source_ref']
@@ -277,5 +376,6 @@ class WorkspaceRuntime:
             r['remote_allowed']=False  # Local workspace grants are not remote-provider consent.
         result=pack_context(records,kwargs.get('limit',5),budget,0)
         result.update(workspace_id=context['workspace_id'],workspace_state=context['state'],context_token=context['context_token'],
-                      profile_revision=context['profile_revision'],issues=context['issues'],working_rules=context['rules'])
+                      profile_revision=context['profile_revision'],issues=context['issues'],working_rules=context['rules'],
+                      rule_precedence='Davranış kuralı önceliği: proje > workspace > global; erişim/yetki sınırları değişmez.')
         return result

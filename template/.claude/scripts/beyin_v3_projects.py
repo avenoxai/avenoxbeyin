@@ -343,3 +343,48 @@ def resolve_active_project(vault, cwd):
         return parts[1]
 
     return None
+
+
+def resolve_project_from_query(vault, query):
+    """A unique known name is a rules signal, never a retrieval/authority scope."""
+    if not isinstance(query, str) or not query.strip():
+        return None
+    aliases = {}
+    def add(alias, project):
+        aliases.setdefault(_scope_key(alias), set()).add(project)
+    try:
+        scopes = read_project_scopes(vault)
+    except (ValueError, OSError):
+        return None
+    for folder, project in (scopes or {}).get('folders', []):
+        add(project, project)
+        add(folder.split('/')[-1], project)
+    for name in ('projects', 'Projeler', 'projeler'):
+        root = Path(vault) / name
+        if root.is_dir() and not root.is_symlink():
+            for child in root.iterdir():
+                if child.is_dir() and not child.is_symlink():
+                    add(child.name, child.name)
+    matches = set()
+    query = _scope_key(query)
+    for alias, projects in aliases.items():
+        if len(alias) >= 3 and re.search(r'(?<![\w-])' + re.escape(alias) + r'(?![\w-])', query):
+            if len(projects) != 1:
+                return None
+            matches.update(projects)
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def resolve_rules_project(vault, cwd=None, *, explicit=None, query='', state=None):
+    """Shared identity selection; configured paths outrank a unique query signal."""
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    selected = resolve_active_project(vault, cwd)
+    if selected:
+        return selected
+    if state is not None and cwd is not None:
+        from beyin_v3_workspace_context import bound_project_for_cwd
+        selected = bound_project_for_cwd(vault, state, cwd)
+        if selected:
+            return selected
+    return resolve_project_from_query(vault, query)
