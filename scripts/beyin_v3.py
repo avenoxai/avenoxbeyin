@@ -1089,6 +1089,11 @@ def parser(note_namespace=None):
     ws.add_argument("--source", help="Vault-relative source folder path to connect/disconnect")
     ws.add_argument("--dry-run", action="store_true", help="Preview workspace provisioning without making changes")
     ws.add_argument("--all", action="store_true", help="Include archived workspaces in listing")
+    lint_parser = sub.add_parser("lint", help="Lint vault markdown notes for broken wikilinks and orphans (RFC #368 P0-E)")
+    lint_parser.add_argument("--folder", default=None, help="Vault-relative folder to lint (default: entire vault)")
+    moc_parser = sub.add_parser("moc", help="Generate or update Obsidian Map of Content (MOC) note (RFC #368 P0-E)")
+    moc_parser.add_argument("--folder", default="knowledge", help="Vault-relative folder for MOC (default: knowledge)")
+    moc_parser.add_argument("--file", default="MOC.md", help="Filename of MOC (default: MOC.md)")
     return root
 
 
@@ -1777,6 +1782,14 @@ def main(argv=None, return_result=False):
                 dry_run=getattr(args, "dry_run", False),
                 include_archived=getattr(args, "all", False),
             )
+        elif args.command == "lint":
+            _ensure_scripts_path()
+            import beyin_v3_lint as linter
+            result = linter.manage(vault, "lint", folder=args.folder)
+        elif args.command == "moc":
+            _ensure_scripts_path()
+            import beyin_v3_lint as linter
+            result = linter.manage(vault, "moc", folder=args.folder, moc_file=args.file)
         else:
             payload = read_json(args.file)
             result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])
