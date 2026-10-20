@@ -171,6 +171,26 @@ def _note_age_days(path: Path, now: float, front_keys: tuple[str, ...]) -> float
     return max(0.0, (now - mtime) / 86400.0)
 
 
+def _note_age_and_source(path: Path, now: float) -> tuple[float, str]:
+    """Age of a knowledge note in days and the date source used ('created', 'updated', or 'mtime').
+    Prioritizes creation date for knowledge production rhythm (#469).
+    """
+    ts_created = _note_frontmatter_timestamp(path, ('created', 'created_at', 'date', 'tarih'))
+    if ts_created is not None:
+        return max(0.0, (now - ts_created) / 86400.0), 'created'
+
+    ts_updated = _note_frontmatter_timestamp(path, ('updated_at', 'updated', 'modified'))
+    if ts_updated is not None:
+        return max(0.0, (now - ts_updated) / 86400.0), 'updated'
+
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return 0.0, 'mtime'
+
+    return max(0.0, (now - mtime) / 86400.0), 'mtime'
+
+
 def _path_key(path: Path) -> tuple:
     """Canonical identifier for a filesystem path across case-insensitive and symlinked systems."""
     try:
@@ -240,11 +260,13 @@ def scan_inbox(vault: Path, now: float, state: Path | None = None) -> dict:
                 if oldest_days is None or od > oldest_days:
                     oldest_days = od
 
+        has_yakala = any((vault / p).exists() for p in ('.agents/skills/beyin-yakala', '.claude/skills/beyin-yakala', '.kiro/skills/beyin-yakala'))
         return {
             'count': total_notes,
             'oldest_days': oldest_days,
             'attention': rep.get('attention', False),
             'folders': folder_rows,
+            'has_yakala': has_yakala,
         }
     except Exception as exc:
         return {
@@ -464,10 +486,7 @@ def scan_knowledge_digest(vault: Path, now: float, digest_days: int = 7, state: 
                     continue
                 seen_files.add(f_key)
 
-                age = _note_age_days(
-                    file_path, now,
-                    ('updated_at', 'updated', 'modified', 'created_at', 'created', 'date', 'tarih')
-                )
+                age, date_source = _note_age_and_source(file_path, now)
                 if age <= digest_days:
                     try:
                         rel = file_path.relative_to(vault).as_posix()
@@ -496,22 +515,26 @@ def scan_knowledge_digest(vault: Path, now: float, digest_days: int = 7, state: 
                         'path': rel,
                         'title': title,
                         'age_days': round(age, 1),
+                        'date_source': date_source,
                     })
 
     outcomes_file = vault / 'outcomes.md'
     if _scan_allowed(outcomes_file, vault, excluded):
-        age = _note_age_days(outcomes_file, now, ('updated_at', 'date'))
+        age, date_source = _note_age_and_source(outcomes_file, now)
         if age <= digest_days:
             recent_items.append({
                 'path': 'outcomes.md',
                 'title': 'Kazanimlar ve Sonuclar',
                 'age_days': round(age, 1),
+                'date_source': date_source,
             })
 
     recent_items.sort(key=lambda x: x['age_days'])
+    mtime_count = sum(1 for it in recent_items if it.get('date_source') == 'mtime')
     return {
         'digest_days': digest_days,
         'count': len(recent_items),
+        'mtime_count': mtime_count,
         'items': recent_items,
     }
 
@@ -621,12 +644,24 @@ def scan_companion(vault: Path, state: Path | None = None, now: float | None = N
     return info
 
 
-def generate_recommendations(inbox: dict, tasks: dict, digest: dict, companion: dict) -> list[str]:
+def generate_recommendations(inbox: dict, tasks: dict, digest: dict, companion: dict, vault: Path | None = None, has_yakala: bool | None = None) -> list[str]:
     recs = []
     if inbox.get('count', 0) > 0:
-        recs.append(
-            f"Gelen kutusunda bekleyen {inbox['count']} kaynak var. Kalici bilgi notlarina donusturmek icin 'beyin-yakala' kullanin."
-        )
+        yakala_ready = has_yakala if has_yakala is not None else inbox.get('has_yakala', False)
+        if not yakala_ready and vault is not None:
+            try:
+                v = Path(vault)
+                yakala_ready = any((v / p).exists() for p in ('.agents/skills/beyin-yakala', '.claude/skills/beyin-yakala', '.kiro/skills/beyin-yakala'))
+            except OSError:
+                yakala_ready = False
+        if yakala_ready:
+            recs.append(
+                f"Gelen kutusunda bekleyen {inbox['count']} kaynak var. Kalici bilgi notlarina donusturmek icin 'beyin-yakala' kullanin."
+            )
+        else:
+            recs.append(
+                f"Gelen kutusunda bekleyen {inbox['count']} kaynak var. Kalici bilgi notlarina donusturmek icin 'note-create' / beyin skill'inin ham notu bilgi notuna cevirme akisini kullanin."
+            )
     if tasks.get('stale_count', 0) > 0:
         recs.append(
             f"{tasks['stale_count']} gorev {tasks['stale_days_threshold']} gunden uzun suredir hareketsiz (waiting/blocked dahil). Bu gorevleri tamamlayin, takibini yapin veya guncelleyin."
@@ -648,8 +683,10 @@ def generate_recommendations(inbox: dict, tasks: dict, digest: dict, companion: 
             f"Son {digest['digest_days']} gunde yeni bilgi/karar notu uretilmedi. Ogrenilenleri knowledge/ altina damitin."
         )
     else:
+        mtime_count = digest.get('mtime_count', 0)
+        mtime_note = f" ({mtime_count} notta mtime'a dayandi)" if mtime_count > 0 else ""
         recs.append(
-            f"Son {digest['digest_days']} gunde {digest['count']} bilgi notu uretildi/guncellendi; ritim saglikli."
+            f"Son {digest['digest_days']} gunde {digest['count']} bilgi notu uretildi/guncellendi{mtime_note}; ritim saglikli."
         )
     return recs
 
@@ -667,7 +704,7 @@ def triage(
     tasks_report = scan_stale_tasks(vault, now_ts, stale_days=stale_days, state=state)
     digest_report = scan_knowledge_digest(vault, now_ts, digest_days=digest_days, state=state)
     companion_report = scan_companion(vault, state, now=now_ts)
-    recs = generate_recommendations(inbox_report_res, tasks_report, digest_report, companion_report)
+    recs = generate_recommendations(inbox_report_res, tasks_report, digest_report, companion_report, vault=vault)
 
     return {
         'schema': 1,
@@ -728,8 +765,12 @@ def format_human(report: dict) -> str:
     digest = report.get('digest', {})
     digest_days = digest.get('digest_days', 7)
     digest_count = digest.get('count', 0)
+    mtime_count = digest.get('mtime_count', 0)
     lines.append(f"[Bilgi ve Karar Ozeti] (son {digest_days} gun)")
-    lines.append(f"  Uretilen/guncellenen not: {digest_count}")
+    if mtime_count > 0:
+        lines.append(f"  Uretilen/guncellenen not: {digest_count} ({mtime_count} notta mtime'a dayanildi)")
+    else:
+        lines.append(f"  Uretilen/guncellenen not: {digest_count}")
     for k in digest.get('items', [])[:5]:
         title = _strip_terminal_controls(k.get('title', ''))
         lines.append(f"  - {k.get('path')}: {title}")

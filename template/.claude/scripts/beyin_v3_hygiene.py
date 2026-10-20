@@ -747,18 +747,23 @@ def _inbox_folder(name, configured):
 
 def _capture_time(path):
     """When a note was captured: a valid frontmatter `created` date, else the file mtime; None for a
-    processed yakala card (`tur: yakala`, `durum: islendi`), which no longer waits.
+    processed yakala card (`tur: yakala`, `durum: islendi`), or index note (`type: index` / `Inbox.md`),
+    which no longer waits (#469).
 
     A clone, a sync client or a restore rewrites mtimes, so a week-old capture would read as new;
     the note's own date survives that. A missing or malformed date falls back to the mtime.
     """
+    if fold(path.stem) in ('inbox', 'index', 'gelenkutusu'):
+        return None
     modified = path.stat().st_mtime
     try:
         with path.open(encoding='utf-8', errors='replace') as handle:
             head = handle.read(4096)
     except OSError:
         return modified
-    values = _front_values(head, ('created', 'tur', 'durum', 'yakalandi'))
+    values = _front_values(head, ('created', 'tur', 'durum', 'yakalandi', 'type', 'kind'))
+    if values.get('type') == 'index' or values.get('kind') == 'index' or values.get('tur') == 'indeks':
+        return None
     if values.get('tur') == 'yakala' and values.get('durum') == 'islendi':
         return None  # a capture card the agent already processed is no longer waiting
     created = values.get('created') or (values.get('yakalandi', '') if values.get('tur') == 'yakala' else '')
