@@ -1267,7 +1267,7 @@ class SyncEngine:
         from beyin_v3_notes import apply
         return apply(self, request)
 
-    def note_create(self, source, text, metadata=None):
+    def note_create(self, source, text, metadata=None, idempotency_key=None, evidence_refs=None):
         from beyin_v3_notes import locked
         if not isinstance(text, str) or not text.strip() or (metadata is not None and not isinstance(metadata, dict)):
             raise ValueError('note text and metadata required')
@@ -1277,11 +1277,28 @@ class SyncEngine:
             raise ValueError('new semantic notes belong under notes/ or knowledge/')
         self._refuse_excluded(source)
         metadata = dict(metadata or {})
-        for field in ('project', 'kind', 'status', 'updated_at'):
+        if idempotency_key is None and 'idempotency_key' in metadata:
+            idempotency_key = metadata.pop('idempotency_key')
+        if evidence_refs is None and 'evidence_refs' in metadata:
+            evidence_refs = metadata.get('evidence_refs')
+        if idempotency_key is not None:
+            if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+                raise ValueError('idempotency_key must be a nonempty string')
+            if not re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', idempotency_key):
+                raise ValueError('idempotency_key contains invalid characters')
+        if evidence_refs is not None:
+            if isinstance(evidence_refs, str):
+                evidence_refs = [evidence_refs]
+            if not isinstance(evidence_refs, list) or not all(isinstance(r, str) and r.strip() for r in evidence_refs):
+                raise ValueError('evidence_refs must be a list of nonempty strings')
+            metadata['evidence_refs'] = evidence_refs
+        for field in ('project', 'kind', 'status', 'updated_at', 'evidence_refs'):
             if metadata.get(field) is None:
                 metadata.pop(field, None)
-            elif field in metadata and not isinstance(metadata[field], str):
+            elif field in metadata and field != 'evidence_refs' and not isinstance(metadata[field], str):
                 raise ValueError(field + ' must be a string')
+            elif field == 'evidence_refs' and not isinstance(metadata['evidence_refs'], list):
+                raise ValueError('evidence_refs must be a list')
         if 'id' in metadata and (not isinstance(metadata['id'], str) or not metadata['id'].strip()):
             raise ValueError('record id must be nonempty text')
         if 'facts' in metadata and not isinstance(metadata['facts'], dict):
@@ -1307,9 +1324,24 @@ class SyncEngine:
         intended = render(metadata, text+'\n')
         # All participating note writers share this vault-local lock, even when
         # clients use different state roots. Acquire it before the DB transaction.
-        with locked(self):
+        with locked(self) as folder:
             self._refuse_excluded(source)
             path = self._path(source)
+            idempotency_file = None
+            if idempotency_key:
+                idemp_dir = folder / 'idempotency'
+                idemp_dir.mkdir(exist_ok=True, mode=0o700)
+                idempotency_file = idemp_dir / (idempotency_key + '.json')
+                if idempotency_file.is_file():
+                    try:
+                        saved = json.loads(idempotency_file.read_text(encoding='utf-8'))
+                        if saved.get('source') == source and path.is_file() and _hash(path.read_bytes()) == saved.get('sha256'):
+                            return dict(saved, idempotent=True)
+                        elif saved.get('source') != source:
+                            raise ValueError('idempotency_key already used for a different source')
+                    except (OSError, ValueError) as exc:
+                        if isinstance(exc, ValueError):
+                            raise
             with self.store._connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 if path.exists():
@@ -1326,12 +1358,22 @@ class SyncEngine:
             record = json.loads(row[0])
             if record.get('source') != source or record.get('source_sha256') != _hash(intended) or path.read_bytes() != intended.encode('utf-8'):
                 raise RevisionConflict('created note source readback mismatch')
-        self._record_redactions(redacted)
-        return {'status': 'succeeded', 'source': source, 'redacted': redacted,
-                'secrets_redacted': redacted, 'warnings': result['warnings'],
-                'conflicts': result['conflicts'],
-                'source_sync': {'status': result['status'], 'warnings': result['warnings'],
-                                'conflicts': result['conflicts']}}
+            self._record_redactions(redacted)
+            created_details = {'status': 'succeeded', 'source': source, 'sha256': _hash(intended),
+                               'redacted': redacted, 'secrets_redacted': redacted,
+                               'warnings': result['warnings'], 'conflicts': result['conflicts'],
+                               'source_sync': {'status': result['status'], 'warnings': result['warnings'],
+                                               'conflicts': result['conflicts']}}
+            if evidence_refs:
+                created_details['evidence_refs'] = evidence_refs
+            if idempotency_file:
+                idemp_saved = {'status': 'succeeded', 'source': source, 'sha256': _hash(intended)}
+                if evidence_refs:
+                    idemp_saved['evidence_refs'] = evidence_refs
+                temp_idemp = idempotency_file.with_suffix('.tmp')
+                temp_idemp.write_text(json.dumps(idemp_saved, ensure_ascii=False), encoding='utf-8')
+                _safe_replace(temp_idemp, idempotency_file)
+            return created_details
 
     def task_create(self, source, text, metadata):
         if not isinstance(source, str) or not source.startswith('tasks/') or not source.endswith('.md'):
