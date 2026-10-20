@@ -447,11 +447,12 @@ class WindowsCaptureModelTest(unittest.TestCase):
         user.GetForegroundWindow.return_value = 42
         user.SetWindowsHookExW.return_value = 100
         user.CallNextHookEx.return_value = 0
+        user.GetAsyncKeyState.return_value = 0
         kernel.GetModuleHandleW.return_value = 1
         with patch.object(ctypes, 'WinDLL', side_effect=lambda name, **_kw: user if name == 'user32' else kernel):
             stop = yakala._win_escape_guard(root, 99, 42, dismiss)
             callback = user.SetWindowsHookExW.call_args.args[1]
-            key = ctypes.c_uint32(0x1B)
+            key = (ctypes.c_uint32 * 6)(0x1B, 0, 0, 0, 0, 0)  # KBDLLHOOKSTRUCT, including flags
             callback(0, 0x100, ctypes.addressof(key))
             root.after.call_args.args[1]()
             stop()
