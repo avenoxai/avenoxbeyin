@@ -1319,6 +1319,30 @@ runpy.run_path({str(HOOK)!r}, run_name='__main__')
         self.assertIn('ALPHA_ONLY_RULE', context)
         self.assertIn('Synthetic Reviewer', context)
 
+    def test_hook_resolves_project_from_query_and_sibling_cwd(self):
+        """Hook resolves active project from query at vault root and from sibling directory (#288, #403)."""
+        engine = self.seed()
+        proj_dir = self.vault / 'projects/alpha'
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        (proj_dir / 'Kurallar.md').write_text('# Alpha Kurallari\n- **kural:** ALPHA_HOOK_QUERY_RULE\n', encoding='utf-8')
+        engine.sync()
+
+        # 1. At vault root, prompt explicitly mentions 'alpha'
+        payload = dict(self.payload, hook_event_name='SessionStart', cwd=str(self.vault), prompt='alpha projesinde kural ve testler')
+        payload.pop('project', None)
+        response = self.invoke(payload, 'claude')
+        context = response.get('hookSpecificOutput', {}).get('additionalContext', '')
+        self.assertIn('ALPHA_HOOK_QUERY_RULE', context)
+
+        # 2. Sibling directory outside vault named 'alpha'
+        sibling = Path(self.tmp.name) / 'alpha' / 'sub'
+        sibling.mkdir(parents=True)
+        sibling_payload = dict(self.payload, hook_event_name='SessionStart', cwd=str(sibling), prompt='unscoped prompt')
+        sibling_payload.pop('project', None)
+        sibling_response = self.invoke(sibling_payload, 'claude')
+        sibling_context = sibling_response.get('hookSpecificOutput', {}).get('additionalContext', '')
+        self.assertIn('ALPHA_HOOK_QUERY_RULE', sibling_context)
+
 
 
 class HookFailOpenTest(unittest.TestCase):

@@ -691,11 +691,16 @@ def main():
                 rules_project = project
                 if rules_project is None:
                     from beyin_v3_bridge import working_directory
-                    from beyin_v3_projects import resolve_active_project
+                    from beyin_v3_projects import resolve_active_project, resolve_project_from_query
                     try:
                         rules_project = resolve_active_project(vault, working_directory(payload, args.harness))
                     except Exception:
                         rules_project = None
+                    if rules_project is None and query:
+                        try:
+                            rules_project = resolve_project_from_query(vault, query)
+                        except Exception:
+                            rules_project = None
                 # The opening may carry its own machine-local budget (#140); never a vault preference.
                 limit = client_budget(args.harness, opening_budget(state, settings['context_chars']))
                 text = companion_context(store, limit, session, args.harness, query, receipt, warning, project=project,
