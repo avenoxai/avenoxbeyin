@@ -117,7 +117,9 @@ Düzeltme dört parçadır:
   en fazla kaç karakterini tam gösterdiğini (`share`) hook'un kendi hesabıyla verir; sayı
   öbür companion dosyalarının o anki boyutuna ve receipt'e göre değişir. Kurallar
   kırpılıyorsa `--human` çıktısında tek satır görünür. Bilgi amaçlıdır, `doctor` durumunu
-  değiştirmez ve hiçbir dosya yazmaz (#374).
+  değiştirmez ve hiçbir dosya yazmaz (#374). Ayrıca açılışta `Kurallar.md` kırpılıyorsa oturum
+  başı bağlamının tepesinde `Memory hygiene: Kurallar.md opens clipped (share X of Y chars)...`
+  uyarısı yer alır (#461).
 - **Kayıpsız arşivleme.** `python3 beyin.py companion-compact` açık bir komuttur; hook,
   worker veya zamanlayıcı onu kendiliğinden çalıştırmaz. Yalnız sınırı aşan dosyada önce
   `## Previous`/`## Önceki` (Last-Session) veya `## Closed`/`## Kapanan`/`## Kapalı`
