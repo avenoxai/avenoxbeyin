@@ -1095,6 +1095,16 @@ def parser(note_namespace=None, is_json=False):
     learn.add_argument("--scope", default=None, help="Scope of the learning: global or project name")
     learn.add_argument("--session", default="", help="Session ID associated with candidate")
     learn.add_argument("--list", action="store_true", help="List active candidate learnings")
+    ws = sub.add_parser("workspace", help="Unified workspace registry management (RFC #368 P0-C)")
+    ws.add_argument("action", choices=["list", "create", "inspect", "connect", "disconnect", "archive", "unarchive"],
+                    nargs="?", default="list",
+                    help="Workspace action to perform (default: list)")
+    ws.add_argument("workspace_id", nargs="?", default=None, help="Workspace identifier")
+    ws.add_argument("--id", dest="explicit_id", default=None, help="Workspace identifier (flag form)")
+    ws.add_argument("--name", help="Workspace display name")
+    ws.add_argument("--kind", default=None, help="Workspace domain kind (software, learning, career, etc.)")
+    ws.add_argument("--source", help="Vault-relative source folder path to connect/disconnect")
+    ws.add_argument("--all", action="store_true", help="Include archived workspaces in listing")
     return root
 
 
@@ -1774,6 +1784,19 @@ def main(argv=None, return_result=False):
                 result = {"candidates": list_candidates(state, session=args.session or None, scope=args.scope)}
             else:
                 raise ValueError("either --candidate or --list is required")
+        elif args.command == "workspace":
+            _ensure_scripts_path()
+            import beyin_v3_workspaces as workspaces
+            wid = args.workspace_id or args.explicit_id
+            result = workspaces.manage(
+                vault,
+                args.action,
+                workspace_id=wid,
+                name=args.name,
+                kind=args.kind,
+                source=args.source,
+                include_archived=getattr(args, "all", False),
+            )
         else:
             payload = read_json(args.file)
             result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])
