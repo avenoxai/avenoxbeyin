@@ -212,6 +212,7 @@ def read(engine, source):
         path = source_path(engine, source)
         source = path.relative_to(engine.root).as_posix()
         _refuse_tracked_view(engine, source)
+        engine._workspace_human_note_guard(source)
         raw = _bytes(path)
         text = raw.decode('utf-8') if raw is not None else None
         if text is not None:
@@ -248,6 +249,7 @@ def _apply(engine, request, committed):
         path = source_path(engine, source)  # Revalidate after waiting for the lock.
         source = path.relative_to(engine.root).as_posix()
         _refuse_tracked_view(engine, source)
+        engine._workspace_human_note_guard(source, write=True)
         raw = _bytes(path)
         actual = _hash(raw) if raw is not None else None
         if actual != expected:
@@ -304,6 +306,7 @@ def _apply(engine, request, committed):
                 raise NoteConflict('external edit detected before replace; source preserved')
             details = {'source': source, 'written_sha256': _hash(updated),
                        'backup': backup.relative_to(engine.root).as_posix() if backup else None}
+            engine._workspace_human_note_guard(source, write=True, content=text)
             _safe_replace(temporary, path)
             committed.update(details)
         finally:

@@ -1346,6 +1346,33 @@ class SyncEngine:
         self._record_redactions(redacted)
         return self._write_diagnostics(dict(actual,redacted=redacted),result)
 
+    def _workspace_human_note_guard(self, source, *, write=False, content=None):
+        from beyin_v3_workspace_context import CURRENT, enabled
+        from beyin_v3_workspaces import WorkspaceError
+        if CURRENT.get() is None and not enabled(self.root, self.state):
+            return
+        if CURRENT.get() is None:
+            raise WorkspaceError('workspace_context_required')
+        with self.store._connect() as db:
+            rows = db.execute('SELECT r.payload FROM records r JOIN markdown_sources m ON r.id=m.id WHERE m.source=?', (source,)).fetchall()
+        records = [json.loads(row[0]) for row in rows]
+        eligible, _ = self.store._eligible('internal', records=records)
+        if not records or len(eligible) != len(records):
+            raise WorkspaceError('scope_denied')
+        for record in records:
+            path = self._path(source, existing=True)
+            if _hash(path.read_bytes()) != record.get('source_sha256'):
+                raise WorkspaceError('source_changed')
+            if write:
+                self._workspace_write_guard(source, record)
+                if content is not None:
+                    before, _ = parse(path.read_bytes().decode('utf-8'))
+                    after, _ = parse(content)
+                    # Human edits may change prose, never silently change authority metadata.
+                    mutable = {'title', 'facts', 'next_action', 'due_at'}
+                    if {k:v for k,v in before.items() if k not in mutable} != {k:v for k,v in after.items() if k not in mutable}:
+                        raise WorkspaceError('scope_denied')
+
     # The notes writer also imports this module when it validates human sources.
     def note_read(self, source):
         if _MODULE_DIR not in sys.path:

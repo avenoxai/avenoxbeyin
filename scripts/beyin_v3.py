@@ -1947,7 +1947,7 @@ def main(argv=None, return_result=False):
         else:
             payload = read_json(args.file)
             result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])
-        if (args.command in SOURCE_WRITE_COMMANDS
+        if (args.command in SOURCE_WRITE_COMMANDS and os.environ.get("CLAUDE_CODE_SESSION_ID")
                 and (args.command != "note-edit" or result.get('status') == 'written')
                 or (args.command == "workspace-write" and result.get("data", {}).get("operation_status") == "applied")):
             mark_session_edit(state)
