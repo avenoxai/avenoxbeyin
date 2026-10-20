@@ -60,7 +60,7 @@ class OnboardingTest(unittest.TestCase):
     def test_stage_is_compact_durable_and_never_approves_or_initializes(self):
         staged, saved = self.stage()
         self.assertNotIn('plan', staged); self.assertNotIn('spec', staged); self.assertNotIn('preview', staged)
-        self.assertEqual(json.loads(Path(staged['plan_path']).read_text()), saved['plan'])
+        self.assertEqual(json.loads(Path(staged['plan_path']).read_text(encoding='utf-8')), saved['plan'])
         self.assertEqual(staged['scope']['homepage'], 'notes/workspaces/fitness.md')
         self.assertEqual(list(self.vault.iterdir()), [])
         self.assertFalse((self.state / 'workspace-authorities.json').exists())

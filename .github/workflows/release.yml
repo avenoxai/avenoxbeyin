@@ -6,6 +6,7 @@ on:
       - 'VERSION'
       - 'scripts/*v3*.py'
       - 'scripts/beyin_entry.py'
+      - 'scripts/audit_text_encoding.py'
       - 'template/.claude/scripts/beyin_v3*.py'
       - 'template/.agents/skills/**'
       - 'tests/v3_*.py'
@@ -42,10 +43,10 @@ jobs:
           python - <<'PY'
           import os, re
           from pathlib import Path
-          version = Path('VERSION').read_text().strip()
+          version = Path('VERSION').read_text(encoding='ascii').strip()
           assert re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', version)
           assert Path('docs/v3/releases/' + version + '.md').is_file()
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write('value=' + version + '\n')
           PY
       - name: Build once and download the released baseline
@@ -75,8 +76,8 @@ jobs:
   verify:
     needs: build
     runs-on: ${{ matrix.os }}
-    # Allow the full Windows suite and package lifecycle to finish on slower runners.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 40 || 15 }}
+    # Full checks exceeded 15 minutes on macOS and 40 on Windows 3.11.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 25 }}
     strategy:
       fail-fast: false
       matrix:
@@ -97,6 +98,8 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: v3-release-bundle
+      - name: Explicit text encoding gate
+        run: python scripts/audit_text_encoding.py
       - name: Offline contracts
         run: python -m unittest discover -s tests -p "v3_*test.py"
       - name: Retrieval gates

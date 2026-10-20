@@ -232,7 +232,7 @@ def main():
     if not 1 <= args.repetitions <= 10: parser.error('repetitions must be 1..10')
     raw = FIXTURE.read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
-    if digest != FIXTURE.with_suffix('.sha256').read_text().split()[0]:
+    if digest != FIXTURE.with_suffix('.sha256').read_text(encoding='ascii').split()[0]:
         raise ValueError('frozen-fixture-hash-mismatch')
     fixture = json.loads(raw)
     variants = [('off', 'full'), ('shadow', 'full'), ('on', 'full')]
