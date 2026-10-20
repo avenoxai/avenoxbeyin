@@ -1186,6 +1186,8 @@ def extract(vault, card, found, allow_audio=True, info=None):
     url, kind = meta.get('url'), meta.get('kaynak_turu') or kind_of(meta.get('url'))
     if url:
         _safe_source_url(url)  # Cards can also be edited, clipped or synced.
+        if kind == 'youtube' and kind_of(url) != 'youtube':
+            kind = kind_of(url)  # an edited field never hands another site to yt-dlp's generic extractor
     clipped = _section(body, 'Icerik') or _section(body, 'İçerik')
     if clipped and len(clipped) > 200 and kind != 'youtube':
         return clipped, 'web-clipper', None

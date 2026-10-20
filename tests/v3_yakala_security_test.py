@@ -350,6 +350,23 @@ class YakalaSecurityTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 yakala.via_audio('--version', {'yt_dlp': 'yt-dlp', 'whisper': 'whisper'}, self.root)
 
+    def test_edited_card_kind_cannot_send_another_site_to_yt_dlp(self):
+        """`kaynak_turu` is card text: only a YouTube address opens yt-dlp, never its generic extractor."""
+        public = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('8.8.8.8', 443))]
+        helpers = {'npx': None, 'yt_dlp': 'yt-dlp', 'whisper': None, 'pdftotext': None, 'ffmpeg': None}
+        for url, opens in (('https://www.youtube.com/watch?v=abc', True), ('https://video.example.com/izle', False)):
+            card = yakala.find_card(self.vault, yakala.capture(self.vault, url=url)['id'])
+            card['meta']['kaynak_turu'] = 'youtube'
+            calls = []
+
+            def run(command, *args, **kwargs):
+                calls.append(Path(command[0]).name)
+                return 1, '', ''
+            with self.subTest(url=url), patch.object(socket, 'getaddrinfo', return_value=public), \
+                    patch.object(yakala, '_run', side_effect=run), patch.object(yakala, 'via_stdlib', return_value=None):
+                yakala.extract(self.vault, card, helpers, allow_audio=False, info={})
+                self.assertEqual('yt-dlp' in calls, opens, calls)
+
     def test_vault_path_traversal_absolute_path_and_symlink(self):
         secret = self.root / 'private.txt'
         secret.write_text('never import this secret', encoding='utf-8')

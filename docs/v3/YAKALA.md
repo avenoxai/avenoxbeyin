@@ -546,5 +546,7 @@ Python HTTP yolu bağlanırken adı yeniden çözer, her cevabı aynı kapıdan 
 IP adresine açar (TLS yine asıl sunucu adını doğrular). Denetimden sonra değişen bir DNS cevabı
 (rebinding) bu yolu yerel adrese yönlendiremez. Sistemde proxy ayarlıysa hedefi proxy çözer; bu bağlama
 proxy'nin kendisine uygulanmaz. Defuddle ve yt-dlp adı kendileri yeniden çözer ve kendi yönlendirmelerini
-izler; bu iki yardımcı için ağ çıkışı izolasyonu yoktur. Ham kaynak metni güvenilmeyen veri olarak işaretlenir;
+izler; bu iki yardımcı için ağ çıkışı izolasyonu yoktur. yt-dlp yalnız YouTube adresiyle çalışır: kartın
+`kaynak_turu` alanı elle `youtube` yapılsa da başka bir site yt-dlp'ye verilmez, adres türüne göre işlenir.
+Ham kaynak metni güvenilmeyen veri olarak işaretlenir;
 metnin içindeki rol değişikliği, komut çalıştırma ve dosya silme istekleri talimat sayılmaz.
