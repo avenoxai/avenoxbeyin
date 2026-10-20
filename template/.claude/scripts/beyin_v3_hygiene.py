@@ -188,7 +188,10 @@ def save_inbox_settings(state, changes):
         os.replace(temporary, state / INBOX_SETTINGS_FILE)
     finally:
         if os.path.exists(temporary):
-            os.unlink(temporary)
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
     return result
 
 
@@ -224,7 +227,10 @@ def save_settings(state, changes):
         os.replace(temporary, state / SETTINGS_FILE)
     finally:
         if os.path.exists(temporary):
-            os.unlink(temporary)
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
     return result
 
 

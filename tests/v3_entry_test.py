@@ -2,6 +2,7 @@
 import importlib.util
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -55,6 +56,24 @@ class EntryPresentationTest(unittest.TestCase):
             usage = run_python(vault / 'beyin.py', ['receipt', '--event-id', 'x', '--human'], vault, env)
             self.assertEqual(usage.returncode, 2)
             self.assertIn('--summary or --summary-file is required', usage.stderr.decode('utf-8'))
+
+    def test_trust_review_names_only_the_clients_whose_hooks_changed(self):
+        spec = importlib.util.spec_from_file_location('v3_entry_trust_review', ROOT / 'scripts/beyin_entry.py')
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        updated = {'status': 'updated', 'from_version': '3.10.0', 'version': '3.11.0', 'trust_review_required': True}
+        kiro = entry.human_result(dict(updated, trust_review_files=['.kiro/hooks/beyin-v3.json']), 'update')
+        self.assertIn('.kiro/hooks/beyin-v3.json', kiro)
+        self.assertIn('Kiro: Agent Hooks', kiro)
+        self.assertNotIn('Codex', kiro)
+        both = entry.human_result(dict(updated, trust_review_files=['.kiro/hooks/beyin-v3.json', '.codex/hooks.json']),
+                                  'update')
+        self.assertLess(both.index('Codex: /hooks'), both.index('Kiro: Agent Hooks'))
+        # An updater from before the file list names no client rather than a wrong one.
+        older = entry.human_result(updated, 'update')
+        self.assertIn('kullandigin istemcide guven incelemesini', older)
+        self.assertNotIn('Codex', older)
+        self.assertNotIn('Hook tanimi', entry.human_result(dict(updated, trust_review_required=False), 'update'))
 
 
 # The installer pins a resolved absolute path; this is one another OS wrote into a synced vault (#249).
@@ -201,6 +220,15 @@ class CrossPlatformPinTest(unittest.TestCase):
         self.assertFalse(same({'state': FOREIGN_PIN, 'schema': 1, 'extra': True}))
         self.assertFalse(same({'state': str(self.root / 'moved-state'), 'schema': 1}))
         self.assertFalse(same({'schema': 1}))
+
+    def test_windows_runtime_env_includes_systemdrive_and_programdata(self):
+        from v3_package_helpers import windows_runtime_env
+        if sys.platform != 'win32':
+            self.skipTest('Windows-specific test')
+        env = windows_runtime_env()
+        for key in ('SystemDrive', 'ProgramData'):
+            if key in os.environ:
+                self.assertIn(key, env)
 
 
 if __name__ == '__main__':

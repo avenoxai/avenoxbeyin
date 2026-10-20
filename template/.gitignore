@@ -20,6 +20,7 @@
 
 # OS / editor noise
 .DS_Store
+.beyin-note-write/
 .obsidian/workspace*
 .obsidian/cache
 __pycache__/

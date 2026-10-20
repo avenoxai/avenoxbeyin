@@ -1,17 +1,19 @@
 """A vault whose state manifest is gone must still reinstall, and a customized legacy runner
 must be retirable through one named path instead of a blanket override."""
+import base64
 import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
 
-from v3_package_helpers import ROOT, build_package, isolated_env, run_python, snapshot
+from v3_package_helpers import ROOT, build_package, inherited_env, isolated_env, run_python, snapshot
 
 RELEASED = Path(__file__).resolve().parent / 'fixtures/v3/released-skills'
 TAGS = ('v3.0.0', 'v3.0.1', 'v3.0.2')
@@ -19,6 +21,42 @@ SKILLS = ('beyin', 'beyin-doktor', 'beyin-guncelle')
 ROOTS = ('.agents', '.claude')
 CUSTOM_RUNNER = b'# kullanicinin kendi flush surumu\nprint("synthetic customized legacy runner")\n'
 CUSTOM_HOOK = b'#!/bin/sh\n# kullanicinin kendi session-end kancasi\nexit 0\n'
+# V2 was never tagged; it was installed by cloning main. These are the untouched upstream bytes
+# main had on 2026-08-29 (git blobs b0759bac and 43e46f14), not the final V2 ones.
+V2_ON_2026_08_29 = Path(__file__).resolve().parent / 'fixtures/v3/legacy-v2/2026-08-29'
+OLDER_V2_FILES = {'.claude/scripts/compile.py': V2_ON_2026_08_29 / 'compile.py',
+                  '.claude/skills/beyin-doktor/SKILL.md': V2_ON_2026_08_29 / 'beyin-doktor.md',
+                  '.agents/skills/beyin-doktor/SKILL.md': V2_ON_2026_08_29 / 'beyin-doktor.md'}
+
+
+def first_parent_versions(paths):
+    """{path: {blob id: bytes}} for every version each repository path had on HEAD's first-parent
+    history, which is main's in a clone of main; None where that history is not here (CI checks
+    out depth 1)."""
+    git = shutil.which('git')
+    if git is None:
+        return None
+    env = inherited_env(GIT_NO_LAZY_FETCH='1')  # a partial clone must not reach the network
+
+    def run(*args):
+        return subprocess.run([git, '-C', str(ROOT), *args], capture_output=True, check=True,
+                              env=env, timeout=120).stdout
+    try:
+        # An export unpacked inside another checkout would read that repository's history.
+        if not Path(run('rev-parse', '--show-toplevel').decode('utf-8').strip()).samefile(ROOT):
+            return None
+        if run('rev-parse', '--is-shallow-repository').strip() != b'false':
+            return None
+        versions = {path: {} for path in paths}
+        for commit in run('rev-list', '--first-parent', 'HEAD', '--', *paths).decode('ascii').split():
+            for line in run('ls-tree', '-r', commit, '--', *paths).decode('utf-8').splitlines():
+                meta, path = line.split('\t', 1)
+                blob = meta.split()[2]
+                if blob not in versions[path]:
+                    versions[path][blob] = run('cat-file', 'blob', blob)
+        return versions
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
 
 
 def flush_sentinel(age):
@@ -39,6 +77,12 @@ RELEASED_V2_HOOKS = {
     'prompt-counter.sh': '3494e2a7282c0278372496c08a51c0e605879d16146ffe184a71e218721a40c0',
     'prompt-counter.ps1': 'bcb6375090dcbf716c62e0232f61772a69d83ced289ad5ed7d37126246237cde',
 }
+# The V2 runners are recognized the same way (install_v3 legacy_hashes): every release from
+# v3.0.0 to v3.11.0 shipped these bytes, so a refactor here blocks the stock V2 upgrade.
+RELEASED_V2_RUNNERS = {
+    'compile.py': '23af64eb892283b907de63fcb9241208a3edf13b4f2e41ff4cecb2a1a8570150',
+    'flush.py': 'f36f8eb4da19222c7a70ea2659b140595834ce7a52483a6549bcab869e2fb404',
+}
 
 
 class ReleasedLegacyHooksTest(unittest.TestCase):
@@ -46,6 +90,12 @@ class ReleasedLegacyHooksTest(unittest.TestCase):
         for name, expected in RELEASED_V2_HOOKS.items():
             with self.subTest(name=name):
                 data = (ROOT / 'template/.claude/hooks' / name).read_bytes()
+                self.assertEqual(hashlib.sha256(data).hexdigest(), expected)
+
+    def test_legacy_runner_templates_keep_their_released_bytes(self):
+        for name, expected in RELEASED_V2_RUNNERS.items():
+            with self.subTest(name=name):
+                data = (ROOT / 'template/.claude/scripts' / name).read_bytes()
                 self.assertEqual(hashlib.sha256(data).hexdigest(), expected)
 
 
@@ -182,6 +232,62 @@ class InstallLegacyExemptionTest(unittest.TestCase):
                         self.installer.install(self.vault, self.state, plan_only=True)
                     self.assertEqual(str(raised.exception), 'Unmanaged file conflict ' + relative)
                     path.unlink()
+
+    def test_untouched_files_of_an_older_v2_install_retire_without_review(self):
+        # Untouched since main put them there on 2026-08-29, yet only the final V2 bytes were
+        # stock: the install stopped at compile.py, and with no flag for skills, at the doctor.
+        seeded = {name: self.seed(name, source.read_bytes()) for name, source in OLDER_V2_FILES.items()}
+        result = self.cli()
+        self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
+        self.assertIn(b'BEYIN_V3_LEGACY_RETIRED', seeded['.claude/scripts/compile.py'].read_bytes())
+        for root in ROOTS:
+            self.assertEqual(seeded[root + '/skills/beyin-doktor/SKILL.md'].read_bytes(),
+                             (ROOT / 'template/.agents/skills/beyin-doktor/SKILL.md').read_bytes(), root)
+        files = json.loads((self.state / 'v3-install.json').read_text(encoding='utf-8'))['files']
+        for name, source in OLDER_V2_FILES.items():
+            self.assertEqual(base64.b64decode(files[name]['original']), source.read_bytes(), name)
+        uninstall = self.cli('--uninstall')
+        self.assertEqual(uninstall.returncode, 0, uninstall.stderr.decode('utf-8', errors='replace'))
+        for name, source in OLDER_V2_FILES.items():
+            self.assertEqual(seeded[name].read_bytes(), source.read_bytes(), name)
+
+    def test_one_byte_on_top_of_an_older_v2_file_still_needs_review(self):
+        for name, message in (('.claude/scripts/compile.py', 'Customized legacy runner requires review '),
+                              ('.claude/skills/beyin-doktor/SKILL.md', 'Unmanaged file conflict ')):
+            with self.subTest(path=name):
+                path = self.seed(name, OLDER_V2_FILES[name].read_bytes() + b'\n')
+                before = snapshot(self.vault)
+                with self.assertRaises(ValueError) as raised:
+                    self.installer.install(self.vault, self.state, plan_only=True)
+                self.assertEqual(str(raised.exception), message + name)
+                self.assertEqual(snapshot(self.vault), before)
+                path.unlink()
+
+    def test_every_version_main_ever_shipped_retires_without_review(self):
+        # V1 and V2 were installed by cloning main, so any of these bytes can sit untouched in a
+        # vault; recognizing only the last ones stopped such vaults with a review demand (#155).
+        doctor = '.claude/skills/beyin-doktor/SKILL.md'
+        versions = first_parent_versions(['template/' + name for name in self.installer.LEGACY_RUNNERS + (doctor,)])
+        if versions is None:
+            self.skipTest('needs the full git history of main; CI checks out depth 1')
+        v3_doctor = (ROOT / 'template/.agents/skills/beyin-doktor/SKILL.md').read_bytes()
+        for path, found in sorted(versions.items()):
+            name = path[len('template/'):]
+            self.assertTrue(found, path)
+            targets = ([root + '/skills/beyin-doktor/SKILL.md' for root in self.installer.SKILL_ROOTS]
+                       if name == doctor else [name])
+            for blob, data in sorted(found.items()):
+                for target in targets:
+                    with self.subTest(path=target, blob=blob, sha256=hashlib.sha256(data).hexdigest()):
+                        seeded = self.seed(target, data)
+                        try:
+                            planned = self.installer.install(self.vault, self.state, plan_only=True)['planned'][target]
+                        finally:
+                            seeded.unlink()
+                        if name == doctor:
+                            self.assertEqual(planned, v3_doctor)
+                        else:
+                            self.assertIn(b'BEYIN_V3_LEGACY_RETIRED', planned)
 
     def test_customized_legacy_runner_needs_its_own_named_acceptance(self):
         runner = self.seed('.claude/scripts/flush.py', CUSTOM_RUNNER)

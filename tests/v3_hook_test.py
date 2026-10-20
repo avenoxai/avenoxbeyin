@@ -15,7 +15,7 @@ import time
 import unittest
 from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
-from v3_package_helpers import clean_environ, isolated_path
+from v3_package_helpers import clean_environ, inherited_env, isolated_path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
@@ -540,10 +540,24 @@ class HookInstallerTest(unittest.TestCase):
             return hashlib.sha256(name.encode()).hexdigest()[:24]
         sess_name = 'no-learn-session'
         self.lifecycle('PostToolUse', sess_name, 'claude')
-        summary = "Routine bugfix completed.\nÖğrenilen: Yok"
+        summary = "Routine bugfix completed.\nÖğrenilen: Yok (rutin hata düzeltmesi)"
         engine.receipt('no-learn-1', summary, ['notes/task.md'], 'claude', session=session(sess_name))
         response = self.lifecycle('Stop', sess_name, 'claude')
         self.assertEqual(response, {})
+
+    def test_stop_knowledge_reminder_challenges_bare_no_learning_without_explanation(self):
+        engine = self.seed()
+        def session(name):
+            return hashlib.sha256(name.encode()).hexdigest()[:24]
+        sess_name = 'bare-no-learn-session'
+        self.lifecycle('PostToolUse', sess_name, 'claude')
+        summary = "Routine bugfix completed.\nÖğrenilen: Yok"
+        engine.receipt('bare-1', summary, ['notes/task.md'], 'claude', session=session(sess_name))
+        response = self.lifecycle('Stop', sess_name, 'claude')
+        self.assertEqual(response.get('decision'), 'block')
+        self.assertIn("Öğrenilen: yok", response.get('reason', ''))
+        # A second stop passes open
+        self.assertEqual(self.lifecycle('Stop', sess_name, 'claude'), {})
 
     def test_learning_declaration_reads_only_the_label_line(self):
         declared = self.hook._has_declared_learning
@@ -1053,6 +1067,29 @@ class HookInstallerTest(unittest.TestCase):
         self.assertIn('Makaleler/uzun.md', response['hookSpecificOutput']['additionalContext'])
         self.assertIn('Makaleler/uzun.md', (self.state / 'touch-log.tsv').read_text(encoding='utf-8'))
 
+    def test_hook_resolves_active_project_from_json_and_junctions(self):
+        self.seed()
+        # Tests basic json mapping and ensures fallback doesn't crash on deleted dirs
+        (self.vault / '.beyin-projects.json').write_text(json.dumps({
+            "folders": {"custom/path": "mapped-project"}
+        }))
+        cwd = self.vault / 'custom' / 'path' / 'inside'
+        cwd.mkdir(parents=True)
+        # Should resolve and respond correctly
+        self.invoke(dict(self.payload, cwd=str(cwd)))
+        queued = list((self.state / 'hook-queue').glob('*.json'))
+        self.assertTrue(queued)
+        event_data = json.loads(queued[-1].read_text(encoding='utf-8'))
+        self.assertEqual(event_data.get('project'), 'mapped-project')
+
+        deleted_cwd = self.vault / 'projects' / 'deleted-proj'
+        deleted_cwd.mkdir(parents=True)
+        cwd_path = str(deleted_cwd)
+        import shutil
+        shutil.rmtree(cwd_path)
+        # Should fallback gracefully without crashing
+        self.invoke(dict(self.payload, cwd=cwd_path))
+
     def test_is_synthetic_prompt_detection(self):
         # Prefix heuristics
         for prefix in (
@@ -1169,6 +1206,47 @@ runpy.run_path({str(HOOK)!r}, run_name='__main__')
         context = self.invoke(payload, 'claude', script=self.slow_sync_hook())['hookSpecificOutput']['additionalContext']
         self.assertIn('V3 source sync is pending', context)
 
+    def deferred_sync_hook(self):
+        """The real hook where interval preference defers source synchronization."""
+        wrapper = self.root / 'deferred_sync_hook.py'
+        wrapper.write_text(f'''import runpy, sys
+sys.path.insert(0, {str(SCRIPTS)!r})
+import beyin_v3_preferences
+beyin_v3_preferences.claim_check = lambda *args, **kwargs: False
+sys.argv[0] = {str(HOOK)!r}
+runpy.run_path({str(HOOK)!r}, run_name='__main__')
+''', encoding='utf-8')
+        self.env.pop('BEYIN_V3_NO_SPAWN', None)
+        return wrapper
+
+    def test_user_prompt_submit_reads_previous_index_when_check_is_deferred(self):
+        # Issue #398: context_mode: turn with interval_minutes > 0 used to drop context entirely.
+        # When check is deferred, prompt retrieval reads the previous committed index.
+        self.seed()
+        import beyin_v3_preferences as preferences
+        preferences.save(self.vault, {'context_mode': 'turn', 'interval_minutes': 15})
+        # Exercise the real interval claim instead of forcing its result in a wrapper.
+        self.assertTrue(preferences.claim_check(self.state, preferences.read(self.vault), 'UserPromptSubmit'))
+        self.env.pop('BEYIN_V3_NO_SPAWN', None)
+        payload = {'hook_event_name': 'UserPromptSubmit', 'session_id': 'deferred-turn', 'event_id': 'deferred-1',
+                   'cwd': str(self.vault), 'prompt': 'Nebula calibration owner'}
+        context = self.invoke(payload, 'claude')['hookSpecificOutput']['additionalContext']
+        self.assertIn('Synthetic Reviewer', context)
+        self.assertIn('deferred by your interval preference', context)
+        self.assertIn('previous index', context)
+        self.assertLessEqual(len(context.encode('utf-16-le')) // 2, 10000)
+        self.assertFalse((self.state / 'hook-error.json').exists())
+
+    def test_user_prompt_submit_without_index_when_check_is_deferred_keeps_notice(self):
+        import beyin_v3_preferences as preferences
+        preferences.save(self.vault, {'context_mode': 'turn', 'interval_minutes': 15})
+        payload = {'hook_event_name': 'UserPromptSubmit', 'session_id': 'first-deferred', 'event_id': 'first-deferred-1',
+                   'cwd': str(self.vault), 'prompt': 'Nebula calibration owner'}
+        context = self.invoke(payload, 'claude', script=self.deferred_sync_hook())['hookSpecificOutput']['additionalContext']
+        self.assertIn('deferred by your interval preference', context)
+        self.assertNotIn('previous index', context)
+        self.assertFalse((self.state / 'hook-error.json').exists())
+
     def test_user_prompt_submit_synthetic_filter_honours_opt_out_env(self):
         self.seed()
         self.env['BEYIN_V3_FILTER_HARNESS_TURNS'] = '0'
@@ -1197,6 +1275,110 @@ runpy.run_path({str(HOOK)!r}, run_name='__main__')
         resp = self.lifecycle('UserPromptSubmit', 'channel-sess', 'claude', prompt='Nebula calibration',
                               origin={'kind': 'channel', 'server': 'telegram'})
         self.assertIn('Synthetic Reviewer', resp['hookSpecificOutput']['additionalContext'])
+
+    def test_hook_resolves_project_from_vault_cwd_without_explicit_payload(self):
+        """Hook resolves active project from cwd within vault and injects its Kurallar.md (#288)."""
+        engine = self.seed()
+        proj_dir = self.vault / 'projects/alpha'
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        (proj_dir / 'Kurallar.md').write_text('# Alpha Kurallari\n- **kural:** ALPHA_HOOK_RULE\n', encoding='utf-8')
+        (self.vault / 'notes/alpha_note.md').write_text('---\n{"id": "alpha-note", "kind": "note", "project": "alpha", "visibility": "internal"}\n---\nAlpha Note\n', encoding='utf-8')
+        engine.sync()
+
+        # SessionStart inside projects/alpha without payload['project']
+        payload = dict(self.payload, hook_event_name='SessionStart', cwd=str(proj_dir), prompt='Alpha query')
+        payload.pop('project', None)
+        response = self.invoke(payload, 'claude')
+        context = response.get('hookSpecificOutput', {}).get('additionalContext', '')
+        self.assertIn('ALPHA_HOOK_RULE', context)
+
+        # Negative control: SessionStart at vault root does not inject project rules
+        root_payload = dict(self.payload, hook_event_name='SessionStart', cwd=str(self.vault), prompt='Root query')
+        root_payload.pop('project', None)
+        root_response = self.invoke(root_payload, 'claude')
+        root_context = root_response.get('hookSpecificOutput', {}).get('additionalContext', '')
+        self.assertNotIn('ALPHA_HOOK_RULE', root_context)
+
+    def test_cwd_project_selects_rules_without_narrowing_retrieval(self):
+        """A project found from cwd picks the project rules only; retrieval keeps notes without that field (#288)."""
+        from beyin_v3_sync import SyncEngine
+        general = self.vault / 'notes/genel.md'
+        general.parent.mkdir()
+        general.write_text('---\n' + json.dumps({'id': 'genel', 'kind': 'task', 'revision': 1, 'status': 'active',
+                                                 'visibility': 'internal'}) +
+                           '\n---\nKuzeyrüzgarı kalibrasyonunu Synthetic Reviewer yürütüyor.\n', encoding='utf-8')
+        alpha = self.vault / 'projects/alpha'
+        alpha.mkdir(parents=True)
+        (alpha / 'Kurallar.md').write_text('# Alpha\n- **kural:** ALPHA_ONLY_RULE\n', encoding='utf-8')
+        SyncEngine(self.vault, self.state).sync()
+        turn = self.lifecycle('UserPromptSubmit', 'alpha-turn', 'claude', prompt='Kuzeyrüzgarı kalibrasyonunu kim yürütüyor',
+                              cwd=str(alpha))
+        self.assertIn('Synthetic Reviewer', turn.get('hookSpecificOutput', {}).get('additionalContext', ''))
+        opening = self.lifecycle('SessionStart', 'alpha-open', 'claude', cwd=str(alpha))
+        context = opening.get('hookSpecificOutput', {}).get('additionalContext', '')
+        self.assertIn('ALPHA_ONLY_RULE', context)
+        self.assertIn('Synthetic Reviewer', context)
+
+
+
+class HookFailOpenTest(unittest.TestCase):
+    """#417: the foreground hook answers the client even when its own diagnostics cannot be written."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='v3-fail-open-test-')
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.vault = self.root / 'vault'
+        self.state = self.root / 'state'
+        self.vault.mkdir()
+        self.state.mkdir()
+        self.env = inherited_env()  # an agent session's BEYIN_V3_SKIP would answer {} before any code under test (#169)
+
+    def run_hook(self, payload, *extra, state=None):
+        return subprocess.run([sys.executable, str(HOOK), '--vault', str(self.vault), '--state', str(state or self.state),
+                               '--harness', 'claude', *extra], input=payload, capture_output=True, env=self.env, timeout=60)
+
+    def test_invalid_json_stdin_fails_open_without_crash(self):
+        result = self.run_hook(b'{invalid json')
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertEqual(result.stdout.strip(), b'{}')
+
+    @unittest.skipIf(os.name == 'nt' or (hasattr(os, 'geteuid') and os.geteuid() == 0),
+                     'a read-only folder needs POSIX permissions and a non-root user')
+    def test_read_only_state_still_answers_the_prompt(self):
+        # Enqueueing fails, and so does the hook-error.json the handler writes: the turn still gets the
+        # failure notice and exit 0 instead of a PermissionError traceback.
+        self.state.chmod(0o555)
+        self.addCleanup(self.state.chmod, 0o755)
+        payload = json.dumps({'hook_event_name': 'UserPromptSubmit', 'session_id': 'ro', 'event_id': 'ro-1',
+                              'cwd': str(self.vault), 'prompt': 'Nebula'}).encode()
+        result = self.run_hook(payload)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        context = json.loads(result.stdout)['hookSpecificOutput']['additionalContext']
+        self.assertIn('V3 source sync failed', context)
+
+    def test_failed_drain_keeps_its_exit_code_and_single_result(self):
+        # The foreground reads the worker's exit code to tell a failed sync from a finished one; a drain
+        # that failed must not exit 0 or print a second JSON document.
+        (self.vault / 'notes').mkdir()
+        (self.vault / 'notes/canary.md').write_text('# Nebula\nNebula canary.\n', encoding='utf-8', newline='\n')
+        (self.state / 'hook-queue').mkdir()
+        (self.state / 'hook-queue' / ('a' * 64 + '.json')).write_text(
+            json.dumps({'event': 'UserPromptSubmit', 'harness': 'claude', 'session': 's', 'at': time.time()}),
+            encoding='utf-8')
+        (self.state / 'skills.sqlite3').mkdir()  # skill mirroring fails after the source sync
+        result = self.run_hook(b'', '--drain-queue')
+        self.assertEqual(result.returncode, 1, result.stderr.decode())
+        self.assertEqual(json.loads(result.stdout)['failed'], 1)
+        self.assertTrue((self.state / 'hook-error.json').exists())
+
+    def test_state_inside_vault_is_refused_without_writing_into_the_vault(self):
+        # Runtime state inside the vault is an install error; the hook says so and never writes there.
+        inside = self.vault / '.state'
+        result = self.run_hook(b'{}', state=inside)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Runtime state must be outside vault', result.stderr.decode())
+        self.assertFalse(inside.exists())
 
 
 if __name__ == '__main__':

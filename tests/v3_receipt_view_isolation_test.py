@@ -422,9 +422,16 @@ class ReceiptViewIsolationTest(unittest.TestCase):
         self.damage_view()
         payload = {'hook_event_name': 'UserPromptSubmit', 'session_id': 'no-match',
                    'cwd': str(self.vault), 'prompt': 'zxqvnonmatchingword'}
-        result = subprocess.run([sys.executable, str(ROOT / 'template/.claude/scripts/beyin_v3_hook.py'),
-            '--vault', str(self.vault), '--state', str(self.state), '--harness', 'codex'],
-            input=json.dumps(payload), text=True, capture_output=True, env=inherited_env(), timeout=20)
+        command = [sys.executable, str(ROOT / 'template/.claude/scripts/beyin_v3_hook.py'),
+                   '--vault', str(self.vault), '--state', str(self.state), '--harness', 'codex']
+        env = inherited_env(BEYIN_V3_NO_SPAWN='1')
+        # This exercises warning delivery, not worker latency. Finish a real sync first:
+        # a detached worker may exceed SYNC_WAIT on CI and keep SQLite open during cleanup.
+        worker = subprocess.run(command + ['--worker'], text=True, capture_output=True,
+                                env=env, timeout=20)
+        self.assertEqual(worker.returncode, 0, worker.stderr)
+        result = subprocess.run(command, input=json.dumps(payload), text=True,
+                                capture_output=True, env=env, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('receipt view', result.stdout)
         self.assertNotIn('Initial synthetic outcome', result.stdout)

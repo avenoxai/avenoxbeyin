@@ -65,6 +65,9 @@ These are local cooperating-worker protections, not a distributed filesystem loc
 
 The installer also replaces hash-recognized stock legacy runners with reversible
 inert shims, so a cached old hook cannot start the retired writer afterward.
+V1 and V2 were installed by cloning `main`, so every version `main` ever shipped
+of a runner or of the V2 `.claude/skills/beyin-doktor/SKILL.md` counts as stock,
+not only the last one.
 Custom-modified runner files require explicit reconciliation. Finalization refuses
 a legacy runner without the retirement marker.
 

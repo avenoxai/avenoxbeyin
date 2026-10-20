@@ -602,7 +602,7 @@ class OfflineUpdateTest(unittest.TestCase):
             ]
         }
         # POSIX replaces a read-only file; Windows refuses (WinError 5). Emulate that refusal so
-        # the test fails without the fix on every platform, not only on the Windows runner.
+        # the test fails without proper handling on every platform, not only on the Windows runner.
         original_replace = os.replace
         def windows_replace(source, destination):
             if os.path.exists(destination) and not os.access(destination, os.W_OK):

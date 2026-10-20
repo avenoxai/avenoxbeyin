@@ -110,7 +110,7 @@ git_id() {
 assert_no_secret_staged() {
   # Only ADDING or MODIFYING a secret path is a leak. A staged DELETION of one is the cure
   # (untrack_ignored_secrets stages exactly that), so status D must not trip the alarm,
-  # otherwise the fix itself aborts the upgrade.
+  # otherwise the cure itself aborts the upgrade.
   BAD=$(git -C "$V" diff --cached --name-status 2>/dev/null \
         | awk '$1 !~ /^D/ { $1=""; sub(/^[ \t]+/, ""); print }' \
         | grep -E '(^|/)\.env$|settings\.local\.json|\.yedek|\.bak$|\.orig$|\.pem$|\.key$' || printf '')

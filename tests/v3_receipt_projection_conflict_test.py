@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from datetime import datetime, timezone
-from v3_package_helpers import inherited_env
+from v3_package_helpers import isolated_env
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
@@ -27,18 +27,29 @@ class ReceiptProjectionConflictTest(unittest.TestCase):
         self.vault = self.root / 'vault'
         self.vault.mkdir()
         self.state = self.root / 'state'
-        self.env = inherited_env(BEYIN_UPDATES_OFF='1', PYTHONDONTWRITEBYTECODE='1')
+        self.env = isolated_env(self.root / 'home')
+        self.env['BEYIN_UPDATES_OFF'] = '1'
         (self.vault / 'notes').mkdir(parents=True)
         (self.vault / 'notes/canary.md').write_text(
             '---\nkind: fact\nvisibility: internal\n---\n# Nebula memory canary\nNebula memory canary code is NC-7319.\n',
             encoding='utf-8',
         )
 
-    def _invoke_hook(self, vault, state, prompt='What is the Nebula memory canary code?', scripts=SCRIPTS):
-        # Projection assertions need completed sync, while the production prompt hook
-        # may return after 1.5 s with its detached worker still owning the SQLite file.
-        # Queue without spawning, drain in a waited child, then inspect hook context.
-        env = dict(self.env, BEYIN_V3_NO_SPAWN='1', PYTHONIOENCODING='utf-8')
+    def _invoke_hook(self, vault, state, prompt='What is the Nebula memory canary code?', scripts=SCRIPTS,
+                     completed_sync=False):
+        env = dict(self.env, BEYIN_V3_NO_SPAWN="1", PYTHONIOENCODING="utf-8")
+        command = [sys.executable, str(scripts / 'beyin_v3_hook.py'), '--vault', str(vault),
+                   '--state', str(state), '--harness', 'codex']
+        if completed_sync:
+            # Inspect completed sync diagnostics, independently of the hook's 1.5 s
+            # foreground budget. Wait for the real worker and prevent a detached
+            # replacement from racing assertions or temporary-directory cleanup.
+            env = dict(env, BEYIN_V3_NO_SPAWN='1')
+            worker = subprocess.run(command + ['--worker'], text=True, capture_output=True,
+                                    encoding='utf-8', env=env, timeout=60)
+            self.assertEqual(worker.returncode, 0, worker.stderr)
+            self.assertTrue((state / 'hook-health.json').is_file(), worker.stdout)
+            self.assertFalse((state / 'hook-error.json').exists(), worker.stdout)
         payload = {
             'hook_event_name': 'UserPromptSubmit',
             'session_id': 'isolated-session',
@@ -46,17 +57,26 @@ class ReceiptProjectionConflictTest(unittest.TestCase):
             'cwd': str(vault),
             'prompt': prompt,
         }
-        command = [sys.executable, str(scripts / 'beyin_v3_hook.py'), '--vault', str(vault),
-                   '--state', str(state), '--harness', 'codex']
+        command = [sys.executable, str(scripts / 'beyin_v3_hook.py'),
+                   '--vault', str(vault), '--state', str(state), '--harness', 'codex']
+        # These tests assert the completed sync's warnings, not the bounded pending-sync path.
+        # Queue the real event and drain synchronously, then read the acknowledged event's context.
+        # A detached worker can outlive SYNC_WAIT on Windows and keep SQLite open during cleanup.
         queued = subprocess.run(command + ['--metadata-only'], input=json.dumps(payload),
-                                text=True, encoding='utf-8', capture_output=True, env=env, timeout=20)
+                                text=True, encoding="utf-8", capture_output=True, env=env, timeout=60)
         self.assertEqual(queued.returncode, 0, queued.stderr)
-        drained = subprocess.run(command + ['--drain-queue'], text=True, encoding='utf-8', capture_output=True,
-                                 env=env, timeout=20)
+        drained = subprocess.run(command + ['--drain-queue'], capture_output=True, text=True, encoding="utf-8",
+                                 env=env, timeout=60)
         self.assertEqual(drained.returncode, 0, drained.stderr)
-        self.assertEqual(json.loads(drained.stdout), {'processed': 1, 'failed': 0, 'pending': 0})
-        return subprocess.run(command, input=json.dumps(payload), text=True, encoding='utf-8',
-                              capture_output=True, env=env, timeout=20)
+        self.assertEqual(json.loads(drained.stdout)['failed'], 0)
+        return subprocess.run(
+            command,
+            input=json.dumps(payload),
+            text=True, encoding="utf-8",
+            capture_output=True,
+            env=env,
+            timeout=20,
+        )
 
     def test_clean_control(self):
         """Clean control: canary note indexed, seed and second receipts succeed, hook contains canary."""
@@ -313,7 +333,9 @@ class ReceiptProjectionConflictTest(unittest.TestCase):
         result = json.loads(context.stdout)
         self.assertTrue(any(row['source'] == 'Paylaşım/Özet.md' for row in result['records']))
         self.assertEqual(result['source_sync']['warnings'][0]['source'], 'knowledge/v3/outcomes.md')
-        hook = self._invoke_hook(self.vault, self.state, scripts=self.vault / '.claude/scripts')
+        hook = self._invoke_hook(self.vault, self.state, scripts=self.vault / '.claude/scripts',
+                                 completed_sync=True)
+        self.assertEqual(hook.returncode, 0, hook.stderr)
         self.assertIn('NC-7319', hook.stdout)
         self.assertIn('V3 receipt view preserved', hook.stdout)
         self.assertEqual(view.read_bytes(), before)

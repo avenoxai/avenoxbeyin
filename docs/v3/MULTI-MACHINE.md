@@ -13,11 +13,18 @@ makineye özeldir ve eşitlenmez; her makine onu vault'taki Markdown'dan kendisi
 | Yol | Git'e girer mi | Neden |
 |---|---|---|
 | Notlar ve companion dosyaları | evet | Markdown kaynak gerçektir. |
+| `.beyin-daily-layout.json` | evet | `preferences --daily-layout flat\|v3` vault'un ortak görünüm yolunu seçer. Aynı vault'a yazan makineler aynı tercihi ve bu seçeneği destekleyen motor sürümünü kullanmalıdır. |
 | `🔮 850-Companion/Arşiv/` | evet | `companion-compact` metni canlı dosyadan çıkarıp arşive taşır ve yerine tek bir işaret satırı bırakır. Arşiv tek makinede kalırsa öbür makine içi boş bir işaret görür. Arşivdeki `visibility: private` otomatik bağlama girmez demektir, git dışı demek değildir. |
 | `receipts/` | evet | Receipt dosyası yazıldıktan sonra değişmez ve adı `event_id` özetidir (`beyin_v3_sync.py` `receipt()`). Öbür makine yeni receipt'i bir sonraki `sync`'te kendi veritabanına alır (`_scan_receipts()`). |
+| `receipts/*.md.view-provenance.json` | evet | Bir receipt'in üretilmiş görünüme dayandığı için dışlandığını, immutable olay kimliğiyle kaydeder. State yeniden kurulunca eski receipt dışarıda kalır; aynı günlük yoluna dayanan yeni insan receipt'leri engellenmez. İçerik taşımaz; bu dosyalar silinmemelidir. |
 | `daily/v3/`, `knowledge/v3/` | hayır | Bu görünümler yerel veritabanındaki receipt'lerden üretilir (`beyin_v3_projections.py` `project_receipts()`). Receipt'ler eşitlendiyse aynı saat dilimindeki iki makinede aynı çıkar; dosya adı makinenin yerel günüdür, farklı saat dilimindeki makineler aynı receipt'i farklı güne koyabilir. Git'e alınırlarsa öbür makineden gelen dosya elle düzenlenmiş sayılır (`manual receipt view edit preserved`) ve o görünüm artık güncellenmez. |
 | `AGENTS.md`, `CLAUDE.md` | evet | Kullanıcının kendi talimatları da bu dosyalardadır. 3.7.0'dan beri Beyin bloğu makine yolu taşımaz (`python3 beyin.py sync`), aynı sürümü kuran her makinede aynıdır. Önce güncelleyen makinenin bloğu git'le öbürüne gelirse öbür makinenin güncellemesi onu kendi bloğu sayar ve çakışma vermez. |
 | Kurulum dosyaları | hayır | Bir kısmı bu makinenin yollarını taşır (`.beyin-runtime.json`, hook dosyaları, Hermes ve OMP eklentileri); geri kalanı bu makinede kurulu sürüme aittir. Güncellemeyi önce yapan makinenin dosyaları git'le öbürüne geçerse o makinenin kurulum kaydıyla uyuşmaz; yeniden kurulum `Reinstall conflict: managed file changed` hatasıyla durur. |
+
+`--daily-layout flat` seçildiğinde üretilen günlükler `daily/YYYY-MM-DD.md` içindedir.
+İnsan günlükleri de burada bulunabildiği için tüm `daily/` klasörünü Git dışında bırakma;
+yalnız üretilen dosyaları ayır. Yerel gün ve saat dilimi kuralı iki düzende de aynıdır.
+Ayrıntılar [günlük receipt düzeninde](PREFERENCES.md#günlük-receipt-düzeni).
 
 ## Önerilen `.gitignore`
 
@@ -47,6 +54,8 @@ Beyni Guncelle.cmd
 .omp/hooks/pre/beyin-v3.ts
 # companion-compact süreçler arası kilidi; kalıcıdır ama kullanıcı verisi değildir
 **/.beyin-compact.lock
+# Aynı makinedeki not yazarlarının yerel kilidi, istekleri ve tam bayt yedekleri
+.beyin-note-write/
 # Yerel veritabanından üretilen görünümler: her makine kendisininkini üretir
 daily/v3/
 knowledge/v3/
@@ -154,6 +163,93 @@ göre sıralar, en yenisini korur.
   kalır; `sync` uyarı vermez ve iki makinenin görünümleri sessizce ayrışır. Bunu önlemek için
   `event_id`'nin sonuna kart başlığındaki gibi `Receipt session=` değerinin ilk 8 karakterini
   ekle: `ortak-konu-2026-09-27-3f9a1c2b`.
+
+## Aynı makinede birden çok ajan
+
+Claude Code ve Codex aynı vault'taki insan yazımı notları düzenlerken doğrudan
+dosya yazmak yerine `note-read` ve `note-edit` kullanır. Last-Session.md, Threads.md,
+Journal.md ve proje notları bu akışa dahildir. Görevler için revision kontrollü
+`task-update`, receipt ve üretilen görünümler için kendi V3 komutları kullanılır.
+
+```text
+python3 beyin.py note-read "proje/Threads.md"
+python3 beyin.py note-edit --file istek.json
+```
+
+Windows'ta `python3` yerine `py -3` kullan. `note-read` JSON olarak `source`,
+`sha256`, `content` verir; dosya yoksa son iki alan `null` olur. `source`, mevcut
+dosya ve üst klasörlerin diskteki gerçek yazımıdır; büyük/küçük harf veya Windows
+kısa ad takma adıyla istek verilmişse girişten farklı olabilir. Sonraki istekte
+bu dönen yolu kullan. Kanonik yol için yönetilen, gizli ve hariç tutulan kaynak
+kuralları yeniden denetlenir. `content`, UTF-8 BOM
+ve CRLF dahil okunan metni korur; hash ham baytların SHA-256 özetidir. İsteği bu
+okumadan oluştur, satır sonlarını dönüştürme:
+
+```json
+{"source":"proje/Threads.md","expected_sha256":"okumadan-gelen-64-haneli-hash","edits":[{"old":"tek bir kez geçen eski metin","new":"yeni metin"}]}
+```
+
+Her `old` boş olmayan metin olmalı ve uygulandığı anda tam bir kez geçmelidir;
+birden çok düzenleme sırayla uygulanır. Mevcut dosyada tam `content` verilmez.
+Yeni dosyada `expected_sha256: null` ve `content` kullan, `edits` verme.
+`secret-filter` açıksa sır içeren sonuç yazımdan ve yedekten önce reddedilir;
+metin sessizce değiştirilmez. Önceden yazılmış sırrı silen düzenleme kabul edilir.
+`--file -` (varsayılan) JSON'u stdin'den okur. Çıktı her zaman JSON'dur:
+`written` veya `unchanged` çıkış 0, `conflict` çıkış 2, `error` çıkış 1.
+Eksik kaynak argümanı, eksik `--file` değeri ve bilinmeyen seçenek gibi komut
+kullanım hataları `usage_error` ve çıkış 64 verir; `note-read` / `note-edit`
+için bunlar da stdout'ta JSON'dur. `--help` olağan yardım metnini gösterir.
+Çakışmada yeniden oku ve diğer ajanın metnini koruyarak hedefli düzenlemeyi yeniden
+kur. Sadece hash'i yenileyip eski metni yeniden yazma; doğrudan dosya yazımıyla
+korumayı atlama. Atomik değiştirme tamamlandıktan sonraki dosya denetimi, dizin
+fsync, sync veya veritabanı hatası `conflict` / çıkış 2 ve `write_occurred: true`
+verir. Bu sonuç ayrıca kanonik `source`, yazılan baytların `written_sha256` özeti,
+varsa `backup` yolu ve `cause` hata türünü taşır. Yazım gerçekleşmiştir; başka
+bir editör sonradan değiştirmiş olabileceğinden bu hash güncel içerik garantisi
+değildir. Önce `note-read` ile yeniden oku ve `sync` çalıştır; aynı düzenlemeyi
+körü körüne tekrarlama. Bu durumda başarı bildirimi ve oturum işaretleyicisi
+üretilmez.
+
+Yönetilen görünümler insan notu olarak okunmaz veya düzenlenmez. Dosyanın
+`generated` / `kind` başlıkları dışarıdan silinse bile güncel `receipt_views`
+kaydı varsa komut yazımdan önce reddedilir; kanonik dosya yolu denetlenir.
+Yalnız dosya adı veya emekliye ayrılmış görünümün geçmişi ret nedeni değildir:
+aynı `daily/GÜN.md` yolundaki sıradan insan notları kullanılabilir.
+Sahiplik veritabanı okunamazsa yazım başlamadan hata döner.
+
+Kilit ve önceki baytların base64 JSON yedekleri vault içindeki
+`.beyin-note-write/` altındadır. MSIX uygulamaları AppData'yı sanallaştırabildiği
+için aynı `.beyin-runtime.json` state yolu bile iki istemcide farklı klasöre
+ulaşabilir. Vault içindeki kilit bu ayrışmadan etkilenmez. Üstteki `.gitignore`
+satırını ekle; araç ayrıca bu yerel klasörde `*` içeren bir `.gitignore` oluşturur.
+İstek dosyalarını da burada benzersiz adla tutup iş bitince kendi isteğini sil.
+Yedekler hassas not metni taşıyabilir, eşitleme ve Git dışında kalmalıdır;
+otomatik yedek temizliği yoktur. `writer.lock` kalıcıdır, açık yazarlar varken silme.
+
+OS kilidi en çok 15 saniye bekler ve süreç kapanınca bırakılır. `note-create`
+de varlık denetimi, kaynak yazımı ve indeks geri okumasında aynı kilidi alır;
+farklı state kökleri kullanan istemciler de aynı yeni notu sessizce ezemez.
+Başarısız `note-create` işleminden kalan journal'ın `sync` ile yeniden
+oynatılması da bu kilide dahildir. Kilit başka yazardaysa bu `sync` o journal
+kaydını beklemeden atlar ve korur; kilidi tutan yazarın kendi `sync`'i ya da sonraki
+`sync` onu tamamlar. Bu durum çakışma sayılmaz, hook bağlamı düşmez. Böylece
+veritabanı işlemi açıkken başka yazarın kilidi beklenmez.
+Kilit altında
+hash kontrolü, tekil hedef denetimi, tam bayt yedeği, geçici dosyaya yazım ve atomik
+değiştirme yapılır; değiştirmeden hemen önce ve sonra kaynak yeniden okunur.
+POSIX'te kaynak dosyanın üst dizini değiştirmeden sonra fsync edilir; bu adım
+başarısızsa yazılmış fakat doğrulanamamış sonuç döner. Windows'ta bu stdlib
+API'siyle dizin fsync yapılmaz; platformun rename ve dosya flush davranışı geçerlidir.
+Başarılı yazım ilgili V3 indeksini günceller. Claude Code oturum kimliği varsa
+receipt hatırlatma penceresi açılır; otomatik receipt gönderilmez.
+
+Koruma işbirliğine dayalıdır. Obsidian, companion yazıcıları ve doğrudan dosya
+araçları bu kilidi almaz; öncesi/sonrası denetim bütün dış yarışları önleyemez.
+Aynı notu eşzamanlı bu araçlarla düzenleme. Kilit çok dosyalı işlem veya ayrı
+makinelerdeki git çalışma kopyaları için garanti vermez. `.beyin-note-write/`
+klasörünü bulut senkronundan da hariç tut. Kaynak yolu vault-göreli görünür
+Markdown olmalıdır; yönetilen kaynaklar, yapılandırma, gizli yollar, symlink ve
+junction yolları reddedilir.
 
 ## Vault'u başka klasöre ya da hesaba taşımak
 

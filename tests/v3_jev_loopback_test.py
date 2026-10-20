@@ -69,7 +69,7 @@ class LoopbackProxyTest(unittest.TestCase):
         return dict(id='one', title='Sentetik', statement='Kisa not.', scope='user', domains=['demo'])
 
     def test_the_fake_proxy_receives_a_default_urllib_call(self):
-        # Control: without the fix urllib sends http://127.0.0.1 through HTTP_PROXY.
+        # Control: in standard configuration urllib sends http://127.0.0.1 through HTTP_PROXY.
         request = urllib.request.Request(self.bridge + '/v1/systemone', data=b'{"questions": {}}', method='POST',
                                          headers={'Content-Type': 'application/json'})
         with urllib.request.build_opener().open(request, timeout=5) as response:

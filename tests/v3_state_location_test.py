@@ -13,14 +13,19 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from v3_package_helpers import isolated_env
+from v3_package_helpers import install, isolated_env, run_python
 from v3_transaction_root_test import link_directory
 
 ROOT = Path(os.environ.get("BEYIN_TEST_REPO", Path(__file__).resolve().parents[1]))
 SPEC = importlib.util.spec_from_file_location("beyin_v3_cli_under_test", ROOT / "scripts/beyin_v3.py")
 CLI = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CLI)
+CORE_SPEC = importlib.util.spec_from_file_location(
+    "state_location_core_under_test", ROOT / "template/.claude/scripts/beyin_v3.py")
+CORE = importlib.util.module_from_spec(CORE_SPEC)
+CORE_SPEC.loader.exec_module(CORE)
 
 SEP = chr(92)
 CONTAINER = "C:" + SEP + "Users" + SEP + "ada" + SEP + "AppData" + SEP + "Local" + SEP + "Packages" + SEP + "Client_pzs8sxrjxfjjc" + SEP + "LocalCache" + SEP + "Local" + SEP + "beyin-v3" + SEP + "ab12"
@@ -183,6 +188,107 @@ class StateLocationTest(unittest.TestCase):
         report = self.report()
         self.assertEqual(report["pin_status"], "unreadable")
         self.assertEqual(report["warnings"], [])
+
+    def test_unresolvable_pin_is_reported_without_rethrowing(self):
+        invalid = str(self.state / "bad") + "\0state"
+        self.pin(invalid)
+        report = self.report()
+        self.assertEqual(report["pinned_state"], invalid)
+        self.assertIn("invalid_state_path", self.codes(report))
+        self.assertFalse(report["installed_at_pinned_state"])
+
+    def test_invalid_pin_falls_back_even_when_resolve_accepts_it(self):
+        # Windows 3.13 non-strict realpath can return a NUL-containing path unchanged.
+        invalid = self.state / "bad\0state"
+        self.pin(str(invalid))
+        original = Path.resolve
+
+        def nonstrict(path, *args, **kwargs):
+            return path if path == invalid else original(path, *args, **kwargs)
+
+        for resolve in (CLI.resolve_state, CORE.resolve_state):
+            with self.subTest(resolve=resolve.__module__), \
+                    patch.object(Path, "resolve", nonstrict), \
+                    patch.dict(os.environ, isolated_env(self.state.parent / "home"), clear=True):
+                expected = CLI.default_state(self.vault).resolve()
+                self.assertEqual(resolve(self.vault, invalid), expected)
+                report = self.report()
+                self.assertEqual(self.codes(report), ["invalid_state_path"])
+                self.assertIsNone(report["pinned_resolves_here_to"])
+
+    def test_invalid_pin_stat_error_is_reported_but_missing_state_is_allowed(self):
+        candidate = self.state / "not-created"
+        self.pin(str(candidate))
+        original = Path.stat
+
+        def invalid_stat(path, *args, **kwargs):
+            if path == candidate:
+                raise OSError(22, "invalid state path")
+            return original(path, *args, **kwargs)
+
+        for resolve in (CLI.resolve_state, CORE.resolve_state):
+            with self.subTest(resolve=resolve.__module__), \
+                    patch.dict(os.environ, isolated_env(self.state.parent / "home"), clear=True):
+                self.assertEqual(resolve(self.vault, candidate), candidate.resolve())
+                with patch.object(Path, "stat", invalid_stat):
+                    self.assertEqual(resolve(self.vault, candidate), CLI.default_state(self.vault).resolve())
+                    self.assertEqual(self.codes(self.report()), ["invalid_state_path"])
+
+    def test_installed_doctor_and_hook_keep_the_invalid_pin_fallback(self):
+        home = self.state.parent / "home"
+        env = isolated_env(home)
+        installed = install(self.vault, self.state, env)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        self.pin(str(self.state / "bad") + "\0state")
+        doctor = run_python(self.vault / "beyin.py", ["doctor"], self.vault, env)
+        self.assertEqual(doctor.returncode, 0, doctor.stderr)
+        location = json.loads(doctor.stdout)["state_location"]
+        self.assertIn("invalid_state_path", self.codes(location))
+        self.assertIn(home, Path(location["effective_state"]).parents)
+        self.assertIn(b"install_v3.py", doctor.stderr)
+        # argv cannot contain NUL through the OS; inject the invalid parsed state inside a
+        # fresh interpreter to exercise the same hook fallback used for inaccessible UNC pins.
+        driver = """
+import sys
+from pathlib import Path
+vault = Path(sys.argv[1])
+sys.path.insert(0, str(vault / '.claude/scripts'))
+import beyin_v3_hook
+sys.argv = ['hook', '--vault', str(vault), '--state', str(vault.parent / 'bad') + chr(0),
+            '--harness', 'claude', '--metadata-only']
+beyin_v3_hook.main()
+"""
+        hook = subprocess.run([sys.executable, "-c", driver, str(self.vault)],
+                              input=json.dumps({"hook_event_name": "SessionEnd", "session_id": "invalid-pin"}),
+                              text=True, encoding="utf-8", capture_output=True, cwd=self.vault,
+                              env=env, timeout=30)
+        self.assertEqual(hook.returncode, 0, hook.stderr)
+        self.assertEqual(json.loads(hook.stdout), {})
+        self.assertTrue((Path(location["effective_state"]) / "hook-queue").is_dir())
+
+    def test_foreign_paths_in_state_location(self):
+        paths = [
+            r"C:\Users\User\AppData\Local\beyin-v3\1234567890abcdef",
+            r"/home/user/.local/state/beyin-v3/1234567890abcdef",
+            r"\\server\share\state",
+            r"//server/share/state",
+            r"C:\Path with spaces\state",
+            r"/path with spaces\state",
+            r"\\?\C:\state",
+            r"relative/path",
+            r"C:",
+            r"state",
+            r" ",
+            r"",
+        ]
+        for path in paths:
+            self.pin(path)
+            try:
+                report = self.report()
+                self.assertIn("pin_status", report)
+                CLI.resolve_state(self.vault, Path(path))
+            except Exception as e:
+                self.fail(f"Path {path!r} caused a crash: {e}")
 
     def doctor(self, driver):
         home = self.state.parent / "home"

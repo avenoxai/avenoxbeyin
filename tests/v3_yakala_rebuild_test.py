@@ -33,9 +33,9 @@ class RebuildRegressionTest(unittest.TestCase):
         self.assertNotEqual(yakala.canonical('https://example.org/x#/one'),
                             yakala.canonical('https://example.org/x#/two'))
 
-    def test_chromium_hidden_scheme(self):
-        # Chromium shows an unfocused address without https://; a focused (draft) box is never read.
-        self.assertEqual(yakala.tab_url('github.com/avenoxai'), 'https://github.com/avenoxai')
+    def test_chromium_hidden_scheme_is_not_invented(self):
+        # Only a renderer's explicit URL can complete a hidden scheme; this string alone cannot.
+        self.assertIsNone(yakala.tab_url('github.com/avenoxai'))
         self.assertIsNone(yakala.tab_url('chrome://settings'))
         self.assertEqual(yakala.tab_url('https://github.com/avenoxai'), 'https://github.com/avenoxai')
 

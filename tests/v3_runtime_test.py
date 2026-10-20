@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -419,6 +420,9 @@ class RuntimeContractTest(unittest.TestCase):
             self.assertIsNone(self.module.optional_provider(enabled=False, factory=forbidden))
         self.store.ingest(self.record())
         self.assertTrue(self.retrieve()['records'])
+
+    def test_load_runtime_ensures_runtime_parent_in_sys_path(self):
+        self.assertIn(str(evaluator.RUNTIME.parent), sys.path)
 
 
 if __name__ == '__main__':

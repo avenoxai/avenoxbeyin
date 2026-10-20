@@ -72,7 +72,11 @@ def read_project_scopes(vault_root):
     for folder, project in folders.items():
         if not isinstance(project, str) or not project.strip():
             raise ValueError("project scope names must be non-empty strings")
-        folder = _scope_path(folder)
+        try:
+            folder = _scope_path(folder)
+        except ValueError as exc:
+            # Still fail closed, but name the entry so the user can find it (#419).
+            raise ValueError(f"{exc}: {folder!r} in {PROJECT_SCOPES_FILE}") from None
         if not _scope_folder_exists(vault_root, folder):
             missing.append(folder)
             try:
@@ -300,3 +304,42 @@ def manage(vault_root, action, folder=None, project=None, shared_unscoped=None, 
                 "folders": folders, "shared_unscoped": data.get("shared_unscoped", False)}
 
     raise ValueError("unknown project-scope action: " + str(action))
+
+
+def resolve_active_project(vault, cwd):
+    """Resolve the active project name from the current working directory.
+    Matches against .beyin-projects.json rules or standard folder names
+    ('projects', 'Projeler', 'projeler'). Returns None if unscoped.
+    """
+    if vault is None or cwd is None:
+        return None
+    try:
+        vault_root = Path(vault).resolve(strict=True)
+        current = Path(cwd).resolve(strict=True)
+    except (RuntimeError, OSError, TypeError, ValueError):
+        # Handle symlink loops, deleted directories, or permission issues gracefully
+        return None
+
+    try:
+        if not current.is_relative_to(vault_root):
+            return None
+        rel_path = current.relative_to(vault_root).as_posix()
+    except (ValueError, TypeError):
+        return None
+
+    try:
+        scopes = read_project_scopes(vault_root)
+    except ValueError:
+        scopes = None
+
+    if scopes and "folders" in scopes:
+        target = _scope_key(rel_path)
+        for folder, project in scopes.get("folders", []):
+            if target == folder or target.startswith(folder + "/"):
+                return project
+
+    parts = rel_path.split("/")
+    if len(parts) >= 2 and parts[0] in ("projects", "Projeler", "projeler"):
+        return parts[1]
+
+    return None

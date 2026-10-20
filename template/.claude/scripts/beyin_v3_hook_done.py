@@ -140,12 +140,13 @@ def summary(state, harnesses):
                     if harness in observed:
                         observed[harness].add(event)
                 keys = [p.stem for p in paths]
-                for offset in range(0, len(keys), BATCH_SIZE):
-                    chunk = keys[offset:offset + BATCH_SIZE]
-                    placeholders = ",".join("?" for _ in chunk)
-                    count -= db.execute(
-                        f"SELECT COUNT(*) FROM hook_done_ledger WHERE key IN ({placeholders})", chunk
-                    ).fetchone()[0]
+                if archived > 0 and keys:
+                    for offset in range(0, len(keys), 500):
+                        chunk = keys[offset:offset + 500]
+                        placeholders = ",".join("?" for _ in chunk)
+                        count -= db.execute(
+                            f"SELECT COUNT(*) FROM hook_done_ledger WHERE key IN ({placeholders})", chunk
+                        ).fetchone()[0]
             except sqlite3.OperationalError as exc:
                 if not _missing_table(exc):
                     raise
