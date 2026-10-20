@@ -8,6 +8,7 @@ import tempfile
 import unicodedata
 
 PROJECT_SCOPES_FILE = ".beyin-projects.json"
+PROJECT_SCOPES_ALLOWED_KEYS = {"folders", "shared_unscoped", "workspaces", "schema_version"}
 
 
 def _scope_path(value):
@@ -61,8 +62,8 @@ def read_project_scopes(vault_root):
         data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (ValueError, OSError) as exc:
         raise ValueError("invalid project scopes file; expected JSON") from exc
-    if not isinstance(data, dict) or set(data) - {"folders", "shared_unscoped"}:
-        raise ValueError("project scopes accept only folders and shared_unscoped")
+    if not isinstance(data, dict) or set(data) - PROJECT_SCOPES_ALLOWED_KEYS:
+        raise ValueError("project scopes accept only folders, shared_unscoped, workspaces, and schema_version")
     folders = data.get("folders", {})
     shared = data.get("shared_unscoped", False)
     if not isinstance(folders, dict) or not isinstance(shared, bool):
@@ -113,7 +114,7 @@ def check_project_scopes(vault_root):
         return {"status": "error", "error": "expected JSON object",
                 "folders": {}, "shared_unscoped": False, "missing_folders": [],
                 "duplicate_folders": [], "invalid_entries": [], "warnings": ["not_an_object"]}
-    unknown_keys = sorted(set(data) - {"folders", "shared_unscoped"})
+    unknown_keys = sorted(set(data) - PROJECT_SCOPES_ALLOWED_KEYS)
     if unknown_keys:
         return {"status": "error", "error": "unsupported keys: " + ", ".join(unknown_keys),
                 "folders": {}, "shared_unscoped": False, "missing_folders": [],
@@ -202,7 +203,7 @@ def manage(vault_root, action, folder=None, project=None, shared_unscoped=None):
     if path.exists():
         # Never replace malformed user configuration with an empty object.
         data = json.loads(path.read_text(encoding='utf-8-sig'))
-        if (not isinstance(data, dict) or set(data) - {'folders', 'shared_unscoped'} or
+        if (not isinstance(data, dict) or set(data) - PROJECT_SCOPES_ALLOWED_KEYS or
                 not isinstance(data.get('folders', {}), dict) or
                 not isinstance(data.get('shared_unscoped', False), bool)):
             raise ValueError('invalid project scopes configuration; preserve and repair it first')
