@@ -287,7 +287,187 @@ def unarchive_workspace(vault_root, workspace_id):
     return ws
 
 
-def manage(vault_root, action, workspace_id=None, name=None, kind=None, source=None, include_archived=False):
+def plan_workspace(vault_root, workspace_id, kind="general", name=None, description=None, sources=None, rules=None):
+    """Generate a verifiable provisioning plan for a workspace without disk mutation (RFC #368 P0-D)."""
+    if not isinstance(workspace_id, str) or not workspace_id.strip():
+        raise ValueError("workspace ID must be a non-empty string")
+    workspace_id = workspace_id.strip()
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", workspace_id):
+        raise ValueError("workspace ID must be 1-64 characters alphanumeric, hyphen or underscore")
+    if kind not in WORKSPACE_KINDS:
+        raise ValueError(f"invalid workspace kind: {kind}. Expected one of: {', '.join(WORKSPACE_KINDS)}")
+
+    existing_ws = read_workspaces(vault_root)
+    if workspace_id in existing_ws:
+        raise ValueError(f"workspace already exists: {workspace_id}")
+
+    display_name = name.strip() if isinstance(name, str) and name.strip() else workspace_id.replace("-", " ").title()
+    desc = description.strip() if isinstance(description, str) and description.strip() else f"{display_name} çalışma alanı"
+
+    # Default folders
+    default_project_dir = f"projects/{workspace_id}"
+    default_note_dir = f"notes/{workspace_id}"
+
+    source_list = []
+    if sources:
+        if isinstance(sources, str):
+            sources = [s.strip() for s in sources.split(",") if s.strip()]
+        for s in sources:
+            norm = _scope_path(s)
+            if norm not in source_list:
+                source_list.append(norm)
+    if not source_list:
+        source_list = [default_project_dir]
+
+    dirs_to_create = []
+    for d in [default_project_dir, default_note_dir] + source_list:
+        norm_d = _scope_path(d)
+        if norm_d not in dirs_to_create:
+            dirs_to_create.append(norm_d)
+
+    # Scaffolding templates
+    rules_file_path = f"{default_project_dir}/Kurallar.md"
+    rules_body = rules.strip() if isinstance(rules, str) and rules.strip() else "- Bu çalışma alanına ait kararlar ve tercihler yerinde tutulur.\n- Genel vault kuralları geçerlidir."
+
+    rules_content = f"""# {display_name} — Kurallar
+
+{desc}
+
+## Kapsam ve Çalışma İlkeleri
+- **Alan Türü:** {kind}
+- **Kaynak Klasörleri:** {', '.join(source_list)}
+- **Hafıza Politikası:** selective
+
+## Özel Kurallar
+{rules_body}
+"""
+
+    moc_file_path = f"{default_project_dir}/MOC.md"
+    moc_content = f"""# {display_name} — Map of Content (MOC)
+
+{desc}
+
+## Belgeler ve Notlar
+- [[projects/{workspace_id}/Kurallar|Çalışma Alanı Kuralları]]
+"""
+
+    files_to_create = [
+        {"path": rules_file_path, "content": rules_content, "purpose": "rules"},
+        {"path": moc_file_path, "content": moc_content, "purpose": "navigation"},
+    ]
+
+    return {
+        "workspace_id": workspace_id,
+        "name": display_name,
+        "kind": kind,
+        "description": desc,
+        "sources": source_list,
+        "rules_file": rules_file_path,
+        "note_roots": [default_note_dir],
+        "memory_policy": "selective",
+        "directories": dirs_to_create,
+        "files": files_to_create,
+    }
+
+
+def provision_workspace(vault_root, workspace_id, kind="general", name=None, description=None, sources=None, rules=None, dry_run=False):
+    """Provision a workspace with atomic rollback, template scaffolding, and verification (RFC #368 P0-D)."""
+    vault_root = Path(vault_root)
+    plan = plan_workspace(vault_root, workspace_id, kind=kind, name=name, description=description, sources=sources, rules=rules)
+    if dry_run:
+        return {"status": "dry_run", "action": "provision", "plan": plan}
+
+    created_dirs = []
+    created_files = []
+    manifest_backup = None
+    manifest_path = vault_root / PROJECT_SCOPES_FILE
+    if manifest_path.exists():
+        manifest_backup = manifest_path.read_bytes()
+
+    try:
+        # 1. Create directories
+        for d in plan["directories"]:
+            dir_path = vault_root / d
+            if not dir_path.exists():
+                dir_path.mkdir(parents=True, exist_ok=True)
+                created_dirs.append(dir_path)
+
+        # 2. Write template files (never overwrite existing user files)
+        written_files = []
+        for fspec in plan["files"]:
+            file_path = vault_root / fspec["path"]
+            if not file_path.exists():
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_path.write_text(fspec["content"], encoding="utf-8")
+                created_files.append(file_path)
+                written_files.append({"path": fspec["path"], "status": "created"})
+            else:
+                written_files.append({"path": fspec["path"], "status": "preserved"})
+
+        # 3. Register in .beyin-projects.json
+        ws = create_workspace(
+            vault_root,
+            workspace_id=plan["workspace_id"],
+            name=plan["name"],
+            kind=plan["kind"],
+            sources=plan["sources"],
+            rules_file=plan["rules_file"],
+            note_roots=plan["note_roots"],
+        )
+
+        # 4. Self-verification
+        verification = inspect_workspace(vault_root, workspace_id)
+        if not verification.get("rules_exist"):
+            raise RuntimeError(f"verification failed: rules file missing at {plan['rules_file']}")
+        all_sources_exist = all(s.get("exists") for s in verification.get("sources_detail", []))
+        if not all_sources_exist:
+            raise RuntimeError("verification failed: one or more source folders not found after creation")
+
+        return {
+            "status": "provisioned",
+            "action": "provision",
+            "workspace": ws,
+            "created_directories": [str(p.relative_to(vault_root).as_posix()) for p in created_dirs],
+            "files": written_files,
+            "verified": True,
+        }
+
+    except Exception as exc:
+        # Atomic rollback on failure
+        for f in created_files:
+            try:
+                if f.exists():
+                    f.unlink()
+            except OSError:
+                pass
+        for d in reversed(created_dirs):
+            try:
+                if d.exists() and not any(d.iterdir()):
+                    d.rmdir()
+            except OSError:
+                pass
+        if manifest_backup is not None:
+            manifest_path.write_bytes(manifest_backup)
+        elif manifest_path.exists():
+            try:
+                manifest_path.unlink()
+            except OSError:
+                pass
+        raise
+
+
+def manage(
+    vault_root,
+    action,
+    workspace_id=None,
+    name=None,
+    kind=None,
+    description=None,
+    rules=None,
+    source=None,
+    dry_run=False,
+    include_archived=False,
+):
     """Unified CLI dispatcher for beyin.py workspace actions."""
     vault_root = Path(vault_root)
     if action == "list":
@@ -323,5 +503,33 @@ def manage(vault_root, action, workspace_id=None, name=None, kind=None, source=N
             raise ValueError("workspace unarchive requires workspace ID")
         ws = unarchive_workspace(vault_root, workspace_id)
         return {"status": "unarchived", "action": "unarchive", "workspace": ws}
+    elif action == "plan":
+        if not workspace_id:
+            raise ValueError("workspace plan requires workspace ID")
+        sources = [source] if source else None
+        plan = plan_workspace(
+            vault_root,
+            workspace_id,
+            kind=(kind or "general"),
+            name=name,
+            description=description,
+            sources=sources,
+            rules=rules,
+        )
+        return {"status": "ok", "action": "plan", "plan": plan}
+    elif action == "provision":
+        if not workspace_id:
+            raise ValueError("workspace provision requires workspace ID")
+        sources = [source] if source else None
+        return provision_workspace(
+            vault_root,
+            workspace_id,
+            kind=(kind or "general"),
+            name=name,
+            description=description,
+            sources=sources,
+            rules=rules,
+            dry_run=dry_run,
+        )
     else:
         raise ValueError(f"unknown workspace action: {action}")
