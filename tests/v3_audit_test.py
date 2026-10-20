@@ -417,6 +417,48 @@ class MemoryAuditorTest(unittest.TestCase):
                 self.assertEqual(len(findings), 1)
                 self.assertEqual(findings[0]['type'], 'near_duplicate')
 
+    def test_asymmetric_size_notes_do_not_produce_false_duplicate_or_body_conflict(self):
+        """Asymmetric pair (large document vs tiny note) must not be flagged as near-duplicate
+
+        or status contradiction from stray prose words (#466).
+        """
+        # Note A: Large document with 800 words, including passing mention of "tamamlandi"
+        words = [
+            f"kavram_{i} mimari servis yapilandirma sistem altyapi parametre analiz model veri akis test"
+            for i in range(50)
+        ]
+        large_body = " ".join(words) + " Proje asamasi tamamlandi ve arsivlendi."
+        (self.knowledge / 'buyuk-not.md').write_text(
+            f"---\ntitle: Buyuk Sistem Raporu\nupdated_at: 2026-08-01\n---\n# Sistem\n{large_body}\n",
+            encoding='utf-8'
+        )
+
+        # Note B: Short scratch note of 15 words whose vocabulary is contained in Note A,
+        # but with stray word "bekliyor". Jaccard is low, vocab ratio is > 10.
+        short_body = "servis yapilandirma altyapi test akis dogrulama bekliyor."
+        (self.knowledge / 'kucuk-not.md').write_text(
+            f"---\ntitle: Kisa Not\nupdated_at: 2026-10-01\n---\n# Kisa\n{short_body}\n",
+            encoding='utf-8'
+        )
+
+        report = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+        # Must not report near_duplicate or status_contradiction for asymmetric pair
+        self.assertEqual(len(report['findings']), 0)
+
+    def test_explicit_frontmatter_status_contradiction_still_detected(self):
+        """When frontmatter explicitly declares contradicting status, conflict is flagged."""
+        (self.knowledge / 'gorev-eski.md').write_text(
+            "---\ntitle: Gorev\nstatus: failed\nupdated_at: 2026-09-01\n---\n" + self.SHARED,
+            encoding='utf-8'
+        )
+        (self.knowledge / 'gorev-yeni.md').write_text(
+            "---\ntitle: Gorev\nstatus: passed\nupdated_at: 2026-10-01\n---\n" + self.SHARED,
+            encoding='utf-8'
+        )
+        report = audit_module.audit_memory(self.vault, state=self.state, min_shared=3)
+        self.assertEqual(len(report['findings']), 1)
+        self.assertEqual(report['findings'][0]['type'], 'status_contradiction')
+
     def _cli_result(self, args):
         cmd = [sys.executable, str(self.vault / '.claude/scripts/beyin_v3_cli.py'),
                '--vault', str(self.vault), '--state', str(self.state)] + args
