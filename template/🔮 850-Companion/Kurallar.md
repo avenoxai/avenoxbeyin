@@ -24,5 +24,5 @@ uzarsa bir kısmı kırpılabilir, bu yüzden her kural bir iki satırda kalır.
 kural ne, tek cümleyle neden. Kullanıcının cümlesi ve olayın anlatımı gerekiyorsa ayrı bir nota
 (ör. `Kurallar-Detay.md`) gider, kurala bağlantısı yazılır. Geçerliliğini yitiren kuralı sil
 veya güncelle, çelişen iki maddeyi yan yana bırakma. En çok işe yarayanlar üstte durur.
-Tek bir projeye ya da alana ait düzeltme buraya değil `projects/<proje>/Kurallar.md` dosyasına
+Tek bir projeye ya da alana ait düzeltme buraya değil `projects/<proje>/Kurallar.md` (şablonda `🏰 300-Projects/<proje>/Kurallar.md`) dosyasına
 gider; burada yalnız `[kapsam: <proje>]` etiketli tek satırlık işaretçi kalır.

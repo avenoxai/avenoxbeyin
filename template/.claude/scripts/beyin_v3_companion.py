@@ -15,7 +15,7 @@ LIMIT_RANGE = (1000, 200000)
 DEFAULT_DIRECTORY = '🔮 850-Companion'
 STARTERS = {
     'Core.md': '# Düşünme ortağı\n\nKullanıcının düşünme ortağı ve ikinci beyniyim. Kimliğimi ve çalışma biçimimi birlikte belirleriz.\n\n## Kullanıcı ve ortak çalışma biçimi\nHenüz kişiselleştirilmedi. Kullanıcının adı, tercih ettiği hitap, çalışma alanı ve beklentilerini konuşarak öğren. Bilinmeyen geçmişi uydurma.\n\n## Kalıcı tercihler\nKullanıcının açıkça belirttiği tercihleri ve dayandıkları kaynağı burada tut.\n',
-    'Kurallar.md': '# Kullanıcının düzeltmeleri\n\nHenüz kaydedilmiş bir düzeltme yok. Açık kullanıcı düzeltmelerini tarihiyle, her kuralı bir iki satırda kaydet; uzun gerekçe ve olayın anlatımı ayrı bir nota gider. Tek bir projeye ya da alana ait kural `projects/<proje>/Kurallar.md` dosyasına gider, burada yalnız `[kapsam: <proje>]` etiketli tek satırlık işaretçi kalır. Geçici istekleri kalıcı kurala dönüştürme.\n',
+    'Kurallar.md': '# Kullanıcının düzeltmeleri\n\nHenüz kaydedilmiş bir düzeltme yok. Açık kullanıcı düzeltmelerini tarihiyle, her kuralı bir iki satırda kaydet; uzun gerekçe ve olayın anlatımı ayrı bir nota gider. Tek bir projeye ya da alana ait kural `projects/<proje>/Kurallar.md` (şablonda `🏰 300-Projects/<proje>/Kurallar.md`) dosyasına gider, burada yalnız `[kapsam: <proje>]` etiketli tek satırlık işaretçi kalır. Geçici istekleri kalıcı kurala dönüştürme.\n',
     'Last-Session.md': '# Son oturum\n\nHenüz bir çalışma sonucu kaydedilmedi. Anlamlı çalışma sonunda sonuç, gerekçe, açık kalan adım ve kaynak bağlantılarını `## YYYY-MM-DD HH:MM · <etiket> · <session_id[:8]>` başlığıyla buraya yaz. Paralel oturumlarda yalnız kendi kartını düzenle, başka oturumların kartlarını ezme.\n',
     'Threads.md': '# Threads\n\n## Active Threads\nHenüz açık bir konu kaydedilmedi.\n\n## Closed Threads\n',
     'Journal.md': '# Journal\n\nOrtak çalışmadan doğan gözlemler, öğrenimler ve açık sorular. Çıkarımları kesin kullanıcı bilgisi olarak sunma.\n',
@@ -665,6 +665,12 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
                 pass
             for folder in ('projects', 'Projeler', 'projeler'):
                 candidate_dirs.append(project_rule_directory(store.vault_root, folder + '/' + proj_clean))
+            try:
+                from beyin_v3_projects import candidate_project_folders
+                for folder in candidate_project_folders(store.vault_root):
+                    candidate_dirs.append(project_rule_directory(store.vault_root, folder + '/' + proj_clean))
+            except Exception:
+                pass
 
             found = False
             for cand_dir in candidate_dirs:
