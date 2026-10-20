@@ -137,7 +137,13 @@ Düzeltme dört parçadır:
   ve tarihsiz yapı korunur. Taşınacak tarihli kayıt yoksa ya da taşımadan sonra dosya
   hala sınırı aşıyorsa komut dosyanın kalan tam metnini aynı aylık arşive kelimesi
   kelimesine yedekler (`backup: written`; dosya değişmemişse yeniden kopyalamaz,
-  `backup: exists`) ve `needs_rewrite` döner; ajan dosyayı ancak bundan sonra sınır içinde
+  `backup: exists`). Taşınacak kayıt kalmamışsa aynı tam metin yedeği önceki 12 aylık
+  arşivde de aranır (toplam en fazla 8 MiB okuma); bulununca rapor gerçek eski arşiv
+  yolunu verir, yeni ayda aynı metni yeniden yazmaz. Eksik, değişmiş, okunamayan,
+  sembolik bağlı veya bu sınırların dışındaki arşiv bir yedeğin kanıtı sayılmaz;
+  komut güvenli biçimde yeni tam yedek yazar. Eski kopyaları silmez. Tarama sırasında
+  canlı dosya değişirse eski yedek kabul edilmez ve `conflict` döner.
+  Komut `needs_rewrite` döner; ajan dosyayı ancak bundan sonra sınır içinde
   yeniden yazar, böylece özetleme hiçbir metnin tek kopyası olmaz (#168). Arşiv
   yazıldıktan sonra canlı dosya değişmişse arşiv eski baytlarına döner ve `conflict`
   raporlanır. `--dry-run` hiçbir şey yazmadan planı gösterir. Komut model çağırmaz ve
