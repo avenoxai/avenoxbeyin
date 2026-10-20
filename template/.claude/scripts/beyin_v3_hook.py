@@ -259,7 +259,7 @@ def _has_staged_candidates(state, session, since):
     """Candidates staged in this edit window; an older entry must not answer for a new session."""
     try:
         from beyin_v3_learning import has_candidates
-        return has_candidates(state, session, since=since)
+        return has_candidates(state, session, since=since, status=None)
     except Exception:
         return False
 

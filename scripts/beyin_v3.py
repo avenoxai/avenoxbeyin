@@ -1095,6 +1095,9 @@ def parser(note_namespace=None, is_json=False):
     learn.add_argument("--scope", default=None, help="Scope of the learning: global or project name")
     learn.add_argument("--session", default="", help="Session ID associated with candidate")
     learn.add_argument("--list", action="store_true", help="List active candidate learnings")
+    learn.add_argument("--resolve", choices=("distilled", "discarded"), default=None,
+                       help="Resolve candidates for session as distilled or discarded")
+    learn.add_argument("--all", action="store_true", help="When resolving or listing, apply across all sessions")
     return root
 
 
@@ -1744,10 +1747,14 @@ def main(argv=None, return_result=False):
                 payload = {"event_id": args.event_id, "summary": summary, "refs": args.ref}
                 if args.session is not None:
                     payload["session"] = args.session
+                elif os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID"):
+                    payload["session"] = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")
                 if args.link:
                     payload["links"] = args.link
             else:
                 payload = read_json(args.file if args.file is not None else "-")
+                if "session" not in payload and (os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")):
+                    payload["session"] = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")
             result = sync.receipt(payload["event_id"], payload["summary"],
                                           payload["refs"], args.harness, session=payload.get('session'),
                                           links=payload.get('links'))
@@ -1766,14 +1773,22 @@ def main(argv=None, return_result=False):
                                  ensure_ascii=True), file=sys.stderr)
         elif args.command == "learn":
             _ensure_scripts_path()
-            from beyin_v3_learning import stage_candidate, list_candidates
+            from beyin_v3_learning import stage_candidate, list_candidates, resolve_candidates
             sess = args.session or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID") or "cli"
-            if args.candidate:
+            if getattr(args, "all", False):
+                target_sess = None
+            else:
+                target_sess = sess
+            if args.resolve:
+                count = resolve_candidates(state, session=target_sess, target_status=args.resolve)
+                result = {"status": "succeeded", "resolved_count": count, "session": target_sess, "target_status": args.resolve}
+            elif args.candidate:
                 result = stage_candidate(state, sess, args.candidate, source=args.source, scope=args.scope or "global")
             elif args.list:
-                result = {"candidates": list_candidates(state, session=args.session or None, scope=args.scope)}
+                list_sess = None if getattr(args, "all", False) else (args.session or None)
+                result = {"candidates": list_candidates(state, session=list_sess, scope=args.scope)}
             else:
-                raise ValueError("either --candidate or --list is required")
+                raise ValueError("one of --candidate, --list, or --resolve is required")
         else:
             payload = read_json(args.file)
             result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])

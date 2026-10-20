@@ -1481,4 +1481,17 @@ class SyncEngine:
         self._record_redactions(redacted)
         receipt_res = {'id': event_id, 'event_id': event_id, 'status': 'succeeded', 'source': source,
                        'redacted': redacted, 'secrets_redacted': redacted}
+        session_to_resolve = event.get('session')
+        if not session_to_resolve:
+            env_sess = os.environ.get('CLAUDE_CODE_SESSION_ID') or os.environ.get('BEYIN_V3_SESSION_ID')
+            if env_sess and isinstance(env_sess, str) and re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', env_sess):
+                session_to_resolve = env_sess
+        if session_to_resolve:
+            try:
+                from beyin_v3_learning import resolve_candidates
+                resolved_count = resolve_candidates(self.state, session=session_to_resolve, target_status="distilled")
+                if resolved_count:
+                    receipt_res['candidates_resolved'] = resolved_count
+            except Exception:
+                pass
         return self._write_diagnostics(receipt_res, result)

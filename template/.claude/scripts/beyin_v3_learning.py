@@ -206,19 +206,19 @@ def list_candidates(state: Path, session: str | None = None, status: str = "cand
 
 
 def has_candidates(state: Path, session: str | None = None, scope: str | None = None,
-                   since: float | None = None) -> bool:
+                   since: float | None = None, status: str | None = "candidate") -> bool:
     """True if active candidates exist for this session (or overall), staged at or after `since`."""
-    return len(list_candidates(state, session=session, status="candidate", scope=scope, since=since)) > 0
+    return len(list_candidates(state, session=session, status=status, scope=scope, since=since)) > 0
 
 
-def resolve_candidates(state: Path, session: str, target_status: str = "distilled") -> int:
-    """Mark all candidates of a session as distilled or discarded."""
+def resolve_candidates(state: Path, session: str | None = None, target_status: str = "distilled") -> int:
+    """Mark all candidates of a session (or all sessions if session is None) as distilled or discarded."""
     ledger = Path(state) / LEARNING_STATE_FILE
     if not ledger.is_file():
         return 0
     records = []
     count = 0
-    target_session = _normalize_session(session)
+    target_session = _normalize_session(session) if session else None
     try:
         with _ledger_lock(ledger.parent):
             with open(ledger, "r", encoding="utf-8") as f:
@@ -228,10 +228,12 @@ def resolve_candidates(state: Path, session: str, target_status: str = "distille
                         continue
                     try:
                         item = json.loads(line)
-                        if item.get("session") in (target_session, "cli") and item.get("status") == "candidate":
-                            item["status"] = target_status
-                            item["resolved_at"] = datetime.now(timezone.utc).isoformat()
-                            count += 1
+                        if item.get("status") == "candidate":
+                            matches = (target_session is None) or (item.get("session") in (target_session, "cli"))
+                            if matches:
+                                item["status"] = target_status
+                                item["resolved_at"] = datetime.now(timezone.utc).isoformat()
+                                count += 1
                         records.append(item)
                     except Exception:
                         continue
