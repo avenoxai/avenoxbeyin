@@ -377,6 +377,9 @@ def _latest_receipts(db):
     return latest
 
 
+EDIT_OBSERVING_HARNESSES = frozenset({'claude', 'codex', 'kiro', 'opencode', 'omp'})
+
+
 def _coverage_threshold(at, turn_at, edit_at):
     """Earliest receipt time that closes a checkpoint.
 
@@ -396,9 +399,9 @@ def receipt_coverage(db, now=None, state=None):
     _checkpoint_schema(db, state=state)
     latest = _latest_receipts(db)
     windows = {
-        'all_time': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0},
-        'last_7d': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0},
-        'last_30d': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0},
+        'all_time': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0, 'missing_no_observed_edit': 0},
+        'last_7d': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0, 'missing_no_observed_edit': 0},
+        'last_30d': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0, 'missing_no_observed_edit': 0},
     }
     for row in db.execute('SELECT harness,session,at,turn_at,project,project_id,prompt_at,edit_at FROM receipt_checkpoints'):
         if not row[2] or row[2] < row[3]:
@@ -409,7 +412,7 @@ def receipt_coverage(db, now=None, state=None):
         chk_at = row[2]
         threshold = _coverage_threshold(row[2], row[3], row[7])
         matched = latest.get((row[0], row[1]), float('-inf')) >= threshold
-        is_no_edit = not bool(row[7])
+        is_no_edit = row[0] in EDIT_OBSERVING_HARNESSES and not bool(row[7])
         for w_name, w_active in (('all_time', True), ('last_30d', chk_at >= thirty_days), ('last_7d', chk_at >= seven_days)):
             if w_active:
                 windows[w_name]['total'] += 1
@@ -419,6 +422,8 @@ def receipt_coverage(db, now=None, state=None):
                     windows[w_name]['covered'] += 1
                 else:
                     windows[w_name]['missing'] += 1
+                    if is_no_edit:
+                        windows[w_name]['missing_no_observed_edit'] += 1
 
     return {
         'ratio': round(windows['all_time']['covered'] / windows['all_time']['total'], 3) if windows['all_time']['total'] else None,
@@ -426,12 +431,14 @@ def receipt_coverage(db, now=None, state=None):
         'total': windows['all_time']['total'],
         'missing': windows['all_time']['missing'],
         'no_observed_edit': windows['all_time']['no_observed_edit'],
+        'missing_no_observed_edit': windows['all_time']['missing_no_observed_edit'],
         'last_7d': {
             'ratio': round(windows['last_7d']['covered'] / windows['last_7d']['total'], 3) if windows['last_7d']['total'] else None,
             'covered': windows['last_7d']['covered'],
             'total': windows['last_7d']['total'],
             'missing': windows['last_7d']['missing'],
             'no_observed_edit': windows['last_7d']['no_observed_edit'],
+            'missing_no_observed_edit': windows['last_7d']['missing_no_observed_edit'],
         },
         'last_30d': {
             'ratio': round(windows['last_30d']['covered'] / windows['last_30d']['total'], 3) if windows['last_30d']['total'] else None,
@@ -439,6 +446,7 @@ def receipt_coverage(db, now=None, state=None):
             'total': windows['last_30d']['total'],
             'missing': windows['last_30d']['missing'],
             'no_observed_edit': windows['last_30d']['no_observed_edit'],
+            'missing_no_observed_edit': windows['last_30d']['missing_no_observed_edit'],
         }
     }
 
@@ -454,12 +462,22 @@ def refresh_gaps(engine, db):
         threshold = _coverage_threshold(row[2], row[3], row[6])
         matched = latest.get((row[0], row[1]), float('-inf')) >= threshold
         if not matched:
-            gaps.append({'harness': row[0], 'session': row[1], 'checkpoint_at': row[2], 'turn_at': row[3], 'scope': 'session_only' if row[0] == 'antigravity' else 'turn' if row[3] else 'terminal_only'})
+            gap_item = {
+                'harness': row[0],
+                'session': row[1],
+                'checkpoint_at': row[2],
+                'turn_at': row[3],
+                'scope': 'session_only' if row[0] == 'antigravity' else 'turn' if row[3] else 'terminal_only'
+            }
+            if row[0] in EDIT_OBSERVING_HARNESSES and not row[6]:
+                gap_item['no_observed_edit'] = True
             if row[4] and row[5]:
-                gaps[-1].update(project=row[4], project_id=row[5])
+                gap_item.update(project=row[4], project_id=row[5])
+            gaps.append(gap_item)
     coverage = receipt_coverage(db, now=time.time(), state=engine.state)
     atomic(engine.state/'receipt-gaps.json', json.dumps({
         'potential_missing_receipts': len(gaps),
+        'no_observed_edit': sum(1 for item in gaps if item.get('no_observed_edit')),
         'receipt_coverage': coverage,
         'checkpoints': gaps,
         'scope_limits': {'antigravity': 'session_only; later per-turn boundaries unsupported', 'missing_prompt_event': 'terminal_only; receipt attribution may be incomplete'},

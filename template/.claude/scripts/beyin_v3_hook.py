@@ -429,9 +429,10 @@ def drain_queue(vault, state):
         if gap_path.exists():
             gaps = json.loads(gap_path.read_text(encoding='utf-8'))
             result['potential_missing_receipts'] = gaps['potential_missing_receipts']
-            # The prompt warning names only the last 7 days, already counted by this sync (#373).
+            # The prompt warning names only the last 7 days, already counted by this sync (#373, #462).
             recent = (gaps.get('receipt_coverage') or {}).get('last_7d') or {}
             result['recent_missing_receipts'] = recent.get('missing', 0)
+            result['recent_no_observed_edit'] = recent.get('missing_no_observed_edit', recent.get('no_observed_edit', 0))
         from beyin_v3_skills import sync_skills
         skills = sync_skills(vault, state)
         # Skill mirroring owns no queued event, so its outcome is reported for
@@ -674,9 +675,15 @@ def main():
                 if sync.get('skill_conflicts'):
                     warning += 'Shared skills differ between harnesses; both versions are preserved. Run doctor before trusting skill text.\n'
                 # Only recent gaps reach the prompt; the all-time count never clears and stays in doctor (#373).
+                # Checkpoints without observed edits are reported separately (#462).
                 recent = sync.get('recent_missing_receipts')
+                no_edits = sync.get('recent_no_observed_edit', 0)
                 if isinstance(recent, int) and recent > 0:
-                    warning += (f'Prior checkpoints may lack structured receipts ({recent} in the last 7 days); '
+                    if isinstance(no_edits, int) and no_edits > 0:
+                        detail = f'{recent} in the last 7 days ({no_edits} without observed edits)'
+                    else:
+                        detail = f'{recent} in the last 7 days'
+                    warning += (f'Prior checkpoints may lack structured receipts ({detail}); '
                                 'check Last-Session/Threads and current sources for unfinished work.\n')
             from beyin_v3_companion import (context as companion_context, relevant, opening_budget, client_budget,
                                             client_rebudget, fit_client)

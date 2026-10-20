@@ -357,7 +357,7 @@ class ReceiptCoverageTest(unittest.TestCase):
             self.assertEqual(values, {'claude': 100, 'codex': 0})
 
     def test_coverage_reports_no_observed_edit(self):
-        """Doctor coverage reports sessions without observed edits (#212)."""
+        """Doctor coverage reports sessions without observed edits (#212, #462)."""
         engine = SyncEngine(self.vault, self.state)
         now = time.time()
         # Session 1: edit session
@@ -375,7 +375,58 @@ class ReceiptCoverageTest(unittest.TestCase):
             cov = receipt_coverage(db, now=now, state=self.state)
             self.assertEqual(cov['total'], 2)
             self.assertEqual(cov['no_observed_edit'], 1)
+            self.assertEqual(cov['missing_no_observed_edit'], 1)
             self.assertEqual(cov['last_7d']['no_observed_edit'], 1)
+            self.assertEqual(cov['last_7d']['missing_no_observed_edit'], 1)
+
+    def test_opening_warning_and_gaps_report_no_observed_edit_separately(self):
+        """Checkpoints without observed edits are tagged in gaps and reported separately in opening warning (#462)."""
+        engine = SyncEngine(self.vault, self.state)
+        now = time.time()
+        # 1. Edit session without receipt (Claude)
+        self._enqueue('SessionStart', 'sess_edit_only', at=now - 60)
+        self._enqueue('UserPromptSubmit', 'sess_edit_only', at=now - 55)
+        self._enqueue('PostToolUse', 'sess_edit_only', at=now - 50)
+        self._enqueue('Stop', 'sess_edit_only', at=now - 45)
+
+        # 2. Read-only session without receipt (Claude: no PostToolUse)
+        self._enqueue('SessionStart', 'sess_read_only', at=now - 40)
+        self._enqueue('UserPromptSubmit', 'sess_read_only', at=now - 35)
+        self._enqueue('Stop', 'sess_read_only', at=now - 30)
+
+        # 3. Harness without edit observation (Antigravity: scope limitation preserved)
+        self._enqueue('SessionStart', 'sess_ag', at=now - 25, harness='antigravity')
+        self._enqueue('Stop', 'sess_ag', at=now - 20, harness='antigravity')
+
+        hook.drain_queue(self.vault, self.state)
+
+        # Check receipt-gaps.json
+        gaps_path = self.state / 'receipt-gaps.json'
+        self.assertTrue(gaps_path.exists())
+        gaps_data = json.loads(gaps_path.read_text(encoding='utf-8'))
+        self.assertEqual(gaps_data['potential_missing_receipts'], 2)
+        self.assertEqual(gaps_data['no_observed_edit'], 1)
+
+        # Checkpoints in gaps: read-only has no_observed_edit=True
+        gap_items = {g['session']: g for g in gaps_data['checkpoints']}
+        self.assertTrue(gap_items['sess_read_only'].get('no_observed_edit'))
+        self.assertNotIn('no_observed_edit', gap_items['sess_edit_only'])
+
+        # Check hook-health.json
+        health_data = json.loads((self.state / 'hook-health.json').read_text(encoding='utf-8'))
+        sync_result = health_data.get('sync', {})
+        self.assertEqual(sync_result.get('recent_missing_receipts'), 2)
+        self.assertEqual(sync_result.get('recent_no_observed_edit'), 1)
+
+        # Verify hook warning output
+        hook_path = ROOT / 'template/.claude/scripts/beyin_v3_hook.py'
+        cmd = [sys.executable, str(hook_path), '--vault', str(self.vault),
+               '--state', str(self.state), '--harness', 'claude']
+        payload = {'hook_event_name': 'SessionStart', 'session_id': 'sess_check_warning'}
+        proc = subprocess.run(cmd, input=json.dumps(payload), capture_output=True, text=True, check=True)
+        out = json.loads(proc.stdout)
+        context = out.get('hookSpecificOutput', {}).get('additionalContext', '')
+        self.assertIn('Prior checkpoints may lack structured receipts (2 in the last 7 days (1 without observed edits))', context)
 
     def test_mark_session_edit_records_session_marker(self):
         """mark_session_edit creates a receipt reminder marker for the active Claude session (#212)."""
