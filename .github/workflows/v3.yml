@@ -30,8 +30,8 @@ jobs:
   stdlib-contracts:
     name: ${{ matrix.os }} / Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
-    # Full offline and retrieval/package checks exceeded 15 minutes on macOS.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 40 || 25 }}
+    # Full checks exceeded 15 minutes on macOS and 40 on Windows 3.11.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 25 }}
     strategy:
       fail-fast: false
       matrix:
