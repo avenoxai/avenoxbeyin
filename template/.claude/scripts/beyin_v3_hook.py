@@ -615,6 +615,12 @@ def main():
         # After enqueue, so reminder bookkeeping can never cost the queued checkpoint.
         # The global bridge (--metadata-only) discards stdout, so it keeps no reminder state.
         reminder = None if args.metadata_only else receipt_reminder(payload, state, args.harness, event, vault=vault)
+        if not args.metadata_only and event == 'UserPromptSubmit' and (state / 'chat-trace.json').is_file():
+            try:
+                from beyin_v3_chat_trace import hint
+                notice += hint(state, args.harness, payload)
+            except Exception:
+                pass  # Optional conversation hints cannot cost a turn or replace its context.
         inject = settings['context_mode'] == 'turn' or (settings['context_mode'] == 'session' and event == 'SessionStart')
         if not inject or args.metadata_only or (event == 'UserPromptSubmit' and is_synthetic_prompt(payload)):
             print(json.dumps(reminder) if reminder else (json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == 'antigravity' else '{}')))
