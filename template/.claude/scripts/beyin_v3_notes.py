@@ -64,7 +64,9 @@ def _checked_source(engine, source):
     if (folded[-1] in EXCLUDED_FILES or folded[-1].startswith('setup-') or
             any(part in EXCLUDED_DIRS for part in folded[:-1])):
         raise ValueError('configuration or excluded source rejected')
-    engine._refuse_excluded(source)
+    from beyin_v3 import sensitive_source
+    if sensitive_source(source):
+        raise ValueError('source is under a sensitive directory excluded from the memory index')
     path = engine._path(source)
     # Sync follows a junction that stays inside the vault; a cooperative writer is stricter
     # and never writes through any link or reparse point between the vault and the note.
@@ -315,13 +317,20 @@ def _apply(engine, request, committed):
         # Keep the lock through indexing so another participating writer cannot
         # change this source between the write and projection readback.
         result = engine.sync()
-        with engine.store._connect() as db:
-            row = db.execute('SELECT r.payload FROM records r JOIN markdown_sources m ON r.id=m.id '
-                             'WHERE m.source=?', (source,)).fetchone()
-        if (engine._source_issues(result, source) or not row or
-                json.loads(row[0]).get('source_sha256') != _hash(updated) or
-                _bytes(source_path(engine, source)) != updated):
-            raise NoteConflict('source written but index readback failed; reread and run sync')
+        from beyin_v3_index import dir_key, exclusions as index_exclusions
+        excluded_keys = index_exclusions(engine.state, engine.root)[0] if engine.state else frozenset()
+        is_index_excluded = bool(excluded_keys and any(dir_key(part) in excluded_keys for part in Path(source).parts[:-1]))
+        if not is_index_excluded:
+            with engine.store._connect() as db:
+                row = db.execute('SELECT r.payload FROM records r JOIN markdown_sources m ON r.id=m.id '
+                                 'WHERE m.source=?', (source,)).fetchone()
+            if (engine._source_issues(result, source) or not row or
+                    json.loads(row[0]).get('source_sha256') != _hash(updated) or
+                    _bytes(source_path(engine, source)) != updated):
+                raise NoteConflict('source written but index readback failed; reread and run sync')
+        else:
+            if _bytes(source_path(engine, source)) != updated:
+                raise NoteConflict('external edit detected after replace; reread source')
     return engine._write_diagnostics(
         {'status': 'written', 'source': source, 'sha256': _hash(updated),
          'backup': backup.relative_to(engine.root).as_posix() if backup else None}, result)

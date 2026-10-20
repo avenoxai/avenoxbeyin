@@ -391,6 +391,43 @@ with locked(engine):
         self.assertEqual((self.vault / 'Threads.md').read_bytes(), b'ALPHA\nBETA\n')
         self.assertEqual(len(list((self.vault / LOCAL_DIRECTORY / 'backups').glob('*.json'))), 2)
 
+    def test_note_read_and_edit_under_index_excluded_directory(self):
+        """note-read and note-edit allow reading and modifying notes in index-excluded directories (#468)."""
+        archive_dir = self.vault / '📦 900-Archive'
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        note = archive_dir / 'Arşiv.md'
+        note.write_text('# Arşiv\nEski proje durumu: aktif.\n', encoding='utf-8')
+
+        # Configure 📦 900-Archive as excluded in state/index.json
+        (self.state / 'index.json').write_text(
+            json.dumps({'schema': 1, 'excluded_dirs': ['📦 900-Archive']}),
+            encoding='utf-8'
+        )
+
+        # 1. note-read must succeed and return content and sha256
+        read_res = self.engine.note_read('📦 900-Archive/Arşiv.md')
+        self.assertEqual(read_res['source'], '📦 900-Archive/Arşiv.md')
+        self.assertIn('Eski proje durumu: aktif.', read_res['content'])
+
+        # 2. note-edit must succeed and update the note on disk safely
+        edit_req = {
+            'source': '📦 900-Archive/Arşiv.md',
+            'expected_sha256': read_res['sha256'],
+            'edits': [{'old': 'aktif', 'new': 'bırakıldı'}]
+        }
+        edit_res = self.engine.note_edit(edit_req)
+        self.assertEqual(edit_res['status'], 'written')
+        self.assertIn('bırakıldı', note.read_text(encoding='utf-8'))
+
+        # 3. Sensitive directories (🔐 Kasa) must still be strictly refused
+        kasa_dir = self.vault / '🔐 Kasa'
+        kasa_dir.mkdir(parents=True, exist_ok=True)
+        (kasa_dir / 'Gizli.md').write_text('# Gizli\n', encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'sensitive directory'):
+            self.engine.note_read('🔐 Kasa/Gizli.md')
+        with self.assertRaisesRegex(ValueError, 'sensitive directory'):
+            self.engine.note_edit({'source': '🔐 Kasa/Gizli.md', 'expected_sha256': None, 'content': '# X'})
+
 
 if __name__ == '__main__':
     unittest.main()
