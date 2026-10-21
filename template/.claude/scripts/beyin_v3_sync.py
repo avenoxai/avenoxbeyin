@@ -689,6 +689,17 @@ class SyncEngine:
             seen.add(identity)
             if task_identity is not None and identity == task_identity:
                 return 'evidence ref cannot be the task source itself'
+            if contract == 'strict' and metadata.get('status') == 'done' and metadata.get('id'):
+                try:
+                    stat = path.stat()
+                    if hasattr(stat, 'st_mtime') and stat.st_mtime > time.time() + 5:
+                        return 'evidence file has an invalid future modification time'
+
+                    with path.open('rt', encoding='utf-8', errors='replace') as f:
+                        if metadata.get('id') not in f.read(1024 * 1024):  # limit to 1MB
+                            return 'evidence file must contain the matching task identifier'
+                except OSError:
+                    return 'evidence file must contain the matching task identifier'
         return None
 
     def completion_health(self):

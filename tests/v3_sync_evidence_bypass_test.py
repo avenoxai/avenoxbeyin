@@ -115,5 +115,78 @@ class TestSyncEvidenceBypass(unittest.TestCase):
         self.assertIn("must be an existing vault source", issue)
 
 
+    def test_spoofed_evidence_ref_without_task_id(self):
+        metadata = {
+            'id': 'T-6',
+            'title': 'Test',
+            'status': 'done',
+            'completion_contract': 'strict',
+            'completion_criterion': 'done',
+            'evidence_refs': ['no_id.txt']
+        }
+        evidence = self.root / 'no_id.txt'
+        evidence.write_text('evidence without id', encoding='utf-8')
+        issue = self.engine._completion_issue(metadata, 'task.md')
+        self.assertIn("must contain the matching task identifier", issue)
+
+    def test_spoofed_evidence_ref_with_task_id(self):
+        metadata = {
+            'id': 'T-7',
+            'title': 'Test',
+            'status': 'done',
+            'completion_contract': 'strict',
+            'completion_criterion': 'done',
+            'evidence_refs': ['with_id.txt']
+        }
+        evidence = self.root / 'with_id.txt'
+        evidence.write_text('evidence with id T-7 inside', encoding='utf-8')
+        issue = self.engine._completion_issue(metadata, 'task.md')
+        self.assertIsNone(issue)
+
+    def test_spoofed_evidence_ref_binary_file(self):
+        metadata = {
+            'id': 'T-8',
+            'title': 'Test',
+            'status': 'done',
+            'completion_contract': 'strict',
+            'completion_criterion': 'done',
+            'evidence_refs': ['binary.bin']
+        }
+        evidence = self.root / 'binary.bin'
+        evidence.write_bytes(b'\x00\xff\x00\xff')
+        issue = self.engine._completion_issue(metadata, 'task.md')
+        self.assertIn("must contain the matching task identifier", issue)
+
+    def test_missing_evidence_ref(self):
+        metadata = {
+            'id': 'T-9',
+            'title': 'Test',
+            'status': 'done',
+            'completion_contract': 'strict',
+            'completion_criterion': 'done',
+            'evidence_refs': ['missing.txt']
+        }
+        issue = self.engine._completion_issue(metadata, 'task.md')
+        self.assertIn("must be an existing vault source", issue)
+
+    def test_spoofed_mtime_signature_manipulation(self):
+        metadata = {
+            'id': 'T-10',
+            'title': 'Test',
+            'status': 'done',
+            'completion_contract': 'strict',
+            'completion_criterion': 'done',
+            'evidence_refs': ['mtime.txt']
+        }
+        evidence = self.root / 'mtime.txt'
+        evidence.write_text('evidence with id T-10 inside', encoding='utf-8')
+        
+        # Test future mtime manipulation
+        import time
+        os.utime(evidence, (evidence.stat().st_atime, time.time() + 3600))
+        issue = self.engine._completion_issue(metadata, 'task.md')
+        self.assertIn("invalid future modification time", issue)
+
+
 if __name__ == '__main__':
     unittest.main()
