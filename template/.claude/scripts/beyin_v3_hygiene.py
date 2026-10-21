@@ -187,11 +187,10 @@ def save_inbox_settings(state, changes):
             out.write('\n'); out.flush(); os.fsync(out.fileno())
         os.replace(temporary, state / INBOX_SETTINGS_FILE)
     finally:
-        if os.path.exists(temporary):
-            try:
-                os.unlink(temporary)
-            except OSError:
-                pass
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
     return result
 
 
@@ -226,11 +225,10 @@ def save_settings(state, changes):
             out.write('\n'); out.flush(); os.fsync(out.fileno())
         os.replace(temporary, state / SETTINGS_FILE)
     finally:
-        if os.path.exists(temporary):
-            try:
-                os.unlink(temporary)
-            except OSError:
-                pass
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
     return result
 
 
