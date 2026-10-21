@@ -7429,6 +7429,11 @@ def main(argv=None, vault=None, state=None):
         if getattr(args, 'hazir', False):
             result = warm_popup(vault, state, getattr(args, 'instance', None))
             if os.name == 'nt':
+                # The IPC reader is a daemon thread blocked on stdin; normal interpreter shutdown
+                # waits 1 s for that BufferedReader lock and then aborts the process
+                # (Fatal Python error: _enter_buffered_busy). DONE is already flushed by pipe.finish().
+                if argv is None:
+                    os._exit(0)
                 return 0  # protocol endpoint, not a second JSON CLI response
         else:
             context = json.loads(args.baglam) if getattr(args, 'baglam', None) else gather_context()
