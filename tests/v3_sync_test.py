@@ -871,6 +871,20 @@ class SourceSyncTest(unittest.TestCase):
         self.assertEqual(len(private_records), 1)
         self.assertEqual(private_records[0].get('visibility'), 'private')
 
+    def test_sync_indexes_note_with_non_utf8_bytes_without_rejection(self):
+        """A note containing non-UTF8 bytes is decoded with replacement and indexed without rejection."""
+        corrupt = self.vault / 'notes/legacy_windows1254.md'
+        corrupt.parent.mkdir(parents=True, exist_ok=True)
+        # 0xfe is invalid UTF-8 start byte
+        corrupt.write_bytes(b'---\nid: legacy-note\nkind: note\nproject: nebula\n---\nLegacy content with non-utf8 byte \xfe.\n')
+        result = self.engine.sync()
+        self.assertEqual(result['status'], 'succeeded')
+        self.assertEqual(result['warnings'], [])
+        records = self.records('Legacy content')
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]['id'], 'legacy-note')
+        self.assertIn('Legacy content with non-utf8 byte', records[0]['text'])
+
 
 class ReceiptStateResetTest(unittest.TestCase):
     def setUp(self):

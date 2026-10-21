@@ -838,7 +838,7 @@ class SyncEngine:
                             records[id] = None
                             continue
                     raw = path.read_bytes()
-                    text = raw.decode('utf-8')
+                    text = raw.decode('utf-8', errors='replace')
                     if _has_conflict_markers(text):
                         raise ValueError('unresolved git conflict markers; resolve the merge before sync')
                     metadata, body = parse(text)
@@ -929,7 +929,7 @@ class SyncEngine:
         """Rebuild a receipts row from its immutable source; ValueError when the file is not a valid receipt."""
         path = self._path(relative, existing=True)
         # Bytes, not read_text: universal newlines would turn '\r' into '\n' and fake an event id collision.
-        text = path.read_bytes().decode('utf-8')
+        text = path.read_bytes().decode('utf-8', errors='replace')
         if _has_conflict_markers(text):
             raise ValueError('unresolved git conflict markers; resolve the merge before sync')
         metadata, body = parse(text)
@@ -1222,7 +1222,7 @@ class SyncEngine:
             raw = path.read_bytes()
             if _hash(raw) != record['source_sha256']:
                 raise RevisionConflict('source changed; sync and reread')
-            metadata, body = parse(raw.decode('utf-8'))
+            metadata, body = parse(raw.decode('utf-8', errors='replace'))
             if metadata.get('id') != id or type(metadata.get('revision')) is not int or metadata['revision'] > expected_revision:
                 raise RevisionConflict('source revision conflict')
             before = {field: metadata.get(field) for field in ('status', 'completion_contract', 'completion_criterion')}

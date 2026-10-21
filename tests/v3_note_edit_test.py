@@ -391,6 +391,22 @@ with locked(engine):
         self.assertEqual((self.vault / 'Threads.md').read_bytes(), b'ALPHA\nBETA\n')
         self.assertEqual(len(list((self.vault / LOCAL_DIRECTORY / 'backups').glob('*.json'))), 2)
 
+    def test_note_read_and_edit_with_non_utf8_bytes(self):
+        """Reading and editing a note containing non-UTF-8 bytes decodes with replacement and succeeds."""
+        corrupt = self.vault / 'notes/legacy_corrupt.md'
+        corrupt.parent.mkdir(parents=True, exist_ok=True)
+        corrupt.write_bytes(b'Header\n\xfe\xffBad bytes\nFooter\n')
+        read = self.engine.note_read('notes/legacy_corrupt.md')
+        self.assertIn('Header', read['content'])
+        self.assertIn('Footer', read['content'])
+        edit = self.engine.note_edit({
+            'source': 'notes/legacy_corrupt.md',
+            'expected_sha256': read['sha256'],
+            'edits': [{'old': 'Footer', 'new': 'Updated Footer'}]
+        })
+        self.assertEqual(edit['status'], 'written')
+        self.assertIn(b'Updated Footer', corrupt.read_bytes())
+
 
 if __name__ == '__main__':
     unittest.main()

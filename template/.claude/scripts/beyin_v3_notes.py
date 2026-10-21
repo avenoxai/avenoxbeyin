@@ -213,7 +213,7 @@ def read(engine, source):
         source = path.relative_to(engine.root).as_posix()
         _refuse_tracked_view(engine, source)
         raw = _bytes(path)
-        text = raw.decode('utf-8') if raw is not None else None
+        text = raw.decode('utf-8', errors='replace') if raw is not None else None
         if text is not None:
             _human(text)
     return {'source': source, 'sha256': _hash(raw) if raw is not None else None,
@@ -259,7 +259,7 @@ def _apply(engine, request, committed):
         else:
             if 'content' in request or not isinstance(request.get('edits'), list) or not request['edits']:
                 raise ValueError('existing source requires nonempty targeted edits, not content')
-            text = raw.decode('utf-8')
+            text = raw.decode('utf-8', errors='replace')
             _human(text)
             for edit in request['edits']:
                 if not isinstance(edit, dict):
