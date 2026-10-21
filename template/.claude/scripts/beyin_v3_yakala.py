@@ -6724,6 +6724,38 @@ def _state_path(state):
     return Path(state) / STATE_FILE
 
 
+def _mac_path():
+    """Predictable, sanitized PATH for LaunchAgent: active Python dir, Homebrew, and POSIX system bins."""
+    ordered = []
+    py_dir = str(Path(sys.executable).parent)
+    defaults = [py_dir, '/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin']
+    for p in defaults:
+        if p and p not in ordered:
+            ordered.append(p)
+    return ':'.join(ordered)
+
+
+def _bootstrap_with_retry(domain, agent, retries=5, delay=0.2):
+    """Call `launchctl bootstrap` with backoff retries when launchd returns EIO (5).
+
+    When a previously running LaunchAgent is booted out, launchd teardown can be
+    asynchronous. A rapid bootstrap call immediately afterwards may fail with
+    EIO (5) until the previous job completely unbinds.
+    """
+    import time
+    last_proc = None
+    for attempt in range(retries):
+        proc = subprocess.run(['launchctl', 'bootstrap', domain, str(agent)], capture_output=True)
+        if not isinstance(getattr(proc, 'returncode', None), int) or proc.returncode == 0:
+            return proc
+        last_proc = proc
+        time.sleep(delay * (attempt + 1))
+    if last_proc is not None and isinstance(getattr(last_proc, 'returncode', None), int) and last_proc.returncode != 0:
+        raise subprocess.CalledProcessError(last_proc.returncode, last_proc.args,
+                                            output=getattr(last_proc, 'stdout', b''), stderr=getattr(last_proc, 'stderr', b''))
+    return last_proc
+
+
 def _launch_agent():
     return Path.home() / 'Library/LaunchAgents' / (LAUNCH_LABEL + '.plist')
 
@@ -7097,7 +7129,7 @@ def install(vault, state, hotkey=True, spec=None, folder_spec=None):
                  'ProgramArguments': [sys.executable, str(runner), 'dinle', '--vault', str(vault),
                                       '--keycode', str(keycode), '--mods', str(modifiers)],
                  'ProcessType': 'Interactive', 'StandardErrorPath': str(state / 'yakala' / 'dinleyici.log'),
-                 'EnvironmentVariables': {'PATH': os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin'),
+                 'EnvironmentVariables': {'PATH': _mac_path(),
                                           'LANG': 'en_US.UTF-8'}}
         agent = _launch_agent()
         previous = _agent_vault()
@@ -7107,7 +7139,7 @@ def install(vault, state, hotkey=True, spec=None, folder_spec=None):
         domain = 'gui/' + str(os.getuid())
         subprocess.run(['launchctl', 'bootout', domain + '/' + LAUNCH_LABEL], capture_output=True)
         agent.write_bytes(plistlib.dumps(plist))
-        subprocess.run(['launchctl', 'bootstrap', domain, str(agent)], check=True, capture_output=True)
+        _bootstrap_with_retry(domain, agent)
         done['kisayol'] = label
         done['kisayol_calisiyor'] = _listener_ok()
     elif hotkey and sys.platform.startswith('linux'):

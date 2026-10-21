@@ -1140,6 +1140,40 @@ class YakalaUnitTest(unittest.TestCase):
         self.assertEqual(calls, [('bootout', True), ('bootstrap', True), ('print', True)])
         self.assertEqual(runner.read_bytes(), script.read_bytes())
 
+    def test_mac_install_retries_bootstrap_on_eio(self):
+        state, agent = Path(self.tmp.name) / 'mac-state', Path(self.tmp.name) / 'agent.plist'
+        bootstrap_attempts = []
+
+        def launchctl(command, **_options):
+            if command[1] == 'bootstrap':
+                bootstrap_attempts.append(len(bootstrap_attempts) + 1)
+                # First attempt fails with EIO (code 5) due to asynchronous bootout unwinding
+                if len(bootstrap_attempts) == 1:
+                    return subprocess.CompletedProcess(command, 5, b'', b'Bootstrap failed: 5: Input/output error\n')
+                return subprocess.CompletedProcess(command, 0, b'', b'')
+            return subprocess.CompletedProcess(command, 0, b'\tstate = running\n', b'')
+
+        with self.mac(agent, launchctl):
+            result = yakala.install(self.vault, state)
+            self.assertIs(result['kisayol_calisiyor'], True)
+        self.assertEqual(bootstrap_attempts, [1, 2])
+
+    def test_mac_install_sanitizes_environment_path(self):
+        import plistlib
+        state, agent = Path(self.tmp.name) / 'mac-state', Path(self.tmp.name) / 'agent.plist'
+        polluted_path = '/var/folders/zz/tmp_session_shim/bin:/usr/bin:/bin'
+
+        with patch.dict(os.environ, {'PATH': polluted_path}):
+            with self.mac(agent, lambda cmd, **_opt: subprocess.CompletedProcess(cmd, 0, b'\tstate = running\n', b'')):
+                yakala.install(self.vault, state)
+
+        plist = plistlib.loads(agent.read_bytes())
+        saved_path = plist['EnvironmentVariables']['PATH']
+        self.assertNotIn('/var/folders/zz/tmp_session_shim/bin', saved_path)
+        self.assertIn('/usr/bin', saved_path)
+        self.assertIn('/opt/homebrew/bin', saved_path)
+        self.assertIn(str(Path(sys.executable).parent), saved_path)
+
     def test_uninstall_boots_the_listener_out_before_its_files_go(self):
         state, agent, calls = Path(self.tmp.name) / 'mac-state', Path(self.tmp.name) / 'agent.plist', []
         runner = state / 'yakala/beyin_v3_yakala.py'
