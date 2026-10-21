@@ -109,6 +109,18 @@ class HookDoneLedgerTest(unittest.TestCase):
         self.assertEqual(ledger.prune(self.store), 1)
         self.assertFalse(old.exists())
 
+    def test_prune_database_lock_fails_open_without_crashing(self):
+        self.marker("locked", old=True)
+        # Ensure table exists first
+        with closing(sqlite3.connect(self.store.database)) as db:
+            db.execute(ledger._CREATE)
+        with closing(sqlite3.connect(self.store.database, timeout=0.1)) as locker:
+            locker.execute("BEGIN EXCLUSIVE")
+            # In concurrent execution, an existing transaction locks SQLite.
+            # Prune must fail-open (return 0) instead of crashing with sqlite3.OperationalError.
+            removed = ledger.prune(self.store)
+            self.assertEqual(removed, 0)
+
     def test_doctor_ignores_file_removed_during_concurrent_cleanup(self):
         key, old = self.marker("racy")
         original = Path.unlink

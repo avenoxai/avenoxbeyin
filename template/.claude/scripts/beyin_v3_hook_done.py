@@ -66,36 +66,44 @@ def prune(store, now=None):
     if done.is_symlink() or not done.is_dir():
         return 0
     batch = []
-    with store._connect() as db:
-        db.execute("BEGIN IMMEDIATE")
-        previous = db.execute("SELECT value FROM metadata WHERE key='hook_done_last_scan'").fetchone()
-        if previous is not None and now - float(previous[0]) < CHECK_INTERVAL_SECONDS:
-            return 0
-        db.execute(_CREATE)
-        for path in done.glob("*.json"):
-            if len(batch) >= BATCH_SIZE:
-                break
-            if not _KEY_RE.fullmatch(path.name):
-                continue
-            try:
-                info = path.lstat()
-                if (not stat.S_ISREG(info.st_mode) or info.st_size > MAX_EVENT_BYTES
-                        or now - info.st_mtime < RETENTION_SECONDS):
+    try:
+        with store._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            previous = db.execute("SELECT value FROM metadata WHERE key='hook_done_last_scan'").fetchone()
+            if previous is not None and now - float(previous[0]) < CHECK_INTERVAL_SECONDS:
+                return 0
+            db.execute(_CREATE)
+            for path in done.glob("*.json"):
+                if len(batch) >= BATCH_SIZE:
+                    break
+                if not _KEY_RE.fullmatch(path.name):
                     continue
-                data = json.loads(path.read_text(encoding="utf-8"))
-                if not isinstance(data, dict):
-                    continue
-                harness, event = data.get("harness"), data.get("event")
-                if not isinstance(harness, str) or not isinstance(event, str):
-                    continue
-                batch.append((path, path.stem, harness, event))
-            except (OSError, ValueError, UnicodeError):
-                continue  # A bad or disappearing file is retained, never silently deleted.
-        for _path, key, harness, event in batch:
-            db.execute("INSERT OR IGNORE INTO hook_done_ledger VALUES (?,?,?)", (key, harness, event))
-        if not batch:  # No eligible files: avoid a full directory scan on every drain.
-            db.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('hook_done_last_scan',?)",
-                       (str(now),))
+                try:
+                    info = path.lstat()
+                    if (not stat.S_ISREG(info.st_mode) or info.st_size > MAX_EVENT_BYTES
+                            or now - info.st_mtime < RETENTION_SECONDS):
+                        continue
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    if not isinstance(data, dict):
+                        continue
+                    harness, event = data.get("harness"), data.get("event")
+                    if not isinstance(harness, str) or not isinstance(event, str):
+                        continue
+                    batch.append((path, path.stem, harness, event))
+                except (OSError, ValueError, UnicodeError):
+                    continue  # A bad or disappearing file is retained, never silently deleted.
+            if batch:
+                db.executemany("INSERT OR IGNORE INTO hook_done_ledger VALUES (?,?,?)",
+                               [(key, harness, event) for _path, key, harness, event in batch])
+            else:
+                # No eligible files: avoid a full directory scan on every drain.
+                db.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('hook_done_last_scan',?)",
+                           (str(now),))
+    except sqlite3.OperationalError as exc:
+        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+            batch = []
+        else:
+            raise
     # The transaction is committed and the connection closed before removing anything.
     removed = 0
     for path, _key, _harness, _event in batch:
