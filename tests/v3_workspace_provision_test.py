@@ -80,21 +80,37 @@ class Harness:
 
     def child(self, phase, index, action='apply', *, crash=True):
         code = '''
-import os,sys
+import faulthandler,json,os,sys,time
+faulthandler.dump_traceback_later(10, repeat=True)
+started=time.perf_counter()
+def trace(phase, index=None):
+    print(json.dumps(dict(phase=phase,index=index,elapsed=time.perf_counter()-started)),file=sys.stderr,flush=True)
+trace("child_started")
 sys.path.insert(0, sys.argv[1])
 from v3_workspace_provision_test import Harness, provision
+trace("imports_complete")
 h=Harness(sys.argv[2],initialize=False)
+trace("harness_ready")
 phase=sys.argv[3]; index=None if sys.argv[4]=='none' else int(sys.argv[4])
 def kill(actual, step=None):
+    trace(actual,step)
     if actual==phase and step==index: os._exit(93)
 provision.transaction_hook=kill
 action=sys.argv[5]
 if action=='apply': h.engine.apply(h.plan,'same-operation')
 elif action=='recover': h.engine.recover('same-operation')
 else: h.engine.revert('same-operation')
+trace('operation_complete')
+faulthandler.cancel_dump_traceback_later()
 '''
-        result = subprocess.run([sys.executable, '-B', '-c', code, str(ROOT / 'tests'), str(self.root),
-            phase, 'none' if index is None else str(index), action], capture_output=True, timeout=30)
+        try:
+            result = subprocess.run([sys.executable, '-B', '-c', code, str(ROOT / 'tests'), str(self.root),
+                phase, 'none' if index is None else str(index), action], capture_output=True, timeout=30)
+        except subprocess.TimeoutExpired as exc:
+            # Preserve the original failure and deadline, but expose the last
+            # durable checkpoint and live stacks from the otherwise lost child.
+            raise AssertionError('recovery child timeout: ' +
+                (exc.stderr or b'').decode('utf-8', errors='replace')) from exc
         if crash:
             if result.returncode != 93:
                 raise AssertionError(result.stderr.decode(errors='replace'))
@@ -206,6 +222,15 @@ class ProvisionTest(unittest.TestCase):
                 harness.child('never', None, 'revert', crash=False)
                 self.assertEqual(harness.read_files(), harness.originals)
                 self.assertFalse((harness.state / 'workspace-provision/pending.json').exists())
+
+    def test_child_timeout_preserves_checkpoint_diagnostics_and_deadline(self):
+        failure = subprocess.TimeoutExpired('synthetic child', 30,
+            stderr=b'{"phase":"revert_started"}\nTimeout: thread stack')
+        with patch.object(subprocess, 'run', side_effect=failure) as run:
+            with self.assertRaisesRegex(AssertionError, 'revert_started') as raised:
+                self.h.child('revert_intent', 2, 'revert')
+        self.assertIs(raised.exception.__cause__, failure)
+        self.assertEqual(run.call_args.kwargs['timeout'], 30)
 
     def test_changed_plan_snapshot_and_unapproved_authority_do_not_apply(self):
         mutated = copy.deepcopy(self.h.plan)
