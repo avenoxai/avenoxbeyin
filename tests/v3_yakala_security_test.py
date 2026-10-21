@@ -649,5 +649,11 @@ class YakalaSecurityTest(unittest.TestCase):
                  if isinstance(handler, urllib.request.ProxyHandler) and handler.proxies == {}]
         self.assertEqual(empty, [])
 
+    def test_extra_urls_with_private_address_sets_visibility_private(self):
+        new = yakala.capture(self.vault, url='https://example.com', extra_urls=['http://127.0.0.1/internal-ref', 'https://example.com'])
+        card = yakala.find_card(self.vault, new['id'])
+        self.assertEqual(card['meta']['visibility'], 'private')
+        self.assertEqual(card['meta']['ek_urller'], ['http://127.0.0.1/internal-ref'])
+
 if __name__ == '__main__':
     unittest.main()

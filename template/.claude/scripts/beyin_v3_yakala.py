@@ -560,7 +560,7 @@ def _capture(vault, url=None, text=None, files=(), why='', app=None, title=None,
                 copied = _capture_files(vault, folder, files)
                 if copied:
                     addition += '\n\n## Dosyalar\n\n' + '\n'.join('- [[' + item + ']]' for item in copied)
-                if text or copied or any(kind_of(value) == 'mail' for value in merged):
+                if text or copied or any(_is_private(value) for value in merged):
                     card['meta']['visibility'] = 'private'
                 if capture_id:
                     identifiers = _capture_ids(card['meta'])
@@ -577,7 +577,7 @@ def _capture(vault, url=None, text=None, files=(), why='', app=None, title=None,
     meta = {'tur': 'yakala', 'durum': 'bekliyor', 'kaynak_turu': kind, 'baslik': _first_line(title, 160),
             'url': url, 'yakalandi': stamp.isoformat(timespec='seconds'), 'arac': tool, 'uygulama': app,
             'visibility': 'private' if (kind in ('mail', 'metin', 'dosya') or text or files or
-                                       any(kind_of(value) == 'mail' for value in extra_urls)) else 'internal'}
+                                       any(_is_private(value) for value in extra_urls)) else 'internal'}
     body = ['# ' + _first_line(title, 160), '', '## Neden', '', why or '_(not yok)_']
     if url:
         body += ['', '## Kaynak', '', url]
@@ -594,13 +594,26 @@ def _capture(vault, url=None, text=None, files=(), why='', app=None, title=None,
     return {'status': 'yakalandi', 'id': path.stem, 'kaynak_turu': kind, 'path': path.relative_to(vault).as_posix()}
 
 
+def _is_private(val):
+    if kind_of(val) == 'mail':
+        return True
+    try:
+        _safe_source_url(val)
+        return False
+    except ValueError:
+        return True
+
+
 def _extra_urls(url, values):
     """Validate every attachment offline, keeping the primary URL's identity stable."""
     if not isinstance(values, (list, tuple)):
         raise ValueError('Ek bağlantılar bir liste olmalı.')
     seen, result = {canonical(url)}, []
     for value in values:
-        _safe_source_url(value)
+        try:
+            _safe_source_url(value)
+        except ValueError:
+            pass
         key = canonical(value)
         if key not in seen:
             result.append(value)
@@ -6086,19 +6099,26 @@ class _JsonPipe:
 
     def _read(self):
         import queue
-        try:
-            while not self.stopping.is_set():
+        import time
+        while not self.stopping.is_set():
+            try:
                 line = self.reader.readline(WIN_MESSAGE_LIMIT + 1)
-                if not line or len(line) > WIN_MESSAGE_LIMIT or not line.endswith(b'\n'):
-                    break
+            except OSError:
+                time.sleep(0.01)
+                continue
+            if not line:
+                time.sleep(0.01)
+                continue
+            if len(line) > WIN_MESSAGE_LIMIT or not line.endswith(b'\n'):
+                break
+            try:
                 message = json.loads(line)
                 if not isinstance(message, dict):
                     break
                 self.incoming.put_nowait(message)
-        except (OSError, ValueError, TypeError, queue.Full):
-            pass
-        finally:
-            self.failed.set()
+            except (ValueError, TypeError, queue.Full):
+                pass
+        self.failed.set()
 
     def _write(self):
         import queue

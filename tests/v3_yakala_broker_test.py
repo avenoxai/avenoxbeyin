@@ -336,5 +336,30 @@ class BrokerRecoveryTest(unittest.TestCase):
         self.assertEqual(len(self.owners), 1)
 
 
+class JsonPipeDirectTest(unittest.TestCase):
+    def test_windows_broker_pipe_zero_byte_read_and_oserror_resilience(self):
+        class FakeReader:
+            def __init__(self):
+                self.calls = 0
+            def readline(self, limit):
+                self.calls += 1
+                if self.calls == 1:
+                    raise OSError("Simulated connection timeout")
+                elif self.calls == 2:
+                    return b""
+                return b'{"type": "READY"}\n'
+
+        class FakeWriter:
+            def write(self, data): pass
+            def flush(self): pass
+
+        pipe = y._JsonPipe(FakeReader(), FakeWriter())
+        time.sleep(0.08)
+        self.assertFalse(pipe.failed.is_set(), "Pipe failed prematurely on zero-byte or transient OSError")
+        pipe.stopping.set()
+        pipe.read_thread.join(1)
+        pipe.write_thread.join(1)
+
+
 if __name__ == '__main__':
     unittest.main()
