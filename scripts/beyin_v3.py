@@ -1300,9 +1300,10 @@ def main(argv=None, return_result=False):
         receipt_flags = args.command == "receipt" and any(
             getattr(args, name) is not None for name in ("event_id", "summary", "summary_file", "ref", "link", "session"))
         if receipt_flags:
-            for stream in (sys.stdout, sys.stderr):
-                if hasattr(stream, "reconfigure"):
-                    stream.reconfigure(encoding="utf-8")
+            if not return_result:
+                for stream in (sys.stdout, sys.stderr):
+                    if hasattr(stream, "reconfigure"):
+                        stream.reconfigure(encoding="utf-8")
             if args.file is not None:
                 argument_parser.error("--file cannot be combined with receipt flags")
             if args.event_id is None:
