@@ -63,6 +63,30 @@ class WorkspaceRegistryTest(unittest.TestCase):
         (self.vault/'linked').symlink_to(self.source,target_is_directory=True)
         with self.assertRaises(ws.WorkspaceError):ws.safe_path(self.vault,'linked/file')
 
+    def test_safe_path_rejects_dangling_links_and_late_parent_redirect(self):
+        from unittest.mock import patch
+        missing = self.vault/'dangling'
+        try:
+            missing.symlink_to(self.source/'missing')
+        except OSError:
+            self.skipTest('symlink unavailable')
+        with self.assertRaisesRegex(ws.WorkspaceError, 'redirected_path'):
+            ws.safe_path(self.vault, 'dangling/child')
+        parent = self.vault/'changing'; parent.mkdir()
+        (self.source/'child').write_bytes(b'outside')
+        original = Path.lstat
+        redirected = False
+        def redirect_after_check(path, *args, **kwargs):
+            nonlocal redirected
+            result = original(path, *args, **kwargs)
+            if path == parent and not redirected:
+                redirected = True
+                parent.rmdir(); parent.symlink_to(self.source, target_is_directory=True)
+            return result
+        with patch.object(Path, 'lstat', redirect_after_check):
+            with self.assertRaisesRegex(ws.WorkspaceError, 'source_unavailable'):
+                ws.safe_path(self.vault, 'changing/child', existing=True)
+
     def test_snapshot_is_pure_and_absent_registry_stays_legacy(self):
         self.assertIsNone(self.registry.snapshot())
         self.assertFalse(self.state.exists())

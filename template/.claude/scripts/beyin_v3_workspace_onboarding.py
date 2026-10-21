@@ -239,7 +239,10 @@ def complete(vault, state, preparation_id, request_document, idempotency_key):
             from beyin_v3_workspace_memory import MemoryIntentService
             runtime = WorkspaceRuntime(vault, state, readers={})
             if journal['homepage_intent']:
-                resolved = runtime.context(request_document)['data']
+                # Resume revalidates the fresh workspace identity and authority;
+                # its journaled canonical homepage intent does not consume
+                # external document excerpts.
+                resolved = runtime.context(request_document, include_external_sources=False)['data']
                 if resolved['workspace_id'] != wid or resolved['state'] not in ('ready', 'partial'):
                     raise WorkspaceError('workspace_context_required')
                 result = MemoryIntentService(runtime).apply(journal['homepage_intent'],

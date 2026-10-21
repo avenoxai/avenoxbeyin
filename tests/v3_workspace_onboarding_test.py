@@ -96,6 +96,108 @@ class OnboardingTest(unittest.TestCase):
         self.assertEqual(code, 5, again); self.assertTrue(artifacts(again)['homepage_verified'])
         self.assertEqual(page.read_bytes(), before)
 
+    def test_homepage_batches_registry_reads_for_many_canonical_notes(self):
+        notes = self.vault / 'notes' / 'bench'
+        notes.mkdir(parents=True)
+        for index in range(40):
+            name = 'synthetic-%02d' % index
+            (notes / (name + '.md')).write_bytes(render(dict(
+                id=name, kind='note', revision=1, workspace_id='fitness',
+                visibility='internal', title='Synthetic ' + str(index)),
+                'Canonical synthetic body').encode('utf-8'))
+        SyncEngine(self.vault, self.state).sync()
+        staged, saved = self.stage(); self.approve(saved)
+
+        snapshot = Registry.snapshot
+        counts = [0]
+        def count_snapshot(registry, *args, **kwargs):
+            counts[0] += 1
+            return snapshot(registry, *args, **kwargs)
+        with patch.object(Registry, 'snapshot', count_snapshot):
+            result, code = self.complete(staged)
+        self.assertEqual(code, 5, result)
+        self.assertTrue(artifacts(result)['homepage_verified'])
+        self.assertLess(counts[0], 50, 'registry should not be read for each canonical record')
+        self.assertIn('Synthetic 0', (self.vault / staged['scope']['homepage']).read_text(encoding='utf-8'))
+
+    def test_grant_revoked_after_batched_eligibility_does_not_mint_context(self):
+        staged, saved = self.stage(); self.approve(saved)
+        result, code = self.complete(staged)
+        self.assertEqual(code, 5, result)
+
+        runtime = WorkspaceRuntime(self.vault, self.state, readers={})
+        authority = LocalAuthority(runtime.registry)
+        original = runtime.store._eligible
+        request = self.request()
+        request['data']['request_id'] = 'revocation-after-batch'
+        calls = [0]
+        token_dir = self.state / 'workspace-contexts'
+        tokens_before = set(token_dir.iterdir()) if token_dir.exists() else set()
+        def revoke_after_scan(*args, **kwargs):
+            result = original(*args, **kwargs)
+            calls[0] += 1
+            authority.revoke('setup-review')
+            return result
+        with patch.object(runtime.store, '_eligible', revoke_after_scan):
+            with self.assertRaisesRegex(WorkspaceError, 'scope_denied'):
+                runtime.context(request, include_external_sources=False)
+        self.assertEqual(calls, [1])
+        self.assertEqual(set(token_dir.iterdir()) if token_dir.exists() else set(), tokens_before)
+
+    def test_revocation_during_homepage_scan_denies_replay(self):
+        staged, saved = self.stage(); self.approve(saved)
+        result, code = self.complete(staged)
+        self.assertEqual(code, 5, result)
+
+        runtime = WorkspaceRuntime(self.vault, self.state, readers={})
+        original = runtime.store._eligible
+        calls = [0]
+        def revoke_during_homepage(*args, **kwargs):
+            result = original(*args, **kwargs)
+            calls[0] += 1
+            if calls[0] == 2:
+                LocalAuthority(runtime.registry).revoke('setup-review')
+            return result
+        with patch.object(runtime.store, '_eligible', revoke_during_homepage):
+            with self.assertRaisesRegex(WorkspaceError, 'scope_denied'):
+                initialize(runtime, self.request(), 'revoked-replay')
+        self.assertEqual(calls, [2])
+
+    def test_homepage_skips_external_content_but_normal_context_reads_it(self):
+        # The setup homepage lists approved source labels, not extracted
+        # excerpts. Normal user retrieval must still read those sources.
+        (self.external / 'searchable.txt').write_text(
+            'Independent synthetic external evidence', encoding='utf-8')
+        staged, saved = self.stage(); self.approve(saved)
+        with patch('beyin_v3_sources.SourceResolver.files',
+                   side_effect=AssertionError('homepage enumerated external files')) as files, \
+             patch('beyin_v3_sources.SourceResolver.extract',
+                   side_effect=AssertionError('homepage extracted external bytes')) as extract:
+            result, code = self.complete(staged)
+            replay, replay_code = self.complete(staged)
+        self.assertEqual(code, 5, result)
+        self.assertEqual(replay_code, 5, replay)
+        self.assertTrue(artifacts(result)['homepage_verified'])
+        self.assertTrue(artifacts(replay)['homepage_verified'])
+        files.assert_not_called()
+        extract.assert_not_called()
+        homepage = self.vault / staged['scope']['homepage']
+        self.assertIn('Programlar', homepage.read_text(encoding='utf-8'))
+
+        runtime = WorkspaceRuntime(self.vault, self.state, readers={})
+        request = self.request()
+        request['data']['query'] = 'Independent synthetic external evidence'
+        context = runtime.context(request)['data']
+        self.assertEqual(context['state'], 'ready')
+        self.assertTrue(any(
+            record['kind'] == 'source' and 'Independent synthetic external evidence' in record['text']
+            for record in context['records']), context)
+
+        # Skipping external extraction must not bypass authority revocation.
+        LocalAuthority(Registry(self.vault, self.state)).revoke('setup-review')
+        with self.assertRaisesRegex(WorkspaceError, 'workspace_context_required'):
+            initialize(runtime, request, 'revoked-homepage')
+
     def test_page_failure_preserves_config_and_resumes_without_reapplying(self):
         staged, saved = self.stage(); self.approve(saved)
         with patch('beyin_v3_workspace_views.initialize', side_effect=WorkspaceError('managed_view_adoption_required')):

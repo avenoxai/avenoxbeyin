@@ -6,7 +6,8 @@ import unittest
 
 from v3_workspace_helpers import install_fixture
 from beyin_v3_workspaces import envelope,WorkspaceError,canonical_bytes,LocalAuthority
-from beyin_v3_workspace_context import WorkspaceRuntime,request_scope
+from beyin_v3_workspace_context import (WorkspaceRuntime,request_scope,authorized_record_scope,
+    record_allowed,CURRENT,_RECORD_POLICY)
 from beyin_v3_sync import SyncEngine
 
 
@@ -14,6 +15,34 @@ class WorkspaceContextTest(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.base=Path(self.tmp.name).resolve()
         self.runtime,self.spec,self.request=install_fixture(self.base,'academic')
+
+    def test_nested_standalone_scope_rechecks_revoked_grant(self):
+        registry=self.runtime.registry
+        snapshot=registry.snapshot();bindings,_=registry.bindings(snapshot)
+        record=next(r for r in self.runtime.store._records() if r['id']=='academic-task')
+        with authorized_record_scope(registry,snapshot,bindings,'academic','academic-user'):
+            self.assertTrue(record_allowed(self.runtime.store,record))
+            self.runtime.authority.revoke('academic-user')
+            with request_scope('academic','academic-user'):
+                self.assertFalse(record_allowed(self.runtime.store,record))
+        self.assertIsNone(CURRENT.get());self.assertIsNone(_RECORD_POLICY.get())
+
+    def test_nested_batch_exception_restores_outer_policy_and_thread_isolation(self):
+        from concurrent.futures import ThreadPoolExecutor
+        registry=self.runtime.registry
+        snapshot=registry.snapshot();bindings,_=registry.bindings(snapshot)
+        record=next(r for r in self.runtime.store._records() if r['id']=='academic-task')
+        with authorized_record_scope(registry,snapshot,bindings,'academic','academic-user'):
+            outer=CURRENT.get();policy=_RECORD_POLICY.get()
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                self.assertEqual(pool.submit(lambda:(CURRENT.get(),_RECORD_POLICY.get())).result(),(None,None))
+            with self.assertRaisesRegex(RuntimeError,'synthetic'):
+                with authorized_record_scope(registry,snapshot,bindings,'academic','missing-grant'):
+                    self.assertFalse(record_allowed(self.runtime.store,record))
+                    raise RuntimeError('synthetic')
+            self.assertIs(CURRENT.get(),outer);self.assertIs(_RECORD_POLICY.get(),policy)
+            self.assertTrue(record_allowed(self.runtime.store,record))
+        self.assertIsNone(CURRENT.get());self.assertIsNone(_RECORD_POLICY.get())
 
     def test_course_task_grade_learning_and_sources_work_together(self):
         result=self.runtime.context(self.request)['data']

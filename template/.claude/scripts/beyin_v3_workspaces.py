@@ -131,10 +131,14 @@ def safe_path(root, name, existing=False):
     path = root
     for part in relative_name(name).split('/'):
         path = path / part
-        if path.exists() or path.is_symlink():
+        # One no-follow observation checks presence and redirection together.
+        # Keep the final resolve below: an ancestor can change during the walk.
+        try:
             info = path.lstat()
-            if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_reparse_tag', 0):
-                raise WorkspaceError('redirected_path')
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_reparse_tag', 0):
+            raise WorkspaceError('redirected_path')
     if not path.resolve().is_relative_to(root) or (existing and not path.is_file()):
         raise WorkspaceError('source_unavailable')
     return path

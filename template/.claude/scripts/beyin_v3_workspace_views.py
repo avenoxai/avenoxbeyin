@@ -5,7 +5,7 @@ from urllib.parse import quote
 from pathlib import Path
 
 from beyin_v3_workspaces import WorkspaceError, content_hash, envelope, safe_path, validate_document, local_root_matches
-from beyin_v3_workspace_context import request_scope, scope_ids
+from beyin_v3_workspace_context import authorized_record_scope, scope_ids
 from beyin_v3_workspace_memory import MemoryIntentService
 from beyin_v3_sync import parse
 
@@ -85,7 +85,10 @@ def initialize(runtime, request_document, idempotency_key, *, before_apply=None)
     request = request_document['data']
     if request['no_memory']:
         raise WorkspaceError('no_memory')
-    resolved = runtime.context(request_document)['data']
+    # Homepage links are based on canonical vault records and approved source
+    # labels, not extracted external-document contents. Keep normal query
+    # contexts unchanged; the canonical writer still rechecks live authority.
+    resolved = runtime.context(request_document, include_external_sources=False)['data']
     if resolved['state'] not in ('ready', 'partial') or resolved['workspace_id'] is None:
         raise WorkspaceError('workspace_context_required')
     context = dict(request=request, workspace_id=resolved['workspace_id'])
@@ -115,11 +118,24 @@ def _organize_context(runtime, context, context_token, idempotency_key, *, _coor
     if path.exists():
         runtime.resolver.resolve(wid, vault_source, homepage, context['request']['grant_ref'],
             access='read', audience=context['request']['audience'])
-    with request_scope(wid, context['request']['grant_ref']):
+    # Cache the previously validated vault policy only for this eligibility
+    # scan; the canonical writer still validates live grants before writing.
+    with authorized_record_scope(runtime.registry,snapshot,bindings,wid,context['request']['grant_ref'],
+                                 audience='internal'):
         # The shared homepage is internal even for an explicitly private request.
         records, stale_count = runtime.store._eligible('internal')
     if stale_count:
         raise WorkspaceError('stale_source')
+    # A grant or registry update during the batched scan must fail closed,
+    # including when the managed block is already unchanged (replay path).
+    fresh = runtime.registry.snapshot()
+    if fresh['snapshot_sha256'] != snapshot['snapshot_sha256']:
+        raise WorkspaceError('snapshot_changed')
+    if runtime.registry.bindings(fresh)[1] != binding_hash:
+        raise WorkspaceError('snapshot_changed')
+    if not runtime.authority.allows(context['request']['grant_ref'], bindings[vault_source], wid,
+                                    access='read', audience='internal'):
+        raise WorkspaceError('scope_denied')
     records = [r for r in records if wid in scope_ids(runtime.registry, r) and r['source'] != homepage
                and not r.get('generated') and r.get('kind') != 'receipt']
     if path.exists():
