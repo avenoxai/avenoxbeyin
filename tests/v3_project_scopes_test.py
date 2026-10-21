@@ -456,6 +456,31 @@ class TestResolveActiveProject(unittest.TestCase):
         cwd.mkdir(parents=True)
         self.assertEqual(beyin_v3_projects.resolve_active_project(self.vault, cwd), 'mapped-project')
 
+    def test_resolve_active_project_sibling_repo(self):
+        import beyin_v3_projects
+        (self.vault / '.beyin-projects.json').write_text(json.dumps({
+            "folders": {"../sibling-repo": "sibling-project"}
+        }))
+        sibling_dir = self.vault.parent / 'sibling-repo'
+        sibling_dir.mkdir(parents=True)
+        cwd = sibling_dir / 'src'
+        cwd.mkdir(parents=True)
+        self.assertEqual(beyin_v3_projects.resolve_active_project(self.vault, cwd), 'sibling-project')
+
+    def test_malformed_project_scopes_skipped_gracefully(self):
+        import beyin_v3_projects
+        (self.vault / '.beyin-projects.json').write_text(json.dumps({
+            "folders": {
+                "/absolute/path": "bad-project",
+                "valid/folder": "good-project"
+            }
+        }))
+        (self.vault / 'valid' / 'folder').mkdir(parents=True)
+        scopes = beyin_v3_projects.read_project_scopes(self.vault)
+        # Should contain 'good-project' mapped, but skip '/absolute/path'
+        self.assertEqual(len(scopes['folders']), 1)
+        self.assertEqual(scopes['folders'][0][1], 'good-project')
+
     def test_resolve_active_project_missing_json(self):
         import beyin_v3_projects
         cwd = self.vault / 'other' / 'folder'
