@@ -120,8 +120,8 @@ def _check_source_trust(state: Path, source: str) -> None:
                         raise ValueError(f"source '{source}' is private or untrusted")
         except ValueError:
             raise
-        except Exception:
-            pass
+        except Exception as e:
+            raise ValueError(f"trust check failed: {e}")
 
 
 def stage_candidate(state: Path, session: str, candidate: str, source: str = "", scope: str = "global") -> dict:
@@ -234,12 +234,15 @@ def resolve_candidates(state: Path, session: str, target_status: str = "distille
                             count += 1
                         records.append(item)
                     except Exception:
-                        continue
+                        records.append(line)
             # Atomic rewrite
             temp = ledger.parent / (ledger.name + ".tmp")
             with open(temp, "w", encoding="utf-8") as out:
                 for rec in records:
-                    out.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                    if isinstance(rec, str):
+                        out.write(rec + "\n")
+                    else:
+                        out.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 out.flush()
                 os.fsync(out.fileno())
             os.replace(temp, ledger)

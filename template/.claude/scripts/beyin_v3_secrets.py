@@ -40,6 +40,7 @@ BUILTIN_PATTERNS = (
     # a 6 character timestamp and an HMAC of at least 27 characters. Like SendGrid it
     # must stand alone: a segment of a longer dotted name is not a token.
     re.compile(r"(?<![A-Za-z0-9_.-])[MNO][A-Za-z0-9_-]{22,27}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,40}(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])"),
+    re.compile(r"(?i)\bbasic\s+[A-Za-z0-9._~+/=-]{10,}"),
 )
 
 

@@ -424,5 +424,13 @@ class MemoryAuditorTest(unittest.TestCase):
         text = res.stdout if res.returncode == 0 else res.stderr
         return json.loads(text), res.returncode
 
+    def test_audit_scale_10000_candidates_and_massive_string(self):
+        # Prove no OOM with massive strings for candidate's word count and re.findall usage
+        body = "word " * 100000
+        meta = {'title': 'Massive Note'}
+        path = self.vault / 'massive.md'
+        candidate = audit_module._candidate(path, 'massive.md', meta, body)
+        self.assertEqual(candidate['words_count'], 100000)
+
 if __name__ == '__main__':
     unittest.main()

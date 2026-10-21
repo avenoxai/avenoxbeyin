@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
@@ -311,6 +312,39 @@ class LearningCandidateLedgerTest(unittest.TestCase):
         self.assertIn("Project B learning", texts_b)
         self.assertNotIn("Project A learning", texts_b)
 
+    def test_corrupted_lines_are_preserved_during_resolution(self):
+        # Create a ledger with one valid and one corrupted line
+        ledger = self.state / "learning-state.jsonl"
+        valid_rec = learning.stage_candidate(self.state, "sess-1", "Valid learning")
+        
+        # Manually append a corrupted line
+        corrupt_line = '{"id": "corrupt", "status": "candidate", "session": "sess-1", "candidate": "Broken JSON'
+        with open(ledger, "a", encoding="utf-8") as f:
+            f.write(corrupt_line + "\n")
+        
+        # Run resolution on sess-1
+        count = learning.resolve_candidates(self.state, "sess-1", "distilled")
+        self.assertEqual(count, 1) # Only the valid line is resolved
+        
+        # Verify the corrupted line survived the rewrite intact
+        content = ledger.read_text(encoding="utf-8")
+        self.assertIn(corrupt_line, content)
+
+    def test_basic_auth_redaction_in_candidate(self):
+        secret_token = "dXNlcm5hbWU6cGFzc3dvcmQ="
+        rec = learning.stage_candidate(self.state, "sess-sec", f"Use auth Basic {secret_token} for access")
+        self.assertNotIn(secret_token, rec["candidate"])
+        self.assertIn("[REDACTED]", rec["candidate"])
+        self.assertEqual(rec["candidate"], "Use auth [REDACTED] for access")
+
+    @mock.patch('sqlite3.connect')
+    def test_source_trust_fails_closed_on_db_error(self, mock_connect):
+        import sqlite3
+        mock_connect.side_effect = sqlite3.OperationalError("database is locked")
+        
+        # Ensure that staging fails completely when trust cannot be established
+        with self.assertRaisesRegex(ValueError, "trust check failed.*database is locked"):
+            learning.stage_candidate(self.state, "sess-err", "Leak?", source="unknown-source")
 
 
 class InstalledLearnCommandTest(unittest.TestCase):

@@ -43,6 +43,9 @@ from beyin_v3 import (
 from beyin_v3_sync import _hash, parse as _parse_note
 
 
+_WORD_RE = re.compile(r'\w+', re.UNICODE)
+
+
 # Status antonym pairs for contradiction detection (Turkish & English)
 STATUS_ANTIPAIRS = [
     # Dogrulanmis / Dogrulanmamis (Verification state)
@@ -153,7 +156,7 @@ def _candidate(path: Path, rel_path: str, meta: dict, body: str) -> dict:
         'status': str(meta.get('status', '')).lower().strip(),
         'created_ts': created_ts,
         'updated_ts': updated_ts,
-        'words_count': len(re.findall(r'\w+', body)),
+        'words_count': sum(1 for _ in _WORD_RE.finditer(body)),
         'supersedes': [str(s).strip() for s in supersedes if s],
     }
 
