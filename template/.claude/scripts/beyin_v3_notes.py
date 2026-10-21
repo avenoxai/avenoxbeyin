@@ -171,38 +171,65 @@ def locked(engine, timeout=15):
         pass
     lock = folder / 'writer.lock'
     _unlinked(lock)
-    with lock.open('a+b') as handle:
-        # Windows can lock byte zero beyond EOF. Do not write a sentinel before
-        # acquisition: another handle may already own that byte of an empty file.
-        deadline = time.monotonic() + timeout
-        while True:
+    deadline = time.monotonic() + timeout
+    while True:
+        with lock.open('a+b') as handle:
+            # Windows can lock byte zero beyond EOF. Do not write a sentinel before
+            # acquisition: another handle may already own that byte of an empty file.
+            while True:
+                try:
+                    handle.seek(0)
+                    if os.name == 'nt':
+                        import msvcrt
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise NoteConflict('writer busy; reread the source and retry') from exc
+                    time.sleep(0.05)
+
+            stale = False
             try:
+                st1 = os.fstat(handle.fileno())
+                st2 = os.stat(lock)
+                if st1.st_dev != st2.st_dev or st1.st_ino != st2.st_ino:
+                    stale = True
+            except OSError:
+                stale = True
+
+            if stale:
                 handle.seek(0)
                 if os.name == 'nt':
                     import msvcrt
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
                 else:
                     import fcntl
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except OSError as exc:
-                if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
-                    raise
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                 if time.monotonic() >= deadline:
-                    raise NoteConflict('writer busy; reread the source and retry') from exc
+                    raise NoteConflict('writer busy; reread the source and retry')
                 time.sleep(0.05)
-        try:
-            held[key] = folder
+                continue
+
             try:
-                yield folder
+                held[key] = folder
+                try:
+                    yield folder
+                    return
+                finally:
+                    held.pop(key, None)
             finally:
-                held.pop(key, None)
-        finally:
-            handle.seek(0)
-            if os.name == 'nt':
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                handle.seek(0)
+                if os.name == 'nt':
+                    import msvcrt
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def read(engine, source):

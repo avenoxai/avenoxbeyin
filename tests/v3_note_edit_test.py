@@ -391,6 +391,25 @@ with locked(engine):
         self.assertEqual((self.vault / 'Threads.md').read_bytes(), b'ALPHA\nBETA\n')
         self.assertEqual(len(list((self.vault / LOCAL_DIRECTORY / 'backups').glob('*.json'))), 2)
 
+    def test_writer_lock_toctou_staleness_retries_on_inode_mismatch(self):
+        orig_fstat = os.fstat
+        calls = []
+
+        def mock_fstat(fd):
+            real_st = orig_fstat(fd)
+            if not calls:
+                calls.append(True)
+                class MockStat:
+                    st_dev = real_st.st_dev
+                    st_ino = real_st.st_ino + 999999
+                return MockStat()
+            return real_st
+
+        with patch('os.fstat', side_effect=mock_fstat):
+            with locked(self.engine):
+                self.assertTrue((self.vault / LOCAL_DIRECTORY / 'writer.lock').exists())
+        self.assertEqual(len(calls), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
