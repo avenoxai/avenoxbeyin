@@ -133,7 +133,7 @@ class IngestHandler(BaseHTTPRequestHandler):
     def handle(self):
         try:
             super().handle()
-        except (ConnectionError, socket.timeout):
+        except (ConnectionError, socket.timeout, ValueError, UnicodeError):
             pass
 
     def _send_json(self, status_code: int, data: dict):
@@ -252,6 +252,8 @@ class IngestHandler(BaseHTTPRequestHandler):
                 "bytes": nbytes,
                 "message": "Kayit basariyla gelen kutusuna eklendi."
             })
+        except ValueError as exc:
+            self._send_json(400, {"error": "bad_request", "message": str(exc)})
         except Exception as exc:
             self._send_json(500, {"error": "write_failed", "message": "Capture could not be saved"})
 
@@ -266,11 +268,14 @@ def create_server(vault: Path, host: str = "127.0.0.1", port: int = 8484, token:
     class BoundHandler(IngestHandler):
         pass
 
+    class ResilientServer(ThreadingHTTPServer):
+        allow_reuse_address = True
+
     BoundHandler.vault = Path(vault).resolve()
     BoundHandler.token = token
     if host not in ("127.0.0.1", "localhost", "::1") and not token:
         raise ValueError("Non-loopback ingest requires a Bearer token")
-    return ThreadingHTTPServer((host, port), BoundHandler)
+    return ResilientServer((host, port), BoundHandler)
 
 
 def run_server(vault: Path, host: str = "127.0.0.1", port: int = 8484, token: str | None = None):

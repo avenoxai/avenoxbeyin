@@ -333,6 +333,36 @@ class IngestServerTest(unittest.TestCase):
         self.assertEqual(len(closed), len(accepted))
         self.assertEqual(errors, [])
 
+    def test_allow_reuse_address_is_enabled(self):
+        server = ingest_server.create_server(self.vault, port=0)
+        self.assertTrue(server.allow_reuse_address)
+        server.server_close()
+
+    def test_daemon_survives_bad_request_unicode(self):
+        import socket
+        import threading
+        server = ingest_server.create_server(self.vault, port=0)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close(), t.join(2)))
+
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect(("127.0.0.1", port))
+        # Send raw invalid bytes at the HTTP request boundary to trigger unhandled exceptions
+        s.sendall(b"\xff\xfe\xfa\r\n\r\n")
+        try:
+            s.recv(1024)
+        except OSError:
+            pass
+        finally:
+            s.close()
+        
+        # Server must still be responsive
+        import urllib.request
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health") as resp:
+            self.assertEqual(resp.status, 200)
+
 
 if __name__ == '__main__':
     unittest.main()
