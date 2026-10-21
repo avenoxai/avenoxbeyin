@@ -692,7 +692,7 @@ class SyncEngine:
             if contract == 'strict' and metadata.get('status') == 'done' and metadata.get('id'):
                 try:
                     stat = path.stat()
-                    if hasattr(stat, 'st_mtime') and stat.st_mtime > time.time():
+                    if hasattr(stat, 'st_mtime') and stat.st_mtime > time.time() + 5:
                         return 'evidence file has an invalid future modification time'
 
                     with path.open('rt', encoding='utf-8', errors='replace') as f:
