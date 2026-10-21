@@ -723,6 +723,11 @@ class BridgeTest(unittest.TestCase):
         self.assertIn('beyin-v3-bridge', ag_data)
         self.assertIn('PreInvocation', ag_data['beyin-v3-bridge'])
 
+    def test_bridge_cli_fail_open_on_invalid_arguments(self):
+        """Invalid arguments must raise ValueError via SafeArgumentParser to preserve the fail-open contract."""
+        with self.assertRaises(ValueError):
+            bridge.main(['--unknown-argument'])
+
 
 if __name__ == '__main__':
     unittest.main()

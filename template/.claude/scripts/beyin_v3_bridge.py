@@ -503,10 +503,15 @@ def uninstall_bridge(harness, home=None):
     }
 
 
+class SafeArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise ValueError(message)
+
+
 def main(argv=None):
     if hasattr(sys.stdin, 'reconfigure'):
         sys.stdin.reconfigure(encoding='utf-8-sig', errors='replace')
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = SafeArgumentParser(description=__doc__)
     parser.add_argument('--vault', type=Path, help='Path to vault root')
     parser.add_argument('--state', type=Path, help='Defaults to the installed vault runtime locator')
     parser.add_argument('--harness', choices=('claude', 'codex', 'antigravity'), required=True)
