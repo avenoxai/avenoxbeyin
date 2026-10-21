@@ -6,6 +6,7 @@ The real Windows clipboard is exercised only on a Windows CI runner (or with BEY
 because those tests replace whatever the clipboard holds.
 """
 import contextlib
+import ctypes
 import os
 from pathlib import Path
 import re
@@ -16,7 +17,7 @@ import tempfile
 import time
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import zlib
 
 from v3_package_helpers import inherited_env
@@ -515,6 +516,9 @@ class Root(Widget):
                     self.bound[value](None)
             elif action == 'alt':
                 self.entry.handlers['<Alt-KeyPress>'](types.SimpleNamespace(**value))
+            elif action == 'event':  # a root binding with real event fields, e.g. a modified Esc
+                sequence, fields = value
+                self.bound[sequence](types.SimpleNamespace(**fields))
             elif action == 'type':
                 self.entry.type(value)
             else:
@@ -997,6 +1001,28 @@ class PopupWiringTest(ScreenshotFiles, unittest.TestCase):
         guard.assert_called_once()
         self.assertEqual(guard.call_args.args[1:3], (99, 42))  # popup frame, source window
         guard.return_value.assert_called()  # and stopped again when the popup closed
+
+    def test_windows_modified_escape_in_the_focused_popup_is_left_to_the_system(self):
+        # The hook passes Shift/Ctrl/Alt/Win+Esc on without dismissing (#459), but Tk's <Escape>
+        # matches every modifier state, so the focused popup's own binding has to skip them too.
+        # Tk on Windows: Shift 0x1, Control 0x4, Alt 0x20000; Caps 0x2, Num 0x8 and Scroll Lock 0x20
+        # are lock states. The Windows key is not in event.state, only in the thread's key state.
+        held, real = set(), getattr(ctypes, 'WinDLL', None)
+        user = Mock()
+        user.GetKeyState.side_effect = lambda key: -128 if key in held else 0  # SHORT, high bit = down
+        cases = ((0x1, (), True), (0x4, (), True), (0x20000, (), True), (0x1 | 0x4 | 0x8, (), True),
+                 (0, (0x5B,), True), (0x8, (0x5C,), True),
+                 (0, (), False), (0x2, (), False), (0x8, (), False), (0x20, (), False), (0x2 | 0x8 | 0x20, (), False))
+        for state, keys, modified in cases:
+            held.clear()
+            held.update(keys)
+            with self.subTest(state=hex(state), keys=keys), \
+                    patch.object(ctypes, 'WinDLL', create=True,
+                                 side_effect=lambda name, **kw: user if name == 'user32' else real(name, **kw)):
+                result, root, _ = self.popup('', None, [('event', ('<Escape>', {'keysym': 'Escape', 'state': state}))],
+                                             windows=True)
+                self.assertEqual(result, {'status': 'vazgecildi'})
+                self.assertEqual(root.alive, modified, 'a modified Esc keeps the popup, a plain one cancels it')
 
     def test_windows_cancel_does_not_consume_sequence_and_double_enter_saves_once(self):
         state = Path(self.tmp.name) / 'state/yakala/pano-sira.txt'

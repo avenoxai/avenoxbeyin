@@ -3462,6 +3462,24 @@ def _escape_scope(front, source, popup):
     return 'consume' if source and front == source else 'pass'
 
 
+def _win_escape_modified(event):
+    """Whether an Esc that reached the popup carries Shift, Ctrl, Alt or Win: the hook's rule for Tk.
+
+    Tk on Windows reports Shift 0x1, Control 0x4 and Alt 0x20000 in event.state; Caps 0x2, Num 0x8
+    and Scroll Lock 0x20 are lock states, so a plain Esc with them still cancels. Tk leaves the
+    Windows key out of event.state; GetKeyState reads it as of this key message on the GUI thread.
+    """
+    if getattr(event, 'state', 0) & 0x20005:
+        return True
+    try:
+        import ctypes
+        user32 = ctypes.WinDLL('user32')
+        user32.GetKeyState.argtypes, user32.GetKeyState.restype = [ctypes.c_int], ctypes.c_short
+        return any(user32.GetKeyState(key) & 0x8000 for key in (0x5B, 0x5C))  # VK_LWIN, VK_RWIN
+    except (AttributeError, OSError):
+        return False
+
+
 def _win_escape_guard(root, popup, source, dismiss):
     """Esc closes the open popup wherever the keyboard focus went, until the popup closes.
 
@@ -3476,13 +3494,31 @@ def _win_escape_guard(root, popup, source, dismiss):
     user32.CallNextHookEx.argtypes, user32.CallNextHookEx.restype = [handle, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t], ctypes.c_ssize_t
     user32.UnhookWindowsHookEx.argtypes = [handle]
     user32.GetForegroundWindow.restype = handle
+    user32.GetAsyncKeyState.argtypes, user32.GetAsyncKeyState.restype = [ctypes.c_int], ctypes.c_short
     pressed, hook = threading.Event(), None
     active = {'on': True}
+    modifiers = set()
+    modifier_groups = ((0x10, 0xA0, 0xA1), (0x11, 0xA2, 0xA3), (0x12, 0xA4, 0xA5), (0x5B, 0x5C))
+    modifier_keys = {key for group in modifier_groups for key in group}
 
     @callback_type
     def callback(code, message, data):
-        if code >= 0 and active['on'] and message in (0x100, 0x104):  # WM_KEYDOWN / WM_SYSKEYDOWN
-            if ctypes.cast(data, ctypes.POINTER(ctypes.c_uint32))[0] == 0x1B:
+        if code >= 0 and active['on'] and message in (0x100, 0x101, 0x104, 0x105):
+            event = ctypes.cast(data, ctypes.POINTER(ctypes.c_uint32))  # KBDLLHOOKSTRUCT DWORD fields
+            key, down = event[0], message in (0x100, 0x104)
+            if key in modifier_keys:
+                if down:
+                    modifiers.add(key)
+                else:
+                    modifiers.discard(key)
+                    for group in modifier_groups[:3]:
+                        if key == group[0]:
+                            modifiers.difference_update(group)
+                        elif key in group:
+                            modifiers.discard(group[0])
+            # LLKHF_ALTDOWN also protects an Alt held before this hook was installed.
+            # Never poll asynchronous key state inside a low-level keyboard callback.
+            if key == 0x1B and down and not modifiers and not event[2] & 0x20:
                 scope = _escape_scope(user32.GetForegroundWindow(), source, popup)
                 if scope:
                     pressed.set()
@@ -3493,6 +3529,12 @@ def _win_escape_guard(root, popup, source, dismiss):
     kernel32 = ctypes.WinDLL('kernel32')
     kernel32.GetModuleHandleW.argtypes, kernel32.GetModuleHandleW.restype = [ctypes.c_wchar_p], handle
     hook = user32.SetWindowsHookExW(13, callback, kernel32.GetModuleHandleW(None), 0)  # WH_KEYBOARD_LL
+    if hook:
+        # One snapshot outside the callback covers modifiers already held at installation;
+        # subsequent key down/up events maintain the state (left and right independently).
+        for key in (0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C):
+            if user32.GetAsyncKeyState(key) & 0x8000:
+                modifiers.add(key)
 
     def stop():
         nonlocal hook
@@ -4931,7 +4973,11 @@ def popup(vault, context=None, state=None, root=None, session=None):
         root.destroy()
         return 'break'
 
-    root.bind('<Escape>', dismiss if windows else lambda _e: close())
+    def escape(event):
+        # Tk's <Escape> matches any modifier state; like the hook, only a plain Esc cancels.
+        return None if _win_escape_modified(event) else dismiss(event)
+
+    root.bind('<Escape>', escape if windows else lambda _e: close())
     if windows:
         root.protocol('WM_DELETE_WINDOW', dismiss)
         close_label = canvas.create_text(W - pad, 33, text='×', anchor='e', fill=P['muted'], font=_font(20))

@@ -381,14 +381,21 @@ Protokol uyumsuzluğu veya eski sürecin sonlandırılamaması doğrudan kapanma
 Hata aşaması ve toparlanma kararı `yakala/dinleyici.log` içine yazılır.
 
 Popup kaynak monitörde açılır. Windows tarafında Tk yönetilen pencere kullanır; özel
-palet/canvas görünümü korunmak üzere yerel başlık/çerçeve stili kaldırılır. **Esc** yerel
+palet/canvas görünümü korunmak üzere yerel başlık/çerçeve stili kaldırılır. Düz **Esc** yerel
 odakta hemen iptal eder. Kaynaklar okunurken ve popup açık olduğu sürece, odak nerede olursa
-olsun, düşük seviyeli bir klavye kancası (`WH_KEYBOARD_LL`) yalnız Esc'e bakar: popup öndeyse
-Esc'i Tk işler; kaynak pencere öndeyse (odak reddedildi ya da sayfaya tıklandı) Esc tüketilir ve
-popup kapanır; başka bir pencere öndeyse popup kapanır ve Esc o pencereye de iletilir. Kanca
-popup kapanınca (kayıt, Esc, Kapat, Alt+F4, hata) kaldırılır; sonrasında hiçbir uygulamanın
-Esc'i tutulmaz. Yeniden hotkey kancayı yeni kaynak pencereyle yeniden kurar, eski yakalama
-içeriğini değiştirmez. `AttachThreadInput` veya `GetAsyncKeyState` kullanılmaz.
+olsun, düşük seviyeli bir klavye kancası (`WH_KEYBOARD_LL`) Esc'e ve değiştirici tuşlara
+(Shift, Ctrl, Alt, Win) bakar: popup öndeyse Esc'i Tk işler; kaynak pencere öndeyse (odak
+reddedildi ya da sayfaya tıklandı) düz Esc tüketilir ve popup kapanır; başka bir pencere öndeyse
+popup kapanır ve Esc o pencereye de iletilir. Değiştiricili Esc'i kanca hiçbir durumda tüketmez
+ve popup'ı kapatmaz; Ctrl+Shift+Esc gibi sistem kısayolları çalışır. Popup'ın kendi Tk bağlaması
+da yalnız düz Esc'te iptal eder: Caps/Num/Scroll Lock değiştirici sayılmaz, Tk'nin olayda
+bildirmediği Win tuşu GUI iş parçacığında eşzamanlı `GetKeyState` ile okunur. Kanca, kurulduğu
+anda zaten basılı değiştiriciler için `GetAsyncKeyState` değerini yalnız bir kez ve geri çağrının
+dışında okur; sonrasında durumu kendi gördüğü basma/bırakma olaylarıyla (sol ve sağ tuş ayrı)
+izler, Alt için olaydaki `LLKHF_ALTDOWN` bayrağına da bakar. Geri çağrının içinde asenkron tuş
+durumu sorgulanmaz. Kanca popup kapanınca (kayıt, Esc, Kapat, Alt+F4, hata) kaldırılır;
+sonrasında hiçbir uygulamanın Esc'i tutulmaz. Yeniden hotkey kancayı yeni kaynak pencereyle
+yeniden kurar, eski yakalama içeriğini değiştirmez. `AttachThreadInput` kullanılmaz.
 Görünür **Kapat** ve Alt+F4 da iptaldir. Windows güvenli masaüstü/UIPI/hook reddi için
 her durumda global Esc garantisi yoktur. Kartın disk commit'i başladıysa Esc kaydedilmiş
 veriyi geriye dönük iptal etmez; yavaş disk I/O'su sırasında arayüz yanıtı gecikebilir.
