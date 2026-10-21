@@ -60,6 +60,9 @@ class BridgeTest(unittest.TestCase):
             text = result['hookSpecificOutput']['additionalContext']
             self.assertIn('receipt --harness ' + harness, text)
             self.assertIn('--event-id EVENT_ID --summary "Work result" --ref PATH', text)
+            self.assertIn('note-create', text)
+            self.assertIn('Beyin bridge active', text)
+            self.assertNotIn('Optional Beyin bridge', text)
             self.assertIn(str(self.vault / 'beyin.py'), text)
             self.assertLessEqual(len(text), 1500)
         events = self.queued()
@@ -80,6 +83,22 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(result.stdout)
         self.assertIn('hookSpecificOutput', data)
+
+    def test_stop_forwards_receipt_reminder_when_session_was_edited(self):
+        # 1. Startup instructions contain note-create instruction
+        start_res = self.invoke(harness='claude')
+        self.assertIn('note-create', start_res['hookSpecificOutput']['additionalContext'])
+        # 2. Simulate note-create / edit during this session
+        session_id = 'one-session'
+        reminders_dir = self.state / 'receipt-reminders'
+        reminders_dir.mkdir(parents=True, exist_ok=True)
+        raw_digest = hashlib.sha256(session_id.encode('utf-8')).hexdigest()
+        (reminders_dir / f'{raw_digest}.edited').write_text(json.dumps({'at': 100.0}), encoding='utf-8')
+        # 3. Invoke Stop via bridge: must forward block decision with reminder
+        stop_payload = dict(self.payload, hook_event_name='Stop')
+        stop_res = self.invoke(stop_payload, harness='claude')
+        self.assertEqual(stop_res.get('decision'), 'block')
+        self.assertIn('Files were edited in this session but no receipt was written', stop_res.get('reason', ''))
 
     def test_sensitive_folder_task_cannot_enter_external_project_context(self):
         secret = self.vault / '🔐 Kasa/task.md'

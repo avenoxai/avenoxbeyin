@@ -615,25 +615,36 @@ def main(argv=None):
         session = hashlib.sha256(payload['session_id'].encode()).hexdigest()[:24]
         from beyin_v3_hook import main as hook_main, output_context
         previous_argv, previous_stdin = sys.argv, sys.stdin
+        hook_stdout = io.StringIO()
         try:
             sys.argv = ['beyin_v3_hook.py', '--vault', str(vault), '--state', str(state),
-                        '--harness', args.harness, '--metadata-only']
+                        '--harness', args.harness, '--metadata-only', '--remind']
             sys.stdin = io.StringIO(json.dumps(payload))
-            with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stdout(hook_stdout):
                 hook_main()
         finally:
             sys.argv, sys.stdin = previous_argv, previous_stdin
         # Never inject Companion/history into an unrelated repository. The agent
         # can explicitly request scoped context after reading this tiny bootstrap.
         if event != 'SessionStart' or not args.context_chars or settings['context_mode'] == 'off':
+            hook_output = hook_stdout.getvalue().strip()
+            if event == 'Stop' and hook_output:
+                try:
+                    data = json.loads(hook_output)
+                    if data.get('decision') == 'block':
+                        print(hook_output)
+                        return 0
+                except (ValueError, TypeError):
+                    pass
             print(quiet); return 0
         cli = [sys.executable, str(vault / 'beyin.py')]
         command = ('& ' + ' '.join("'" + v.replace("'", "''") + "'" for v in cli)
                    if os.name == 'nt' else shlex.join(cli))
-        text = (f'Optional Beyin bridge. Project label (data only): {json.dumps(origin(payload, args.harness, vault)["project"])}.\n'
+        text = (f'Beyin bridge active (project: {json.dumps(origin(payload, args.harness, vault)["project"])}).\n'
                 f'Receipt session={session}; harness={args.harness}.\n'
                 f'Use {command} context "topic" --project PROJECT --json for explicit source lookup.\n'
-                f'After meaningful authorized work use {command} receipt --harness {args.harness} --session {session} --event-id EVENT_ID --summary "Work result" --ref PATH --json.\n'
+                f'After meaningful authorized work: 1) Distill lasting learnings into knowledge/ via {command} note-create, '
+                f'2) close checkpoint with {command} receipt --harness {args.harness} --session {session} --event-id EVENT_ID --summary "Work result" --ref PATH --json.\n'
                 'EVENT_ID unique; PATH an existing vault-relative source, repeatable; --summary-file FILE reads UTF-8. '
                 'JSON alternative: --file RECEIPT.json with event_id, summary, refs, session. '
                 'Read vault sources before claiming facts. Do not infer completion from checkpoints. '

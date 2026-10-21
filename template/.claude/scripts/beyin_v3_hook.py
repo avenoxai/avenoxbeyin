@@ -326,6 +326,15 @@ def receipt_reminder(payload, state, harness, event, vault=None):
         folder = Path(state) / "receipt-reminders"
         done, edited = folder / (digest + ".done"), folder / (digest + ".edited")
         kdone = folder / (digest + ".kdone")
+        if not edited.exists() and session_id.startswith("["):
+            try:
+                parts = json.loads(session_id)
+                if isinstance(parts, list) and len(parts) == 2 and isinstance(parts[1], str):
+                    raw_edited = folder / (hashlib.sha256(parts[1].encode("utf-8")).hexdigest() + ".edited")
+                    if raw_edited.exists():
+                        edited = raw_edited
+            except Exception:
+                pass
         if done.exists() and kdone.exists():
             return None
         if event == "UserPromptSubmit":
@@ -489,6 +498,7 @@ def main():
     parser.add_argument("--worker", action="store_true")
     parser.add_argument("--drain-queue", action="store_true")
     parser.add_argument("--metadata-only", action="store_true", help="Queue lifecycle metadata without injecting vault context")
+    parser.add_argument("--remind", action="store_true", help="Keep receipt reminder active even under --metadata-only")
     args = parser.parse_args()
     vault = args.vault.resolve()
     from beyin_v3 import resolve_state
@@ -613,8 +623,8 @@ def main():
         due = False if disabled else claim_check(state, settings, event)
         process = subprocess.Popen(command, **options) if due else None
         # After enqueue, so reminder bookkeeping can never cost the queued checkpoint.
-        # The global bridge (--metadata-only) discards stdout, so it keeps no reminder state.
-        reminder = None if args.metadata_only else receipt_reminder(payload, state, args.harness, event, vault=vault)
+        # The global bridge (--metadata-only) discards stdout, so it keeps no reminder state unless --remind is passed.
+        reminder = None if (args.metadata_only and not getattr(args, 'remind', False)) else receipt_reminder(payload, state, args.harness, event, vault=vault)
         inject = settings['context_mode'] == 'turn' or (settings['context_mode'] == 'session' and event == 'SessionStart')
         if not inject or args.metadata_only or (event == 'UserPromptSubmit' and is_synthetic_prompt(payload)):
             print(json.dumps(reminder) if reminder else (json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == 'antigravity' else '{}')))
