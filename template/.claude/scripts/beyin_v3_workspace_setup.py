@@ -186,9 +186,9 @@ def execute(vault, state, action, payload):
             return _catalog(payload)
         if action == 'prepare':
             return _prepare(vault, state, payload)
-        if action in ('discover', 'design'):
-            from beyin_v3_workspace_discovery import discover, design
-            return _result((discover if action == 'discover' else design)(vault, state, payload))
+        if action in ('discover', 'design', 'preview'):
+            from beyin_v3_workspace_discovery import discover, design, preview
+            return _result({'discover': discover, 'design': design, 'preview': preview}[action](vault, state, payload))
         if action in ('stage', 'complete', 'resume', 'status'):
             from beyin_v3_workspace_onboarding import execute as onboarding
             return onboarding(vault, state, action, payload)

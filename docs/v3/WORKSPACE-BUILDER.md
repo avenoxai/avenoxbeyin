@@ -9,7 +9,7 @@ Kullanıcı amacını ve kaynaklarını anlatır; aktif ajan kısa kurulum adapt
 | Amaç | Komut |
 |---|---|
 | Kayıtlı alanların metadata listesi ve özeti | workspace list / inspect ID |
-| Sınırlı katalog, yetkili kanıt ve özel profil tasarımı | workspace-setup catalog / discover / design |
+| Sınırlı katalog, yetkili kanıt, ihtiyaç kararı ve özel profil tasarımı | workspace-setup catalog / discover / preview / design |
 | Kayıtlı kısa kurulum ve kesinti sonrası devam | workspace-setup stage / complete / resume / status |
 | Salt okunur ayrıntılı plan | workspace-setup prepare |
 | Yetkili bağlamla Markdown bloğunu yenileme | workspace-setup organize |
@@ -26,6 +26,8 @@ Plan ve authority komutları sınırlı JSON'u --file - ile stdin'den alır. wor
 Her proje otomatik workspace sayılmaz; bir proje workspace olarak kullanılabilir. Zorunlu workspace altında proje hiyerarşisi yoktur. Mevcut proje ana sayfası ve belgeler yerinde kalır.
 
 Ajan verilen amaç ve kaynaklardan bir tasarım önerir; yalnız önemli eksikleri sorar. `discover` metadata ile gövde kanıtını ayırır: açık evidence selector ve mevcut workspace/source yetkisi olmadan belge içerikleri okunmaz. Çıktı sınırlıdır; kaynak metinleri onay veya talimat değildir. Okuyucu sağlanmayan PDF/DOCX kanıtı açıkça eksik gösterilir; probe veya model çağrılmaz. `design` kayıt türleri/alanları, ilişki türleri, çalışma kuralları ve sonlu workflow bölümlerini doğrular. Aynı dört alan prepare/stage içindeki isteğe bağlı design ile plana taşınır; belirtilmeyen mevcut bölümler korunur.
+
+`preview`, `discover` girişine `{ "decision": { "kind": "new_workspace|extend_workspace|record_only", "rationale": "..." }, "candidate_record_ids": ["..."] }` ekler. Aktif ajan ihtiyacı ve ayrı amaç/erişim/yaşam döngüsü gerekçesini oluşturur; araç semantik kararı kaynak metninden türetmez. Mevcut alana ilişkin `workspace_id` ve `grant_ref` olmadan kayıt adayları açılmaz. Yetkili ve güncel kayıtlar P2 üyelik okuma filtresinden geçer. Eş kaynak yolu ve SHA veya eş içerik SHA'sı olası kanonik kayıt olarak döner; bunlar otomatik güncelleme ya da paylaşım izni değildir. İsim benzerliği, aynı müşteri veya şirket, tek başına eşleşme sayılmaz. Belirsiz aday ve eksik yetki `review` alanına gider. Önizleme context token, yeni grant, adoption, dosya veya writer işlemi üretmez; uygulama için mevcut plan/onay ve kanonik writer akışı kullanılır.
 
 `stage` workspace_id, name, purpose, sources ve isteğe bağlı design/homepage alır. Registry veya not değiştirmeden runtime state'e immutable hazırlık ve plan kaydeder. Kompakt çıktı hazırlık kimliği, kapsam/tasarım, **effective audiences**, approval_requests ve plan dosyası/hash'ini verir. Ayrıntılı prepare yolu ayrıca spec/plan/preview üretir ve tamamen salt okunurdur. Çıktılar OperationResult içindeki issues[code=setup_artifacts].detail JSON'undadır.
 

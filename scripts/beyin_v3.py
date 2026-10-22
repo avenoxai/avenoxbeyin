@@ -1075,7 +1075,7 @@ def parser(note_namespace=None, is_json=False):
     builder.add_argument('action', choices=('plan','preview','apply','recover','revert'))
     builder.add_argument('--file', default='-', help='Agent-prepared JSON input or - for stdin')
     setup = sub.add_parser('workspace-setup', help='Catalog sources, prepare a compact workspace plan, or organize an approved view')
-    setup.add_argument('action', choices=('catalog', 'discover', 'design', 'prepare', 'stage', 'complete', 'resume', 'status', 'organize'))
+    setup.add_argument('action', choices=('catalog', 'discover', 'preview', 'design', 'prepare', 'stage', 'complete', 'resume', 'status', 'organize'))
     setup.add_argument('--file', default='-', help='Compact agent-prepared setup JSON or - for stdin')
     authority = sub.add_parser('workspace-authority', help='Record explicit trusted-agent source/plan/revert authority or revoke it')
     authority.add_argument('action', choices=('grant','approve-plan','approve-revert','revoke'))

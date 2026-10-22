@@ -234,3 +234,121 @@ def design(vault, state, payload):
             {'name': 'daily_workspace', 'state': 'not_tested', 'detail': 'Profile design is a proposal; source scope, Markdown home, activation and readback require setup.'},
             {'name': 'workflow_execution', 'state': 'not_tested', 'detail': 'Finite shared services only; semantic proposals return to the active agent. No scheduler is created.'}],
         writes_performed=False)
+
+
+def preview(vault, state, payload, *, readers=None):
+    """Preview an agent's reasoned need decision and exact, authorized record candidates.
+
+    This is planning data, not an adoption or a writer intent. In particular a
+    matching title, company or issue label cannot authorize an update.
+    """
+    if not isinstance(payload, dict) or set(payload) - {'decision', 'candidate_record_ids'} - {
+            'sources', 'goal', 'workspace_id', 'name', 'grant_ref', 'evidence',
+            'max_depth', 'max_items', 'budget_chars', 'max_source_bytes', 'no_memory', 'audience'}:
+        raise WorkspaceError('invalid_discovery_request')
+    decision = payload.get('decision')
+    if (not isinstance(decision, dict) or set(decision) != {'kind', 'rationale'}
+            or decision['kind'] not in ('new_workspace', 'extend_workspace', 'record_only')):
+        raise WorkspaceError('invalid_need_decision')
+    _text(decision['rationale'], 'invalid_need_decision')
+    ids = payload.get('candidate_record_ids', [])
+    if not isinstance(ids, list) or len(ids) > 32 or any(not isinstance(i, str) or not i or len(i) > 128 for i in ids):
+        raise WorkspaceError('invalid_candidate_records')
+    if len(ids) != len(set(ids)):
+        raise WorkspaceError('invalid_candidate_records')
+    request = {k: v for k, v in payload.items() if k not in ('decision', 'candidate_record_ids')}
+    found = discover(vault, state, request, readers=readers)
+    result = dict(discovery=found, decision=copy.deepcopy(decision), record_candidates=[],
+                  review=[], proposed_operations=[], writes_performed=False)
+    if found['suggestion'] == 'discovery_disabled':
+        result['review'].append('no_memory')
+        return result
+    wid, grant = request.get('workspace_id'), request.get('grant_ref')
+    matches = {m['workspace_id'] for m in found['existing_matches']}
+    if found['matches_truncated']:
+        result['review'].append('workspace_matches_truncated')
+    if decision['kind'] == 'new_workspace':
+        if matches:
+            result['review'].append('existing_workspace_must_be_distinguished')
+        else:
+            result['proposed_operations'].append({'kind': 'prepare_workspace', 'state': 'review_required'})
+    elif not wid or wid not in matches or not grant:
+        result['review'].append('existing_workspace_and_authority_required')
+    else:
+        result['proposed_operations'].append({'kind': 'extend_workspace' if decision['kind'] == 'extend_workspace'
+                                               else 'record_only', 'workspace_id': wid, 'state': 'preview_only'})
+    if not ids and not found['evidence']:
+        result['review'].append('candidate_records_not_selected')
+        return result
+    if not wid or wid not in matches or not grant or found['issues']:
+        result['review'].append('candidate_scope_or_source_review')
+        return result
+    # Reuse P2's live membership/read policy. A read-only store never creates
+    # context tokens, cache entries, grants or adoption state.
+    from beyin_v3_workspace_context import WorkspaceRuntime, authorized_record_scope, membership_hash
+    try:
+        runtime = WorkspaceRuntime(vault, state, read_only=True)
+    except ValueError as exc:
+        if str(exc) != 'read-only runtime is not initialized':
+            raise
+        result['review'].append('record_index_unavailable')
+        return result
+    registry = runtime.registry
+    snapshot = registry.snapshot()
+    bindings, binding_hash = registry.bindings(snapshot)
+    membership_before = membership_hash(registry)
+    with authorized_record_scope(registry, snapshot, bindings, wid, grant,
+                                 audience=request.get('audience', 'internal')):
+        eligible, _ = runtime.store._eligible(request.get('audience', 'internal'))
+    by_id = {record['id']: record for record in eligible}
+    refs = [item['source_ref'] for item in found['evidence']]
+    # Exact source identity or byte digest can nominate an existing canonical
+    # record. Neither relation decides semantic equivalence or grants editing.
+    matching_ids = [record['id'] for record in eligible if any(
+        ref['content_sha256'] == record['source_sha256'] for ref in refs)]
+    if refs and not matching_ids and not ids:
+        result['review'].append('no_exact_record_match')
+    if len(matching_ids) > 32:
+        result['review'].append('candidate_matches_truncated')
+    ids = list(dict.fromkeys(ids + matching_ids[:32]))[:32]
+    for record_id in ids:
+        record = by_id.get(record_id)
+        if record is None:
+            result['review'].append('record_unavailable_or_denied:' + record_id)
+            continue
+        exact_source = any(ref['relative_path'] == record['source'] and
+                           ref['content_sha256'] == record['source_sha256'] and
+                           bindings.get(ref['source_id'], {}).get('locator') == str(Path(vault).resolve())
+                           for ref in refs)
+        exact_hash = any(ref['content_sha256'] == record['source_sha256'] for ref in refs)
+        relation = 'exact_source' if exact_source else 'same_content_hash' if exact_hash else 'unconfirmed'
+        result['record_candidates'].append(dict(record_id=record_id, workspace_id=wid,
+            source=record['source'], source_sha256=record['source_sha256'], revision=record['revision'],
+            relation=relation, action='review_for_update_or_membership' if relation != 'unconfirmed'
+                                else 'review_relation'))
+        if relation == 'unconfirmed':
+            result['review'].append('record_relation_unconfirmed:' + record_id)
+    latest = registry.snapshot()
+    latest_profile = next((p for p in latest['profiles'] if p['id'] == wid), None)
+    fresh_sources = True
+    for ref in refs:
+        try:
+            runtime.resolver.read(ref, wid, grant, audience=request.get('audience', 'internal'))
+        except (WorkspaceError, OSError):
+            fresh_sources = False
+    for candidate in result['record_candidates']:
+        try:
+            path = safe_path(Path(vault), candidate['source'], existing=True)
+            if content_hash(path.read_bytes()) != candidate['source_sha256']:
+                fresh_sources = False
+        except (WorkspaceError, OSError, ValueError):
+            fresh_sources = False
+    if (latest['snapshot_sha256'] != snapshot['snapshot_sha256'] or
+            registry.bindings(latest)[1] != binding_hash or membership_hash(registry) != membership_before or
+            not fresh_sources or latest_profile is None or
+            not any(b['source_id'] in latest_profile['source_ids'] and
+                    runtime.authority.allows(grant, b, wid, audience=request.get('audience', 'internal'))
+                    for b in registry.bindings(latest)[0].values())):
+        result['record_candidates'] = []
+        result['review'].append('authorization_or_snapshot_changed')
+    return result
