@@ -193,6 +193,55 @@ def limits(mode):
     return client.thresholds(mode.get('provider'), mode.get('model'))
 
 
+def card_excerpt(record, query='', project=None):
+    """Best-matching heading-aware passage excerpt for a Jev candidate card (#507).
+
+    If the candidate already carries a strict passage excerpt (text_truncated=True)
+    or is shorter than AUTO_EXCERPT, its opening slice is already authoritative.
+    For longer loose/ambient notes, locate the Markdown block with highest lexical
+    overlap with query terms, preserving the section heading path for Jev.
+    """
+    text = record.get('text', '')
+    if not text or len(text) <= AUTO_EXCERPT or record.get('text_truncated'):
+        return text[:AUTO_EXCERPT]
+
+    if not query or not isinstance(query, str):
+        return text[:AUTO_EXCERPT]
+
+    try:
+        from beyin_v3 import _tokens, STOPWORDS, _strict_terms
+        from beyin_v3_passage import split_blocks
+        terms = _strict_terms(_tokens(query) - STOPWORDS - _tokens(project or ''))
+        if not terms:
+            return text[:AUTO_EXCERPT]
+
+        blocks = split_blocks(text)
+        if not blocks:
+            return text[:AUTO_EXCERPT]
+
+        best_score = 0
+        best_block = None
+        for head, start, end in blocks:
+            body = text[start:end]
+            block_tokens = _tokens(body)
+            if head:
+                block_tokens |= _tokens(head)
+            score = len(terms & block_tokens)
+            if score > best_score:
+                best_score = score
+                best_block = (head, start, end)
+
+        if best_block is not None and best_score > 0:
+            head, start, end = best_block
+            body = text[start:end]
+            passage = head + '\n\n' + body if head else body
+            return passage[:AUTO_EXCERPT]
+    except Exception:
+        pass
+
+    return text[:AUTO_EXCERPT]
+
+
 def auto_context(store, harness, query, context, *, budget_chars, timeout_cap=2.0, transport=None, project=None):
     """Per-turn hook path: strict local matches plus a loose lexical pool, judged in one call.
 
@@ -246,7 +295,7 @@ def auto_context(store, harness, query, context, *, budget_chars, timeout_cap=2.
     if not keys:
         return context
     before = _signature(records)
-    cards = [dict(id=k, title=str(r.get('title', ''))[:160], excerpt=r['text'][:AUTO_EXCERPT],
+    cards = [dict(id=k, title=str(r.get('title', ''))[:160], excerpt=card_excerpt(r, query, project),
                   project=str(r.get('project') or ''), status=str(r.get('status') or ''),
                   updated_at=str(r.get('updated_at') or '')) for k, r in keys.items()]
     sent_strict = sum(1 for r in keys.values() if r['id'] in known)
