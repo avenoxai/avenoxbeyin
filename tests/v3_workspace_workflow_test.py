@@ -32,6 +32,75 @@ class WorkspaceWorkflowTest(unittest.TestCase):
         records=m.runtime.context(m.request)['data']['records']
         self.assertEqual(next(r for r in records if r['id']=='academic-learning')['revision'],2)
 
+    def test_proposal_only_completed_run_replay_never_applies_intent(self):
+        from beyin_v3_workspace_memory import MemoryIntentService
+        original_apply=MemoryIntentService.apply
+        for replay_path in ('advance','fresh_runner_resume'):
+            with self.subTest(replay_path=replay_path):
+                m=memory_tests.WorkspaceMemoryTest();m.setUp();self.addCleanup(m.tmp.cleanup)
+                record=next(r for r in m.context['records'] if r['id']=='academic-result')
+                event=envelope('WorkflowEvent',{'event_id':'proposal-only-'+replay_path,'workspace_id':'academic',
+                    'event_kind':'record_changed','record':record,'evidence_refs':[record['source_ref']]})
+                profile=copy.deepcopy(m.spec['desired_profile']);profile['revision']+=1
+                workflow=profile['workflows'][0]
+                workflow['steps']=[{'id':'propose','depends_on':[],'action':'propose_memory_write',
+                    'inputs':{'result':{'ref':'event.record.id'}}}]
+                profile_path=m.runtime.registry.vault/'.beyin-workspaces/workspaces/academic.json'
+                m.runtime.registry.compare_and_save(envelope('WorkspaceProfile',profile),content_hash(profile_path.read_bytes()))
+                context=m.runtime.context(m.request)['data']
+                run_id=content_hash(canonical_bytes(['academic',workflow['id'],workflow['revision'],event['data']['event_id']]))
+                intent=copy.deepcopy(m.intent)
+                intent['data'].update(context_token=context['context_token'],profile_revision=profile['revision'],
+                    binding_snapshot_sha256=context['binding_snapshot_sha256'],idempotency_key=run_id+'/propose')
+                runner=WorkflowRunner(m.runtime)
+                def vault_bytes():
+                    return {p:p.read_bytes() for p in m.runtime.registry.vault.rglob('*') if p.is_file()}
+                vault_files=vault_bytes()
+
+                with patch.object(MemoryIntentService,'apply', autospec=True, side_effect=original_apply) as apply:
+                    first=runner.advance(event,workflow['id'],m.request,proposals={'propose':intent})['data']
+                    self.assertEqual(first['status'],'completed')
+                    self.assertEqual(vault_bytes(),vault_files)
+
+                    if replay_path=='advance':
+                        replay=runner.advance(event,workflow['id'],m.request)['data']
+                    else:
+                        replay=WorkflowRunner(m.runtime).resume(first['run_id'],m.request)['data']
+                    self.assertEqual(replay['status'],'completed')
+                    self.assertEqual(vault_bytes(),vault_files)
+                    apply.assert_not_called()
+
+    def test_completed_memory_replay_requires_own_step_and_completed_journal(self):
+        from beyin_v3_workspace_memory import MemoryIntentService
+        original_apply=MemoryIntentService.apply
+        for failure in ('step-key','missing-journal','incomplete-journal'):
+            with self.subTest(failure=failure):
+                m=memory_tests.WorkspaceMemoryTest();m.setUp();self.addCleanup(m.tmp.cleanup)
+                record=next(r for r in m.context['records'] if r['id']=='academic-result')
+                event=envelope('WorkflowEvent',{'event_id':'completed-'+failure,'workspace_id':'academic',
+                    'event_kind':'record_changed','record':record,'evidence_refs':[record['source_ref']]})
+                workflow=m.spec['desired_profile']['workflows'][0]
+                run_id=content_hash(canonical_bytes(['academic',workflow['id'],workflow['revision'],event['data']['event_id']]))
+                intent=copy.deepcopy(m.intent);intent['data']['idempotency_key']=run_id+'/persist'
+                runner=WorkflowRunner(m.runtime)
+                self.assertEqual(runner.advance(event,workflow['id'],m.request,proposals={'propose':intent})['data']['status'],'completed')
+                run_path=m.runtime.registry.state/'workspace-workflow'/(run_id+'.json')
+                journal_path=m.runtime.registry.state/'workspace-write-intents'/(content_hash(intent['data']['idempotency_key'])+'.json')
+                if failure=='step-key':
+                    saved=json.loads(run_path.read_bytes())
+                    saved['outputs']['persist']['intent_ref']['data']['idempotency_key']=run_id+'/propose'
+                    run_path.write_text(json.dumps(saved),encoding='utf-8')
+                elif failure=='missing-journal':journal_path.unlink()
+                else:
+                    journal=json.loads(journal_path.read_bytes());journal['parts'][0]['done']=False
+                    journal_path.write_text(json.dumps(journal),encoding='utf-8')
+                before={p:p.read_bytes() for p in m.runtime.registry.vault.rglob('*') if p.is_file()}
+                error='workflow_idempotency_collision' if failure=='step-key' else 'invalid_write_journal'
+                with patch.object(MemoryIntentService,'apply',autospec=True,side_effect=original_apply) as apply:
+                    with self.assertRaisesRegex(WorkspaceError,error):WorkflowRunner(m.runtime).resume(run_id,m.request)
+                    apply.assert_not_called()
+                self.assertEqual({p:p.read_bytes() for p in m.runtime.registry.vault.rglob('*') if p.is_file()},before)
+
     def test_view_refresh_failure_is_checkpointed_without_losing_canonical_success(self):
         import sys
         import types

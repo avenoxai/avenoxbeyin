@@ -56,3 +56,5 @@ Markdown görünümü kaynak bağlantıları, işler ve notları içerir. Başar
 ## Tekrar ve recovery sınırı
 
 Aynı request ve workflow kimliğiyle tekrar, yalnız o run'ın writer journal'ında birebir doğrulanmış before→after geçişi için devam edebilir. Grant iptali ve sonradan yapılan kullanıcı edit'i reddedilir. Eski eksik journal'lar ve aynı hedefte ardışık birden fazla geçiş otomatik onarılmaz; hata sonrası mevcut kayıtları koruyarak yetkili inceleme gerekir. Ortak internal ana sayfa private kayıt metadata'sını içermez. Ayrıntılar [sözleşmede](workspaces/v0.1.0/CONTRACT.md).
+
+Yalnız `propose_memory_write` ile biten bir süreç ilk çalıştırmada, tekrarda ve `resume` çağrısında kanonik kayıt yazmaz. Tamamlanmış bir yazma adımının tekrarında adım anahtarı, kayıtlı istek/bağlam ve bitmiş writer journal'ı eşleşmelidir; eksik veya tamamlanmamış journal yeni yazma başlatmak yerine hata üretir. Yarım kalmış süreçlerin mevcut kesintiden devam yolu korunur.

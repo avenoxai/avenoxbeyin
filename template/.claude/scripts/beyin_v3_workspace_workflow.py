@@ -159,9 +159,28 @@ class WorkflowRunner:
             if saved is not None:
                 run=saved['run'];outputs=saved['outputs']
                 if run['status']=='completed':
+                    # A proposal is not a writer effect. Replay only completed
+                    # writing steps with their own exact, finished journal.
+                    steps={step['step_id']:step for step in run['steps']}
+                    service=MemoryIntentService(self.runtime)
+                    for definition in workflow['steps']:
+                        if definition['action'] not in ('update_task','link_records','apply_memory_write'):continue
+                        step=steps[definition['id']]
+                        if step['state']!='completed':continue
+                        output=outputs.get(definition['id'],{})
+                        proposed=output.get('intent_ref') if isinstance(output,dict) else None
+                        if not isinstance(proposed,dict):raise WorkspaceError('workflow_idempotency_collision')
+                        validate_document(proposed)
+                        if (proposed['type']!='MemoryWriteIntent' or proposed['data']['workspace_id']!=event['workspace_id']
+                                or proposed['data']['idempotency_key']!=step['idempotency_key']
+                                or proposed['data']['context_token']!=run['context_token']):
+                            raise WorkspaceError('workflow_idempotency_collision')
+                        if service._context(proposed['data'])['request']!=request:raise WorkspaceError('workflow_idempotency_collision')
+                        _,journal=service._load_journal(proposed)
+                        if journal is None or not all(part.get('done') is True for part in journal['parts']):
+                            raise WorkspaceError('invalid_write_journal')
+                        output['operation_ref']=service.apply(proposed,_coordinated=True)
                     for output in outputs.values():
-                        if isinstance(output,dict) and 'intent_ref' in output:
-                            output['operation_ref']=MemoryIntentService(self.runtime).apply(output['intent_ref'],_coordinated=True)
                         if isinstance(output,dict) and 'applied_plan_ref' in output:
                             self._provisioner().apply(output['applied_plan_ref'],output['operation_key'],_coordinated=True)
             else:
