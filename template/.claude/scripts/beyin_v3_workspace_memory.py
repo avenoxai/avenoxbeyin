@@ -5,7 +5,7 @@ from contextlib import nullcontext
 from datetime import datetime,timezone
 
 from beyin_v3_workspaces import (WorkspaceError,canonical_bytes,content_hash,envelope,parse_document,safe_path,validate_document)
-from beyin_v3_workspace_context import request_scope
+from beyin_v3_workspace_context import request_scope,membership_hash,record_owner
 from beyin_v3_sync import SyncEngine,parse,render,atomic
 
 
@@ -51,11 +51,18 @@ class MemoryIntentService:
         profile=next((p for p in snapshot['profiles'] if p['id']==intent['workspace_id']),None)
         if (not profile or profile['lifecycle']!='active' or profile['revision']!=intent['profile_revision']
                 or snapshot['snapshot_sha256']!=context['snapshot_sha256'] or binding_hash!=intent['binding_snapshot_sha256']
-                or binding_hash!=context['binding_snapshot_sha256']):raise WorkspaceError('context_changed')
+                or binding_hash!=context['binding_snapshot_sha256']
+                or membership_hash(self.registry)!=context.get('membership_sha256')):raise WorkspaceError('context_changed')
+        updates={r['id']:r for r in self.engine.store._records()} if any(
+            c['action'] not in ('create_note','create_task','skip','review') for c in intent['changes']) else {}
         for change in intent['changes']:
             binding=bindings.get(change['target']['source_id'])
             if not binding or not self.runtime.authority.allows(context['request']['grant_ref'],binding,intent['workspace_id'],'write_memory'):
                 raise WorkspaceError('scope_denied')
+            if change['action'] not in ('create_note','create_task','skip','review'):
+                record=updates.get(change['target']['record_id'])
+                if not record or record_owner(self.registry,record)!=intent['workspace_id']:
+                    raise WorkspaceError('scope_denied')
         return context
 
     def _changes(self,change,context):

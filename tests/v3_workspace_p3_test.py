@@ -7,6 +7,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'template/.claude/scripts'))
 import v3_workspace_discovery_test as fixture
 import v3_workspace_p2_test as p2_fixture
+from v3_package_helpers import inherited_env
 from v3_workspace_test_io import run_json_cli
 from beyin_v3_sync import SyncEngine
 from beyin_v3_workspace_discovery import preview
@@ -131,7 +132,7 @@ class NeedPreviewTest(unittest.TestCase):
         process = run_json_cli([sys.executable, '-B', str(root / 'scripts/beyin_v3.py'),
             '--vault', str(self.vault), '--state', str(self.state),
             'workspace-setup', 'preview', '--file', '-'], input=json.dumps(payload),
-            capture_output=True, timeout=15)
+            capture_output=True, timeout=15, env=inherited_env())
         self.assertEqual(process.returncode, 0, process.stderr)
         result = json.loads(process.stdout)
         detail = json.loads(next(i['detail'] for i in result['data']['issues']

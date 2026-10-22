@@ -10,7 +10,7 @@ Custom fixture'da aynı işlem fotoğraf çekim konusu, çekim işi, sonuç ve t
 
 ## Taşıma, sürüm ve kimlik
 
-Her belge `{ "contract_version": "workspace/0.1.0", "type": "WorkspaceProfile", "data": {...} }` zarfını kullanır. Zarf tipi schema içindeki arayüz adıdır. Eksik zorunlu alan, bilinmeyen sürüm/alan/eylem veya geçersiz güvenlik değeri reddedilir. Yalnız `extensions` serbest scalar gösterim verisi alır; erişim, routing, workflow veya yürütme yetkisi vermez. `facts` bir düz scalar veya scalar-list metadata haritasıdır; kod/ifade değildir.
+Her belge `{ "contract_version": "workspace/0.1.0", "type": "WorkspaceProfile", "data": {...} }` zarfını kullanır. Zarf tipi schema içindeki arayüz adıdır. Eksik zorunlu alan, bilinmeyen sürüm/alan/eylem veya geçersiz güvenlik değeri reddedilir. Yalnız `extensions` serbest scalar gösterim verisi alır; erişim veya yürütme yetkisi vermez. `project_id` aynı dış proje etiketini birden fazla workspace amacıyla eşleyebilir; yalnız aday daraltır, tek başına workspace seçimi veya grant oluşturmaz. `facts` bir düz scalar veya scalar-list metadata haritasıdır; kod/ifade değildir.
 
 Workspace/source/workflow kimlikleri ASCII stable ID'dir; kullanıcı adı ve dosya adı kimlik değildir. Mevcut kayıt/task `id` değerleri korunur. Explicit ID'li not rename'de aynı kalır. Bugünkü path-derived `md-*` kimliği rename'de değişir: G0 bunun tersini vaat etmez. C5 adoption gerektiğinde kullanıcı edit'ini koruyan planla explicit kimlik ekler; geçmişi topluca yeniden yazmaz.
 
@@ -122,6 +122,18 @@ Planlama saf okumadır. Fixture planı mevcut kayıtları benimser, descriptor/b
 `operation_status=applied` + `workspace_health=verification_pending` geçerlidir. Aynı şekilde bir kaynağın ready olması canlı istemci teslimi değildir. CLI bağlandığında normal çıkış kodları: 0 = istenen işlem/plan tamamlandı; 2 = schema/girdi; 3 = conflict/busy/pending; 4 = denied/unbound/eksik yetki; 5 = failed/partial veya uygulanmış işlemin zorunlu doğrulaması tamamlanmadı. JSON içindeki ayrıntı korunur; 0 tek başına ürün kabulü sayılmaz. Bu kodlar yeni CLI'lar için sözleşmedir, mevcut komutların exit kodlarını G0 değiştirmez.
 
 ## Migration ve kabul sınırı
+
+### P2 kanonik kayıt üyeliği ve düzenleme sahipliği
+
+Bir not veya görevin kanonik `id` ve Markdown dosyası tektir. Kaydın frontmatter `workspace_id` alanı varsa düzenleme sahibi odur; başka bir alanın üyeliği bu sahipliği değiştirmez. Okuma için hem kayıt üyeliği hem canlı workspace, kaynak binding ve audience grant'i gerekir. Kanonik not/görev yazarı ayrıca sahip workspace ve `write_memory` grant'i arar. `WorkspaceSpec.adopt_record_refs` üyelik ekler; kaynak dosyayı kopyalamaz, kimliği ve frontmatter'ı değiştirmez. Explicit sahipli kaydı paylaşmak için benimseyen ref üzerinde okuma, aynı ref üzerinde sahip adına yazma yetkisi gerekir. Private veya untrusted kayıt otomatik benimsenmez.
+
+Yerel state içindeki `workspace-adoptions.json` üyelik yan dosyasının güncel biçimi `{ "contract_version": "workspace-membership/0.2.0", "records": {"record-id": ["workspace-id"]}, "owners": {"legacy-record-id": "workspace-id"} }` şeklindedir. Önceki düz `{record-id: [workspace-id]}` ve `workspace-membership/0.1.0` kayıtları okunur; ilk üyelik/owner değişikliğinde 0.2.0 biçimine atomik yazılır. Bu geçiş Markdown'ı yeniden yazmaz. Bilinmeyen veya bozuk yan dosya sürümü erişimi açık bırakmak yerine işlemi reddeder. Üyelik değişimi ve açık legacy owner ataması, çağıranın gördüğü exact yan dosya SHA256 değeriyle CAS yapar; eski context token'ları üyelik hash'i değişince yazma için geçersiz olur. Grant ayrıca her işlemde güncel olarak denetlenir.
+
+`workspace_id` taşımayan eski kayıt tek üyeyle geçici olarak o üyenin düzenlemesine açıktır. Birden çok üye olunca owner otomatik seçilmez ve yazma durur; `assign_legacy_owner` üye workspace'i, güncel kayıt baytlarını ve o workspace'in canlı `write_memory` yetkisini doğrulayarak açık atama yapar. Bir üyeliği kaldırma da yalnız mevcut owner'ın canlı yazma yetkisi ve exact CAS ile yapılır. Owner üyeliği bu işlemle kaldırılamaz. Bu yerel üyelik yan dosyası cihazlar arası senkron yetki taşımaz; başka makinede ayrı yetki ve benimseme gerekir.
+
+WorkContext oturum seçimi `client` ve `session_id` çiftine bağlıdır. Dış `project_id` birden çok workspace'e karşılık geldiğinde konu veya aynı oturumdaki önceki yetkili seçim ayrıştırır; belirsizlikte `ambiguous` döner. Bilinmeyen proje etiketi alakasız workspace'e düşmez. `no_memory` ve salt okunur mod oturum seçimini veya kalıcı context token'ı yazmaz.
+
+0.1.0 wire zarfı değişmez; 0.2.0 yalnız yerel üyelik dosyasının sürümüdür. 0.2.0 dosyasını anlamayan eski runtime'a doğrudan downgrade güvenli değildir: eski runtime'ın dosyayı nasıl yorumlayacağına güvenilmez. Önce uygun sürümle üyelik/owner durumunu inceleyip yedekleyerek açık restore/migration gerekir; eski sürümü yan dosyayı sessizce yeniden yazmaya bırakmamak gerekir.
 
 Registry yokken V3 korunur. C1 dormant/opt-in okuyucu/validator ile başlar; bütün retrieval/snapshot/passage/companion/bridge/advisor/yazma yollarında ortak policy tamamlanmadan yeni mod etkinleştirilmez. Legacy `project` ve folder mutasyonları C5'te tek truth adapter'ına bağlanır. G0 source/task/frontmatter alanlarını topluca yeniden yazmaz; indeks migration'ı yapmaz. Bilinmeyen workspace/global durum sessizce paylaşılmaz. Şemayı anlamayan eski sürüme downgrade açık restore gerektirir; güvenlik garantisi varsayılmaz.
 

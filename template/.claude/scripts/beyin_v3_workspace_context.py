@@ -10,6 +10,7 @@ from beyin_v3_workspaces import (Registry,LocalAuthority,WorkspaceError,canonica
 from beyin_v3_sources import SourceResolver
 
 CURRENT=ContextVar('beyin_workspace_request',default=None)
+MEMBERSHIP_VERSION='workspace-membership/0.2.0'
 # Reused only while one trusted store._eligible() call checks canonical records.
 _RECORD_POLICY=ContextVar('beyin_workspace_record_policy',default=None)
 
@@ -61,13 +62,62 @@ def bound_project_for_cwd(vault, state, cwd):
         return None
 
 
-def scope_ids(registry,record):
-    declared=record.get('workspace_id')
-    if isinstance(declared,str) and declared:return {declared}
+def _membership_state(registry):
+    """Read versioned membership/owner state, including both older layouts."""
     path=safe_path(registry.state,'workspace-adoptions.json')
-    if not path.exists():return set()
-    values=parse_document(path.read_bytes())
-    return set(values.get(record['id'],[]))
+    if not path.exists():return {},{}
+    value=parse_document(path.read_bytes())
+    owners={}
+    if isinstance(value,dict) and 'contract_version' in value:
+        version=value['contract_version']
+        if version==MEMBERSHIP_VERSION and set(value)=={'contract_version','records','owners'}:
+            owners=value['owners']
+        elif version=='workspace-membership/0.1.0' and set(value)=={'contract_version','records'}:
+            pass
+        else:raise WorkspaceError('invalid_membership_state')
+        value=value['records']
+    if not isinstance(value,dict) or not isinstance(owners,dict):raise WorkspaceError('invalid_membership_state')
+    for record_id,members in value.items():
+        if (not isinstance(record_id,str) or not isinstance(members,list) or
+                any(not isinstance(wid,str) or not wid for wid in members) or len(set(members))!=len(members)):
+            raise WorkspaceError('invalid_membership_state')
+    if any(not isinstance(record_id,str) or not isinstance(wid,str) or wid not in value.get(record_id,[])
+           for record_id,wid in owners.items()):raise WorkspaceError('invalid_membership_state')
+    return value,owners
+
+
+def _adoptions(registry):
+    return _membership_state(registry)[0]
+
+
+def _write_adoptions(registry,values,owners=None):
+    from beyin_v3_sync import atomic
+    path=safe_path(registry.state,'workspace-adoptions.json')
+    if owners is None:owners=_membership_state(registry)[1]
+    atomic(path,canonical_bytes({'contract_version':MEMBERSHIP_VERSION,'records':values,'owners':owners}).decode())
+
+
+def scope_ids(registry,record,adoptions=None):
+    declared=record.get('workspace_id')
+    scopes={declared} if isinstance(declared,str) and declared else set()
+    return scopes|set((adoptions if adoptions is not None else _adoptions(registry)).get(record['id'],[]))
+
+
+def membership_hash(registry):
+    """Bind saved contexts to the exact approved membership projection."""
+    path=safe_path(registry.state,'workspace-adoptions.json')
+    return content_hash(path.read_bytes() if path.exists() else b'{}')
+
+
+def record_owner(registry,record):
+    """Legacy records with several adopters stay readable but have no inferred editor."""
+    declared=record.get('workspace_id')
+    if isinstance(declared,str) and declared:return declared
+    adoptions,owners=_membership_state(registry)
+    selected=owners.get(record['id'])
+    if selected:return selected
+    scopes=scope_ids(registry,record,adoptions)
+    return next(iter(scopes)) if len(scopes)==1 else None
 
 
 def record_allowed(store,record,audience='internal'):
@@ -82,7 +132,7 @@ def record_allowed(store,record,audience='internal'):
             policy['audience']==audience and
             policy['registry'].vault==store.vault_root and
             policy['registry'].state==store.state_dir):
-        return policy['allowed'] and current['workspace_id'] in scope_ids(policy['registry'],record)
+        return policy['allowed'] and current['workspace_id'] in scope_ids(policy['registry'],record,policy['adoptions'])
     if not enabled(store.vault_root,store.state_dir) and current is None:return True
     if not current:return False
     registry=Registry(store.vault_root,store.state_dir)
@@ -127,7 +177,8 @@ def authorized_record_scope(registry,snapshot,bindings,workspace_id,grant_ref,*,
                 allowed=True
                 break
     policy=dict(registry=registry,workspace_id=workspace_id,grant_ref=grant_ref,
-                include_archived=bool(include_archived),audience=audience,allowed=allowed)
+                include_archived=bool(include_archived),audience=audience,allowed=allowed,
+                adoptions=_adoptions(registry))
     with request_scope(workspace_id,grant_ref,include_archived=include_archived):
         # A nested standalone scope must perform its own live grant checks, even
         # when its workspace/grant values happen to match this batch.
@@ -179,25 +230,108 @@ class WorkspaceRuntime:
         validate_document(spec_document)
         if spec_document['type']!='WorkspaceSpec':raise WorkspaceError('invalid_schema')
         spec=spec_document['data'];wid=spec['desired_profile']['id']
-        snapshot=self.registry.snapshot();profile=next((p for p in snapshot['profiles'] if p['id']==wid),None)
-        if profile!=spec['desired_profile']:raise WorkspaceError('profile_changed')
-        records={r['id']:r for r in self.store._records()};bindings,_=self.registry.bindings(snapshot)
-        vault_bindings=[b for id,b in bindings.items() if id in profile['source_ids'] and local_root_matches(b['locator'],self.registry.vault)]
-        if not any(self.authority.allows(spec['authority_ref'],b,wid) for b in vault_bindings):raise WorkspaceError('scope_denied')
-        ids=[]
-        for reference in spec['adopt_record_refs']:
-            record=records.get(reference['record_id'])
-            if reference['workspace_id']!=wid or not record:raise WorkspaceError('adoption_record_unavailable')
-            if record.get('workspace_id') not in (None,wid):raise WorkspaceError('adoption_scope_conflict')
-            if record.get('visibility')=='private' or record.get('trust')=='untrusted':raise WorkspaceError('adoption_requires_review')
-            ids.append(record['id'])
-        from beyin_v3_sync import atomic
         with (nullcontext() if _coordinated else self.registry.coordinated()):
-            path=safe_path(self.registry.state,'workspace-adoptions.json')
-            values=parse_document(path.read_bytes()) if path.exists() else {}
+            snapshot=self.registry.snapshot();profile=next((p for p in snapshot['profiles'] if p['id']==wid),None)
+            if profile!=spec['desired_profile'] or profile['lifecycle']!='active':raise WorkspaceError('profile_changed')
+            records={r['id']:r for r in self.store._records()};bindings,_=self.registry.bindings(snapshot)
+            vault_sources=[sid for sid,b in bindings.items() if sid in profile['source_ids']
+                and local_root_matches(b['locator'],self.registry.vault)
+                and self.authority.allows(spec['authority_ref'],b,wid)]
+            if not vault_sources:raise WorkspaceError('scope_denied')
+            ids=[]
+            for reference in spec['adopt_record_refs']:
+                record=records.get(reference['record_id'])
+                if reference['workspace_id']!=wid or not record:raise WorkspaceError('adoption_record_unavailable')
+                if record.get('visibility')=='private' or record.get('trust')=='untrusted':raise WorkspaceError('adoption_requires_review')
+                source=record['source']
+                path=safe_path(self.registry.vault,source,True)
+                if not path.is_file() or content_hash(path.read_bytes())!=record['source_sha256']:
+                    raise WorkspaceError('stale_source')
+                # This is the membership bootstrap: SourceResolver's record
+                # scope gate cannot run until the adoption has been committed.
+                # safe_path, exact bytes, vault-root binding, and live read grant
+                # were checked above without granting broader source access.
+                owner=record_owner(self.registry,record)
+                if record.get('workspace_id') and owner!=wid:
+                    owner_profile=next((p for p in snapshot['profiles'] if p['id']==owner and p['lifecycle']=='active'),None)
+                    if not owner_profile:raise WorkspaceError('adoption_scope_conflict')
+                    owner_sources=[sid for sid,b in bindings.items() if sid in owner_profile['source_ids']
+                        and local_root_matches(b['locator'],self.registry.vault)
+                        and self.authority.allows(spec['authority_ref'],b,owner,'write_memory')]
+                    owner_allowed=False
+                    for sid in owner_sources:
+                        try:
+                            resolved,_,_=self.resolver.resolve(owner,sid,source,spec['authority_ref'],access='write_memory')
+                            if resolved==path:owner_allowed=True;break
+                        except WorkspaceError:continue
+                    if not owner_allowed:raise WorkspaceError('adoption_scope_conflict')
+                ids.append(record['id'])
+            values=_adoptions(self.registry)
             for id in ids:values[id]=sorted(set(values.get(id,[]))|{wid})
-            atomic(path,canonical_bytes(values).decode())
+            _write_adoptions(self.registry,values)
         return ids
+
+    def release_membership(self,record_id,member_workspace_id,authority_ref,expected_membership_sha256):
+        """Remove a shared reader with an exact membership CAS and live owner authority."""
+        if self.read_only:raise WorkspaceError('read_only_runtime')
+        with self.registry.coordinated():
+            if membership_hash(self.registry)!=expected_membership_sha256:raise WorkspaceError('membership_changed')
+            record=next((r for r in self.store._records() if r['id']==record_id),None)
+            if not record:raise WorkspaceError('adoption_record_unavailable')
+            owner=record_owner(self.registry,record)
+            if owner is None or owner==member_workspace_id:raise WorkspaceError('adoption_scope_conflict')
+            path=safe_path(self.registry.vault,record['source'],True)
+            if not path.is_file() or content_hash(path.read_bytes())!=record['source_sha256']:
+                raise WorkspaceError('stale_source')
+            snapshot=self.registry.snapshot();bindings,_=self.registry.bindings(snapshot)
+            profile=next((p for p in snapshot['profiles'] if p['id']==owner and p['lifecycle']=='active'),None)
+            allowed=False
+            if profile:
+                for sid,binding in bindings.items():
+                    if sid not in profile['source_ids'] or not local_root_matches(binding['locator'],self.registry.vault):continue
+                    try:
+                        resolved,_,_=self.resolver.resolve(owner,sid,record['source'],authority_ref,access='write_memory')
+                        if resolved==path:allowed=True;break
+                    except WorkspaceError:continue
+            if not allowed:
+                raise WorkspaceError('scope_denied')
+            values=_adoptions(self.registry)
+            members=values.get(record_id,[])
+            if member_workspace_id not in members:raise WorkspaceError('adoption_record_unavailable')
+            values[record_id]=[wid for wid in members if wid!=member_workspace_id]
+            if not values[record_id]:del values[record_id]
+            _write_adoptions(self.registry,values)
+            return membership_hash(self.registry)
+
+    def assign_legacy_owner(self,record_id,workspace_id,authority_ref,expected_membership_sha256):
+        """Make a shared ownerless record editable by one explicitly authorized area."""
+        if self.read_only:raise WorkspaceError('read_only_runtime')
+        with self.registry.coordinated():
+            if membership_hash(self.registry)!=expected_membership_sha256:raise WorkspaceError('membership_changed')
+            record=next((r for r in self.store._records() if r['id']==record_id),None)
+            if not record or record.get('workspace_id'):raise WorkspaceError('adoption_record_unavailable')
+            values,owners=_membership_state(self.registry)
+            if workspace_id not in values.get(record_id,[]):raise WorkspaceError('scope_denied')
+            if record_id in owners:
+                if owners[record_id]!=workspace_id:raise WorkspaceError('adoption_scope_conflict')
+                return membership_hash(self.registry)
+            path=safe_path(self.registry.vault,record['source'],True)
+            if not path.is_file() or content_hash(path.read_bytes())!=record['source_sha256']:
+                raise WorkspaceError('stale_source')
+            snapshot=self.registry.snapshot();bindings,_=self.registry.bindings(snapshot)
+            profile=next((p for p in snapshot['profiles'] if p['id']==workspace_id and p['lifecycle']=='active'),None)
+            if not profile:raise WorkspaceError('scope_denied')
+            allowed=False
+            for sid,binding in bindings.items():
+                if sid not in profile['source_ids'] or not local_root_matches(binding['locator'],self.registry.vault):continue
+                try:
+                    resolved,_,_=self.resolver.resolve(workspace_id,sid,record['source'],authority_ref,access='write_memory')
+                    if resolved==path:allowed=True;break
+                except WorkspaceError:continue
+            if not allowed:raise WorkspaceError('scope_denied')
+            owners[record_id]=workspace_id
+            _write_adoptions(self.registry,values,owners)
+            return membership_hash(self.registry)
 
     def _base(self,request,snapshot,bindings_hash,state='ready',workspace=None):
         return dict(request_id=request['request_id'],state=state,context_token='unresolved',workspace_id=workspace,
@@ -215,6 +349,7 @@ class WorkspaceRuntime:
         request=document['data'];snapshot=self.registry.snapshot()
         if not snapshot:raise WorkspaceError('registry_required')
         bindings,binding_hash=self.registry.bindings(snapshot)
+        adoption_hash=membership_hash(self.registry)
         candidates={p['id']:p for p in snapshot['profiles'] if (p['lifecycle']=='active' or (include_archived and p['lifecycle']=='archived')) and any(
             id in p['source_ids'] and self.authority.allows(request['grant_ref'],b,p['id'],audience=request['audience']) for id,b in bindings.items())}
         signals=[s for s in request['signals'] if s['workspace_id'] in candidates]
@@ -308,6 +443,8 @@ class WorkspaceRuntime:
         fresh_bindings,fresh_hash=self.registry.bindings(fresh)
         if fresh_hash!=binding_hash:
             raise WorkspaceError('snapshot_changed')
+        if membership_hash(self.registry)!=adoption_hash:
+            raise WorkspaceError('snapshot_changed')
         # Grants can be revoked independently of the registry and binding
         # digests. The batched record-policy must never mint a stale token.
         if not any(source_id in profile['source_ids'] and
@@ -318,11 +455,12 @@ class WorkspaceRuntime:
         if request['no_memory'] or self.read_only:
             result['context_token']='no-memory'
             return envelope('WorkContext',result)
-        token=content_hash(canonical_bytes([request,profile['revision'],snapshot['snapshot_sha256'],binding_hash,include_archived]))
+        token=content_hash(canonical_bytes([request,profile['revision'],snapshot['snapshot_sha256'],binding_hash,adoption_hash,include_archived]))
         result['context_token']=token
         from beyin_v3_sync import atomic
         atomic(safe_path(self.registry.state,'workspace-contexts/'+token+'.json'),canonical_bytes({'request':request,'workspace_id':wid,
-            'profile_revision':profile['revision'],'snapshot_sha256':snapshot['snapshot_sha256'],'binding_snapshot_sha256':binding_hash}).decode())
+            'profile_revision':profile['revision'],'snapshot_sha256':snapshot['snapshot_sha256'],
+            'binding_snapshot_sha256':binding_hash,'membership_sha256':adoption_hash}).decode())
         return envelope('WorkContext',result)
 
     def behavior_rules(self, profile, request, selected_ids, project=None):
@@ -388,31 +526,36 @@ class WorkspaceRuntime:
         """Use existing grants and per-session continuity; never infer new authority."""
         from beyin_v3 import _tokens,STOPWORDS
         snapshot=self.registry.snapshot();bindings,_=self.registry.bindings(snapshot)
-        if project is not None:
-            mapping_path=safe_path(self.registry.state,'workspace-legacy-map.json')
-            if mapping_path.exists():project=parse_document(mapping_path.read_bytes()).get(project,project)
+        mapping_path=safe_path(self.registry.state,'workspace-legacy-map.json')
+        aliases=parse_document(mapping_path.read_bytes()) if mapping_path.exists() else {}
+        project_profiles={p['id'] for p in snapshot['profiles'] if project is not None and
+            (p['id']==project or p['extensions'].get('project_id')==project or aliases.get(project)==p['id'])}
         grants=self.authority._load()['grants'];options=[];terms=_tokens(query)-STOPWORDS
         for profile in snapshot['profiles']:
             if profile['lifecycle']!='active':continue
+            if project is not None and profile['id'] not in project_profiles:continue
             references=[ref for ref in grants if any(id in profile['source_ids'] and self.authority.allows(ref,b,profile['id'],audience=audience) for id,b in bindings.items())]
             if not references:continue
             reference=sorted(references)[0]
-            with request_scope(profile['id'],reference):records,_=self.store._eligible(audience)
+            with authorized_record_scope(self.registry,snapshot,bindings,profile['id'],reference,
+                                         audience=audience):records,_=self.store._eligible(audience)
             score=len(terms&_tokens(profile['name']+' '+profile['purpose']))
             score+=max([len(terms&_tokens(r.get('title','')+' '+r['text'])) for r in records] or [0])
-            if project is not None:score=100000 if project==profile['id'] else -1
             options.append((score,profile['id'],reference))
-        path=safe_path(self.registry.state,'workspace-sessions/'+content_hash(str(session_id))+'.json')
+        # Session identifiers are only unique within a client. Keep one client's
+        # previous choice from becoming another client's implicit selection.
+        path=safe_path(self.registry.state,'workspace-sessions/'+content_hash(canonical_bytes([client,str(session_id)]))+'.json')
         previous=parse_document(path.read_bytes()) if path.exists() else {}
         options.sort(reverse=True);choice=None
         if len(options)==1 and options[0][0]>=0:choice=options[0]
         if options and options[0][0]>0 and (len(options)==1 or options[0][0]>options[1][0]):choice=options[0]
-        if choice is None and project is None and (not options or options[0][0]==0):
-            choice=next((o for o in options if o[1]==previous.get('workspace_id')),None)
-        request={'request_id':'request-'+content_hash(canonical_bytes([session_id,query,project]))[:32],
+        if choice is None and options:
+            tied=[o for o in options if o[0]==options[0][0]]
+            choice=next((o for o in tied if o[1]==previous.get('workspace_id')),None)
+        request={'request_id':'request-'+content_hash(canonical_bytes([client,str(session_id),query,project]))[:32],
             'session_id':str(session_id),'client':client,'query':query or 'Güncel çalışma bağlamı',
             'grant_ref':choice[2] if choice else 'unresolved','audience':audience,'no_memory':bool(no_memory or self.read_only),
-            'signals':[] if not choice else [{'kind':'explicit_user' if project else 'conversation_subject','workspace_id':choice[1],'subject_refs':[]}],
+            'signals':[] if not choice else [{'kind':'conversation_subject','workspace_id':choice[1],'subject_refs':[]}],
             'budget_chars':budget_chars}
         if not choice:
             result=self._base(request,snapshot,self.registry.bindings(snapshot)[1],'ambiguous' if options else 'denied')
