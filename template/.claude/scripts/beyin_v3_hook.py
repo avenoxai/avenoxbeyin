@@ -265,23 +265,29 @@ def _has_staged_candidates(state, session, since):
 
 
 def _has_knowledge_update(vault, receipt, since):
-    """A knowledge ref is a citation, not evidence of a write in this edit window."""
-    if not receipt:
+    """A distilled note cited by this receipt with a recent mtime."""
+    if not receipt or not vault:
         return False
-    from beyin_v3_projections import DISTILLATION_ROOTS, is_distilled_note
-    if not vault:
+    from beyin_v3_projections import is_distilled_note
+    root = Path(vault).resolve()
+    refs = receipt.get("refs")
+    if not isinstance(refs, (list, tuple)):
         return False
-    for root in DISTILLATION_ROOTS:
-        k_dir = Path(vault) / root
-        if not k_dir.is_dir():
+    for ref in refs:
+        if not isinstance(ref, str) or not ref.strip():
             continue
-        for path in k_dir.rglob("*.md"):
-            try:
-                if (path.is_file() and not path.is_symlink() and path.stat().st_mtime >= since and
-                        is_distilled_note(path.relative_to(vault).as_posix())):
-                    return True
-            except (ValueError, OSError):
+        try:
+            rel = ref.strip().replace('\\', '/')
+            if not is_distilled_note(rel):
                 continue
+            path = (root / rel).resolve()
+            if path.is_symlink() or not path.is_file():
+                continue
+            path.relative_to(root)
+            if path.stat().st_mtime >= since:
+                return True
+        except (ValueError, OSError):
+            continue
     return False
 
 
@@ -294,7 +300,7 @@ def _edits_knowledge(vault, payload):
     from beyin_v3_hygiene import edited_paths
     from beyin_v3_projections import is_distilled_note
     root = Path(vault).resolve()
-    for path in edited_paths(payload):
+    for path in edited_paths(payload, limit=None):
         try:
             if path.is_symlink():
                 continue

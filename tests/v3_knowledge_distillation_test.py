@@ -187,7 +187,7 @@ class KnowledgeDistillationTest(unittest.TestCase):
                 engine = SyncEngine(vault, Path(self.tmp.name) / ('state-%d' % index))
                 with engine.store._connect() as db:
                     doctor_counts = knowledge_freshness(vault, db)['latest_source'] == relative
-                hook_counts = hook._has_knowledge_update(vault, {'refs': []}, 0)
+                hook_counts = hook._has_knowledge_update(vault, {'refs': [relative]}, 0)
                 self.assertEqual((doctor_counts, hook_counts), (counted, counted))
 
     def test_stop_hook_receipt_refs_need_a_recent_file_and_the_shared_filter(self):

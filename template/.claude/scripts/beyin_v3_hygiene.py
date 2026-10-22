@@ -357,11 +357,11 @@ def _shallow_newest(folder, cutoff=None):
     return newest
 
 
-def edited_paths(payload):
+def edited_paths(payload, limit=5):
     """Vault candidates from one PostToolUse payload: Claude file_path/path, Codex apply_patch headers.
 
     Codex reports apply_patch as tool_input.command with the patch text; its file
-    headers are relative to the session cwd. At most five paths, in order.
+    headers are relative to the session cwd. At most `limit` paths when bounded, in order.
     """
     tool_input = payload.get('tool_input')
     if not isinstance(tool_input, dict):
@@ -382,7 +382,7 @@ def edited_paths(payload):
             path = base / path
         if path not in paths:
             paths.append(path)
-    return paths[:5]
+    return paths[:limit] if limit is not None else paths
 
 
 def _vault_relative(vault, path):
@@ -555,7 +555,7 @@ def touch_log(state, vault, payload):
         return
     companions = companion_names(vault, state)
     rows = []
-    for path in edited_paths(payload):
+    for path in edited_paths(payload, limit=None):
         relative = _vault_relative(vault, path)
         if relative is None or '/' not in relative or _excluded(relative, companions):
             continue  # a root-level file has no folder to promote

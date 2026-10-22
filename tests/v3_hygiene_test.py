@@ -31,6 +31,17 @@ class BoundaryTest(unittest.TestCase):
                                       'tool_input': {'notebook_path': str(notebook)}})
         self.assertEqual(paths, [notebook])
 
+    def test_edited_paths_respects_custom_and_unlimited_bound(self):
+        patch = (
+            "*** Begin Patch\n"
+            + "".join(f"*** Update File: file{i}.md\n+line\n" for i in range(1, 8))
+            + "*** End Patch\n"
+        )
+        payload = {'tool_name': 'apply_patch', 'tool_input': {'command': patch}, 'cwd': str(self.vault)}
+        self.assertEqual(len(hygiene.edited_paths(payload)), 5)
+        self.assertEqual(len(hygiene.edited_paths(payload, limit=3)), 3)
+        self.assertEqual(len(hygiene.edited_paths(payload, limit=None)), 7)
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix='v3-hygiene-bound-')
         self.addCleanup(tmp.cleanup)

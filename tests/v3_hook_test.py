@@ -517,6 +517,34 @@ class HookInstallerTest(unittest.TestCase):
                 engine.receipt(name, 'İş tamamlandı.\nÖğrenilen: Onay kuralı.', [relative], harness, session=session)
                 self.assertEqual(self.lifecycle('Stop', name, harness), {})
 
+    def test_stop_knowledge_reminder_accepts_knowledge_edit_beyond_five_paths_in_patch(self):
+        # Issue #509: apply_patch editing 6+ files with distilled note as 6th or later path.
+        engine = self.seed()
+        name = 'multi-patch-knowledge'
+        relative = 'knowledge/concepts/sqlite-wal.md'
+        note = self.vault / relative
+        note.parent.mkdir(parents=True, exist_ok=True)
+        note.write_text('# SQLite WAL\nTimeout 5s.\n', encoding='utf-8')
+        before = time.time() - 10
+        os.utime(note, (before, before))
+
+        patch_lines = ['*** Begin Patch\n']
+        for i in range(1, 6):
+            f_rel = f'notes/file{i}.md'
+            f_path = self.vault / f_rel
+            f_path.parent.mkdir(parents=True, exist_ok=True)
+            f_path.write_text(f'# File {i}\n', encoding='utf-8')
+            patch_lines.append(f'*** Update File: {f_rel}\n+change {i}\n')
+        patch_lines.append(f'*** Update File: {relative}\n+WAL timeout rule\n*** End Patch\n')
+        command = ''.join(patch_lines)
+
+        tool_input = {'command': command}
+        self.lifecycle('PostToolUse', name, 'codex', tool_input=tool_input, cwd=str(self.vault))
+        session = hashlib.sha256(name.encode()).hexdigest()[:24]
+        engine.receipt(name, 'İş tamamlandı.\nÖğrenilen: WAL timeout en az 5 sn.', [relative], 'codex', session=session)
+        # Must pass without block: knowledge was edited in the 6th path
+        self.assertEqual(self.lifecycle('Stop', name, 'codex'), {})
+
     def test_knowledge_update_requires_a_recent_file_not_a_ref_alone(self):
         receipt = {'refs': ['knowledge/concepts/existing.md']}
         note = self.vault / receipt['refs'][0]
@@ -529,8 +557,8 @@ class HookInstallerTest(unittest.TestCase):
         note.write_text('# Updated\nNew knowledge.\n', encoding='utf-8')
         os.utime(note, (30, 30))
         self.assertTrue(self.hook._has_knowledge_update(self.vault, receipt, 20))
-        # A recent note still counts even when the receipt cites another source.
-        self.assertTrue(self.hook._has_knowledge_update(self.vault, {'refs': ['notes/task.md']}, 20))
+        # A parallel session's recent note does not count when this receipt does not cite it (#509).
+        self.assertFalse(self.hook._has_knowledge_update(self.vault, {'refs': ['notes/task.md']}, 20))
         note.unlink()
         self.assertFalse(self.hook._has_knowledge_update(self.vault, receipt, 20))
 
@@ -597,13 +625,16 @@ class HookInstallerTest(unittest.TestCase):
                 with self.subTest(root=root, via_ref=via_ref):
                     name = f'human-root-{index}-{via_ref}'
                     session = hashlib.sha256(name.encode()).hexdigest()[:24]
-                    self.lifecycle('PostToolUse', name, 'claude')
                     note = self.vault / root / 'Ajanlar' / f'wal-{name}.md'
                     note.parent.mkdir(parents=True, exist_ok=True)
-                    note.write_text('# WAL\n', encoding='utf-8')
-                    refs = ['notes/task.md']
                     if via_ref:
-                        refs.append(note.relative_to(self.vault).as_posix())
+                        self.lifecycle('PostToolUse', name, 'claude')
+                        note.write_text('# WAL\n', encoding='utf-8')
+                        refs = ['notes/task.md', note.relative_to(self.vault).as_posix()]
+                    else:
+                        note.write_text('# WAL\n', encoding='utf-8')
+                        self.lifecycle('PostToolUse', name, 'claude', tool_input={'file_path': str(note)})
+                        refs = ['notes/task.md']
                     engine.receipt(f'{name}-1', summary, refs, 'claude', session=session)
                     self.assertEqual(self.lifecycle('Stop', name, 'claude'), {})
                     os.utime(note, (0, 0))  # keep the folder scan of the next case honest
