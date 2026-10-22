@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections import Counter
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 import functools
 import hashlib
 import json
@@ -194,6 +194,36 @@ def _allowed_statuses(statuses):
     if isinstance(statuses, str):
         statuses = [statuses]
     return {_status_word({"status": value}) for value in statuses}
+
+
+CLOSED_TASK_STATUSES = frozenset((
+    "done", "cancelled", "canceled", "kapandi", "completed",
+    "tamamlandi", "iptal", "closed", "bitti", "cozuldu", "resolved"
+))
+
+
+def _is_task(record):
+    return record.get("kind") == "task" or str(record.get("source", "")).startswith("tasks/")
+
+
+def _is_closed_task(record):
+    return _is_task(record) and _status_word(record) in CLOSED_TASK_STATUSES
+
+
+def is_due_task(record, today=None):
+    if not _is_task(record):
+        return False
+    if _status_word(record) not in ("active", "waiting", "inbox"):
+        return False
+    raw_due = record.get("due_at")
+    if not raw_due:
+        return False
+    try:
+        due = date.fromisoformat(str(raw_due)[:10]).isoformat()
+    except (ValueError, TypeError):
+        return False
+    target_today = str(today)[:10] if today else date.today().isoformat()
+    return due <= target_today
 
 
 def _supersedes_key(value):
@@ -942,10 +972,10 @@ class MemoryStore:
             db.execute("INSERT OR IGNORE INTO receipts VALUES (?,?)", (event_id, payload))
         return dict(event, id=event_id, status="succeeded")
 
-    def retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, strict=False):
-        return self._retrieve(query, project, audience, statuses, limit, budget_chars, strict=strict)
+    def retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, strict=False, today=None):
+        return self._retrieve(query, project, audience, statuses, limit, budget_chars, strict=strict, today=today)
 
-    def candidates(self, query, project=None, audience="internal", statuses=None, limit=32, strict=False):
+    def candidates(self, query, project=None, audience="internal", statuses=None, limit=32, strict=False, today=None):
         """Bounded eligible candidates before any final context packing.
 
         Callers must build separately bounded provider cards and pack final output.
@@ -954,12 +984,23 @@ class MemoryStore:
         if type(limit) is not int or not 0 <= limit <= 128:
             raise ValueError("candidate limit must be 0..128")
         return self._retrieve(query, project, audience, statuses, limit, 0,
-                              strict=strict, candidate_only=True)
+                              strict=strict, candidate_only=True, today=today)
 
-    def snapshot_context(self, audience="internal", budget_chars=6000, limit=5, project=None):
+    def snapshot_context(self, audience="internal", budget_chars=6000, limit=5, project=None, today=None):
         """Explicit bounded current-state snapshot; normal empty queries abstain."""
-        return self._retrieve("", project=project, audience=audience, statuses=("active", "waiting"),
-                              limit=limit, budget_chars=budget_chars, snapshot=True)
+        return self._retrieve("", project=project, audience=audience, statuses=("active", "waiting", "inbox"),
+                              limit=limit, budget_chars=budget_chars, snapshot=True, today=today)
+
+    def due_tasks_context(self, audience="internal", budget_chars=1500, limit=5, project=None, today=None):
+        """Bounded due task snapshot when ambient snapshot is skipped."""
+        with self._connect() as db:
+            rows = db.execute("SELECT payload FROM records WHERE payload LIKE '%\"due_at\"%' ORDER BY id")
+            records = [json.loads(row[0]) for row in rows]
+        eligible, stale_count = self._eligible(audience=audience, project=project, records=records)
+        today_iso = str(today)[:10] if today else date.today().isoformat()
+        due_records = [r for r in eligible if is_due_task(r, today_iso)]
+        due_records.sort(key=lambda r: (str(r.get("due_at", ""))[:10], r.get("id", "")))
+        return pack_context(due_records, limit, budget_chars, stale_count)
 
     def source_snapshot(self, source_names, audience="internal", budget_chars=3000, source_directory=None, text_transform=None):
         """Return a bounded, source-verified continuity set in requested order."""
@@ -1119,15 +1160,22 @@ class MemoryStore:
     def _name_match_score(record, terms):
         return _name_match_score(record, terms)
 
-    def _strict_rank(self, ranked, terms, vocabularies, name_scores=None):
+    is_due_task = staticmethod(is_due_task)
+
+    def _strict_rank(self, ranked, terms, vocabularies, name_scores=None, today=None, allowed_statuses=None):
         """Keep meaningful matches without making one-word queries impossible."""
         min_shared = min(self.STRICT_MIN_SHARED, len(terms))
         min_weight = self.STRICT_SINGLE_TERM_MIN_WEIGHT if len(terms) == 1 else self.STRICT_MIN_WEIGHT
+        today_iso = str(today)[:10] if today else date.today().isoformat()
         weighted = []
         for weight, shared_count, record in self._lexical_weights(ranked, terms, vocabularies):
             if shared_count >= min_shared and weight >= min_weight:
                 if name_scores and record["id"] in name_scores:
                     weight += self.NAME_MATCH_STRICT_WEIGHT * name_scores[record["id"]]
+                if is_due_task(record, today_iso):
+                    weight += self.DUE_STRICT_BONUS
+                elif allowed_statuses is None and _is_closed_task(record):
+                    weight -= self.CLOSED_TASK_PENALTY
                 weighted.append((weight, record))
         return self._by_weight(weighted)
 
@@ -1135,8 +1183,11 @@ class MemoryStore:
     BM25_B = 0.75
     NAME_MATCH_WEIGHT = 20.0
     NAME_MATCH_STRICT_WEIGHT = 10.0
+    DUE_BONUS = 50.0
+    DUE_STRICT_BONUS = 25.0
+    CLOSED_TASK_PENALTY = 50.0
 
-    def _weighted_rank(self, ranked, terms, term_counts, name_scores=None):
+    def _weighted_rank(self, ranked, terms, term_counts, name_scores=None, today=None, allowed_statuses=None):
         """Order without dropping anything: Okapi BM25 over stem counts, no thresholds.
 
         A raw shared-term count favours whichever note has the largest vocabulary, so one long
@@ -1148,6 +1199,7 @@ class MemoryStore:
         lengths = {rid: sum(counts.values()) for rid, counts in term_counts.items()}
         average = sum(lengths.values()) / total if total else 0
         frequency = {term: sum(1 for counts in term_counts.values() if term in counts) for term in terms}
+        today_iso = str(today)[:10] if today else date.today().isoformat()
         weighted = []
         for _, record in ranked:
             counts = term_counts[record["id"]]
@@ -1157,6 +1209,10 @@ class MemoryStore:
                          for term in terms if counts.get(term))
             if name_scores and record["id"] in name_scores:
                 weight += self.NAME_MATCH_WEIGHT * name_scores[record["id"]]
+            if is_due_task(record, today_iso):
+                weight += self.DUE_BONUS
+            elif allowed_statuses is None and _is_closed_task(record):
+                weight -= self.CLOSED_TASK_PENALTY
             weighted.append((weight, record))
         return self._by_weight(weighted)
 
@@ -1228,7 +1284,7 @@ class MemoryStore:
         """Ids retired by any trusted record, not only by the ones this reader may see (#201)."""
         return resolve_supersedes(self._records() if records is None else records)[0]
 
-    def _retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, snapshot=False, strict=False, candidate_only=False):
+    def _retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, snapshot=False, strict=False, candidate_only=False, today=None):
         if audience not in ("public", "internal", "private"):
             raise ValueError("invalid audience")
         if not isinstance(query, str) or type(limit) is not int or limit < 0 or type(budget_chars) is not int or budget_chars < 0:
@@ -1290,9 +1346,11 @@ class MemoryStore:
             if score or name_score or scoped_listing or snapshot:
                 ranked.append((score, record))
         if strict and not snapshot:
-            ranked = self._strict_rank(ranked, terms, vocabularies, name_scores=name_scores)
+            ranked = self._strict_rank(ranked, terms, vocabularies, name_scores=name_scores,
+                                       today=today, allowed_statuses=allowed_statuses)
         else:
-            ranked = self._weighted_rank(ranked, terms, term_counts, name_scores=name_scores)
+            ranked = self._weighted_rank(ranked, terms, term_counts, name_scores=name_scores,
+                                         today=today, allowed_statuses=allowed_statuses)
         if candidate_only:
             return [record for _, record in ranked[:limit]]
         return pack_context([record for _, record in ranked], limit, budget_chars, stale_count)
