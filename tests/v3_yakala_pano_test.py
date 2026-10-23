@@ -357,8 +357,12 @@ class FakeWin32:
         self.formats, self.busy, self.slack, self.unlockable = dict(formats), busy, slack, set(unlockable)
         self.is_open, self.locked, self.asked, self.closed, self.buffers = False, set(), [], 0, {}
         for name in ('OpenClipboard', 'CloseClipboard', 'IsClipboardFormatAvailable', 'RegisterClipboardFormatW',
-                     'GetClipboardData', 'GlobalSize', 'GlobalLock', 'GlobalUnlock'):
+                     'GetClipboardData', 'GlobalSize', 'GlobalLock', 'GlobalUnlock', 'DragQueryFileW',
+                     'GetClipboardSequenceNumber'):
             setattr(self, name, Call(getattr(self, '_' + name)))
+
+    def _GetClipboardSequenceNumber(self):
+        return 42
 
     def _OpenClipboard(self, _window):
         assert not self.is_open
@@ -405,6 +409,25 @@ class FakeWin32:
         self.locked.remove(handle)
         return 0
 
+    def _DragQueryFileW(self, handle, index, buffer, size):
+        data = self.formats.get(handle - 0x7FF000000000) if handle else None
+        if not data or len(data) < 20:
+            return 0
+        pFiles = struct.unpack_from('<I', data, 0)[0]
+        raw = data[pFiles:]
+        paths = [p for p in raw.decode('utf-16-le', 'ignore').split('\0') if p]
+        if index == 0xFFFFFFFF:
+            return len(paths)
+        if 0 <= index < len(paths):
+            path = paths[index]
+            if buffer is None or size == 0:
+                return len(path)
+            for i, ch in enumerate(path[:size - 1]):
+                buffer[i] = ch
+            buffer[min(len(path), size - 1)] = '\0'
+            return min(len(path), size - 1)
+        return 0
+
 
 class WindowsReaderFlowTest(unittest.TestCase):
     """_win_clipboard_payload() against a recording stand-in for user32/kernel32, on every OS.
@@ -415,9 +438,10 @@ class WindowsReaderFlowTest(unittest.TestCase):
 
     def read(self, formats, limit=None, **options):
         import ctypes
+        snapshot = options.pop('snapshot', False)
         fake = FakeWin32(formats, **options)
         with patch.object(ctypes, 'WinDLL', lambda _name: fake, create=True), patch.object(time, 'sleep') as sleep:
-            payload = yakala._win_clipboard_payload(**({'limit': limit} if limit else {}))
+            payload = yakala._win_clipboard_payload(**({'limit': limit} if limit else {}), snapshot=snapshot)
         self.assertFalse(fake.is_open)
         self.assertEqual(fake.locked, set())
         return payload, fake, sleep
@@ -470,6 +494,21 @@ class WindowsReaderFlowTest(unittest.TestCase):
             with patch.object(yakala, '_clipboard_payload', yakala._win_clipboard_payload):
                 self.assertIsNone(yakala.clipboard_image('', {}))  # the popup sees "no picture", not the error
         self.assertEqual(fake.closed, 2)
+
+    def test_file_drop_format_is_extracted_when_snapshot_requested(self):
+        with tempfile.NamedTemporaryFile(suffix='.txt') as tmp1, tempfile.NamedTemporaryFile(suffix='.pdf') as tmp2:
+            paths = [tmp1.name, tmp2.name]
+            drop = file_drop(*paths)
+            payload, fake, _ = self.read({15: drop}, snapshot=True)
+            self.assertEqual(payload.get('dosyalar'), paths)
+            self.assertEqual(payload.get('text'), '')
+            self.assertFalse(payload['image'])
+
+    def test_file_drop_is_ignored_when_snapshot_not_requested(self):
+        with tempfile.NamedTemporaryFile(suffix='.txt') as tmp:
+            payload, fake, _ = self.read({15: file_drop(tmp.name)}, snapshot=False)
+            self.assertNotIn('dosyalar', payload)
+            self.assertFalse(payload['image'])
 
 
 class Widget:
@@ -1206,6 +1245,14 @@ class WindowsClipboardTest(unittest.TestCase):
             del thumb
         finally:
             root.destroy()
+
+    def test_file_drop_round_trip_in_snapshot(self):
+        with tempfile.NamedTemporaryFile(suffix='.txt') as tmp:
+            set_clipboard({15: file_drop(tmp.name)})
+            payload = self.payload(snapshot=True)
+            self.assertEqual(payload.get('dosyalar'), [tmp.name])
+            self.assertEqual(payload.get('text'), '')
+            self.assertFalse(payload['image'])
 
 
 if __name__ == '__main__':

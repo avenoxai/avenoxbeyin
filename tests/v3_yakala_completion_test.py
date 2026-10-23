@@ -209,6 +209,36 @@ class WindowsPolicyTest(unittest.TestCase):
                 y._collect_windows({}, '/unused', '/unused')
         self.assertIn(((image,), {}), [(c.args, c.kwargs) for c in done.call_args_list])
 
+    def test_windows_collect_clipboard_files_leads_without_browser_link(self):
+        with patch.object(y, '_windows_clipboard', return_value={'dosyalar': ['C:/test/sample.pdf'], 'sequence': 12}), \
+                patch.object(y, 'clipboard_fresh', return_value=True), \
+                patch.object(y, 'clipboard_image', return_value=None), \
+                patch.object(y, 'windows_enrich', side_effect=lambda ctx, cancel=None: ctx), \
+                patch.object(y, 'window_image', return_value=None):
+            result = y._collect_windows({'pano_sira': 12}, '/unused', '/unused')
+        self.assertEqual(result['context'].get('dosyalar'), ['C:/test/sample.pdf'])
+        self.assertTrue(result['context'].get('dosyalar_pano'))
+        file_source = next(s for s in result['sources'] if s['kind'] == 'file')
+        self.assertTrue(file_source['on'])
+        self.assertTrue(file_source['clipboard'])
+        self.assertEqual(y._source_arguments(result['sources'])['files'], ['C:/test/sample.pdf'])
+
+    def test_windows_collect_clipboard_files_unselected_when_browser_page_leads(self):
+        with patch.object(y, '_windows_clipboard', return_value={'dosyalar': ['C:/test/sample.pdf'], 'sequence': 12}), \
+                patch.object(y, 'clipboard_fresh', return_value=True), \
+                patch.object(y, 'clipboard_image', return_value=None), \
+                patch.object(y, 'windows_enrich', return_value={'url': 'https://example.org/page'}), \
+                patch.object(y, 'window_image', return_value=None):
+            result = y._collect_windows({'pano_sira': 12}, '/unused', '/unused')
+        self.assertEqual(result['context'].get('dosyalar'), ['C:/test/sample.pdf'])
+        page_source = next(s for s in result['sources'] if s['kind'] == 'url')
+        file_source = next(s for s in result['sources'] if s['kind'] == 'file')
+        self.assertTrue(page_source['on'])
+        self.assertFalse(file_source['on'])
+        self.assertTrue(file_source['clipboard'])
+        self.assertEqual(y._source_arguments(result['sources'])['url'], 'https://example.org/page')
+        self.assertEqual(y._source_arguments(result['sources'])['files'], [])
+
 
 class CommitAndFilesTest(unittest.TestCase):
     def setUp(self):
