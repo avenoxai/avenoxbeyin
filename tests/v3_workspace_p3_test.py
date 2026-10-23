@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'template/.claude/scripts'))
 import v3_workspace_discovery_test as fixture
@@ -10,6 +11,7 @@ import v3_workspace_p2_test as p2_fixture
 from v3_package_helpers import inherited_env
 from v3_workspace_test_io import run_json_cli
 from beyin_v3_sync import SyncEngine, render
+from beyin_v3_sources import SourceResolver
 from beyin_v3_workspace_discovery import preview
 from beyin_v3_workspace_setup import execute
 from beyin_v3_workspace_context import membership_hash
@@ -158,6 +160,49 @@ class NeedPreviewTest(unittest.TestCase):
         self.assertEqual(result['record_candidates'][0]['record_id'], 'p3-legacy')
         self.assertEqual(path.read_bytes(), before)
         self.assertFalse(case.state.joinpath('workspace-contexts').exists())
+
+    def test_owner_write_revocation_during_preview_hides_candidate(self):
+        for legacy in (False, True):
+            with self.subTest(assigned_legacy_owner=legacy):
+                case = p2_fixture.WorkspaceP2Test('test_explicit_owner_record_is_one_id_in_two_authorized_workspaces')
+                case.setUp()
+                self.addCleanup(case.doCleanups)
+                record_id = 'academic-learning'
+                if legacy:
+                    record_id = 'p3-assigned-owner'
+                    path = case.vault/'notes/p3-assigned-owner.md'
+                    path.write_text(render({'id': record_id, 'kind': 'note', 'revision': 1,
+                                            'visibility': 'internal'}, 'Assigned legacy candidate.'), encoding='utf-8')
+                    SyncEngine(case.vault, case.state).sync()
+                    case._adopt(case.academic_spec, record_id)
+                    case.runtime.assign_legacy_owner(record_id, 'academic', 'academic-user',
+                                                     membership_hash(case.runtime.registry))
+                case._authorize_owner_share()
+                request = dict(goal='Review owner-controlled note', workspace_id='custom',
+                    grant_ref='custom-user', evidence=[], candidate_record_ids=[record_id],
+                    decision=dict(kind='record_only', rationale='Existing custom workspace fits.'))
+                original = SourceResolver.resolve
+                revoked = []
+                def revoke_after_owner_resolve(resolver, workspace_id, source_id, name, grant_ref, **kwargs):
+                    resolved = original(resolver, workspace_id, source_id, name, grant_ref, **kwargs)
+                    if (not revoked and workspace_id == 'academic' and
+                            kwargs.get('access') == 'write_memory'):
+                        revoked.append(True)
+                        target_binding = case.runtime.registry.bindings()[0]['custom-vault']
+                        case.runtime.authority.record_approval('custom-user', machine_id='fixture-machine',
+                            permissions=[dict(workspace_id='custom', source_id='custom-vault',
+                                              locator=target_binding['locator'], access='read')],
+                            audiences=('internal',), evidence='Synthetic owner-write revocation during preview')
+                    return resolved
+                with patch.object(SourceResolver, 'resolve', revoke_after_owner_resolve):
+                    result = preview(case.vault, case.state, request)
+                self.assertTrue(revoked)
+                target_binding = case.runtime.registry.bindings()[0]['custom-vault']
+                self.assertTrue(case.runtime.authority.allows('custom-user', target_binding, 'custom'))
+                self.assertEqual(result['record_candidates'], [])
+                self.assertIn('authorization_or_snapshot_changed', result['review'])
+                self.assertNotIn('academic-learning.md' if not legacy else 'p3-assigned-owner.md',
+                                 json.dumps(result))
 
     def test_setup_action_returns_the_same_read_only_preview(self):
         result, code = execute(self.vault, self.state, 'preview', self.request(

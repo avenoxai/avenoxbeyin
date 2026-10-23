@@ -384,12 +384,23 @@ def preview(vault, state, payload, *, readers=None):
                 fresh_sources = False
         except (WorkspaceError, OSError, ValueError):
             fresh_sources = False
+    # A grant can be revoked while the first owner resolution is in flight.
+    # Recheck every candidate's target read and explicit-owner write grants
+    # before returning paths, hashes or revisions to the caller.
+    try:
+        candidates_still_allowed = all(candidate_allowed(by_id[item['record_id']])
+                                       for item in result['record_candidates'])
+    except (WorkspaceError, OSError, ValueError):
+        candidates_still_allowed = False
     if (latest['snapshot_sha256'] != snapshot['snapshot_sha256'] or
             registry.bindings(latest)[1] != binding_hash or membership_hash(registry) != membership_before or
-            not fresh_sources or latest_profile is None or
+            not fresh_sources or not candidates_still_allowed or latest_profile is None or
             not any(b['source_id'] in latest_profile['source_ids'] and
                     runtime.authority.allows(grant, b, wid, audience=request.get('audience', 'internal'))
                     for b in registry.bindings(latest)[0].values())):
         result['record_candidates'] = []
+        result.pop('expected_membership_sha256', None)
+        result['review'] = [item for item in result['review']
+                            if not item.startswith('record_relation_unconfirmed:')]
         result['review'].append('authorization_or_snapshot_changed')
     return result
