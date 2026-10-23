@@ -9,7 +9,7 @@ import v3_workspace_discovery_test as fixture
 import v3_workspace_p2_test as p2_fixture
 from v3_package_helpers import inherited_env
 from v3_workspace_test_io import run_json_cli
-from beyin_v3_sync import SyncEngine
+from beyin_v3_sync import SyncEngine, render
 from beyin_v3_workspace_discovery import preview
 from beyin_v3_workspace_setup import execute
 from beyin_v3_workspace_context import membership_hash
@@ -87,7 +87,7 @@ class NeedPreviewTest(unittest.TestCase):
         result = preview(self.vault, self.state, self.request('Review customer issue',
             evidence=[selector], candidate_record_ids=['customer-issue']))
         self.assertEqual(result['record_candidates'], [])
-        self.assertIn('candidate_scope_or_source_review', result['review'])
+        self.assertIn('record_unavailable_or_denied:customer-issue', result['review'])
 
     def test_stale_index_record_cannot_be_nominated_by_old_hash(self):
         selector = self.case.note('bug-17')
@@ -99,7 +99,7 @@ class NeedPreviewTest(unittest.TestCase):
         self.assertEqual(result['record_candidates'], [])
         self.assertIn('record_unavailable_or_denied:bug-17', result['review'])
 
-    def test_p2_membership_revocation_removes_shared_candidate(self):
+    def test_p2_released_record_is_visible_only_with_owner_authority_and_exact_cas(self):
         case = p2_fixture.WorkspaceP2Test('test_explicit_owner_record_is_one_id_in_two_authorized_workspaces')
         case.setUp()
         self.addCleanup(case.doCleanups)
@@ -112,10 +112,52 @@ class NeedPreviewTest(unittest.TestCase):
             candidate_record_ids=['academic-learning'])
         before = preview(case.vault, case.state, request)
         self.assertEqual(before['record_candidates'][0]['record_id'], 'academic-learning')
+        self.assertEqual(before['expected_membership_sha256'], membership_hash(case.runtime.registry))
         case.runtime.release_membership('academic-learning', 'custom', 'academic-user',
                                         membership_hash(case.runtime.registry))
         after = preview(case.vault, case.state, request)
-        self.assertEqual(after['record_candidates'], [])
+        self.assertEqual(after['record_candidates'][0]['record_id'], 'academic-learning')
+        self.assertNotEqual(after['expected_membership_sha256'], before['expected_membership_sha256'])
+        with self.assertRaisesRegex(ValueError, 'membership_changed'):
+            case._adopt(case.custom_spec, 'academic-learning', before['expected_membership_sha256'])
+        case.runtime.authority.revoke('custom-user')
+        denied = preview(case.vault, case.state, request)
+        self.assertEqual(denied['record_candidates'], [])
+
+    def test_unadopted_explicit_owner_candidate_requires_owner_write(self):
+        case = p2_fixture.WorkspaceP2Test('test_explicit_owner_record_is_one_id_in_two_authorized_workspaces')
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        request = dict(goal='Review a shared technical note', workspace_id='custom',
+            grant_ref='custom-user', evidence=[],
+            decision=dict(kind='record_only', rationale='Existing custom workspace fits.'),
+            candidate_record_ids=['academic-learning'])
+        denied = preview(case.vault, case.state, request)
+        self.assertEqual(denied['record_candidates'], [])
+        self.assertNotIn('academic-learning.md', json.dumps(denied))
+        case._authorize_owner_share()
+        offered = preview(case.vault, case.state, request)
+        self.assertEqual(offered['record_candidates'][0]['record_id'], 'academic-learning')
+        self.assertEqual(offered['expected_membership_sha256'], membership_hash(case.runtime.registry))
+        case._adopt(case.custom_spec, 'academic-learning', offered['expected_membership_sha256'])
+        self.assertEqual(case._record(case.custom_request, 'academic-learning')[1]['id'], 'academic-learning')
+
+    def test_unassigned_legacy_record_can_be_reviewed_before_first_membership(self):
+        case = p2_fixture.WorkspaceP2Test('test_legacy_unscoped_adoption_still_reads_in_two_workspaces')
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        path = case.vault/'notes/p3-legacy.md'
+        path.write_text(render({'id': 'p3-legacy', 'kind': 'note', 'revision': 1,
+                                'visibility': 'internal'}, 'Legacy candidate.'), encoding='utf-8')
+        SyncEngine(case.vault, case.state).sync()
+        request = dict(goal='Review legacy method', workspace_id='academic', grant_ref='academic-user',
+            evidence=[], candidate_record_ids=['p3-legacy'],
+            decision=dict(kind='record_only', rationale='Existing academic workspace fits.'))
+        before = case.vault.joinpath('notes/p3-legacy.md').read_bytes()
+        result = preview(case.vault, case.state, request)
+        self.assertEqual(result['record_candidates'][0]['record_id'], 'p3-legacy')
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse(case.state.joinpath('workspace-contexts').exists())
 
     def test_setup_action_returns_the_same_read_only_preview(self):
         result, code = execute(self.vault, self.state, 'preview', self.request(

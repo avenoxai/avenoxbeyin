@@ -11,7 +11,7 @@ from v3_workspace_helpers import FIX,ROOT,install_fixture
 from v3_workspace_test_io import load_utf8_json, run_json_cli
 from beyin_v3_workspace_memory import MemoryIntentService
 from beyin_v3_workspaces import WorkspaceError,content_hash,canonical_bytes
-from beyin_v3_workspace_context import WorkspaceRuntime
+from beyin_v3_workspace_context import WorkspaceRuntime, membership_hash
 
 
 class WorkspaceMemoryTest(unittest.TestCase):
@@ -227,7 +227,7 @@ class WorkspaceMemoryTest(unittest.TestCase):
         self.runtime.registry.compare_and_save(envelope('WorkspaceProfile',profile),content_hash(path.read_bytes()))
         self.service.engine.sync()
         adopted=copy.deepcopy(self.spec);adopted['desired_profile']=profile
-        self.runtime.adopt(envelope('WorkspaceSpec',adopted))
+        self.runtime.adopt(envelope('WorkspaceSpec',adopted), membership_hash(self.runtime.registry))
         context=self.runtime.context(self.request)['data']
         record=next(r for r in context['records'] if r['id']=='academic-task')
         intent=copy.deepcopy(self.intent)

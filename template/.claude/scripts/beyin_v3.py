@@ -1208,7 +1208,7 @@ class MemoryStore:
         with self._connect() as db:
             return [json.loads(row[0]) for row in db.execute("SELECT payload FROM records ORDER BY id")]
 
-    def _eligible(self, audience="internal", project=None, rejected_only=False, records=None):
+    def _eligible(self, audience="internal", project=None, rejected_only=False, records=None, workspace_policy=None):
         """Visibility, trust, project and source-freshness gates shared by every retrieval path.
 
         rejected_only inverts the rejection gate alone, for rejected_matches: the same
@@ -1225,7 +1225,7 @@ class MemoryStore:
         eligible = []
         stale_count = 0
         for record in records:
-            if not self._workspace_allowed(record, audience):
+            if not (workspace_policy or self._workspace_allowed)(record, audience):
                 continue
             # Old indexes can still hold these notes until the next sync. Never deliver them.
             if sensitive_source(record.get("source")):

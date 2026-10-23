@@ -81,7 +81,7 @@ from beyin_v3_parser_probe import document_capabilities
 from beyin_v3_builder import plan,provisioner
 from beyin_v3_workspaces import Registry,LocalAuthority
 from beyin_v3_sync import SyncEngine
-from beyin_v3_workspace_context import WorkspaceRuntime
+from beyin_v3_workspace_context import membership_hash, WorkspaceRuntime
 from beyin_v3_workspace_memory import MemoryIntentService
 value=json.loads(Path(sys.argv[3]).read_bytes());spec=value['spec'];request=value['request']
 capabilities={c['name']:c['state'] for c in document_capabilities(vault)}
@@ -94,7 +94,7 @@ auth=LocalAuthority(Registry(vault,state))
 auth.record_approval('fixture-user-request',machine_id='fixture-machine',permissions=value['permissions'],evidence='Synthetic explicit source grant')
 auth.approve_plan(document,evidence='Synthetic exact plan preview consent')
 assert provisioner(vault,state).apply(document,'installed-i1')['data']['workspace_health']=='verification_pending'
-SyncEngine(vault,state).sync();runtime=WorkspaceRuntime(vault,state);runtime.adopt(spec);runtime.activate()
+SyncEngine(vault,state).sync();runtime=WorkspaceRuntime(vault,state);runtime.adopt(spec, membership_hash(runtime.registry));runtime.activate()
 context=runtime.context(request)['data'];records={r['id']:r for r in context['records']}
 assert {'academic-topic','academic-task','academic-result','academic-learning'}<=records.keys()
 assert any(r['source_ref']['fragment']=={'kind':'pdf_page','page':1} and 'Türkçe quartz öğrenim PDF' in r['text'] for r in records.values())

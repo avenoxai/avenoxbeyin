@@ -12,7 +12,7 @@ from beyin_v3_workspaces import envelope,validate_for_provision
 from beyin_v3_workspace_plan import plan_workspace
 from beyin_v3_provision import Provisioner
 from beyin_v3_workspace_lifecycle import LifecycleService
-from beyin_v3_workspace_context import request_scope
+from beyin_v3_workspace_context import request_scope, membership_hash
 from beyin_v3_sync import SyncEngine,render
 
 
@@ -54,7 +54,7 @@ class PrivacyLifecycleTest(unittest.TestCase):
         SyncEngine(vault,state).sync();mapping=state/'workspace-legacy-map.json';mapping.write_text(json.dumps({'OldProject':'another'}))
         adoption=state/'workspace-adoptions.json';before=adoption.read_bytes()
         with self.assertRaisesRegex(ValueError,'legacy_mapping_conflict'):
-            LifecycleService(self.runtime).adopt_legacy('OldProject','academic','academic-user')
+            LifecycleService(self.runtime).adopt_legacy('OldProject','academic','academic-user',membership_hash(self.runtime.registry))
         self.assertEqual(adoption.read_bytes(),before)
 
     def test_legacy_folder_adoption_does_not_globalize_shared_unscoped(self):
@@ -65,7 +65,7 @@ class PrivacyLifecycleTest(unittest.TestCase):
             (root/(name+'.md')).write_text(render(dict(id='legacy-'+name,revision=1,kind='note',visibility='internal',**metadata),'Legacy '+name))
         (vault/'notes/unscoped.md').write_text(render(dict(id='legacy-global',revision=1,kind='note',visibility='internal'),'Unscoped'))
         SyncEngine(vault,state).sync();before={p:p.read_bytes() for p in vault.rglob('*.md')}
-        adopted=LifecycleService(self.runtime).adopt_legacy('OldProject','academic','academic-user')
+        adopted=LifecycleService(self.runtime).adopt_legacy('OldProject','academic','academic-user',membership_hash(self.runtime.registry))
         self.assertEqual(adopted,['legacy-adopted'])
         self.assertEqual({p:p.read_bytes() for p in before},before)
         with request_scope('academic','academic-user'):

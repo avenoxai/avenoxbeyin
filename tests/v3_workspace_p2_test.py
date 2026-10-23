@@ -44,11 +44,12 @@ class WorkspaceP2Test(unittest.TestCase):
         context = self.runtime.context(self._subject_request(request, record_id))['data']
         return context, next((r for r in context['records'] if r['id'] == record_id), None)
 
-    def _adopt(self, spec, record_id):
+    def _adopt(self, spec, record_id, expected_membership_sha256=None):
         document = copy.deepcopy(spec)
         wid = document['desired_profile']['id']
         document['adopt_record_refs'] = [{'workspace_id': wid, 'record_id': record_id}]
-        return self.runtime.adopt(envelope('WorkspaceSpec', document))
+        expected = membership_hash(self.runtime.registry) if expected_membership_sha256 is None else expected_membership_sha256
+        return self.runtime.adopt(envelope('WorkspaceSpec', document), expected)
 
     def _authorize_owner_share(self):
         """The adopting reference has explicit owner write and member read authority."""
@@ -108,6 +109,34 @@ class WorkspaceP2Test(unittest.TestCase):
         self._adopt(self.custom_spec, 'academic-learning')
         _, shared = self._record(self.custom_request, 'academic-learning')
         self.assertEqual(shared['id'], 'academic-learning')
+
+    def test_assigned_legacy_owner_must_authorize_a_new_share(self):
+        path = self.vault/'notes/p2-assigned-share.md'
+        path.write_text(render({'id': 'p2-assigned-share', 'kind': 'note', 'revision': 1,
+                                'visibility': 'internal'}, 'Legacy owner can control sharing.'), encoding='utf-8')
+        SyncEngine(self.vault, self.state).sync()
+        self._adopt(self.academic_spec, 'p2-assigned-share')
+        self.runtime.assign_legacy_owner('p2-assigned-share', 'academic', 'academic-user',
+                                         membership_hash(self.runtime.registry))
+        before = path.read_bytes()
+        with self.assertRaisesRegex(WorkspaceError, 'adoption_scope_conflict'):
+            self._adopt(self.custom_spec, 'p2-assigned-share')
+        self.assertEqual(path.read_bytes(), before)
+        self.assertIsNone(self._record(self.custom_request, 'p2-assigned-share')[1])
+        self._authorize_owner_share()
+        self._adopt(self.custom_spec, 'p2-assigned-share')
+        self.assertEqual(self._record(self.custom_request, 'p2-assigned-share')[1]['id'], 'p2-assigned-share')
+
+    def test_stale_adoption_cannot_restore_released_membership(self):
+        self._authorize_owner_share()
+        self._adopt(self.custom_spec, 'academic-learning')
+        reviewed = membership_hash(self.runtime.registry)
+        self.runtime.release_membership('academic-learning', 'custom', 'academic-user', reviewed)
+        released = (self.state/'workspace-adoptions.json').read_bytes()
+        with self.assertRaisesRegex(WorkspaceError, 'membership_changed'):
+            self._adopt(self.custom_spec, 'academic-learning', reviewed)
+        self.assertEqual((self.state/'workspace-adoptions.json').read_bytes(), released)
+        self.assertIsNone(self._record(self.custom_request, 'academic-learning')[1])
 
     def test_shared_read_and_workspace_write_grant_do_not_transfer_edit_ownership(self):
         self._authorize_owner_share()

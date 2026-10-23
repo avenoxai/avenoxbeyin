@@ -12,7 +12,7 @@ from v3_workspace_test_io import load_utf8_json, run_json_cli
 from beyin_v3_workspaces import Registry,LocalAuthority,envelope,validate_for_provision,content_hash,canonical_bytes
 from beyin_v3_workspace_plan import plan_workspace
 from beyin_v3_provision import Provisioner
-from beyin_v3_workspace_context import WorkspaceRuntime
+from beyin_v3_workspace_context import membership_hash, WorkspaceRuntime
 from beyin_v3_workspace_lifecycle import LifecycleService
 from beyin_v3_workspace_memory import MemoryIntentService
 from beyin_v3_workspace_workflow import WorkflowRunner
@@ -46,7 +46,7 @@ def provision_fixture(base,case,*,activate=True):
         check_authority=authority.check_authority,check_snapshot=authority.check_snapshot)
     result=provisioner.apply(plan,'I1-'+case)
     assert result['data']['workspace_health']=='verification_pending'
-    SyncEngine(vault,state).sync();runtime=WorkspaceRuntime(vault,state);runtime.adopt(envelope('WorkspaceSpec',spec))
+    SyncEngine(vault,state).sync();runtime=WorkspaceRuntime(vault,state);runtime.adopt(envelope('WorkspaceSpec',spec), membership_hash(runtime.registry))
     if activate:runtime.activate()
     request=copy.deepcopy(docs['RequestContext']);request['grant_ref']=reference
     return runtime,spec,envelope('RequestContext',request),provisioner,plan

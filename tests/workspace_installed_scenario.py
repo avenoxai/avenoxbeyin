@@ -11,7 +11,7 @@ ocr_enabled=len(sys.argv)>5 and sys.argv[5]=='require-ocr'
 sys.path.insert(0,str(vault/'.claude/scripts'))
 import beyin_v3_workspaces as ws
 from beyin_v3_sources import probe_capabilities
-from beyin_v3_workspace_context import WorkspaceRuntime
+from beyin_v3_workspace_context import membership_hash, WorkspaceRuntime
 from beyin_v3_workspace_plan import plan_workspace
 from beyin_v3_provision import Provisioner
 from beyin_v3_sync import SyncEngine,parse,render
@@ -63,7 +63,7 @@ for case in ('academic','ceramics'):
     authority.approve_plan(plan,evidence='Exact installed plan')
     provisioner=Provisioner(vault,state,validate_document=ws.validate_for_provision,check_authority=authority.check_authority,check_snapshot=authority.check_snapshot)
     provisioner.apply(plan,'installed-'+case)
-    SyncEngine(vault,state).sync();runtime=WorkspaceRuntime(vault,state);runtime.adopt(ws.envelope('WorkspaceSpec',spec));runtime.activate()
+    SyncEngine(vault,state).sync();runtime=WorkspaceRuntime(vault,state);runtime.adopt(ws.envelope('WorkspaceSpec',spec), membership_hash(runtime.registry));runtime.activate()
     request=transform(copy.deepcopy(docs['RequestContext']));request['grant_ref']=reference
     if case=='ceramics':request['query']='yüzey çatladı ceramic firing reçete'
     request=ws.envelope('RequestContext',request)

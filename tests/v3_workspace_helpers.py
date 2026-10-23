@@ -8,7 +8,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'template/.claude/scripts'))
 from beyin_v3_workspaces import Registry,LocalAuthority,envelope,render_document
 from v3_workspace_test_io import load_utf8_json
-from beyin_v3_workspace_context import WorkspaceRuntime
+from beyin_v3_workspace_context import WorkspaceRuntime, membership_hash
 from beyin_v3_sync import SyncEngine
 
 FIX=ROOT/'tests/fixtures/v3/workspaces/v0.1.0'
@@ -34,6 +34,6 @@ def install_fixture(base,case):
     LocalAuthority(registry).record_approval(reference,machine_id='fixture-machine',permissions=permissions,evidence='Explicit synthetic fixture authority')
     spec['authority_ref']=reference
     sync=SyncEngine(vault,state);sync.sync()
-    runtime=WorkspaceRuntime(vault,state);runtime.adopt(envelope('WorkspaceSpec',spec))
+    runtime=WorkspaceRuntime(vault,state);runtime.adopt(envelope('WorkspaceSpec',spec), membership_hash(runtime.registry))
     request=copy.deepcopy(docs['RequestContext']);request['grant_ref']=reference
     return runtime,spec,envelope('RequestContext',request)

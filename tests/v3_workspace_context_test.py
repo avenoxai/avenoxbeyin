@@ -6,7 +6,7 @@ import unittest
 
 from v3_workspace_helpers import install_fixture
 from beyin_v3_workspaces import envelope,WorkspaceError,canonical_bytes,LocalAuthority
-from beyin_v3_workspace_context import (WorkspaceRuntime,request_scope,authorized_record_scope,
+from beyin_v3_workspace_context import (WorkspaceRuntime,membership_hash,request_scope,authorized_record_scope,
     record_allowed,CURRENT,_RECORD_POLICY)
 from beyin_v3_sync import SyncEngine
 
@@ -102,7 +102,7 @@ class WorkspaceContextTest(unittest.TestCase):
         SyncEngine(vault,state).sync()
         for spec in (self.spec,custom_spec):
             adopted=copy.deepcopy(spec);adopted['adopt_record_refs']=[{'workspace_id':spec['desired_profile']['id'],'record_id':'general-method'}]
-            self.runtime.adopt(envelope('WorkspaceSpec',adopted))
+            self.runtime.adopt(envelope('WorkspaceSpec',adopted), membership_hash(self.runtime.registry))
         for request in (self.request,custom_request):
             request=copy.deepcopy(request);wid=request['data']['signals'][0]['workspace_id']
             request['data']['signals'][0]['subject_refs'].append({'workspace_id':wid,'record_id':'general-method'})
@@ -122,7 +122,7 @@ class WorkspaceContextTest(unittest.TestCase):
         after={p.relative_to(state).as_posix():p.read_bytes() for p in state.rglob('*') if p.is_file()}
         self.assertEqual(after,before)
         runtime=WorkspaceRuntime(vault,state,read_only=True)
-        for call in (runtime.activate,lambda:runtime.adopt(envelope('WorkspaceSpec',self.spec)),lambda:runtime.sync(self.request)):
+        for call in (runtime.activate,lambda:runtime.adopt(envelope('WorkspaceSpec',self.spec), membership_hash(runtime.registry)),lambda:runtime.sync(self.request)):
             with self.assertRaisesRegex(WorkspaceError,'read_only_runtime'):call()
 
     def test_new_process_equivalent_store_and_revoked_authority(self):

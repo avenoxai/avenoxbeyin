@@ -9,6 +9,7 @@ from unittest.mock import patch
 from v3_workspace_registry_test import ROOT,FIX
 from beyin_v3_workspaces import Registry,LocalAuthority,WorkspaceError,envelope,render_document,content_hash
 from beyin_v3_sources import SourceResolver,run_reader,default_readers,probe_capabilities
+from beyin_v3_workspace_context import membership_hash
 
 
 class WorkspaceSourcesTest(unittest.TestCase):
@@ -47,7 +48,7 @@ class WorkspaceSourcesTest(unittest.TestCase):
                                for g in binding['grants'])
         runtime.authority.record_approval('academic-user', machine_id='fixture-machine',
             permissions=permissions, evidence='Explicit synthetic approval of the same system-alias roots')
-        runtime.adopt(envelope('WorkspaceSpec', spec)); runtime.activate()
+        runtime.adopt(envelope('WorkspaceSpec', spec), membership_hash(runtime.registry)); runtime.activate()
         context = runtime.context(request)['data']
         record = next(r for r in context['records'] if r['id']=='academic-learning')
         expected = (runtime.registry.vault/record['source_ref']['relative_path']).read_bytes()

@@ -225,12 +225,13 @@ class WorkspaceRuntime:
         from beyin_v3_sync import atomic
         with self.registry.coordinated():atomic(safe_path(self.registry.state,'workspace-runtime.json'),'{"enabled":true}')
 
-    def adopt(self,spec_document,*,_coordinated=False):
+    def adopt(self,spec_document,expected_membership_sha256,*,_coordinated=False):
         if self.read_only:raise WorkspaceError('read_only_runtime')
         validate_document(spec_document)
         if spec_document['type']!='WorkspaceSpec':raise WorkspaceError('invalid_schema')
         spec=spec_document['data'];wid=spec['desired_profile']['id']
         with (nullcontext() if _coordinated else self.registry.coordinated()):
+            if membership_hash(self.registry)!=expected_membership_sha256:raise WorkspaceError('membership_changed')
             snapshot=self.registry.snapshot();profile=next((p for p in snapshot['profiles'] if p['id']==wid),None)
             if profile!=spec['desired_profile'] or profile['lifecycle']!='active':raise WorkspaceError('profile_changed')
             records={r['id']:r for r in self.store._records()};bindings,_=self.registry.bindings(snapshot)
@@ -252,7 +253,7 @@ class WorkspaceRuntime:
                 # safe_path, exact bytes, vault-root binding, and live read grant
                 # were checked above without granting broader source access.
                 owner=record_owner(self.registry,record)
-                if record.get('workspace_id') and owner!=wid:
+                if owner!=wid and (record.get('workspace_id') or record['id'] in _membership_state(self.registry)[1]):
                     owner_profile=next((p for p in snapshot['profiles'] if p['id']==owner and p['lifecycle']=='active'),None)
                     if not owner_profile:raise WorkspaceError('adoption_scope_conflict')
                     owner_sources=[sid for sid,b in bindings.items() if sid in owner_profile['source_ids']

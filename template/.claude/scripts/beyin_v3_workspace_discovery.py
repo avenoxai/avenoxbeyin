@@ -280,12 +280,13 @@ def preview(vault, state, payload, *, readers=None):
     if not ids and not found['evidence']:
         result['review'].append('candidate_records_not_selected')
         return result
-    if not wid or wid not in matches or not grant or found['issues']:
+    if (not wid or wid not in matches or not grant or
+            (found['issues'] and (not ids or any(issue['code'] != 'scope_denied' for issue in found['issues'])))):
         result['review'].append('candidate_scope_or_source_review')
         return result
-    # Reuse P2's live membership/read policy. A read-only store never creates
-    # context tokens, cache entries, grants or adoption state.
-    from beyin_v3_workspace_context import WorkspaceRuntime, authorized_record_scope, membership_hash
+    # A read-only store never creates context tokens, cache entries, grants or
+    # adoption state.
+    from beyin_v3_workspace_context import WorkspaceRuntime, membership_hash, record_owner, scope_ids, _membership_state
     try:
         runtime = WorkspaceRuntime(vault, state, read_only=True)
     except ValueError as exc:
@@ -297,20 +298,60 @@ def preview(vault, state, payload, *, readers=None):
     snapshot = registry.snapshot()
     bindings, binding_hash = registry.bindings(snapshot)
     membership_before = membership_hash(registry)
-    with authorized_record_scope(registry, snapshot, bindings, wid, grant,
-                                 audience=request.get('audience', 'internal')):
-        eligible, _ = runtime.store._eligible(request.get('audience', 'internal'))
-    by_id = {record['id']: record for record in eligible}
+    # A share preview examines candidates before target membership exists.
+    # Preserve the store's freshness, trust and audience checks, then require
+    # live target read and current owner write authority per candidate.
+    audience = request.get('audience', 'internal')
     refs = [item['source_ref'] for item in found['evidence']]
+    selected_ids = set(ids)
+    selected_hashes = {ref['content_sha256'] for ref in refs}
+    selected = [record for record in runtime.store._records()
+                if record['id'] in selected_ids or record['source_sha256'] in selected_hashes]
+    eligible, _ = runtime.store._eligible(audience, records=selected,
+        workspace_policy=lambda record, audience: True)
+    profiles = {p['id']: p for p in snapshot['profiles']}
+    def candidate_allowed(record):
+        if record.get('visibility') == 'private' or record.get('trust') == 'untrusted':
+            return False
+        path = safe_path(Path(vault), record['source'], existing=True)
+        target = profiles.get(wid)
+        if not target or target['lifecycle'] != 'active':
+            return False
+        if not any(sid in target['source_ids'] and
+                local_root_matches(binding['locator'], registry.vault) and
+                runtime.authority.allows(grant, binding, wid, audience=audience)
+                for sid, binding in bindings.items()):
+            return False
+        if wid in scope_ids(registry, record):
+            return True
+        owner = record_owner(registry, record)
+        if owner is None or (not record.get('workspace_id') and record['id'] not in _membership_state(registry)[1]):
+            return True
+        owner_profile = profiles.get(owner)
+        if not owner_profile or owner_profile['lifecycle'] != 'active':
+            return False
+        for sid, binding in bindings.items():
+            if sid not in owner_profile['source_ids'] or not local_root_matches(binding['locator'], registry.vault):
+                continue
+            try:
+                resolved, _, _ = runtime.resolver.resolve(owner, sid, record['source'], grant,
+                                                           access='write_memory')
+                if resolved == path:
+                    return True
+            except WorkspaceError:
+                continue
+        return False
+    by_id = {record['id']: record for record in eligible if candidate_allowed(record)}
     # Exact source identity or byte digest can nominate an existing canonical
     # record. Neither relation decides semantic equivalence or grants editing.
-    matching_ids = [record['id'] for record in eligible if any(
+    matching_ids = [record['id'] for record in by_id.values() if any(
         ref['content_sha256'] == record['source_sha256'] for ref in refs)]
     if refs and not matching_ids and not ids:
         result['review'].append('no_exact_record_match')
     if len(matching_ids) > 32:
         result['review'].append('candidate_matches_truncated')
     ids = list(dict.fromkeys(ids + matching_ids[:32]))[:32]
+    result['expected_membership_sha256'] = membership_before
     for record_id in ids:
         record = by_id.get(record_id)
         if record is None:

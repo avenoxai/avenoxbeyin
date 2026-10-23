@@ -41,7 +41,7 @@ class LifecycleService:
         from beyin_v3_projects import read_project_scopes
         return read_project_scopes(self.registry.vault)
 
-    def adopt_legacy(self,project,workspace_id,authority_ref):
+    def adopt_legacy(self,project,workspace_id,authority_ref,expected_membership_sha256):
         snapshot=self.registry.snapshot();profile=next((p for p in snapshot['profiles'] if p['id']==workspace_id),None)
         if profile is None:raise WorkspaceError('workspace_unavailable')
         from beyin_v3_projects import read_project_scopes
@@ -57,6 +57,6 @@ class LifecycleService:
             path=safe_path(self.registry.state,'workspace-legacy-map.json')
             mapping=parse_document(path.read_bytes()) if path.exists() else {}
             if project in mapping and mapping[project]!=workspace_id:raise WorkspaceError('legacy_mapping_conflict')
-            self.runtime.adopt(spec,_coordinated=True)
+            self.runtime.adopt(spec,expected_membership_sha256,_coordinated=True)
             mapping[project]=workspace_id;atomic(path,canonical_bytes(mapping).decode())
         return ids

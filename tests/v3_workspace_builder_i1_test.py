@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
 from beyin_v3_workspaces import Registry, LocalAuthority, envelope, validate_document
 from beyin_v3_workspace_plan import plan_workspace
 from beyin_v3_provision import Provisioner
-from beyin_v3_workspace_context import WorkspaceRuntime
+from beyin_v3_workspace_context import membership_hash, WorkspaceRuntime
 from beyin_v3_workspace_memory import MemoryIntentService
 from beyin_v3_sync import SyncEngine
 from v3_workspace_test_io import load_utf8_json
@@ -59,7 +59,7 @@ class BuilderI1Test(unittest.TestCase):
                 self.assertEqual(result['data']['workspace_health'], 'verification_pending')
                 self.assertEqual(registry.snapshot()['profiles'][0], data['desired_profile'])
                 SyncEngine(vault, state).sync()
-                runtime = WorkspaceRuntime(vault, state); runtime.adopt(spec); runtime.activate()
+                runtime = WorkspaceRuntime(vault, state); runtime.adopt(spec, membership_hash(runtime.registry)); runtime.activate()
                 request = docs['RequestContext']; request['data']['grant_ref'] = reference
                 context = runtime.context(request)['data']
                 ids = {r['id'] for r in context['records']}
