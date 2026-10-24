@@ -24,7 +24,7 @@ class StableIdTest(unittest.TestCase):
         self.path = self.vault / self.source
         self.path.parent.mkdir()
         self.body = 'Accepted scope and original evidence.\r\n'
-        self.path.write_text(self.body, encoding='utf-8')
+        self.path.write_bytes(self.body.encode('utf-8'))
         self.engine.sync()
         self.record_id = 'md-' + hashlib.sha256(self.source.encode()).hexdigest()[:24]
 
@@ -58,7 +58,7 @@ class StableIdTest(unittest.TestCase):
         edited = dict(preview, plan_sha256='0' * 64)
         with self.assertRaisesRegex(RevisionConflict, 'plan changed'):
             self.engine.adopt_stable_id(edited)
-        self.path.write_text(self.body + 'Manual edit.\n', encoding='utf-8')
+        self.path.write_bytes((self.body + 'Manual edit.\n').encode('utf-8'))
         with self.assertRaisesRegex(RevisionConflict, 'source changed'):
             self.engine.adopt_stable_id(preview)
         self.assertNotIn('id:', self.path.read_text(encoding='utf-8'))
@@ -74,10 +74,10 @@ class StableIdTest(unittest.TestCase):
                 self.assertEqual(self.path.read_bytes(), before)
 
     def test_explicit_and_task_sources_are_not_adopted(self):
-        self.path.write_text(render({'id': 'known', 'kind': 'note'}, self.body), encoding='utf-8')
+        self.path.write_bytes(render({'id': 'known', 'kind': 'note'}, self.body).encode('utf-8'))
         self.engine.sync()
         self.assertEqual(self.engine.preview_stable_id('known')['status'], 'already_stable')
-        self.path.write_text(render({'kind': 'task', 'revision': 1, 'status': 'active', 'owner': 'Can'}, self.body), encoding='utf-8')
+        self.path.write_bytes(render({'kind': 'task', 'revision': 1, 'status': 'active', 'owner': 'Can'}, self.body).encode('utf-8'))
         self.engine.sync()
         with self.assertRaisesRegex(ValueError, 'dedicated writer'):
             self.engine.preview_stable_id(self.record_id)
@@ -85,7 +85,7 @@ class StableIdTest(unittest.TestCase):
     def test_private_and_untrusted_notes_do_not_expose_preview_metadata(self):
         for metadata in ({'visibility': 'private'}, {'trust': 'untrusted'}):
             with self.subTest(metadata=metadata):
-                self.path.write_text(render(metadata, self.body), encoding='utf-8')
+                self.path.write_bytes(render(metadata, self.body).encode('utf-8'))
                 self.engine.sync()
                 with self.assertRaisesRegex(WorkspaceError, 'scope_denied'):
                     self.engine.preview_stable_id(self.record_id)
