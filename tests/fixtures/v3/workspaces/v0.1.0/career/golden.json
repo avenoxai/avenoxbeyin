@@ -1,0 +1,822 @@
+{
+  "fixture_version": "workspace/0.1.0",
+  "case_id": "career",
+  "status": "golden_expectation_only",
+  "documents": [
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "WorkspaceProfile",
+      "data": {
+        "id": "career",
+        "revision": 1,
+        "name": "Sentetik başvuru",
+        "purpose": "CV, başvuru, görüşme ve geri bildirimimi birlikte tut.",
+        "lifecycle": "active",
+        "source_ids": [
+          "career-vault",
+          "career-materials",
+          "career-extra"
+        ],
+        "note_roots": [
+          "notes",
+          "knowledge"
+        ],
+        "working_rules": [
+          {
+            "id": "topic-rule",
+            "text": "Sonucu kaynakla bağla; eksik bilgiyi üretme.",
+            "subject_refs": [
+              {
+                "workspace_id": "career",
+                "record_id": "career-topic"
+              }
+            ]
+          }
+        ],
+        "memory_policy": {
+          "prefer_update_existing": true,
+          "new_note": "distinct_only",
+          "automatic_learning": "enabled"
+        },
+        "access_policy": {
+          "cross_workspace": "explicit_grant",
+          "external_sources": "read_only",
+          "automatic_audience": "internal"
+        },
+        "record_types": [
+          {
+            "id": "cv",
+            "label": "cv",
+            "fields": {}
+          },
+          {
+            "id": "application_task",
+            "label": "application_task",
+            "fields": {}
+          },
+          {
+            "id": "interview",
+            "label": "interview",
+            "fields": {}
+          },
+          {
+            "id": "preparation_learning",
+            "label": "preparation_learning",
+            "fields": {}
+          }
+        ],
+        "relation_types": [
+          "belongs_to",
+          "result_of",
+          "learned_from"
+        ],
+        "workflows": [
+          {
+            "id": "result-to-learning",
+            "revision": 1,
+            "name": "Sonuçtan işe ve öğrenime",
+            "trigger": {
+              "event_kind": "record_changed",
+              "entity_type": "interview"
+            },
+            "conditions": [],
+            "steps": [
+              {
+                "id": "propose",
+                "depends_on": [],
+                "action": "propose_memory_write",
+                "inputs": {
+                  "result": {
+                    "ref": "event.record.id"
+                  },
+                  "target": {
+                    "literal": "career-learning"
+                  },
+                  "task_id": {
+                    "literal": "career-task"
+                  }
+                }
+              },
+              {
+                "id": "persist",
+                "depends_on": [
+                  "propose"
+                ],
+                "action": "apply_memory_write",
+                "inputs": {
+                  "intent": {
+                    "ref": "steps.propose.intent_ref"
+                  }
+                }
+              },
+              {
+                "id": "verify",
+                "depends_on": [
+                  "persist"
+                ],
+                "action": "verify_readback",
+                "inputs": {
+                  "intent": {
+                    "ref": "steps.propose.intent_ref"
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "extensions": {}
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "ProvisionPlan",
+      "data": {
+        "plan_id": "career-plan",
+        "plan_sha256": "a13d1240f50d1c1e3de647d37cfa970f07aaa9c8fb2e522c5c9cc816afdc4477",
+        "spec_sha256": "5622b17b7e1b912cc54f1e8c5fdfe7c11eef254712dc0ba2874819945e92d4ba",
+        "snapshot_sha256": "93ca970803eb0f4cd644aac6dd1b3e8075819adb66943cab8682744d96f34542",
+        "binding_snapshot_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "operations": [
+          {
+            "id": "source-career-vault",
+            "kind": "create",
+            "target": {
+              "root": "vault",
+              "relative_path": ".beyin-workspaces/sources/career-vault.json"
+            },
+            "ownership": "registry",
+            "before_sha256": null,
+            "after_sha256": "9900ef0603577e8a4c6e6d6bea6b0839bf6dcfa5e26ecd26bc85f3629f952ae2",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"SourceDescriptor\",\n  \"data\": {\n    \"id\": \"career-vault\",\n    \"kind\": \"vault\",\n    \"label\": \"Sentetik vault\"\n  }\n}\n",
+            "depends_on": []
+          },
+          {
+            "id": "source-career-materials",
+            "kind": "create",
+            "target": {
+              "root": "vault",
+              "relative_path": ".beyin-workspaces/sources/career-materials.json"
+            },
+            "ownership": "registry",
+            "before_sha256": null,
+            "after_sha256": "252faecbc238b9abd601e3b95c77c0adeb040ce006381575f4a11843fda402a0",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"SourceDescriptor\",\n  \"data\": {\n    \"id\": \"career-materials\",\n    \"kind\": \"directory\",\n    \"label\": \"Materyaller A\"\n  }\n}\n",
+            "depends_on": []
+          },
+          {
+            "id": "source-career-extra",
+            "kind": "create",
+            "target": {
+              "root": "vault",
+              "relative_path": ".beyin-workspaces/sources/career-extra.json"
+            },
+            "ownership": "registry",
+            "before_sha256": null,
+            "after_sha256": "31fe60acd18ef5380016f8ac10e18c53bff8a6936969add738aef51de1fa85a3",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"SourceDescriptor\",\n  \"data\": {\n    \"id\": \"career-extra\",\n    \"kind\": \"directory\",\n    \"label\": \"Materyaller B\"\n  }\n}\n",
+            "depends_on": []
+          },
+          {
+            "id": "bind-career-vault",
+            "kind": "create",
+            "target": {
+              "root": "state",
+              "relative_path": "workspace-bindings/career-vault.json"
+            },
+            "ownership": "binding",
+            "before_sha256": null,
+            "after_sha256": "89bf3ffb9dcb7a49228bd08c08fdc4ab52435d33a4a547cb84a5c2da57fa993f",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"SourceBinding\",\n  \"data\": {\n    \"source_id\": \"career-vault\",\n    \"machine_id\": \"fixture-machine\",\n    \"revision\": 1,\n    \"locator\": \"/synthetic/career/vault\",\n    \"grants\": [\n      {\n        \"workspace_id\": \"career\",\n        \"access\": \"read\"\n      },\n      {\n        \"workspace_id\": \"career\",\n        \"access\": \"write_memory\"\n      }\n    ],\n    \"authority_ref\": \"fixture-user-request\"\n  }\n}\n",
+            "depends_on": []
+          },
+          {
+            "id": "bind-career-materials",
+            "kind": "create",
+            "target": {
+              "root": "state",
+              "relative_path": "workspace-bindings/career-materials.json"
+            },
+            "ownership": "binding",
+            "before_sha256": null,
+            "after_sha256": "80c18795d43d54b782275ad5ecde8ba84e9d697b1a0e6938401ebcd321d131ae",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"SourceBinding\",\n  \"data\": {\n    \"source_id\": \"career-materials\",\n    \"machine_id\": \"fixture-machine\",\n    \"revision\": 1,\n    \"locator\": \"/synthetic/career/source-a\",\n    \"grants\": [\n      {\n        \"workspace_id\": \"career\",\n        \"access\": \"read\"\n      }\n    ],\n    \"authority_ref\": \"fixture-user-request\"\n  }\n}\n",
+            "depends_on": []
+          },
+          {
+            "id": "bind-career-extra",
+            "kind": "create",
+            "target": {
+              "root": "state",
+              "relative_path": "workspace-bindings/career-extra.json"
+            },
+            "ownership": "binding",
+            "before_sha256": null,
+            "after_sha256": "3e86daf9a3cc649da5b09d508977377df4e243aa13de764029df7bb650b173bc",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"SourceBinding\",\n  \"data\": {\n    \"source_id\": \"career-extra\",\n    \"machine_id\": \"fixture-machine\",\n    \"revision\": 1,\n    \"locator\": \"/synthetic/career/source-b\",\n    \"grants\": [\n      {\n        \"workspace_id\": \"career\",\n        \"access\": \"read\"\n      }\n    ],\n    \"authority_ref\": \"fixture-user-request\"\n  }\n}\n",
+            "depends_on": []
+          },
+          {
+            "id": "publish-profile",
+            "kind": "create",
+            "target": {
+              "root": "vault",
+              "relative_path": ".beyin-workspaces/workspaces/career.json"
+            },
+            "ownership": "registry",
+            "before_sha256": null,
+            "after_sha256": "1296d4e4a8650ac809bc501f8cd22c0d54d0016563c31f5287261983cdc852b7",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"WorkspaceProfile\",\n  \"data\": {\n    \"id\": \"career\",\n    \"revision\": 1,\n    \"name\": \"Sentetik başvuru\",\n    \"purpose\": \"CV, başvuru, görüşme ve geri bildirimimi birlikte tut.\",\n    \"lifecycle\": \"active\",\n    \"source_ids\": [\n      \"career-vault\",\n      \"career-materials\",\n      \"career-extra\"\n    ],\n    \"note_roots\": [\n      \"notes\",\n      \"knowledge\"\n    ],\n    \"working_rules\": [\n      {\n        \"id\": \"topic-rule\",\n        \"text\": \"Sonucu kaynakla bağla; eksik bilgiyi üretme.\",\n        \"subject_refs\": [\n          {\n            \"workspace_id\": \"career\",\n            \"record_id\": \"career-topic\"\n          }\n        ]\n      }\n    ],\n    \"memory_policy\": {\n      \"prefer_update_existing\": true,\n      \"new_note\": \"distinct_only\",\n      \"automatic_learning\": \"enabled\"\n    },\n    \"access_policy\": {\n      \"cross_workspace\": \"explicit_grant\",\n      \"external_sources\": \"read_only\",\n      \"automatic_audience\": \"internal\"\n    },\n    \"record_types\": [\n      {\n        \"id\": \"cv\",\n        \"label\": \"cv\",\n        \"fields\": {}\n      },\n      {\n        \"id\": \"application_task\",\n        \"label\": \"application_task\",\n        \"fields\": {}\n      },\n      {\n        \"id\": \"interview\",\n        \"label\": \"interview\",\n        \"fields\": {}\n      },\n      {\n        \"id\": \"preparation_learning\",\n        \"label\": \"preparation_learning\",\n        \"fields\": {}\n      }\n    ],\n    \"relation_types\": [\n      \"belongs_to\",\n      \"result_of\",\n      \"learned_from\"\n    ],\n    \"workflows\": [\n      {\n        \"id\": \"result-to-learning\",\n        \"revision\": 1,\n        \"name\": \"Sonuçtan işe ve öğrenime\",\n        \"trigger\": {\n          \"event_kind\": \"record_changed\",\n          \"entity_type\": \"interview\"\n        },\n        \"conditions\": [],\n        \"steps\": [\n          {\n            \"id\": \"propose\",\n            \"depends_on\": [],\n            \"action\": \"propose_memory_write\",\n            \"inputs\": {\n              \"result\": {\n                \"ref\": \"event.record.id\"\n              },\n              \"target\": {\n                \"literal\": \"career-learning\"\n              },\n              \"task_id\": {\n                \"literal\": \"career-task\"\n              }\n            }\n          },\n          {\n            \"id\": \"persist\",\n            \"depends_on\": [\n              \"propose\"\n            ],\n            \"action\": \"apply_memory_write\",\n            \"inputs\": {\n              \"intent\": {\n                \"ref\": \"steps.propose.intent_ref\"\n              }\n            }\n          },\n          {\n            \"id\": \"verify\",\n            \"depends_on\": [\n              \"persist\"\n            ],\n            \"action\": \"verify_readback\",\n            \"inputs\": {\n              \"intent\": {\n                \"ref\": \"steps.propose.intent_ref\"\n              }\n            }\n          }\n        ]\n      }\n    ],\n    \"extensions\": {}\n  }\n}\n",
+            "depends_on": [
+              "source-career-vault",
+              "source-career-materials",
+              "source-career-extra",
+              "bind-career-vault",
+              "bind-career-materials",
+              "bind-career-extra"
+            ]
+          }
+        ],
+        "required_authority": [
+          "fixture-user-request"
+        ],
+        "verify_steps": [
+          "source_read",
+          "related_records",
+          "canonical_update",
+          "index_readback",
+          "fresh_session",
+          "workflow_resume"
+        ],
+        "rollback_limits": [
+          "Restore only operation-owned files still matching after_sha256; preserve later user edits."
+        ],
+        "unresolved": []
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "WorkContext",
+      "data": {
+        "request_id": "career-request",
+        "state": "ready",
+        "context_token": "fixture-context-career",
+        "workspace_id": "career",
+        "profile_revision": 1,
+        "snapshot_sha256": "87b09b00624605f271a3404b4031b952b6b8a22b16dbd7aeae40968ca52ab789",
+        "binding_snapshot_sha256": "0aad6d77b66eebcbbc707c15452ff70a0659bccf1e12c7711a90a187879339b2",
+        "subject_refs": [
+          {
+            "workspace_id": "career",
+            "record_id": "career-task"
+          }
+        ],
+        "rules": [
+          {
+            "id": "topic-rule",
+            "text": "Sonucu kaynakla bağla; eksik bilgiyi üretme.",
+            "subject_refs": [
+              {
+                "workspace_id": "career",
+                "record_id": "career-topic"
+              }
+            ]
+          }
+        ],
+        "records": [
+          {
+            "id": "career-topic",
+            "kind": "note",
+            "revision": 1,
+            "visibility": "internal",
+            "facts": {
+              "fixture": true
+            },
+            "entity_type": "cv",
+            "workspace_id": "career",
+            "text": "Sentetik başvuru",
+            "source_ref": {
+              "source_id": "career-vault",
+              "relative_path": "notes/career-topic.md",
+              "content_sha256": "1265b9479c9089de410f57cb389b2261e98ab0b564276da4258d7d49d8828dd1",
+              "fragment": {
+                "kind": "whole"
+              },
+              "extractor": {
+                "id": "markdown",
+                "version": "fixture-1",
+                "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+              }
+            },
+            "trust": "trusted",
+            "relations": []
+          },
+          {
+            "id": "career-task",
+            "kind": "task",
+            "revision": 1,
+            "visibility": "internal",
+            "facts": {
+              "fixture": true
+            },
+            "entity_type": "application_task",
+            "status": "active",
+            "due_at": "2026-10-23",
+            "next_action": "Kaynak ve önceki öğrenimle devam et",
+            "workspace_id": "career",
+            "text": "Görüşme geri bildirimiyle hazırlığa devam edelim.",
+            "source_ref": {
+              "source_id": "career-vault",
+              "relative_path": "tasks/career-task.md",
+              "content_sha256": "8fb7efa13e13c52d87ba04c4502dd35310e8dc3254de057c1ba42f0194043428",
+              "fragment": {
+                "kind": "whole"
+              },
+              "extractor": {
+                "id": "markdown",
+                "version": "fixture-1",
+                "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+              }
+            },
+            "trust": "trusted",
+            "relations": [
+              {
+                "id": "career-task-topic",
+                "workspace_id": "career",
+                "type": "belongs_to",
+                "from": {
+                  "workspace_id": "career",
+                  "record_id": "career-task"
+                },
+                "to": {
+                  "workspace_id": "career",
+                  "record_id": "career-topic"
+                },
+                "evidence_refs": []
+              }
+            ]
+          },
+          {
+            "id": "career-result",
+            "kind": "note",
+            "revision": 1,
+            "visibility": "internal",
+            "facts": {
+              "fixture": true,
+              "observation": "Kayıtlı ölçüm"
+            },
+            "entity_type": "interview",
+            "workspace_id": "career",
+            "text": "Görüşmede proje örneği daha açık anlatılmalı.",
+            "source_ref": {
+              "source_id": "career-vault",
+              "relative_path": "notes/career-result.md",
+              "content_sha256": "0d054a6ecae85b34e2a1aa99b6d633e6041e864191c340ff9223db6ace6d8373",
+              "fragment": {
+                "kind": "whole"
+              },
+              "extractor": {
+                "id": "markdown",
+                "version": "fixture-1",
+                "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+              }
+            },
+            "trust": "trusted",
+            "relations": [
+              {
+                "id": "career-result-topic",
+                "workspace_id": "career",
+                "type": "belongs_to",
+                "from": {
+                  "workspace_id": "career",
+                  "record_id": "career-result"
+                },
+                "to": {
+                  "workspace_id": "career",
+                  "record_id": "career-topic"
+                },
+                "evidence_refs": []
+              }
+            ]
+          },
+          {
+            "id": "career-learning",
+            "kind": "note",
+            "revision": 1,
+            "visibility": "internal",
+            "facts": {
+              "fixture": true
+            },
+            "entity_type": "preparation_learning",
+            "workspace_id": "career",
+            "text": "Deneyim örneğini başvurunun gereksinimiyle ilişkilendir.",
+            "source_ref": {
+              "source_id": "career-vault",
+              "relative_path": "notes/career-learning.md",
+              "content_sha256": "2c45b1cc0a099d8dc92ace4c6ce6ecf68ae0a64efeb45ed57ab4cb63f91c6074",
+              "fragment": {
+                "kind": "whole"
+              },
+              "extractor": {
+                "id": "markdown",
+                "version": "fixture-1",
+                "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+              }
+            },
+            "trust": "trusted",
+            "relations": [
+              {
+                "id": "career-learning-topic",
+                "workspace_id": "career",
+                "type": "belongs_to",
+                "from": {
+                  "workspace_id": "career",
+                  "record_id": "career-learning"
+                },
+                "to": {
+                  "workspace_id": "career",
+                  "record_id": "career-topic"
+                },
+                "evidence_refs": []
+              }
+            ]
+          }
+        ],
+        "relations": [
+          {
+            "id": "career-task-topic",
+            "workspace_id": "career",
+            "type": "belongs_to",
+            "from": {
+              "workspace_id": "career",
+              "record_id": "career-task"
+            },
+            "to": {
+              "workspace_id": "career",
+              "record_id": "career-topic"
+            },
+            "evidence_refs": []
+          },
+          {
+            "id": "career-result-topic",
+            "workspace_id": "career",
+            "type": "belongs_to",
+            "from": {
+              "workspace_id": "career",
+              "record_id": "career-result"
+            },
+            "to": {
+              "workspace_id": "career",
+              "record_id": "career-topic"
+            },
+            "evidence_refs": []
+          },
+          {
+            "id": "career-learning-topic",
+            "workspace_id": "career",
+            "type": "belongs_to",
+            "from": {
+              "workspace_id": "career",
+              "record_id": "career-learning"
+            },
+            "to": {
+              "workspace_id": "career",
+              "record_id": "career-topic"
+            },
+            "evidence_refs": []
+          }
+        ],
+        "source_refs": [
+          {
+            "source_id": "career-vault",
+            "relative_path": "notes/career-topic.md",
+            "content_sha256": "1265b9479c9089de410f57cb389b2261e98ab0b564276da4258d7d49d8828dd1",
+            "fragment": {
+              "kind": "whole"
+            },
+            "extractor": {
+              "id": "markdown",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          },
+          {
+            "source_id": "career-vault",
+            "relative_path": "tasks/career-task.md",
+            "content_sha256": "8fb7efa13e13c52d87ba04c4502dd35310e8dc3254de057c1ba42f0194043428",
+            "fragment": {
+              "kind": "whole"
+            },
+            "extractor": {
+              "id": "markdown",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          },
+          {
+            "source_id": "career-vault",
+            "relative_path": "notes/career-result.md",
+            "content_sha256": "0d054a6ecae85b34e2a1aa99b6d633e6041e864191c340ff9223db6ace6d8373",
+            "fragment": {
+              "kind": "whole"
+            },
+            "extractor": {
+              "id": "markdown",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          },
+          {
+            "source_id": "career-vault",
+            "relative_path": "notes/career-learning.md",
+            "content_sha256": "2c45b1cc0a099d8dc92ace4c6ce6ecf68ae0a64efeb45ed57ab4cb63f91c6074",
+            "fragment": {
+              "kind": "whole"
+            },
+            "extractor": {
+              "id": "markdown",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          },
+          {
+            "source_id": "career-materials",
+            "relative_path": "material.txt",
+            "content_sha256": "7e7479bd9e2bedbeb5a94e88e0660accbc1e596ba70d4ae7fdd67973e5f02d17",
+            "fragment": {
+              "kind": "lines",
+              "start": 1,
+              "end": 2
+            },
+            "extractor": {
+              "id": "text",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          },
+          {
+            "source_id": "career-extra",
+            "relative_path": "material.txt",
+            "content_sha256": "d2dcfca626d1a13d5901dc545db6a8681c852bd6489b76b667279399bdd114fa",
+            "fragment": {
+              "kind": "lines",
+              "start": 1,
+              "end": 2
+            },
+            "extractor": {
+              "id": "text",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          }
+        ],
+        "missing_facts": [],
+        "issues": []
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "MemoryWriteIntent",
+      "data": {
+        "intent_id": "career-intent",
+        "workspace_id": "career",
+        "context_token": "fixture-context-career",
+        "profile_revision": 1,
+        "binding_snapshot_sha256": "0aad6d77b66eebcbbc707c15452ff70a0659bccf1e12c7711a90a187879339b2",
+        "idempotency_key": "career/result-1/write",
+        "reason": "Sonuçtan çıkarılan kalıcı öğrenim mevcut kaydı geliştiriyor.",
+        "changes": [
+          {
+            "id": "learning-update",
+            "action": "update_note",
+            "target": {
+              "record_id": "career-learning",
+              "source_id": "career-vault",
+              "relative_path": "notes/career-learning.md",
+              "expected_revision": 1,
+              "expected_source_sha256": "2c45b1cc0a099d8dc92ace4c6ce6ecf68ae0a64efeb45ed57ab4cb63f91c6074"
+            },
+            "body": "Deneyim örneğini başvurunun gereksinimiyle ilişkilendir.\nYeni sonuç kaynağıyla karşılaştırıldı.",
+            "metadata_changes": {},
+            "relation_changes": [],
+            "evidence_refs": [
+              {
+                "source_id": "career-vault",
+                "relative_path": "notes/career-result.md",
+                "content_sha256": "0d054a6ecae85b34e2a1aa99b6d633e6041e864191c340ff9223db6ace6d8373",
+                "fragment": {
+                  "kind": "whole"
+                },
+                "extractor": {
+                  "id": "markdown",
+                  "version": "fixture-1",
+                  "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                }
+              },
+              {
+                "source_id": "career-materials",
+                "relative_path": "material.txt",
+                "content_sha256": "7e7479bd9e2bedbeb5a94e88e0660accbc1e596ba70d4ae7fdd67973e5f02d17",
+                "fragment": {
+                  "kind": "lines",
+                  "start": 1,
+                  "end": 2
+                },
+                "extractor": {
+                  "id": "text",
+                  "version": "fixture-1",
+                  "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                }
+              }
+            ]
+          },
+          {
+            "id": "task-progress",
+            "action": "update_task",
+            "target": {
+              "record_id": "career-task",
+              "source_id": "career-vault",
+              "relative_path": "tasks/career-task.md",
+              "expected_revision": 1,
+              "expected_source_sha256": "8fb7efa13e13c52d87ba04c4502dd35310e8dc3254de057c1ba42f0194043428"
+            },
+            "body": "",
+            "metadata_changes": {
+              "next_action": "Geri bildirimle bir sonraki denemeyi hazırla"
+            },
+            "relation_changes": [
+              {
+                "id": "career-result-task",
+                "workspace_id": "career",
+                "type": "result_of",
+                "from": {
+                  "workspace_id": "career",
+                  "record_id": "career-result"
+                },
+                "to": {
+                  "workspace_id": "career",
+                  "record_id": "career-task"
+                },
+                "evidence_refs": [
+                  {
+                    "source_id": "career-vault",
+                    "relative_path": "notes/career-result.md",
+                    "content_sha256": "0d054a6ecae85b34e2a1aa99b6d633e6041e864191c340ff9223db6ace6d8373",
+                    "fragment": {
+                      "kind": "whole"
+                    },
+                    "extractor": {
+                      "id": "markdown",
+                      "version": "fixture-1",
+                      "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                    }
+                  }
+                ]
+              }
+            ],
+            "evidence_refs": [
+              {
+                "source_id": "career-vault",
+                "relative_path": "notes/career-result.md",
+                "content_sha256": "0d054a6ecae85b34e2a1aa99b6d633e6041e864191c340ff9223db6ace6d8373",
+                "fragment": {
+                  "kind": "whole"
+                },
+                "extractor": {
+                  "id": "markdown",
+                  "version": "fixture-1",
+                  "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "OperationResult",
+      "data": {
+        "operation_id": "career-operation",
+        "operation_status": "applied",
+        "workspace_health": "verification_pending",
+        "parts": [
+          {
+            "id": "profile",
+            "state": "applied"
+          },
+          {
+            "id": "learning",
+            "state": "pending"
+          },
+          {
+            "id": "task",
+            "state": "pending"
+          }
+        ],
+        "capabilities": [
+          {
+            "name": "text",
+            "state": "not_tested"
+          },
+          {
+            "name": "markdown",
+            "state": "not_tested"
+          },
+          {
+            "name": "pdf_text",
+            "state": "not_tested"
+          },
+          {
+            "name": "docx_text",
+            "state": "not_tested"
+          },
+          {
+            "name": "workflow",
+            "state": "not_tested"
+          }
+        ],
+        "verification": [
+          {
+            "check": "source_read",
+            "state": "pending",
+            "evidence_refs": []
+          },
+          {
+            "check": "related_records",
+            "state": "pending",
+            "evidence_refs": []
+          },
+          {
+            "check": "canonical_update",
+            "state": "pending",
+            "evidence_refs": []
+          },
+          {
+            "check": "index_readback",
+            "state": "pending",
+            "evidence_refs": []
+          },
+          {
+            "check": "fresh_session",
+            "state": "pending",
+            "evidence_refs": []
+          },
+          {
+            "check": "workflow_resume",
+            "state": "pending",
+            "evidence_refs": []
+          }
+        ],
+        "issues": [],
+        "next_action": "C3/C4/D2 gerçek servisleriyle günlük akışı doğrula."
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "WorkflowRun",
+      "data": {
+        "run_id": "4b3a2d539177efb16e7e5da89e56b8c71c3acabae7c7323add46f78189c0f611",
+        "workspace_id": "career",
+        "workflow_id": "result-to-learning",
+        "workflow_revision": 1,
+        "definition_sha256": "a3e054e30c37e807d6ce673a8b2fc6ac4a42d78603f7d23b9a458c3703cb29b1",
+        "event_id": "career/result-1",
+        "context_token": "fixture-context-career",
+        "status": "awaiting_agent",
+        "steps": [
+          {
+            "step_id": "propose",
+            "idempotency_key": "4b3a2d539177efb16e7e5da89e56b8c71c3acabae7c7323add46f78189c0f611/propose",
+            "state": "awaiting_agent",
+            "result_ref": null
+          },
+          {
+            "step_id": "persist",
+            "idempotency_key": "4b3a2d539177efb16e7e5da89e56b8c71c3acabae7c7323add46f78189c0f611/persist",
+            "state": "pending",
+            "result_ref": null
+          },
+          {
+            "step_id": "verify",
+            "idempotency_key": "4b3a2d539177efb16e7e5da89e56b8c71c3acabae7c7323add46f78189c0f611/verify",
+            "state": "pending",
+            "result_ref": null
+          }
+        ],
+        "next_action": "Aktif ajan mevcut bağlamda kaynaklı MemoryWriteIntent önerir; ardından policy/CAS doğrulanır."
+      }
+    }
+  ],
+  "acceptance": {
+    "required_record_ids": [
+      "career-topic",
+      "career-task",
+      "career-result",
+      "career-learning"
+    ],
+    "same_profile_from_builder_and_runtime": true,
+    "new_note_count": 0,
+    "external_source_writes": 0,
+    "workflow_replay_extra_effects": 0
+  }
+}

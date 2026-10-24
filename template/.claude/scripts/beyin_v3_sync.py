@@ -887,6 +887,11 @@ class SyncEngine:
         for entry in sorted(self.journal.glob('*.json')):
             try:
                 intent = json.loads(entry.read_text(encoding='utf-8'))
+                if intent.get('workspace_context') is not None:
+                    from beyin_v3_workspace_context import request_scope
+                    context=intent['workspace_context']
+                    with request_scope(context['workspace_id'],context['grant_ref']):
+                        self._workspace_write_guard(intent['source'])
                 # Failed note-create operations can leave an intent behind. Its
                 # replay is a note writer too. Never wait here while holding a DB
                 # transaction: another writer may hold the note lock and need it.
@@ -1189,6 +1194,10 @@ class SyncEngine:
         if entry.exists():
             raise RevisionConflict('pending source operation; sync and resolve first')
         intent = {'source': relative, 'old_hash': old_hash, 'content': content, 'kind': kind}
+        try:
+            from beyin_v3_workspace_context import CURRENT
+            if CURRENT.get() is not None:intent['workspace_context']=dict(CURRENT.get())
+        except ImportError:pass
         if event:
             intent['event'] = event
         atomic(entry, _json(intent))
@@ -1199,7 +1208,7 @@ class SyncEngine:
         return entry
 
     def update_task(self, id, expected_revision, changes):
-        allowed = {'title', 'status', 'project', 'visibility', 'facts', 'next_action', 'owner', 'priority', 'due_at', 'updated_at', 'supersedes', 'completion_contract', 'completion_criterion', 'evidence_refs'}
+        allowed = {'title', 'status', 'project', 'visibility', 'facts', 'next_action', 'owner', 'priority', 'due_at', 'updated_at', 'supersedes', 'completion_contract', 'completion_criterion', 'evidence_refs', 'workspace_relations'}
         if not isinstance(changes, dict) or set(changes) - allowed:
             raise ValueError('unsupported task metadata changes')
         if 'status' in changes and changes['status'] not in TASK_STATUSES:
@@ -1212,6 +1221,8 @@ class SyncEngine:
             if not row:
                 raise KeyError(id)
             record = json.loads(row[0])
+            self._workspace_write_guard(record['source'], record)
+            self._check_workspace_relations(changes.get('workspace_relations', []))
             if record.get('kind') != 'task':
                 raise ValueError('explicit task source required')
             if type(expected_revision) is not int or record['revision'] != expected_revision:
@@ -1260,6 +1271,196 @@ class SyncEngine:
         self._record_redactions(redacted)
         return self._write_diagnostics(dict(result_record, redacted=redacted, secrets_redacted=redacted), result)
 
+    def _check_workspace_relations(self, relations):
+        if not isinstance(relations,list):
+            raise ValueError('workspace_relations must be a list')
+        if relations:
+            from beyin_v3_workspaces import envelope
+            for relation in relations:
+                envelope('Relation',relation)
+
+    def _workspace_write_guard(self, source, record=None):
+        try:
+            from beyin_v3_workspace_context import CURRENT,enabled,record_owner
+            from beyin_v3_workspaces import Registry,WorkspaceError,local_root_matches
+            from beyin_v3_sources import SourceResolver
+        except ImportError:
+            if (self.state/'workspace-runtime.json').exists():raise ValueError('workspace_package_unavailable')
+            return
+        current=CURRENT.get()
+        if current is None and not enabled(self.root,self.state):return
+        if current is None:raise WorkspaceError('workspace_context_required')
+        registry=Registry(self.root,self.state)
+        if record is not None and current['workspace_id']!=record_owner(registry,record):
+            raise WorkspaceError('scope_denied')
+        snapshot=registry.snapshot();bindings,_=registry.bindings(snapshot)
+        for descriptor in snapshot['sources']:
+            if descriptor['kind']=='vault' and descriptor['id'] in bindings and local_root_matches(bindings[descriptor['id']]['locator'],self.root):
+                try:
+                    SourceResolver(registry).resolve(current['workspace_id'],descriptor['id'],source,current['grant_ref'],access='write_memory')
+                    return
+                except WorkspaceError:continue
+        raise WorkspaceError('scope_denied')
+
+    def preview_stable_id(self, record_id):
+        """Preview pinning a path-derived identity without changing its ID or source."""
+        from beyin_v3_workspace_context import CURRENT, enabled
+        from beyin_v3_workspaces import WorkspaceError
+        scoped = CURRENT.get() is not None or enabled(self.root, self.state)
+        with self.store._connect() as db:
+            row = db.execute('SELECT payload FROM records WHERE id=?', (record_id,)).fetchone()
+        if not row:
+            if scoped:
+                raise WorkspaceError('scope_denied')
+            raise KeyError(record_id)
+        record = json.loads(row[0])
+        if not scoped:
+            path = self._path(record['source'], existing=True)
+            if _hash(path.read_bytes()) != record['source_sha256']:
+                raise RevisionConflict('source changed; sync and reread')
+        eligible, _ = self.store._eligible('internal', records=[record])
+        if not eligible:
+            raise WorkspaceError('scope_denied')
+        self._workspace_write_guard(record['source'], record)
+        source = record['source']
+        path = self._path(source, existing=True)
+        raw = path.read_bytes()
+        if _hash(raw) != record['source_sha256']:
+            raise RevisionConflict('source changed; sync and reread')
+        metadata, _ = parse(raw.decode('utf-8'))
+        if record.get('kind') in ('task', 'receipt') or record.get('generated'):
+            raise ValueError('dedicated writer required')
+        if metadata.get('id') is not None:
+            return {'status': 'already_stable', 'record_id': record_id, 'source': source}
+        derived = 'md-' + _hash(source)[:24]
+        if record_id != derived:
+            raise RevisionConflict('indexed identity does not match source path')
+        with self.store._connect() as db:
+            rows = db.execute('SELECT source FROM markdown_sources WHERE id=?', (record_id,)).fetchall()
+        if len(rows) != 1 or rows[0][0] != source:
+            raise RevisionConflict('source identity conflict; sync and review')
+        plan = {'record_id': record_id, 'source': source,
+                'expected_revision': record['revision'],
+                'expected_source_sha256': record['source_sha256'],
+                'stable_id': record_id}
+        from beyin_v3_workspace_context import CURRENT, membership_hash
+        if CURRENT.get() is not None:
+            from beyin_v3_workspaces import Registry
+            plan['workspace_membership_sha256'] = membership_hash(Registry(self.root, self.state))
+        return {'status': 'ready', **plan, 'plan_sha256': _hash(_json(plan))}
+
+    def adopt_stable_id(self, preview):
+        """Pin the existing ID via the canonical source journal and exact readback.
+
+        This prepares a later move; it does not move a file or rewrite historical refs.
+        """
+        if not isinstance(preview, dict) or preview.get('status') != 'ready':
+            raise ValueError('ready stable ID preview required')
+        record_id = preview.get('record_id')
+        with note_locked(self):
+            current = self.preview_stable_id(record_id)
+            if current != preview:
+                raise RevisionConflict('stable ID plan changed; preview again')
+            source = current['source']
+            path = self._path(source, existing=True)
+            raw = path.read_bytes()
+            if _hash(raw) != current['expected_source_sha256']:
+                raise RevisionConflict('source changed; sync and reread')
+            metadata, body = parse(raw.decode('utf-8'))
+            if metadata.get('id') is not None:
+                raise RevisionConflict('source identity changed; preview again')
+            metadata['id'] = record_id
+            metadata['revision'] = current['expected_revision'] + 1
+            intended = render(metadata, body)
+            with self.store._connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                self._intent(source, current['expected_source_sha256'], intended, 'note')
+            result = self.sync()
+            if self._write_blockers(result, source) or self._source_issues(result, source, record_id):
+                raise RevisionConflict('stable ID projection conflict')
+            with self.store._connect() as db:
+                row = db.execute('SELECT payload FROM records WHERE id=?', (record_id,)).fetchone()
+            if not row or path.read_bytes() != intended.encode('utf-8'):
+                raise RevisionConflict('stable ID source readback mismatch')
+            actual = json.loads(row[0])
+            if (actual['id'] != record_id or actual['source'] != source or
+                    actual['source_sha256'] != _hash(intended) or actual['revision'] != current['expected_revision'] + 1):
+                raise RevisionConflict('stable ID projection readback mismatch')
+            return {'status': 'succeeded', 'record_id': record_id, 'source': source,
+                    'source_sha256': actual['source_sha256'], 'plan_sha256': current['plan_sha256']}
+
+    def update_note(self, id, expected_revision, expected_source_sha256, text, changes=None, *, _preserve_body=False):
+        """Narrow canonical update through the existing source journal and sync.
+
+        Existing metadata is preserved; policy-changing metadata is not accepted.
+        Expected revision/hash protect manual edits and explicit IDs survive renames.
+        """
+        # Internal managed-view calls may retain exact body bytes (including
+        # CRLF / missing final LF). The ordinary canonical update stays unchanged.
+        if type(_preserve_body) is not bool:raise ValueError('invalid body mode')
+        allowed={'title','facts','next_action','status','due_at','workspace_relations'}
+        changes=dict(changes or {})
+        if set(changes)-allowed or not isinstance(text,str) or not text.strip() or text.lstrip().startswith('---'):
+            raise ValueError('invalid note update')
+        original_text=text
+        text,redacted=self._protect(text)
+        if _preserve_body and text!=original_text:raise ValueError('managed view body requires review')
+        changes,meta_redacted=self._protect_metadata(changes);redacted+=meta_redacted
+        self._check_workspace_relations(changes.get('workspace_relations',[]))
+        with self.store._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row=db.execute('SELECT payload FROM records WHERE id=?',(id,)).fetchone()
+            if not row:raise KeyError(id)
+            record=json.loads(row[0])
+            if record.get('kind') in ('task','receipt') or record.get('generated'):raise ValueError('dedicated writer required')
+            self._workspace_write_guard(record['source'],record)
+            path=self._path(record['source'],existing=True);raw=path.read_bytes()
+            if (type(expected_revision) is not int or record['revision']!=expected_revision
+                    or record['source_sha256']!=expected_source_sha256 or _hash(raw)!=expected_source_sha256):
+                raise RevisionConflict('source changed; sync and reread')
+            metadata,body=parse(raw.decode('utf-8'))
+            if metadata.get('id')!=id:raise RevisionConflict('explicit stable id required for canonical update')
+            metadata.update(changes);metadata['revision']=expected_revision+1
+            intended=render(metadata,text if (_preserve_body or text.endswith('\n')) else text+'\n')
+            self._intent(record['source'],expected_source_sha256,intended,'note')
+        result=self.sync()
+        if self._write_blockers(result,record['source']):raise RevisionConflict('note projection conflict')
+        with self.store._connect() as db:
+            row=db.execute('SELECT payload FROM records WHERE id=?',(id,)).fetchone()
+        if not row:raise RevisionConflict('note projection missing')
+        actual=json.loads(row[0])
+        if actual['revision']!=expected_revision+1 or actual['source_sha256']!=_hash(intended) or path.read_bytes()!=intended.encode():
+            raise RevisionConflict('note source changed before readback')
+        self._record_redactions(redacted)
+        return self._write_diagnostics(dict(actual,redacted=redacted),result)
+
+    def _workspace_human_note_guard(self, source, *, write=False, content=None):
+        from beyin_v3_workspace_context import CURRENT, enabled
+        from beyin_v3_workspaces import WorkspaceError
+        if CURRENT.get() is None and not enabled(self.root, self.state):
+            return
+        if CURRENT.get() is None:
+            raise WorkspaceError('workspace_context_required')
+        with self.store._connect() as db:
+            rows = db.execute('SELECT r.payload FROM records r JOIN markdown_sources m ON r.id=m.id WHERE m.source=?', (source,)).fetchall()
+        records = [json.loads(row[0]) for row in rows]
+        eligible, _ = self.store._eligible('internal', records=records)
+        if not records or len(eligible) != len(records):
+            raise WorkspaceError('scope_denied')
+        for record in records:
+            path = self._path(source, existing=True)
+            if _hash(path.read_bytes()) != record.get('source_sha256'):
+                raise WorkspaceError('source_changed')
+            if write:
+                self._workspace_write_guard(source, record)
+                if content is not None:
+                    before, _ = parse(path.read_bytes().decode('utf-8'))
+                    after, _ = parse(content)
+                    # Human edits may change prose, never silently change authority metadata.
+                    mutable = {'title', 'facts', 'next_action', 'due_at'}
+                    if {k:v for k,v in before.items() if k not in mutable} != {k:v for k,v in after.items() if k not in mutable}:
+                        raise WorkspaceError('scope_denied')
+
     # The notes writer also imports this module when it validates human sources.
     def note_read(self, source):
         if _MODULE_DIR not in sys.path:
@@ -1274,6 +1475,7 @@ class SyncEngine:
     def note_create(self, source, text, metadata=None):
         if _MODULE_DIR not in sys.path:
             sys.path.insert(0, _MODULE_DIR)
+        self._workspace_write_guard(source)
         if not isinstance(text, str) or not text.strip() or (metadata is not None and not isinstance(metadata, dict)):
             raise ValueError('note text and metadata required')
         if text.lstrip().startswith('---'):
@@ -1339,6 +1541,7 @@ class SyncEngine:
                                 'conflicts': result['conflicts']}}
 
     def task_create(self, source, text, metadata):
+        self._workspace_write_guard(source)
         if not isinstance(source, str) or not source.startswith('tasks/') or not source.endswith('.md'):
             raise ValueError('task-create source must be a tasks/ Markdown path')
         if not isinstance(text, str) or not text.strip() or not isinstance(metadata, dict):
@@ -1346,10 +1549,11 @@ class SyncEngine:
         if text.lstrip().startswith('---'):
             raise ValueError('text must be body only; put frontmatter fields in metadata')
         self._refuse_excluded(source)
-        allowed = {'id', 'title', 'kind', 'revision', 'status', 'owner', 'project', 'visibility', 'facts', 'next_action', 'priority', 'due_at', 'updated_at', 'created_at', 'completion_contract', 'completion_criterion', 'evidence_refs'}
+        allowed = {'id', 'title', 'kind', 'revision', 'status', 'owner', 'project', 'visibility', 'facts', 'next_action', 'priority', 'due_at', 'updated_at', 'created_at', 'completion_contract', 'completion_criterion', 'evidence_refs', 'workspace_id', 'entity_type', 'workspace_relations'}
         if set(metadata) - allowed:
             raise ValueError('unsupported task metadata')
         metadata = dict(metadata)
+        self._check_workspace_relations(metadata.get('workspace_relations',[]))
         now_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
         if 'updated_at' not in metadata:
             metadata['updated_at'] = now_date

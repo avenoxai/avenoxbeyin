@@ -314,7 +314,7 @@ def canonical(url):
 
 def _value(raw):
     raw = raw.strip()
-    if raw.startswith(('"', '[')):
+    if raw.startswith(('"','[','{')):
         try:
             return json.loads(raw)
         except ValueError:
@@ -818,7 +818,7 @@ def tools():
     """Optional helpers; each one only widens what `isle` can do."""
     whisper = _which('mlx_whisper', 'whisper-ctranslate2', 'whisper')
     return {'npx': _which('npx'), 'yt_dlp': _which('yt-dlp', 'yt_dlp'), 'whisper': whisper,
-            'pdftotext': _which('pdftotext'), 'ffmpeg': _which('ffmpeg')}
+            'ffmpeg': _which('ffmpeg')}
 
 
 def via_defuddle(url, found, info=None, lang=None):
@@ -1200,21 +1200,33 @@ def extract(vault, card, found, allow_audio=True, info=None):
     if kind == 'metin':
         return _section(body, 'Secim') or body, 'metin', None
     if kind == 'dosya':
-        parts = []
+        parts = [];documents=[];document_issues=[];observations=[]
         vault_root = Path(vault).resolve()
         for link in re.findall(r'\[\[([^\]]+)\]\]', _section(body, 'Dosyalar')):
             path = _safe_vault_file(vault_root, link)
             if path.suffix.lower() in ('.md', '.txt', '.csv', '.json', '.html', '.srt', '.vtt'):
                 parts.append('## ' + path.name + '\n\n' + path.read_text(encoding='utf-8', errors='replace'))
-            elif path.suffix.lower() == '.pdf' and found['pdftotext']:
-                try:
-                    code, out, _ = _run([found['pdftotext'], '-layout', str(path), '-'], timeout=120)
-                    if code == 0 and out.strip():
-                        parts.append('## ' + path.name + '\n\n' + out)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
+            elif path.suffix.lower() in ('.pdf','.docx'):
+                from beyin_v3_sources import extract_document_bytes,MAX_SOURCE_BYTES
+                from beyin_v3_workspaces import content_hash
+                if path.stat().st_size>MAX_SOURCE_BYTES:
+                    document_issues.append(path.name+': source_too_large');continue
+                raw=path.read_bytes();result=extract_document_bytes(vault_root,raw,path.suffix.lower()[1:])
+                observations.append((link,path,result['source_sha256']))
+                documents.append({'source':path.relative_to(vault_root).as_posix(),'state':result['state'],
+                    'source_sha256':result['source_sha256'],'extractor':result['extractor'],
+                    'fragments':[c['fragment'] for c in result['chunks']],'issues':result['issues']})
+                if result['state']!='ready':document_issues.append(path.name+': '+result['state'])
+                for chunk in result['chunks']:
+                    fragment=chunk['fragment']
+                    location=('PDF sayfa '+str(fragment['page'])) if fragment['kind']=='pdf_page' else 'DOCX '+json.dumps(fragment,ensure_ascii=False,sort_keys=True)
+                    parts.append('## '+path.name+' — '+location+'\n\n'+chunk['text'])
+        for link,path,digest in observations:
+            if _safe_vault_file(vault_root,link)!=path or content_hash(path.read_bytes())!=digest:raise ValueError('stale_source')
+        if info is not None and documents:info['documents']=documents
         if parts:
-            return '\n\n'.join(parts), 'dosya', None
+            return '\n\n'.join(parts), 'dosya', '; '.join(document_issues) or None
+        if document_issues:return None,None,'; '.join(document_issues)
         return None, 'ajan-okusun', 'Dosyayi ajan dogrudan okusun (gorsel, PDF ya da ikili dosya).'
     if url:
         _safe_network_url(url)  # before npx/yt-dlp can make the first request
@@ -1259,13 +1271,17 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
                 meta['baslik'] = entry['baslik'] = _first_line(info['title'], 160)
             meta.update({target: info[source] for source, target in (('author', 'yazar'), ('published', 'yayin'), ('site', 'site'))
                          if info.get(source)})
+            if info.get('documents'):
+                meta['belge_cikarim']=info['documents'];entry['belge_cikarim']=info['documents']
+                meta['cikarim_durumu']=entry['cikarim_durumu']='ready' if all(d['state']=='ready' for d in info['documents']) else 'partial' if text else 'failed'
             if text:
                 raw = _local_only(card['path'].parent / RAW) / (card['id'] + '.md')
                 header = ['---', 'tur: yakala-ham', 'kart: ' + json.dumps(entry['kart'], ensure_ascii=False),
                           'baslik: ' + json.dumps(meta.get('baslik') or '', ensure_ascii=False),
                           'url: ' + json.dumps(meta.get('url') or '', ensure_ascii=False),
                           'yontem: ' + json.dumps(method), 'cikarildi: ' + json.dumps(now().isoformat(timespec='seconds')),
-                          'visibility: private', 'kaynak_guveni: guvenilmeyen', '---', '']
+                          'visibility: private', 'trust: untrusted', 'kaynak_guveni: guvenilmeyen',
+                          'belge_cikarim: '+json.dumps(info.get('documents',[]),ensure_ascii=False), '---', '']
                 boundary = secrets.token_hex(16)
                 opening = '<!-- yakala-kaynak:' + boundary + ':baslangic -->'
                 closing = '<!-- yakala-kaynak:' + boundary + ':bitis -->'

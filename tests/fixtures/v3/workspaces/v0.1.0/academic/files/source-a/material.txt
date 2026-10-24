@@ -1,0 +1,2 @@
+Algoritmalar dersi
+Ödev sonucu 82; karmaşıklık açıklaması geliştirilmeli.

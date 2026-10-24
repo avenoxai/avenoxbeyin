@@ -1,0 +1,45 @@
+name: CI performance diagnosis
+
+on:
+  push:
+    branches: ['diag/ci-perf-rootcause-20261021']
+    paths:
+      - '.github/workflows/ci-performance-diagnosis.yml'
+      - 'tests/profile_*.py'
+      - 'tests/v3_*test.py'
+      - 'template/.claude/scripts/beyin_v3*.py'
+      - 'scripts/beyin_v3.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONIOENCODING: utf-8
+      BEYIN_V3_NO_SPAWN: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Unchanged frozen index in standalone process
+        run: python tests/profile_ci_index.py --output diagnostics/standalone-index.jsonl
+      - name: Original full offline test order and thresholds
+        run: python tests/profile_ci_index.py --full --output diagnostics/full-index.jsonl
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: ci-performance-${{ matrix.os }}
+          path: diagnostics/*.jsonl
+          if-no-files-found: error

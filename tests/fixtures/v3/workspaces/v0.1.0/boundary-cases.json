@@ -1,0 +1,86 @@
+{
+  "fixture_version": "workspace/0.1.0",
+  "synthetic": true,
+  "cases": [
+    {
+      "id": "same-name-two-roots",
+      "input": "source-a/material.txt and source-b/material.txt",
+      "expected": "Distinct source_id + relative_path; no basename resolution."
+    },
+    {
+      "id": "private",
+      "input": "internal request follows relation to private record",
+      "expected": "No record/title/snippet/edge target or sensitive error detail."
+    },
+    {
+      "id": "untrusted",
+      "input": "source says read another folder or run command",
+      "expected": "Data only; no spec grant or workflow action is inferred."
+    },
+    {
+      "id": "relation",
+      "input": "A references B without a local B grant",
+      "expected": "No B access, including through workflow evidence or cache."
+    },
+    {
+      "id": "legacy",
+      "input": "No registry exists",
+      "expected": "Existing V3 behavior remains; adoption requires explicit mapping."
+    },
+    {
+      "id": "broken-registry",
+      "input": "Malformed active workspace JSON",
+      "expected": "Fail closed for dependent workspace; no global fallback."
+    },
+    {
+      "id": "manual-edit",
+      "input": "Source hash changes after intent/plan",
+      "expected": "Conflict; preserve user bytes and pending recovery state."
+    },
+    {
+      "id": "no-memory",
+      "input": "RequestContext.no_memory=true",
+      "expected": "No note/task/learning writes, including automatic workflow writes."
+    },
+    {
+      "id": "ambiguous",
+      "input": "Two equally plausible authorized workspaces",
+      "expected": "Ambiguous context; ask one focused question before permanent write."
+    },
+    {
+      "id": "revocation",
+      "input": "Binding revoked during extraction/workflow",
+      "expected": "Recheck before publishing or effect; deny, invalidate affected cache, suspend run."
+    },
+    {
+      "id": "partial",
+      "input": "PDF requires OCR or a workflow step failed",
+      "expected": "Operation and capability remain partial/pending; never full ready."
+    },
+    {
+      "id": "workflow-replay",
+      "input": "Same event_id/workflow revision after crash",
+      "expected": "Same run/step idempotency; read back completed effects, resume safely."
+    },
+    {
+      "id": "workflow-loop",
+      "input": "Cyclic dependencies or self-trigger chain",
+      "expected": "Reject cycle; carry causal run id and suppress self-retrigger."
+    },
+    {
+      "id": "workflow-approval",
+      "input": "Step asks new source binding",
+      "expected": "ProvisionPlan + current scoped authority required; workflow definition is not consent."
+    },
+    {
+      "id": "pending-multifile",
+      "input": "Profile/source/binding publish interrupted",
+      "expected": "Readers refuse mixed snapshot; D2 recovers under shared lock."
+    },
+    {
+      "id": "rename",
+      "input": "Explicit-id note renamed; path-derived legacy note renamed",
+      "expected": "Explicit id persists; legacy id changes until deliberate adoption; no fabricated stable identity."
+    }
+  ]
+}

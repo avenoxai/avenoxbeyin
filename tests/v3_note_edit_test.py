@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from v3_package_helpers import inherited_env
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
@@ -56,7 +57,7 @@ class NoteEditTest(unittest.TestCase):
         return subprocess.run(self.command(command, *args),
                               input=json.dumps(request) if request is not None else None,
                               text=True, encoding='utf-8', capture_output=True, timeout=30,
-                              env=os.environ.copy())
+                              env=inherited_env())
 
     def test_missing_read_and_create_do_not_overwrite(self):
         missing = {'source': 'project/Journal.md', 'sha256': None, 'content': None}
@@ -191,7 +192,7 @@ class NoteEditTest(unittest.TestCase):
         target.mkdir()
         junction = self.vault / 'junction'
         done = subprocess.run(['cmd', '/c', 'mklink', '/J', str(junction), str(target)],
-                              capture_output=True, timeout=10)
+                              capture_output=True, env=inherited_env(), timeout=10)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.addCleanup(lambda: os.rmdir(junction))
         with self.assertRaises(ValueError):
@@ -283,7 +284,7 @@ class NoteEditTest(unittest.TestCase):
         installed = subprocess.run(
             [sys.executable, str(ROOT / 'scripts/install_v3.py'), '--vault', str(self.vault),
              '--state', str(self.state)], capture_output=True, text=True, encoding='utf-8',
-            env=dict(os.environ, BEYIN_V3_NO_SPAWN='1'), timeout=40)
+            env=inherited_env(BEYIN_V3_NO_SPAWN='1'), timeout=40)
         self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
         self.assertTrue((self.vault / '.claude/scripts/beyin_v3_notes.py').is_file())
         source = 'proje/Journal.md'
@@ -292,7 +293,7 @@ class NoteEditTest(unittest.TestCase):
             return subprocess.run([sys.executable, str(self.vault / 'beyin.py'), *args],
                                   input=json.dumps(payload) if payload else None,
                                   capture_output=True, text=True, encoding='utf-8',
-                                  env=os.environ.copy(), timeout=30)
+                                  env=inherited_env(), timeout=30)
         result = run('note-edit', '--human', '--file', '-', payload=request)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(json.loads(result.stdout)['status'], 'written')
@@ -304,14 +305,15 @@ class NoteEditTest(unittest.TestCase):
         self.assertEqual(json.loads(stale.stdout)['status'], 'conflict')
 
     def test_local_backup_and_lock_are_git_ignored_in_existing_vault(self):
-        done = subprocess.run(['git', 'init', str(self.vault)], capture_output=True, timeout=10)
+        done = subprocess.run(['git', 'init', str(self.vault)], capture_output=True,
+                              env=inherited_env(), timeout=10)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.write()
         result = self.engine.note_edit(self.request())
         for source in (LOCAL_DIRECTORY + '/writer.lock', result['backup'],
                        LOCAL_DIRECTORY + '/request.json'):
             ignored = subprocess.run(['git', '-C', str(self.vault), 'check-ignore', source],
-                                     capture_output=True, timeout=10)
+                                     capture_output=True, env=inherited_env(), timeout=10)
             self.assertEqual(ignored.returncode, 0, ignored.stderr)
 
     def test_os_lock_timeout_is_a_conflict_and_process_death_releases_lock(self):
@@ -323,7 +325,7 @@ with locked(engine):
     print('locked', flush=True)
     sys.stdin.read()
 '''
-        env = dict(os.environ, PYTHONPATH=str(ROOT / 'template/.claude/scripts'))
+        env = inherited_env(PYTHONPATH=str(ROOT / 'template/.claude/scripts'))
         child = subprocess.Popen([sys.executable, '-c', code, str(self.vault), str(self.state)],
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, text=True, env=env)
@@ -376,7 +378,7 @@ with locked(engine):
                                                       state=Path(self.temp.name) / ('state-' + str(i))),
                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                          stderr=subprocess.PIPE, text=True, encoding='utf-8',
-                                         env=os.environ.copy()) for i in range(2)]
+                                         env=inherited_env()) for i in range(2)]
             for child, request in zip(children, requests):
                 child.stdin.write(json.dumps(request))
                 child.stdin.close()

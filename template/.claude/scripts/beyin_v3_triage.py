@@ -212,6 +212,18 @@ def _find_top_matching_dirs(vault: Path, matcher, extra_exact: tuple[str, ...] =
     return matched
 
 
+def _workspace_boundary(vault,state):
+    if state is None:
+        if (Path(vault)/'.beyin-workspaces').exists():raise ValueError('workspace_requires_explicit_state')
+        return
+    try:
+        from beyin_v3_workspace_context import enabled
+    except ImportError:
+        if (Path(state)/'workspace-runtime.json').exists():raise ValueError('workspace_package_unavailable')
+    else:
+        if enabled(vault,state):raise ValueError('active_workspace_requires_scoped_context')
+
+
 def scan_inbox(vault: Path, now: float, state: Path | None = None) -> dict:
     """Scan inbox items using the unified hygiene inbox report (#253).
 
@@ -219,6 +231,7 @@ def scan_inbox(vault: Path, now: float, state: Path | None = None) -> dict:
     index-excluded lists (#275). Only counts Markdown capture notes, ignoring
     configuration or asset files (such as web clipper JSONs).
     """
+    _workspace_boundary(vault,state)
     vault = Path(vault).resolve()
     folders = None
     if state is not None:
@@ -286,6 +299,7 @@ def scan_stale_tasks(vault: Path, now: float, stale_days: int = 14, state: Path 
     undated (age_days: None) rather than inventing an age from file mtime.
     Open tasks include active, waiting, and blocked tasks.
     """
+    _workspace_boundary(vault,state)
     vault = Path(vault).resolve()
     excluded = _scan_keys(vault, state)
     open_tasks = []
@@ -415,6 +429,7 @@ def scan_stale_tasks(vault: Path, now: float, stale_days: int = 14, state: Path 
 
 
 def scan_knowledge_digest(vault: Path, now: float, digest_days: int = 7, state: Path | None = None) -> dict:
+    _workspace_boundary(vault,state)
     vault = Path(vault).resolve()
     excluded = _scan_keys(vault, state)
     recent_items = []
@@ -522,6 +537,7 @@ def scan_companion(vault: Path, state: Path | None = None, now: float | None = N
     Active threads are counted from '### ' headings under ## Active Threads section,
     matching both the template structure and companion-compact conventions.
     """
+    _workspace_boundary(vault,state)
     vault = Path(vault).resolve()
     info = {'rules_count': 0, 'active_threads': 0, 'last_session': None, 'active_presence': 0}
     comp_dir = None
@@ -661,6 +677,7 @@ def triage(
     digest_days: int = 7,
     now: float | None = None,
 ) -> dict:
+    _workspace_boundary(vault,state)
     now_ts = time.time() if now is None else now
     vault = Path(vault).resolve()
     inbox_report_res = scan_inbox(vault, now_ts, state=state)

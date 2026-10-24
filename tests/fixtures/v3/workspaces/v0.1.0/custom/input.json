@@ -1,0 +1,375 @@
+{
+  "fixture_version": "workspace/0.1.0",
+  "synthetic": true,
+  "split": "development",
+  "case_id": "custom",
+  "natural_setup_request": "Fotoğraf kaynaklarımı, çekim işlerimi, sonuçları ve öğrenimleri birlikte takip et.",
+  "natural_daily_request": "Son çekim sonucuyla bir sonraki denemeyi hazırlayalım.",
+  "documents": [
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "RegistryFormat",
+      "data": {
+        "registry_id": "synthetic-brain",
+        "layout": "per_workspace_json"
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "RegistrySnapshot",
+      "data": {
+        "registry_id": "synthetic-brain",
+        "snapshot_sha256": "93ca970803eb0f4cd644aac6dd1b3e8075819adb66943cab8682744d96f34542",
+        "files": [
+          {
+            "relative_path": ".beyin-workspaces/format.json",
+            "content_sha256": "dbbcc63cbe0264e5c416369166182cc9b0858c9da84f6aa3b50e73b3eaf403f1"
+          }
+        ],
+        "profiles": [],
+        "sources": []
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "WorkspaceSpec",
+      "data": {
+        "spec_id": "custom-setup",
+        "user_goal": "Fotoğraf kaynaklarımı, çekim işlerimi, sonuçları ve öğrenimleri birlikte takip et.",
+        "desired_profile": {
+          "id": "custom",
+          "revision": 1,
+          "name": "Düşük ışık çekim denemeleri",
+          "purpose": "Fotoğraf kaynaklarımı, çekim işlerimi, sonuçları ve öğrenimleri birlikte takip et.",
+          "lifecycle": "active",
+          "source_ids": [
+            "custom-vault",
+            "custom-materials",
+            "custom-extra"
+          ],
+          "note_roots": [
+            "notes",
+            "knowledge"
+          ],
+          "working_rules": [
+            {
+              "id": "topic-rule",
+              "text": "Sonucu kaynakla bağla; eksik bilgiyi üretme.",
+              "subject_refs": [
+                {
+                  "workspace_id": "custom",
+                  "record_id": "custom-topic"
+                }
+              ]
+            }
+          ],
+          "memory_policy": {
+            "prefer_update_existing": true,
+            "new_note": "distinct_only",
+            "automatic_learning": "enabled"
+          },
+          "access_policy": {
+            "cross_workspace": "explicit_grant",
+            "external_sources": "read_only",
+            "automatic_audience": "internal"
+          },
+          "record_types": [
+            {
+              "id": "shooting_topic",
+              "label": "shooting_topic",
+              "fields": {}
+            },
+            {
+              "id": "shooting_task",
+              "label": "shooting_task",
+              "fields": {}
+            },
+            {
+              "id": "shooting_result",
+              "label": "shooting_result",
+              "fields": {}
+            },
+            {
+              "id": "technique",
+              "label": "technique",
+              "fields": {}
+            }
+          ],
+          "relation_types": [
+            "belongs_to",
+            "result_of",
+            "learned_from"
+          ],
+          "workflows": [
+            {
+              "id": "result-to-learning",
+              "revision": 1,
+              "name": "Sonuçtan işe ve öğrenime",
+              "trigger": {
+                "event_kind": "record_changed",
+                "entity_type": "shooting_result"
+              },
+              "conditions": [],
+              "steps": [
+                {
+                  "id": "propose",
+                  "depends_on": [],
+                  "action": "propose_memory_write",
+                  "inputs": {
+                    "result": {
+                      "ref": "event.record.id"
+                    },
+                    "target": {
+                      "literal": "custom-learning"
+                    },
+                    "task_id": {
+                      "literal": "custom-task"
+                    }
+                  }
+                },
+                {
+                  "id": "persist",
+                  "depends_on": [
+                    "propose"
+                  ],
+                  "action": "apply_memory_write",
+                  "inputs": {
+                    "intent": {
+                      "ref": "steps.propose.intent_ref"
+                    }
+                  }
+                },
+                {
+                  "id": "verify",
+                  "depends_on": [
+                    "persist"
+                  ],
+                  "action": "verify_readback",
+                  "inputs": {
+                    "intent": {
+                      "ref": "steps.propose.intent_ref"
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "extensions": {}
+        },
+        "sources": [
+          {
+            "id": "custom-vault",
+            "kind": "vault",
+            "label": "Sentetik vault"
+          },
+          {
+            "id": "custom-materials",
+            "kind": "directory",
+            "label": "Materyaller A"
+          },
+          {
+            "id": "custom-extra",
+            "kind": "directory",
+            "label": "Materyaller B"
+          }
+        ],
+        "binding_requests": [
+          {
+            "source_id": "custom-vault",
+            "machine_id": "fixture-machine",
+            "revision": 1,
+            "locator": "/synthetic/custom/vault",
+            "grants": [
+              {
+                "workspace_id": "custom",
+                "access": "read"
+              },
+              {
+                "workspace_id": "custom",
+                "access": "write_memory"
+              }
+            ],
+            "authority_ref": "fixture-user-request"
+          },
+          {
+            "source_id": "custom-materials",
+            "machine_id": "fixture-machine",
+            "revision": 1,
+            "locator": "/synthetic/custom/source-a",
+            "grants": [
+              {
+                "workspace_id": "custom",
+                "access": "read"
+              }
+            ],
+            "authority_ref": "fixture-user-request"
+          },
+          {
+            "source_id": "custom-extra",
+            "machine_id": "fixture-machine",
+            "revision": 1,
+            "locator": "/synthetic/custom/source-b",
+            "grants": [
+              {
+                "workspace_id": "custom",
+                "access": "read"
+              }
+            ],
+            "authority_ref": "fixture-user-request"
+          }
+        ],
+        "adopt_record_refs": [
+          {
+            "workspace_id": "custom",
+            "record_id": "custom-topic"
+          },
+          {
+            "workspace_id": "custom",
+            "record_id": "custom-task"
+          },
+          {
+            "workspace_id": "custom",
+            "record_id": "custom-result"
+          },
+          {
+            "workspace_id": "custom",
+            "record_id": "custom-learning"
+          }
+        ],
+        "required_capabilities": [
+          "text",
+          "markdown",
+          "pdf_text",
+          "docx_text",
+          "workflow"
+        ],
+        "unresolved": [],
+        "authority_ref": "fixture-user-request"
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "RequestContext",
+      "data": {
+        "request_id": "custom-request",
+        "session_id": "fixture-session-custom",
+        "client": "fixture-codex",
+        "query": "Son çekim sonucuyla bir sonraki denemeyi hazırlayalım.",
+        "grant_ref": "fixture-user-request",
+        "audience": "internal",
+        "no_memory": false,
+        "signals": [
+          {
+            "kind": "conversation_subject",
+            "workspace_id": "custom",
+            "subject_refs": [
+              {
+                "workspace_id": "custom",
+                "record_id": "custom-task"
+              }
+            ]
+          }
+        ],
+        "budget_chars": 8000
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "WorkflowEvent",
+      "data": {
+        "event_id": "custom/result-1",
+        "workspace_id": "custom",
+        "event_kind": "record_changed",
+        "record": {
+          "id": "custom-result",
+          "kind": "note",
+          "revision": 1,
+          "visibility": "internal",
+          "facts": {
+            "fixture": true,
+            "observation": "Kayıtlı ölçüm"
+          },
+          "entity_type": "shooting_result",
+          "workspace_id": "custom",
+          "text": "1/60 saniyede hareket bulanıklığı görüldü.",
+          "source_ref": {
+            "source_id": "custom-vault",
+            "relative_path": "notes/custom-result.md",
+            "content_sha256": "0840c800d771ca17b25d881b9f101e6bec320aa398bfc9ff0bac8af7581ef410",
+            "fragment": {
+              "kind": "whole"
+            },
+            "extractor": {
+              "id": "markdown",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          },
+          "trust": "trusted",
+          "relations": [
+            {
+              "id": "custom-result-topic",
+              "workspace_id": "custom",
+              "type": "belongs_to",
+              "from": {
+                "workspace_id": "custom",
+                "record_id": "custom-result"
+              },
+              "to": {
+                "workspace_id": "custom",
+                "record_id": "custom-topic"
+              },
+              "evidence_refs": []
+            }
+          ]
+        },
+        "evidence_refs": [
+          {
+            "source_id": "custom-vault",
+            "relative_path": "notes/custom-result.md",
+            "content_sha256": "0840c800d771ca17b25d881b9f101e6bec320aa398bfc9ff0bac8af7581ef410",
+            "fragment": {
+              "kind": "whole"
+            },
+            "extractor": {
+              "id": "markdown",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "source_files": [
+    {
+      "path": "files/source-a/material.txt",
+      "content_sha256": "f6d3b1526232bf970644616aac1b4d6e0fd2520bbb1c39e25bc65fed46c4660e"
+    },
+    {
+      "path": "files/source-b/material.txt",
+      "content_sha256": "4e90e5c0b503edff9ade66544c32af9ff708be7b3f81d62237a25ac50100ca45"
+    },
+    {
+      "path": "files/vault/notes/custom-topic.md",
+      "content_sha256": "906800645e68b193edeee74cf2258de6850646eedba021b6aaee12146b2a38dc"
+    },
+    {
+      "path": "files/vault/tasks/custom-task.md",
+      "content_sha256": "795bbe87f072e7e91f45a757c628aa2da4e8c95dc3872b7fcb009a87d2c4de8c"
+    },
+    {
+      "path": "files/vault/notes/custom-result.md",
+      "content_sha256": "0840c800d771ca17b25d881b9f101e6bec320aa398bfc9ff0bac8af7581ef410"
+    },
+    {
+      "path": "files/vault/notes/custom-learning.md",
+      "content_sha256": "4f47dacae726d9bbab934cfc09dea9ce477ff5ab396101122aa711c08aa440fb"
+    }
+  ],
+  "locator_remap": {
+    "/synthetic/custom/vault": "files/vault",
+    "/synthetic/custom/source-a": "files/source-a",
+    "/synthetic/custom/source-b": "files/source-b"
+  }
+}

@@ -9,6 +9,15 @@ from beyin_v3_secrets import redact
 from beyin_v3 import pack_context
 
 
+def _workspace_remote_boundary(store):
+    try:
+        from beyin_v3_workspace_context import enabled
+    except ImportError:
+        if (store.state_dir/'workspace-runtime.json').exists():raise ValueError('workspace_package_unavailable')
+    else:
+        if enabled(store.vault_root,store.state_dir):raise ValueError('active_workspace_remote_requires_scoped_consent')
+
+
 def _strings(value):
     if isinstance(value, str):
         yield value
@@ -22,6 +31,7 @@ def _strings(value):
 
 
 def _safe(store, value):
+    _workspace_remote_boundary(store)
     # Reject instead of silently judging redacted evidence. Never persist matches.
     # Scan raw strings too: JSON escapes a newline as \n, which hides a line-leading key.
     text = json.dumps(value, ensure_ascii=False) + '\n' + '\n'.join(_strings(value))
@@ -33,6 +43,7 @@ def _safe(store, value):
 def _fresh(store, records):
     try:
         for record in records:
+            if not store._workspace_allowed(record):return False
             path = store.vault_root / store._source(record['source'])
             if hashlib.sha256(path.read_bytes()).hexdigest() != record['source_sha256']:
                 return False
@@ -123,6 +134,7 @@ def _packaged(store, query, cards, project, versions, facets, mode, transport):
 def advise_context(store, query, *, project, audience='internal', statuses=None,
                    limit=5, budget_chars=8000, transport=None):
     """Retrieve a bounded pool, judge permitted cards, then pack final source records."""
+    _workspace_remote_boundary(store)
     if not isinstance(project, str) or not project.strip():
         raise ValueError('advisor_requires_explicit_project')
     if audience not in ('public', 'internal'):
@@ -202,6 +214,8 @@ def auto_context(store, harness, query, context, *, budget_chars, timeout_cap=2.
     word-overlap bar is lower, and a loose record enters only above AUTO_RESCUE. Any failure
     or doubt returns the strict result untouched.
     """
+    try:_workspace_remote_boundary(store)
+    except ValueError:return context
     mode = client.inspect_config(store.state_dir)
     if (not mode['valid'] or mode['mode'] == 'off' or 'auto_context' not in mode['features']
             or not isinstance(query, str) or len(query.strip()) < AUTO_MIN_CHARS):
@@ -326,6 +340,7 @@ def _verified_evidence(store, evidence, project, by_id=None):
 
 def review_candidate(store, proposal, *, project, transport=None):
     """Judge exact source evidence, without ingesting or approving a proposal."""
+    _workspace_remote_boundary(store)
     if not isinstance(proposal, dict) or set(proposal) != {'status', 'project', 'claim', 'evidence'}:
         raise ValueError('invalid_proposal_fields')
     proposal = json.loads(json.dumps(proposal, ensure_ascii=False))
@@ -409,6 +424,7 @@ def _calibration(result, mode):
 
 def verify_answer(store, claims, *, project, transport=None):
     """Advisory claim checks; exact local evidence gates precede remote scoring."""
+    _workspace_remote_boundary(store)
     if not isinstance(project, str) or not project.strip():
         raise ValueError('advisor_requires_explicit_project')
     if not isinstance(claims, list) or not 1 <= len(claims) <= 20:

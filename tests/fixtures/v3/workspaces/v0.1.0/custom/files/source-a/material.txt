@@ -1,0 +1,2 @@
+Düşük ışık çekim denemeleri
+1/60 saniyede hareket bulanıklığı görüldü.

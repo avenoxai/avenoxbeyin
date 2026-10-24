@@ -2,6 +2,10 @@
 """Local-first CLI for the shared V3 memory foundation."""
 from __future__ import annotations
 
+# Source checkouts also support truly read-only navigation commands.
+import sys
+sys.dont_write_bytecode = True
+
 import argparse
 import base64
 import hashlib
@@ -260,7 +264,7 @@ def receipt_line_endings(vault: Path) -> dict:
     Read-only, information only; a vault that is not a git work tree reports not_applicable.
     """
     def git(*args):
-        done = subprocess.run(("git", "-C", str(vault)) + args, capture_output=True, text=True, timeout=10)
+        done = subprocess.run(("git", "-C", str(vault)) + args, capture_output=True, text=True, encoding='locale', timeout=10)
         return done.returncode, done.stdout.strip()
     try:
         code, inside = git("rev-parse", "--is-inside-work-tree")
@@ -304,6 +308,24 @@ def _ensure_scripts_path():
     directory = str(adjacent if (adjacent / "beyin_v3_sync.py").exists() else Path(__file__).resolve().parents[1] / "template/.claude/scripts")
     if sys.path[:1] != [directory]:
         sys.path.insert(0, directory)
+
+
+def write_json(value, *, stream=None, indent=2):
+    _ensure_scripts_path()
+    try:
+        from beyin_v3_output import write_json as emit
+    except (ImportError, OSError, SyntaxError):
+        # A partial install must still report its real result/error as JSON.
+        # Only helper loading is optional; serialization and I/O errors propagate.
+        stream = sys.stdout if stream is None else stream
+        text = json.dumps(value, ensure_ascii=True, indent=indent) + '\n'
+        buffer = getattr(stream, 'buffer', None)
+        if buffer is None:
+            stream.write(text)
+        else:
+            stream.flush(); buffer.write(text.encode('utf-8')); buffer.flush()
+        return
+    emit(value, stream=stream, indent=indent)
 
 
 def load_sync():
@@ -865,6 +887,17 @@ def read_json(filename: str):
         return json.load(stream)
 
 
+def read_workspace_json(filename):
+    """G0 input uses C1 duplicate-key/number/size validation before dispatch."""
+    from beyin_v3_workspaces import MAX_BYTES,parse_document
+    if filename=='-':
+        stream=getattr(sys.stdin,'buffer',sys.stdin);raw=stream.read(MAX_BYTES+1)
+    else:
+        with Path(filename).open('rb') as stream:raw=stream.read(MAX_BYTES+1)
+    raw=raw.removeprefix(b'\xef\xbb\xbf') if isinstance(raw,bytes) else raw.removeprefix('\ufeff')
+    return parse_document(raw)
+
+
 def load_skills():
     _ensure_scripts_path()
     import beyin_v3_skills
@@ -939,6 +972,23 @@ def parser(note_namespace=None, is_json=False):
     sync_parser.add_argument("--recover-views", action="store_true",
                              help="Archive conflicting receipt views and regenerate from immutable receipts")
     sub.add_parser("recover-views", help="Archive conflicting receipt views and regenerate from immutable receipts")
+    lint = sub.add_parser("lint", help="Read-only visible Markdown wikilink checks (legacy vault mode)")
+    lint.add_argument("--folder")
+    lint.add_argument("--workspace-id")
+    lint.add_argument("--grant-ref")
+    moc = sub.add_parser("moc", help="Update a MOC through the hash-checked note writer (legacy vault mode)")
+    moc.add_argument("--folder", default="knowledge")
+    moc.add_argument("--moc-file", default="MOC.md")
+    moc.add_argument("--dry-run", action="store_true", help="Preview the note-edit request without writing")
+    moc.add_argument("--workspace-id")
+    moc.add_argument("--grant-ref")
+    moc.add_argument("--source-id", help="Authorized vault binding for a scoped MOC write")
+    impact = sub.add_parser("link-impact", help="Preview known references in an authorized workspace inventory")
+    impact.add_argument("--workspace-id", required=True)
+    impact.add_argument("--grant-ref", required=True)
+    impact.add_argument("--source", required=True)
+    impact.add_argument("--source-id", help="Approved binding for one non-Markdown source")
+    impact.add_argument("--destination")
     sub.add_parser("skill-sync", help="Reconcile project-local shared skills")
     sub.add_parser("doctor", help="Read local hook health and pending metadata counts")
     scheduled = sub.add_parser("scheduled-check", help="Sync then doctor for an OS scheduler you set up; no model call, no service")
@@ -1028,6 +1078,19 @@ def parser(note_namespace=None, is_json=False):
     note_edit.add_argument("--file", default="-", help="JSON {source, expected_sha256, edits} or new content; - for stdin")
     task = sub.add_parser("task-create", help="Create and verify an explicit new task")
     task.add_argument("--file", default="-", help="JSON {source: tasks/name.md, text, metadata: {id,status,owner}}")
+    metadata = sub.add_parser('workspace', help='Read workspace registry metadata without sources, index or sync')
+    metadata.add_argument('action', choices=('list', 'inspect'))
+    metadata.add_argument('workspace_id', nargs='?', help='Workspace ID required for inspect')
+    metadata.add_argument('--limit', type=int, default=20, help='List at most 1-100 workspaces (default 20)')
+    builder = sub.add_parser('workspace-builder', help='Plan, preview and execute approved workspace configuration')
+    builder.add_argument('action', choices=('plan','preview','apply','recover','revert'))
+    builder.add_argument('--file', default='-', help='Agent-prepared JSON input or - for stdin')
+    setup = sub.add_parser('workspace-setup', help='Catalog sources, prepare a compact workspace plan, or organize an approved view')
+    setup.add_argument('action', choices=('catalog', 'discover', 'preview', 'design', 'prepare', 'stage', 'complete', 'resume', 'status', 'organize'))
+    setup.add_argument('--file', default='-', help='Compact agent-prepared setup JSON or - for stdin')
+    authority = sub.add_parser('workspace-authority', help='Record explicit trusted-agent source/plan/revert authority or revoke it')
+    authority.add_argument('action', choices=('grant','approve-plan','approve-revert','revoke'))
+    authority.add_argument('--file', default='-', help='Bounded JSON with explicit human evidence, or - for stdin')
     context = sub.add_parser("context", help="Retrieve source-backed shared context")
     context.add_argument("query", nargs="?", help="Query; alternatively use --file")
     context.add_argument("--file", help="JSON retrieval arguments, or - for stdin")
@@ -1070,6 +1133,11 @@ def parser(note_namespace=None, is_json=False):
     update.add_argument("--file", default="-", help="JSON {id, expected_revision, changes}")
     history = sub.add_parser("history", help="Read ordered revision snapshots for a record")
     history.add_argument("record_id")
+    for name,help_text in [('workspace-context','Read integrated G0 workspace context'),('workspace-write','Apply a G0 MemoryWriteIntent'),
+                           ('workspace-workflow','Advance a finite G0 workflow with typed proposals')]:
+        workspace=sub.add_parser(name,help=help_text)
+        workspace.add_argument('--file',required=True,help='G0 JSON envelope or typed workflow request')
+        if name=='workspace-context':workspace.add_argument('--include-archived',action='store_true',help='Explicit historical workspace query')
     pscope = sub.add_parser("project-scope", help="Manage folder project scopes in .beyin-projects.json")
     pscope.add_argument("action", choices=["list", "add", "remove", "prune"], nargs="?", default="list",
                         help="Action to perform: list, add, remove, prune")
@@ -1098,6 +1166,151 @@ def parser(note_namespace=None, is_json=False):
     return root
 
 
+def workspace_failure(exc, operation='workspace-operation'):
+    """Stable symbolic errors only; never dump source, OS paths or tracebacks."""
+    from beyin_v3_workspaces import envelope
+    known = {
+        'runtime/updater busy; retry after active work finishes': 'busy',
+        'workspace provisioning pending; recover or revert that operation first': 'operation_pending',
+        'new semantic notes belong under notes/ or knowledge/': 'invalid_create_note_target',
+        'task-create source must be a tasks/ Markdown path': 'invalid_create_task_target',
+    }
+    code = getattr(exc, 'code', None)
+    if code is None:
+        code = known.get(str(exc)) if isinstance(exc, ValueError) else None
+    if not isinstance(code, str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,95}', code):
+        code = 'source_unavailable' if isinstance(exc, OSError) else ('revision_conflict' if type(exc).__name__ == 'RevisionConflict' else 'workspace_operation_failed')
+    denied = code.endswith(('_denied', '_authority_required')) or code in ('source_unbound', 'authority_required', 'no_memory', 'workspace_context_required')
+    conflict = any(word in code for word in ('conflict', 'changed', 'collision', 'pending', 'busy', 'stale'))
+    invalid = code.startswith(('invalid_', 'unsupported_contract')) or code in ('duplicate_json_key', 'invalid_number', 'document_too_large', 'document_too_deep')
+    parts = []
+    issue = {'code': code}
+    if code in ('invalid_create_note_target', 'invalid_create_task_target'):
+        change_id = getattr(exc, 'change_id', None)
+        if isinstance(change_id, str) and re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,95}', change_id):
+            parts = [{'id': change_id, 'state': 'failed'}]
+        roots = 'notes/ or knowledge/' if code == 'invalid_create_note_target' else 'tasks/'
+        issue['detail'] = 'The canonical create writer requires a Markdown target under ' + roots + '.'
+        next_action = ('Choose an approved .md target under ' + roots +
+                       '; obtain a fresh context and approval if scope changes. ' +
+                       ('The whole intent was rejected before source writes.' if parts else 'Inspect the journal before retrying; previous source changes may exist.'))
+    elif code == 'input_file_unavailable':
+        next_action = 'Create the UTF-8 request file before invoking the command, or pass its JSON on stdin with --file -.'
+    else:
+        next_action = ('Verify explicit source scope and user authority before retrying.' if denied else
+                       'Read the current context and pending journal; recover or revert the existing operation before retrying.' if conflict else
+                       'Correct the bounded request using the workspace command help; do not retry by bypassing the CLI.' if invalid else
+                       'Inspect dependencies and pending operations. This error does not undo already journaled source changes.')
+    result = envelope('OperationResult', {'operation_id': operation,
+        'operation_status': 'denied' if denied else 'conflict' if conflict else 'failed',
+        'workspace_health': 'verification_pending', 'parts': parts, 'capabilities': [], 'verification': [],
+        'issues': [issue], 'next_action': next_action})
+    return result, 4 if denied else 3 if conflict else 2 if invalid else 5
+
+
+def workspace_metadata_cli(args, return_result=False):
+    # Dispatch before MemoryStore/SyncEngine and suppress import bytecode too.
+    sys.dont_write_bytecode = True
+    _ensure_scripts_path()
+    try:
+        from beyin_v3_workspaces import workspace_metadata
+        vault = args.vault.expanduser().resolve()
+        state = (args.state.expanduser() if args.state else default_state(vault)).resolve()
+        result = workspace_metadata(vault, state, args.action, args.workspace_id, limit=args.limit)
+        code = 0
+    except Exception as exc:
+        result, code = workspace_failure(exc, 'workspace-metadata')
+    if return_result:
+        return result, code
+    write_json(result)
+    return code
+
+
+def workspace_builder_cli(args,return_result=False):
+    # Planning/preview must not initialize MemoryStore, SyncEngine or bytecode.
+    sys.dont_write_bytecode=True
+    try:
+        _ensure_scripts_path()
+        from beyin_v3_builder import execute,_failure
+        if args.command=='workspace-authority':
+            from beyin_v3_workspaces import execute_authority as execute
+        elif args.command=='workspace-setup':
+            from beyin_v3_workspace_setup import execute
+        vault=args.vault.expanduser().resolve()
+        if not vault.is_dir():raise ValueError('invalid_builder_request')
+        state=(args.state.expanduser() if args.state else default_state(vault)).resolve()
+        if state==vault or vault in state.parents:raise ValueError('invalid_builder_request')
+        try:
+            payload=read_workspace_json(args.file)
+        except OSError as exc:
+            from beyin_v3_workspaces import WorkspaceError
+            raise WorkspaceError('input_file_unavailable') from exc
+        result,code=execute(vault,state,args.action,payload)
+    except Exception as exc:
+        try:
+            from beyin_v3_builder import _failure
+            result,code=(workspace_failure(exc,args.command) if args.command=='workspace-setup' else _failure(exc))
+            result['data']['operation_id']=args.command
+            if getattr(exc,'code',None) in ('document_too_large','document_too_deep'):code=2
+        except ImportError:
+            result={'contract_version':'workspace/0.1.0','type':'OperationResult','data':{
+                'operation_id':'workspace-builder','operation_status':'failed','workspace_health':'verification_pending',
+                'parts':[],'capabilities':[],'verification':[],'issues':[{'code':'workspace_builder_unavailable'}],
+                'next_action':'Repair the managed workspace builder modules before retrying.'}}
+            code=5
+    if return_result:return result,code
+    write_json(result);return code
+
+
+def knowledge_cli(args, return_result=False):
+    # Even a source checkout must leave no bytecode, DB, locks or state on a read.
+    sys.dont_write_bytecode = True
+    try:
+        _ensure_scripts_path()
+        from beyin_v3_lint import (lint_vault, plan_moc, generate_moc, scoped_vault_index,
+                                   plan_link_impact, plan_attached_source_impact)
+        vault = args.vault.expanduser().resolve()
+        if not vault.is_dir():
+            raise ValueError("--vault must be an existing directory")
+        state = (args.state.expanduser() if args.state else default_state(vault)).resolve()
+        if state == vault or vault in state.parents:
+            raise ValueError("--state must be outside the vault")
+        # A raw vault walk cannot establish workspace authority; refuse before reading notes.
+        from beyin_v3_workspace_context import enabled
+        active = enabled(vault, state)
+        workspace_id, grant_ref = args.workspace_id, args.grant_ref
+        if bool(workspace_id) != bool(grant_ref) or (active and not workspace_id):
+            raise ValueError('active_workspace_requires_scoped_context')
+        if args.command == 'link-impact' and not active:
+            raise ValueError('active_workspace_requires_scoped_context')
+        index = scoped_vault_index(vault, state, workspace_id, grant_ref) if active else None
+        if args.command == 'lint':
+            result = lint_vault(vault, args.folder, state=state, vault_index=index)
+        elif args.command == 'link-impact':
+            result = (plan_attached_source_impact(vault, state, index, workspace_id, grant_ref,
+                                                  args.source_id, args.source, args.destination)
+                      if args.source_id else plan_link_impact(index, args.source, args.destination))
+        elif args.dry_run:
+            result = plan_moc(vault, args.folder, args.moc_file, state=state, vault_index=index)
+        else:
+            result = generate_moc(load_sync()(vault, state), args.folder, args.moc_file,
+                                  vault_index=index, workspace_id=workspace_id, grant_ref=grant_ref,
+                                  source_id=args.source_id)
+        code = 1 if result['status'] == 'issues_found' else 3 if result['status'] == 'indeterminate' else 0
+    except Exception as exc:
+        from beyin_v3_workspaces import WorkspaceError
+        if str(exc) == 'active_workspace_requires_scoped_context':
+            result, code = workspace_failure(WorkspaceError('workspace_context_required'), 'knowledge-navigation')
+        elif isinstance(exc, WorkspaceError):
+            result, code = workspace_failure(exc, 'knowledge-navigation')
+        else:
+            result, code = dict(status='error', error=type(exc).__name__, message=str(exc)), 2
+    if return_result:
+        return result, code
+    write_json(result)
+    return code
+
+
 def main(argv=None, return_result=False):
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8-sig")
@@ -1106,12 +1319,16 @@ def main(argv=None, return_result=False):
     argument_parser = parser(note_namespace=args, is_json="--json" in args_list)
     try:
         args = argument_parser.parse_args(args_list, namespace=args)
+        if args.command in ("lint", "moc", "link-impact"): return knowledge_cli(args, return_result)
+        if args.command == "workspace": return workspace_metadata_cli(args, return_result)
+        if args.command in ("workspace-builder", "workspace-authority", "workspace-setup"): return workspace_builder_cli(args, return_result)
         receipt_flags = args.command == "receipt" and any(
             getattr(args, name) is not None for name in ("event_id", "summary", "summary_file", "ref", "link", "session"))
         if receipt_flags:
-            for stream in (sys.stdout, sys.stderr):
-                if hasattr(stream, "reconfigure"):
-                    stream.reconfigure(encoding="utf-8")
+            if not return_result:
+                for stream in (sys.stdout, sys.stderr):
+                    if hasattr(stream, "reconfigure"):
+                        stream.reconfigure(encoding="utf-8")
             if args.file is not None:
                 argument_parser.error("--file cannot be combined with receipt flags")
             if args.event_id is None:
@@ -1147,6 +1364,11 @@ def main(argv=None, return_result=False):
         state = (args.state.expanduser() if args.state else default_state(vault)).resolve()
         if state == vault or vault in state.parents:
             raise ValueError("--state must be outside the vault")
+        _ensure_scripts_path()
+        if (state/'workspace-runtime.json').exists():
+            from beyin_v3_workspace_context import enabled as workspace_enabled
+            if workspace_enabled(vault,state) and args.command in ('recap','triage','doctor','history','ingest-server','jev-review','jev-answer','jev-memory'):
+                raise ValueError('active_workspace_requires_scoped_context')
         read_only_context = args.command == "context" and args.no_sync
         if read_only_context:
             # The source CLI can run without the installed entry point, which
@@ -1606,7 +1828,7 @@ def main(argv=None, return_result=False):
             result, code = scheduled.run(vault, state, Path(__file__).resolve(), notify=args.notify)
             if return_result:
                 return result, code
-            print(json.dumps(result, ensure_ascii=True, indent=2))
+            write_json(result)
             return code
         elif args.command == "skill-sync":
             result = load_skills().sync_skills(vault, state)
@@ -1616,7 +1838,7 @@ def main(argv=None, return_result=False):
             _ensure_scripts_path()
             import beyin_v3_projects as projects
             result = projects.manage(vault, args.action, folder=args.folder, project=args.project,
-                                     shared_unscoped=args.shared_unscoped)
+                                     shared_unscoped=args.shared_unscoped, workspace_state=state)
         elif args.command == "companion-compact":
             _ensure_scripts_path()
             import beyin_v3_compact
@@ -1677,6 +1899,26 @@ def main(argv=None, return_result=False):
         elif args.command == "task-create":
             payload = read_json(args.file)
             result = sync.task_create(payload['source'], payload['text'], payload['metadata'])
+        elif args.command in ('workspace-context','workspace-write','workspace-workflow'):
+            _ensure_scripts_path()
+            from beyin_v3_workspace_context import WorkspaceRuntime
+            from beyin_v3_workspaces import parse_document
+            runtime=WorkspaceRuntime(vault,state)
+            payload=read_workspace_json(args.file)
+            if args.command=='workspace-context':
+                from beyin_v3_sync import SyncEngine
+                checked=runtime.sync(payload)
+                if checked.get('conflicts'):raise ValueError('source_sync_conflict')
+                result=runtime.context(payload,include_archived=args.include_archived)
+            elif args.command=='workspace-write':
+                from beyin_v3_workspace_memory import MemoryIntentService
+                result=MemoryIntentService(runtime).apply(payload)
+            else:
+                from beyin_v3_workspace_workflow import WorkflowRunner
+                if not isinstance(payload,dict) or set(payload)-{'event','workflow_id','request','proposals','run_id'}:raise ValueError('invalid_workflow_request')
+                runner=WorkflowRunner(runtime)
+                result=(runner.resume(payload['run_id'],payload['request'],proposals=payload.get('proposals')) if 'run_id' in payload else
+                    runner.advance(payload['event'],payload['workflow_id'],payload['request'],proposals=payload.get('proposals')))
         elif args.command == "context":
             params = {"query": args.query, "project": args.project, "audience": args.audience,
                       "statuses": args.statuses, "limit": args.limit, "budget_chars": args.budget_chars}
@@ -1758,12 +2000,12 @@ def main(argv=None, return_result=False):
             if refreshed.get('status') == 'conflict':
                 raise RuntimeError('History blocked: source sync conflict. Run sync with the same vault/state to inspect and reconcile source issues, then retry history.')
             result = sync.store.history(args.record_id)
-            if refreshed.get('status') == 'degraded':
+            if refreshed.get('status') == 'degraded' and not return_result:
                 # The public stdout contract remains a JSON list.
                 warnings = refreshed.get('warnings', [])
-                print(json.dumps({'source_sync': {'status': 'degraded', 'warnings': warnings[:20],
-                                                  'warning_count': len(warnings), 'truncated': len(warnings) > 20}},
-                                 ensure_ascii=True), file=sys.stderr)
+                write_json({'source_sync': {'status': 'degraded', 'warnings': warnings[:20],
+                                             'warning_count': len(warnings), 'truncated': len(warnings) > 20}},
+                           stream=sys.stderr, indent=None)
         elif args.command == "learn":
             _ensure_scripts_path()
             from beyin_v3_learning import stage_candidate, list_candidates
@@ -1777,15 +2019,21 @@ def main(argv=None, return_result=False):
         else:
             payload = read_json(args.file)
             result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])
-        if (args.command in SOURCE_WRITE_COMMANDS
+        if (args.command in SOURCE_WRITE_COMMANDS and os.environ.get("CLAUDE_CODE_SESSION_ID")
                 and (args.command != "note-edit" or result.get('status') == 'written')
-                and os.environ.get("CLAUDE_CODE_SESSION_ID")):
+                or (args.command == "workspace-write" and result.get("data", {}).get("operation_status") == "applied")):
             mark_session_edit(state)
+        view_stale=(args.command=='workspace-write' and any(issue.get('code')=='managed_view_stale' for issue in result.get('data',{}).get('issues',[]))) or (args.command=='workspace-workflow' and (result.get('data',{}).get('next_action') or '').startswith('managed_view_stale:'))
+        exit_code=5 if view_stale else 0
         if return_result:
-            return result, 0
-        print(json.dumps(result, ensure_ascii=True, indent=2))
-        return 0
+            return result, exit_code
+        write_json(result)
+        return exit_code
     except Exception as exc:
+        if args.command in ('workspace-context','workspace-write','workspace-workflow'):
+            error,exit_code=workspace_failure(exc)
+            if return_result:return error,exit_code
+            write_json(error);return exit_code
         # No traceback or raw input dump: callers retain their local source files.
         error = {"error": type(exc).__name__, "message": str(exc)}
         code = 1
@@ -1802,8 +2050,7 @@ def main(argv=None, return_result=False):
             error["hint"] = ERROR_HINTS[str(exc)]
         if return_result:
             return error, code
-        print(json.dumps(error, ensure_ascii=True),
-              file=sys.stdout if args.command in NOTE_JSON_COMMANDS else sys.stderr)
+        write_json(error, stream=sys.stdout if args.command in NOTE_JSON_COMMANDS else sys.stderr, indent=None)
         return code
 
 

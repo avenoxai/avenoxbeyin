@@ -192,6 +192,18 @@ class ProjectScopesTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.store._eligible('internal', 'oyun')
 
+    def test_invalid_folder_error_names_the_entry(self):
+        # #419: one bad entry still fails the explicit project closed, but the
+        # message must say which entry, for both copies of the reader.
+        import beyin_v3_projects as projects
+        self.vault_notes()
+        self.scopes({'folders': {'../Disari': 'oyun', GAME: 'oyun'}})
+        for read in (lambda: self.store._eligible('internal', 'oyun'),
+                     lambda: projects.read_project_scopes(self.vault)):
+            with self.subTest(read=read):
+                with self.assertRaisesRegex(ValueError, r"vault-relative: '\.\./Disari' in \.beyin-projects\.json"):
+                    read()
+
     def test_visibility_and_freshness_gates_still_apply_inside_a_scope(self):
         self.note('secret', GAME + '/Gizli.md', visibility='private')
         stale = self.note('stale', GAME + '/Eski.md')

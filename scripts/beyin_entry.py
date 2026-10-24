@@ -172,6 +172,52 @@ def rewrite_note(entry):
 
 
 def human_result(result, command, installed_version=None):
+    if 'workspace_metadata' in result:
+        data = result['workspace_metadata']
+        lines = []
+        for item in data['workspaces']:
+            lines.append(plain_text(item['id']) + ' · ' + plain_text(item['name']) +
+                         ' · ' + plain_text(item['lifecycle']) + ' · r' + str(item['revision']) +
+                         ' · ' + str(item['source_count']) + ' kaynak')
+            if data['action'] == 'inspect':
+                lines.append('Not kokleri: ' + ', '.join(plain_text(root) for root in item['note_roots']))
+                lines.append('Kural: ' + str(item['working_rule_count']) + '; surec: ' + str(item['workflow_count']))
+        if not lines:
+            lines.append('Kayitli workspace yok.')
+        if data['truncated']:
+            lines.append('Gosterilen: ' + str(len(data['workspaces'])) + '/' + str(data['total']) + '; --limit ile genislet.')
+        return '\n'.join(lines)
+    if command == 'workspace-setup' and result.get('contract_version') == 'workspace/0.1.0':
+        for issue in result['data'].get('issues', []):
+            if issue.get('code') != 'setup_artifacts':
+                continue
+            try:
+                artifacts = json.loads(issue['detail'])
+            except (ValueError, KeyError, TypeError):
+                break
+            preview = artifacts.get('preview') if isinstance(artifacts, dict) else None
+            if isinstance(preview, dict) and isinstance(preview.get('text'), str):
+                return '\n'.join(plain_text(line) for line in preview['text'].splitlines())
+            if isinstance(artifacts, dict) and isinstance(artifacts.get('catalog'), list):
+                return ('Kaynak katalogu: ' + str(len(artifacts['catalog'])) + ' kayit.' +
+                        (' Sinira ulasildi; daha dar kokler sec.' if artifacts.get('truncated') else '') +
+                        (' ' + plain_text(result['data']['next_action']) if result['data'].get('next_action') else ''))
+    if result.get('contract_version')=='workspace/0.1.0':
+        data=result['data']
+        if result['type']=='WorkContext':
+            return 'Calisma baglami: '+str(data['state'])+'; '+str(len(data['records']))+' kaynak/kayit.'
+        if result['type']=='WorkflowRun':
+            return 'Surec: '+str(data['status'])+('. '+data['next_action'] if data.get('next_action') else '')
+        line='Islem: '+str(data['operation_status'])+'; alan durumu: '+str(data['workspace_health'])
+        codes=[plain_text(issue['code']) for issue in data.get('issues',[]) if issue.get('code')!='setup_artifacts']
+        failed=[plain_text(part['id']) for part in data.get('parts',[]) if part['state'] in ('failed','conflict')]
+        if codes:line+='; kod: '+', '.join(codes)
+        if failed:line+='; hedef degisiklik: '+', '.join(failed)
+        return line+('. '+plain_text(data['next_action']) if data.get('next_action') else '')
+    if command=='workspace-builder':
+        preview=result.get('preview',result)
+        if isinstance(preview,dict) and isinstance(preview.get('text'),str):
+            return '\n'.join(plain_text(line) for line in preview['text'].splitlines())
     status = result.get('status', '')
     if command == 'scheduled-check' and 'status' in result:
         # Exit 4 (needs attention) prints here like a finished check: the check ran and found something.
@@ -639,6 +685,29 @@ def human_result(result, command, installed_version=None):
     return message
 
 
+def write_json(value, *, stream=None, indent=2):
+    # The installer and release builder include all managed beyin_v3*.py helpers.
+    entry = Path(__file__).resolve()
+    directory = (entry.parents[1] / 'template/.claude/scripts' if entry.name == 'beyin_entry.py'
+                 and entry.parent.name == 'scripts' else entry.parent / '.claude/scripts')
+    try:
+        spec = importlib.util.spec_from_file_location('beyin_entry_output', directory / 'beyin_v3_output.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except (ImportError, OSError, SyntaxError):
+        # Bootstrap errors must remain reportable even without managed modules.
+        # Catch only loading failures, before serialization or any output occurs.
+        stream = sys.stdout if stream is None else stream
+        text = json.dumps(value, ensure_ascii=True, indent=indent) + '\n'
+        buffer = getattr(stream, 'buffer', None)
+        if buffer is None:
+            stream.write(text)
+        else:
+            stream.flush(); buffer.write(text.encode('utf-8')); buffer.flush()
+        return
+    module.write_json(value, stream=stream, indent=indent)
+
+
 # Hook definition file -> the step its client needs before the new hooks run (SETUP-V3.md step 5).
 TRUST_REVIEW = {
     '.codex/hooks.json': 'Codex: /hooks guven incelemesi',
@@ -671,11 +740,15 @@ def main(argv=None):
     human = ('--human' in argv or sys.stdout.isatty()) and not force_json
     argv = [arg for arg in argv if arg not in ('--human', '--json')]
     if human:
-        # A piped or redirected Windows console uses a legacy code page (cp1252 has no s-cedilla);
-        # an unencodable character must print as '?' instead of failing the whole command.
+        # Interactive text follows the terminal's own encoding. For redirected
+        # --human output, UTF-8 is the explicit pipe format, independent of the
+        # Windows legacy code page. Never silently replace user-visible text.
         for stream in (sys.stdout, sys.stderr):
             if hasattr(stream, 'reconfigure'):
-                stream.reconfigure(errors='replace')
+                if stream.isatty():
+                    stream.reconfigure(errors='backslashreplace')
+                else:
+                    stream.reconfigure(encoding='utf-8', errors='strict')
     command = argv[0] if argv else 'doctor'
     if command in ('note-read', 'note-edit'):
         human = False  # These commands have a JSON contract, including on a terminal.
@@ -750,7 +823,10 @@ def main(argv=None):
                 else: result = updater.update(vault, state, args.package, args.check)
             elif args.command == 'rollback': result = updater.rollback(vault, state)
             else: result = updater.recover(vault, state)
-            print(human_result(result, command, installed_version) if human else json.dumps(result, ensure_ascii=True, indent=2))
+            if human:
+                print(human_result(result, command, installed_version))
+            else:
+                write_json(result)
             return 0
         cli = cli or load_cli(directory)
         cli_args = ['--vault', str(vault), '--state', str(state)] + (['--json'] if force_json else []) + (argv or ['doctor'])
@@ -781,7 +857,10 @@ def main(argv=None):
         return code
     except Exception as exc:
         error = {'error': type(exc).__name__, 'message': str(exc)}
-        print(human_result(error, command, installed_version) if human else json.dumps(error, ensure_ascii=True), file=sys.stderr)
+        if human:
+            print(human_result(error, command, installed_version), file=sys.stderr)
+        else:
+            write_json(error, stream=sys.stderr, indent=None)
         return 1
 
 
