@@ -215,6 +215,21 @@ def scoped_vault_index(vault_root, state, workspace_id, grant_ref, *, audience='
                            outside_inventory='unknown', media_inventory='not_indexed'))
 
 
+def _reference_values(metadata):
+    """Yield stored reference values; callers decide what identifies their target."""
+    for field in ('source_refs', 'evidence_refs'):
+        refs = metadata.get(field, [])
+        for ref in refs if isinstance(refs, list) else []:
+            yield field, None, ref
+    relations = metadata.get('workspace_relations', [])
+    for relation in relations if isinstance(relations, list) else []:
+        if not isinstance(relation, dict):
+            continue
+        refs = relation.get('evidence_refs', [])
+        for ref in refs if isinstance(refs, list) else []:
+            yield 'evidence_refs', relation, ref
+
+
 def plan_link_impact(vault_index, source, destination=None):
     """Preview known references before a path change; no source or index mutation.
 
@@ -245,25 +260,23 @@ def plan_link_impact(vault_index, source, destination=None):
             elif not resolved['exists']:
                 item['reason'] = 'ambiguous' if resolved.get('ambiguous') else 'unresolved'
                 unresolved.append(item)
-        for field in ('source_refs', 'evidence_refs'):
-            refs = metadata.get(field, [])
-            for ref in refs if isinstance(refs, list) else []:
+        for field, relation, ref in _reference_values(metadata):
+            if relation is None:
                 if isinstance(ref, str) and ref == source:
                     source_refs.append(dict(source=rel, field=field, reference_kind='path'))
                 elif isinstance(ref, dict) and ref.get('relative_path') == source:
                     source_refs.append(dict(source=rel, field=field, reference_kind='source_ref',
                                             source_id=ref.get('source_id'),
                                             content_sha256=ref.get('content_sha256')))
+            elif isinstance(ref, dict) and ref.get('relative_path') == source:
+                source_refs.append(dict(source=rel, relation_id=relation.get('id'),
+                                        source_id=ref.get('source_id'), content_sha256=ref.get('content_sha256')))
         for relation in metadata.get('workspace_relations', []) if isinstance(metadata.get('workspace_relations'), list) else []:
             if not isinstance(relation, dict):
                 continue
             if any(isinstance(relation.get(end), dict) and relation[end].get('record_id') == record['id']
                    for end in ('from', 'to')):
                 relations.append(dict(source=rel, relation_id=relation.get('id'), type=relation.get('type')))
-            for ref in relation.get('evidence_refs', []) if isinstance(relation.get('evidence_refs'), list) else []:
-                if isinstance(ref, dict) and ref.get('relative_path') == source:
-                    source_refs.append(dict(source=rel, relation_id=relation.get('id'),
-                                            source_id=ref.get('source_id'), content_sha256=ref.get('content_sha256')))
     aliases = record.get('aliases', [])
     if destination is None:
         destination_status = 'not_requested'
@@ -336,24 +349,17 @@ def plan_attached_source_impact(vault_root, state, vault_index, workspace_id, gr
             elif '/' not in target and _norm_key(target) == _norm_key(PurePosixPath(source).name):
                 item['reason'] = 'basename_uniqueness_unknown'
                 possible_basename.append(item)
-        for field in ('source_refs', 'evidence_refs'):
-            refs = metadata.get(field, [])
-            for ref in refs if isinstance(refs, list) else []:
+        for field, relation, ref in _reference_values(metadata):
+            if relation is None:
                 if isinstance(ref, dict) and ref.get('source_id') == source_id and ref.get('relative_path') == source:
                     source_refs.append(dict(source=rel, field=field, reference_kind='source_ref',
                                             content_sha256=ref.get('content_sha256')))
                 elif isinstance(ref, str) and ref == source:
                     item = dict(source=rel, field=field, reference_kind='path_only')
                     (source_refs if same_vault_root else possible_path_refs).append(item)
-        relations = metadata.get('workspace_relations', [])
-        for relation in relations if isinstance(relations, list) else []:
-            if not isinstance(relation, dict):
-                continue
-            refs = relation.get('evidence_refs', [])
-            for ref in refs if isinstance(refs, list) else []:
-                if isinstance(ref, dict) and ref.get('source_id') == source_id and ref.get('relative_path') == source:
-                    source_refs.append(dict(source=rel, relation_id=relation.get('id'),
-                                            reference_kind='source_ref', content_sha256=ref.get('content_sha256')))
+            elif isinstance(ref, dict) and ref.get('source_id') == source_id and ref.get('relative_path') == source:
+                source_refs.append(dict(source=rel, relation_id=relation.get('id'),
+                                        reference_kind='source_ref', content_sha256=ref.get('content_sha256')))
     # The approved Markdown inventory and this exact attachment must still be
     # readable after the scan; a revoked binding cannot return collected refs.
     fresh_index = scoped_vault_index(vault_root, state, workspace_id, grant_ref)
