@@ -435,14 +435,19 @@ class LocalAuthority:
     def _load(self):
         p=safe_path(self.registry.state,'workspace-authorities.json')
         if not p.exists():
-            return {'version':1,'machine_id':None,'grants':{},'plans':{}}
+            return {'version':2,'machine_id':None,'grants':{},'plans':{},'copy_plans':{}}
         data=parse_document(p.read_bytes())
-        if set(data)!={'version','machine_id','grants','plans'} or data['version']!=1:
+        if not isinstance(data,dict) or data.get('version') not in (1,2) or set(data)!=(
+                {'version','machine_id','grants','plans'} if data['version']==1 else
+                {'version','machine_id','grants','plans','copy_plans'}):
             raise WorkspaceError('invalid_local_authority')
+        if data['version']==1:
+            data['copy_plans']={}
         return data
 
     def _save(self,data):
         from beyin_v3_sync import atomic
+        data['version']=2
         atomic(safe_path(self.registry.state,'workspace-authorities.json'),canonical_bytes(data).decode())
 
     def record_approval(self, reference, *, machine_id, permissions, audiences=('internal',), evidence,
@@ -455,7 +460,7 @@ class LocalAuthority:
         if not reference or not evidence or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,95}',machine_id):
             raise WorkspaceError('explicit_authority_required')
         for permission in permissions:
-            if set(permission)!={'workspace_id','source_id','locator','access'} or permission['access'] not in ('read','write_memory'):
+            if set(permission)!={'workspace_id','source_id','locator','access'} or permission['access'] not in ('read','write_memory','write_copy'):
                 raise WorkspaceError('invalid_local_permission')
             path=Path(permission['locator'])
             if not _valid_local_locator(path):
@@ -490,13 +495,40 @@ class LocalAuthority:
         with self.registry.coordinated(_authority_control=True):
             data=self._load();data['grants'].pop(reference,None);self._save(data)
 
+    def approve_organization_plan(self,plan,*,evidence):
+        from beyin_v3_workspace_organize import _validate_plan
+        _validate_plan(plan)
+        if plan['action']!='copy' or not isinstance(evidence,str) or not evidence.strip():
+            raise WorkspaceError('plan_authority_required')
+        with self.registry.coordinated(_authority_control=True):
+            data=self._load()
+            data['copy_plans'][plan['plan_sha256']]={
+                'workspace_id':plan['workspace_id'],'grant_ref':plan['grant_ref'],
+                'source':plan['source'],'target':plan['target'],'evidence':evidence}
+            self._save(data)
+
+    def allows_organization_plan(self,plan):
+        approval=self._load()['copy_plans'].get(plan['plan_sha256'])
+        return bool(approval and all(approval.get(k)==plan[k] for k in
+            ('workspace_id','grant_ref','source','target')))
+
+    def revoke_organization_plan(self,plan_sha256):
+        if not isinstance(plan_sha256,str) or not re.fullmatch(r'[a-f0-9]{64}',plan_sha256):
+            raise WorkspaceError('invalid_authority_request')
+        with self.registry.coordinated(_authority_control=True):
+            data=self._load();data['copy_plans'].pop(plan_sha256,None);self._save(data)
+
     def allows(self,reference,binding,workspace_id,access='read',audience='internal'):
         data=self._load(); grant=data['grants'].get(reference)
         own=data['grants'].get(binding['authority_ref'])
         permission={'workspace_id':workspace_id,'source_id':binding['source_id'],'locator':binding['locator'],'access':access}
+        # Copy is an explicit local authority permission on an existing source
+        # binding. A profile/binding read grant admits the target directory but
+        # never confers physical write permission by itself.
+        binding_access='read' if access=='write_copy' else access
         return bool(grant and own and binding['machine_id']==data['machine_id'] and audience in grant['audiences']
                     and permission in grant['permissions'] and permission in own['permissions']
-                    and {'workspace_id':workspace_id,'access':access} in binding['grants'])
+                    and {'workspace_id':workspace_id,'access':binding_access} in binding['grants'])
 
     def approve_plan(self,document,*,evidence):
         validate_document(document)
@@ -590,6 +622,8 @@ def execute_authority(vault,state,action,payload):
     """
     fields={'grant':{'reference','machine_id','permissions','audiences','evidence'},
             'approve-plan':{'plan','evidence'},'approve-revert':{'plan','evidence'},
+            'approve-organization':{'plan','evidence'},
+            'revoke-organization':{'plan_sha256','evidence'},
             'revoke':{'reference','evidence'}}
     if action not in fields or not isinstance(payload,dict):
         raise WorkspaceError('invalid_authority_request')
@@ -625,6 +659,22 @@ def execute_authority(vault,state,action,payload):
     elif action=='revoke':
         authority.revoke(payload['reference'])
         verified=payload['reference'] not in authority._load()['grants']
+    elif action=='approve-organization':
+        from beyin_v3_workspace_organize import WorkspaceOrganizer
+        plan=payload['plan']
+        if not isinstance(plan,dict):raise WorkspaceError('invalid_organization_plan')
+        source,target=plan.get('source'),plan.get('target')
+        from beyin_v3_workspace_organize import _validate_plan
+        _validate_plan(plan)
+        fresh=WorkspaceOrganizer(vault,state).preview(plan['workspace_id'],plan['grant_ref'],
+            source['source_id'],source['relative_path'],action='copy',
+            target_source_id=target['source_id'],target=target['relative_path'])
+        if fresh!=plan:raise WorkspaceError('organization_plan_changed')
+        authority.approve_organization_plan(plan,evidence=evidence)
+        verified=authority.allows_organization_plan(plan)
+    elif action=='revoke-organization':
+        authority.revoke_organization_plan(payload['plan_sha256'])
+        verified=payload['plan_sha256'] not in authority._load()['copy_plans']
     else:
         document=payload['plan'];validate_document(document)
         if document['type']!='ProvisionPlan':raise WorkspaceError('invalid_schema')

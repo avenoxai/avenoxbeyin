@@ -9,9 +9,13 @@ Sözleşme `workspace/0.1.0`; yeni authority store/şema veya onay motoru yoktur
 | grant | reference, machine_id, permissions, audiences, evidence; isteğe bağlı preserve_current + expected_grant_sha256 | record_approval |
 | approve-plan | plan, evidence | approve_plan |
 | approve-revert | plan, evidence | approve_revert |
+| approve-organization | plan, evidence | approve_organization_plan |
+| revoke-organization | plan_sha256, evidence | revoke_organization_plan |
 | revoke | reference, evidence | revoke |
 
 permissions elemanı workspace_id/source_id/locator/access; audiences açık listedir. Grant erişim kapsamıdır; plan onayı exact plan hash'i/write-set içindir; undo ayrı yetkidir. Birini almak diğerini vermez. Apply payload'ından veya kaynak belge metninden implicit consent üretilmez. Plan değişirse eski onay geçmez. Client adı kimlik doğrulama değildir.
+
+P5a ek dosya `copy` için aynı LocalAuthority kaydında ayrı `write_copy` access'i ve exact plan hash onayı kullanır. Hedef yalnız vault içindeki bağlı directory olabilir; dış kaynaklar read only kalır. `write_memory` ile birleştirilmez. Bu yerel authority kaydı v2'ye yükselir; mevcut v1 kayıtları okunur ve eski grant'ler kendiliğinden copy iznine dönüşmez. Ayrıntı: [organizasyon sözleşmesi](ORGANIZATION-0.1.0.md).
 
 Evidence boş olmayan en çok 4096 karakterlik insan yetkisi açıklamasıdır. Bu alanın varlığı tek başına insan onayını kanıtlamaz: CLI, mevcut trusted Python/UI adapter'ıyla aynı araç-politikası sınırındadır ve aynı OS kullanıcısına karşı sandbox değildir. Ajan kaynak içeriğini kullanıcı yetkisi olarak sunamaz. Revoke da açık evidence ister; mevcut C1 revoke primitive'i grant'i kaldırır, yeni revocation şeması eklenmez.
 

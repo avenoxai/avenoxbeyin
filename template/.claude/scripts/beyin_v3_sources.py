@@ -169,6 +169,8 @@ class SourceResolver:
                 raise WorkspaceError('external_source_write_denied')
             if not any(name.startswith(r.rstrip('/')+'/') for r in profile['note_roots']) and not name.startswith('tasks/'):
                 raise WorkspaceError('write_root_denied')
+        if access=='write_copy' and descriptors[source_id]['kind']!='directory':
+            raise WorkspaceError('copy_target_denied')
         path=safe_path(root,name,existing=access=='read')
         if access=='read' and descriptors[source_id]['kind']=='vault':
             # Binary attachments need their own approved directory source; a

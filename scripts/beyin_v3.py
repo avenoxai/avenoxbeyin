@@ -989,6 +989,9 @@ def parser(note_namespace=None, is_json=False):
     impact.add_argument("--source", required=True)
     impact.add_argument("--source-id", help="Approved binding for one non-Markdown source")
     impact.add_argument("--destination")
+    organize = sub.add_parser("workspace-organize", help="Preview a typed attachment link/copy or apply its exact plan")
+    organize.add_argument("action", choices=("preview", "apply"))
+    organize.add_argument("--file", required=True, help="UTF-8 JSON request for preview or OrganizationPlan for apply")
     sub.add_parser("skill-sync", help="Reconcile project-local shared skills")
     sub.add_parser("doctor", help="Read local hook health and pending metadata counts")
     scheduled = sub.add_parser("scheduled-check", help="Sync then doctor for an OS scheduler you set up; no model call, no service")
@@ -1089,7 +1092,7 @@ def parser(note_namespace=None, is_json=False):
     setup.add_argument('action', choices=('catalog', 'discover', 'preview', 'design', 'prepare', 'stage', 'complete', 'resume', 'status', 'organize'))
     setup.add_argument('--file', default='-', help='Compact agent-prepared setup JSON or - for stdin')
     authority = sub.add_parser('workspace-authority', help='Record explicit trusted-agent source/plan/revert authority or revoke it')
-    authority.add_argument('action', choices=('grant','approve-plan','approve-revert','revoke'))
+    authority.add_argument('action', choices=('grant','approve-plan','approve-revert','approve-organization','revoke-organization','revoke'))
     authority.add_argument('--file', default='-', help='Bounded JSON with explicit human evidence, or - for stdin')
     context = sub.add_parser("context", help="Retrieve source-backed shared context")
     context.add_argument("query", nargs="?", help="Query; alternatively use --file")
@@ -1311,6 +1314,44 @@ def knowledge_cli(args, return_result=False):
     return code
 
 
+def organization_cli(args, return_result=False):
+    sys.dont_write_bytecode = True
+    try:
+        vault = args.vault.expanduser().resolve()
+        if not vault.is_dir():
+            raise ValueError("--vault must be an existing directory")
+        state = (args.state.expanduser() if args.state else default_state(vault)).resolve()
+        if state == vault or vault in state.parents:
+            raise ValueError("--state must be outside the vault")
+        _ensure_scripts_path()
+        from beyin_v3_workspace_organize import WorkspaceOrganizer
+        request = read_json(args.file)
+        organizer = WorkspaceOrganizer(vault, state)
+        if args.action == 'preview':
+            required = {'workspace_id', 'grant_ref', 'source_id', 'source'}
+            allowed = required | {'action', 'target_source_id', 'target'}
+            if not isinstance(request, dict) or not required <= request.keys() or set(request) - allowed:
+                raise ValueError('invalid_organization_request')
+            result = organizer.preview(request['workspace_id'], request['grant_ref'],
+                                       request['source_id'], request['source'],
+                                       action=request.get('action', 'link'),
+                                       target_source_id=request.get('target_source_id'),
+                                       target=request.get('target'))
+        else:
+            result = organizer.apply(request)
+        code = 0
+    except Exception as exc:
+        from beyin_v3_workspaces import WorkspaceError
+        if isinstance(exc, WorkspaceError):
+            result, code = workspace_failure(exc, 'workspace-organize')
+        else:
+            result, code = dict(status='error', error=type(exc).__name__, message=str(exc)), 2
+    if return_result:
+        return result, code
+    write_json(result)
+    return code
+
+
 def main(argv=None, return_result=False):
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8-sig")
@@ -1320,6 +1361,7 @@ def main(argv=None, return_result=False):
     try:
         args = argument_parser.parse_args(args_list, namespace=args)
         if args.command in ("lint", "moc", "link-impact"): return knowledge_cli(args, return_result)
+        if args.command == "workspace-organize": return organization_cli(args, return_result)
         if args.command == "workspace": return workspace_metadata_cli(args, return_result)
         if args.command in ("workspace-builder", "workspace-authority", "workspace-setup"): return workspace_builder_cli(args, return_result)
         receipt_flags = args.command == "receipt" and any(
