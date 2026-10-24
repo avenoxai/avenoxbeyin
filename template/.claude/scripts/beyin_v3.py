@@ -571,6 +571,32 @@ def _stem(word):
     return word
 
 
+# A possessive on a three-letter root stays on the word: _stem keeps four letters, so "boyum"
+# (my height) keeps its own stem while the note says "Boy: 180". Only a query word tries the
+# root (_query_roots); note-side stems never change, so dur/durum and yay/yayin stay apart.
+# -m after a vowel stays out: _stem leaves it on verbal nouns too (yedeklemenin -> yedeklem).
+_SHORT_ROOT_SUFFIXES = (
+    ("im", "consonant"), ("um", "consonant"), ("in", "consonant"), ("un", "consonant"),
+    ("i", "consonant"), ("u", "consonant"),
+)
+
+
+@functools.lru_cache(maxsize=16384)
+def _short_root(stem):
+    """The three-letter root one possessive shorter than stem, or None; _stem peels longer ones."""
+    for suffix, gate in _SHORT_ROOT_SUFFIXES:
+        root = stem[:-len(suffix)]
+        if not stem.endswith(suffix) or len(root) != 3 or not _attaches(root, gate):
+            continue
+        # Folding keeps rounding: i follows a, e, i (a ı e i) and u follows o, u (o ö u ü).
+        last = next((c for c in reversed(root) if c in _VOWELS), "")
+        if last not in ("aei" if suffix[0] == "i" else "ou"):
+            continue
+        # Softening as in _stem (kabim, cebim). A short g stays: dag, sag and yag end in a real g.
+        return root[:-1] + "p" if root[-1] == "b" and root[-2] in _VOWELS else root
+    return None
+
+
 def _token_counts(text):
     """Stem -> occurrence count; the keys are exactly _tokens(text)."""
     text = unicodedata.normalize("NFKD", str(text).casefold())
@@ -596,6 +622,44 @@ def _strict_terms(terms):
     and alphanumeric identifiers ('722b4dd').
     """
     return {t for t in terms if len(t) >= 2 and not (t.isdigit() and len(t) < 3)}
+
+
+# bu and su are stopwords; their oblique stem (bunu, sunun, bunlar -> bun) is not a topic either.
+_PRONOUN_ROOTS = frozenset(("bun", "sun"))
+
+# Nouns made from a verb with -Im/-Um look like a possessive on the verb (durum, dur + um).
+# Note frequency cannot tell them apart: a vault may say dur or ver in more notes than durum
+# or verim, so these never fall back to the verb.
+_WHOLE_WORDS = _tokens("durum kurum verim yazım yapım seçim bölüm sürüm doğum yorum konum tutum biçim "
+                       "bilim geçim kesim satım giyim dikim dönüm çözüm basım takım tanım çekim döküm "
+                       "dolum yayım ölçüm")
+
+
+def _query_roots(terms, frequency, ignored=frozenset()):
+    """Query term -> the shorter root (_short_root) it also matches.
+
+    A root joins only where more notes use it than the inflected word: boyum is rare beside
+    boy. A noun of its own (_WHOLE_WORDS) keeps matching itself only, however common its verb.
+    frequency(stem) is the number of notes that use the stem. A term still counts once, and a
+    root serves one term only: "boyum boyun" must not pass the two-word gate on one "Boy".
+    """
+    alternatives = {}
+    for term in sorted(terms):
+        root = None if term in _WHOLE_WORDS else _short_root(term)
+        if (root and root not in terms and root not in ignored and root not in _PRONOUN_ROOTS
+                and root not in alternatives.values() and frequency(root) > frequency(term)):
+            alternatives[term] = root
+    return alternatives
+
+
+def _fold_query_roots(term_counts, terms, ignored):
+    """Count each note's _query_roots occurrences under the query term, in place."""
+    term_counts = list(term_counts)
+    alternatives = _query_roots(terms, lambda token: sum(1 for counts in term_counts if token in counts), ignored)
+    for counts in term_counts:
+        for term, root in alternatives.items():
+            if root in counts:
+                counts[term] += counts.pop(root)
 
 
 def _name_candidates(record):
@@ -1262,6 +1326,7 @@ class MemoryStore:
         vocabularies = {}
         term_counts = {}
         name_scores = {}
+        scanned = []
         for record in eligible:
             if record["id"] in superseded:
                 continue
@@ -1281,13 +1346,17 @@ class MemoryStore:
             counts = _token_counts(record["text"] + " " + _json(record["facts"]) + " " + str(record.get("title", "")) + " " + alias_text + " " + source_stem)
             for stopword in STOPWORDS & counts.keys():
                 del counts[stopword]
-            vocabulary = set(counts)
-            vocabularies[record["id"]] = vocabulary
             term_counts[record["id"]] = counts
             if name_score:
                 name_scores[record["id"]] = name_score
+            scanned.append(record)
+        # Root use is counted over every scanned note, so the counts are final only after the scan.
+        _fold_query_roots(term_counts.values(), terms, STOPWORDS | project_tokens)
+        for record in scanned:
+            vocabulary = set(term_counts[record["id"]])
+            vocabularies[record["id"]] = vocabulary
             score = len(terms & vocabulary)
-            if score or name_score or scoped_listing or snapshot:
+            if score or record["id"] in name_scores or scoped_listing or snapshot:
                 ranked.append((score, record))
         if strict and not snapshot:
             ranked = self._strict_rank(ranked, terms, vocabularies, name_scores=name_scores)

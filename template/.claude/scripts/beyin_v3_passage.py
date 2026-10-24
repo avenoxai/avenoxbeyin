@@ -30,7 +30,7 @@ import tempfile
 import time
 import unicodedata
 
-from beyin_v3 import HARNESSES, STOPWORDS, _allowed_statuses, _json, _name_match_score, _status_allowed, _strict_terms, _tokens, pack_context
+from beyin_v3 import HARNESSES, STOPWORDS, _allowed_statuses, _json, _name_match_score, _query_roots, _status_allowed, _strict_terms, _tokens, pack_context
 
 # #83 chose 0.15 on one 263-note Turkish vault without a coverage cap. With the cap, on a
 # second 1,285-note vault 0.20 is the lowest floor that keeps everyday and agent-command
@@ -337,8 +337,11 @@ def _weight(shared, frequency, total, size):
     return weight / idf_max / math.log(10 + size)
 
 
-def search(index, terms, limit=5, floor=FLOOR, min_shared=MIN_SHARED):
-    """Best admitted passage per source, ranked. Returns [(rank weight, passage), ...]."""
+def search(index, terms, limit=5, floor=FLOOR, min_shared=MIN_SHARED, ignored=STOPWORDS):
+    """Best admitted passage per source, ranked. Returns [(rank weight, passage), ...].
+
+    ignored: stems a query root may not become (the caller's stopwords and project words).
+    """
     terms = _strict_terms(terms)
     if not terms:
         return []
@@ -348,10 +351,14 @@ def search(index, terms, limit=5, floor=FLOOR, min_shared=MIN_SHARED):
     sources_total = max(1, index.sources)
     wanted = min(len(terms), COVERAGE_CAP)
     probes = [(term, " " + term + " ") for term in sorted(terms)]
+    # A term may also match a shorter root; shared then holds the root, so its own idf weighs it.
+    roots = [(" " + term + " ", root, " " + root + " ") for term, root in
+             sorted(_query_roots(terms, lambda token: index.source_df.get(token, 0), ignored).items())]
     best = {}
     for passage in index.passages:
         tokens = passage[4]
         shared = [term for term, probe in probes if probe in tokens]
+        shared += [root for term_probe, root, probe in roots if term_probe not in tokens and probe in tokens]
         if len(shared) < min_shared:
             continue
         size = tokens.count(" ") - 1
@@ -409,11 +416,12 @@ def context_for(store, harness, query, project=None, audience="internal", status
                   deadline=time.monotonic() + BUILD_SECONDS)
     if candidates and not index.passages:
         raise RuntimeError("passage index is empty")  # a failure, not an answer: caller falls back
-    terms = _strict_terms(_tokens(query) - STOPWORDS - _tokens(project or ""))
+    ignored = STOPWORDS | _tokens(project or "")
+    terms = _strict_terms(_tokens(query) - ignored)
     if not terms:
         return pack_context([], limit, budget_chars, stale_count)
     records = []
-    for _rank, (record, head, start, end, _tokens_) in search(index, terms, limit, config["floor"]):
+    for _rank, (record, head, start, end, _tokens_) in search(index, terms, limit, config["floor"], ignored=ignored):
         body = record["text"][start:end]
         excerpt = head + "\n\n" + body if head else body
         # Only text and text_truncated change, so advisor signatures still match the index.
