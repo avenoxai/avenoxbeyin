@@ -11,6 +11,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from v3_package_helpers import inherited_env
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
@@ -105,7 +106,8 @@ faulthandler.cancel_dump_traceback_later()
 '''
         try:
             result = subprocess.run([sys.executable, '-B', '-c', code, str(ROOT / 'tests'), str(self.root),
-                phase, 'none' if index is None else str(index), action], capture_output=True, timeout=30)
+                phase, 'none' if index is None else str(index), action], capture_output=True,
+                env=inherited_env(), timeout=30)
         except subprocess.TimeoutExpired as exc:
             # Preserve the original failure and deadline, but expose the last
             # durable checkpoint and live stacks from the otherwise lost child.

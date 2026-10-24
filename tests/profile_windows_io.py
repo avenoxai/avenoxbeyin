@@ -18,6 +18,7 @@ import tempfile
 from time import perf_counter
 import unittest
 from unittest.mock import patch
+from v3_package_helpers import inherited_env
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -109,7 +110,8 @@ def main():
                     emit(dict(event='cold_index', iteration=iteration, cold_index_ms=cold))
                     def startup():
                         for _ in range(5):
-                            subprocess.run([sys.executable, '-c', 'pass'], check=True, capture_output=True)
+                            subprocess.run([sys.executable, '-c', 'pass'], check=True,
+                                           capture_output=True, env=inherited_env())
                     phase('control.python_startup5', startup)
                 for name in TESTS:
                     case = next(iter(unittest.defaultTestLoader.loadTestsFromName(name)))
