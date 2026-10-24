@@ -1304,19 +1304,24 @@ class SyncEngine:
 
     def preview_stable_id(self, record_id):
         """Preview pinning a path-derived identity without changing its ID or source."""
+        from beyin_v3_workspace_context import CURRENT, enabled
+        from beyin_v3_workspaces import WorkspaceError
+        scoped = CURRENT.get() is not None or enabled(self.root, self.state)
         with self.store._connect() as db:
             row = db.execute('SELECT payload FROM records WHERE id=?', (record_id,)).fetchone()
         if not row:
+            if scoped:
+                raise WorkspaceError('scope_denied')
             raise KeyError(record_id)
         record = json.loads(row[0])
-        try:
-            self._workspace_write_guard(record['source'], record)
-        except Exception as exc:
-            # A denied workspace must not learn the canonical source or its hash.
-            from beyin_v3_workspaces import WorkspaceError
-            if isinstance(exc, WorkspaceError):
-                return {'status': 'denied', 'record_id': record_id}
-            raise
+        if not scoped:
+            path = self._path(record['source'], existing=True)
+            if _hash(path.read_bytes()) != record['source_sha256']:
+                raise RevisionConflict('source changed; sync and reread')
+        eligible, _ = self.store._eligible('internal', records=[record])
+        if not eligible:
+            raise WorkspaceError('scope_denied')
+        self._workspace_write_guard(record['source'], record)
         source = record['source']
         path = self._path(source, existing=True)
         raw = path.read_bytes()

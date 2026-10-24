@@ -4,9 +4,12 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+import copy
 
 from beyin_v3_sync import SyncEngine, parse, render, RevisionConflict
-from beyin_v3_workspaces import WorkspaceError
+from beyin_v3_workspaces import WorkspaceError, envelope
+from beyin_v3_workspace_context import membership_hash, request_scope
+from v3_workspace_helpers import install_fixture
 
 
 class StableIdTest(unittest.TestCase):
@@ -66,7 +69,7 @@ class StableIdTest(unittest.TestCase):
         for reason in ('scope_denied', 'edit_owner_required'):
             with self.subTest(reason=reason):
                 with patch.object(self.engine, '_workspace_write_guard', side_effect=WorkspaceError(reason)):
-                    with self.assertRaisesRegex(RevisionConflict, 'plan changed'):
+                    with self.assertRaisesRegex(WorkspaceError, reason):
                         self.engine.adopt_stable_id(preview)
                 self.assertEqual(self.path.read_bytes(), before)
 
@@ -78,6 +81,71 @@ class StableIdTest(unittest.TestCase):
         self.engine.sync()
         with self.assertRaisesRegex(ValueError, 'dedicated writer'):
             self.engine.preview_stable_id(self.record_id)
+
+    def test_private_and_untrusted_notes_do_not_expose_preview_metadata(self):
+        for metadata in ({'visibility': 'private'}, {'trust': 'untrusted'}):
+            with self.subTest(metadata=metadata):
+                self.path.write_text(render(metadata, self.body), encoding='utf-8')
+                self.engine.sync()
+                with self.assertRaisesRegex(WorkspaceError, 'scope_denied'):
+                    self.engine.preview_stable_id(self.record_id)
+
+
+class WorkspaceStableIdTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.runtime, self.spec, _ = install_fixture(self.base, 'academic')
+        install_fixture(self.base, 'custom')
+        self.vault = self.runtime.registry.vault
+        self.engine = SyncEngine(self.vault, self.runtime.registry.state)
+        self.source = 'notes/stable-prep.md'
+        self.path = self.vault / self.source
+        self.path.write_text('Workspace owner evidence.\n', encoding='utf-8')
+        self.engine.sync()
+        self.record_id = 'md-' + hashlib.sha256(self.source.encode()).hexdigest()[:24]
+        spec = copy.deepcopy(self.spec)
+        spec['adopt_record_refs'] = [{'workspace_id': 'academic', 'record_id': self.record_id}]
+        self.runtime.adopt(envelope('WorkspaceSpec', spec), membership_hash(self.runtime.registry))
+        self.runtime.activate()
+
+    def test_owner_applies_and_unrelated_member_cannot_probe_identity(self):
+        before = self.path.read_bytes()
+        with request_scope('custom', 'custom-user'):
+            for record_id in (self.record_id, 'md-nonexistent'):
+                with self.subTest(record_id=record_id):
+                    with self.assertRaisesRegex(WorkspaceError, '^scope_denied$'):
+                        self.engine.preview_stable_id(record_id)
+        with request_scope('academic', 'academic-user'):
+            preview = self.engine.preview_stable_id(self.record_id)
+            self.assertEqual(preview['expected_source_sha256'], hashlib.sha256(before).hexdigest())
+            self.assertEqual(preview['workspace_membership_sha256'], membership_hash(self.runtime.registry))
+            self.assertEqual(self.engine.adopt_stable_id(preview)['record_id'], self.record_id)
+        self.assertEqual(parse(self.path.read_bytes().decode())[0]['id'], self.record_id)
+
+    def test_live_grant_revoke_and_membership_change_invalidate_preview(self):
+        with request_scope('academic', 'academic-user'):
+            preview = self.engine.preview_stable_id(self.record_id)
+        before = self.path.read_bytes()
+        # Another legitimate adoption changes the membership projection, even
+        # though the target note's source bytes remain untouched.
+        other = self.vault / 'notes' / 'other.md'
+        other.write_text('Another note.\n', encoding='utf-8')
+        self.engine.sync()
+        other_id = 'md-' + hashlib.sha256('notes/other.md'.encode()).hexdigest()[:24]
+        spec = copy.deepcopy(self.spec)
+        spec['adopt_record_refs'] = [{'workspace_id': 'academic', 'record_id': other_id}]
+        self.runtime.adopt(envelope('WorkspaceSpec', spec), membership_hash(self.runtime.registry))
+        with request_scope('academic', 'academic-user'):
+            with self.assertRaisesRegex(RevisionConflict, 'plan changed'):
+                self.engine.adopt_stable_id(preview)
+            fresh = self.engine.preview_stable_id(self.record_id)
+        self.runtime.authority.revoke('academic-user')
+        with request_scope('academic', 'academic-user'):
+            with self.assertRaisesRegex(WorkspaceError, 'scope_denied'):
+                self.engine.adopt_stable_id(fresh)
+        self.assertEqual(self.path.read_bytes(), before)
 
 
 if __name__ == '__main__':
