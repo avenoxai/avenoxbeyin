@@ -673,6 +673,16 @@ def receipt_day(created_at, zone=None):
         return None
 
 
+def _receipt_link(source, event_id):
+    """Wikilink to a receipt, shown by its event_id instead of the hash file name (#514).
+
+    Characters that would end or split an Obsidian link become spaces; an id with nothing
+    readable left keeps the bare link.
+    """
+    alias = ' '.join(re.sub(r'[\[\]|#^]', ' ', event_id).split())[:80].strip()
+    return f'[[{source}|{alias}]]' if alias else f'[[{source}]]'
+
+
 def _receipt_view_contents(engine, db, warnings=None, *, include_human_daily=False):
     """Render receipts without side effects; include_human_daily is for comparison only."""
     _hash, _, render = engine.projection_helpers()
@@ -695,14 +705,16 @@ def _receipt_view_contents(engine, db, warnings=None, *, include_human_daily=Fal
             if warnings is not None:
                 warnings.append({'source': source, 'reason': 'unreadable receipt created_at; omitted from daily/v3'})
             continue
-        grouped[day].append((_receipt_instant(event['created_at']), event['created_at'], source, event['summary']))
+        grouped[day].append((_receipt_instant(event['created_at']), event['created_at'], source, event['summary'],
+                             event['event_id']))
     desired = {}
     outcomes = []
     for day, items in sorted(grouped.items()):
         entries = []
-        for _, at, source, summary in sorted(items):
-            entries.append(f'## {at}\n\n{summary}\n\nSource: [[{source}]]\n')
-            outcomes.append(f'- {day}: {summary}\n  Source: [[{source}]]\n')
+        for _, at, source, summary, event_id in sorted(items):
+            link = _receipt_link(source, event_id)
+            entries.append(f'## {at}\n\n{summary}\n\nSource: {link}\n')
+            outcomes.append(f'- {day}: {summary}\n  Source: {link}\n')
         relative = f'daily/{day}.md' if layout == 'flat' else f'daily/v3/{day}.md'
         # Omit human notes before sync claims desired paths as view provenance.
         # Outcomes were collected above and remain available in the shared index.

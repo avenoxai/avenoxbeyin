@@ -151,6 +151,11 @@ worker projects new structured receipt summaries into:
   edited one is kept and reported as a conflict until you move or delete it.
 - `knowledge/v3/outcomes.md`: an index linking those outcomes to their receipts.
 
+Both views link a receipt as `[[receipts/<hash>.md|<event_id>]]`, so the reading
+view shows the event id instead of the hash file name; `[`, `]`, `|`, `#` and `^`
+in an id become spaces and the alias stops at 80 characters. Views written
+before this change are regenerated on the next sync unless they were edited.
+
 These are explicitly generated indexes of agent-authored claims, not automatic
 knowledge distillation or external verification. Existing human daily and
 knowledge texts remain untouched. Pre-cutover receipt files are not recaptured.
