@@ -377,6 +377,30 @@ class ReceiptCoverageTest(unittest.TestCase):
             self.assertEqual(cov['no_observed_edit'], 1)
             self.assertEqual(cov['last_7d']['no_observed_edit'], 1)
 
+    def test_coverage_counts_sessions_without_prompt_separately(self):
+        """Bridge sessions see no UserPromptSubmit: kept out of the ratio, but counted."""
+        engine = SyncEngine(self.vault, self.state)
+        now = time.time()
+        self._enqueue('SessionStart', 'sess_vault', at=now - 50)
+        self._enqueue('UserPromptSubmit', 'sess_vault', at=now - 40)
+        self._enqueue('Stop', 'sess_vault', at=now - 30)
+        # The global bridge installs SessionStart, Stop, PreCompact and SessionEnd only.
+        for session in ('sess_bridge_receipt', 'sess_bridge_quiet'):
+            self._enqueue('SessionStart', session, at=now - 45)
+            self._enqueue('Stop', session, at=now - 20)
+        hook.drain_queue(self.vault, self.state)
+        with engine.store._connect() as db:
+            receipt = {'event_id': 'bridge-receipt', 'harness': 'claude', 'session': 'sess_bridge_receipt',
+                       'summary': 'Done work.', 'refs': ['notes/task.md'],
+                       'created_at': datetime.fromtimestamp(now - 10, timezone.utc).isoformat()}
+            db.execute("INSERT INTO receipts VALUES (?,?)", ('bridge-receipt', json.dumps(receipt)))
+            cov = receipt_coverage(db, now=now, state=self.state)
+        self.assertEqual((cov['total'], cov['covered'], cov['missing']), (1, 0, 1))
+        self.assertEqual(cov['without_prompt'], 2)
+        self.assertEqual(cov['without_prompt_with_receipt'], 1)
+        self.assertEqual(cov['last_7d']['without_prompt'], 2)
+        self.assertEqual(cov['last_30d']['without_prompt_with_receipt'], 1)
+
     def test_mark_session_edit_records_session_marker(self):
         """mark_session_edit creates a receipt reminder marker for the active Claude session (#212)."""
         session_id = "test-session-uuid-1234"

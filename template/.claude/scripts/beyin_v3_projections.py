@@ -396,21 +396,32 @@ def receipt_coverage(db, now=None, state=None):
     _checkpoint_schema(db, state=state)
     latest = _latest_receipts(db)
     windows = {
-        'all_time': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0},
-        'last_7d': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0},
-        'last_30d': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0},
+        'all_time': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0, 'without_prompt': 0, 'without_prompt_with_receipt': 0},
+        'last_7d': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0, 'without_prompt': 0, 'without_prompt_with_receipt': 0},
+        'last_30d': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0, 'without_prompt': 0, 'without_prompt_with_receipt': 0},
     }
     for row in db.execute('SELECT harness,session,at,turn_at,project,project_id,prompt_at,edit_at FROM receipt_checkpoints'):
         if not row[2] or row[2] < row[3]:
             continue
         # Only count sessions that saw a user prompt: UserPromptSubmit, or a SessionStart carrying the first prompt (#78)
-        if not row[6]:
-            continue
         chk_at = row[2]
+        active = (('all_time', True), ('last_30d', chk_at >= thirty_days), ('last_7d', chk_at >= seven_days))
+        if not row[6]:
+            # Still kept out of the ratio, but counted, receipts included: an unexplained
+            # small total reads as missing data. Any session without a prompt marker lands
+            # here: every session outside the vault (the global bridge installs no
+            # UserPromptSubmit), and vault sessions recorded before the marker existed or
+            # closed before a prompt was observed.
+            has_receipt = (row[0], row[1]) in latest
+            for w_name, w_active in active:
+                if w_active:
+                    windows[w_name]['without_prompt'] += 1
+                    windows[w_name]['without_prompt_with_receipt'] += has_receipt
+            continue
         threshold = _coverage_threshold(row[2], row[3], row[7])
         matched = latest.get((row[0], row[1]), float('-inf')) >= threshold
         is_no_edit = not bool(row[7])
-        for w_name, w_active in (('all_time', True), ('last_30d', chk_at >= thirty_days), ('last_7d', chk_at >= seven_days)):
+        for w_name, w_active in active:
             if w_active:
                 windows[w_name]['total'] += 1
                 if is_no_edit:
@@ -426,12 +437,16 @@ def receipt_coverage(db, now=None, state=None):
         'total': windows['all_time']['total'],
         'missing': windows['all_time']['missing'],
         'no_observed_edit': windows['all_time']['no_observed_edit'],
+        'without_prompt': windows['all_time']['without_prompt'],
+        'without_prompt_with_receipt': windows['all_time']['without_prompt_with_receipt'],
         'last_7d': {
             'ratio': round(windows['last_7d']['covered'] / windows['last_7d']['total'], 3) if windows['last_7d']['total'] else None,
             'covered': windows['last_7d']['covered'],
             'total': windows['last_7d']['total'],
             'missing': windows['last_7d']['missing'],
             'no_observed_edit': windows['last_7d']['no_observed_edit'],
+            'without_prompt': windows['last_7d']['without_prompt'],
+            'without_prompt_with_receipt': windows['last_7d']['without_prompt_with_receipt'],
         },
         'last_30d': {
             'ratio': round(windows['last_30d']['covered'] / windows['last_30d']['total'], 3) if windows['last_30d']['total'] else None,
@@ -439,6 +454,8 @@ def receipt_coverage(db, now=None, state=None):
             'total': windows['last_30d']['total'],
             'missing': windows['last_30d']['missing'],
             'no_observed_edit': windows['last_30d']['no_observed_edit'],
+            'without_prompt': windows['last_30d']['without_prompt'],
+            'without_prompt_with_receipt': windows['last_30d']['without_prompt_with_receipt'],
         }
     }
 
