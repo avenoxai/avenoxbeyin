@@ -163,7 +163,8 @@ def scoped_vault_index(vault_root, state, workspace_id, grant_ref, *, audience='
         grant_ref, bindings[sid], workspace_id, audience=audience)]
     if not vault_ids:
         raise WorkspaceError('scope_denied')
-    by_rel, basenames, texts, metadata_by_rel = {}, defaultdict(list), {}, {}
+    by_rel, basenames, aliases, texts, metadata_by_rel = {}, defaultdict(list), defaultdict(list), {}, {}
+    read_sources = {}
     ambiguous_rel = set()
     for record in records:
         rel = record.get('source')
@@ -184,15 +185,30 @@ def scoped_vault_index(vault_root, state, workspace_id, grant_ref, *, audience='
                 else:
                     by_rel[key] = rel
                 basenames[_norm_key(PurePosixPath(rel).stem)].append(rel)
+                for alias in metadata.get('aliases', [])[:32] if isinstance(metadata.get('aliases'), list) else []:
+                    if isinstance(alias, str) and 0 < len(alias) <= 160 and '/' not in alias and '\\' not in alias:
+                        aliases[_norm_key(alias[:-3] if alias.lower().endswith('.md') else alias)].append(rel)
                 texts[rel], metadata_by_rel[rel] = (metadata, body), record
+                read_sources[rel] = (sid, record['source_sha256'])
                 break
             except (WorkspaceError, OSError, UnicodeError, ValueError):
                 continue
-    # Final live check prevents a revoked grant from returning already collected data.
-    if not any(resolver.authority.allows(grant_ref, bindings[sid], workspace_id, audience=audience)
-               for sid in vault_ids):
+    # Recheck each exact binding and source after collecting bytes. A different
+    # still-authorized binding cannot keep a revoked source's content visible.
+    for rel, (sid, digest) in read_sources.items():
+        try:
+            path, _, _ = resolver.resolve(workspace_id, sid, rel, grant_ref, audience=audience)
+            if content_hash(path.read_bytes()) != digest:
+                raise WorkspaceError('stale_source')
+            resolver.resolve(workspace_id, sid, rel, grant_ref, audience=audience)
+        except WorkspaceError:
+            raise
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise WorkspaceError('source_unavailable') from exc
+    if not read_sources and not any(resolver.authority.allows(
+            grant_ref, bindings[sid], workspace_id, audience=audience) for sid in vault_ids):
         raise WorkspaceError('scope_denied')
-    return dict(by_rel=by_rel, by_basename=dict(basenames), texts=texts, media={},
+    return dict(by_rel=by_rel, by_basename=dict(basenames), by_alias=dict(aliases), texts=texts, media={},
                 ambiguous_rel=ambiguous_rel, records=metadata_by_rel,
                 scope=dict(kind='authorized_canonical_records', workspace_id=workspace_id,
                            source_ids=sorted(vault_ids), indexed_count=len(texts), stale_count=stale_count,
@@ -224,6 +240,7 @@ def plan_link_impact(vault_index, source, destination=None):
             item = dict(source=rel, line=link['line'], target=target,
                         display_alias=link['display'], is_embed=link['is_embed'])
             if resolved.get('resolved_path') == source:
+                item['match_kind'] = resolved.get('match_kind', 'self')
                 incoming.append(item)
             elif not resolved['exists']:
                 item['reason'] = 'ambiguous' if resolved.get('ambiguous') else 'unresolved'
@@ -231,8 +248,11 @@ def plan_link_impact(vault_index, source, destination=None):
         for field in ('source_refs', 'evidence_refs'):
             refs = metadata.get(field, [])
             for ref in refs if isinstance(refs, list) else []:
-                if isinstance(ref, dict) and ref.get('relative_path') == source:
-                    source_refs.append(dict(source=rel, field=field, source_id=ref.get('source_id'),
+                if isinstance(ref, str) and ref == source:
+                    source_refs.append(dict(source=rel, field=field, reference_kind='path'))
+                elif isinstance(ref, dict) and ref.get('relative_path') == source:
+                    source_refs.append(dict(source=rel, field=field, reference_kind='source_ref',
+                                            source_id=ref.get('source_id'),
                                             content_sha256=ref.get('content_sha256')))
         for relation in metadata.get('workspace_relations', []) if isinstance(metadata.get('workspace_relations'), list) else []:
             if not isinstance(relation, dict):
@@ -245,10 +265,16 @@ def plan_link_impact(vault_index, source, destination=None):
                     source_refs.append(dict(source=rel, relation_id=relation.get('id'),
                                             source_id=ref.get('source_id'), content_sha256=ref.get('content_sha256')))
     aliases = record.get('aliases', [])
+    if destination is None:
+        destination_status = 'not_requested'
+    elif _norm_key(destination) in (set(vault_index['by_rel']) | vault_index['ambiguous_rel']):
+        destination_status = 'known_conflict'
+    else:
+        destination_status = 'unknown'
     return dict(status='preview', writes_performed=False, source=source, destination=destination,
                 record_id=record['id'], source_sha256=record['source_sha256'],
-                destination_conflict=bool(destination and _norm_key(destination) in
-                                          (set(vault_index['by_rel']) | vault_index['ambiguous_rel'])),
+                destination_status=destination_status,
+                destination_conflict=True if destination_status == 'known_conflict' else None,
                 canonical_aliases=aliases if isinstance(aliases, list) else [],
                 incoming_wikilinks=incoming, known_unresolved=unresolved,
                 record_relations=relations, historical_source_refs=source_refs,
@@ -278,12 +304,17 @@ def resolve_wikilink(vault_root, link_target, source_file=None, vault_index=None
             return dict(fail, ambiguous=True)
         match = index['by_rel'].get(_norm_key(candidate))
         if match:
-            return dict(exists=True, resolved_path=match)
+            return dict(exists=True, resolved_path=match, match_kind='path')
     # Qualified paths must never fall back to an unrelated basename; ambiguity is explicit.
     if '/' not in target:
-        matches = index['by_basename'].get(_norm_key(PurePosixPath(target).stem), [])
+        key = _norm_key(PurePosixPath(target).stem)
+        basename_matches = set(index['by_basename'].get(key, []))
+        alias_matches = set(index.get('by_alias', {}).get(key, []))
+        matches = basename_matches | alias_matches
         if len(matches) == 1:
-            return dict(exists=True, resolved_path=matches[0])
+            match = next(iter(matches))
+            return dict(exists=True, resolved_path=match,
+                        match_kind='basename' if match in basename_matches else 'canonical_alias')
         if len(matches) > 1:
             return dict(fail, ambiguous=True)
     return fail

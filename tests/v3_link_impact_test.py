@@ -8,10 +8,10 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
-import v3_workspace_discovery_test as fixture
+from v3_navigation_fixture import NavigationFixture
 from beyin_v3_lint import scoped_vault_index, lint_vault, plan_link_impact, plan_moc, generate_moc
 from beyin_v3_sync import SyncEngine, parse, render
-from beyin_v3_workspaces import canonical_bytes
+from beyin_v3_workspaces import canonical_bytes, content_hash, envelope, render_document
 from beyin_v3_workspace_context import request_scope
 from beyin_v3_sources import SourceResolver
 
@@ -22,11 +22,9 @@ SPEC.loader.exec_module(cli)
 
 class ScopedNavigationTest(unittest.TestCase):
     def setUp(self):
-        self.case = fixture.DiscoveryTest('test_metadata_only_is_bounded_and_never_extracts_cataloged_files')
-        self.case.setUp()
-        self.addCleanup(self.case.tmp.cleanup)
-        self.vault, self.state = self.case.vault, self.case.state
-        self.state.joinpath('workspace-runtime.json').write_text('{"enabled":true}')
+        self.fixture = NavigationFixture()
+        self.addCleanup(self.fixture.close)
+        self.vault, self.state = self.fixture.vault, self.fixture.state
 
     def note(self, source, body, **metadata):
         path = self.vault / source
@@ -47,17 +45,16 @@ class ScopedNavigationTest(unittest.TestCase):
         binding_path.write_bytes(canonical_bytes(binding))
         permission = dict(workspace_id='observatory', source_id='memory', locator=str(self.vault), access='write_memory')
         read_permission = dict(permission, access='read')
-        self.case.authority.record_approval('synthetic-approval', machine_id='synthetic-machine',
-            permissions=[read_permission, permission,
-                         dict(workspace_id='observatory', source_id='materials', locator=str(self.case.external), access='read')],
-            audiences=('internal', 'private'), evidence='Synthetic read and write approval')
+        self.fixture.authority.record_approval('synthetic-approval', machine_id='synthetic-machine',
+            permissions=[read_permission, permission], audiences=('internal',),
+            evidence='Synthetic read and write approval')
 
     def test_authorized_impact_keeps_unknown_and_unresolved_visible(self):
-        self.note('notes/workspaces/target.md', '# Target', aliases=['Other name'])
+        self.note('notes/workspaces/target.md', '# Target', aliases=['Müşteri'])
         relation = dict(id='edge-1', workspace_id='observatory', type='related_to',
             **{'from': {'workspace_id': 'observatory', 'record_id': 'source'},
                'to': {'workspace_id': 'observatory', 'record_id': 'target'}}, evidence_refs=[])
-        self.note('notes/workspaces/source.md', '[[target|Display]] [[missing]] [[target#Absent]]',
+        self.note('notes/workspaces/source.md', '[[target|Display]] [[Müşteri]] [[missing]] [[target#Absent]]',
                   workspace_relations=[relation])
         self.note('notes/hidden.md', 'SECRET-CANARY [[target]]', workspace_id='another')
         SyncEngine(self.vault, self.state).sync()
@@ -65,12 +62,43 @@ class ScopedNavigationTest(unittest.TestCase):
         self.assertNotIn('notes/hidden.md', index['texts'])
         plan = plan_link_impact(index, 'notes/workspaces/target.md', 'notes/workspaces/moved.md')
         self.assertEqual(plan['outside_inventory'], 'unknown')
-        self.assertEqual(plan['canonical_aliases'], ['Other name'])
+        self.assertEqual(plan['canonical_aliases'], ['Müşteri'])
         self.assertEqual(plan['incoming_wikilinks'][0]['display_alias'], 'Display')
+        self.assertIn('canonical_alias', [x['match_kind'] for x in plan['incoming_wikilinks']])
         self.assertIn('missing', [x['target'] for x in plan['known_unresolved']])
         self.assertEqual(plan['record_relations'][0]['relation_id'], 'edge-1')
         self.assertNotIn('SECRET-CANARY', json.dumps(plan))
         self.assertEqual(lint_vault(self.vault, vault_index=index)['broken_links_count'], 2)
+
+    def test_ambiguous_alias_and_strict_task_evidence_path_are_reported(self):
+        self.note('notes/workspaces/proof.md', '# Proof', aliases=['Müşteri'])
+        self.note('notes/workspaces/other.md', '# Other', aliases=['Müşteri'])
+        self.note('notes/workspaces/source.md', '[[Müşteri]]')
+        self.note('tasks/check.md', 'Check evidence.', kind='task', status='done', owner='Reviewer',
+                  completion_contract='strict', completion_criterion='Evidence recorded.',
+                  evidence_refs=['notes/workspaces/proof.md'])
+        SyncEngine(self.vault, self.state).sync()
+        index = self.inventory()
+        plan = plan_link_impact(index, 'notes/workspaces/proof.md')
+        self.assertEqual(plan['incoming_wikilinks'], [])
+        self.assertIn('Müşteri', [x['target'] for x in plan['known_unresolved'] if x['reason'] == 'ambiguous'])
+        self.assertIn(dict(source='tasks/check.md', field='evidence_refs', reference_kind='path'),
+                      plan['historical_source_refs'])
+
+    def test_destination_conflict_is_unknown_outside_authorized_inventory(self):
+        self.note('notes/workspaces/target.md', '# Target')
+        self.note('notes/workspaces/source.md', '# Source')
+        self.note('notes/workspaces/hidden.md', 'SECRET-CANARY', workspace_id='another')
+        SyncEngine(self.vault, self.state).sync()
+        index = self.inventory()
+        for destination in ('notes/workspaces/hidden.md', 'notes/workspaces/absent.md'):
+            plan = plan_link_impact(index, 'notes/workspaces/target.md', destination)
+            self.assertEqual(plan['destination_status'], 'unknown')
+            self.assertIsNone(plan['destination_conflict'])
+            self.assertNotIn('SECRET-CANARY', json.dumps(plan))
+        known = plan_link_impact(index, 'notes/workspaces/target.md', 'notes/workspaces/source.md')
+        self.assertEqual(known['destination_status'], 'known_conflict')
+        self.assertIs(known['destination_conflict'], True)
 
     def test_revoked_grant_fails_closed_and_legacy_guard_remains(self):
         self.note('notes/workspaces/target.md', '# Target')
@@ -78,7 +106,7 @@ class ScopedNavigationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'active_workspace_requires_scoped_context'):
             plan_moc(self.vault, 'notes/workspaces', state=self.state)
         self.assertEqual(len(self.inventory()['texts']), 1)
-        self.case.authority.revoke('synthetic-approval')
+        self.fixture.authority.revoke('synthetic-approval')
         with self.assertRaisesRegex(Exception, 'scope_denied'):
             self.inventory()
 
@@ -95,11 +123,54 @@ class ScopedNavigationTest(unittest.TestCase):
         def revoke_on_second(resolver, *args, **kwargs):
             calls.append(args)
             if len(calls) == 2:
-                self.case.authority.revoke('synthetic-approval')
+                self.fixture.authority.revoke('synthetic-approval')
             return original(resolver, *args, **kwargs)
         with patch.object(SourceResolver, 'resolve', revoke_on_second):
             with self.assertRaisesRegex(Exception, 'scope_denied'):
                 self.inventory()
+
+    def test_revoked_source_binding_is_not_saved_by_another_live_binding(self):
+        self.note('notes/workspaces/target.md', '# Target')
+        SyncEngine(self.vault, self.state).sync()
+        registry = self.fixture.registry
+        registry.compare_and_save(envelope('SourceDescriptor',
+            dict(id='z-memory', kind='vault', label='z-memory')), None)
+        profile_path = self.vault / '.beyin-workspaces/workspaces/observatory.json'
+        profile = json.loads(profile_path.read_text())
+        prior = content_hash(profile_path.read_bytes())
+        profile['data']['revision'] += 1
+        profile['data']['source_ids'].append('z-memory')
+        registry.compare_and_save(profile, prior)
+        a_path = self.state / 'workspace-bindings/memory.json'
+        a = json.loads(a_path.read_text())
+        a['data']['authority_ref'] = 'synthetic-own-a'
+        a_path.write_bytes(canonical_bytes(a))
+        b = dict(a['data'], source_id='z-memory', authority_ref='synthetic-own-b')
+        (self.state / 'workspace-bindings/z-memory.json').write_bytes(
+            render_document(envelope('SourceBinding', b)))
+        a_permission = dict(workspace_id='observatory', source_id='memory',
+                            locator=str(self.vault), access='read')
+        b_permission = dict(a_permission, source_id='z-memory')
+        self.fixture.authority.record_approval('synthetic-own-a', machine_id='synthetic-machine',
+            permissions=[a_permission], evidence='Synthetic A owner')
+        self.fixture.authority.record_approval('synthetic-own-b', machine_id='synthetic-machine',
+            permissions=[b_permission], evidence='Synthetic B owner')
+        self.fixture.authority.record_approval('synthetic-approval', machine_id='synthetic-machine',
+            permissions=[a_permission, b_permission], evidence='Synthetic two-source request')
+        original = SourceResolver.resolve
+        a_calls = []
+        def revoke_after_a_read(resolver, *args, **kwargs):
+            result = original(resolver, *args, **kwargs)
+            if args[1] == 'memory':
+                a_calls.append(args)
+                if len(a_calls) == 2:
+                    self.fixture.authority.revoke('synthetic-own-a')
+            return result
+        with patch.object(SourceResolver, 'resolve', revoke_after_a_read):
+            with self.assertRaisesRegex(Exception, 'scope_denied'):
+                self.inventory()
+        self.assertEqual(len(a_calls), 2)
+        self.assertTrue(self.fixture.authority.allows('synthetic-approval', b, 'observatory'))
 
     def test_path_derived_stable_id_preview_and_reference_impact_agree(self):
         target = self.note('notes/workspaces/path-note.md', '# Path note')
