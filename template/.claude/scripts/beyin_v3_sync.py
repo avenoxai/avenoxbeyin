@@ -1302,6 +1302,88 @@ class SyncEngine:
                 except WorkspaceError:continue
         raise WorkspaceError('scope_denied')
 
+    def preview_stable_id(self, record_id):
+        """Preview pinning a path-derived identity without changing its ID or source."""
+        with self.store._connect() as db:
+            row = db.execute('SELECT payload FROM records WHERE id=?', (record_id,)).fetchone()
+        if not row:
+            raise KeyError(record_id)
+        record = json.loads(row[0])
+        try:
+            self._workspace_write_guard(record['source'], record)
+        except Exception as exc:
+            # A denied workspace must not learn the canonical source or its hash.
+            from beyin_v3_workspaces import WorkspaceError
+            if isinstance(exc, WorkspaceError):
+                return {'status': 'denied', 'record_id': record_id}
+            raise
+        source = record['source']
+        path = self._path(source, existing=True)
+        raw = path.read_bytes()
+        if _hash(raw) != record['source_sha256']:
+            raise RevisionConflict('source changed; sync and reread')
+        metadata, _ = parse(raw.decode('utf-8'))
+        if record.get('kind') in ('task', 'receipt') or record.get('generated'):
+            raise ValueError('dedicated writer required')
+        if metadata.get('id') is not None:
+            return {'status': 'already_stable', 'record_id': record_id, 'source': source}
+        derived = 'md-' + _hash(source)[:24]
+        if record_id != derived:
+            raise RevisionConflict('indexed identity does not match source path')
+        with self.store._connect() as db:
+            rows = db.execute('SELECT source FROM markdown_sources WHERE id=?', (record_id,)).fetchall()
+        if len(rows) != 1 or rows[0][0] != source:
+            raise RevisionConflict('source identity conflict; sync and review')
+        plan = {'record_id': record_id, 'source': source,
+                'expected_revision': record['revision'],
+                'expected_source_sha256': record['source_sha256'],
+                'stable_id': record_id}
+        from beyin_v3_workspace_context import CURRENT, membership_hash
+        if CURRENT.get() is not None:
+            from beyin_v3_workspaces import Registry
+            plan['workspace_membership_sha256'] = membership_hash(Registry(self.root, self.state))
+        return {'status': 'ready', **plan, 'plan_sha256': _hash(_json(plan))}
+
+    def adopt_stable_id(self, preview):
+        """Pin the existing ID via the canonical source journal and exact readback.
+
+        This prepares a later move; it does not move a file or rewrite historical refs.
+        """
+        if not isinstance(preview, dict) or preview.get('status') != 'ready':
+            raise ValueError('ready stable ID preview required')
+        record_id = preview.get('record_id')
+        with note_locked(self):
+            current = self.preview_stable_id(record_id)
+            if current != preview:
+                raise RevisionConflict('stable ID plan changed; preview again')
+            source = current['source']
+            path = self._path(source, existing=True)
+            raw = path.read_bytes()
+            if _hash(raw) != current['expected_source_sha256']:
+                raise RevisionConflict('source changed; sync and reread')
+            metadata, body = parse(raw.decode('utf-8'))
+            if metadata.get('id') is not None:
+                raise RevisionConflict('source identity changed; preview again')
+            metadata['id'] = record_id
+            metadata['revision'] = current['expected_revision'] + 1
+            intended = render(metadata, body)
+            with self.store._connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                self._intent(source, current['expected_source_sha256'], intended, 'note')
+            result = self.sync()
+            if self._write_blockers(result, source) or self._source_issues(result, source, record_id):
+                raise RevisionConflict('stable ID projection conflict')
+            with self.store._connect() as db:
+                row = db.execute('SELECT payload FROM records WHERE id=?', (record_id,)).fetchone()
+            if not row or path.read_bytes() != intended.encode('utf-8'):
+                raise RevisionConflict('stable ID source readback mismatch')
+            actual = json.loads(row[0])
+            if (actual['id'] != record_id or actual['source'] != source or
+                    actual['source_sha256'] != _hash(intended) or actual['revision'] != current['expected_revision'] + 1):
+                raise RevisionConflict('stable ID projection readback mismatch')
+            return {'status': 'succeeded', 'record_id': record_id, 'source': source,
+                    'source_sha256': actual['source_sha256'], 'plan_sha256': current['plan_sha256']}
+
     def update_note(self, id, expected_revision, expected_source_sha256, text, changes=None, *, _preserve_body=False):
         """Narrow canonical update through the existing source journal and sync.
 
