@@ -47,4 +47,3 @@ class WorkspaceHumanNotesTest(unittest.TestCase):
         with request_scope('academic','revoked'):
             with self.assertRaises(WorkspaceError):engine.note_read('notes/allowed.md')
             with self.assertRaises(WorkspaceError):engine.note_edit({'source':'notes/allowed.md','expected_sha256':before['sha256'],'edits':[{'old':'After','new':'REVOKED'}]})
-
