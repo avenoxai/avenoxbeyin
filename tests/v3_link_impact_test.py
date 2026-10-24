@@ -68,7 +68,27 @@ class ScopedNavigationTest(unittest.TestCase):
         self.assertIn('missing', [x['target'] for x in plan['known_unresolved']])
         self.assertEqual(plan['record_relations'][0]['relation_id'], 'edge-1')
         self.assertNotIn('SECRET-CANARY', json.dumps(plan))
-        self.assertEqual(lint_vault(self.vault, vault_index=index)['broken_links_count'], 2)
+        report = lint_vault(self.vault, vault_index=index)
+        self.assertEqual(report['broken_links_count'], 1)
+        self.assertEqual(report['unknown_links_count'], 1)
+
+    def test_scoped_missing_wikilink_and_media_are_unknown_without_presence_leak(self):
+        self.note('notes/workspaces/source.md', '[[other]] ![[diagram.png]]')
+        self.note('notes/workspaces/other.md', '# Hidden', workspace_id='another')
+        image = self.vault / 'notes/workspaces/diagram.png'
+        image.write_bytes(b'IMAGE-CANARY')
+        SyncEngine(self.vault, self.state).sync()
+        report = lint_vault(self.vault, vault_index=self.inventory())
+        self.assertEqual(report['status'], 'indeterminate')
+        self.assertEqual(report['broken_links_count'], 0)
+        self.assertEqual(report['unknown_links_count'], 2)
+        self.assertEqual({x['type'] for x in report['unknown_links']},
+                         {'unknown_wikilink', 'unknown_media'})
+        self.assertNotIn('Hidden', json.dumps(report))
+        self.assertNotIn('IMAGE-CANARY', json.dumps(report))
+        image.unlink()
+        report_without_media = lint_vault(self.vault, vault_index=self.inventory())
+        self.assertEqual(report_without_media['unknown_links'], report['unknown_links'])
 
     def test_ambiguous_alias_and_strict_task_evidence_path_are_reported(self):
         self.note('notes/workspaces/proof.md', '# Proof', aliases=['Müşteri'])
@@ -235,7 +255,8 @@ class ScopedNavigationTest(unittest.TestCase):
         self.assertEqual(code, 4, result)
         scoped = ['--workspace-id', 'observatory', '--grant-ref', 'synthetic-approval']
         result, code = cli.main(base + ['lint'] + scoped, return_result=True)
-        self.assertEqual(code, 1, result)
+        self.assertEqual(code, 3, result)
+        self.assertEqual(result['status'], 'indeterminate')
         self.assertEqual(result['scope']['outside_inventory'], 'unknown')
         result, code = cli.main(base + ['link-impact'] + scoped +
                                 ['--source', 'notes/workspaces/target.md'], return_result=True)

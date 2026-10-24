@@ -212,7 +212,7 @@ def scoped_vault_index(vault_root, state, workspace_id, grant_ref, *, audience='
                 ambiguous_rel=ambiguous_rel, records=metadata_by_rel,
                 scope=dict(kind='authorized_canonical_records', workspace_id=workspace_id,
                            source_ids=sorted(vault_ids), indexed_count=len(texts), stale_count=stale_count,
-                           outside_inventory='unknown'))
+                           outside_inventory='unknown', media_inventory='not_indexed'))
 
 
 def plan_link_impact(vault_index, source, destination=None):
@@ -337,7 +337,8 @@ def lint_vault(vault_root, folder=None, *, state=None, vault_index=None):
     index = vault_index if vault_index is not None else build_vault_index(root, state=state)
     targets = [f for f in index['texts'] if not folder or f.startswith(folder.rstrip('/') + '/')]
     incoming, outgoing = defaultdict(set), defaultdict(set)
-    broken, total = [], 0
+    broken, unknown, total = [], [], 0
+    scoped = index.get('scope') is not None
     # Graph sees the whole eligible vault even when the report is folder-limited.
     for source, (_, body) in index['texts'].items():
         for link in extract_wikilinks(body):
@@ -349,11 +350,11 @@ def lint_vault(vault_root, folder=None, *, state=None, vault_index=None):
                 names = [posixpath.normpath(posixpath.join(posixpath.dirname(source), target)), posixpath.normpath(target)]
                 exists = any(not n.startswith('../') and _norm_key(n) in index['media'] for n in names)
                 if not exists:
-                    reason = 'embed'
+                    reason = 'unknown_media' if scoped else 'embed'
             else:
                 resolved = resolve_wikilink(root, target, source, index)
                 if not resolved['exists']:
-                    reason = 'ambiguous' if resolved.get('ambiguous') else 'wikilink'
+                    reason = 'ambiguous' if resolved.get('ambiguous') else 'unknown_wikilink' if scoped else 'wikilink'
                 else:
                     destination = resolved['resolved_path']
                     incoming[destination].add(source)
@@ -361,11 +362,14 @@ def lint_vault(vault_root, folder=None, *, state=None, vault_index=None):
                     if link['heading'] is not None and not _heading_exists(index['texts'][destination][1], link['heading']):
                         reason = 'heading'
             if reason and source in targets:
-                broken.append(dict(source=source, line=link['line'], target=target, raw=link['raw'], type=reason))
+                issue = dict(source=source, line=link['line'], target=target, raw=link['raw'], type=reason)
+                (unknown if reason.startswith('unknown_') else broken).append(issue)
     orphans = sorted(f for f in targets if not incoming[f] and not outgoing[f])
     unlinked = sorted(f for f in targets if not incoming[f] and f not in orphans)
-    return dict(status='issues_found' if broken else 'ok', scope=index.get('scope'), scanned_files_count=len(targets),
+    return dict(status='issues_found' if broken else 'indeterminate' if unknown else 'ok',
+                scope=index.get('scope'), scanned_files_count=len(targets),
                 total_links_count=total, broken_links_count=len(broken), broken_links=broken,
+                unknown_links_count=len(unknown), unknown_links=unknown,
                 orphan_count=len(orphans), orphans=orphans, unlinked_count=len(unlinked), unlinked=unlinked)
 
 

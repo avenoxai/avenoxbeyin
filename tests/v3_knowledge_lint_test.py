@@ -57,6 +57,14 @@ class KnowledgeLintTest(unittest.TestCase):
         result = lint.lint_vault(self.vault, 'knowledge')
         self.assertEqual(result['orphans'], []); self.assertEqual(result['broken_links'], [])
 
+    def test_legacy_missing_wikilink_and_media_remain_definite_breaks(self):
+        self.note('knowledge/source.md', '[[other]] ![[diagram.png]]')
+        report = lint.lint_vault(self.vault)
+        self.assertEqual(report['status'], 'issues_found')
+        self.assertEqual(report['broken_links_count'], 2)
+        self.assertEqual(report['unknown_links_count'], 0)
+        self.assertEqual({x['type'] for x in report['broken_links']}, {'wikilink', 'embed'})
+
     def test_private_untrusted_sensitive_archive_generated_and_user_exclusions(self):
         for folder in ('secrets', 'Arşiv', 'node_modules', '.codex', 'vendor'):
             self.note(folder + '/canary.md', '# CANARY')

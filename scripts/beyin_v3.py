@@ -1292,7 +1292,7 @@ def knowledge_cli(args, return_result=False):
             result = generate_moc(load_sync()(vault, state), args.folder, args.moc_file,
                                   vault_index=index, workspace_id=workspace_id, grant_ref=grant_ref,
                                   source_id=args.source_id)
-        code = 0 if result['status'] != 'issues_found' else 1
+        code = 1 if result['status'] == 'issues_found' else 3 if result['status'] == 'indeterminate' else 0
     except Exception as exc:
         from beyin_v3_workspaces import WorkspaceError
         if str(exc) == 'active_workspace_requires_scoped_context':
