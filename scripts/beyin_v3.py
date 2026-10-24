@@ -974,10 +974,20 @@ def parser(note_namespace=None, is_json=False):
     sub.add_parser("recover-views", help="Archive conflicting receipt views and regenerate from immutable receipts")
     lint = sub.add_parser("lint", help="Read-only visible Markdown wikilink checks (legacy vault mode)")
     lint.add_argument("--folder")
+    lint.add_argument("--workspace-id")
+    lint.add_argument("--grant-ref")
     moc = sub.add_parser("moc", help="Update a MOC through the hash-checked note writer (legacy vault mode)")
     moc.add_argument("--folder", default="knowledge")
     moc.add_argument("--moc-file", default="MOC.md")
     moc.add_argument("--dry-run", action="store_true", help="Preview the note-edit request without writing")
+    moc.add_argument("--workspace-id")
+    moc.add_argument("--grant-ref")
+    moc.add_argument("--source-id", help="Authorized vault binding for a scoped MOC write")
+    impact = sub.add_parser("link-impact", help="Preview known references in an authorized workspace inventory")
+    impact.add_argument("--workspace-id", required=True)
+    impact.add_argument("--grant-ref", required=True)
+    impact.add_argument("--source", required=True)
+    impact.add_argument("--destination")
     sub.add_parser("skill-sync", help="Reconcile project-local shared skills")
     sub.add_parser("doctor", help="Read local hook health and pending metadata counts")
     scheduled = sub.add_parser("scheduled-check", help="Sync then doctor for an OS scheduler you set up; no model call, no service")
@@ -1256,7 +1266,7 @@ def knowledge_cli(args, return_result=False):
     sys.dont_write_bytecode = True
     try:
         _ensure_scripts_path()
-        from beyin_v3_lint import lint_vault, plan_moc, generate_moc
+        from beyin_v3_lint import lint_vault, plan_moc, generate_moc, scoped_vault_index, plan_link_impact
         vault = args.vault.expanduser().resolve()
         if not vault.is_dir():
             raise ValueError("--vault must be an existing directory")
@@ -1265,19 +1275,30 @@ def knowledge_cli(args, return_result=False):
             raise ValueError("--state must be outside the vault")
         # A raw vault walk cannot establish workspace authority; refuse before reading notes.
         from beyin_v3_workspace_context import enabled
-        if enabled(vault, state):
+        active = enabled(vault, state)
+        workspace_id, grant_ref = args.workspace_id, args.grant_ref
+        if bool(workspace_id) != bool(grant_ref) or (active and not workspace_id):
             raise ValueError('active_workspace_requires_scoped_context')
+        if args.command == 'link-impact' and not active:
+            raise ValueError('active_workspace_requires_scoped_context')
+        index = scoped_vault_index(vault, state, workspace_id, grant_ref) if active else None
         if args.command == 'lint':
-            result = lint_vault(vault, args.folder, state=state)
+            result = lint_vault(vault, args.folder, state=state, vault_index=index)
+        elif args.command == 'link-impact':
+            result = plan_link_impact(index, args.source, args.destination)
         elif args.dry_run:
-            result = plan_moc(vault, args.folder, args.moc_file, state=state)
+            result = plan_moc(vault, args.folder, args.moc_file, state=state, vault_index=index)
         else:
-            result = generate_moc(load_sync()(vault, state), args.folder, args.moc_file)
+            result = generate_moc(load_sync()(vault, state), args.folder, args.moc_file,
+                                  vault_index=index, workspace_id=workspace_id, grant_ref=grant_ref,
+                                  source_id=args.source_id)
         code = 0 if result['status'] != 'issues_found' else 1
     except Exception as exc:
+        from beyin_v3_workspaces import WorkspaceError
         if str(exc) == 'active_workspace_requires_scoped_context':
-            from beyin_v3_workspaces import WorkspaceError
             result, code = workspace_failure(WorkspaceError('workspace_context_required'), 'knowledge-navigation')
+        elif isinstance(exc, WorkspaceError):
+            result, code = workspace_failure(exc, 'knowledge-navigation')
         else:
             result, code = dict(status='error', error=type(exc).__name__, message=str(exc)), 2
     if return_result:
@@ -1294,7 +1315,7 @@ def main(argv=None, return_result=False):
     argument_parser = parser(note_namespace=args, is_json="--json" in args_list)
     try:
         args = argument_parser.parse_args(args_list, namespace=args)
-        if args.command in ("lint", "moc"): return knowledge_cli(args, return_result)
+        if args.command in ("lint", "moc", "link-impact"): return knowledge_cli(args, return_result)
         if args.command == "workspace": return workspace_metadata_cli(args, return_result)
         if args.command in ("workspace-builder", "workspace-authority", "workspace-setup"): return workspace_builder_cli(args, return_result)
         receipt_flags = args.command == "receipt" and any(

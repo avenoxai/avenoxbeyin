@@ -132,6 +132,130 @@ def build_vault_index(vault_root, target_folder=None, *, state=None):
     return dict(by_rel=by_rel, by_basename=dict(basenames), texts=texts, media=media, ambiguous_rel=ambiguous_rel)
 
 
+def scoped_vault_index(vault_root, state, workspace_id, grant_ref, *, audience='internal'):
+    """Build navigation data from fresh, authorized canonical records only.
+
+    This never walks the vault. Files absent from the indexed workspace inventory
+    remain unknown, including external sources and unindexed Markdown.
+    """
+    from beyin_v3 import MemoryStore
+    from beyin_v3_workspace_context import authorized_record_scope, enabled
+    from beyin_v3_workspaces import Registry, WorkspaceError, local_root_matches, content_hash
+    from beyin_v3_sources import SourceResolver
+    root, state = Path(vault_root).resolve(), Path(state).resolve()
+    if not enabled(root, state):
+        raise WorkspaceError('workspace_context_required')
+    registry = Registry(root, state)
+    snapshot = registry.snapshot()
+    if snapshot is None:
+        raise WorkspaceError('workspace_unavailable')
+    bindings, _ = registry.bindings(snapshot)
+    profile = next((p for p in snapshot['profiles'] if p['id'] == workspace_id and p['lifecycle'] == 'active'), None)
+    if profile is None:
+        raise WorkspaceError('scope_denied')
+    configured_ids = [s['id'] for s in snapshot['sources'] if s['kind'] == 'vault' and s['id'] in profile['source_ids']
+                      and s['id'] in bindings and local_root_matches(bindings[s['id']]['locator'], root)]
+    store = MemoryStore(state, root, read_only=True)
+    with authorized_record_scope(registry, snapshot, bindings, workspace_id, grant_ref, audience=audience):
+        records, stale_count = store._eligible(audience)
+    resolver = SourceResolver(registry, readers={}, cache_write=False)
+    vault_ids = [sid for sid in configured_ids if resolver.authority.allows(
+        grant_ref, bindings[sid], workspace_id, audience=audience)]
+    if not vault_ids:
+        raise WorkspaceError('scope_denied')
+    by_rel, basenames, texts, metadata_by_rel = {}, defaultdict(list), {}, {}
+    ambiguous_rel = set()
+    for record in records:
+        rel = record.get('source')
+        if not isinstance(rel, str) or not rel.lower().endswith('.md'):
+            continue
+        for sid in vault_ids:
+            try:
+                path, _, _ = resolver.resolve(workspace_id, sid, rel, grant_ref, audience=audience)
+                raw = path.read_bytes()
+                if content_hash(raw) != record['source_sha256']:
+                    break
+                # A grant may be revoked while bytes are read.
+                resolver.resolve(workspace_id, sid, rel, grant_ref, audience=audience)
+                metadata, body = parse(raw.decode('utf-8-sig'))
+                key = _norm_key(rel)
+                if key in by_rel or key in ambiguous_rel:
+                    ambiguous_rel.add(key); by_rel.pop(key, None)
+                else:
+                    by_rel[key] = rel
+                basenames[_norm_key(PurePosixPath(rel).stem)].append(rel)
+                texts[rel], metadata_by_rel[rel] = (metadata, body), record
+                break
+            except (WorkspaceError, OSError, UnicodeError, ValueError):
+                continue
+    # Final live check prevents a revoked grant from returning already collected data.
+    if not any(resolver.authority.allows(grant_ref, bindings[sid], workspace_id, audience=audience)
+               for sid in vault_ids):
+        raise WorkspaceError('scope_denied')
+    return dict(by_rel=by_rel, by_basename=dict(basenames), texts=texts, media={},
+                ambiguous_rel=ambiguous_rel, records=metadata_by_rel,
+                scope=dict(kind='authorized_canonical_records', workspace_id=workspace_id,
+                           source_ids=sorted(vault_ids), indexed_count=len(texts), stale_count=stale_count,
+                           outside_inventory='unknown'))
+
+
+def plan_link_impact(vault_index, source, destination=None):
+    """Preview known references before a path change; no source or index mutation.
+
+    Wikilink display aliases and canonical metadata aliases are distinct. A
+    resolved link outside this approved inventory cannot be asserted safe.
+    """
+    if 'scope' not in vault_index:
+        raise ValueError('authorized inventory required')
+    if source not in vault_index['texts']:
+        raise ValueError('source outside authorized inventory')
+    if destination is not None and (not isinstance(destination, str) or destination == source):
+        raise ValueError('invalid destination')
+    if destination is not None and (not destination.endswith('.md') or destination.startswith('/') or
+                                    '\\' in destination or ':' in destination or
+                                    any(p in ('', '.', '..') or p.startswith('.') for p in destination.split('/'))):
+        raise ValueError('invalid destination')
+    record = vault_index['records'][source]
+    incoming, unresolved, relations, source_refs = [], [], [], []
+    for rel, (metadata, body) in sorted(vault_index['texts'].items()):
+        for link in extract_wikilinks(body):
+            target = link['file_target']
+            resolved = resolve_wikilink(None, target, rel, vault_index)
+            item = dict(source=rel, line=link['line'], target=target,
+                        display_alias=link['display'], is_embed=link['is_embed'])
+            if resolved.get('resolved_path') == source:
+                incoming.append(item)
+            elif not resolved['exists']:
+                item['reason'] = 'ambiguous' if resolved.get('ambiguous') else 'unresolved'
+                unresolved.append(item)
+        for field in ('source_refs', 'evidence_refs'):
+            refs = metadata.get(field, [])
+            for ref in refs if isinstance(refs, list) else []:
+                if isinstance(ref, dict) and ref.get('relative_path') == source:
+                    source_refs.append(dict(source=rel, field=field, source_id=ref.get('source_id'),
+                                            content_sha256=ref.get('content_sha256')))
+        for relation in metadata.get('workspace_relations', []) if isinstance(metadata.get('workspace_relations'), list) else []:
+            if not isinstance(relation, dict):
+                continue
+            if any(isinstance(relation.get(end), dict) and relation[end].get('record_id') == record['id']
+                   for end in ('from', 'to')):
+                relations.append(dict(source=rel, relation_id=relation.get('id'), type=relation.get('type')))
+            for ref in relation.get('evidence_refs', []) if isinstance(relation.get('evidence_refs'), list) else []:
+                if isinstance(ref, dict) and ref.get('relative_path') == source:
+                    source_refs.append(dict(source=rel, relation_id=relation.get('id'),
+                                            source_id=ref.get('source_id'), content_sha256=ref.get('content_sha256')))
+    aliases = record.get('aliases', [])
+    return dict(status='preview', writes_performed=False, source=source, destination=destination,
+                record_id=record['id'], source_sha256=record['source_sha256'],
+                destination_conflict=bool(destination and _norm_key(destination) in
+                                          (set(vault_index['by_rel']) | vault_index['ambiguous_rel'])),
+                canonical_aliases=aliases if isinstance(aliases, list) else [],
+                incoming_wikilinks=incoming, known_unresolved=unresolved,
+                record_relations=relations, historical_source_refs=source_refs,
+                scope=vault_index['scope'], outside_inventory='unknown',
+                review_required=bool(unresolved or destination is not None))
+
+
 def resolve_wikilink(vault_root, link_target, source_file=None, vault_index=None):
     index = vault_index if vault_index is not None else build_vault_index(vault_root)
     fail = dict(exists=False, resolved_path=None)
@@ -172,13 +296,14 @@ def _heading_exists(body, heading):
     return _norm_key(heading) in {_norm_key(h) for h in headings}
 
 
-def lint_vault(vault_root, folder=None, *, state=None):
+def lint_vault(vault_root, folder=None, *, state=None, vault_index=None):
     root = Path(vault_root).resolve()
     if folder:
         _inside(root, folder)
         # Validate scope with the same exclusion policy even when the report is empty.
-        build_vault_index(root, folder, state=state)
-    index = build_vault_index(root, state=state)
+        if vault_index is None:
+            build_vault_index(root, folder, state=state)
+    index = vault_index if vault_index is not None else build_vault_index(root, state=state)
     targets = [f for f in index['texts'] if not folder or f.startswith(folder.rstrip('/') + '/')]
     incoming, outgoing = defaultdict(set), defaultdict(set)
     broken, total = [], 0
@@ -208,7 +333,7 @@ def lint_vault(vault_root, folder=None, *, state=None):
                 broken.append(dict(source=source, line=link['line'], target=target, raw=link['raw'], type=reason))
     orphans = sorted(f for f in targets if not incoming[f] and not outgoing[f])
     unlinked = sorted(f for f in targets if not incoming[f] and f not in orphans)
-    return dict(status='issues_found' if broken else 'ok', scanned_files_count=len(targets),
+    return dict(status='issues_found' if broken else 'ok', scope=index.get('scope'), scanned_files_count=len(targets),
                 total_links_count=total, broken_links_count=len(broken), broken_links=broken,
                 orphan_count=len(orphans), orphans=orphans, unlinked_count=len(unlinked), unlinked=unlinked)
 
@@ -219,7 +344,7 @@ def _title(metadata, body, rel):
     return re.sub(r'[\r\n|\[\]]', ' ', title)
 
 
-def plan_moc(vault_root, target_folder='knowledge', moc_filename='MOC.md', *, state=None):
+def plan_moc(vault_root, target_folder='knowledge', moc_filename='MOC.md', *, state=None, vault_index=None):
     """Return a deterministic note-edit request; no lock, DB or state writes."""
     root = Path(vault_root).resolve()
     folder = _inside(root, target_folder)
@@ -229,10 +354,10 @@ def plan_moc(vault_root, target_folder='knowledge', moc_filename='MOC.md', *, st
     destination = _inside(root, source)
     if sensitive_source(source) or sensitive_excluded(Path(moc_filename).stem):
         raise ValueError('excluded MOC destination')
-    index = build_vault_index(root, target_folder, state=state)
+    index = vault_index if vault_index is not None else build_vault_index(root, target_folder, state=state)
     categories = defaultdict(list)
     for rel, (metadata, body) in index['texts'].items():
-        if rel == source:
+        if rel == source or not rel.startswith(target_folder.rstrip('/') + '/'):
             continue
         category = PurePosixPath(rel).relative_to(target_folder).parent.as_posix()
         categories['Genel' if category == '.' else category].append((rel, _title(metadata, body, rel)))
@@ -262,12 +387,33 @@ def plan_moc(vault_root, target_folder='knowledge', moc_filename='MOC.md', *, st
             request['edits'] = [dict(old=existing, new=existing + '\n\n' + block + '\n')]
         else:
             raise ValueError('empty existing MOC; add a heading before updating')
-    return dict(status='preview', action='moc', file=source, indexed_notes_count=sum(map(len, categories.values())),
+    return dict(status='preview', action='moc', file=source, scope=index.get('scope'), indexed_notes_count=sum(map(len, categories.values())),
                 categories_count=len(categories), request=request)
 
 
-def generate_moc(engine, target_folder='knowledge', moc_filename='MOC.md'):
+def generate_moc(engine, target_folder='knowledge', moc_filename='MOC.md', *, vault_index=None,
+                 workspace_id=None, grant_ref=None, source_id=None):
     """Write using the shared writer's confinement, hash, lock, backup and sync contract."""
-    plan = plan_moc(engine.root, target_folder, moc_filename, state=engine.state)
-    result = engine.note_edit(plan.pop('request'))
+    plan = plan_moc(engine.root, target_folder, moc_filename, state=engine.state, vault_index=vault_index)
+    if vault_index is not None:
+        from beyin_v3_workspace_context import request_scope
+        from beyin_v3_workspaces import Registry, WorkspaceError, content_hash
+        from beyin_v3_sources import SourceResolver
+        if not all((workspace_id, grant_ref, source_id)):
+            raise WorkspaceError('scope_denied')
+        resolver = SourceResolver(Registry(engine.root, engine.state), readers={}, cache_write=False)
+        resolver.resolve(workspace_id, source_id, plan['file'], grant_ref, access='write_memory')
+        with request_scope(workspace_id, grant_ref):
+            request = plan.pop('request')
+            if request['expected_sha256'] is None:
+                created = engine.note_create(plan['file'], request['content'],
+                                             {'workspace_id': workspace_id, 'kind': 'note'})
+                result = {'status': 'written' if created['status'] == 'succeeded' else created['status'],
+                          'sha256': content_hash((Path(engine.root) / plan['file']).read_bytes())}
+            else:
+                if plan['file'] not in vault_index['texts']:
+                    raise WorkspaceError('scope_denied')
+                result = engine.note_edit(request)
+    else:
+        result = engine.note_edit(plan.pop('request'))
     return dict(plan, status=result['status'], sha256=result['sha256'])
