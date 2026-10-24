@@ -987,6 +987,7 @@ def parser(note_namespace=None, is_json=False):
     impact.add_argument("--workspace-id", required=True)
     impact.add_argument("--grant-ref", required=True)
     impact.add_argument("--source", required=True)
+    impact.add_argument("--source-id", help="Approved binding for one non-Markdown source")
     impact.add_argument("--destination")
     sub.add_parser("skill-sync", help="Reconcile project-local shared skills")
     sub.add_parser("doctor", help="Read local hook health and pending metadata counts")
@@ -1266,7 +1267,8 @@ def knowledge_cli(args, return_result=False):
     sys.dont_write_bytecode = True
     try:
         _ensure_scripts_path()
-        from beyin_v3_lint import lint_vault, plan_moc, generate_moc, scoped_vault_index, plan_link_impact
+        from beyin_v3_lint import (lint_vault, plan_moc, generate_moc, scoped_vault_index,
+                                   plan_link_impact, plan_attached_source_impact)
         vault = args.vault.expanduser().resolve()
         if not vault.is_dir():
             raise ValueError("--vault must be an existing directory")
@@ -1285,7 +1287,9 @@ def knowledge_cli(args, return_result=False):
         if args.command == 'lint':
             result = lint_vault(vault, args.folder, state=state, vault_index=index)
         elif args.command == 'link-impact':
-            result = plan_link_impact(index, args.source, args.destination)
+            result = (plan_attached_source_impact(vault, state, index, workspace_id, grant_ref,
+                                                  args.source_id, args.source, args.destination)
+                      if args.source_id else plan_link_impact(index, args.source, args.destination))
         elif args.dry_run:
             result = plan_moc(vault, args.folder, args.moc_file, state=state, vault_index=index)
         else:

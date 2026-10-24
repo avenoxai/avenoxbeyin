@@ -282,6 +282,98 @@ def plan_link_impact(vault_index, source, destination=None):
                 review_required=bool(unresolved or destination is not None))
 
 
+def plan_attached_source_impact(vault_root, state, vault_index, workspace_id, grant_ref,
+                                source_id, source, destination=None):
+    """Preview one approved non-Markdown source without a media/vault walk.
+
+    An unqualified basename is only a possible link: uniqueness cannot be
+    established from this single approved attachment.
+    """
+    from beyin_v3_workspaces import Registry, WorkspaceError, content_hash, relative_name, local_root_matches
+    from beyin_v3_sources import SourceResolver
+    if 'scope' not in vault_index or vault_index['scope']['workspace_id'] != workspace_id:
+        raise WorkspaceError('scope_denied')
+    if not isinstance(source_id, str) or not source_id or not isinstance(source, str):
+        raise WorkspaceError('source_unavailable')
+    relative_name(source)
+    excluded_dirs = {dir_key(name) for name in EXCLUDED_DIRS}
+    if (Path(source).suffix.lower() in ('', '.md') or sensitive_source(source) or
+            sensitive_excluded(PurePosixPath(source).stem) or
+            _excluded(PurePosixPath(source).parts[:-1], excluded_dirs)):
+        raise WorkspaceError('scope_denied')
+    if destination is not None:
+        relative_name(destination)
+        if destination == source or Path(destination).suffix.lower() == '.md':
+            raise ValueError('invalid destination')
+    registry = Registry(vault_root, state)
+    snapshot = registry.snapshot()
+    descriptor = next((item for item in (snapshot or {}).get('sources', []) if item['id'] == source_id), None)
+    if descriptor is None or descriptor['kind'] == 'vault':
+        raise WorkspaceError('scope_denied')
+    resolver = SourceResolver(registry, readers={}, cache_write=False)
+    path, _, binding = resolver.resolve(workspace_id, source_id, source, grant_ref)
+    raw = resolver._read_bytes(path)
+    digest = content_hash(raw)
+    same_vault_root = local_root_matches(binding['locator'], registry.vault)
+    incoming, possible_basename, possible_path_links, source_refs, possible_path_refs = [], [], [], [], []
+    for rel, (metadata, body) in sorted(vault_index['texts'].items()):
+        for link in extract_wikilinks(body):
+            target = link['file_target'].replace('\\', '/')
+            if not target or target.startswith('/') or ':' in target or PurePosixPath(target).suffix.lower() != Path(source).suffix.lower():
+                continue
+            item = dict(source=rel, line=link['line'], target=link['file_target'],
+                        display_alias=link['display'], is_embed=link['is_embed'])
+            relative = posixpath.normpath(posixpath.join(posixpath.dirname(rel), target))
+            if same_vault_root and not relative.startswith('../') and _norm_key(relative) == _norm_key(source):
+                item['match_kind'] = 'relative_path'
+                incoming.append(item)
+            elif same_vault_root and not target.startswith(('./', '../')) and _norm_key(target) == _norm_key(source):
+                item['match_kind'] = 'qualified_path'
+                incoming.append(item)
+            elif not same_vault_root and _norm_key(target) == _norm_key(source):
+                item['reason'] = 'binding_root_not_vault'
+                possible_path_links.append(item)
+            elif '/' not in target and _norm_key(target) == _norm_key(PurePosixPath(source).name):
+                item['reason'] = 'basename_uniqueness_unknown'
+                possible_basename.append(item)
+        for field in ('source_refs', 'evidence_refs'):
+            refs = metadata.get(field, [])
+            for ref in refs if isinstance(refs, list) else []:
+                if isinstance(ref, dict) and ref.get('source_id') == source_id and ref.get('relative_path') == source:
+                    source_refs.append(dict(source=rel, field=field, reference_kind='source_ref',
+                                            content_sha256=ref.get('content_sha256')))
+                elif isinstance(ref, str) and ref == source:
+                    item = dict(source=rel, field=field, reference_kind='path_only')
+                    (source_refs if same_vault_root else possible_path_refs).append(item)
+        relations = metadata.get('workspace_relations', [])
+        for relation in relations if isinstance(relations, list) else []:
+            if not isinstance(relation, dict):
+                continue
+            refs = relation.get('evidence_refs', [])
+            for ref in refs if isinstance(refs, list) else []:
+                if isinstance(ref, dict) and ref.get('source_id') == source_id and ref.get('relative_path') == source:
+                    source_refs.append(dict(source=rel, relation_id=relation.get('id'),
+                                            reference_kind='source_ref', content_sha256=ref.get('content_sha256')))
+    # The approved Markdown inventory and this exact attachment must still be
+    # readable after the scan; a revoked binding cannot return collected refs.
+    fresh_index = scoped_vault_index(vault_root, state, workspace_id, grant_ref)
+    if ({rel: record['source_sha256'] for rel, record in fresh_index['records'].items()} !=
+            {rel: record['source_sha256'] for rel, record in vault_index['records'].items()}):
+        raise WorkspaceError('stale_source')
+    fresh_path, _, _ = resolver.resolve(workspace_id, source_id, source, grant_ref)
+    if content_hash(resolver._read_bytes(fresh_path)) != digest:
+        raise WorkspaceError('stale_source')
+    resolver.resolve(workspace_id, source_id, source, grant_ref)
+    return dict(status='preview', writes_performed=False, source_id=source_id, source=source,
+                source_sha256=digest, destination=destination,
+                destination_status='unknown' if destination is not None else 'not_requested',
+                incoming_links=incoming, possible_basename_references=possible_basename,
+                possible_path_links=possible_path_links,
+                source_refs=source_refs, possible_path_refs=possible_path_refs,
+                scope=vault_index['scope'], outside_inventory='unknown',
+                review_required=bool(destination is not None or possible_basename or possible_path_links or possible_path_refs))
+
+
 def resolve_wikilink(vault_root, link_target, source_file=None, vault_index=None):
     index = vault_index if vault_index is not None else build_vault_index(vault_root)
     fail = dict(exists=False, resolved_path=None)

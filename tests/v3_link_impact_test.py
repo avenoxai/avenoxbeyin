@@ -9,7 +9,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
 from v3_navigation_fixture import NavigationFixture
-from beyin_v3_lint import scoped_vault_index, lint_vault, plan_link_impact, plan_moc, generate_moc
+from beyin_v3_lint import (scoped_vault_index, lint_vault, plan_link_impact,
+                           plan_attached_source_impact, plan_moc, generate_moc)
 from beyin_v3_sync import SyncEngine, parse, render
 from beyin_v3_workspaces import canonical_bytes, content_hash, envelope, render_document
 from beyin_v3_workspace_context import request_scope
@@ -272,6 +273,91 @@ class ScopedNavigationTest(unittest.TestCase):
             self.assertNotEqual(code, 0)
             self.assertNotIn('Target', json.dumps(denied))
             self.assertNotIn('notes/workspaces/target.md', json.dumps(denied))
+
+    def test_s2_attachment_impact_exact_links_and_unknown_basename(self):
+        asset = self.vault / 'assets/logo.png'
+        asset.parent.mkdir()
+        asset.write_bytes(b'\x89PNG-S2-LOGO')
+        digest = content_hash(asset.read_bytes())
+        self.note('notes/workspaces/brief.md',
+                  '![[assets/logo.png]] [[assets/logo.png|Brand]] ![[logo.png]]',
+                  source_refs=[dict(source_id='attachments', relative_path='assets/logo.png',
+                                    content_sha256=digest, fragment=dict(kind='whole'),
+                                    extractor=dict(id='binary', version='1', settings_sha256='0' * 64))],
+                  evidence_refs=['assets/logo.png'])
+        self.note('assets/page.md', '![[logo.png]]')
+        SyncEngine(self.vault, self.state).sync()
+        self.fixture.allow_attachment_read()
+        index = self.inventory()
+        with patch('os.walk', side_effect=AssertionError('attachment plan walked the vault')):
+            plan = plan_attached_source_impact(self.vault, self.state, index,
+                'observatory', 'synthetic-approval', 'attachments', 'assets/logo.png', 'assets/new-logo.png')
+        self.assertEqual(plan['source_sha256'], digest)
+        self.assertEqual(plan['destination_status'], 'unknown')
+        self.assertEqual(len(plan['incoming_links']), 3)
+        self.assertEqual(len(plan['possible_basename_references']), 1)
+        self.assertEqual({ref['reference_kind'] for ref in plan['source_refs']},
+                         {'source_ref', 'path_only'})
+        self.assertEqual(plan['outside_inventory'], 'unknown')
+        self.assertNotIn('PNG-S2-LOGO', json.dumps(plan))
+        base = ['--vault', str(self.vault), '--state', str(self.state)]
+        args = ['link-impact', '--workspace-id', 'observatory', '--grant-ref', 'synthetic-approval',
+                '--source-id', 'attachments', '--source', 'assets/logo.png']
+        cli_plan, code = cli.main(base + args, return_result=True)
+        self.assertEqual(code, 0, cli_plan)
+        self.assertEqual(cli_plan['source_sha256'], digest)
+        asset.unlink()
+        denied, code = cli.main(base + args, return_result=True)
+        self.assertNotEqual(code, 0)
+        self.assertNotIn('PNG-S2-LOGO', json.dumps(denied))
+
+    def test_s2_pdf_docx_source_refs_without_media_walk_and_revocation(self):
+        folder = self.vault / 'assets'
+        folder.mkdir()
+        digests = {}
+        for suffix, raw in [('pdf', b'%PDF-S2-CANARY'), ('docx', b'PK-S2-CANARY')]:
+            attachment = folder / ('contract.' + suffix)
+            attachment.write_bytes(raw)
+            digests[suffix] = content_hash(raw)
+        refs = [dict(source_id='attachments', relative_path='assets/contract.' + suffix,
+                     content_sha256=digests[suffix], fragment=dict(kind='whole'),
+                     extractor=dict(id=suffix, version='1', settings_sha256='0' * 64))
+                for suffix in ('pdf', 'docx')]
+        self.note('notes/workspaces/brief.md', '[[assets/contract.pdf]] [[assets/contract.docx]]',
+                  source_refs=refs)
+        SyncEngine(self.vault, self.state).sync()
+        self.fixture.allow_attachment_read()
+        index = self.inventory()
+        for suffix in ('pdf', 'docx'):
+            plan = plan_attached_source_impact(self.vault, self.state, index,
+                'observatory', 'synthetic-approval', 'attachments', 'assets/contract.' + suffix)
+            self.assertEqual(plan['source_sha256'], digests[suffix])
+            self.assertEqual(len(plan['incoming_links']), 1)
+            self.assertEqual(len(plan['source_refs']), 1)
+            self.assertNotIn('S2-CANARY', json.dumps(plan))
+        with self.assertRaisesRegex(Exception, 'scope_denied'):
+            plan_attached_source_impact(self.vault, self.state, index,
+                'observatory', 'synthetic-approval', 'memory', 'assets/contract.pdf')
+        self.fixture.authority.revoke('synthetic-approval')
+        with self.assertRaisesRegex(Exception, 'scope_denied'):
+            plan_attached_source_impact(self.vault, self.state, index,
+                'observatory', 'synthetic-approval', 'attachments', 'assets/contract.pdf')
+
+    def test_s2_external_binding_does_not_claim_vault_wikilink_target(self):
+        external = self.fixture.root / 'external-assets'
+        (external / 'assets').mkdir(parents=True)
+        (external / 'assets/logo.png').write_bytes(b'EXTERNAL-S2')
+        self.note('notes/workspaces/brief.md', '![[assets/logo.png]]',
+                  source_refs=[dict(source_id='external-assets', relative_path='assets/logo.png',
+                                    content_sha256=content_hash(b'EXTERNAL-S2'), fragment=dict(kind='whole'),
+                                    extractor=dict(id='binary', version='1', settings_sha256='0' * 64))])
+        SyncEngine(self.vault, self.state).sync()
+        self.fixture.allow_attachment_read(external, 'external-assets')
+        plan = plan_attached_source_impact(self.vault, self.state, self.inventory(),
+            'observatory', 'synthetic-approval', 'external-assets', 'assets/logo.png')
+        self.assertEqual(plan['incoming_links'], [])
+        self.assertEqual(plan['possible_path_links'][0]['reason'], 'binding_root_not_vault')
+        self.assertEqual(len(plan['source_refs']), 1)
 
 
 if __name__ == '__main__':
