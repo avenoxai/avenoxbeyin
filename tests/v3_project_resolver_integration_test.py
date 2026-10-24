@@ -37,10 +37,38 @@ class ResolverIntegrationTest(unittest.TestCase):
     def test_query_alias_collision_and_unicode_boundary(self):
         for name in ('alpha','beta','ödev'):(self.vault/'projects'/name).mkdir(parents=True)
         (self.vault/'.beyin-projects.json').write_text(json.dumps({'folders':{'projects/alpha':'beta'}}),encoding='utf-8')
-        self.assertIsNone(resolve_project_from_query(self.vault,'alpha hakkında'))
+        self.assertEqual(resolve_project_from_query(self.vault,'alpha hakkında'),'beta')
         self.assertIsNone(resolve_project_from_query(self.vault,'beta ve ödev'))
         self.assertIsNone(resolve_project_from_query(self.vault,'önödevson'))
         self.assertEqual(resolve_project_from_query(self.vault,'ödev hakkında'),'ödev')
+
+    def test_configured_folder_alias_routes_rules_but_distinct_owners_stay_ambiguous(self):
+        folder = self.vault / 'projects/client'
+        folder.mkdir(parents=True)
+        (self.vault / '.beyin-projects.json').write_text(
+            json.dumps({'folders': {'projects/client': 'alpha'}}), encoding='utf-8')
+        self.assertEqual(resolve_project_from_query(self.vault, 'client projesinde devam'), 'alpha')
+        self.assertEqual(resolve_rules_project(self.vault, self.base, query='client projesinde devam'), 'alpha')
+        rules = self.vault / '🔮 850-Companion/Kurallar.md'
+        rules.parent.mkdir(parents=True, exist_ok=True)
+        rules.write_text('- [kapsam: alpha] ALPHA RULE CANARY\n', encoding='utf-8')
+        SyncEngine(self.vault, self.state).sync()
+        hook = Path(__file__).resolve().parents[1] / 'template/.claude/scripts/beyin_v3_hook.py'
+        payload = {'hook_event_name': 'SessionStart', 'session_id': 'mapped-client',
+                   'event_id': 'mapped-client', 'cwd': str(self.base),
+                   'prompt': 'client projesinde devam'}
+        result = subprocess.run([sys.executable, str(hook), '--vault', str(self.vault),
+                                 '--state', str(self.state), '--harness', 'claude'],
+                                input=json.dumps(payload), capture_output=True, text=True,
+                                encoding='utf-8', env=inherited_env(BEYIN_V3_NO_SPAWN='1'), timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('ALPHA RULE CANARY', result.stdout)
+        other = self.vault / 'Projeler/client'
+        other.mkdir(parents=True)
+        (self.vault / '.beyin-projects.json').write_text(
+            json.dumps({'folders': {'projects/client': 'alpha', 'Projeler/client': 'beta'}}),
+            encoding='utf-8')
+        self.assertIsNone(resolve_project_from_query(self.vault, 'client projesinde devam'))
 
     def test_authorized_rule_layers_render_within_budget(self):
         for source,text in [('projects/academic/Kurallar.md','PROJECT CANARY'),('Companion/Kurallar.md','GLOBAL CANARY')]:

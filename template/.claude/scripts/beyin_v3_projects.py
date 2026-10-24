@@ -356,7 +356,8 @@ def resolve_project_from_query(vault, query):
         scopes = read_project_scopes(vault)
     except (ValueError, OSError):
         return None
-    for folder, project in (scopes or {}).get('folders', []):
+    configured = (scopes or {}).get('folders', [])
+    for folder, project in configured:
         add(project, project)
         add(folder.split('/')[-1], project)
     for name in ('projects', 'Projeler', 'projeler'):
@@ -364,7 +365,13 @@ def resolve_project_from_query(vault, query):
         if root.is_dir() and not root.is_symlink():
             for child in root.iterdir():
                 if child.is_dir() and not child.is_symlink():
-                    add(child.name, child.name)
+                    folder = _scope_key(name + '/' + child.name)
+                    # The standard folder name is an alias for its configured owner.
+                    # Treating it as a second project makes a single folder ambiguous.
+                    owner = next((project for mapped, project in configured
+                                  if folder == mapped or folder.startswith(mapped + '/')),
+                                 child.name)
+                    add(child.name, owner)
     matches = set()
     query = _scope_key(query)
     for alias, projects in aliases.items():

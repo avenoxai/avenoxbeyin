@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from v3_package_helpers import inherited_env
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
@@ -29,7 +30,7 @@ class TaskCompletionTest(unittest.TestCase):
     def doctor(self):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/beyin_v3.py'),
                                  '--vault', str(self.vault), '--state', str(self.state), 'doctor'],
-                                capture_output=True, text=True, encoding='utf-8')
+                                capture_output=True, text=True, encoding='utf-8', env=inherited_env())
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 

@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from v3_package_helpers import inherited_env
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
@@ -145,7 +146,7 @@ class KnowledgeLintTest(unittest.TestCase):
         self.note('knowledge/a.md', '# Public')
         program = "import sys,__future__;sys.pycache_prefix=sys.argv[1];sys.argv=sys.argv[2:];exec(compile(open(sys.argv[0],encoding='utf-8').read(),sys.argv[0],'exec'),{'__name__':'__main__','__file__':sys.argv[0]})"
         cache = self.base / 'cache'
-        process = subprocess.run([sys.executable, '-c', program, str(cache), str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault), '--state', str(self.state), 'lint'], capture_output=True, text=True)
+        process = subprocess.run([sys.executable, '-c', program, str(cache), str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault), '--state', str(self.state), 'lint'], capture_output=True, text=True, env=inherited_env())
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertEqual(list(cache.rglob('*.pyc')), []); self.assertFalse(self.state.exists())
 
