@@ -380,6 +380,16 @@ def provision_workspace(vault_root, workspace_id, kind="general", name=None, des
     if dry_run:
         return {"status": "dry_run", "action": "provision", "plan": plan}
 
+    vault_root = vault_root.resolve()
+    def checked_path(relative):
+        path = vault_root / relative
+        if not path.resolve().is_relative_to(vault_root):
+            raise ValueError("workspace output must remain inside the vault")
+        return path
+
+    # Validate the complete plan before the first directory or file is created.
+    for relative in plan['directories'] + [item['path'] for item in plan['files']]:
+        checked_path(relative)
     created_dirs = []
     created_files = []
     manifest_backup = None
@@ -390,7 +400,7 @@ def provision_workspace(vault_root, workspace_id, kind="general", name=None, des
     try:
         # 1. Create directories
         for d in plan["directories"]:
-            dir_path = vault_root / d
+            dir_path = checked_path(d)
             if not dir_path.exists():
                 dir_path.mkdir(parents=True, exist_ok=True)
                 created_dirs.append(dir_path)
@@ -398,12 +408,17 @@ def provision_workspace(vault_root, workspace_id, kind="general", name=None, des
         # 2. Write template files (never overwrite existing user files)
         written_files = []
         for fspec in plan["files"]:
-            file_path = vault_root / fspec["path"]
+            file_path = checked_path(fspec["path"])
             if not file_path.exists():
                 file_path.parent.mkdir(parents=True, exist_ok=True)
-                file_path.write_text(fspec["content"], encoding="utf-8")
-                created_files.append(file_path)
-                written_files.append({"path": fspec["path"], "status": "created"})
+                try:
+                    with file_path.open('x', encoding='utf-8') as output:
+                        created_files.append(file_path)
+                        output.write(fspec['content'])
+                except FileExistsError:
+                    written_files.append({"path": fspec["path"], "status": "preserved"})
+                else:
+                    written_files.append({"path": fspec["path"], "status": "created"})
             else:
                 written_files.append({"path": fspec["path"], "status": "preserved"})
 
