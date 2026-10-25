@@ -1688,7 +1688,7 @@ def main(argv=None, return_result=False):
             if not isinstance(params["query"], str) or not params["query"].strip():
                 raise ValueError("context requires a nonempty query")
             if read_only_context:
-                result = store.context_for(args.harness, **params)
+                result = store.context_for(args.harness, explicit=True, **params)
                 result['source_sync'] = {'status': 'skipped', 'reason': 'explicit_no_sync'}
             else:
                 refreshed = sync.sync()
@@ -1701,7 +1701,7 @@ def main(argv=None, return_result=False):
                     from beyin_v3_jev import advise_context
                     result = advise_context(sync.store, **params)
                 else:
-                    result = sync.store.context_for(args.harness, **params)
+                    result = sync.store.context_for(args.harness, explicit=True, **params)
                 view_conflicts = [c for c in refreshed.get('conflicts', []) if is_receipt_view_conflict(c)]
                 if view_conflicts:
                     result['view_conflicts'] = view_conflicts
