@@ -34,6 +34,19 @@ WORKSPACE_KINDS = (
 LIFECYCLE_STATES = ("active", "archived")
 
 
+def _serialized_write(function):
+    from functools import wraps
+    @wraps(function)
+    def wrapped(vault_root, *args, **kwargs):
+        from types import SimpleNamespace
+        from beyin_v3_notes import locked
+        if kwargs.get('dry_run'):
+            return function(vault_root, *args, **kwargs)
+        with locked(SimpleNamespace(root=Path(vault_root).resolve())):
+            return function(vault_root, *args, **kwargs)
+    return wrapped
+
+
 def _read_raw_manifest(vault_root):
     path = Path(vault_root) / PROJECT_SCOPES_FILE
     if path.is_symlink():
@@ -125,6 +138,7 @@ def inspect_workspace(vault_root, workspace_id):
     return ws
 
 
+@_serialized_write
 def create_workspace(vault_root, workspace_id, name=None, kind="general", sources=None, rules_file=None, note_roots=None):
     """Create a new workspace in .beyin-projects.json and bind initial sources."""
     if not isinstance(workspace_id, str) or not workspace_id.strip():
@@ -180,6 +194,7 @@ def create_workspace(vault_root, workspace_id, name=None, kind="general", source
     return ws
 
 
+@_serialized_write
 def connect_source(vault_root, workspace_id, folder):
     """Connect an existing vault-relative folder to a workspace."""
     if not isinstance(workspace_id, str) or not workspace_id.strip():
@@ -217,6 +232,7 @@ def connect_source(vault_root, workspace_id, folder):
     return ws
 
 
+@_serialized_write
 def disconnect_source(vault_root, workspace_id, folder):
     """Disconnect a source folder from a workspace. Never deletes the folder from disk."""
     if not isinstance(workspace_id, str) or not workspace_id.strip():
@@ -252,6 +268,7 @@ def disconnect_source(vault_root, workspace_id, folder):
     return ws
 
 
+@_serialized_write
 def archive_workspace(vault_root, workspace_id):
     """Mark a workspace as archived; keeps sources intact on disk."""
     if not isinstance(workspace_id, str) or not workspace_id.strip():
@@ -271,6 +288,7 @@ def archive_workspace(vault_root, workspace_id):
     return ws
 
 
+@_serialized_write
 def unarchive_workspace(vault_root, workspace_id):
     """Restore an archived workspace to active lifecycle."""
     if not isinstance(workspace_id, str) or not workspace_id.strip():
