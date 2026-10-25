@@ -7,6 +7,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import threading
+import time
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "template/.claude/scripts"))
@@ -28,6 +31,31 @@ class WorkspacesTest(unittest.TestCase):
         self.vault.mkdir()
         self.state = Path(self.tmp.name) / "state"
         self.state.mkdir()
+
+    def test_concurrent_creates_preserve_both_workspaces(self):
+        original_save = workspaces._save_project_scopes
+        first_entered = threading.Event()
+        errors = []
+        def delayed_save(vault, data):
+            if 'one' in data.get('workspaces', {}) and 'two' not in data.get('workspaces', {}):
+                first_entered.set()
+                time.sleep(0.15)
+            original_save(vault, data)
+        def create(name):
+            try:
+                workspaces.create_workspace(self.vault, name)
+            except Exception as exc:
+                errors.append(exc)
+        with patch.object(workspaces, '_save_project_scopes', delayed_save):
+            first = threading.Thread(target=create, args=('one',))
+            second = threading.Thread(target=create, args=('two',))
+            first.start()
+            self.assertTrue(first_entered.wait(2))
+            second.start()
+            first.join(3)
+            second.join(3)
+        self.assertFalse(errors)
+        self.assertEqual({item['id'] for item in workspaces.list_workspaces(self.vault)}, {'one', 'two'})
 
     def test_read_only_workspace_dispatch_does_not_create_state(self):
         fresh = self.state / 'not-created'
