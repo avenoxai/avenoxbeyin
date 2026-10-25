@@ -32,6 +32,20 @@ class WorkspacesTest(unittest.TestCase):
         self.state = Path(self.tmp.name) / "state"
         self.state.mkdir()
 
+    def test_source_aliases_cannot_duplicate_or_steal_legacy_scope(self):
+        (self.vault / 'team').mkdir()
+        path = self.vault / projects.PROJECT_SCOPES_FILE
+        path.write_text(json.dumps({'folders': {'team/': 'legacy'}}), encoding='utf-8')
+        with self.assertRaises(ValueError):
+            workspaces.create_workspace(self.vault, 'new', sources=['team'])
+        path.unlink()
+        workspaces.create_workspace(self.vault, 'one', sources=['team'])
+        workspaces.connect_source(self.vault, 'one', 'TEAM')
+        workspaces.disconnect_source(self.vault, 'one', 'team')
+        data = json.loads(path.read_text())
+        self.assertEqual(data['folders'], {})
+        self.assertEqual(data['workspaces']['one']['sources'], [])
+
     def test_concurrent_creates_preserve_both_workspaces(self):
         original_save = workspaces._save_project_scopes
         first_entered = threading.Event()
