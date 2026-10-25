@@ -30,6 +30,17 @@ class WorkspaceBuilderTest(unittest.TestCase):
         self.state = Path(self.tmp.name) / "state"
         self.state.mkdir()
 
+    def test_provision_rejects_symlink_outside_vault(self):
+        outside = self.vault.parent / 'outside'
+        outside.mkdir()
+        try:
+            (self.vault / 'projects').symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest('symlink creation unavailable')
+        with self.assertRaises(ValueError):
+            workspaces.provision_workspace(self.vault, 'alpha')
+        self.assertEqual(list(outside.iterdir()), [])
+
     def test_plan_workspace_structure(self):
         plan = workspaces.plan_workspace(
             self.vault,
