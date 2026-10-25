@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "template/.claude/scripts"))
@@ -29,6 +30,20 @@ class WorkspaceBuilderTest(unittest.TestCase):
         self.vault.mkdir()
         self.state = Path(self.tmp.name) / "state"
         self.state.mkdir()
+
+    def test_provision_binds_note_root_to_workspace(self):
+        workspaces.provision_workspace(self.vault, 'alpha')
+        scopes = projects.read_project_scopes(self.vault)
+        self.assertEqual(runtime.record_scope({'source': 'notes/alpha/note.md'}, scopes), 'alpha')
+
+    def test_failed_provision_does_not_erase_later_registry_change(self):
+        def concurrent_change(vault, workspace_id):
+            workspaces.create_workspace(vault, 'beta')
+            raise RuntimeError('verification failed after other update')
+        with patch.object(workspaces, 'inspect_workspace', concurrent_change):
+            with self.assertRaises(RuntimeError):
+                workspaces.provision_workspace(self.vault, 'alpha')
+        self.assertIn('beta', workspaces.read_workspaces(self.vault))
 
     def test_provision_rejects_symlink_outside_vault(self):
         outside = self.vault.parent / 'outside'
