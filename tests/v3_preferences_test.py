@@ -26,7 +26,7 @@ class PreferencesTest(unittest.TestCase):
     def cli(self, *args):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/beyin_v3.py'),
             '--vault', str(self.vault), '--state', str(self.state), *args],
-            capture_output=True, text=True, encoding='utf-8', timeout=20)
+            capture_output=True, text=True, encoding='utf-8', env=inherited_env(), timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
@@ -81,7 +81,7 @@ class PreferencesTest(unittest.TestCase):
             result = subprocess.run([sys.executable, str(ROOT / 'scripts/beyin_v3.py'),
                                      '--vault', str(self.vault), '--state', str(self.state),
                                      'preferences', '--daily-layout', 'v3', '--profile', 'manual'],
-                                    capture_output=True, text=True, encoding='utf-8', timeout=20)
+                                    capture_output=True, text=True, encoding='utf-8', env=inherited_env(), timeout=20)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(path.read_text(encoding='utf-8'), raw)
             self.assertFalse((self.vault / '.beyin-preferences.json').exists())
@@ -139,7 +139,7 @@ class PreferencesTest(unittest.TestCase):
             r = subprocess.run([sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
                                 '--state', str(self.state), 'preferences', '--context-chars', '3000',
                                 '--companion-context-chars', value],
-                               capture_output=True, text=True, encoding='utf-8', timeout=20)
+                               capture_output=True, text=True, encoding='utf-8', env=inherited_env(), timeout=20)
             self.assertNotEqual(r.returncode, 0)
         self.assertEqual((self.state / 'companion-context.json').read_bytes(), before)
         self.assertEqual(json.loads((self.vault / '.beyin-preferences.json').read_text(encoding='utf-8'))['context_chars'],
@@ -268,18 +268,19 @@ class PreferencesTest(unittest.TestCase):
         layout_before = (self.vault / '.beyin-daily-layout.json').read_bytes()
         before = (self.vault / '.beyin-preferences.json').read_bytes()
         r = subprocess.run([sys.executable, str(ROOT / 'scripts/install_v3.py'), '--vault',
-                            str(self.vault), '--state', str(self.state)], capture_output=True, timeout=30)
+                            str(self.vault), '--state', str(self.state)], capture_output=True,
+                           env=inherited_env(), timeout=30)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(before, (self.vault / '.beyin-preferences.json').read_bytes())
         self.assertEqual(layout_before, (self.vault / '.beyin-daily-layout.json').read_bytes())
         installed = subprocess.run([sys.executable, str(self.vault / 'beyin.py'), 'preferences',
                                     '--daily-layout', 'v3', '--json'], capture_output=True,
-                                   text=True, encoding='utf-8', timeout=20)
+                                   text=True, encoding='utf-8', env=inherited_env(), timeout=20)
         self.assertEqual(installed.returncode, 0, installed.stderr)
         self.assertEqual(json.loads(installed.stdout)['daily_layout'], 'v3')
         self.assertEqual(before, (self.vault / '.beyin-preferences.json').read_bytes())
         r = subprocess.run([sys.executable, str(self.vault / 'beyin.py'), 'preferences', '--human'],
-                           capture_output=True, text=True, encoding='utf-8', timeout=20)
+                           capture_output=True, text=True, encoding='utf-8', env=inherited_env(), timeout=20)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('2000 karakter', r.stdout)
         self.assertIn('preferences', self.cli('doctor'))
@@ -325,7 +326,7 @@ class PreferencesTest(unittest.TestCase):
         before = (self.state / 'hygiene.json').read_bytes()
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
                                  '--state', str(self.state), 'preferences', '--max-words', '5', '--promotion', 'off'],
-                                capture_output=True, text=True, encoding='utf-8', timeout=20)
+                                capture_output=True, text=True, encoding='utf-8', env=inherited_env(), timeout=20)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(before, (self.state / 'hygiene.json').read_bytes(), 'an invalid value changes nothing')
         (self.state / 'hygiene.json').write_text('{"word_cap_warning": "yes"}', encoding='utf-8')

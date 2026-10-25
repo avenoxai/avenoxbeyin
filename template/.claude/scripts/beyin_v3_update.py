@@ -200,7 +200,7 @@ def _download(directory, with_metadata=False):
 
 
 @contextmanager
-def locked(vault, state):
+def locked(vault, state, *, allow_workspace_provision=False):
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     connections = []
     try:
@@ -218,6 +218,12 @@ def locked(vault, state):
                 connection = sqlite3.connect(path, timeout=5)
             connections.append(connection)
             connection.execute('BEGIN IMMEDIATE')
+        # A crashed multi-file workspace publication is durable operational state.
+        # Ordinary updater/installer/runtime readers must not race or observe it.
+        # Only the provisioner opts out, then validates the exact pending journal.
+        workspace_pending = state / 'workspace-provision/pending.json'
+        if not allow_workspace_provision and (workspace_pending.exists() or workspace_pending.is_symlink()):
+            raise ValueError('workspace provisioning pending; recover or revert that operation first')
         yield
     except sqlite3.OperationalError as exc:
         raise ValueError('runtime/updater busy; retry after active work finishes') from exc

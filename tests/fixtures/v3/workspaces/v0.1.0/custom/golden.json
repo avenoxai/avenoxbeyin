@@ -1,0 +1,822 @@
+{
+  "fixture_version": "workspace/0.1.0",
+  "case_id": "custom",
+  "status": "golden_expectation_only",
+  "documents": [
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "WorkspaceProfile",
+      "data": {
+        "id": "custom",
+        "revision": 1,
+        "name": "Düşük ışık çekim denemeleri",
+        "purpose": "Fotoğraf kaynaklarımı, çekim işlerimi, sonuçları ve öğrenimleri birlikte takip et.",
+        "lifecycle": "active",
+        "source_ids": [
+          "custom-vault",
+          "custom-materials",
+          "custom-extra"
+        ],
+        "note_roots": [
+          "notes",
+          "knowledge"
+        ],
+        "working_rules": [
+          {
+            "id": "topic-rule",
+            "text": "Sonucu kaynakla bağla; eksik bilgiyi üretme.",
+            "subject_refs": [
+              {
+                "workspace_id": "custom",
+                "record_id": "custom-topic"
+              }
+            ]
+          }
+        ],
+        "memory_policy": {
+          "prefer_update_existing": true,
+          "new_note": "distinct_only",
+          "automatic_learning": "enabled"
+        },
+        "access_policy": {
+          "cross_workspace": "explicit_grant",
+          "external_sources": "read_only",
+          "automatic_audience": "internal"
+        },
+        "record_types": [
+          {
+            "id": "shooting_topic",
+            "label": "shooting_topic",
+            "fields": {}
+          },
+          {
+            "id": "shooting_task",
+            "label": "shooting_task",
+            "fields": {}
+          },
+          {
+            "id": "shooting_result",
+            "label": "shooting_result",
+            "fields": {}
+          },
+          {
+            "id": "technique",
+            "label": "technique",
+            "fields": {}
+          }
+        ],
+        "relation_types": [
+          "belongs_to",
+          "result_of",
+          "learned_from"
+        ],
+        "workflows": [
+          {
+            "id": "result-to-learning",
+            "revision": 1,
+            "name": "Sonuçtan işe ve öğrenime",
+            "trigger": {
+              "event_kind": "record_changed",
+              "entity_type": "shooting_result"
+            },
+            "conditions": [],
+            "steps": [
+              {
+                "id": "propose",
+                "depends_on": [],
+                "action": "propose_memory_write",
+                "inputs": {
+                  "result": {
+                    "ref": "event.record.id"
+                  },
+                  "target": {
+                    "literal": "custom-learning"
+                  },
+                  "task_id": {
+                    "literal": "custom-task"
+                  }
+                }
+              },
+              {
+                "id": "persist",
+                "depends_on": [
+                  "propose"
+                ],
+                "action": "apply_memory_write",
+                "inputs": {
+                  "intent": {
+                    "ref": "steps.propose.intent_ref"
+                  }
+                }
+              },
+              {
+                "id": "verify",
+                "depends_on": [
+                  "persist"
+                ],
+                "action": "verify_readback",
+                "inputs": {
+                  "intent": {
+                    "ref": "steps.propose.intent_ref"
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "extensions": {}
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "ProvisionPlan",
+      "data": {
+        "plan_id": "custom-plan",
+        "plan_sha256": "496feba58ff785affd679fcb9593078839bb10bb95e518e1753e136a3e4bc8cb",
+        "spec_sha256": "12112d88b3f12b493a5949fe69fbd54e768bd11386e8bb5bdc71e77cb6f1e2e0",
+        "snapshot_sha256": "93ca970803eb0f4cd644aac6dd1b3e8075819adb66943cab8682744d96f34542",
+        "binding_snapshot_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "operations": [
+          {
+            "id": "source-custom-vault",
+            "kind": "create",
+            "target": {
+              "root": "vault",
+              "relative_path": ".beyin-workspaces/sources/custom-vault.json"
+            },
+            "ownership": "registry",
+            "before_sha256": null,
+            "after_sha256": "8d3d753ec8f635f7e350f5f96c3f08400d8e774bf06d4bb3b3030e5b238b0bf7",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"SourceDescriptor\",\n  \"data\": {\n    \"id\": \"custom-vault\",\n    \"kind\": \"vault\",\n    \"label\": \"Sentetik vault\"\n  }\n}\n",
+            "depends_on": []
+          },
+          {
+            "id": "source-custom-materials",
+            "kind": "create",
+            "target": {
+              "root": "vault",
+              "relative_path": ".beyin-workspaces/sources/custom-materials.json"
+            },
+            "ownership": "registry",
+            "before_sha256": null,
+            "after_sha256": "736a73346d7542ad61907af9101dfe86a26ef0f8b04c3838925a751ad08442b1",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"SourceDescriptor\",\n  \"data\": {\n    \"id\": \"custom-materials\",\n    \"kind\": \"directory\",\n    \"label\": \"Materyaller A\"\n  }\n}\n",
+            "depends_on": []
+          },
+          {
+            "id": "source-custom-extra",
+            "kind": "create",
+            "target": {
+              "root": "vault",
+              "relative_path": ".beyin-workspaces/sources/custom-extra.json"
+            },
+            "ownership": "registry",
+            "before_sha256": null,
+            "after_sha256": "978df489401781eac3d299f95a0ff709d5a63e6321665e5b242d2e2ddb002243",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"SourceDescriptor\",\n  \"data\": {\n    \"id\": \"custom-extra\",\n    \"kind\": \"directory\",\n    \"label\": \"Materyaller B\"\n  }\n}\n",
+            "depends_on": []
+          },
+          {
+            "id": "bind-custom-vault",
+            "kind": "create",
+            "target": {
+              "root": "state",
+              "relative_path": "workspace-bindings/custom-vault.json"
+            },
+            "ownership": "binding",
+            "before_sha256": null,
+            "after_sha256": "994fd4ce57a3dd7a83f7d74a0e39d858aaf66314f577484ab981bd5c19548bae",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"SourceBinding\",\n  \"data\": {\n    \"source_id\": \"custom-vault\",\n    \"machine_id\": \"fixture-machine\",\n    \"revision\": 1,\n    \"locator\": \"/synthetic/custom/vault\",\n    \"grants\": [\n      {\n        \"workspace_id\": \"custom\",\n        \"access\": \"read\"\n      },\n      {\n        \"workspace_id\": \"custom\",\n        \"access\": \"write_memory\"\n      }\n    ],\n    \"authority_ref\": \"fixture-user-request\"\n  }\n}\n",
+            "depends_on": []
+          },
+          {
+            "id": "bind-custom-materials",
+            "kind": "create",
+            "target": {
+              "root": "state",
+              "relative_path": "workspace-bindings/custom-materials.json"
+            },
+            "ownership": "binding",
+            "before_sha256": null,
+            "after_sha256": "c4b88ec82e3ec8ce62af75036e97d307f1db53531e68e88e0e583bf2eae07285",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"SourceBinding\",\n  \"data\": {\n    \"source_id\": \"custom-materials\",\n    \"machine_id\": \"fixture-machine\",\n    \"revision\": 1,\n    \"locator\": \"/synthetic/custom/source-a\",\n    \"grants\": [\n      {\n        \"workspace_id\": \"custom\",\n        \"access\": \"read\"\n      }\n    ],\n    \"authority_ref\": \"fixture-user-request\"\n  }\n}\n",
+            "depends_on": []
+          },
+          {
+            "id": "bind-custom-extra",
+            "kind": "create",
+            "target": {
+              "root": "state",
+              "relative_path": "workspace-bindings/custom-extra.json"
+            },
+            "ownership": "binding",
+            "before_sha256": null,
+            "after_sha256": "7594e32df8e3478e85879c51ab5b6451c44e9b4ddd1ad9fa7c55bcc68bf739ff",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"SourceBinding\",\n  \"data\": {\n    \"source_id\": \"custom-extra\",\n    \"machine_id\": \"fixture-machine\",\n    \"revision\": 1,\n    \"locator\": \"/synthetic/custom/source-b\",\n    \"grants\": [\n      {\n        \"workspace_id\": \"custom\",\n        \"access\": \"read\"\n      }\n    ],\n    \"authority_ref\": \"fixture-user-request\"\n  }\n}\n",
+            "depends_on": []
+          },
+          {
+            "id": "publish-profile",
+            "kind": "create",
+            "target": {
+              "root": "vault",
+              "relative_path": ".beyin-workspaces/workspaces/custom.json"
+            },
+            "ownership": "registry",
+            "before_sha256": null,
+            "after_sha256": "8e623a2df0e86d43f196d79ad4d44d14499be67064ec983b940053b9b621ba3e",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"WorkspaceProfile\",\n  \"data\": {\n    \"id\": \"custom\",\n    \"revision\": 1,\n    \"name\": \"Düşük ışık çekim denemeleri\",\n    \"purpose\": \"Fotoğraf kaynaklarımı, çekim işlerimi, sonuçları ve öğrenimleri birlikte takip et.\",\n    \"lifecycle\": \"active\",\n    \"source_ids\": [\n      \"custom-vault\",\n      \"custom-materials\",\n      \"custom-extra\"\n    ],\n    \"note_roots\": [\n      \"notes\",\n      \"knowledge\"\n    ],\n    \"working_rules\": [\n      {\n        \"id\": \"topic-rule\",\n        \"text\": \"Sonucu kaynakla bağla; eksik bilgiyi üretme.\",\n        \"subject_refs\": [\n          {\n            \"workspace_id\": \"custom\",\n            \"record_id\": \"custom-topic\"\n          }\n        ]\n      }\n    ],\n    \"memory_policy\": {\n      \"prefer_update_existing\": true,\n      \"new_note\": \"distinct_only\",\n      \"automatic_learning\": \"enabled\"\n    },\n    \"access_policy\": {\n      \"cross_workspace\": \"explicit_grant\",\n      \"external_sources\": \"read_only\",\n      \"automatic_audience\": \"internal\"\n    },\n    \"record_types\": [\n      {\n        \"id\": \"shooting_topic\",\n        \"label\": \"shooting_topic\",\n        \"fields\": {}\n      },\n      {\n        \"id\": \"shooting_task\",\n        \"label\": \"shooting_task\",\n        \"fields\": {}\n      },\n      {\n        \"id\": \"shooting_result\",\n        \"label\": \"shooting_result\",\n        \"fields\": {}\n      },\n      {\n        \"id\": \"technique\",\n        \"label\": \"technique\",\n        \"fields\": {}\n      }\n    ],\n    \"relation_types\": [\n      \"belongs_to\",\n      \"result_of\",\n      \"learned_from\"\n    ],\n    \"workflows\": [\n      {\n        \"id\": \"result-to-learning\",\n        \"revision\": 1,\n        \"name\": \"Sonuçtan işe ve öğrenime\",\n        \"trigger\": {\n          \"event_kind\": \"record_changed\",\n          \"entity_type\": \"shooting_result\"\n        },\n        \"conditions\": [],\n        \"steps\": [\n          {\n            \"id\": \"propose\",\n            \"depends_on\": [],\n            \"action\": \"propose_memory_write\",\n            \"inputs\": {\n              \"result\": {\n                \"ref\": \"event.record.id\"\n              },\n              \"target\": {\n                \"literal\": \"custom-learning\"\n              },\n              \"task_id\": {\n                \"literal\": \"custom-task\"\n              }\n            }\n          },\n          {\n            \"id\": \"persist\",\n            \"depends_on\": [\n              \"propose\"\n            ],\n            \"action\": \"apply_memory_write\",\n            \"inputs\": {\n              \"intent\": {\n                \"ref\": \"steps.propose.intent_ref\"\n              }\n            }\n          },\n          {\n            \"id\": \"verify\",\n            \"depends_on\": [\n              \"persist\"\n            ],\n            \"action\": \"verify_readback\",\n            \"inputs\": {\n              \"intent\": {\n                \"ref\": \"steps.propose.intent_ref\"\n              }\n            }\n          }\n        ]\n      }\n    ],\n    \"extensions\": {}\n  }\n}\n",
+            "depends_on": [
+              "source-custom-vault",
+              "source-custom-materials",
+              "source-custom-extra",
+              "bind-custom-vault",
+              "bind-custom-materials",
+              "bind-custom-extra"
+            ]
+          }
+        ],
+        "required_authority": [
+          "fixture-user-request"
+        ],
+        "verify_steps": [
+          "source_read",
+          "related_records",
+          "canonical_update",
+          "index_readback",
+          "fresh_session",
+          "workflow_resume"
+        ],
+        "rollback_limits": [
+          "Restore only operation-owned files still matching after_sha256; preserve later user edits."
+        ],
+        "unresolved": []
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "WorkContext",
+      "data": {
+        "request_id": "custom-request",
+        "state": "ready",
+        "context_token": "fixture-context-custom",
+        "workspace_id": "custom",
+        "profile_revision": 1,
+        "snapshot_sha256": "b8b28193a37d153e60cb5db651cbc34cd721016aec7598a9159f96b109d44735",
+        "binding_snapshot_sha256": "560a7f038608c5e731bd490f2486e7cbeddd959f1a4d35ede1c64eb9d6f43dd5",
+        "subject_refs": [
+          {
+            "workspace_id": "custom",
+            "record_id": "custom-task"
+          }
+        ],
+        "rules": [
+          {
+            "id": "topic-rule",
+            "text": "Sonucu kaynakla bağla; eksik bilgiyi üretme.",
+            "subject_refs": [
+              {
+                "workspace_id": "custom",
+                "record_id": "custom-topic"
+              }
+            ]
+          }
+        ],
+        "records": [
+          {
+            "id": "custom-topic",
+            "kind": "note",
+            "revision": 1,
+            "visibility": "internal",
+            "facts": {
+              "fixture": true
+            },
+            "entity_type": "shooting_topic",
+            "workspace_id": "custom",
+            "text": "Düşük ışık çekim denemeleri",
+            "source_ref": {
+              "source_id": "custom-vault",
+              "relative_path": "notes/custom-topic.md",
+              "content_sha256": "906800645e68b193edeee74cf2258de6850646eedba021b6aaee12146b2a38dc",
+              "fragment": {
+                "kind": "whole"
+              },
+              "extractor": {
+                "id": "markdown",
+                "version": "fixture-1",
+                "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+              }
+            },
+            "trust": "trusted",
+            "relations": []
+          },
+          {
+            "id": "custom-task",
+            "kind": "task",
+            "revision": 1,
+            "visibility": "internal",
+            "facts": {
+              "fixture": true
+            },
+            "entity_type": "shooting_task",
+            "status": "active",
+            "due_at": "2026-10-23",
+            "next_action": "Kaynak ve önceki öğrenimle devam et",
+            "workspace_id": "custom",
+            "text": "Son çekim sonucuyla bir sonraki denemeyi hazırlayalım.",
+            "source_ref": {
+              "source_id": "custom-vault",
+              "relative_path": "tasks/custom-task.md",
+              "content_sha256": "795bbe87f072e7e91f45a757c628aa2da4e8c95dc3872b7fcb009a87d2c4de8c",
+              "fragment": {
+                "kind": "whole"
+              },
+              "extractor": {
+                "id": "markdown",
+                "version": "fixture-1",
+                "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+              }
+            },
+            "trust": "trusted",
+            "relations": [
+              {
+                "id": "custom-task-topic",
+                "workspace_id": "custom",
+                "type": "belongs_to",
+                "from": {
+                  "workspace_id": "custom",
+                  "record_id": "custom-task"
+                },
+                "to": {
+                  "workspace_id": "custom",
+                  "record_id": "custom-topic"
+                },
+                "evidence_refs": []
+              }
+            ]
+          },
+          {
+            "id": "custom-result",
+            "kind": "note",
+            "revision": 1,
+            "visibility": "internal",
+            "facts": {
+              "fixture": true,
+              "observation": "Kayıtlı ölçüm"
+            },
+            "entity_type": "shooting_result",
+            "workspace_id": "custom",
+            "text": "1/60 saniyede hareket bulanıklığı görüldü.",
+            "source_ref": {
+              "source_id": "custom-vault",
+              "relative_path": "notes/custom-result.md",
+              "content_sha256": "0840c800d771ca17b25d881b9f101e6bec320aa398bfc9ff0bac8af7581ef410",
+              "fragment": {
+                "kind": "whole"
+              },
+              "extractor": {
+                "id": "markdown",
+                "version": "fixture-1",
+                "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+              }
+            },
+            "trust": "trusted",
+            "relations": [
+              {
+                "id": "custom-result-topic",
+                "workspace_id": "custom",
+                "type": "belongs_to",
+                "from": {
+                  "workspace_id": "custom",
+                  "record_id": "custom-result"
+                },
+                "to": {
+                  "workspace_id": "custom",
+                  "record_id": "custom-topic"
+                },
+                "evidence_refs": []
+              }
+            ]
+          },
+          {
+            "id": "custom-learning",
+            "kind": "note",
+            "revision": 1,
+            "visibility": "internal",
+            "facts": {
+              "fixture": true
+            },
+            "entity_type": "technique",
+            "workspace_id": "custom",
+            "text": "Hareketli sahnede enstantane etkisini kayıtlı çekimle karşılaştır.",
+            "source_ref": {
+              "source_id": "custom-vault",
+              "relative_path": "notes/custom-learning.md",
+              "content_sha256": "4f47dacae726d9bbab934cfc09dea9ce477ff5ab396101122aa711c08aa440fb",
+              "fragment": {
+                "kind": "whole"
+              },
+              "extractor": {
+                "id": "markdown",
+                "version": "fixture-1",
+                "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+              }
+            },
+            "trust": "trusted",
+            "relations": [
+              {
+                "id": "custom-learning-topic",
+                "workspace_id": "custom",
+                "type": "belongs_to",
+                "from": {
+                  "workspace_id": "custom",
+                  "record_id": "custom-learning"
+                },
+                "to": {
+                  "workspace_id": "custom",
+                  "record_id": "custom-topic"
+                },
+                "evidence_refs": []
+              }
+            ]
+          }
+        ],
+        "relations": [
+          {
+            "id": "custom-task-topic",
+            "workspace_id": "custom",
+            "type": "belongs_to",
+            "from": {
+              "workspace_id": "custom",
+              "record_id": "custom-task"
+            },
+            "to": {
+              "workspace_id": "custom",
+              "record_id": "custom-topic"
+            },
+            "evidence_refs": []
+          },
+          {
+            "id": "custom-result-topic",
+            "workspace_id": "custom",
+            "type": "belongs_to",
+            "from": {
+              "workspace_id": "custom",
+              "record_id": "custom-result"
+            },
+            "to": {
+              "workspace_id": "custom",
+              "record_id": "custom-topic"
+            },
+            "evidence_refs": []
+          },
+          {
+            "id": "custom-learning-topic",
+            "workspace_id": "custom",
+            "type": "belongs_to",
+            "from": {
+              "workspace_id": "custom",
+              "record_id": "custom-learning"
+            },
+            "to": {
+              "workspace_id": "custom",
+              "record_id": "custom-topic"
+            },
+            "evidence_refs": []
+          }
+        ],
+        "source_refs": [
+          {
+            "source_id": "custom-vault",
+            "relative_path": "notes/custom-topic.md",
+            "content_sha256": "906800645e68b193edeee74cf2258de6850646eedba021b6aaee12146b2a38dc",
+            "fragment": {
+              "kind": "whole"
+            },
+            "extractor": {
+              "id": "markdown",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          },
+          {
+            "source_id": "custom-vault",
+            "relative_path": "tasks/custom-task.md",
+            "content_sha256": "795bbe87f072e7e91f45a757c628aa2da4e8c95dc3872b7fcb009a87d2c4de8c",
+            "fragment": {
+              "kind": "whole"
+            },
+            "extractor": {
+              "id": "markdown",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          },
+          {
+            "source_id": "custom-vault",
+            "relative_path": "notes/custom-result.md",
+            "content_sha256": "0840c800d771ca17b25d881b9f101e6bec320aa398bfc9ff0bac8af7581ef410",
+            "fragment": {
+              "kind": "whole"
+            },
+            "extractor": {
+              "id": "markdown",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          },
+          {
+            "source_id": "custom-vault",
+            "relative_path": "notes/custom-learning.md",
+            "content_sha256": "4f47dacae726d9bbab934cfc09dea9ce477ff5ab396101122aa711c08aa440fb",
+            "fragment": {
+              "kind": "whole"
+            },
+            "extractor": {
+              "id": "markdown",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          },
+          {
+            "source_id": "custom-materials",
+            "relative_path": "material.txt",
+            "content_sha256": "f6d3b1526232bf970644616aac1b4d6e0fd2520bbb1c39e25bc65fed46c4660e",
+            "fragment": {
+              "kind": "lines",
+              "start": 1,
+              "end": 2
+            },
+            "extractor": {
+              "id": "text",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          },
+          {
+            "source_id": "custom-extra",
+            "relative_path": "material.txt",
+            "content_sha256": "4e90e5c0b503edff9ade66544c32af9ff708be7b3f81d62237a25ac50100ca45",
+            "fragment": {
+              "kind": "lines",
+              "start": 1,
+              "end": 2
+            },
+            "extractor": {
+              "id": "text",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          }
+        ],
+        "missing_facts": [],
+        "issues": []
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "MemoryWriteIntent",
+      "data": {
+        "intent_id": "custom-intent",
+        "workspace_id": "custom",
+        "context_token": "fixture-context-custom",
+        "profile_revision": 1,
+        "binding_snapshot_sha256": "560a7f038608c5e731bd490f2486e7cbeddd959f1a4d35ede1c64eb9d6f43dd5",
+        "idempotency_key": "custom/result-1/write",
+        "reason": "Sonuçtan çıkarılan kalıcı öğrenim mevcut kaydı geliştiriyor.",
+        "changes": [
+          {
+            "id": "learning-update",
+            "action": "update_note",
+            "target": {
+              "record_id": "custom-learning",
+              "source_id": "custom-vault",
+              "relative_path": "notes/custom-learning.md",
+              "expected_revision": 1,
+              "expected_source_sha256": "4f47dacae726d9bbab934cfc09dea9ce477ff5ab396101122aa711c08aa440fb"
+            },
+            "body": "Hareketli sahnede enstantane etkisini kayıtlı çekimle karşılaştır.\nYeni sonuç kaynağıyla karşılaştırıldı.",
+            "metadata_changes": {},
+            "relation_changes": [],
+            "evidence_refs": [
+              {
+                "source_id": "custom-vault",
+                "relative_path": "notes/custom-result.md",
+                "content_sha256": "0840c800d771ca17b25d881b9f101e6bec320aa398bfc9ff0bac8af7581ef410",
+                "fragment": {
+                  "kind": "whole"
+                },
+                "extractor": {
+                  "id": "markdown",
+                  "version": "fixture-1",
+                  "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                }
+              },
+              {
+                "source_id": "custom-materials",
+                "relative_path": "material.txt",
+                "content_sha256": "f6d3b1526232bf970644616aac1b4d6e0fd2520bbb1c39e25bc65fed46c4660e",
+                "fragment": {
+                  "kind": "lines",
+                  "start": 1,
+                  "end": 2
+                },
+                "extractor": {
+                  "id": "text",
+                  "version": "fixture-1",
+                  "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                }
+              }
+            ]
+          },
+          {
+            "id": "task-progress",
+            "action": "update_task",
+            "target": {
+              "record_id": "custom-task",
+              "source_id": "custom-vault",
+              "relative_path": "tasks/custom-task.md",
+              "expected_revision": 1,
+              "expected_source_sha256": "795bbe87f072e7e91f45a757c628aa2da4e8c95dc3872b7fcb009a87d2c4de8c"
+            },
+            "body": "",
+            "metadata_changes": {
+              "next_action": "Geri bildirimle bir sonraki denemeyi hazırla"
+            },
+            "relation_changes": [
+              {
+                "id": "custom-result-task",
+                "workspace_id": "custom",
+                "type": "result_of",
+                "from": {
+                  "workspace_id": "custom",
+                  "record_id": "custom-result"
+                },
+                "to": {
+                  "workspace_id": "custom",
+                  "record_id": "custom-task"
+                },
+                "evidence_refs": [
+                  {
+                    "source_id": "custom-vault",
+                    "relative_path": "notes/custom-result.md",
+                    "content_sha256": "0840c800d771ca17b25d881b9f101e6bec320aa398bfc9ff0bac8af7581ef410",
+                    "fragment": {
+                      "kind": "whole"
+                    },
+                    "extractor": {
+                      "id": "markdown",
+                      "version": "fixture-1",
+                      "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                    }
+                  }
+                ]
+              }
+            ],
+            "evidence_refs": [
+              {
+                "source_id": "custom-vault",
+                "relative_path": "notes/custom-result.md",
+                "content_sha256": "0840c800d771ca17b25d881b9f101e6bec320aa398bfc9ff0bac8af7581ef410",
+                "fragment": {
+                  "kind": "whole"
+                },
+                "extractor": {
+                  "id": "markdown",
+                  "version": "fixture-1",
+                  "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "OperationResult",
+      "data": {
+        "operation_id": "custom-operation",
+        "operation_status": "applied",
+        "workspace_health": "verification_pending",
+        "parts": [
+          {
+            "id": "profile",
+            "state": "applied"
+          },
+          {
+            "id": "learning",
+            "state": "pending"
+          },
+          {
+            "id": "task",
+            "state": "pending"
+          }
+        ],
+        "capabilities": [
+          {
+            "name": "text",
+            "state": "not_tested"
+          },
+          {
+            "name": "markdown",
+            "state": "not_tested"
+          },
+          {
+            "name": "pdf_text",
+            "state": "not_tested"
+          },
+          {
+            "name": "docx_text",
+            "state": "not_tested"
+          },
+          {
+            "name": "workflow",
+            "state": "not_tested"
+          }
+        ],
+        "verification": [
+          {
+            "check": "source_read",
+            "state": "pending",
+            "evidence_refs": []
+          },
+          {
+            "check": "related_records",
+            "state": "pending",
+            "evidence_refs": []
+          },
+          {
+            "check": "canonical_update",
+            "state": "pending",
+            "evidence_refs": []
+          },
+          {
+            "check": "index_readback",
+            "state": "pending",
+            "evidence_refs": []
+          },
+          {
+            "check": "fresh_session",
+            "state": "pending",
+            "evidence_refs": []
+          },
+          {
+            "check": "workflow_resume",
+            "state": "pending",
+            "evidence_refs": []
+          }
+        ],
+        "issues": [],
+        "next_action": "C3/C4/D2 gerçek servisleriyle günlük akışı doğrula."
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "WorkflowRun",
+      "data": {
+        "run_id": "7f57565574b718ad98f73494b9fe3066112b860807bd29bb438d6a6f13a16640",
+        "workspace_id": "custom",
+        "workflow_id": "result-to-learning",
+        "workflow_revision": 1,
+        "definition_sha256": "8b17b0b2bba32b82a60d95e3b073b9e87480c75cf9ce0932f29666ffb3d6832f",
+        "event_id": "custom/result-1",
+        "context_token": "fixture-context-custom",
+        "status": "awaiting_agent",
+        "steps": [
+          {
+            "step_id": "propose",
+            "idempotency_key": "7f57565574b718ad98f73494b9fe3066112b860807bd29bb438d6a6f13a16640/propose",
+            "state": "awaiting_agent",
+            "result_ref": null
+          },
+          {
+            "step_id": "persist",
+            "idempotency_key": "7f57565574b718ad98f73494b9fe3066112b860807bd29bb438d6a6f13a16640/persist",
+            "state": "pending",
+            "result_ref": null
+          },
+          {
+            "step_id": "verify",
+            "idempotency_key": "7f57565574b718ad98f73494b9fe3066112b860807bd29bb438d6a6f13a16640/verify",
+            "state": "pending",
+            "result_ref": null
+          }
+        ],
+        "next_action": "Aktif ajan mevcut bağlamda kaynaklı MemoryWriteIntent önerir; ardından policy/CAS doğrulanır."
+      }
+    }
+  ],
+  "acceptance": {
+    "required_record_ids": [
+      "custom-topic",
+      "custom-task",
+      "custom-result",
+      "custom-learning"
+    ],
+    "same_profile_from_builder_and_runtime": true,
+    "new_note_count": 0,
+    "external_source_writes": 0,
+    "workflow_replay_extra_effects": 0
+  }
+}

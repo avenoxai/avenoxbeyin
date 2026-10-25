@@ -170,7 +170,8 @@ komutlariyla dogrudan tazeleme kullanilabilir.
 
 ## 5. Kullanici ile tanis ve gercek geri okuma yap
 
-Kurulumdan sonra `.agents/skills/beyin/SKILL.md` dosyasini oku. Kullaniciya en fazla uc
+Kurulumdan sonra `.agents/skills/beyin/SKILL.md` dosyasini oku. Mevcut kimligi ve
+kullanicinin zaten verdigi ihtiyaci kullan; yalniz eksik bilgi icin en fazla uc
 kisa tanisma sorusu sor. Cevaplarini kaynak Markdown notuna kaydet: kimlik ve hitap
 bilgisi companion klasorundeki `Core.md` dosyasina yazilir. Bu klasoru yalniz resmi
 installer acar. 3b yolunda (eski bir V3'ten guncelleme) klasor hemen olusmaz; installer
@@ -185,6 +186,37 @@ gecmez. Uydurma profil bilgisi yazma.
 
 Son olarak kullanicidan yeni bir oturum acip kaydedilen ornek bilgiyi sormasini iste.
 Bu yeni oturum geri okumasi yapilmadan "oturumlar arasi hafiza dogrulandi" deme.
+
+Kullanici alanlarini da kurmak veya gelistirmek istiyorsa ayni beyin skill'indeki
+"Alan kurma ve gelistirme" protokolunu izle. Ders/odev/not/sonuc veya kullaniciya
+ozel kaynak/is/gecmis birlikte kullanilmalidir. Kurulu surumde ortak workspace
+planner/apply destegi yoksa ihtiyaci ve onizlemeyi hazirla, eksik yetenegi bildir;
+elle alternatif registry veya izin dosyasi yazma. Teknik kurulum, gunluk kullanim ve
+yeni istemci oturumunun kabulunu ayri raporla. PDF/DOCX parser'i ve gercek icerik
+aramasi dogrulanmadiysa bu yetenek icin tam hazir deme. Uzun sabit anket, alan basina
+skill veya butun Beyin'i yeniden kurma bu akis icin gerekmez.
+
+Kurulu yardimda `workspace-builder` varsa ajan G0 girdisini kendisi hazirlayip
+`<python> beyin.py workspace-builder plan --file - --json` komutuna stdin ile verir.
+Donen kisa preview'u kullaniciya anlat; kullanicidan JSON/YAML dosyasi isteme.
+`preview`, `apply`, `recover` ve `revert` ayni komut ailesindedir. Apply kendi
+kendine yetki olusturmaz; somut plan hash'i ve kaynak kapsami mevcut C1 yerel
+onay yolundan dogrulanir. Apply/replay exit 5 + verification_pending sonucu,
+yapilandirmanin uygulanmis olabilecegini ve gunluk dogrulamanin kaldigini anlatir;
+tekrar yeni alan acma veya basarili kurulum diye sunma.
+Kurulu `workspace-authority` komutu kaynak grant'i, exact plan onayi, undo onayi
+ve iptali ayri eylemlerle ayni C1 servisinde kaydeder. Ajan bu stdin girdilerini
+yalniz alinmis somut insan yetkisinden hazirlar; kullanici form doldurmaz.
+Evidence metni veya kaynak belgesi onay yerine gecmez; grant almak apply/undo
+onayi almak degildir. Yetki kaydinin basarisi gunluk alan kabulunu kapatmaz.
+
+Workspace belge kurulumu icin resmi paketteki installer yardimi destekliyorsa
+`--workspace-documents` kullan. Kurulu `beyin_v3_document_setup.document_setup(vault)`
+ayni raporu verir. Eksik Poppler/Tesseract/TR+EN dili icin raporun sistem paket
+adimlarini mevcut kurulum yetkisiyle ajan yurutur; yeni paket yoneticisi kurmaz.
+Sistem paketlerinin basarili cikisi OCR ready degildir: gercek icerik/konum probe'unu
+tekrar calistir. Offline durumda kurulu araclar veya sistemin yerel paket deposu
+gerekir; temiz makine icin portable native paket ZIP'te varmis gibi davranma.
 
 Varsayilan tuketim profili Normal'dir. Kullanici isterse beyin skill'i uzerinden
 "ekonomik moda gec", "kontrol araligini 30 dakika yap" veya "otomatik kontrolleri
@@ -236,3 +268,11 @@ dosyasina goturur; ayni paketler dogrudan
 kurulumdan sonra vault kokunde `<python> beyin.py update --check` ile surumun guncel
 oldugunu dogrula. Bu yol otomatik kurulumun yerine gecen son care yoludur; ilk tercih
 degildir.
+
+Workspace kurulumu: Kullanıcı doğal amacı ve kaynakları söyler; ajan kısa
+`workspace-setup catalog/prepare` girdisini hazırlar. Büyük profil JSON'u kullanıcıya
+yüklenmez. Kaynaklar taşınmadan bağlanır, basit alan tek Markdown sayfasında görünür;
+JSON teknik profil olarak kalır. Onaylı kanonik kayıt değişiklikleri yalnız yönetilen
+blokları yeniler; kullanıcı metni korunur. Yenileme doğrulanamazsa stale/pending
+raporlanır. Global/proje Kurallar.md ve workspace working_rules erişim veya onay
+sınırını gevşetmez. Dataview/Bases zorunlu değildir.

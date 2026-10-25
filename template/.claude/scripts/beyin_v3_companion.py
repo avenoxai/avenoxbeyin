@@ -626,7 +626,8 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
     (#374); doctor reads it, the hooks pass nothing. project scopes rules and retrieval;
     rules_project, the project found from the working directory, scopes the rules alone (#288)."""
     if not (isinstance(rules_project, str) and rules_project.strip()):
-        rules_project = project
+        from beyin_v3_projects import resolve_rules_project
+        rules_project = resolve_rules_project(store.vault_root, explicit=project, query=query)
     target = directory(store.vault_root)
     hygiene_line = ''
     if target is not None:
@@ -686,7 +687,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
                                     without_v2_window(text), active_project=rules_project))
                             for record in project_snapshot['records']:
                                 if record['text'].strip():
-                                    sections.append((f"\n[{record['source']}]\n", record['text'], 'Kurallar.md'))
+                                    sections.insert(0, (f"\n[{record['source']}]\n", record['text'], 'Kurallar.md'))
                                     found = True
                             if found:
                                 break
@@ -729,7 +730,8 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         # Rules and the handoff get a floor first: an even split leaves the two continuity
         # sources the same share as a one-line style note. The rest water-fills, so small
         # identity files still return their unused share to long histories.
-        lengths = [min(len(body), int(available * FLOORS.get(name, 0))) for _, body, name in parts]
+        counts = {name: sum(item[2] == name for item in parts) for _, _, name in parts}
+        lengths = [min(len(body), int(available * FLOORS.get(name, 0) / counts[name])) for _, body, name in parts]
         spare = available - sum(lengths)
         while spare and any(lengths[i] < len(item[1]) for i, item in enumerate(parts)):
             for i, (_, body, _) in enumerate(parts):
@@ -748,7 +750,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
             lengths = share(available, parts)
         rendered, rules = header + notice, None
         for i, (label, body, name) in enumerate(parts):
-            if name == 'Kurallar.md' and i < len(records):  # project rule files come after the records
+            if name == 'Kurallar.md' and any(label == f'\n[{r["source"]}]\n' for r in records):
                 rules = {'chars': len(sections[i][1]), 'share': lengths[i], 'clipped': lengths[i] < len(body),
                          'reasons_omitted': body != sections[i][1]}
             rendered += label + clip(body, lengths[i], both=name == 'Kurallar.md',

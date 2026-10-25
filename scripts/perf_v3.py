@@ -231,7 +231,7 @@ def filesystem_type(path):
     candidates = []
     try:
         if sys.platform == 'darwin':
-            output = subprocess.run(['mount'], capture_output=True, text=True, timeout=10, check=True).stdout
+            output = subprocess.run(['mount'], capture_output=True, text=True, encoding='locale', timeout=10, check=True).stdout
             for line in output.splitlines():
                 match = re.search(r' on (.+) \(([^, )]+)', line)
                 if match:
@@ -258,7 +258,7 @@ def filesystem_type(path):
 def env_info(vault, fixture, repeat):
     try:
         sha = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, capture_output=True,
-                             text=True, check=True, timeout=10).stdout.strip()
+                             text=True, encoding='locale', check=True, timeout=10).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         sha = None
     path = str(vault).casefold()

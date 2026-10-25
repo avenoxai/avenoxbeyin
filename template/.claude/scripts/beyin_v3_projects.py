@@ -72,7 +72,11 @@ def read_project_scopes(vault_root):
     for folder, project in folders.items():
         if not isinstance(project, str) or not project.strip():
             raise ValueError("project scope names must be non-empty strings")
-        folder = _scope_path(folder)
+        try:
+            folder = _scope_path(folder)
+        except ValueError as exc:
+            # Still fail closed, but name the entry so the user can find it (#419).
+            raise ValueError(f"{exc}: {folder!r} in {PROJECT_SCOPES_FILE}") from None
         if not _scope_folder_exists(vault_root, folder):
             missing.append(folder)
             try:
@@ -187,9 +191,13 @@ def _save_project_scopes(vault_root, data):
                 pass
 
 
-def manage(vault_root, action, folder=None, project=None, shared_unscoped=None):
+def manage(vault_root, action, folder=None, project=None, shared_unscoped=None, workspace_state=None):
     """CLI handler for beyin.py project-scope list|add|remove|prune."""
     vault_root = Path(vault_root)
+    if action!='list' and (vault_root/'.beyin-workspaces').exists():
+        if workspace_state is None:raise ValueError('workspace_state_required_for_legacy_mutation')
+        from beyin_v3_workspace_context import enabled
+        if enabled(vault_root,workspace_state):raise ValueError('active_workspace_requires_provision_plan')
     path = vault_root / PROJECT_SCOPES_FILE
 
     if action == "list":
@@ -335,3 +343,55 @@ def resolve_active_project(vault, cwd):
         return parts[1]
 
     return None
+
+
+def resolve_project_from_query(vault, query):
+    """A unique known name is a rules signal, never a retrieval/authority scope."""
+    if not isinstance(query, str) or not query.strip():
+        return None
+    aliases = {}
+    def add(alias, project):
+        aliases.setdefault(_scope_key(alias), set()).add(project)
+    try:
+        scopes = read_project_scopes(vault)
+    except (ValueError, OSError):
+        return None
+    configured = (scopes or {}).get('folders', [])
+    for folder, project in configured:
+        add(project, project)
+        add(folder.split('/')[-1], project)
+    for name in ('projects', 'Projeler', 'projeler'):
+        root = Path(vault) / name
+        if root.is_dir() and not root.is_symlink():
+            for child in root.iterdir():
+                if child.is_dir() and not child.is_symlink():
+                    folder = _scope_key(name + '/' + child.name)
+                    # The standard folder name is an alias for its configured owner.
+                    # Treating it as a second project makes a single folder ambiguous.
+                    owner = next((project for mapped, project in configured
+                                  if folder == mapped or folder.startswith(mapped + '/')),
+                                 child.name)
+                    add(child.name, owner)
+    matches = set()
+    query = _scope_key(query)
+    for alias, projects in aliases.items():
+        if len(alias) >= 3 and re.search(r'(?<![\w-])' + re.escape(alias) + r'(?![\w-])', query):
+            if len(projects) != 1:
+                return None
+            matches.update(projects)
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def resolve_rules_project(vault, cwd=None, *, explicit=None, query='', state=None):
+    """Shared identity selection; configured paths outrank a unique query signal."""
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    selected = resolve_active_project(vault, cwd)
+    if selected:
+        return selected
+    if state is not None and cwd is not None:
+        from beyin_v3_workspace_context import bound_project_for_cwd
+        selected = bound_project_for_cwd(vault, state, cwd)
+        if selected:
+            return selected
+    return resolve_project_from_query(vault, query)

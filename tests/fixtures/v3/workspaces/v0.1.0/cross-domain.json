@@ -1,0 +1,32 @@
+{
+  "fixture_version": "workspace/0.1.0",
+  "synthetic": true,
+  "cases": [
+    {
+      "domain": "project",
+      "entity_types": [
+        "repository",
+        "task",
+        "decision"
+      ],
+      "relation_chain": [
+        "current file -> task",
+        "decision -> task"
+      ],
+      "source_truth": "Current repo file outranks old summary."
+    },
+    {
+      "domain": "career",
+      "entity_types": [
+        "cv",
+        "application",
+        "interview"
+      ],
+      "relation_chain": [
+        "cv -> application",
+        "interview -> application"
+      ],
+      "source_truth": "Feedback updates the same application; external sending is a separate action."
+    }
+  ]
+}

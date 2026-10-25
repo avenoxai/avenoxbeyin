@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
+from v3_package_helpers import inherited_env
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
@@ -35,7 +36,7 @@ class NoteReviewTest(unittest.TestCase):
         self.state = (Path(self.temp.name) / 'state').resolve()
         self.engine = sync.SyncEngine(self.vault, self.state)
         self.addCleanup(self.engine.store.close)
-        self.env = dict(os.environ, BEYIN_V3_NO_SPAWN='1')
+        self.env = inherited_env(BEYIN_V3_NO_SPAWN='1')
         self.env.pop('CLAUDE_CODE_SESSION_ID', None)
 
     def write(self, source='Project/Threads.md', raw=b'alpha\nbeta\n'):

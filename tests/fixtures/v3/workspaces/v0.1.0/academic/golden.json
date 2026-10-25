@@ -1,0 +1,825 @@
+{
+  "fixture_version": "workspace/0.1.0",
+  "case_id": "academic",
+  "status": "golden_expectation_only",
+  "documents": [
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "WorkspaceProfile",
+      "data": {
+        "id": "academic",
+        "revision": 1,
+        "name": "Algoritmalar dersi",
+        "purpose": "Derslerimi, ödevlerimi ve sonuçlardan öğrendiklerimi birlikte takip et.",
+        "lifecycle": "active",
+        "source_ids": [
+          "academic-vault",
+          "academic-materials",
+          "academic-extra"
+        ],
+        "note_roots": [
+          "notes",
+          "knowledge"
+        ],
+        "working_rules": [
+          {
+            "id": "topic-rule",
+            "text": "Sonucu kaynakla bağla; eksik bilgiyi üretme.",
+            "subject_refs": [
+              {
+                "workspace_id": "academic",
+                "record_id": "academic-topic"
+              }
+            ]
+          }
+        ],
+        "memory_policy": {
+          "prefer_update_existing": true,
+          "new_note": "distinct_only",
+          "automatic_learning": "enabled"
+        },
+        "access_policy": {
+          "cross_workspace": "explicit_grant",
+          "external_sources": "read_only",
+          "automatic_audience": "internal"
+        },
+        "record_types": [
+          {
+            "id": "course",
+            "label": "course",
+            "fields": {}
+          },
+          {
+            "id": "assignment",
+            "label": "assignment",
+            "fields": {}
+          },
+          {
+            "id": "grade_feedback",
+            "label": "grade_feedback",
+            "fields": {}
+          },
+          {
+            "id": "learning",
+            "label": "learning",
+            "fields": {}
+          }
+        ],
+        "relation_types": [
+          "belongs_to",
+          "result_of",
+          "learned_from"
+        ],
+        "workflows": [
+          {
+            "id": "result-to-learning",
+            "revision": 1,
+            "name": "Sonuçtan işe ve öğrenime",
+            "trigger": {
+              "event_kind": "record_changed",
+              "entity_type": "grade_feedback"
+            },
+            "conditions": [],
+            "steps": [
+              {
+                "id": "propose",
+                "depends_on": [],
+                "action": "propose_memory_write",
+                "inputs": {
+                  "result": {
+                    "ref": "event.record.id"
+                  },
+                  "target": {
+                    "literal": "academic-learning"
+                  },
+                  "task_id": {
+                    "literal": "academic-task"
+                  }
+                }
+              },
+              {
+                "id": "persist",
+                "depends_on": [
+                  "propose"
+                ],
+                "action": "apply_memory_write",
+                "inputs": {
+                  "intent": {
+                    "ref": "steps.propose.intent_ref"
+                  }
+                }
+              },
+              {
+                "id": "verify",
+                "depends_on": [
+                  "persist"
+                ],
+                "action": "verify_readback",
+                "inputs": {
+                  "intent": {
+                    "ref": "steps.propose.intent_ref"
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "extensions": {}
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "ProvisionPlan",
+      "data": {
+        "plan_id": "academic-plan",
+        "plan_sha256": "93a046bb3fa1bfa36abe62c088a9cca35ebe4850bb7d72e3424683f347bbeba3",
+        "spec_sha256": "c607aa1efd76ff42259a5aa01360c9ef10efb2905cfc828088d17b37c2484a7a",
+        "snapshot_sha256": "93ca970803eb0f4cd644aac6dd1b3e8075819adb66943cab8682744d96f34542",
+        "binding_snapshot_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "operations": [
+          {
+            "id": "source-academic-vault",
+            "kind": "create",
+            "target": {
+              "root": "vault",
+              "relative_path": ".beyin-workspaces/sources/academic-vault.json"
+            },
+            "ownership": "registry",
+            "before_sha256": null,
+            "after_sha256": "14ae3ea64a5432f1d7a1b5e9598213e87db3c14412af78eabf33e2bb322e7789",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"SourceDescriptor\",\n  \"data\": {\n    \"id\": \"academic-vault\",\n    \"kind\": \"vault\",\n    \"label\": \"Sentetik vault\"\n  }\n}\n",
+            "depends_on": []
+          },
+          {
+            "id": "source-academic-materials",
+            "kind": "create",
+            "target": {
+              "root": "vault",
+              "relative_path": ".beyin-workspaces/sources/academic-materials.json"
+            },
+            "ownership": "registry",
+            "before_sha256": null,
+            "after_sha256": "49f2cb7764f5f2a840cfa1b508f22481c5422d4085b8228dffbf7d0064b82a33",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"SourceDescriptor\",\n  \"data\": {\n    \"id\": \"academic-materials\",\n    \"kind\": \"directory\",\n    \"label\": \"Materyaller A\"\n  }\n}\n",
+            "depends_on": []
+          },
+          {
+            "id": "source-academic-extra",
+            "kind": "create",
+            "target": {
+              "root": "vault",
+              "relative_path": ".beyin-workspaces/sources/academic-extra.json"
+            },
+            "ownership": "registry",
+            "before_sha256": null,
+            "after_sha256": "f49cc72c5ecdc6c82bec1505ac48fa8119d12fad09892836207452bb5133ef2b",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"SourceDescriptor\",\n  \"data\": {\n    \"id\": \"academic-extra\",\n    \"kind\": \"directory\",\n    \"label\": \"Materyaller B\"\n  }\n}\n",
+            "depends_on": []
+          },
+          {
+            "id": "bind-academic-vault",
+            "kind": "create",
+            "target": {
+              "root": "state",
+              "relative_path": "workspace-bindings/academic-vault.json"
+            },
+            "ownership": "binding",
+            "before_sha256": null,
+            "after_sha256": "2b6ff3e75ca34addea9422b6fab35cfa617228b1fc92a2b56bc395e31ee35db1",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"SourceBinding\",\n  \"data\": {\n    \"source_id\": \"academic-vault\",\n    \"machine_id\": \"fixture-machine\",\n    \"revision\": 1,\n    \"locator\": \"/synthetic/academic/vault\",\n    \"grants\": [\n      {\n        \"workspace_id\": \"academic\",\n        \"access\": \"read\"\n      },\n      {\n        \"workspace_id\": \"academic\",\n        \"access\": \"write_memory\"\n      }\n    ],\n    \"authority_ref\": \"fixture-user-request\"\n  }\n}\n",
+            "depends_on": []
+          },
+          {
+            "id": "bind-academic-materials",
+            "kind": "create",
+            "target": {
+              "root": "state",
+              "relative_path": "workspace-bindings/academic-materials.json"
+            },
+            "ownership": "binding",
+            "before_sha256": null,
+            "after_sha256": "4a8ad5ff2cb20c2c4f8c3a48ad478153737066b4ebaf1f6f807683008f3a857c",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"SourceBinding\",\n  \"data\": {\n    \"source_id\": \"academic-materials\",\n    \"machine_id\": \"fixture-machine\",\n    \"revision\": 1,\n    \"locator\": \"/synthetic/academic/source-a\",\n    \"grants\": [\n      {\n        \"workspace_id\": \"academic\",\n        \"access\": \"read\"\n      }\n    ],\n    \"authority_ref\": \"fixture-user-request\"\n  }\n}\n",
+            "depends_on": []
+          },
+          {
+            "id": "bind-academic-extra",
+            "kind": "create",
+            "target": {
+              "root": "state",
+              "relative_path": "workspace-bindings/academic-extra.json"
+            },
+            "ownership": "binding",
+            "before_sha256": null,
+            "after_sha256": "0bfd4a8b5e1e881b8932485025765b3639c70ec0ed0c9f0bfb21198173587bf1",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"SourceBinding\",\n  \"data\": {\n    \"source_id\": \"academic-extra\",\n    \"machine_id\": \"fixture-machine\",\n    \"revision\": 1,\n    \"locator\": \"/synthetic/academic/source-b\",\n    \"grants\": [\n      {\n        \"workspace_id\": \"academic\",\n        \"access\": \"read\"\n      }\n    ],\n    \"authority_ref\": \"fixture-user-request\"\n  }\n}\n",
+            "depends_on": []
+          },
+          {
+            "id": "publish-profile",
+            "kind": "create",
+            "target": {
+              "root": "vault",
+              "relative_path": ".beyin-workspaces/workspaces/academic.json"
+            },
+            "ownership": "registry",
+            "before_sha256": null,
+            "after_sha256": "3f137f6b7188a22ae2a870e615ce25973e946eeb074d3127e82efcd417b7df3a",
+            "content_utf8": "{\n  \"contract_version\": \"workspace/0.1.0\",\n  \"type\": \"WorkspaceProfile\",\n  \"data\": {\n    \"id\": \"academic\",\n    \"revision\": 1,\n    \"name\": \"Algoritmalar dersi\",\n    \"purpose\": \"Derslerimi, ödevlerimi ve sonuçlardan öğrendiklerimi birlikte takip et.\",\n    \"lifecycle\": \"active\",\n    \"source_ids\": [\n      \"academic-vault\",\n      \"academic-materials\",\n      \"academic-extra\"\n    ],\n    \"note_roots\": [\n      \"notes\",\n      \"knowledge\"\n    ],\n    \"working_rules\": [\n      {\n        \"id\": \"topic-rule\",\n        \"text\": \"Sonucu kaynakla bağla; eksik bilgiyi üretme.\",\n        \"subject_refs\": [\n          {\n            \"workspace_id\": \"academic\",\n            \"record_id\": \"academic-topic\"\n          }\n        ]\n      }\n    ],\n    \"memory_policy\": {\n      \"prefer_update_existing\": true,\n      \"new_note\": \"distinct_only\",\n      \"automatic_learning\": \"enabled\"\n    },\n    \"access_policy\": {\n      \"cross_workspace\": \"explicit_grant\",\n      \"external_sources\": \"read_only\",\n      \"automatic_audience\": \"internal\"\n    },\n    \"record_types\": [\n      {\n        \"id\": \"course\",\n        \"label\": \"course\",\n        \"fields\": {}\n      },\n      {\n        \"id\": \"assignment\",\n        \"label\": \"assignment\",\n        \"fields\": {}\n      },\n      {\n        \"id\": \"grade_feedback\",\n        \"label\": \"grade_feedback\",\n        \"fields\": {}\n      },\n      {\n        \"id\": \"learning\",\n        \"label\": \"learning\",\n        \"fields\": {}\n      }\n    ],\n    \"relation_types\": [\n      \"belongs_to\",\n      \"result_of\",\n      \"learned_from\"\n    ],\n    \"workflows\": [\n      {\n        \"id\": \"result-to-learning\",\n        \"revision\": 1,\n        \"name\": \"Sonuçtan işe ve öğrenime\",\n        \"trigger\": {\n          \"event_kind\": \"record_changed\",\n          \"entity_type\": \"grade_feedback\"\n        },\n        \"conditions\": [],\n        \"steps\": [\n          {\n            \"id\": \"propose\",\n            \"depends_on\": [],\n            \"action\": \"propose_memory_write\",\n            \"inputs\": {\n              \"result\": {\n                \"ref\": \"event.record.id\"\n              },\n              \"target\": {\n                \"literal\": \"academic-learning\"\n              },\n              \"task_id\": {\n                \"literal\": \"academic-task\"\n              }\n            }\n          },\n          {\n            \"id\": \"persist\",\n            \"depends_on\": [\n              \"propose\"\n            ],\n            \"action\": \"apply_memory_write\",\n            \"inputs\": {\n              \"intent\": {\n                \"ref\": \"steps.propose.intent_ref\"\n              }\n            }\n          },\n          {\n            \"id\": \"verify\",\n            \"depends_on\": [\n              \"persist\"\n            ],\n            \"action\": \"verify_readback\",\n            \"inputs\": {\n              \"intent\": {\n                \"ref\": \"steps.propose.intent_ref\"\n              }\n            }\n          }\n        ]\n      }\n    ],\n    \"extensions\": {}\n  }\n}\n",
+            "depends_on": [
+              "source-academic-vault",
+              "source-academic-materials",
+              "source-academic-extra",
+              "bind-academic-vault",
+              "bind-academic-materials",
+              "bind-academic-extra"
+            ]
+          }
+        ],
+        "required_authority": [
+          "fixture-user-request"
+        ],
+        "verify_steps": [
+          "source_read",
+          "related_records",
+          "canonical_update",
+          "index_readback",
+          "fresh_session",
+          "workflow_resume"
+        ],
+        "rollback_limits": [
+          "Restore only operation-owned files still matching after_sha256; preserve later user edits."
+        ],
+        "unresolved": []
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "WorkContext",
+      "data": {
+        "request_id": "academic-request",
+        "state": "ready",
+        "context_token": "fixture-context-academic",
+        "workspace_id": "academic",
+        "profile_revision": 1,
+        "snapshot_sha256": "7603b843ca771b79d0123ab217b5391a9ba51f68086a4fde8856d0ecff73cde6",
+        "binding_snapshot_sha256": "a51b2661e2cd35e531314c7d7c2b7514385dedfb88916f780fc196f6cdf1bdd8",
+        "subject_refs": [
+          {
+            "workspace_id": "academic",
+            "record_id": "academic-task"
+          }
+        ],
+        "rules": [
+          {
+            "id": "topic-rule",
+            "text": "Sonucu kaynakla bağla; eksik bilgiyi üretme.",
+            "subject_refs": [
+              {
+                "workspace_id": "academic",
+                "record_id": "academic-topic"
+              }
+            ]
+          }
+        ],
+        "records": [
+          {
+            "id": "academic-topic",
+            "kind": "note",
+            "revision": 1,
+            "visibility": "internal",
+            "facts": {
+              "fixture": true
+            },
+            "entity_type": "course",
+            "workspace_id": "academic",
+            "text": "Algoritmalar dersi",
+            "source_ref": {
+              "source_id": "academic-vault",
+              "relative_path": "notes/academic-topic.md",
+              "content_sha256": "1ea592d46a64f2d17126ade3b397cf6ec064d6b830b6927f81b6729f4eca1f52",
+              "fragment": {
+                "kind": "whole"
+              },
+              "extractor": {
+                "id": "markdown",
+                "version": "fixture-1",
+                "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+              }
+            },
+            "trust": "trusted",
+            "relations": []
+          },
+          {
+            "id": "academic-task",
+            "kind": "task",
+            "revision": 1,
+            "visibility": "internal",
+            "facts": {
+              "fixture": true
+            },
+            "entity_type": "assignment",
+            "status": "active",
+            "due_at": "2026-10-23",
+            "next_action": "Kaynak ve önceki öğrenimle devam et",
+            "workspace_id": "academic",
+            "text": "Bu dersin ödevine geri bildirimle devam edelim.",
+            "source_ref": {
+              "source_id": "academic-vault",
+              "relative_path": "tasks/academic-task.md",
+              "content_sha256": "96d01d786605ec2f90faa6c330cd94d5a209dbebbb20636b40136597d9cf7998",
+              "fragment": {
+                "kind": "whole"
+              },
+              "extractor": {
+                "id": "markdown",
+                "version": "fixture-1",
+                "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+              }
+            },
+            "trust": "trusted",
+            "relations": [
+              {
+                "id": "academic-task-topic",
+                "workspace_id": "academic",
+                "type": "belongs_to",
+                "from": {
+                  "workspace_id": "academic",
+                  "record_id": "academic-task"
+                },
+                "to": {
+                  "workspace_id": "academic",
+                  "record_id": "academic-topic"
+                },
+                "evidence_refs": []
+              }
+            ]
+          },
+          {
+            "id": "academic-result",
+            "kind": "note",
+            "revision": 1,
+            "visibility": "internal",
+            "facts": {
+              "fixture": true,
+              "score": 82,
+              "weight": null
+            },
+            "entity_type": "grade_feedback",
+            "workspace_id": "academic",
+            "text": "Ödev sonucu 82; karmaşıklık açıklaması geliştirilmeli.",
+            "source_ref": {
+              "source_id": "academic-vault",
+              "relative_path": "notes/academic-result.md",
+              "content_sha256": "3430bdec54c807a0cf5d67a6b5b878bd1828e5cacae45d44807b33a3b9a392ad",
+              "fragment": {
+                "kind": "whole"
+              },
+              "extractor": {
+                "id": "markdown",
+                "version": "fixture-1",
+                "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+              }
+            },
+            "trust": "trusted",
+            "relations": [
+              {
+                "id": "academic-result-topic",
+                "workspace_id": "academic",
+                "type": "belongs_to",
+                "from": {
+                  "workspace_id": "academic",
+                  "record_id": "academic-result"
+                },
+                "to": {
+                  "workspace_id": "academic",
+                  "record_id": "academic-topic"
+                },
+                "evidence_refs": []
+              }
+            ]
+          },
+          {
+            "id": "academic-learning",
+            "kind": "note",
+            "revision": 1,
+            "visibility": "internal",
+            "facts": {
+              "fixture": true
+            },
+            "entity_type": "learning",
+            "workspace_id": "academic",
+            "text": "Karmaşıklık açıklamasını örnek girdi ve gerekçeyle yaz.",
+            "source_ref": {
+              "source_id": "academic-vault",
+              "relative_path": "notes/academic-learning.md",
+              "content_sha256": "f284b4e21dd2b5a40a4f92b8335b894990142cd6b9dcd9b1baf6760ebb0050b2",
+              "fragment": {
+                "kind": "whole"
+              },
+              "extractor": {
+                "id": "markdown",
+                "version": "fixture-1",
+                "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+              }
+            },
+            "trust": "trusted",
+            "relations": [
+              {
+                "id": "academic-learning-topic",
+                "workspace_id": "academic",
+                "type": "belongs_to",
+                "from": {
+                  "workspace_id": "academic",
+                  "record_id": "academic-learning"
+                },
+                "to": {
+                  "workspace_id": "academic",
+                  "record_id": "academic-topic"
+                },
+                "evidence_refs": []
+              }
+            ]
+          }
+        ],
+        "relations": [
+          {
+            "id": "academic-task-topic",
+            "workspace_id": "academic",
+            "type": "belongs_to",
+            "from": {
+              "workspace_id": "academic",
+              "record_id": "academic-task"
+            },
+            "to": {
+              "workspace_id": "academic",
+              "record_id": "academic-topic"
+            },
+            "evidence_refs": []
+          },
+          {
+            "id": "academic-result-topic",
+            "workspace_id": "academic",
+            "type": "belongs_to",
+            "from": {
+              "workspace_id": "academic",
+              "record_id": "academic-result"
+            },
+            "to": {
+              "workspace_id": "academic",
+              "record_id": "academic-topic"
+            },
+            "evidence_refs": []
+          },
+          {
+            "id": "academic-learning-topic",
+            "workspace_id": "academic",
+            "type": "belongs_to",
+            "from": {
+              "workspace_id": "academic",
+              "record_id": "academic-learning"
+            },
+            "to": {
+              "workspace_id": "academic",
+              "record_id": "academic-topic"
+            },
+            "evidence_refs": []
+          }
+        ],
+        "source_refs": [
+          {
+            "source_id": "academic-vault",
+            "relative_path": "notes/academic-topic.md",
+            "content_sha256": "1ea592d46a64f2d17126ade3b397cf6ec064d6b830b6927f81b6729f4eca1f52",
+            "fragment": {
+              "kind": "whole"
+            },
+            "extractor": {
+              "id": "markdown",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          },
+          {
+            "source_id": "academic-vault",
+            "relative_path": "tasks/academic-task.md",
+            "content_sha256": "96d01d786605ec2f90faa6c330cd94d5a209dbebbb20636b40136597d9cf7998",
+            "fragment": {
+              "kind": "whole"
+            },
+            "extractor": {
+              "id": "markdown",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          },
+          {
+            "source_id": "academic-vault",
+            "relative_path": "notes/academic-result.md",
+            "content_sha256": "3430bdec54c807a0cf5d67a6b5b878bd1828e5cacae45d44807b33a3b9a392ad",
+            "fragment": {
+              "kind": "whole"
+            },
+            "extractor": {
+              "id": "markdown",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          },
+          {
+            "source_id": "academic-vault",
+            "relative_path": "notes/academic-learning.md",
+            "content_sha256": "f284b4e21dd2b5a40a4f92b8335b894990142cd6b9dcd9b1baf6760ebb0050b2",
+            "fragment": {
+              "kind": "whole"
+            },
+            "extractor": {
+              "id": "markdown",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          },
+          {
+            "source_id": "academic-materials",
+            "relative_path": "material.txt",
+            "content_sha256": "59d6bd58d0e7e9062df195f78e866bdd62ccec64ba5df83df8cff9d3e427bdcc",
+            "fragment": {
+              "kind": "lines",
+              "start": 1,
+              "end": 2
+            },
+            "extractor": {
+              "id": "text",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          },
+          {
+            "source_id": "academic-extra",
+            "relative_path": "material.txt",
+            "content_sha256": "2009e1fed1df2130bb12e677cebd85c8b43f7c81359cc318775f48425f128881",
+            "fragment": {
+              "kind": "lines",
+              "start": 1,
+              "end": 2
+            },
+            "extractor": {
+              "id": "text",
+              "version": "fixture-1",
+              "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            }
+          }
+        ],
+        "missing_facts": [
+          "result.weight"
+        ],
+        "issues": []
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "MemoryWriteIntent",
+      "data": {
+        "intent_id": "academic-intent",
+        "workspace_id": "academic",
+        "context_token": "fixture-context-academic",
+        "profile_revision": 1,
+        "binding_snapshot_sha256": "a51b2661e2cd35e531314c7d7c2b7514385dedfb88916f780fc196f6cdf1bdd8",
+        "idempotency_key": "academic/result-1/write",
+        "reason": "Sonuçtan çıkarılan kalıcı öğrenim mevcut kaydı geliştiriyor.",
+        "changes": [
+          {
+            "id": "learning-update",
+            "action": "update_note",
+            "target": {
+              "record_id": "academic-learning",
+              "source_id": "academic-vault",
+              "relative_path": "notes/academic-learning.md",
+              "expected_revision": 1,
+              "expected_source_sha256": "f284b4e21dd2b5a40a4f92b8335b894990142cd6b9dcd9b1baf6760ebb0050b2"
+            },
+            "body": "Karmaşıklık açıklamasını örnek girdi ve gerekçeyle yaz.\nYeni sonuç kaynağıyla karşılaştırıldı.",
+            "metadata_changes": {},
+            "relation_changes": [],
+            "evidence_refs": [
+              {
+                "source_id": "academic-vault",
+                "relative_path": "notes/academic-result.md",
+                "content_sha256": "3430bdec54c807a0cf5d67a6b5b878bd1828e5cacae45d44807b33a3b9a392ad",
+                "fragment": {
+                  "kind": "whole"
+                },
+                "extractor": {
+                  "id": "markdown",
+                  "version": "fixture-1",
+                  "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                }
+              },
+              {
+                "source_id": "academic-materials",
+                "relative_path": "material.txt",
+                "content_sha256": "59d6bd58d0e7e9062df195f78e866bdd62ccec64ba5df83df8cff9d3e427bdcc",
+                "fragment": {
+                  "kind": "lines",
+                  "start": 1,
+                  "end": 2
+                },
+                "extractor": {
+                  "id": "text",
+                  "version": "fixture-1",
+                  "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                }
+              }
+            ]
+          },
+          {
+            "id": "task-progress",
+            "action": "update_task",
+            "target": {
+              "record_id": "academic-task",
+              "source_id": "academic-vault",
+              "relative_path": "tasks/academic-task.md",
+              "expected_revision": 1,
+              "expected_source_sha256": "96d01d786605ec2f90faa6c330cd94d5a209dbebbb20636b40136597d9cf7998"
+            },
+            "body": "",
+            "metadata_changes": {
+              "next_action": "Geri bildirimle bir sonraki denemeyi hazırla"
+            },
+            "relation_changes": [
+              {
+                "id": "academic-result-task",
+                "workspace_id": "academic",
+                "type": "result_of",
+                "from": {
+                  "workspace_id": "academic",
+                  "record_id": "academic-result"
+                },
+                "to": {
+                  "workspace_id": "academic",
+                  "record_id": "academic-task"
+                },
+                "evidence_refs": [
+                  {
+                    "source_id": "academic-vault",
+                    "relative_path": "notes/academic-result.md",
+                    "content_sha256": "3430bdec54c807a0cf5d67a6b5b878bd1828e5cacae45d44807b33a3b9a392ad",
+                    "fragment": {
+                      "kind": "whole"
+                    },
+                    "extractor": {
+                      "id": "markdown",
+                      "version": "fixture-1",
+                      "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                    }
+                  }
+                ]
+              }
+            ],
+            "evidence_refs": [
+              {
+                "source_id": "academic-vault",
+                "relative_path": "notes/academic-result.md",
+                "content_sha256": "3430bdec54c807a0cf5d67a6b5b878bd1828e5cacae45d44807b33a3b9a392ad",
+                "fragment": {
+                  "kind": "whole"
+                },
+                "extractor": {
+                  "id": "markdown",
+                  "version": "fixture-1",
+                  "settings_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "OperationResult",
+      "data": {
+        "operation_id": "academic-operation",
+        "operation_status": "applied",
+        "workspace_health": "verification_pending",
+        "parts": [
+          {
+            "id": "profile",
+            "state": "applied"
+          },
+          {
+            "id": "learning",
+            "state": "pending"
+          },
+          {
+            "id": "task",
+            "state": "pending"
+          }
+        ],
+        "capabilities": [
+          {
+            "name": "text",
+            "state": "not_tested"
+          },
+          {
+            "name": "markdown",
+            "state": "not_tested"
+          },
+          {
+            "name": "pdf_text",
+            "state": "not_tested"
+          },
+          {
+            "name": "docx_text",
+            "state": "not_tested"
+          },
+          {
+            "name": "workflow",
+            "state": "not_tested"
+          }
+        ],
+        "verification": [
+          {
+            "check": "source_read",
+            "state": "pending",
+            "evidence_refs": []
+          },
+          {
+            "check": "related_records",
+            "state": "pending",
+            "evidence_refs": []
+          },
+          {
+            "check": "canonical_update",
+            "state": "pending",
+            "evidence_refs": []
+          },
+          {
+            "check": "index_readback",
+            "state": "pending",
+            "evidence_refs": []
+          },
+          {
+            "check": "fresh_session",
+            "state": "pending",
+            "evidence_refs": []
+          },
+          {
+            "check": "workflow_resume",
+            "state": "pending",
+            "evidence_refs": []
+          }
+        ],
+        "issues": [],
+        "next_action": "C3/C4/D2 gerçek servisleriyle günlük akışı doğrula."
+      }
+    },
+    {
+      "contract_version": "workspace/0.1.0",
+      "type": "WorkflowRun",
+      "data": {
+        "run_id": "5ae5b8dcc40f8db825771930379a2804f141e19f38d31e8cbefb85c5d7a7b7a8",
+        "workspace_id": "academic",
+        "workflow_id": "result-to-learning",
+        "workflow_revision": 1,
+        "definition_sha256": "2a95add789bdfa8fa6fa4cea35e236d185c4d2b83df5f792149b0fc426b09751",
+        "event_id": "academic/result-1",
+        "context_token": "fixture-context-academic",
+        "status": "awaiting_agent",
+        "steps": [
+          {
+            "step_id": "propose",
+            "idempotency_key": "5ae5b8dcc40f8db825771930379a2804f141e19f38d31e8cbefb85c5d7a7b7a8/propose",
+            "state": "awaiting_agent",
+            "result_ref": null
+          },
+          {
+            "step_id": "persist",
+            "idempotency_key": "5ae5b8dcc40f8db825771930379a2804f141e19f38d31e8cbefb85c5d7a7b7a8/persist",
+            "state": "pending",
+            "result_ref": null
+          },
+          {
+            "step_id": "verify",
+            "idempotency_key": "5ae5b8dcc40f8db825771930379a2804f141e19f38d31e8cbefb85c5d7a7b7a8/verify",
+            "state": "pending",
+            "result_ref": null
+          }
+        ],
+        "next_action": "Aktif ajan mevcut bağlamda kaynaklı MemoryWriteIntent önerir; ardından policy/CAS doğrulanır."
+      }
+    }
+  ],
+  "acceptance": {
+    "required_record_ids": [
+      "academic-topic",
+      "academic-task",
+      "academic-result",
+      "academic-learning"
+    ],
+    "same_profile_from_builder_and_runtime": true,
+    "new_note_count": 0,
+    "external_source_writes": 0,
+    "workflow_replay_extra_effects": 0
+  }
+}
