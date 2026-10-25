@@ -942,8 +942,9 @@ class MemoryStore:
             db.execute("INSERT OR IGNORE INTO receipts VALUES (?,?)", (event_id, payload))
         return dict(event, id=event_id, status="succeeded")
 
-    def retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, strict=False):
-        return self._retrieve(query, project, audience, statuses, limit, budget_chars, strict=strict)
+    def retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, strict=False, explicit=False):
+        # explicit=True is the `beyin.py context` command: see the unscoped explicit rules below.
+        return self._retrieve(query, project, audience, statuses, limit, budget_chars, strict=strict, explicit=explicit)
 
     def candidates(self, query, project=None, audience="internal", statuses=None, limit=32, strict=False):
         """Bounded eligible candidates before any final context packing.
@@ -1160,6 +1161,65 @@ class MemoryStore:
             weighted.append((weight, record))
         return self._by_weight(weighted)
 
+    # Unscoped explicit lookups (`beyin.py context` without --project, which passes
+    # explicit=True; not strict, not a snapshot) get two extra rules. Scoped (--project)
+    # queries, the strict hook path, companion retrieval, the advisor pools and plain
+    # retrieve()/candidates() calls are unchanged.
+    # Admission: a multiword query needs EXPLICIT_MIN_SHARED shared words, the same gate as
+    # the strict hook path, so a question that shares one common word with some note
+    # ("password", "recipe") abstains instead of returning that note. A full name match or a
+    # word naming the record's own project still admits it alone; one-word queries keep
+    # their single shared word.
+    # Dominant project: when one project owns more than DOMINANT_PROJECT_SHARE of the
+    # eligible records (in an index of at least DOMINANT_PROJECT_MIN_RECORDS), its records'
+    # weights are multiplied by DOMINANT_PROJECT_WEIGHT, so a large course or archive project
+    # cannot fill every unscoped top-5 by volume alone. Nothing is removed. The demotion is
+    # skipped when a query word names that project (its id, or the name of a folder mapped
+    # to it in .beyin-projects.json).
+    # Calibration (real vault, 698 notes, one project 83 %): weights 0.5 / 0.35 / 0.25 / 0.15
+    # gave English top-1 15 / 15 / 16 / 16 of 20 (13-14 without demotion); 0.25 is the
+    # mildest setting at the plateau. The admission rule took out-of-scope probes 0/4 -> 4/4.
+    EXPLICIT_MIN_SHARED = 2
+    DOMINANT_PROJECT_SHARE = 0.5
+    DOMINANT_PROJECT_MIN_RECORDS = 20
+    DOMINANT_PROJECT_WEIGHT = 0.25
+
+    def _record_projects(self, records):
+        """Project of every record (scope file folders included) and the words naming each project."""
+        try:
+            scopes = read_project_scopes(self.vault_root)
+        except ValueError:
+            scopes = None  # an invalid scope file is reported by scoped queries and doctor
+        owners, names = {}, {}
+        for record in records:
+            owner = record_scope(record, scopes) if scopes else record.get("project")
+            if isinstance(owner, str) and owner.strip():
+                owners[record["id"]] = owner
+                names.setdefault(owner, set()).update(_tokens(owner))
+        for folder, owner in (scopes or {}).get("folders", ()):
+            names.setdefault(owner, set()).update(_tokens(folder.rsplit("/", 1)[-1]))
+        return owners, names
+
+    def _unscoped_rank(self, weighted, terms, vocabularies, eligible, name_scores=None):
+        """Admission and dominant-project demotion for unscoped explicit lookups (see above)."""
+        min_shared = min(self.EXPLICIT_MIN_SHARED, len(terms))
+        owners, names = self._record_projects(eligible)
+        # A full name match (#354) or a word naming the record's own project is enough
+        # evidence on its own: "tavla oyunu ne durumda" must still reach the tavla notes.
+        name_scores = name_scores or {}
+        weighted = [(weight, record) for weight, record in weighted
+                    if len(terms & vocabularies[record["id"]]) >= min_shared or
+                    record["id"] in name_scores or terms & names.get(owners.get(record["id"]), set())]
+        if not weighted or len(eligible) < self.DOMINANT_PROJECT_MIN_RECORDS:
+            return weighted
+        counts = Counter(owners.values())
+        dominant = {owner for owner, count in counts.items()
+                    if count > self.DOMINANT_PROJECT_SHARE * len(eligible) and not (terms & names[owner])}
+        if not dominant:
+            return weighted
+        return self._by_weight([(weight * self.DOMINANT_PROJECT_WEIGHT if owners.get(record["id"]) in dominant else weight, record)
+                                for weight, record in weighted])
+
     # Strict automatic context: multiword queries need two shared words so that an incidental
     # common word cannot pull an unrelated note into the prompt. One-word queries use a
     # separate weight floor and still reject weak matches. Weight = sum of relative idf over
@@ -1228,7 +1288,7 @@ class MemoryStore:
         """Ids retired by any trusted record, not only by the ones this reader may see (#201)."""
         return resolve_supersedes(self._records() if records is None else records)[0]
 
-    def _retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, snapshot=False, strict=False, candidate_only=False):
+    def _retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, snapshot=False, strict=False, candidate_only=False, explicit=False):
         if audience not in ("public", "internal", "private"):
             raise ValueError("invalid audience")
         if not isinstance(query, str) or type(limit) is not int or limit < 0 or type(budget_chars) is not int or budget_chars < 0:
@@ -1293,6 +1353,8 @@ class MemoryStore:
             ranked = self._strict_rank(ranked, terms, vocabularies, name_scores=name_scores)
         else:
             ranked = self._weighted_rank(ranked, terms, term_counts, name_scores=name_scores)
+            if explicit and project is None and not snapshot and terms:
+                ranked = self._unscoped_rank(ranked, terms, vocabularies, eligible, name_scores)
         if candidate_only:
             return [record for _, record in ranked[:limit]]
         return pack_context([record for _, record in ranked], limit, budget_chars, stale_count)
