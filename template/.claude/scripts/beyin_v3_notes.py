@@ -4,6 +4,7 @@ The persistent OS lock is vault-local: an MSIX AppData redirect can split even a
 pinned state path between clients. Uncooperative editors do not take this lock.
 """
 from contextlib import contextmanager
+import hashlib
 import base64
 import errno
 import json
@@ -232,22 +233,102 @@ def apply(engine, request):
         raise
 
 
+def _idempotency_path(folder, key):
+    directory = folder / 'idempotency'
+    _unlinked(directory)
+    directory.mkdir(exist_ok=True, mode=0o700)
+    path = directory / (key + '.json')
+    _unlinked(path)
+    return path
+
+
+def _request_digest(request):
+    return hashlib.sha256(json.dumps(request, sort_keys=True, ensure_ascii=False,
+                                     separators=(',', ':')).encode('utf-8')).hexdigest()
+
+
+def _save_idempotency(path, details, fingerprint):
+    from beyin_v3_sync import _safe_replace
+    _unlinked(path.parent)
+    _unlinked(path)
+    fd, temporary = tempfile.mkstemp(prefix='.idempotency-', suffix='.tmp', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as out:
+            json.dump(dict(details, request_sha256=fingerprint), out, ensure_ascii=False)
+            out.flush()
+            os.fsync(out.fileno())
+        _unlinked(path.parent)
+        _unlinked(path)
+        _safe_replace(temporary, path)
+        _fsync_parent(path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def _replay_idempotency(engine, path, source, fingerprint, source_path):
+    from beyin_v3_sync import _hash
+    if not path.is_file():
+        return None
+    saved = json.loads(path.read_text(encoding='utf-8'))
+    if saved.get('source') != source:
+        raise ValueError('idempotency_key already used for a different source')
+    if saved.get('request_sha256') != fingerprint:
+        raise ValueError('idempotency_key already used for a different request')
+    current = _bytes(source_path)
+    if current is not None and _hash(current) == saved.get('sha256'):
+        # Recover a write interrupted after source replacement but before final publication.
+        result = engine.sync()
+        with engine.store._connect() as db:
+            row = db.execute('SELECT r.payload FROM records r JOIN markdown_sources m ON r.id=m.id '
+                             'WHERE m.source=?', (source,)).fetchone()
+        if (engine._source_issues(result, source) or _bytes(source_path) != current or not row or
+                json.loads(row[0]).get('source_sha256') != saved.get('sha256')):
+            raise NoteConflict('idempotent source requires projection review')
+        return dict({k: v for k, v in saved.items() if k != 'request_sha256'}, idempotent=True)
+    return None
+
+
 def _apply(engine, request, committed):
     from beyin_v3_sync import _hash, _safe_replace
     if not isinstance(request, dict):
         raise ValueError('note-edit request must be an object')
     source = request.get('source')
     source_path(engine, source)
-    if 'expected_sha256' not in request:
+    if 'expected_sha256' not in request and 'expected_source_hash' not in request:
         raise ValueError('expected_sha256 is required; use note-read first')
-    expected = request['expected_sha256']
+    if 'expected_sha256' in request and 'expected_source_hash' in request:
+        if request['expected_sha256'] != request['expected_source_hash']:
+            raise ValueError('expected_sha256 and expected_source_hash must match if both provided')
+    expected = request.get('expected_source_hash', request.get('expected_sha256'))
     if expected is not None and (not isinstance(expected, str) or
                                  not re.fullmatch('[0-9a-f]{64}', expected)):
         raise ValueError('expected_sha256 must be a SHA-256 hex digest or null')
+    idempotency_key = request.get('idempotency_key')
+    if idempotency_key is not None:
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            raise ValueError('idempotency_key must be a nonempty string')
+        if not re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', idempotency_key):
+            raise ValueError('idempotency_key contains invalid characters')
+    evidence_refs = request.get('evidence_refs')
+    if evidence_refs is not None:
+        if isinstance(evidence_refs, str):
+            evidence_refs = [evidence_refs]
+        if not isinstance(evidence_refs, list) or not all(isinstance(r, str) and r.strip() for r in evidence_refs):
+            raise ValueError('evidence_refs must be a list of nonempty strings')
     with locked(engine) as folder:
         path = source_path(engine, source)  # Revalidate after waiting for the lock.
         source = path.relative_to(engine.root).as_posix()
         _refuse_tracked_view(engine, source)
+        idempotency_file = None
+        fingerprint = _request_digest(dict(request, source=source, expected_sha256=expected))
+        if idempotency_key:
+            idempotency_file = _idempotency_path(folder, idempotency_key)
+            replay = _replay_idempotency(engine, idempotency_file, source, fingerprint, path)
+            if replay is not None:
+                return replay
         raw = _bytes(path)
         actual = _hash(raw) if raw is not None else None
         if actual != expected:
@@ -274,7 +355,12 @@ def _apply(engine, request, committed):
         _human(text)  # Do not create a managed source or convert a human note into one.
         updated = text.encode('utf-8')  # Keeps BOM and untouched CRLF bytes exactly.
         if updated == raw:
-            return {'status': 'unchanged', 'source': source, 'sha256': actual}
+            res = {'status': 'unchanged', 'source': source, 'sha256': actual}
+            if evidence_refs:
+                res['evidence_refs'] = evidence_refs
+            if idempotency_file:
+                _save_idempotency(idempotency_file, res, fingerprint)
+            return res
         # Preserve the exact requested bytes. With the opt-in filter enabled,
         # reject a secret-bearing result instead of silently rewriting its anchors.
         if engine._protect(text)[1]:
@@ -285,9 +371,12 @@ def _apply(engine, request, committed):
             _unlinked(backups)
             backups.mkdir(exist_ok=True, mode=0o700)
             backup = backups / (uuid.uuid4().hex + '.json')
+            backup_dict = {'source': source, 'sha256': actual,
+                           'bytes_base64': base64.b64encode(raw).decode('ascii')}
+            if evidence_refs:
+                backup_dict['evidence_refs'] = evidence_refs
             with backup.open('x', encoding='utf-8', newline='') as out:
-                json.dump({'source': source, 'sha256': actual,
-                           'bytes_base64': base64.b64encode(raw).decode('ascii')}, out)
+                json.dump(backup_dict, out)
                 out.flush()
                 os.fsync(out.fileno())
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -304,6 +393,11 @@ def _apply(engine, request, committed):
                 raise NoteConflict('external edit detected before replace; source preserved')
             details = {'source': source, 'written_sha256': _hash(updated),
                        'backup': backup.relative_to(engine.root).as_posix() if backup else None}
+            if idempotency_file:
+                _save_idempotency(idempotency_file,
+                    {'status': 'written', 'source': source, 'sha256': _hash(updated),
+                     'backup': details['backup'], **({'evidence_refs': evidence_refs} if evidence_refs else {})},
+                    fingerprint)
             _safe_replace(temporary, path)
             committed.update(details)
         finally:
@@ -322,6 +416,12 @@ def _apply(engine, request, committed):
                 json.loads(row[0]).get('source_sha256') != _hash(updated) or
                 _bytes(source_path(engine, source)) != updated):
             raise NoteConflict('source written but index readback failed; reread and run sync')
-    return engine._write_diagnostics(
-        {'status': 'written', 'source': source, 'sha256': _hash(updated),
-         'backup': backup.relative_to(engine.root).as_posix() if backup else None}, result)
+        written_details = {
+            'status': 'written',
+            'source': source,
+            'sha256': _hash(updated),
+            'backup': backup.relative_to(engine.root).as_posix() if backup else None,
+        }
+        if evidence_refs:
+            written_details['evidence_refs'] = evidence_refs
+        return engine._write_diagnostics(written_details, result)

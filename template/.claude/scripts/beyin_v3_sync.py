@@ -1271,7 +1271,7 @@ class SyncEngine:
             sys.path.insert(0, _MODULE_DIR)
         return note_apply_edits(self, request)
 
-    def note_create(self, source, text, metadata=None):
+    def note_create(self, source, text, metadata=None, idempotency_key=None, evidence_refs=None):
         if _MODULE_DIR not in sys.path:
             sys.path.insert(0, _MODULE_DIR)
         if not isinstance(text, str) or not text.strip() or (metadata is not None and not isinstance(metadata, dict)):
@@ -1282,11 +1282,28 @@ class SyncEngine:
             raise ValueError('new semantic notes belong under notes/ or knowledge/')
         self._refuse_excluded(source)
         metadata = dict(metadata or {})
-        for field in ('project', 'kind', 'status', 'updated_at'):
+        if idempotency_key is None and 'idempotency_key' in metadata:
+            idempotency_key = metadata.pop('idempotency_key')
+        if evidence_refs is None and 'evidence_refs' in metadata:
+            evidence_refs = metadata.get('evidence_refs')
+        if idempotency_key is not None:
+            if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+                raise ValueError('idempotency_key must be a nonempty string')
+            if not re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', idempotency_key):
+                raise ValueError('idempotency_key contains invalid characters')
+        if evidence_refs is not None:
+            if isinstance(evidence_refs, str):
+                evidence_refs = [evidence_refs]
+            if not isinstance(evidence_refs, list) or not all(isinstance(r, str) and r.strip() for r in evidence_refs):
+                raise ValueError('evidence_refs must be a list of nonempty strings')
+            metadata['evidence_refs'] = evidence_refs
+        for field in ('project', 'kind', 'status', 'updated_at', 'evidence_refs'):
             if metadata.get(field) is None:
                 metadata.pop(field, None)
-            elif field in metadata and not isinstance(metadata[field], str):
+            elif field in metadata and field != 'evidence_refs' and not isinstance(metadata[field], str):
                 raise ValueError(field + ' must be a string')
+            elif field == 'evidence_refs' and not isinstance(metadata['evidence_refs'], list):
+                raise ValueError('evidence_refs must be a list')
         if 'id' in metadata and (not isinstance(metadata['id'], str) or not metadata['id'].strip()):
             raise ValueError('record id must be nonempty text')
         if 'facts' in metadata and not isinstance(metadata['facts'], dict):
@@ -1306,19 +1323,35 @@ class SyncEngine:
             raise ValueError('use task-create for new tasks')
         if metadata.get('generated') or metadata.get('kind') == 'receipt':
             raise ValueError('managed note kinds require their dedicated command')
+        from beyin_v3_notes import _request_digest
+        request_fingerprint = _request_digest({'operation': 'note-create', 'source': source,
+                                               'text': text, 'metadata': metadata})
         text, redacted = self._protect(text)
         metadata, meta_redacted = self._protect_metadata(metadata)
         redacted += meta_redacted
         intended = render(metadata, text+'\n')
         # All participating note writers share this vault-local lock, even when
         # clients use different state roots. Acquire it before the DB transaction.
-        with note_locked(self):
+        with note_locked(self) as folder:
             self._refuse_excluded(source)
             path = self._path(source)
+            idempotency_file = None
+            from beyin_v3_notes import (_idempotency_path, _request_digest,
+                                        _replay_idempotency, _save_idempotency)
+            fingerprint = request_fingerprint
+            if idempotency_key:
+                idempotency_file = _idempotency_path(folder, idempotency_key)
+                replay = _replay_idempotency(self, idempotency_file, source, fingerprint, path)
+                if replay is not None:
+                    return replay
             with self.store._connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 if path.exists():
                     raise ValueError('source exists; preserve and edit deliberately')
+                if idempotency_file:
+                    _save_idempotency(idempotency_file,
+                        {'status': 'succeeded', 'source': source, 'sha256': _hash(intended),
+                         **({'evidence_refs': evidence_refs} if evidence_refs else {})}, fingerprint)
                 self._intent(source, None, intended, 'note')
             result = self.sync()
             record_id = metadata.get('id', 'md-' + _hash(source)[:24])
@@ -1331,12 +1364,15 @@ class SyncEngine:
             record = json.loads(row[0])
             if record.get('source') != source or record.get('source_sha256') != _hash(intended) or path.read_bytes() != intended.encode('utf-8'):
                 raise RevisionConflict('created note source readback mismatch')
-        self._record_redactions(redacted)
-        return {'status': 'succeeded', 'source': source, 'redacted': redacted,
-                'secrets_redacted': redacted, 'warnings': result['warnings'],
-                'conflicts': result['conflicts'],
-                'source_sync': {'status': result['status'], 'warnings': result['warnings'],
-                                'conflicts': result['conflicts']}}
+            self._record_redactions(redacted)
+            created_details = {'status': 'succeeded', 'source': source, 'sha256': _hash(intended),
+                               'redacted': redacted, 'secrets_redacted': redacted,
+                               'warnings': result['warnings'], 'conflicts': result['conflicts'],
+                               'source_sync': {'status': result['status'], 'warnings': result['warnings'],
+                                               'conflicts': result['conflicts']}}
+            if evidence_refs:
+                created_details['evidence_refs'] = evidence_refs
+            return created_details
 
     def task_create(self, source, text, metadata):
         if not isinstance(source, str) or not source.startswith('tasks/') or not source.endswith('.md'):
