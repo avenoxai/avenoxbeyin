@@ -1323,6 +1323,9 @@ class SyncEngine:
             raise ValueError('use task-create for new tasks')
         if metadata.get('generated') or metadata.get('kind') == 'receipt':
             raise ValueError('managed note kinds require their dedicated command')
+        from beyin_v3_notes import _request_digest
+        request_fingerprint = _request_digest({'operation': 'note-create', 'source': source,
+                                               'text': text, 'metadata': metadata})
         text, redacted = self._protect(text)
         metadata, meta_redacted = self._protect_metadata(metadata)
         redacted += meta_redacted
@@ -1333,24 +1336,22 @@ class SyncEngine:
             self._refuse_excluded(source)
             path = self._path(source)
             idempotency_file = None
+            from beyin_v3_notes import (_idempotency_path, _request_digest,
+                                        _replay_idempotency, _save_idempotency)
+            fingerprint = request_fingerprint
             if idempotency_key:
-                idemp_dir = folder / 'idempotency'
-                idemp_dir.mkdir(exist_ok=True, mode=0o700)
-                idempotency_file = idemp_dir / (idempotency_key + '.json')
-                if idempotency_file.is_file():
-                    try:
-                        saved = json.loads(idempotency_file.read_text(encoding='utf-8'))
-                        if saved.get('source') == source and path.is_file() and _hash(path.read_bytes()) == saved.get('sha256'):
-                            return dict(saved, idempotent=True)
-                        elif saved.get('source') != source:
-                            raise ValueError('idempotency_key already used for a different source')
-                    except (OSError, ValueError) as exc:
-                        if isinstance(exc, ValueError):
-                            raise
+                idempotency_file = _idempotency_path(folder, idempotency_key)
+                replay = _replay_idempotency(self, idempotency_file, source, fingerprint, path)
+                if replay is not None:
+                    return replay
             with self.store._connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 if path.exists():
                     raise ValueError('source exists; preserve and edit deliberately')
+                if idempotency_file:
+                    _save_idempotency(idempotency_file,
+                        {'status': 'succeeded', 'source': source, 'sha256': _hash(intended),
+                         **({'evidence_refs': evidence_refs} if evidence_refs else {})}, fingerprint)
                 self._intent(source, None, intended, 'note')
             result = self.sync()
             record_id = metadata.get('id', 'md-' + _hash(source)[:24])
@@ -1371,13 +1372,6 @@ class SyncEngine:
                                                'conflicts': result['conflicts']}}
             if evidence_refs:
                 created_details['evidence_refs'] = evidence_refs
-            if idempotency_file:
-                idemp_saved = {'status': 'succeeded', 'source': source, 'sha256': _hash(intended)}
-                if evidence_refs:
-                    idemp_saved['evidence_refs'] = evidence_refs
-                temp_idemp = idempotency_file.with_suffix('.tmp')
-                temp_idemp.write_text(json.dumps(idemp_saved, ensure_ascii=False), encoding='utf-8')
-                _safe_replace(temp_idemp, idempotency_file)
             return created_details
 
     def task_create(self, source, text, metadata):

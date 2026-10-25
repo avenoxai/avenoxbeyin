@@ -72,3 +72,9 @@ A changed managed source advances the indexed effective revision even when its a
 Skipped unsupported metadata returns `status: degraded` with warnings. Context adapters must surface this rather than treating an incomplete scan as healthy.
 
 `store.snapshot_context(audience='internal', budget_chars=6000, limit=5)` (also available on SyncEngine) selects recent active/waiting records and statusless notes/facts using the same visibility, trust, source-freshness and budget checks as retrieval. A task without explicit status is unknown and excluded from this current-state snapshot; no active or completed state is invented. It is explicit: an empty ordinary retrieval query continues to abstain. Receipts remain separate historical agent claims; adapters may include a bounded latest receipt with that label, never convert it into verified facts. New source receipts have an immutable ISO `created_at` timestamp retained on replay.
+
+### Local note retry keys (proposed API)
+
+`note-create` and `note-edit` may use a vault-local `idempotency_key`. A key is bound to the complete request and source; reusing it for a different request is rejected. The writer records the intended source digest atomically before replacing the source, while holding the cooperative writer lock. Retrying an interrupted request succeeds only when the source bytes match that recorded digest and sync verifies the projection. Existing cache records without a request digest are rejected rather than trusted. The journal contains hashes and result metadata, not the requested note body. It stays in `.beyin-note-write/idempotency/`, which must not be synchronized between devices.
+
+This is local retry protection, not a distributed transaction or proof that arbitrary external effects occurred. The proposed use of note `evidence_refs` for free-form identifiers remains distinct from the existing task source-path contract and requires a maintainer API decision before adoption.

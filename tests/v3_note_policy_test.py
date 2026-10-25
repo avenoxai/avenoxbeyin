@@ -36,6 +36,64 @@ class NotePolicyTest(unittest.TestCase):
         path.write_bytes(raw)
         return path
 
+    def test_cached_key_rejects_changed_payload_for_edit_and_create(self):
+        request = dict(source='notes/key.md', expected_sha256=None, content='original', idempotency_key='key')
+        self.engine.note_edit(request)
+        with self.assertRaisesRegex(ValueError, 'different request'):
+            self.engine.note_edit(dict(request, content='changed'))
+        self.engine.note_create('notes/create.md', 'original', idempotency_key='create')
+        with self.assertRaisesRegex(ValueError, 'different request'):
+            self.engine.note_create('notes/create.md', 'changed', idempotency_key='create')
+
+    def test_fixed_temporary_symlink_does_not_escape_vault(self):
+        outside = self.vault.parent / 'outside.txt'
+        outside.write_text('preserve', encoding='utf-8')
+        cache = self.vault / LOCAL_DIRECTORY / 'idempotency'
+        cache.mkdir(parents=True)
+        try:
+            (cache / 'key.tmp').symlink_to(outside)
+        except OSError:
+            self.skipTest('symlink unavailable')
+        self.engine.note_edit(dict(source='notes/key.md', expected_sha256=None,
+                                   content='hello', idempotency_key='key'))
+        self.assertEqual(outside.read_text(), 'preserve')
+
+    def test_note_create_rejects_linked_idempotency_directory(self):
+        outside = self.vault.parent / 'outside-cache'
+        outside.mkdir()
+        folder = self.vault / LOCAL_DIRECTORY
+        folder.mkdir()
+        try:
+            (folder / 'idempotency').symlink_to(outside, target_is_directory=True)
+        except OSError:
+            self.skipTest('symlink unavailable')
+        with self.assertRaises(ValueError):
+            self.engine.note_create('notes/key.md', 'hello', idempotency_key='key')
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertFalse((self.vault / 'notes/key.md').exists())
+
+    def test_create_retry_recovers_interruption_after_source_write(self):
+        original = self.engine.sync
+        def interrupted():
+            original()
+            raise OSError('synthetic interruption after source/index write')
+        with patch.object(self.engine, 'sync', side_effect=interrupted):
+            with self.assertRaises(OSError):
+                self.engine.note_create('notes/recover.md', 'durable', idempotency_key='recover')
+        self.assertTrue((self.vault / 'notes/recover.md').is_file())
+        result = self.engine.note_create('notes/recover.md', 'durable', idempotency_key='recover')
+        self.assertTrue(result['idempotent'])
+
+    def test_edit_retry_recovers_interruption_after_source_write(self):
+        request = dict(source='notes/recover.md', expected_sha256=None,
+                       content='durable', idempotency_key='recover')
+        with patch.object(self.engine, 'sync', side_effect=OSError('synthetic interruption')):
+            with self.assertRaises(NoteConflict):
+                self.engine.note_edit(request)
+        self.assertTrue((self.vault / 'notes/recover.md').is_file())
+        result = self.engine.note_edit(request)
+        self.assertTrue(result['idempotent'])
+
     def test_expected_source_hash_alias(self):
         self.write(source='notes/policy.md', raw=b'# Policy Note\ncontent here\n')
         current_hash = self.engine.note_read('notes/policy.md')['sha256']
