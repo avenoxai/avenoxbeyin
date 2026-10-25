@@ -29,6 +29,13 @@ class WorkspacesTest(unittest.TestCase):
         self.state = Path(self.tmp.name) / "state"
         self.state.mkdir()
 
+    def test_read_only_workspace_dispatch_does_not_create_state(self):
+        fresh = self.state / 'not-created'
+        result, code = cli.main(['--vault', str(self.vault), '--state', str(fresh),
+                                 'workspace', 'list'], return_result=True)
+        self.assertEqual(code, 0)
+        self.assertFalse(fresh.exists())
+
     def test_disconnect_preserves_reassigned_folder_owner(self):
         (self.vault / 'team').mkdir()
         workspaces.create_workspace(self.vault, 'one', sources=['team'])
