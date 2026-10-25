@@ -28,6 +28,105 @@ class MutationQueueTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def test_malformed_queue_is_not_silently_rewritten(self):
+        queue = self.state / mutation.MUTATION_QUEUE_FILE
+        original = b'{broken JSON\n'
+        queue.write_bytes(original)
+        for operation in (lambda: mutation.replay_mutations(self.vault, self.state, self.sync),
+                          lambda: mutation.clear_applied(self.state)):
+            with self.assertRaises(ValueError):
+                operation()
+            self.assertEqual(queue.read_bytes(), original)
+
+    def test_doctor_does_not_create_identity_or_state(self):
+        empty = self.tmp / 'absent-state'
+        self.assertIsNone(mutation.doctor(empty)['machine_id'])
+        self.assertFalse(empty.exists())
+
+    def test_update_requires_full_hash_and_preserves_private_metadata(self):
+        from beyin_v3_sync import parse
+        self.sync.note_create('notes/private.md', 'original', {'visibility': 'private', 'project': 'restricted'})
+        path = self.vault / 'notes/private.md'
+        original = path.read_bytes()
+        for expected in ('', _hash(original)[:1]):
+            mutation.enqueue_mutation(self.state, 'note_update', 'notes/private.md',
+                {'text': 'stale', 'expected_hash': expected})
+            self.assertEqual(mutation.replay_mutations(self.vault, self.state, self.sync)['failed'], 1)
+            self.assertEqual(path.read_bytes(), original)
+        mutation.enqueue_mutation(self.state, 'note_update', 'notes/private.md',
+            {'text': 'updated', 'expected_hash': _hash(original)})
+        result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertEqual(result['applied'], 1, result)
+        metadata, body = parse(path.read_text())
+        self.assertEqual(metadata['visibility'], 'private')
+        self.assertEqual(metadata['project'], 'restricted')
+        self.assertEqual(body, 'updated\n')
+
+    def test_replay_revalidates_source_even_for_tampered_queue(self):
+        outside = self.tmp / 'victim.md'
+        outside.write_text('preserve')
+        item = mutation.enqueue_mutation(self.state, 'note_update', 'notes/valid.md',
+            {'text': 'overwrite', 'expected_hash': _hash(b'preserve')})
+        item['source'] = '../victim.md'
+        mutation._save_all_mutations(self.state, [item])
+        result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertEqual(result['failed'], 1)
+        self.assertEqual(outside.read_text(), 'preserve')
+
+    def test_update_and_conflict_redact_secrets_and_keep_distinct_copies(self):
+        from beyin_v3_preferences import save
+        save(self.vault, {'secret_filter': True})
+        token = 'sk-' + 'SyntheticOnly' * 3
+        self.sync.note_create('notes/redact.md', 'original')
+        path = self.vault / 'notes/redact.md'
+        for expected in (_hash(path.read_bytes()), 'a' * 64, 'b' * 64):
+            mutation.enqueue_mutation(self.state, 'note_update', 'notes/redact.md',
+                {'text': token, 'expected_hash': expected})
+        result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertEqual((result['applied'], result['conflicts']), (1, 2), result)
+        copies = list(path.parent.glob('*.sync-conflict-*.md'))
+        self.assertEqual(len(copies), 2)
+        for note in [path] + copies:
+            self.assertNotIn(token, note.read_text())
+            self.assertIn('[REDACTED]', note.read_text())
+
+    def test_note_and_task_create_replay_are_idempotent(self):
+        for action, source, payload in [
+            ('note_create', 'notes/repeat.md', {'text': 'same'}),
+            ('task_create', 'tasks/repeat.md', {'text': 'same', 'metadata':
+                {'id': 'repeat', 'owner': 'test', 'status': 'active'}})]:
+            for _ in range(2):
+                mutation.enqueue_mutation(self.state, action, source, payload)
+                result = mutation.replay_mutations(self.vault, self.state, self.sync)
+                self.assertEqual((result['applied'], result['conflicts']), (1, 0), result)
+
+    def test_enqueue_during_replay_is_preserved(self):
+        import threading
+        from unittest.mock import patch
+        mutation.enqueue_mutation(self.state, 'note_create', 'notes/first.md', {'text': 'first'})
+        original = self.sync.note_create
+        appended = threading.Event()
+        errors = []
+        def enqueue():
+            try:
+                mutation.enqueue_mutation(self.state, 'note_create', 'notes/second.md', {'text': 'second'})
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                appended.set()
+        thread = threading.Thread(target=enqueue)
+        def interleave(*args, **kwargs):
+            thread.start()
+            appended.wait(0.2)
+            return original(*args, **kwargs)
+        with patch.object(self.sync, 'note_create', side_effect=interleave):
+            mutation.replay_mutations(self.vault, self.state, self.sync)
+        thread.join(10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual({m['source'] for m in mutation.list_mutations(self.state)},
+                         {'notes/first.md', 'notes/second.md'})
+
     def test_machine_id_generation_and_persistence(self):
         mid1 = mutation.get_machine_id(self.state)
         self.assertRegex(mid1, r"^[0-9a-f]{32}$")

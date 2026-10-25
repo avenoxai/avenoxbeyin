@@ -1804,7 +1804,8 @@ def main(argv=None, return_result=False):
         else:
             payload = read_json(args.file)
             result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])
-        if (args.command in SOURCE_WRITE_COMMANDS
+        if ((args.command in SOURCE_WRITE_COMMANDS or
+             (args.command == "mutation-queue" and args.replay and result.get("applied", 0) > 0))
                 and (args.command != "note-edit" or result.get('status') == 'written')
                 and os.environ.get("CLAUDE_CODE_SESSION_ID")):
             mark_session_edit(state)

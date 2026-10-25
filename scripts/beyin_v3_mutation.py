@@ -7,6 +7,8 @@ Standard library only; zero external dependencies.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+from types import SimpleNamespace
 import datetime
 import hashlib
 import json
@@ -22,7 +24,7 @@ VALID_ACTIONS = ("note_create", "note_update", "task_create", "task_update", "re
 VALID_STATUSES = ("pending", "applied", "conflict", "failed")
 
 
-def get_machine_id(state: str | Path) -> str:
+def get_machine_id(state: str | Path, *, create=True) -> str | None:
     """Return persistent, anonymous 32-hex machine identifier.
 
     Reuses existing parallel presence device id if available, or reads/generates
@@ -49,6 +51,8 @@ def get_machine_id(state: str | Path) -> str:
         except (OSError, ValueError):
             pass
 
+    if not create:
+        return None
     new_id = uuid.uuid4().hex
     state_dir.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".dev-", dir=state_dir)
@@ -67,10 +71,28 @@ def get_machine_id(state: str | Path) -> str:
 
 
 def _queue_path(state: str | Path) -> Path:
-    return Path(state) / MUTATION_QUEUE_FILE
+    from beyin_v3_notes import _unlinked
+    path = Path(state) / MUTATION_QUEUE_FILE
+    _unlinked(path)
+    return path
 
 
-def enqueue_mutation(
+@contextmanager
+def _queue_lock(state):
+    # Reuse the cross-platform, process-aware cooperative writer lock in local state.
+    from beyin_v3_notes import locked
+    root = Path(state).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    with locked(SimpleNamespace(root=root)):
+        yield
+
+
+def enqueue_mutation(state, action, source, payload, vault=None):
+    with _queue_lock(state):
+        return _enqueue_mutation(state, action, source, payload, vault)
+
+
+def _enqueue_mutation(
     state: str | Path,
     action: str,
     source: str,
@@ -82,6 +104,8 @@ def enqueue_mutation(
         raise ValueError(f"invalid mutation action: {action}; must be one of {VALID_ACTIONS}")
     if not isinstance(source, str) or not source.strip():
         raise ValueError("source must be a non-empty string path")
+    if Path(source).is_absolute() or ".." in Path(source).parts or "\\" in source:
+        raise ValueError("relative vault source required")
     if not isinstance(payload, dict):
         raise ValueError("payload must be a dictionary")
 
@@ -131,21 +155,18 @@ def list_mutations(state: str | Path, status: str | None = None) -> list[dict]:
         return []
 
     mutations = []
-    try:
-        with open(queue_file, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    item = json.loads(line)
-                    if isinstance(item, dict) and "mutation_id" in item:
-                        if status is None or item.get("status") == status:
-                            mutations.append(item)
-                except ValueError:
-                    continue
-    except OSError:
-        return []
+    with open(queue_file, 'r', encoding='utf-8') as f:
+        for number, line in enumerate(f, 1):
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except ValueError as exc:
+                raise ValueError(f'invalid mutation queue line {number}; preserve and repair it') from exc
+            if not isinstance(item, dict) or not isinstance(item.get('mutation_id'), str):
+                raise ValueError(f'invalid mutation queue line {number}; preserve and repair it')
+            if status is None or item.get('status') == status:
+                mutations.append(item)
     return mutations
 
 
@@ -175,41 +196,66 @@ def _save_all_mutations(state: str | Path, mutations: list[dict]) -> None:
         raise
 
 
-def isolate_conflict(vault: str | Path, mutation: dict) -> str:
+def isolate_conflict(vault: str | Path, mutation: dict, sync_engine=None) -> str:
     """Create a conflict copy matching the file-sync conflict pattern:
 
     .*\\.sync-conflict-\\d{8}(?:-\\d{6})?-[0-9A-Za-z]+\\.md
     """
-    vpath = Path(vault)
-    source = mutation["source"]
-    orig_path = Path(source)
-    stem = orig_path.stem
-    parent = orig_path.parent
-
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
-    machine_prefix = mutation.get("machine_id", "local")[:8]
-    conflict_name = f"{stem}.sync-conflict-{stamp}-{machine_prefix}.md"
-    conflict_rel = parent / conflict_name
-    conflict_target = vpath / conflict_rel
-    conflict_target.parent.mkdir(parents=True, exist_ok=True)
-
-    payload = mutation.get("payload", {})
-    text = payload.get("text", "")
-    metadata = payload.get("metadata")
-
-    if metadata and isinstance(metadata, dict):
-        content = "---\n" + json.dumps(metadata, ensure_ascii=False, indent=2) + "\n---\n" + text
+    from beyin_v3_sync import render, parse
+    from beyin_v3_notes import source_path, locked
+    engine = sync_engine
+    if engine is None:
+        raise ValueError('conflict isolation requires the validated replay engine')
+    source = mutation['source']
+    if source.startswith('tasks/'):
+        from beyin_v3_notes import _unlinked
+        original = engine._path(source)
+        cursor = original
+        while cursor != engine.root:
+            _unlinked(cursor)
+            cursor = cursor.parent
     else:
-        content = text
+        original = source_path(engine, source)
+    payload = mutation.get('payload', {})
+    text, _ = engine._protect(payload.get('text', ''))
+    metadata = parse(original.read_text(encoding='utf-8'))[0] if original.is_file() else {}
+    metadata.update(payload.get('metadata') or {})
+    metadata, _ = engine._protect_metadata(metadata)
+    content = render(metadata, text.rstrip('\n') + '\n')
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d-%H%M%S')
+    # An exclusive create plus a fresh suffix prevents same-second overwrites.
+    with locked(engine):
+        for _ in range(10):
+            relative = original.relative_to(engine.root).with_name(
+                f'{original.stem}.sync-conflict-{stamp}-{uuid.uuid4().hex[:8]}.md').as_posix()
+            target = engine._path(relative)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target = engine._path(relative)
+            from beyin_v3_notes import _unlinked
+            cursor = target
+            while cursor != engine.root:
+                _unlinked(cursor)
+                cursor = cursor.parent
+            try:
+                with target.open('x', encoding='utf-8', newline='') as out:
+                    out.write(content)
+                    out.flush()
+                    os.fsync(out.fileno())
+                return relative
+            except FileExistsError:
+                continue
+    raise ValueError('could not allocate a unique conflict copy')
 
-    if not content.endswith("\n"):
-        content += "\n"
 
-    conflict_target.write_text(content, encoding="utf-8")
-    return conflict_rel.as_posix()
+def replay_mutations(vault, state, sync_engine=None):
+    if not _queue_path(state).is_file():
+        return {'status': 'succeeded', 'total': 0, 'replayed': 0, 'applied': 0,
+                'conflicts': 0, 'failed': 0, 'mutations': []}
+    with _queue_lock(state):
+        return _replay_mutations(vault, state, sync_engine)
 
 
-def replay_mutations(vault: str | Path, state: str | Path, sync_engine=None) -> dict:
+def _replay_mutations(vault: str | Path, state: str | Path, sync_engine=None) -> dict:
     """Replay pending mutations against vault and sync engine.
 
     Idempotent: matching content is marked applied without modification.
@@ -253,22 +299,25 @@ def replay_mutations(vault: str | Path, state: str | Path, sync_engine=None) -> 
         action = mut["action"]
         source = mut["source"]
         payload = mut.get("payload", {})
-        target_path = vpath / source
-
         try:
+            if action not in VALID_ACTIONS:
+                raise ValueError("unknown mutation action")
+            from beyin_v3_notes import source_path, NoteConflict
+            from beyin_v3_sync import parse, render
+            target_path = sync_engine._path(source)
+            if action in ('note_create', 'note_update'):
+                target_path = source_path(sync_engine, source)
             if action == "note_create":
                 if target_path.is_file():
-                    text = payload.get("text", "")
-                    meta = payload.get("metadata")
-                    expected_content = ("---\n" + json.dumps(meta, ensure_ascii=False, indent=2) + "\n---\n" + text) if meta else text
-                    if not expected_content.endswith("\n"):
-                        expected_content += "\n"
+                    text, _ = sync_engine._protect(payload.get('text', ''))
+                    meta, _ = sync_engine._protect_metadata(payload.get('metadata') or {})
+                    expected_content = render(meta, text + '\n')
                     if target_path.read_text(encoding="utf-8") == expected_content:
                         mut["status"] = "applied"
                         mut["idempotent"] = True
                         applied_count += 1
                     else:
-                        conflict_rel = isolate_conflict(vpath, mut)
+                        conflict_rel = isolate_conflict(vpath, mut, sync_engine)
                         mut["status"] = "conflict"
                         mut["conflict_path"] = conflict_rel
                         conflict_count += 1
@@ -279,54 +328,46 @@ def replay_mutations(vault: str | Path, state: str | Path, sync_engine=None) -> 
                     applied_count += 1
 
             elif action == "note_update":
-                if hasattr(sync_engine, "note_update"):
-                    try:
-                        res = sync_engine.note_update(
-                            source,
-                            payload.get("expected_hash", ""),
-                            text=payload.get("text"),
-                            metadata=payload.get("metadata"),
-                        )
-                        mut["status"] = "applied"
-                        mut["result"] = res
-                        applied_count += 1
-                    except Exception as conflict_exc:
-                        conflict_rel = isolate_conflict(vpath, mut)
-                        mut["status"] = "conflict"
-                        mut["conflict_path"] = conflict_rel
-                        mut["error"] = str(conflict_exc)
-                        conflict_count += 1
+                expected = payload.get('expected_hash')
+                if not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{64}', expected):
+                    raise ValueError('note_update requires a full SHA-256 expected_hash')
+                snapshot = sync_engine.note_read(source)
+                raw = snapshot['content']
+                if raw is None or snapshot['sha256'] != expected:
+                    conflict_rel = isolate_conflict(vpath, mut, sync_engine)
+                    mut.update(status='conflict', conflict_path=conflict_rel)
+                    conflict_count += 1
                 else:
-                    if not target_path.is_file():
-                        conflict_rel = isolate_conflict(vpath, mut)
-                        mut["status"] = "conflict"
-                        mut["conflict_path"] = conflict_rel
+                    meta, _ = parse(raw)
+                    meta.update(payload.get('metadata') or {})
+                    text, _ = sync_engine._protect(payload.get('text', ''))
+                    meta, _ = sync_engine._protect_metadata(meta)
+                    desired = render(meta, text.rstrip('\n') + '\n')
+                    try:
+                        res = sync_engine.note_edit({'source': source, 'expected_sha256': expected,
+                            'edits': [{'old': raw, 'new': desired}]})
+                        mut.update(status='applied', result=res)
+                        applied_count += 1
+                    except NoteConflict as exc:
+                        conflict_rel = isolate_conflict(vpath, mut, sync_engine)
+                        mut.update(status='conflict', conflict_path=conflict_rel, error=str(exc))
                         conflict_count += 1
-                    else:
-                        cur_raw = target_path.read_bytes()
-                        cur_hash = hashlib.sha256(cur_raw).hexdigest()
-                        exp = payload.get("expected_hash", "").strip().lower()
-                        if cur_hash.startswith(exp):
-                            text = payload.get("text", "")
-                            meta = payload.get("metadata")
-                            new_content = ("---\n" + json.dumps(meta, ensure_ascii=False, indent=2) + "\n---\n" + text) if meta else text
-                            if not new_content.endswith("\n"):
-                                new_content += "\n"
-                            target_path.write_text(new_content, encoding="utf-8")
-                            mut["status"] = "applied"
-                            applied_count += 1
-                        else:
-                            conflict_rel = isolate_conflict(vpath, mut)
-                            mut["status"] = "conflict"
-                            mut["conflict_path"] = conflict_rel
-                            conflict_count += 1
 
             elif action == "task_create":
                 if target_path.is_file():
-                    conflict_rel = isolate_conflict(vpath, mut)
-                    mut["status"] = "conflict"
-                    mut["conflict_path"] = conflict_rel
-                    conflict_count += 1
+                    stored_meta, stored_text = parse(target_path.read_text(encoding='utf-8'))
+                    meta, _ = sync_engine._protect_metadata(payload.get('metadata') or {})
+                    text, _ = sync_engine._protect(payload.get('text', ''))
+                    if (meta.get('id') and stored_meta.get('kind') == 'task' and
+                            stored_meta.get('revision') == 1 and
+                            all(stored_meta.get(k) == v for k, v in meta.items()) and
+                            stored_text == text + '\n'):
+                        mut.update(status='applied', idempotent=True)
+                        applied_count += 1
+                    else:
+                        conflict_rel = isolate_conflict(vpath, mut, sync_engine)
+                        mut.update(status='conflict', conflict_path=conflict_rel)
+                        conflict_count += 1
                 else:
                     res = sync_engine.task_create(source, payload.get("text", ""), payload.get("metadata"))
                     mut["status"] = "applied"
@@ -369,7 +410,9 @@ def replay_mutations(vault: str | Path, state: str | Path, sync_engine=None) -> 
         mut["applied_at"] = time.time()
         processed.append(mut)
 
-    _save_all_mutations(state_dir, all_mutations)
+    updates = {m['mutation_id']: m for m in all_mutations}
+    latest = list_mutations(state_dir)
+    _save_all_mutations(state_dir, [updates.get(m['mutation_id'], m) for m in latest])
 
     if applied_count > 0:
         try:
@@ -389,6 +432,11 @@ def replay_mutations(vault: str | Path, state: str | Path, sync_engine=None) -> 
 
 
 def clear_applied(state: str | Path) -> dict:
+    with _queue_lock(state):
+        return _clear_applied(state)
+
+
+def _clear_applied(state: str | Path) -> dict:
     """Remove applied mutations from queue, leaving pending and conflict entries."""
     state_dir = Path(state)
     all_mutations = list_mutations(state_dir)
@@ -405,7 +453,7 @@ def doctor(state: str | Path) -> dict:
     if not queue_file.is_file():
         return {
             "status": "ok",
-            "machine_id": get_machine_id(state_dir),
+            "machine_id": get_machine_id(state_dir, create=False),
             "queue_exists": False,
             "pending_count": 0,
             "conflict_count": 0,
@@ -422,7 +470,7 @@ def doctor(state: str | Path) -> dict:
     status = "needs_attention" if (conflicts > 0 or failed > 0) else "pending" if pending > 0 else "ok"
     return {
         "status": status,
-        "machine_id": get_machine_id(state_dir),
+        "machine_id": get_machine_id(state_dir, create=False),
         "queue_exists": True,
         "pending_count": pending,
         "conflict_count": conflicts,
