@@ -34,6 +34,10 @@ WORKSPACE_KINDS = (
 LIFECYCLE_STATES = ("active", "archived")
 
 
+def _source_key(value):
+    return _scope_key(_scope_path(value))
+
+
 def _serialized_write(function):
     from functools import wraps
     @wraps(function)
@@ -168,11 +172,11 @@ def create_workspace(vault_root, workspace_id, name=None, kind="general", source
             norm_src = _scope_path(src)
             if not _scope_folder_exists(vault_root, norm_src):
                 raise ValueError(f"source folder not found in vault: {norm_src}")
-            src_key = _scope_key(norm_src)
+            src_key = _source_key(norm_src)
             for existing_f, existing_p in data["folders"].items():
-                if _scope_key(existing_f) == src_key and existing_p != workspace_id:
+                if _source_key(existing_f) == src_key and existing_p != workspace_id:
                     raise ValueError(f"source folder {norm_src} is already assigned to workspace {existing_p}")
-            if norm_src not in validated_sources:
+            if not any(_source_key(item) == src_key for item in validated_sources):
                 validated_sources.append(norm_src)
                 data["folders"][norm_src] = workspace_id
 
@@ -217,15 +221,16 @@ def connect_source(vault_root, workspace_id, folder):
     data["schema_version"] = 2
 
     ws = data["workspaces"][workspace_id]
-    src_key = _scope_key(norm_src)
+    src_key = _source_key(norm_src)
     for existing_f, existing_p in data["folders"].items():
-        if _scope_key(existing_f) == src_key and existing_p != workspace_id:
+        if _source_key(existing_f) == src_key and existing_p != workspace_id:
             raise ValueError(f"source folder {norm_src} is already assigned to workspace {existing_p}")
 
     sources = ws.setdefault("sources", [])
-    if norm_src not in sources:
+    if not any(_source_key(item) == src_key for item in sources):
         sources.append(norm_src)
-    data["folders"][norm_src] = workspace_id
+    existing_key = next((key for key in data['folders'] if _source_key(key) == src_key), norm_src)
+    data["folders"][existing_key] = workspace_id
     ws["updated_at"] = datetime.now(timezone.utc).isoformat()
     data["workspaces"][workspace_id] = ws
     _save_project_scopes(vault_root, data)
@@ -252,13 +257,13 @@ def disconnect_source(vault_root, workspace_id, folder):
         data["folders"] = {}
 
     ws = data["workspaces"][workspace_id]
-    src_key = _scope_key(norm_src)
-    matched_src = next((s for s in ws.get("sources", []) if _scope_key(s) == src_key), None)
+    src_key = _source_key(norm_src)
+    matched_src = next((s for s in ws.get("sources", []) if _source_key(s) == src_key), None)
     if not matched_src:
         raise ValueError(f"source folder {norm_src} is not connected to workspace {workspace_id}")
 
-    ws["sources"].remove(matched_src)
-    matched_folder = next((f for f in data["folders"] if _scope_key(f) == src_key), None)
+    ws["sources"] = [source for source in ws["sources"] if _source_key(source) != src_key]
+    matched_folder = next((f for f in data["folders"] if _source_key(f) == src_key), None)
     if matched_folder and data["folders"][matched_folder] == workspace_id:
         del data["folders"][matched_folder]
 
