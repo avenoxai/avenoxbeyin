@@ -134,12 +134,19 @@ class MigrationTest(unittest.TestCase):
                                   cwd=self.root, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL, start_new_session=True)
 
+        stopped = False
+
         def stop():
+            nonlocal stopped
+            # Cleanup runs again after the explicit stop; do not reuse the reaped writer's PGID.
+            if stopped:
+                return
             try:
                 os.killpg(writer.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             writer.wait(timeout=60)
+            stopped = True
         self.addCleanup(stop)
         sentinels = []
         deadline = time.monotonic() + 120
