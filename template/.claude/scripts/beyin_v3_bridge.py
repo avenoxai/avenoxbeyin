@@ -649,6 +649,16 @@ def main(argv=None):
                 'JSON alternative: --file RECEIPT.json with event_id, summary, refs, session. '
                 'Read vault sources before claiming facts. Do not infer completion from checkpoints. '
                 'Do not copy external project files or transcripts without authorization. No-memory requests take precedence.')
+        if len(text) > args.context_chars:
+            # Keep one complete executable path instead of repeating it three times.
+            text = (f'Beyin bridge active. Receipt session={session}; harness={args.harness}.\n'
+                    f'CLI: {command}\n'
+                    'Append context "topic" --project PROJECT --json for authorized lookup; '
+                    'note-create for lasting knowledge; then '
+                    f'receipt --harness {args.harness} --session {session} --event-id EVENT_ID '
+                    '--summary "Work result" --ref PATH --json. '
+                    'PATH must be an existing vault-relative source. Read sources before claiming facts. '
+                    'Do not copy external files or transcripts without authorization. No-memory requests take precedence.')
         if read_project_context(state):
             try:
                 proj_info = origin(payload, args.harness, vault)

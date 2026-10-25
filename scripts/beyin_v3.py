@@ -35,27 +35,40 @@ class NoteUsageError(ValueError):
     pass
 
 
-def mark_session_edit(state: Path) -> None:
+def mark_session_edit(state: Path, vault: Path | None = None, source: str | None = None) -> None:
     """Open the Stop reminder's edit window for the Claude Code session that ran this write (#212).
 
     Bash is not a PostToolUse matcher, so a note or task written through `beyin.py` from the Bash
     tool was invisible to the receipt reminder. Claude Code sets CLAUDE_CODE_SESSION_ID in Bash
-    subprocesses to the session_id its hooks receive, so the marker names that exact session;
-    other shells and harnesses do not set it and nothing is guessed. Never costs the write itself.
+    subprocesses to the session_id its hooks receive. External project writes use the same
+    cwd/session namespace as the global bridge; successful distilled-note writes retain
+    knowledge evidence even though the note mtime precedes this marker. Other shells and harnesses do not set it and nothing is guessed. Never costs the write itself.
     """
     session = os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not session or os.environ.get("BEYIN_V3_NO_RECEIPT_REMINDER") == "1":
         return
     try:
+        if vault is not None:
+            cwd = Path.cwd().resolve()
+            if not cwd.is_relative_to(Path(vault).resolve()):
+                session = json.dumps([str(cwd), session])
         folder = Path(state) / "receipt-reminders"
         edited = folder / (hashlib.sha256(session.encode("utf-8")).hexdigest() + ".edited")
-        if edited.exists():
-            return  # the window opened by the first edit stays, as for PostToolUse
+        previous = json.loads(edited.read_text(encoding="utf-8")) if edited.exists() else None
+        marker = dict(previous) if previous is not None else {"at": time.time()}
+        if vault is not None and source:
+            from beyin_v3_projections import is_distilled_note
+            lexical = Path(vault) / source
+            canonical = lexical.resolve().relative_to(Path(vault).resolve()).as_posix()
+            if not lexical.is_symlink() and lexical.is_file() and is_distilled_note(canonical):
+                marker['knowledge'] = True
+        if marker == previous:
+            return
         folder.mkdir(parents=True, exist_ok=True)
         temporary = folder / (edited.name + "." + str(os.getpid()) + ".tmp")
-        temporary.write_text(json.dumps({"at": time.time()}), encoding="utf-8")
+        temporary.write_text(json.dumps(marker), encoding="utf-8")
         os.replace(temporary, edited)
-    except OSError:
+    except (OSError, ValueError, TypeError):
         pass
 
 
@@ -1780,7 +1793,7 @@ def main(argv=None, return_result=False):
         if (args.command in SOURCE_WRITE_COMMANDS
                 and (args.command != "note-edit" or result.get('status') == 'written')
                 and os.environ.get("CLAUDE_CODE_SESSION_ID")):
-            mark_session_edit(state)
+            mark_session_edit(state, vault, result.get("source"))
         if return_result:
             return result, 0
         print(json.dumps(result, ensure_ascii=True, indent=2))

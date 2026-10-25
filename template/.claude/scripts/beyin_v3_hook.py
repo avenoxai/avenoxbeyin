@@ -326,15 +326,6 @@ def receipt_reminder(payload, state, harness, event, vault=None):
         folder = Path(state) / "receipt-reminders"
         done, edited = folder / (digest + ".done"), folder / (digest + ".edited")
         kdone = folder / (digest + ".kdone")
-        if not edited.exists() and session_id.startswith("["):
-            try:
-                parts = json.loads(session_id)
-                if isinstance(parts, list) and len(parts) == 2 and isinstance(parts[1], str):
-                    raw_edited = folder / (hashlib.sha256(parts[1].encode("utf-8")).hexdigest() + ".edited")
-                    if raw_edited.exists():
-                        edited = raw_edited
-            except Exception:
-                pass
         if done.exists() and kdone.exists():
             return None
         if event == "UserPromptSubmit":
