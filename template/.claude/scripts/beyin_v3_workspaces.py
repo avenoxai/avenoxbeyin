@@ -15,6 +15,7 @@ from beyin_v3_projects import (
     PROJECT_SCOPES_FILE,
     PROJECT_SCOPES_ALLOWED_KEYS,
     _save_project_scopes,
+    read_project_scopes,
     _scope_folder_exists,
     _scope_key,
     _scope_path,
@@ -47,6 +48,8 @@ def _read_raw_manifest(vault_root):
         raise ValueError("project scopes file must contain a JSON object")
     if set(data) - PROJECT_SCOPES_ALLOWED_KEYS:
         raise ValueError(f"unsupported keys in project scopes file: {sorted(set(data) - PROJECT_SCOPES_ALLOWED_KEYS)}")
+    # Preserve the established fail-closed scope contract before any mutation.
+    read_project_scopes(vault_root)
     return data
 
 
@@ -240,7 +243,7 @@ def disconnect_source(vault_root, workspace_id, folder):
 
     ws["sources"].remove(matched_src)
     matched_folder = next((f for f in data["folders"] if _scope_key(f) == src_key), None)
-    if matched_folder:
+    if matched_folder and data["folders"][matched_folder] == workspace_id:
         del data["folders"][matched_folder]
 
     ws["updated_at"] = datetime.now(timezone.utc).isoformat()

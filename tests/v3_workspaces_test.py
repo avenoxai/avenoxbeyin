@@ -29,6 +29,26 @@ class WorkspacesTest(unittest.TestCase):
         self.state = Path(self.tmp.name) / "state"
         self.state.mkdir()
 
+    def test_disconnect_preserves_reassigned_folder_owner(self):
+        (self.vault / 'team').mkdir()
+        workspaces.create_workspace(self.vault, 'one', sources=['team'])
+        projects.manage(self.vault, 'add', folder='team', project='two')
+        workspaces.disconnect_source(self.vault, 'one', 'team')
+        data = json.loads((self.vault / projects.PROJECT_SCOPES_FILE).read_text())
+        self.assertEqual(data['folders'], {'team': 'two'})
+
+    def test_invalid_manifest_is_rejected_without_rewriting_bytes(self):
+        path = self.vault / projects.PROJECT_SCOPES_FILE
+        for data in ({'folders': [], 'shared_unscoped': True},
+                     {'folders': {}, 'shared_unscoped': 'true'},
+                     {'folders': {'../outside': 'one'}}):
+            with self.subTest(data=data):
+                original = json.dumps(data).encode()
+                path.write_bytes(original)
+                with self.assertRaises(ValueError):
+                    workspaces.create_workspace(self.vault, 'new')
+                self.assertEqual(path.read_bytes(), original)
+
     def test_read_workspaces_empty_when_manifest_absent(self):
         self.assertEqual(workspaces.read_workspaces(self.vault), {})
 
