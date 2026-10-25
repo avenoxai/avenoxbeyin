@@ -651,7 +651,8 @@ def main(argv=None):
                 'Do not copy external project files or transcripts without authorization. No-memory requests take precedence.')
         if len(text) > args.context_chars:
             # Keep one complete executable path instead of repeating it three times.
-            text = (f'Beyin bridge active. Receipt session={session}; harness={args.harness}.\n'
+            text = (f'Beyin bridge active (project: {json.dumps(origin(payload, args.harness, vault)["project"])}). '
+                    f'Receipt session={session}; harness={args.harness}.\n'
                     f'CLI: {command}\n'
                     'Append context "topic" --project PROJECT --json for authorized lookup; '
                     'note-create for lasting knowledge; then '

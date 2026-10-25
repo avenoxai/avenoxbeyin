@@ -129,6 +129,7 @@ class BridgeTest(unittest.TestCase):
         text = self.invoke(harness='claude')['hookSpecificOutput']['additionalContext']
         self.assertIn('note-create', text)
         self.assertIn('receipt --harness claude', text)
+        self.assertIn(json.dumps(self.project.name), text)
         self.assertLessEqual(len(text), 1500)
 
     def test_sensitive_folder_task_cannot_enter_external_project_context(self):
