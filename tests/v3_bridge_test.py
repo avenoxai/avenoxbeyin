@@ -60,6 +60,9 @@ class BridgeTest(unittest.TestCase):
             text = result['hookSpecificOutput']['additionalContext']
             self.assertIn('receipt --harness ' + harness, text)
             self.assertIn('--event-id EVENT_ID --summary "Work result" --ref PATH', text)
+            self.assertIn('note-create', text)
+            self.assertIn('Beyin bridge active', text)
+            self.assertNotIn('Optional Beyin bridge', text)
             self.assertIn(str(self.vault / 'beyin.py'), text)
             self.assertLessEqual(len(text), 1500)
         events = self.queued()
@@ -80,6 +83,54 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(result.stdout)
         self.assertIn('hookSpecificOutput', data)
+
+    def test_stop_forwards_receipt_reminder_when_session_was_edited(self):
+        # 1. Startup instructions contain note-create instruction
+        start_res = self.invoke(harness='claude')
+        self.assertIn('note-create', start_res['hookSpecificOutput']['additionalContext'])
+        # A real CLI write records the same project namespace as the bridge.
+        self.create_cli_knowledge()
+        # 3. Invoke Stop via bridge: must forward block decision with reminder
+        stop_payload = dict(self.payload, hook_event_name='Stop')
+        stop_res = self.invoke(stop_payload, harness='claude')
+        self.assertEqual(stop_res.get('decision'), 'block')
+        self.assertIn('Files were edited in this session but no receipt was written', stop_res.get('reason', ''))
+
+    def create_cli_knowledge(self):
+        env = dict(self.env, CLAUDE_CODE_SESSION_ID='one-session')
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/beyin_v3.py'),
+                                 '--vault', str(self.vault), '--state', str(self.state),
+                                 'note-create', '--file', '-'],
+                                input=json.dumps({'source': 'knowledge/concepts/finding.md',
+                                                  'text': '# Durable finding\n'}),
+                                text=True, capture_output=True, env=env, cwd=self.project, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_real_cli_write_does_not_mark_another_project(self):
+        self.invoke(harness='claude')
+        self.create_cli_knowledge()
+        other = self.root / 'Projects/other'
+        other.mkdir()
+        stop = dict(self.payload, hook_event_name='Stop', cwd=str(other))
+        self.assertEqual(self.invoke(stop, harness='claude'), {})
+        self.assertEqual(self.invoke(dict(self.payload, hook_event_name='Stop'), harness='claude')['decision'], 'block')
+
+    def test_real_cli_knowledge_and_receipt_satisfy_stop(self):
+        self.invoke(harness='claude')
+        self.create_cli_knowledge()
+        session = hashlib.sha256(json.dumps([str(self.project), 'one-session']).encode()).hexdigest()[:24]
+        SyncEngine(self.vault, self.state).receipt('finding', 'Learned: durable finding',
+            ['knowledge/concepts/finding.md'], 'claude', session=session)
+        self.assertEqual(self.invoke(dict(self.payload, hook_event_name='Stop'), harness='claude'), {})
+
+    def test_long_vault_path_preserves_bootstrap(self):
+        self.vault = self.root / ('Brain' + 'x' * 160)
+        self.vault.mkdir()
+        text = self.invoke(harness='claude')['hookSpecificOutput']['additionalContext']
+        self.assertIn('note-create', text)
+        self.assertIn('receipt --harness claude', text)
+        self.assertIn(json.dumps(self.project.name), text)
+        self.assertLessEqual(len(text), 1500)
 
     def test_sensitive_folder_task_cannot_enter_external_project_context(self):
         secret = self.vault / '🔐 Kasa/task.md'
