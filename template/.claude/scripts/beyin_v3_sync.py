@@ -30,6 +30,8 @@ from beyin_v3_projections import (is_receipt_view_source, is_receipt_view_confli
                                   RECEIPT_VIEW_SOURCES_ROW)
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
+from beyin_v3_notes import (NoteConflict, locked as note_locked,
+                            read as note_read_source, apply as note_apply_edits)
 
 
 def _hash(data):
@@ -881,7 +883,6 @@ class SyncEngine:
         return candidate
 
     def _recover(self, db, note_locks=None):
-        from beyin_v3_notes import NoteConflict, locked
         completed, conflicts = [], []
         for entry in sorted(self.journal.glob('*.json')):
             try:
@@ -892,7 +893,7 @@ class SyncEngine:
                 with ExitStack() as guard:
                     if intent.get('kind') == 'note':
                         try:
-                            guard.enter_context(locked(self, timeout=0))
+                            guard.enter_context(note_locked(self, timeout=0))
                         except NoteConflict:
                             # A live writer holds the lock (the OS releases it when a
                             # process dies). Its own sync, or a later one, replays this
@@ -1259,16 +1260,20 @@ class SyncEngine:
         self._record_redactions(redacted)
         return self._write_diagnostics(dict(result_record, redacted=redacted, secrets_redacted=redacted), result)
 
+    # The notes writer also imports this module when it validates human sources.
     def note_read(self, source):
-        from beyin_v3_notes import read
-        return read(self, source)
+        if _MODULE_DIR not in sys.path:
+            sys.path.insert(0, _MODULE_DIR)
+        return note_read_source(self, source)
 
     def note_edit(self, request):
-        from beyin_v3_notes import apply
-        return apply(self, request)
+        if _MODULE_DIR not in sys.path:
+            sys.path.insert(0, _MODULE_DIR)
+        return note_apply_edits(self, request)
 
     def note_create(self, source, text, metadata=None, idempotency_key=None, evidence_refs=None):
-        from beyin_v3_notes import locked
+        if _MODULE_DIR not in sys.path:
+            sys.path.insert(0, _MODULE_DIR)
         if not isinstance(text, str) or not text.strip() or (metadata is not None and not isinstance(metadata, dict)):
             raise ValueError('note text and metadata required')
         if text.lstrip().startswith('---'):
@@ -1324,7 +1329,7 @@ class SyncEngine:
         intended = render(metadata, text+'\n')
         # All participating note writers share this vault-local lock, even when
         # clients use different state roots. Acquire it before the DB transaction.
-        with locked(self) as folder:
+        with note_locked(self) as folder:
             self._refuse_excluded(source)
             path = self._path(source)
             idempotency_file = None

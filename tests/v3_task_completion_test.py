@@ -312,8 +312,12 @@ class TaskCompletionTest(unittest.TestCase):
         result = self.engine.sync()
         self.assertEqual(result['indexed'], 1)
         reasons = {warning['source']: warning['reason'] for warning in result['warnings']}
-        self.assertEqual(reasons.get('notes/a.md'), 'symlink source rejected')
-        self.assertEqual(reasons.get('notes/b.md'), 'symlink source rejected')
+        # The invariant is that each looped link becomes one rejected source. On Windows,
+        # Python 3.13+ resolves a loop without raising and lands outside the vault, so the
+        # same rejection is reported with the outside-vault reason there.
+        rejected = {'symlink source rejected'} | ({'source outside vault'} if os.name == 'nt' else set())
+        self.assertIn(reasons.get('notes/a.md'), rejected)
+        self.assertIn(reasons.get('notes/b.md'), rejected)
 
 
 if __name__ == '__main__':

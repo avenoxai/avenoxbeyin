@@ -208,10 +208,12 @@ aninin kaydedilmis noktasini temsil etmez.
 **Secim ve sure.** macOS/Linux tam Tk penceresinde, dogrulanmis sayfa ve ondan farkli imlec
 linki varsa `Imlecin altindaki baglanti` varsayilan, `Etkin sayfa` alternatif gelir.
 macOS'ta Option+I/Option+S, Linux'ta Alt+I/Alt+S veya satira tiklama kullanilir.
-Pano metni/gorseli/linki bu durumda istege bagli secenektir. Linux'ta panodaki yerel dosya
-listesi tarayici baglamina onceliklidir: dosya onizlemesi gosterilir ve yalniz dosyalar
-kaydedilir; sayfa ve imlec URL'si karta eklenmez. Yalniz sayfa akisi mevcut davranisini
-korur. Tk olmayan `kdialog`/`zenity`/macOS basit soru yedeginde
+Pano bağlantısı bu durumda kapalı bir seçenektir. macOS/Linux bu sayfa+imleç yolunda
+pano metninin tazeliğini doğrulamadığından metin kartı sunulmaz; not kutusuna elle
+yazılabilir veya açıkça yapıştırılabilir. Mevcut pano görseli okuyucusu da sayfa varken
+görsel teklif etmez. Linux'ta panodaki yerel dosya listesi tarayıcı bağlamına önceliklidir:
+dosya önizlemesi gösterilir ve yalnız dosyalar kaydedilir; sayfa ve imleç URL'si karta eklenmez.
+Yalnız sayfa akışı mevcut davranışını korur. Tk olmayan `kdialog`/`zenity`/macOS basit soru yedeginde
 imlec ve sayfa secicisi yoktur; dogrulanmis sayfa kullanilir.
 
 Yeni Windows belge okuyucusu 1 saniye; macOS tarayici okuma toplami 2,5 saniye (AX payi en
@@ -283,7 +285,7 @@ ve percent-encoding gosterim farki veya soguk renderer bos sonuca yol acabilir.
 Kısayol anında fare bir linkin
 (ör. YouTube ana sayfasındaki bir video kartı) üstündeyse o link varsayılan kaynak olur; açık
 sayfa **Alt+S**, imlecin altındaki link **Alt+I** ile seçilir. Okuma sırasında pencere veya sekme
-değişirse (başlık değişir) iki link de atılır. Link yoksa kaynak pencerenin görüntüsü sunulur
+değişirse (başlık değişir) iki link de atılır. Link varken de kaynak pencerenin görüntüsü sunulur
 (önce Windows.Graphics.Capture, olmazsa PrintWindow). Görüntü kapalı gelir; **Alt+W** veya satıra
 tıklama ile eklenir, çünkü `isle` görseli ajana olduğu gibi okutur. History/oturum veritabanı okunmaz;
 localhost/özel IP için mevcut ağ güvenliği sınırı korunur.
@@ -327,20 +329,33 @@ Opera Air soguk erisilebilirlik olcumu ve tek UIA uyandirma istegi ayri
 icermiyor. Yandex ortak renderer yolunu kullandigi icin soguk/sicak saglayici sonucu ve
 #399 oncesi/sonrasi ayrica olculmelidir. Eski Opera Air sonucu yeni tarayicilar icin kanit degildir.
 
-Tarayıcıdan okunan link (imlecin altındaki ya da açık sayfa) varsa varsayılan odur; pano içeriği
-yalnız seçenek olarak, işaretsiz sunulur. Link yoksa dinleyicinin başlangıcından itibaren gözlenen,
-başarılı kayıtta kullanılmamış pano revision'ı önceliklidir. İlk kullanım/yeniden başlatmada eldeki panonun yaşı bilinmez: içerik kapalı
-seçenek olarak kalır. Snipping Tool dosya zamanı tek başına otomatik tazelik sağlamaz.
+Tarayıcıdan okunan link (imlecin altındaki ya da açık sayfa) varsa varsayılan odur. Pano metni
+yalnız tazeliği doğrulanmışsa görünür; linkin yanında kapalı gelir. Eski pano metni gösterilmez.
+Link yoksa dinleyicinin başlangıcından itibaren gözlenen, başarılı kayıtta kullanılmamış pano
+revision'ı önceliklidir. İlk kullanım/yeniden başlatmada eldeki panonun yaşı bilinmez: metin
+gizlenir; bağlantı ve görüntü kapalı seçenek olarak kalır. Snipping Tool dosya zamanı tek başına
+otomatik tazelik sağlamaz.
 İptal ve yalnız sayfayı kaydetmek panoyu tüketmez. Pano değişimi yakalama tuşundan sonra
 olduysa yeni içerik kendiliğinden kaynak seçilmez. Metin/görüntü aynı pano oturumundan
 kopyalanır; gecikmeli veya tutarsız okuma güvenli biçimde atlanır.
 
 Seçim yolları: **Alt+I** imlecin altındaki bağlantı, **Alt+S** etkin sayfa, **Alt+A** alıntılanan
 gönderi, **Alt+P** pano bağlantısı, **Alt+M** metin, **Alt+G** pano görüntüsü, **Alt+W** pencere
-görüntüsü.
-Alternatifler birbirini silmez. Bir URL seçimi diğer URL'yi kapatır. Pano metni/dosya eklenen
-mevcut URL kartı da `private` olur. Aynı popup'ın kayıt kimliği tekrar oynatılsa bile ikinci
+görüntüsü. Kısayollar not kutusunda da çalışır; büyük harf ve Türkçe I/İ desteklenir.
+Birden çok bağlantı birlikte seçilebilir. Ana `url` önceliği: imleç bağlantısı, etkin sayfa,
+alıntılanan gönderi, pano bağlantısı. Diğer seçilen adresler kartın `Ek bağlantılar` bölümünde
+ve isteğe bağlı `ek_urller` listesinde tutulur; `isle` ana URL'yi işler. Aynı adres ikinci kart
+olarak gösterilmez. Yalnız bir bağlantıyı kaydetmek için diğerlerinin işaretini kaldır.
+Pano metni, dosya veya mail adresi eklenen mevcut URL kartı da `private` olur.
+Mail adresi ana kaynak yerine `ek_urller` içinde seçilmiş olsa da bütün kart özel kalır.
+Aynı popup'ın kayıt kimliği tekrar oynatılsa bile ikinci
 commit yapılmaz.
+
+Popup sıcak nötr zemin, kiremit vurgu ve küçük kısayol rozetleri kullanır. Seçili kaynaklar
+renkli çerçeve ve onay işaretiyle ayrılır. Pencere kaynak monitörün çalışma alanına sığar;
+uzun kaynak listesi fare tekerleği veya PgUp/PgDn ile kaydırılır. Not kutusu ve kaydetme
+ipuçları yerinde kalır. Pencere görüntüsü kullanıcı seçmeden karta eklenmez; link ve görüntü
+birlikte kaydedilebilir.
 
 Aynı sayfanın ikinci yakalaması yeni kart açmaz, mevcut karta eklenir. Sayfa kimliği her
 sistemde aynı kuralla hesaplanır (senkronlanan bir vault'u Mac ve Windows birlikte okuyabilir):
@@ -358,6 +373,13 @@ ile dinleyici kopyasını yenilemek gerekir. IPC pipe'ları hotkey thread'ini bl
 Dinleyici kapanışı önce STOP gönderir; yanıt vermeyen pencere ve okuyucuları sahip olunan
 Job Object üzerinden sonlandırılır. Başka bir vault'a ait state silinmez.
 
+Windows'ta geçici el sıkışma zaman aşımı veya popup'ın beklenmedik kapanması kısayolu bırakmaz.
+Önce eski süreç sonlandırılıp beklenir, ardından 0,5 saniye sonra yeni pencere ısıtılır.
+Sonucu bilinmeyen yakalama otomatik tekrarlanmaz; sonraki basış yeni yakalamadır.
+120 saniye içinde üçüncü geçici hatada dinleyici kapanır ve `yakala kur` ile yenilenmesi istenir.
+Protokol uyumsuzluğu veya eski sürecin sonlandırılamaması doğrudan kapanma nedenidir.
+Hata aşaması ve toparlanma kararı `yakala/dinleyici.log` içine yazılır.
+
 Popup kaynak monitörde açılır. Windows tarafında Tk yönetilen pencere kullanır; özel
 palet/canvas görünümü korunmak üzere yerel başlık/çerçeve stili kaldırılır. **Esc** yerel
 odakta hemen iptal eder. Kaynaklar okunurken ve popup açık olduğu sürece, odak nerede olursa
@@ -371,8 +393,9 @@ Görünür **Kapat** ve Alt+F4 da iptaldir. Windows güvenli masaüstü/UIPI/hoo
 her durumda global Esc garantisi yoktur. Kartın disk commit'i başladıysa Esc kaydedilmiş
 veriyi geriye dönük iptal etmez; yavaş disk I/O'su sırasında arayüz yanıtı gecikebilir.
 
-URL doğrulanmışsa ek ekran görüntüsü işi yapılmaz. Diğer durumda **WGC → PrintWindow →
-görüntü yok** sırası izlenir; her backend ayrı, sonlandırılabilir süreçtedir. Önizleme yöntem
+Pencere görüntüsü için link olsa da **WGC → PrintWindow → görüntü yok** sırası izlenir;
+her backend ayrı, sonlandırılabilir süreçtedir. Bu hazırlık popup açılışına süre ekleyebilir.
+Yakalama başarısızsa görüntü seçeneği oluşmaz. Önizleme yöntem
 adını gösterir. Ekran DC'sinden BitBlt yoktur. Kaynak pencere değişirse sonuç atılır.
 WGC, Windows 10 1903+ API yoludur; destek/izin/sürücü başarısızsa PrintWindow denenir.
 Korumalı/GPU/exclusive-fullscreen uygulamaların tamamı için başarı veya HDR renk doğruluğu
@@ -495,7 +518,8 @@ elde olanla devam edilir.
 - Yakalama ağa çıkmaz; yalnız vault'a bir dosya yazar.
 - Ağ yalnız `isle` adımında ve yalnız yakaladığın kaynaklar için kullanılır. Defuddle,
   X gönderisi sayfada yoksa gönderi adresini FxTwitter API'sine sorar.
-- Mail, pano metni ve dosya kartları `visibility: private` ile yazılır.
+- Mail, pano metni ve dosya kartları `visibility: private` ile yazılır. Seçilen ek
+  bağlantılardan biri mail adresiyse ana kaynak herkese açık olsa da aynı kural uygulanır.
 - Kaldırmak için `python3 beyin.py yakala kaldir`: kısayol, skill ve bildirim gider, kartların kalır.
 
 ## Komutlar

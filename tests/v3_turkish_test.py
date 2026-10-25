@@ -4,10 +4,12 @@ import importlib.util
 import json
 from pathlib import Path
 import sqlite3
+import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
 spec = importlib.util.spec_from_file_location('v3_turkish_evaluator', ROOT / 'scripts/evaluate_v3.py')
 evaluator = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(evaluator)
@@ -61,6 +63,9 @@ GUARDS = (
     ('sistem', 'sisteme'), ('durum', 'duruma'), ('platform', 'platforma'), ('alarm', 'alarma'),
     ('prompt', 'promptu'), ('backend', 'backendi'), ('trend', 'trendi'), ('build', 'buildi'),
     ('minimal', 'minimali'), ('anahtar', 'anahtarı'), ('sınır', 'sınırı'),
+    # A folded i/u cannot reveal fronting, so older vowels must not veto suffixes.
+    ('tarih', 'tarihte'), ('hakim', 'hakime'), ('kalori', 'kaloriler'), ('kabul', 'kabulde'),
+    ('claude', 'claudenin'), ('claude', 'claudeye'), ('claude', 'claudede'),
 )
 
 FILLER = 'Bu sentetik test kaydıdır.'
@@ -123,6 +128,12 @@ class TurkishStemTest(unittest.TestCase):
         for root, inflected in GUARDS:
             with self.subTest(root=root):
                 self.assertEqual(self.stem(root), self.stem(inflected))
+
+    def test_claude_keeps_its_literal_root_without_matching_a_truncated_name(self):
+        for word in ('claude', 'claudenin', 'claudeye', 'claudede'):
+            with self.subTest(word=word):
+                self.assertEqual(self.stem(word), 'claude')
+        self.assertNotEqual(self.stem('clau'), self.stem('claude'))
 
     def test_stemming_replaces_rather_than_expands(self):
         # The strict gate counts matched query words, so a word may never become two tokens.
@@ -200,6 +211,8 @@ class TurkishVerbIssueTest(VaultTestCase):
         self.ingest('tarih', 'Kaydın tarihi frontmatter alanında saklanır, dosya adında değil.',
                     'knowledge/tarih.md')
         self.ingest('docker', 'Docker imajı her sürümde yeniden derlenir.', 'knowledge/docker.md')
+        self.ingest('claude', 'Claude Code rehberi: araç çalıştırma ve bellek ayarları burada saklanır.',
+                    'knowledge/claude.md')
         self.ingest('mutfak', 'Mutfak alışverişi: elma, ekmek, zeytinyağı.', 'notes/mutfak.md')
 
     def context(self, query):
@@ -212,6 +225,31 @@ class TurkishVerbIssueTest(VaultTestCase):
             with self.subTest(passages=passages):
                 self.assertEqual(self.context('Mem0 kurulmalı mı?'), ['mem0'])
                 self.assertEqual(self.context('kayıt tarihi nerede'), ['tarih'])
+                self.assertEqual(self.context('Claude ayarları nerede'), ['claude'])
+                self.assertEqual(self.context("Claude'da bellek ayarları"), ['claude'])
+                self.assertEqual(self.context("Claude'un ayarları"), ['claude'])
+
+    def test_ambiguous_last_vowels_keep_real_note_matches(self):
+        pairs = (('tarih', 'tarihte'), ('hakim', 'hakime'),
+                 ('kalori', 'kaloriler'), ('kabul', 'kabulde'))
+        for i, (_, written) in enumerate(pairs):
+            self.ingest('weak-%s' % i, written + ' hakkında sentetik kayıt.',
+                        'knowledge/weak-%s.md' % i)
+        for passages in (True, False):
+            self.store.STRICT_PASSAGES = passages
+            for i, (query, _) in enumerate(pairs):
+                with self.subTest(query=query, passages=passages):
+                    expected = ['weak-%s' % i]
+                    if query == 'tarih':
+                        expected.append('tarih')
+                    self.assertCountEqual(self.context(query), expected)
+
+    def test_truncated_name_does_not_find_claude(self):
+        for passages in (True, False):
+            self.store.STRICT_PASSAGES = passages
+            with self.subTest(passages=passages):
+                self.assertEqual(self.context('clau'), [])
+                self.assertEqual(self.context('Claude'), ['claude'])
 
     def test_imperative_prompt_stays_silent(self):
         for passages in (True, False):

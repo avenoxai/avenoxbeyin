@@ -64,6 +64,18 @@ def _is_absolute_cross_platform(raw: str) -> bool:
     return bool(re.match(r"^([A-Za-z]:[/\\]|[/\\])", raw))
 
 
+def _resolve_state_path(pinned: Path) -> Path:
+    """Validate a pin even when non-strict realpath suppresses invalid-path errors."""
+    if "\0" in str(pinned):
+        raise ValueError("embedded null character in state path")
+    resolved = Path(pinned).expanduser().resolve()
+    try:
+        resolved.stat()
+    except FileNotFoundError:
+        pass  # A valid state directory may not have been created yet.
+    return resolved
+
+
 def resolve_state(vault: Path, pinned: Path) -> Path:
     """Resolve a foreign OS/user's conventional default; preserve custom and local pins."""
     expected = default_state(vault).resolve()
@@ -72,7 +84,7 @@ def resolve_state(vault: Path, pinned: Path) -> Path:
         return expected
     if _in_package_container(raw):
         try:
-            resolved = Path(pinned).expanduser().resolve()
+            resolved = _resolve_state_path(pinned)
             if _is_absolute_cross_platform(str(resolved)):
                 return resolved
         except (OSError, ValueError, RuntimeError):
@@ -89,7 +101,7 @@ def resolve_state(vault: Path, pinned: Path) -> Path:
     if conventional and portable.rsplit("/", 1)[0].casefold() != local_parent:
         return expected
     try:
-        resolved = Path(pinned).expanduser().resolve()
+        resolved = _resolve_state_path(pinned)
     except (OSError, ValueError, RuntimeError):
         return expected
 
@@ -185,7 +197,7 @@ def state_location(vault: Path, state: Path, windows=None) -> dict:
     if pinned is None:
         return report
     try:
-        resolved = Path(pinned).expanduser().resolve()
+        resolved = _resolve_state_path(pinned)
     except (OSError, ValueError, RuntimeError):
         report.update(pinned_state=pinned, installed_at_pinned_state=False)
         report["warnings"].append(
@@ -900,18 +912,25 @@ def recap_bounds_inverted(since, until):
     return first > last
 
 
-def parser(note_namespace=None):
+class ArgumentParsingError(Exception):
+    pass
+
+
+def parser(note_namespace=None, is_json=False):
     class ResultParser(argparse.ArgumentParser):
         def error(self, message):
             # argparse assigns the root command before parsing the subparser.
             # The shared namespace also covers unknown options reported by root.
             if getattr(note_namespace, 'command', None) in NOTE_JSON_COMMANDS:
                 raise NoteUsageError(message)
+            if is_json:
+                raise ArgumentParsingError(message)
             super().error(message)
 
     root = ResultParser(description=__doc__)
     root.add_argument("--vault", required=True, type=Path, help="Existing vault directory")
     root.add_argument("--state", type=Path, help="Local state directory outside the vault")
+    root.add_argument("--json", action="store_true", help="Format output as JSON")
     sub = root.add_subparsers(dest="command", required=True)
     sub.add_parser("init", help="Initialize local state; installs no hooks or services")
     sync_parser = sub.add_parser("sync", help="Reconcile Markdown sources into local state")
@@ -1086,38 +1105,45 @@ def parser(note_namespace=None):
 def main(argv=None, return_result=False):
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8-sig")
+    args_list = list(sys.argv[1:] if argv is None else argv)
     args = argparse.Namespace()
-    argument_parser = parser(note_namespace=args)
+    argument_parser = parser(note_namespace=args, is_json="--json" in args_list)
     try:
-        args = argument_parser.parse_args(argv, namespace=args)
+        args = argument_parser.parse_args(args_list, namespace=args)
+        receipt_flags = args.command == "receipt" and any(
+            getattr(args, name) is not None for name in ("event_id", "summary", "summary_file", "ref", "link", "session"))
+        if receipt_flags:
+            for stream in (sys.stdout, sys.stderr):
+                if hasattr(stream, "reconfigure"):
+                    stream.reconfigure(encoding="utf-8")
+            if args.file is not None:
+                argument_parser.error("--file cannot be combined with receipt flags")
+            if args.event_id is None:
+                argument_parser.error("--event-id is required in flag mode")
+            if args.summary is not None and args.summary_file is not None:
+                argument_parser.error("use exactly one of --summary and --summary-file")
+            if args.summary is None and args.summary_file is None:
+                argument_parser.error("--summary or --summary-file is required in flag mode")
+            if not args.ref:
+                argument_parser.error("--ref is required in flag mode (at least one)")
+        if args.command == "recap":
+            # Usage errors, raised before any state is opened or synced.
+            if args.days is not None and (args.since is not None or args.until is not None):
+                args.usage_error("argument --days: not allowed with argument --since/--until")
+            if args.since is not None and args.until is not None and recap_bounds_inverted(args.since, args.until):
+                args.usage_error("argument --since: must not be after --until")
+    except ArgumentParsingError as exc:
+        error = {"error": "SystemExit", "message": str(exc)}
+        if return_result:
+            return error, 2
+        print(json.dumps(error, ensure_ascii=True), file=sys.stderr)
+        return 2
     except NoteUsageError as exc:
         result = {'status': 'usage_error', 'error': type(exc).__name__, 'message': str(exc)}
         if return_result:
             return result, 64
         print(json.dumps(result, ensure_ascii=True))
         return 64
-    receipt_flags = args.command == "receipt" and any(
-        getattr(args, name) is not None for name in ("event_id", "summary", "summary_file", "ref", "link", "session"))
-    if receipt_flags:
-        for stream in (sys.stdout, sys.stderr):
-            if hasattr(stream, "reconfigure"):
-                stream.reconfigure(encoding="utf-8")
-        if args.file is not None:
-            argument_parser.error("--file cannot be combined with receipt flags")
-        if args.event_id is None:
-            argument_parser.error("--event-id is required in flag mode")
-        if args.summary is not None and args.summary_file is not None:
-            argument_parser.error("use exactly one of --summary and --summary-file")
-        if args.summary is None and args.summary_file is None:
-            argument_parser.error("--summary or --summary-file is required in flag mode")
-        if not args.ref:
-            argument_parser.error("--ref is required in flag mode (at least one)")
-    if args.command == "recap":
-        # Usage errors, raised before any state is opened or synced.
-        if args.days is not None and (args.since is not None or args.until is not None):
-            args.usage_error("argument --days: not allowed with argument --since/--until")
-        if args.since is not None and args.until is not None and recap_bounds_inverted(args.since, args.until):
-            args.usage_error("argument --since: must not be after --until")
     try:
         vault = args.vault.expanduser().resolve()
         if not vault.is_dir():
@@ -1779,6 +1805,9 @@ def main(argv=None, return_result=False):
         # No traceback or raw input dump: callers retain their local source files.
         error = {"error": type(exc).__name__, "message": str(exc)}
         code = 1
+        if isinstance(exc, ArgumentParsingError):
+            error["error"] = "SystemExit"
+            code = 2
         if args.command in NOTE_JSON_COMMANDS:
             from beyin_v3_notes import NoteConflict, NotePartialWrite
             code = 2 if isinstance(exc, NoteConflict) else 1

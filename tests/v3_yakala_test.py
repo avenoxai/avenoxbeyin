@@ -53,7 +53,7 @@ class WindowsSourceDecisionTest(unittest.TestCase):
                 self.assertIsNone(chosen['url'])
                 self.assertEqual(chosen['files'], [])  # a window picture waits for Alt+W, like the stale clipboard
 
-    def test_url_toggle_excludes_other_urls_but_preserves_text_and_images(self):
+    def test_url_selection_preserves_text_and_images(self):
         sources = yakala.windows_sources({'url': 'https://example.com/page'},
                                          'copied text', True, {'path': 'image.png', 'on': True})
         for key in ('m', 'g'):  # clipboard text and picture are offered off next to a link; switch them on

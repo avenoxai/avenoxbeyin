@@ -787,11 +787,14 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         clean = label.strip()
         if clean.startswith('[') and clean.endswith(']'):
             used.add(clean[1:-1].strip())
-    try:
-        used.update(p.relative_to(store.vault_root.resolve()).as_posix()
-                    for p in all_persons)
-    except (ValueError, OSError):
-        pass
+    if not query:
+        # The unqueried opening stays within the person notes shown above; a person note the
+        # prompt itself matches is still retrieval's to show.
+        try:
+            used.update(p.relative_to(store.vault_root.resolve()).as_posix()
+                        for p in all_persons)
+        except (ValueError, OSError):
+            pass
     retrieval_used = 0
     retrieval_cap = retrieval_share if companion_clipped else remaining
     for record in ranked.get('records', []):

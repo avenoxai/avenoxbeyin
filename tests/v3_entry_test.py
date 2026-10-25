@@ -2,6 +2,7 @@
 import importlib.util
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -219,6 +220,15 @@ class CrossPlatformPinTest(unittest.TestCase):
         self.assertFalse(same({'state': FOREIGN_PIN, 'schema': 1, 'extra': True}))
         self.assertFalse(same({'state': str(self.root / 'moved-state'), 'schema': 1}))
         self.assertFalse(same({'schema': 1}))
+
+    def test_windows_runtime_env_includes_systemdrive_and_programdata(self):
+        from v3_package_helpers import windows_runtime_env
+        if sys.platform != 'win32':
+            self.skipTest('Windows-specific test')
+        env = windows_runtime_env()
+        for key in ('SystemDrive', 'ProgramData'):
+            if key in os.environ:
+                self.assertIn(key, env)
 
 
 if __name__ == '__main__':

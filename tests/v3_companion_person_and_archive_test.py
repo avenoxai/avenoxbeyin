@@ -127,6 +127,27 @@ class CompanionPersonAndArchiveTest(unittest.TestCase):
             self.assertNotIn(f'Person {i}', ctx)
             self.assertNotIn(f'person-{i}.md', ctx)
 
+    def test_query_reaches_a_person_note_beyond_the_shown_five(self):
+        self.seed()
+        folder = self.vault / 'notes/kisiler'
+        folder.mkdir(parents=True)
+        for i in range(5):
+            (folder / f'person-{i}.md').write_text(
+                f'---\nid: person-{i}\nkind: person\n---\n# Person {i}\nFriend {i}.\n', encoding='utf-8')
+        (folder / 'person-5.md').write_text(
+            '---\nid: person-5\nkind: person\n---\n# Zümrüt Kayalı\nTez danışmanı.\n', encoding='utf-8')
+        (folder / 'person-6.md').write_text(
+            '---\nid: person-6\nkind: person\nvisibility: private\n---\n# Zümrüt Kayalıgil\nGizli kişi.\n',
+            encoding='utf-8')
+        self.assertEqual(SyncEngine(self.vault, self.state).sync()['status'], 'succeeded')
+        ambient = companion.context(self.store, 8000, 'session-1', 'claude')
+        self.assertNotIn('person-5.md', ambient)
+        asked = companion.context(self.store, 8000, 'session-1', 'claude', query='Zümrüt Kayalı kimdi')
+        self.assertIn('[Related source: notes/kisiler/person-5.md]', asked)
+        self.assertEqual(asked.count('person-5.md'), 1)
+        self.assertNotIn('person-6.md', asked)
+        self.assertNotIn('Gizli kişi', asked)
+
     def test_person_facts_share_the_identity_limit(self):
         self.seed()
         folder = self.vault / 'notes/kisiler'

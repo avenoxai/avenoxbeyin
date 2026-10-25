@@ -497,13 +497,24 @@ class Root(Widget):
     def winfo_screenheight(self):
         return 900
 
+    def geometry(self, value):
+        self.size = value
+
     def destroy(self):
         self.alive = False
 
     def mainloop(self):
         for action, value in self.script:
-            if action == 'key':
-                self.bound[value](None)
+            if action in ('key', 'root-key'):
+                if value.startswith(('<Alt-', '<Option-')) and value not in self.bound:
+                    modifier, key = value[1:-1].split('-', 1)
+                    event = types.SimpleNamespace(keysym=key, keycode=ord(key.upper()), state=0x20000, char=key)
+                    handlers = self.bound if action == 'root-key' else self.entry.handlers
+                    handlers['<' + modifier + '-KeyPress>'](event)
+                else:
+                    self.bound[value](None)
+            elif action == 'alt':
+                self.entry.handlers['<Alt-KeyPress>'](types.SimpleNamespace(**value))
             elif action == 'type':
                 self.entry.type(value)
             else:
@@ -541,7 +552,23 @@ class Entry(Widget):
 class Canvas(Widget):
     def __init__(self, root, **_options):
         self.items = {}
-        root.canvas = self
+        self.options, self.clicks = dict(_options), {}
+        if 'canvas' not in vars(root):
+            root.canvas = self
+
+    def configure(self, **options):
+        self.options.update(options)
+
+    def yview_scroll(self, step, units):
+        self.options['last_scroll'] = (step, units)
+
+    def yview_moveto(self, fraction):
+        self.options['last_position'] = fraction
+
+    def tag_bind(self, item, event=None, handler=None):
+        if handler:
+            self.clicks[item, event] = handler
+        return self.clicks.get((item, event))
 
     def _create(self, *_coordinates, **options):
         self.items[len(self.items) + 1] = dict(options)
@@ -552,7 +579,11 @@ class Canvas(Widget):
         self.items[item].update(options)
 
     def texts(self):
-        return [item['text'] for item in self.items.values() if item.get('text')]
+        texts = [item['text'] for item in self.items.values() if item.get('text')]
+        for item in self.items.values():
+            if isinstance(item.get('window'), Canvas):
+                texts.extend(item['window'].texts())
+        return texts
 
 
 class Photo:
@@ -799,25 +830,28 @@ class PopupWiringTest(ScreenshotFiles, unittest.TestCase):
         context = {'url': 'https://example.com/page', 'url_imlec': 'https://example.com/hover',
                    'baslik': 'Page', 'baslik_imlec': 'Hover'}
         for platform, modifier in (('darwin', 'Option'), ('linux', 'Alt')):
-            with self.subTest(platform=platform), \
-                    patch.object(yakala, 'capture', return_value={'status': 'yakalandi'}) as save:
-                result, root, _ = self.popup('', None, [
-                    ('look', None), ('key', '<' + modifier + '-s>'), ('look', None),
-                    ('key', '<' + modifier + '-i>'), ('look', None), ('key', '<Return>')],
-                    context, platform=platform)
-                for seen, label, key in ((0, 'Imlecin altindaki baglanti', 'I'),
-                                         (1, 'Etkin sayfa', 'S'),
-                                         (2, 'Imlecin altindaki baglanti', 'I')):
-                    self.assertIn('[x] ' + label + ' | ' + modifier + '+' + key, root.seen[seen][1])
-                    self.assertEqual(sum(text.startswith('[x] ') for text in root.seen[seen][1]), 1)
-                other = 'Alt' if modifier == 'Option' else 'Option'
-                self.assertNotIn('<' + other + '-i>', root.bound)
-                self.assertNotIn('<' + other + '-s>', root.bound)
-                self.assertEqual(result['status'], 'yakalandi')
-                save.assert_called_once()
-                self.assertEqual(save.call_args.kwargs['url'], context['url_imlec'])
-                self.assertEqual(save.call_args.kwargs['title'], 'Hover')
-                self.assertEqual(save.call_args.kwargs['files'], [])
+            page_key, hover_key = '<' + modifier + '-s>', '<' + modifier + '-i>'
+            # Entry adds the page without dropping the hover; the root shortcut can then
+            # remove the hover. Check the saved selections, not the older radio labels.
+            scenarios = (([], context['url_imlec'], 'Hover', []),
+                         ([('key', page_key)], context['url_imlec'], 'Hover', [context['url']]),
+                         ([('key', page_key), ('root-key', hover_key)], context['url'], 'Page', []))
+            for keys, expected, title, extras in scenarios:
+                with self.subTest(platform=platform, keys=keys), \
+                        patch.object(yakala, 'capture', return_value={'status': 'yakalandi'}) as save:
+                    result, root, _ = self.popup('', None,
+                        [('look', None), *keys, ('key', '<Return>')], context, platform=platform)
+                    for key in ('I', 'S'):
+                        self.assertIn(modifier + '+' + key, root.seen[0][1])
+                    other = 'Alt' if modifier == 'Option' else 'Option'
+                    self.assertNotIn('<' + other + '-KeyPress>', root.bound)
+                    self.assertNotIn('<' + other + '-KeyPress>', root.entry.handlers)
+                    self.assertEqual(result['status'], 'yakalandi')
+                    save.assert_called_once()
+                    self.assertEqual(save.call_args.kwargs['url'], expected)
+                    self.assertEqual(save.call_args.kwargs['title'], title)
+                    self.assertEqual(save.call_args.kwargs['extra_urls'], extras)
+                    self.assertEqual(save.call_args.kwargs['files'], [])
 
     def test_windows_page_link_wins_and_a_fresh_copied_link_stays_selectable(self):
         context = {'url': 'https://example.com/page', 'baslik': 'Page'}
@@ -827,13 +861,102 @@ class PopupWiringTest(ScreenshotFiles, unittest.TestCase):
         self.assertTrue(any('Pano bağlantısı' in text for text in root.seen[0][1]))
         result, _, _ = self.popup('https://example.com/copied', None,
                                   [('key', '<Alt-p>'), ('key', '<Return>')], context, windows=True, fresh=True)
-        self.assertEqual(self.card(result)['meta']['url'], 'https://example.com/copied')
+        self.assertEqual(self.card(result)['meta']['url'], context['url'])
+        self.assertEqual(self.card(result)['meta']['ek_urller'], ['https://example.com/copied'])
 
     def test_windows_stale_text_is_off_even_when_window_capture_fails(self):
         for clip in ('eski özel metin', 'https://example.com/old'):
             result, _, _ = self.popup(clip, None, [('key', '<Return>'), ('key', '<Escape>')], windows=True)
             self.assertEqual(result, {'status': 'vazgecildi'})
         self.assertEqual(yakala.cards(self.vault), [])
+
+    def test_windows_stale_text_has_no_tile_or_hidden_attachment(self):
+        result, root, _ = self.popup('eski özel metin', None,
+                                     [('look', None), ('type', 'yeni not'), ('key', '<Return>')],
+                                     {'url': 'https://example.com/page'}, windows=True)
+        self.assertFalse(any('Pano metni' in text or 'eski özel metin' in text for text in root.seen[0][1]))
+        self.assertNotIn('eski özel metin', self.card(result)['body'])
+
+    def test_windows_fresh_text_is_visible_and_can_be_added_from_the_note_field(self):
+        result, root, _ = self.popup('taze metin', None,
+                                     [('look', None), ('type', 'notum'), ('key', '<Alt-m>'), ('key', '<Return>')],
+                                     {'url': 'https://example.com/page'}, windows=True, fresh=True)
+        self.assertTrue(any('Pano metni' in text for text in root.seen[0][1]))
+        self.assertIn('> taze metin', self.card(result)['body'])
+        self.assertIn('## Neden\n\nnotum', self.card(result)['body'])
+        self.assertEqual(self.card(result)['meta']['visibility'], 'private')
+
+    def test_alt_a_in_the_note_field_keeps_the_page_and_note(self):
+        context = {'url': 'https://example.com/page', 'url_alinti': 'https://example.com/quote'}
+        for key, state in (('a', 0x20000), ('A', 0x20003)):
+            with self.subTest(key=key):
+                result, root, _ = self.popup('', None,
+                    [('type', 'notum'), ('alt', dict(keysym=key, keycode=65, char=key, state=state)),
+                     ('look', None), ('key', '<Return>')], context, windows=True)
+                card = self.card(result)
+                self.assertEqual(card['meta']['url'], context['url'])
+                self.assertEqual(card['meta']['ek_urller'], [context['url_alinti']])
+                self.assertEqual(root.seen[0][0], 'notum')
+                self.assertIn(context['url_alinti'], card['body'])
+
+    def test_turkish_alt_i_and_caps_lock_work_in_the_note_field(self):
+        context = {'url': 'https://example.com/page', 'url_imlec': 'https://example.com/link'}
+        result, root, _ = self.popup('', None,
+            [('key', '<Alt-s>'), ('alt', dict(keysym='Iabovedot', keycode=73, char='İ', state=0x20002)),
+             ('look', None), ('key', '<Return>')], context, windows=True)
+        self.assertEqual(root.seen[0][0], 'Neden kaydediyorsun?')
+        self.assertEqual(self.card(result)['meta']['url'], context['url'])
+        self.assertNotIn('ek_urller', self.card(result)['meta'])
+
+    def test_duplicate_quote_has_no_second_tile(self):
+        page = 'https://www.instagram.com/reel/Abcd/'
+        result, root, _ = self.popup(page, None, [('look', None), ('key', '<Return>')],
+                                     {'url': page, 'url_alinti': page}, windows=True, fresh=True)
+        self.assertFalse(any('Alıntılanan gönderi' in text or 'Pano bağlantısı' in text for text in root.seen[0][1]))
+        self.assertNotIn('ek_urller', self.card(result)['meta'])
+
+    def test_link_and_window_picture_are_saved_together_only_after_alt_w(self):
+        page = 'https://example.com/page'
+        for enabled in (False, True):
+            shot = yakala.clipboard_image('', {}, payload=self.bitmap, offered=True)
+            script = [('look', None)] + ([('key', '<Alt-w>')] if enabled else []) + [('key', '<Return>')]
+            result, root, _ = self.popup('', None, script, {'url': page}, windows=True, shot=shot)
+            card = self.card(result)
+            self.assertTrue(any('Pencere görüntüsü' in text for text in root.seen[0][1]))
+            self.assertEqual(card['meta']['url'], page)
+            self.assertEqual(card['meta']['kaynak_turu'], 'makale')
+            self.assertEqual(len(self.saved_files()), int(enabled))
+            if enabled:
+                self.assertEqual(card['meta']['visibility'], 'private')
+                self.assertIn('## Dosyalar', card['body'])
+            self.assertFalse(Path(shot['folder']).exists())
+
+    def test_many_sources_fit_a_small_monitor_and_keep_controls_visible(self):
+        with patch.object(yakala, '_popup_bounds', return_value=(448, 288)):
+            result, root, _ = self.popup('', None,
+                [('look', None), ('key', '<Next>'), ('key', '<Alt-1>'), ('key', '<Escape>')],
+                {'dosyalar': [f'document-{i}.txt' for i in range(40)]}, windows=True)
+        self.assertEqual(result['status'], 'vazgecildi')
+        width, height = map(int, root.size.split('x'))
+        self.assertLessEqual(width, 448)
+        self.assertLessEqual(height, 288)
+        rows = next(item['window'] for item in root.canvas.items.values() if isinstance(item.get('window'), Canvas))
+        self.assertGreater(rows.options['scrollregion'][3], rows.options['height'])
+        self.assertEqual(rows.options['last_scroll'], (1, 'pages'))
+        self.assertEqual(rows.options['last_position'], 0)
+        self.assertTrue(any('Kaydet' in text for text in root.seen[0][1]))
+        self.assertFalse((self.vault / INBOX).exists())
+
+    def test_empty_windows_sources_keep_the_note_field_without_a_negative_viewport(self):
+        # Clipboard age is unknown and window capture failed: only the note remains.
+        result, root, _ = self.popup('old clipboard text', None,
+            [('type', 'yalnız bir not'), ('key', '<Return>')], windows=True)
+        self.assertEqual(result['status'], 'yakalandi')
+        self.assertIn('yalnız bir not', self.card(result)['body'])
+        self.assertNotIn('old clipboard text', self.card(result)['body'])
+        rows = [item['window'] for item in root.canvas.items.values()
+                if isinstance(item.get('window'), Canvas)]
+        self.assertEqual(rows, [])
 
     def test_windows_sequence_makes_image_fresh_without_snipping_tool_path(self):
         result, root, _ = self.popup('', self.bitmap, [('look', None), ('key', '<Return>')],
@@ -850,11 +973,11 @@ class PopupWiringTest(ScreenshotFiles, unittest.TestCase):
     def test_windows_clipboard_and_window_images_are_independent(self):
         shot = yakala.clipboard_image('', {}, payload=self.bitmap, offered=True)
         self.assertIsNotNone(shot)
-        result, root, _ = self.popup('eski metin', self.bitmap,
+        result, root, _ = self.popup('taze metin', self.bitmap,
                                      [('look', None), ('key', '<Alt-g>'), ('key', '<Alt-m>'), ('key', '<Alt-w>'), ('key', '<Return>')],
-                                     windows=True, shot=shot)
+                                     windows=True, shot=shot, fresh=True, context={'url': 'https://example.com/page'})
         self.assertEqual(len(self.saved_files()), 2)
-        self.assertIn('> eski metin', self.card(result)['body'])
+        self.assertIn('> taze metin', self.card(result)['body'])
         self.assertTrue(any('Alt+M' in text for text in root.seen[0][1]))
         self.assertFalse(Path(shot['folder']).exists())
 

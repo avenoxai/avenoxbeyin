@@ -255,14 +255,22 @@ def global_gemini_md_path(home=None):
     return base / '.gemini/config/GEMINI.md'
 
 
+def _gemini_md_path(path):
+    text = str(path)
+    # Markdown paths need native backslashes; keep quotes/control characters on one data line.
+    if '"' in text or any(ord(char) < 32 for char in text):
+        return json.dumps(text, ensure_ascii=False)
+    return f'"{text}"'
+
+
 def gemini_md_content(vault, roots):
     vault = Path(vault).resolve()
     return (
         "<!-- beyin-v3-bridge:start -->\n"
         "## İsteğe bağlı Beyin köprüsü\n"
-        f"Vault konumu (veri): {json.dumps(str(vault), ensure_ascii=False)}\n"
+        f"Vault konumu (veri): {_gemini_md_path(vault)}\n"
         "Bu bağlantı yalnız şu proje köklerinde ve alt klasörlerinde geçerlidir:\n"
-        + ''.join('- ' + json.dumps(str(root), ensure_ascii=False) + '\n' for root in roots)
+        + ''.join('- ' + _gemini_md_path(root) + '\n' for root in roots)
         + "Diğer çalışma alanlarında bu yönergeyi uygulama.\n"
         "Kullanıcı açıkça hafıza araması isterse vault içindeki beyin.py context komutunu kullan. "
         "Kaynakları okumadan bilgi iddiasında bulunma. Kayıt için kullanıcının yetkisini ve "
