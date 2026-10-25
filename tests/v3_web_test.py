@@ -80,6 +80,30 @@ class TestBeyinWeb(unittest.TestCase):
         st = web.status_server(self.vault, self.state)
         self.assertEqual(st["status"], "calismiyor")
 
+    def test_malformed_post_length_returns_error_and_server_survives(self):
+        server = web.BeyinWebServer('127.0.0.1', 0, self.vault, self.state, self.web_dir)
+        server.port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            headers = {'Cookie': f'bw_session_{server.port}={server.session_token}',
+                       'Origin': f'http://127.0.0.1:{server.port}',
+                       'Content-Type': 'application/json', 'X-Beyin-Web': '1'}
+            for length, expected in [('invalid', 400), ('-1', 400), ('1048577', 413)]:
+                conn = http.client.HTTPConnection('127.0.0.1', server.port, timeout=3)
+                try:
+                    conn.request('POST', '/api/v1/goals', headers={**headers, 'Content-Length': length})
+                    response = conn.getresponse()
+                    self.assertEqual(response.status, expected)
+                    response.read()
+                finally:
+                    conn.close()
+            self.assertFalse((self.vault / 'goals/new.md').exists())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
     def test_server_lifecycle_and_security(self):
         port = web.find_free_port()
         server = web.BeyinWebServer("127.0.0.1", port, self.vault, self.state, self.web_dir, read_only=False)

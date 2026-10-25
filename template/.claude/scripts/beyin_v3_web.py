@@ -252,6 +252,25 @@ class BeyinWebHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": "Not Found"}).encode())
 
     def do_POST(self):
+        # Consume a bounded body before returning a rejection. Closing a Windows
+        # socket with unread request bytes can reset it before the client sees 403.
+        try:
+            length = self.headers.get('Content-Length', '0')
+            if not length.isdecimal() or self.headers.get('Transfer-Encoding'):
+                self.send_error(400, 'Invalid request framing')
+                return
+            content_len = int(length)
+            if content_len > 1024 * 1024:
+                self.send_error(413, 'Request body too large')
+                return
+            self.connection.settimeout(2)
+            body = self.rfile.read(content_len) if content_len else b''
+            if len(body) != content_len:
+                self.send_error(400, 'Incomplete request body')
+                return
+        except (OSError, ValueError):
+            self.send_error(400, 'Invalid request body')
+            return
         if not self._verify_auth():
             self._send_headers(401)
             self.wfile.write(json.dumps({"error": "Unauthorized"}).encode())
@@ -274,8 +293,6 @@ class BeyinWebHandler(BaseHTTPRequestHandler):
             return
 
         self.server_instance.touch_interaction()
-        content_len = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_len) if content_len > 0 else b""
 
         if path == "/api/v1/action/compact":
             self._handle_action_compact()
