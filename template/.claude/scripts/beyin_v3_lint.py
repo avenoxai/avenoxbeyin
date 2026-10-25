@@ -8,6 +8,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 import json
 import os
+import posixpath
 from pathlib import Path
 import re
 import unicodedata
@@ -81,6 +82,22 @@ def extract_wikilinks(text):
     return results
 
 
+def _eligible_note(vault_root, path):
+    from beyin_v3 import sensitive_source
+    from beyin_v3_sync import parse
+    try:
+        relative = path.relative_to(vault_root).as_posix()
+        if path.is_symlink() or not path.resolve().is_relative_to(vault_root.resolve()):
+            return False
+        if sensitive_source(relative) or any(_norm_key(part) in ('arşiv', 'arsiv', 'archive', 'archives')
+                                              for part in Path(relative).parts[:-1]):
+            return False
+        metadata, _ = parse(path.read_text(encoding='utf-8-sig'))
+        return metadata.get('visibility') != 'private' and metadata.get('status') != 'archived'
+    except (OSError, ValueError, UnicodeError):
+        return False
+
+
 def build_vault_index(vault_root, target_folder=None):
     """Build fast lookup table of markdown files in the vault."""
     vault_root = Path(vault_root)
@@ -110,6 +127,8 @@ def build_vault_index(vault_root, target_folder=None):
             except ValueError:
                 continue
 
+            if not _eligible_note(vault_root, full_path):
+                continue
             rel_key = _norm_key(rel_path)
             files_by_rel[rel_key] = rel_path
 
@@ -154,10 +173,13 @@ def resolve_wikilink(vault_root, link_target, source_file=None, vault_index=None
     if source_file:
         source_parent = Path(source_file).parent.as_posix()
         if source_parent and source_parent != ".":
-            candidate_rel = f"{source_parent}/{target_with_ext}"
+            candidate_rel = posixpath.normpath(f"{source_parent}/{target_with_ext}")
             k_cand = _norm_key(candidate_rel)
             if k_cand in by_rel:
                 return {"exists": True, "resolved_path": by_rel[k_cand]}
+
+    if "/" in norm_target:
+        return {"exists": False, "resolved_path": None}
 
     # 4. Check basename lookup (Obsidian standard shortest path)
     k_stem = _norm_key(target_stem)
@@ -187,7 +209,7 @@ def lint_vault(vault_root, folder=None):
     incoming_links = defaultdict(set)
     all_extracted_count = 0
 
-    for rel_path in target_files:
+    for rel_path in all_files:
         full_path = vault_root / rel_path
         try:
             content = full_path.read_text(encoding="utf-8-sig")
@@ -195,11 +217,12 @@ def lint_vault(vault_root, folder=None):
             continue
 
         links = extract_wikilinks(content)
-        all_extracted_count += len(links)
+        if rel_path in target_files:
+            all_extracted_count += len(links)
 
         for link in links:
             # Skip non-markdown media embeds unless checking file existence
-            if link["is_embed"] and link["file_target"] and not link["file_target"].lower().endswith(".md"):
+            if link["is_embed"] and Path(link["file_target"]).suffix and not link["file_target"].lower().endswith(".md"):
                 if "." in link["file_target"]:
                     embed_path = vault_root / link["file_target"]
                     if not embed_path.exists() and not (full_path.parent / link["file_target"]).exists():
@@ -213,6 +236,15 @@ def lint_vault(vault_root, folder=None):
                 continue
 
             res = resolve_wikilink(vault_root, link["file_target"], source_file=rel_path, vault_index=vault_index)
+            if res['exists'] and link['heading']:
+                try:
+                    target_text = (vault_root / res['resolved_path']).read_text(encoding='utf-8-sig')
+                    headings = {_norm_key(match.group(1).strip().rstrip('#').strip())
+                                for match in re.finditer(r'^#{1,6}\s+(.+)$', target_text, re.MULTILINE)}
+                    if _norm_key(link['heading']) not in headings:
+                        res = {'exists': False, 'resolved_path': None}
+                except (OSError, UnicodeError):
+                    res = {'exists': False, 'resolved_path': None}
             if res["exists"]:
                 resolved = res["resolved_path"]
                 outgoing_links[rel_path].add(resolved)
@@ -225,6 +257,8 @@ def lint_vault(vault_root, folder=None):
                     "raw": link["raw"],
                     "type": "wikilink",
                 })
+
+    broken_links = [link for link in broken_links if link["source"] in target_files]
 
     # Identify orphans (no incoming and no outgoing)
     orphans = []
@@ -288,6 +322,13 @@ def extract_note_title(full_path):
 
 
 def generate_moc(vault_root, target_folder="knowledge", moc_filename="MOC.md"):
+    from types import SimpleNamespace
+    from beyin_v3_notes import locked
+    with locked(SimpleNamespace(root=Path(vault_root).resolve())):
+        return _generate_moc(vault_root, target_folder, moc_filename)
+
+
+def _generate_moc(vault_root, target_folder="knowledge", moc_filename="MOC.md"):
     """Generate or update an Obsidian Map of Content (MOC) note.
 
     Preserves user handwritten content outside markers. Pure stdlib.
@@ -313,6 +354,8 @@ def generate_moc(vault_root, target_folder="knowledge", moc_filename="MOC.md"):
                 continue
             f_path = Path(root) / f
             if f_path.resolve() == moc_path.resolve():
+                continue
+            if not _eligible_note(vault_root, f_path):
                 continue
 
             rel_to_vault = f_path.relative_to(vault_root).as_posix()
@@ -350,8 +393,9 @@ def generate_moc(vault_root, target_folder="knowledge", moc_filename="MOC.md"):
     generated_lines.append(f"{MOC_END_MARKER}")
     generated_block = "\n".join(generated_lines).strip()
 
-    # Read existing content if exists
-    if moc_path.exists():
+    # Preserve the exact snapshot while generating the replacement.
+    original_bytes = moc_path.read_bytes() if moc_path.exists() else None
+    if original_bytes is not None:
         existing_text = moc_path.read_text(encoding="utf-8-sig")
         if MOC_START_MARKER in existing_text and MOC_END_MARKER in existing_text:
             # Replace only the generated block
@@ -380,7 +424,18 @@ Bu not, `{target_folder}` altındaki notların navigasyon ve içerik haritasıd�
 
     # Write file safely
     moc_path.parent.mkdir(parents=True, exist_ok=True)
-    moc_path.write_text(new_text, encoding="utf-8")
+    from beyin_v3_sync import atomic
+    current_bytes = moc_path.read_bytes() if moc_path.exists() else None
+    if current_bytes != original_bytes:
+        raise ValueError('MOC source changed; reread and retry')
+    if not moc_path.resolve().is_relative_to(vault_root):
+        raise ValueError('MOC output must remain inside the vault')
+    if original_bytes is None:
+        # Do not replace a user file created after the absence check.
+        with moc_path.open('x', encoding='utf-8') as output:
+            output.write(new_text)
+    else:
+        atomic(moc_path, new_text)
 
     return {
         "status": action_status,

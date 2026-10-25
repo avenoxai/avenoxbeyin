@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "template/.claude/scripts"))
@@ -27,6 +28,55 @@ class KnowledgeLintTest(unittest.TestCase):
         self.vault.mkdir()
         self.state = Path(self.tmp.name) / "state"
         self.state.mkdir()
+
+    def test_moc_refuses_concurrent_edit_after_snapshot(self):
+        (self.vault / 'knowledge').mkdir()
+        (self.vault / 'knowledge/a.md').write_text('# A', encoding='utf-8')
+        target = self.vault / 'knowledge/MOC.md'
+        target.write_text('Handwritten text', encoding='utf-8')
+        original_read = Path.read_text
+        changed = False
+        def edit_after_read(path, *args, **kwargs):
+            nonlocal changed
+            result = original_read(path, *args, **kwargs)
+            if path.resolve() == target.resolve() and not changed:
+                changed = True
+                path.write_text(result + '\nConcurrent user text', encoding='utf-8')
+            return result
+        with patch.object(Path, 'read_text', edit_after_read):
+            with self.assertRaisesRegex(ValueError, 'changed'):
+                linter.generate_moc(self.vault)
+        self.assertIn('Concurrent user text', target.read_text())
+
+    def test_moc_omits_sensitive_archived_and_private_notes(self):
+        for source, text in [('knowledge/public.md', '# Public'),
+                             ('knowledge/secrets/secret.md', '# SecretCanary'),
+                             ('knowledge/Arşiv/old.md', '# ArchiveCanary'),
+                             ('knowledge/private-note.md', '---\nvisibility: private\n---\n# PrivateCanary')]:
+            path = self.vault / source
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding='utf-8')
+        linter.generate_moc(self.vault)
+        result = (self.vault / 'knowledge/MOC.md').read_text()
+        self.assertIn('Public', result)
+        self.assertNotIn('Canary', result)
+
+    def test_relative_links_and_missing_qualified_paths(self):
+        for source in ['a/note.md', 'b/note.md', 'b/sub/source.md']:
+            path = self.vault / source
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('# Present', encoding='utf-8')
+        result = linter.resolve_wikilink(self.vault, '../note', source_file='b/sub/source.md')
+        self.assertEqual(result['resolved_path'], 'b/note.md')
+        self.assertFalse(linter.resolve_wikilink(self.vault, 'missing/note')['exists'])
+
+    def test_folder_lint_counts_external_backlinks_and_missing_embeds(self):
+        (self.vault / 'knowledge').mkdir()
+        (self.vault / 'knowledge/a.md').write_text('# Present\n![[missing]]\n[[#Absent]]', encoding='utf-8')
+        (self.vault / 'outside.md').write_text('[[knowledge/a]]', encoding='utf-8')
+        result = linter.lint_vault(self.vault, 'knowledge')
+        self.assertEqual(result['broken_links_count'], 2)
+        self.assertNotIn('knowledge/a.md', result['orphans'])
 
     def test_moc_rejects_escape_and_preserves_external_file(self):
         (self.vault / 'knowledge').mkdir()
