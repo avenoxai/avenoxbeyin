@@ -281,7 +281,11 @@ def _replay_idempotency(engine, path, source, fingerprint, source_path):
     if current is not None and _hash(current) == saved.get('sha256'):
         # Recover a write interrupted after source replacement but before final publication.
         result = engine.sync()
-        if engine._source_issues(result, source):
+        with engine.store._connect() as db:
+            row = db.execute('SELECT r.payload FROM records r JOIN markdown_sources m ON r.id=m.id '
+                             'WHERE m.source=?', (source,)).fetchone()
+        if (engine._source_issues(result, source) or _bytes(source_path) != current or not row or
+                json.loads(row[0]).get('source_sha256') != saved.get('sha256')):
             raise NoteConflict('idempotent source requires projection review')
         return dict({k: v for k, v in saved.items() if k != 'request_sha256'}, idempotent=True)
     return None

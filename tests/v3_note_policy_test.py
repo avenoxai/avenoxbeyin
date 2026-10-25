@@ -36,6 +36,20 @@ class NotePolicyTest(unittest.TestCase):
         path.write_bytes(raw)
         return path
 
+    def test_replay_rechecks_source_after_sync(self):
+        request = dict(source='notes/replay.md', expected_sha256=None,
+                       content='original', idempotency_key='replay')
+        self.engine.note_edit(request)
+        original_sync = self.engine.sync
+        def external_edit():
+            result = original_sync()
+            (self.vault / 'notes/replay.md').write_text('external change')
+            return result
+        with patch.object(self.engine, 'sync', side_effect=external_edit):
+            with self.assertRaises(NoteConflict):
+                self.engine.note_edit(request)
+        self.assertEqual((self.vault / 'notes/replay.md').read_text(), 'external change')
+
     def test_cached_key_rejects_changed_payload_for_edit_and_create(self):
         request = dict(source='notes/key.md', expected_sha256=None, content='original', idempotency_key='key')
         self.engine.note_edit(request)
