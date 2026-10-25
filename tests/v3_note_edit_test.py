@@ -52,11 +52,11 @@ class NoteEditTest(unittest.TestCase):
         return [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
                 '--state', str(state or self.state), command, *args]
 
-    def run_cli(self, command, request=None, *args):
+    def run_cli(self, command, request=None, *args, cwd=None):
         return subprocess.run(self.command(command, *args),
                               input=json.dumps(request) if request is not None else None,
                               text=True, encoding='utf-8', capture_output=True, timeout=30,
-                              env=os.environ.copy())
+                              env=os.environ.copy(), cwd=cwd)
 
     def test_missing_read_and_create_do_not_overwrite(self):
         missing = {'source': 'project/Journal.md', 'sha256': None, 'content': None}
@@ -361,10 +361,17 @@ with locked(engine):
             mark.assert_called_once()
             # The CLI resolves the state root; macOS /var and Windows 8.3 temp names differ.
             self.assertEqual(Path(mark.call_args.args[0]).resolve(), self.state.resolve())
-        marker = self.run_cli('note-edit', self.request('merged', 'final'))
+        # A local vault CLI write keeps the raw session identity.
+        marker = self.run_cli('note-edit', self.request('merged', 'final'), cwd=self.vault)
         self.assertEqual(marker.returncode, 0, marker.stdout + marker.stderr)
         key = hashlib.sha256(b'synthetic-note-session').hexdigest()
         self.assertTrue((self.state / 'receipt-reminders' / (key + '.edited')).is_file())
+        # The same successful write from an external project belongs to the bridge namespace.
+        external = self.run_cli('note-edit', self.request('final', 'external'), cwd=ROOT)
+        self.assertEqual(external.returncode, 0, external.stdout + external.stderr)
+        external_id = json.dumps([str(ROOT.resolve()), 'synthetic-note-session'])
+        external_key = hashlib.sha256(external_id.encode()).hexdigest()
+        self.assertTrue((self.state / 'receipt-reminders' / (external_key + '.edited')).is_file())
 
     def test_two_real_processes_one_wins_other_conflicts_then_merges(self):
         self.write()
