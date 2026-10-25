@@ -362,6 +362,7 @@ def rejected_dependents(records):
 # project matches only a record's own project field, so a vault that never writes that
 # field has an empty scope for every explicit-project command.
 PROJECT_SCOPES_FILE = ".beyin-projects.json"
+PROJECT_SCOPES_ALLOWED_KEYS = {"folders", "shared_unscoped", "workspaces", "schema_version"}
 
 
 def _scope_path(value):
@@ -415,8 +416,8 @@ def read_project_scopes(vault_root):
         data = json.loads(path.read_text(encoding="utf-8"))
     except (ValueError, OSError) as exc:
         raise ValueError("invalid project scopes file; expected JSON") from exc
-    if not isinstance(data, dict) or set(data) - {"folders", "shared_unscoped"}:
-        raise ValueError("project scopes accept only folders and shared_unscoped")
+    if not isinstance(data, dict) or set(data) - PROJECT_SCOPES_ALLOWED_KEYS:
+        raise ValueError("project scopes accept only folders, shared_unscoped, workspaces, and schema_version")
     folders = data.get("folders", {})
     shared = data.get("shared_unscoped", False)
     if not isinstance(folders, dict) or not isinstance(shared, bool):

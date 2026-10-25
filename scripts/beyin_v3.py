@@ -1095,6 +1095,24 @@ def parser(note_namespace=None, is_json=False):
     learn.add_argument("--scope", default=None, help="Scope of the learning: global or project name")
     learn.add_argument("--session", default="", help="Session ID associated with candidate")
     learn.add_argument("--list", action="store_true", help="List active candidate learnings")
+    ws = sub.add_parser("workspace", help="Unified workspace registry management (RFC #368 P0-C)")
+    ws.add_argument("action", choices=["list", "create", "inspect", "connect", "disconnect", "archive", "unarchive", "plan", "provision"],
+                    nargs="?", default="list",
+                    help="Workspace action to perform (default: list)")
+    ws.add_argument("workspace_id", nargs="?", default=None, help="Workspace identifier")
+    ws.add_argument("--id", dest="explicit_id", default=None, help="Workspace identifier (flag form)")
+    ws.add_argument("--name", help="Workspace display name")
+    ws.add_argument("--kind", default=None, help="Workspace domain kind (software, learning, career, etc.)")
+    ws.add_argument("--description", help="Workspace purpose or description")
+    ws.add_argument("--rules", help="Initial custom workspace rules text for Kurallar.md")
+    ws.add_argument("--source", help="Vault-relative source folder path to connect/disconnect")
+    ws.add_argument("--dry-run", action="store_true", help="Preview workspace provisioning without making changes")
+    ws.add_argument("--all", action="store_true", help="Include archived workspaces in listing")
+    lint_parser = sub.add_parser("lint", help="Lint vault markdown notes for broken wikilinks and orphans (RFC #368 P0-E)")
+    lint_parser.add_argument("--folder", default=None, help="Vault-relative folder to lint (default: entire vault)")
+    moc_parser = sub.add_parser("moc", help="Generate or update Obsidian Map of Content (MOC) note (RFC #368 P0-E)")
+    moc_parser.add_argument("--folder", default="knowledge", help="Vault-relative folder for MOC (default: knowledge)")
+    moc_parser.add_argument("--file", default="MOC.md", help="Filename of MOC (default: MOC.md)")
     return root
 
 
@@ -1155,7 +1173,7 @@ def main(argv=None, return_result=False):
         if read_only_context and args.jev:
             raise ValueError("context --no-sync cannot be combined with --jev")
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
-        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge") else None
+        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "workspace", "lint", "moc") else None
         store = engine.MemoryStore(state, vault, read_only=read_only_context) if engine else None
         sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
         if args.command == "bridge":
@@ -1774,6 +1792,30 @@ def main(argv=None, return_result=False):
                 result = {"candidates": list_candidates(state, session=args.session or None, scope=args.scope)}
             else:
                 raise ValueError("either --candidate or --list is required")
+        elif args.command == "workspace":
+            _ensure_scripts_path()
+            import beyin_v3_workspaces as workspaces
+            wid = args.workspace_id or args.explicit_id
+            result = workspaces.manage(
+                vault,
+                args.action,
+                workspace_id=wid,
+                name=args.name,
+                kind=args.kind,
+                description=getattr(args, "description", None),
+                rules=getattr(args, "rules", None),
+                source=args.source,
+                dry_run=getattr(args, "dry_run", False),
+                include_archived=getattr(args, "all", False),
+            )
+        elif args.command == "lint":
+            _ensure_scripts_path()
+            import beyin_v3_lint as linter
+            result = linter.manage(vault, "lint", folder=args.folder)
+        elif args.command == "moc":
+            _ensure_scripts_path()
+            import beyin_v3_lint as linter
+            result = linter.manage(vault, "moc", folder=args.folder, moc_file=args.file)
         else:
             payload = read_json(args.file)
             result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])
