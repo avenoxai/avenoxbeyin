@@ -696,8 +696,12 @@ class SyncEngine:
                         return 'evidence file has an invalid future modification time'
 
                     with path.open('rb') as f:
+                        evidence_bytes = f.read(1024 * 1024)
+                        evidence_text = evidence_bytes.decode('utf-8', errors='replace')
+                        if len(evidence_bytes) == 1024 * 1024:
+                            evidence_text = re.sub(r'[\w.-]+$', '', evidence_text)
                         if not re.search(r'(?<![\w.-])' + re.escape(str(metadata['id'])) +
-                                         r'(?![\w.-])', f.read(1024 * 1024).decode('utf-8', errors='replace')):
+                                         r'(?![\w.-])', evidence_text):
                             return 'evidence file must contain the matching task identifier'
                 except OSError:
                     return 'evidence file must contain the matching task identifier'
