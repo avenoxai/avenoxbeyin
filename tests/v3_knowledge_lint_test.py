@@ -28,6 +28,22 @@ class KnowledgeLintTest(unittest.TestCase):
         self.state = Path(self.tmp.name) / "state"
         self.state.mkdir()
 
+    def test_moc_rejects_escape_and_preserves_external_file(self):
+        (self.vault / 'knowledge').mkdir()
+        outside = self.vault.parent / 'outside.md'
+        outside.write_text('User text', encoding='utf-8')
+        with self.assertRaises(ValueError):
+            linter.generate_moc(self.vault, 'knowledge', '../../outside.md')
+        self.assertEqual(outside.read_text(), 'User text')
+
+    def test_moc_update_preserves_backslashes_in_titles(self):
+        (self.vault / 'knowledge').mkdir()
+        (self.vault / 'knowledge/note.md').write_text('# C:\\Users\\Synthetic\n', encoding='utf-8')
+        linter.generate_moc(self.vault)
+        before = (self.vault / 'knowledge/MOC.md').read_text()
+        linter.generate_moc(self.vault)
+        self.assertEqual((self.vault / 'knowledge/MOC.md').read_text(), before)
+
     def test_extract_wikilinks(self):
         sample_text = """
 # System Overview

@@ -292,12 +292,16 @@ def generate_moc(vault_root, target_folder="knowledge", moc_filename="MOC.md"):
 
     Preserves user handwritten content outside markers. Pure stdlib.
     """
-    vault_root = Path(vault_root)
-    folder_path = vault_root / target_folder
+    vault_root = Path(vault_root).resolve()
+    folder_path = (vault_root / target_folder).resolve()
+    if not folder_path.is_relative_to(vault_root):
+        raise ValueError("MOC folder must remain inside the vault")
     if not folder_path.exists():
         raise ValueError(f"target folder not found in vault: {target_folder}")
 
-    moc_path = folder_path / moc_filename
+    moc_path = (folder_path / moc_filename).resolve()
+    if not moc_path.is_relative_to(vault_root):
+        raise ValueError("MOC output must remain inside the vault")
     moc_rel = moc_path.relative_to(vault_root).as_posix()
 
     # Collect notes in folder (excluding moc itself)
@@ -355,7 +359,7 @@ def generate_moc(vault_root, target_folder="knowledge", moc_filename="MOC.md"):
                 re.escape(MOC_START_MARKER) + r".*?" + re.escape(MOC_END_MARKER),
                 re.DOTALL
             )
-            new_text = pattern.sub(generated_block, existing_text)
+            new_text = pattern.sub(lambda _: generated_block, existing_text)
             action_status = "updated"
         else:
             # Append generated block to existing content, keeping user text intact
