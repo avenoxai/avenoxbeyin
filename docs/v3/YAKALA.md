@@ -383,12 +383,17 @@ Hata aşaması ve toparlanma kararı `yakala/dinleyici.log` içine yazılır.
 Popup kaynak monitörde açılır. Windows tarafında Tk yönetilen pencere kullanır; özel
 palet/canvas görünümü korunmak üzere yerel başlık/çerçeve stili kaldırılır. **Esc** yerel
 odakta hemen iptal eder. Kaynaklar okunurken ve popup açık olduğu sürece, odak nerede olursa
-olsun, düşük seviyeli bir klavye kancası (`WH_KEYBOARD_LL`) yalnız Esc'e bakar: popup öndeyse
+olsun, düşük seviyeli bir klavye kancası (`WH_KEYBOARD_LL`) yalın Esc'i izler: popup öndeyse
 Esc'i Tk işler; kaynak pencere öndeyse (odak reddedildi ya da sayfaya tıklandı) Esc tüketilir ve
 popup kapanır; başka bir pencere öndeyse popup kapanır ve Esc o pencereye de iletilir. Kanca
 popup kapanınca (kayıt, Esc, Kapat, Alt+F4, hata) kaldırılır; sonrasında hiçbir uygulamanın
 Esc'i tutulmaz. Yeniden hotkey kancayı yeni kaynak pencereyle yeniden kurar, eski yakalama
-içeriğini değiştirmez. `AttachThreadInput` veya `GetAsyncKeyState` kullanılmaz.
+içeriğini değiştirmez. Ctrl, Shift, Alt veya Win ile basılan Esc kancadan geçirilir; kanca bu
+kombinasyonla popup'ı kapatmaz. Sol ve sağ değiştiricilerin basma/bırakma olayları ayrı izlenir;
+Alt bağlam bayrağı da değerlendirilir. Kanca kurulurken zaten basılı tuşlar, callback dışında
+bir kez `GetAsyncKeyState` yüksek bitiyle alınır; callback içinde bu API çağrılmaz.
+`AttachThreadInput` kullanılmaz. Ctrl+Shift+Esc, Ctrl+Esc ve Alt+Esc için yerel Windows kabul
+testi gerekir; bellek içi kanca testi işletim sisteminin kısayolu gerçekten açtığını kanıtlamaz.
 Görünür **Kapat** ve Alt+F4 da iptaldir. Windows güvenli masaüstü/UIPI/hook reddi için
 her durumda global Esc garantisi yoktur. Kartın disk commit'i başladıysa Esc kaydedilmiş
 veriyi geriye dönük iptal etmez; yavaş disk I/O'su sırasında arayüz yanıtı gecikebilir.
@@ -456,6 +461,821 @@ python3 beyin.py yakala kur --klasor "Notlar/Yakala"
 - Seçim bu makinenin durum klasöründe saklanır. Aynı vault'u başka bir makinede de kullanıyorsan
   orada da aynı komutu çalıştır.
 - Kayıtlı klasör silinir ya da adı değişirse yukarıdaki kurala dönülür; `durum` kullanılan klasörü söyler.
+
+## İsteğe bağlı: kaydet ve ajana ver
+
+**Varsayılan kapalıdır.** Açtığında **Enter** yine yalnız kartı kaydeder. **Ctrl+Enter** veya
+penceredeki **Kaydet ve ajana ver** satırı, önce kartı kaydeder, sonra bu kart için ayrı bir
+Claude Code ya da Codex oturumu başlatır. Ajan vault içinde çalışır; sonucu kaynak bağlantılarıyla
+hafızaya kaydeder. Pencere kapanabilir, başka bir ajan oturumunda çalışmaya devam edebilirsin.
+
+Bu yol tam Tk penceresinde vardır. Linux'taki `kdialog`/`zenity` yedek pencereleri yalnız
+yakalama yapar; kaydedilmiş kartı aşağıdaki `ajan-gonder` komutuyla gönderebilirsin.
+
+### Aç, kullan, kapat
+
+Vault klasöründe, Windows için:
+
+```sh
+py -3 beyin.py yakala kur --ajan claude
+py -3 beyin.py yakala ajan
+```
+
+Otomatik seçim için `kur --ajan otomatik` veya `ajan otomatik` kullan. Önce kurulumu yapan
+Claude Code ya da Codex oturumu, oturum işareti yoksa kurulu tek CLI seçilir. İkisi de kuruluysa
+terminalde `1) claude / 2) codex` sorulur; JSON çıktıda veya etkileşimsiz kullanımda açıkça
+`claude` ya da `codex` seçmen gerekir. Hiçbiri bulunamazsa hata verilir. Ayara somut istemci
+yazılır; çıktının `secim` alanı `kurulum-ajani`, `tek-kurulu` veya `kullanici` yolunu gösterir.
+Kurulumu yapan ajan, başka bir istemci istemediysen `--ajan otomatik` kullanır.
+`--ajan` verilmezse varsayılan kapalı davranışı değişmez.
+
+Codex seçmek için `--ajan codex` kullan. Yakala zaten kuruluysa `py -3 beyin.py yakala ajan claude`
+veya `py -3 beyin.py yakala ajan codex` yeterlidir. Mac/Linux'ta `py -3` yerine `python3` yaz.
+Bu Windows sürümüne ilk geçişte `kur` komutunu yeniden çalıştır: state'teki dinleyici kopyası da
+ajan işinin popup'tan ayrılmasını sağlayan yeni süreç ayarını almalıdır.
+
+**Görünüm: gizli ya da pencere.** Windows'ta Claude ve Codex için ajanın nasıl çalışacağını seçebilirsin:
+
+- `gizli` (varsayılan): iş arka planda başsız bir oturumda çalışır, bitince bildirim gelir.
+- `pencere`: Ctrl+Enter ekranda seçili istemcinin Claude Code veya Codex penceresini açar; ajanın ne yaptığını canlı
+  izlersin, gerekirse aynı pencerede yazarak yön verirsin. Araç sınırı gizli çalışmayla aynıdır
+  (genel kabuk kapalıdır; Codex'in dosya okuma profili ve ağ ayarı aşağıda). İş, ajan `complete` çağırınca
+  teslim edilir; receipt ve kart güncellemesi yine çalışan tarafından doğrulanarak yapılır, pencere
+  açık kalır ve konuşma sürdürülebilir. Pencereyi sonuç bırakmadan kapatırsan iş `onay-bekliyor`
+  olur. Tur ve bütçe sınırları yalnız gizli çalışmada uygulanır; zaman sınırı ikisinde de
+  geçerlidir. Pencere bir yalıtım değildir: aynı konsolda kullanıcının kendi istemci
+  denetimleri (Claude'da ör. `!` ile komut) açıktır ve iş bittikten sonra pencere bir sonraki işle aynı anda
+  açık kalabilir.
+
+**Ağ: kısıtlı ya da açık.** Ajan aynı bağlamda hem güvenilmeyen kaynağı hem özel notlarını
+okur; bir kaynağa gizlenmiş talimat, okunan not metnini bir URL'ye ya da arama sorgusuna
+koydurmaya çalışabilir.
+
+- `kisitli` (varsayılan): genel web araması kapalıdır. `fetch_source` ve `download` yalnız
+  yakalanan ana adresi, açıkça seçilen ek adresleri ve izinli bir sayfadan çalışanın kendi ayrıştırdığı bağlantıları açar; modelin
+  ürettiği yeni adresler reddedilir. Bağlantı seçimi ve zamanlama gibi yan kanallar kalır; bu tam
+  bir veri sızıntısı koruması değildir.
+- `acik`: Claude'un web araması (Codex'te hosted arama) ve herkese açık her adres kullanılabilir.
+  Araştırma gerektiren işler (ör. bir videodaki müziği bulmak) için gerekir; özel notlar ile web
+  aynı çıkış kanalını paylaşır. Bu kipte ajana ayrıca talimat verilir: arama ve indirme yalnız
+  herkese açık bilgi içindir; notlardan, kişisel bilgilerden veya özel ya da kullanıcının kendi
+  yüklediği içerikten hiçbir metin arama sorgusuna, adrese ya da dosya adına konmaz, bunu
+  gerektiren iş kullanıcının izni için `onay-bekliyor` olur. Bu bir model talimatıdır, teknik bir
+  engel değildir.
+
+Çoklu kaynak kartındaki `ek_urller`, kuyruğa gönderilirken mevcut kart ve kuyruk kilitleri
+altında doğrulanıp işin `extra_urls` listesine sabitlenir. Kart gövdesindeki bağlantılar,
+modelin ürettiği URL'ler ve sonradan yapılan kart değişiklikleri bu işe yeni yetki vermez;
+aynı teslimin tekrarı ilk listeyi korur. Eski işlerde alan yoksa yalnız ana kaynak kullanılır.
+Ek liste en fazla 63 adres, adres başına 8192 karakter ve JSON olarak 64 KiB olabilir.
+İstek, ayarlar ve kaynakların birlikte yazılacak ilk iş kaydı 96 KiB ile sınırlıdır;
+128 KiB okuyucu sınırında sonraki çalışma/sonuç alanlarına yer bırakılır. Sınır aşılırsa
+kart ajan durumuna geçirilmeden hata verilir; kartın kendisi korunur.
+
+İki ağ kipinde de `fetch_source` ve `download` iş başına toplam **8 çağrı** paylaşır. Başarısız
+izinli denemeler de bu bütçeden düşer. Sayaç dış isteğe çıkmadan önce diske kaydedilir;
+köprüye yeniden bağlanmak veya aynı işi yeniden yüklemek bütçeyi sıfırlamaz. İzin verilmeyen
+adres, ağa çıkmadan reddedilir. Sayaç bozuksa veya yazılamazsa ağ çağrısı yapılmaz. İş başına
+izinli adres listesi en fazla 64 adrestir. Bu sınır MCP çağrısınadır; HTTP yönlendirmeleri,
+istemcinin hosted web araması ve model hizmetinin normal trafiği için paket sayacı değildir.
+Çağrı sırası, adres seçimi ve zamanlama yan kanalları devam eder. Bütçe bittiğinde mevcut
+notları okumak, sonuç yazmak ve `complete` ile somut engeli bildirmek mümkündür.
+
+```sh
+py -3 beyin.py yakala ajan claude --ag acik
+```
+
+**Aylık ajan günlüğü.** Çalışan, işin kartının bulunduğu Yakala klasöründe
+`Ajan/Gunluk-YYYY-MM.md` notuna kısa bir girdi ekler; `Last-Session.md` dosyasına yazmaz.
+Yakala'nın mevcut klasör seçimi kullanılır; iş sıraya alındıktan sonra ayar değişirse girdi
+o işin kartıyla aynı klasörde kalır. Dosya yoksa `visibility: internal` frontmatter ve
+`# Yakala ajan gunlugu - YYYY-MM` başlığıyla oluşturulur. En yeni girdi başlığın altındadır.
+Girdi tarih-saat, istemci, gerçek oturum kimliğinin ilk sekiz karakteri, durum ve kart/sonuç/receipt
+bağlantılarını taşır. Bağlantılar günlüğe göre göreli Markdown yollarıdır; özel karakterler URL
+kodlamasıyla korunur. Normal yollarla işaret dahil yaklaşık 300 karakterdir; uzun dosya
+yollarında bağlantılar kesilmediği için daha uzun olabilir.
+
+Günlük aramada bulunabilir; özet, kullanıcı isteği ve kaynak metni taşımaz. `private` kartlar
+gibi `internal` kartların sonuçları da özel istek, ek veya sonuç notlarından bilgi içerebilir.
+Güvenilir bir herkese açık özet ayrımı olmadığından hiçbir işin sonuç özeti bu günlüğe kopyalanmaz.
+Tam özet `visibility: private` sonuç notunda kalır. Bağlantı hedeflerinin görünürlük kuralları
+değişmez; günlükteki bağlantı özel notu aramaya veya hook bağlamına açmaz.
+
+Her iş `<!-- yakala-ajan:<iş-UUID> -->` işaretiyle yalnız bir kez eklenir. Günlük zamanı iş
+kaydına yazılmadan dosyaya dokunulmaz; ay değişimindeki tekrar deneme aynı aylık notu kullanır.
+Yazma `memory.lock` kilidi altında yapılır. Okuma ile
+yazma arasında dosya değişirse girdi eklenmez; sonuç ve receipt korunur. Yeni dosya mevcut
+hedefin üzerine yazmadan atomik yayımlanır; mevcut dosya atomik değiştirilir. Yazılan baytların
+tamamı geri okunarak doğrulanır. Bu kontrol ile atomik
+değiştirme arasındaki çok kısa aralıkta kilide katılmayan bir editörün yazısı kaybolabilir;
+taşınabilir bir karşılaştır-ve-değiştir yolu olmadığından bu risk bilerek kabul edilmiştir.
+
+```sh
+py -3 beyin.py yakala kur --ajan claude --ajan-gorunum pencere
+py -3 beyin.py yakala ajan codex --gorunum pencere
+py -3 beyin.py yakala ajan claude --gorunum gizli
+```
+
+`kur --ajan claude`, `kur --ajan codex` veya `kur --ajan otomatik` bir terminalde `--ajan-gorunum` olmadan
+çalıştırılırsa hangisini istediğini sorar. Kurulumu bir ajana yaptırıyorsan ajan bu seçimi sana sormalıdır.
+
+1. Kısayola bas, kaynağı seç ve **Neden** alanına yapılacak işi yaz. Özellik açıkken altta
+   `Ctrl+Enter · Kaydet ve ajana ver (claude)` veya `(codex)` görünür. Kapalıyken bu satır
+   görünmez; Ctrl+Enter bir ajan işi başlatmaz ve yanlışlıkla düz Enter kaydına dönüşmez.
+2. **Ctrl+Enter**'a bas. Boş istek gönderilmez; pencere `Ajana vereceğin isteği yaz` der.
+   Başarılı kayıt ve kuyruğa ekleme sonrasında `Kaydedildi · Ajan sırasında` görünür, pencere kapanır.
+   Kuyruk doluysa veya bağımsız süreç açılamazsa kart korunur, pencerede kayıt ile ajan hatası
+   ayrı belirtilir. Aynı URL'nin yeni isteği, karta daha önce eklenmiş eski isteklerle karıştırılmaz.
+3. İş gerçekten başladığında **Beyin ajanı başladı** bildirimi gelir. Kuyrukta bekleme, modelin
+   çalışmaya başladığı anlamına gelmez. Bir makinedeki bu vault kuyruğu aynı anda **bir iş** çalıştırır.
+4. Doğrulanmış sonuç, receipt ve aylık ajan günlüğü kaydı tamamlanınca **Beyin ajanı bitirdi** görünür.
+   Bir engel varsa **Beyin ajanı onay bekliyor**, çalışma hatasında **Beyin ajanı tamamlayamadı**
+   görünür. Kartın `ajan_notu` alanı gerekçeyi, aylık günlük durum ve bağlantıları gösterir.
+
+Yeni işleri kapatmak için:
+
+```sh
+py -3 beyin.py yakala ajan kapali
+```
+
+Çalışan iş ayarı yeniden okuduğunda durdurulur; oluşmuş dosyalar geri alınmaz. Bekleyen işler
+yeniden uyandırıldığında otomatik çalıştırılmaz. Kapalıyken yakalama ve düz Enter çalışmayı sürdürür.
+İstemciyi değiştirmek daha önce kuyruğa alınmış işlerin kayıtlı istemcisini veya sınırlarını değiştirmez.
+Yeni seçilen istemci için eski `extra_args` ve `executable` sıfırlanır; aynı komutta verilen
+`--ayar` değerleri bundan sonra uygulanır. Böylece Claude'un `--model haiku`, `--effort` veya
+özel binary yolu Codex'e taşınmaz. Aynı istemcinin diğer ayarlarını değiştirmek bu seçenekleri
+korur. `kapali` durumundan yeniden açarken eski seçeneklerin hangi istemciye ait olduğu
+bilinmediğinden model/binary varsayılanına dönülür; isteniyorsa yeniden açıkça belirtilir.
+
+Kaydedilmiş tek bir kart için açık bir istek de verebilirsin:
+
+```sh
+py -3 beyin.py yakala ajan-gonder KART_ID --istek "Bu kaynağı incele, üç önemli bulguyu kaynaklarıyla not et"
+py -3 beyin.py yakala ajan-devam
+py -3 beyin.py yakala ajan-serbest KART_ID
+```
+
+`ajan-devam` kalıcı kuyruğu uyandırır; kesilmiş bir işi tekrar çalıştırma izni vermez.
+`ajan-serbest`, incelediğin `hata` veya `onay-bekliyor` kartını `bekliyor` yaparak normal
+`isle`/`bitti` akışına bırakır. Çalışan kartı serbest bırakamazsın. Bu komut yeni bir ajan işi
+başlatmaz ve geniş araç izni vermez. Yeniden otomatik deneme istersen önce kısmi sonuçları incele,
+sonra `ajan-gonder` ile yeni, açık bir istek ver.
+
+### Kart, oturum ve hafıza
+
+| Kartın `durum` değeri | Anlamı |
+|---|---|
+| `bekliyor` | Normal yakalama; ajan işi verilmedi veya kullanıcı normal işleme bıraktı |
+| `ajanda` | Bu karta ait iş sırada ya da çalışıyor; `ajan_asama` ayrıntıyı verir |
+| `islendi` | Sonuç ve hafıza kapanışı doğrulandı |
+| `hata` | Çalışma tamamlanamadı; kart ve mevcut sonuçlar korunur |
+| `onay-bekliyor` | İzin, kurulum, belirsiz kesilme veya hafıza doğrulaması insan incelemesi gerektiriyor |
+
+Normal bekleyen listesi `ajanda` kartlarını tekrar işleme almaz. `isle` ve `bitti` bu kartı
+başka oturumdan kapatmaz; oturum bildirimi ayrılmış ve onay bekleyen kartları ayrıca bildirir.
+Aynı kartın yakalanması yeni notu korur; devam eden iş ikinci kez başlatılmaz.
+
+Karttaki `ajan_isi` iş UUID'sidir; `ajan_oturum` istemcinin oturum UUID'sidir. Claude için UUID
+başlamadan üretilir ve `--session-id` ile verilir; başarı için CLI çıktısında aynı gerçek oturumun
+görülmesi gerekir. Başlamamış bir Claude işinde ayrılmış UUID'nin yazması, oturumun oluştuğunu
+kanıtlamaz. Codex UUID'si gizli kipte ilk `thread.started` olayının `thread_id` alanından alınır;
+pencere kipinde `CODEX_HOME/sessions` (varsayılan `~/.codex/sessions`) altındaki yeni oturumların
+yalnız ilk satır meta verisi okunur. Başlangıç zamanı ve vault yolu eşleşen tek bir oturum
+bulunmalıdır. Kimlik bulunamazsa veya birden fazla aday varsa sonuç korunur, iş `onay-bekliyor`
+olur; hafıza kapanışı yapılmaz. Aynı vault'ta eşzamanlı açılan Codex oturumları bu eşleştirmeyi
+belirsizleştirebilir. İş UUID'si Codex oturumu yerine kullanılmaz.
+[belge: aşağıdaki CLI ve başsız çalışma kaynakları]
+
+Vault klasöründeki terminalden aynı oturumu açmak için:
+
+```sh
+claude --resume OTURUM_UUID
+codex resume OTURUM_UUID
+```
+
+Sonuç notları kart klasörünün `Ajan/<iş-UUID>/` altına yeni dosyalar olarak yazılır. Kart, sonuç,
+kaynak ve varsa indirilen dosyanın yolu birlikte kaydedilir. `ajan_sonuc` ile `ajan_receipt`
+kapanış kayıtlarını gösterir. Aylık ajan günlüğüne bunların bağlantıları eklenir. Sonraki oturumda
+"o indirdiğin müzik" gibi bir isteği bu kaynak kayıtları üzerinden bulmak mümkündür; bunun için
+normal vault hafıza kurallarının ve hook'larının kurulmuş olması gerekir.
+
+**Receipt entegrasyonu, varsayım:** Bu modül `beyin.py receipt` uygulamasını içermez. Adaptör,
+yerel `receipt --help` çıktısında `--file` ve `--harness` desteğini arar; oturum kimliği dosyadaki `session` alanıyla gider; `--json`
+ile makinece okunur yanıt bekler. Dosya girdisinin `event_id`, `summary`, `refs`, `session`
+alanlarını kabul etmesi; yanıtın aynı `event_id`, başarı durumu ve vault içindeki gerçek `source`
+yolunu vermesi beklenen entegrasyon sözleşmesidir. Kod yalnız `status: succeeded` kabul eder;
+başka bir değer, bilinmeyen durum veya boş durum başarılı kapanış sayılmaz.
+Kaynak dosyası geri okunarak olay kimliği
+kontrol edilir. Bu JSON şemasının ve yerel başarı durumunun upstream runtime ile kabul testinde
+eşleşmesi gerekir; yardım çıktısı tek başına veri şemasını kanıtlamaz. Sözleşme, receipt veya
+ajan günlüğü doğrulanamazsa indirilmiş dosya ve notlar korunur, kart tamamlandı sayılmaz.
+
+### Gelişmiş JSON ayarı
+
+Ayarlar makinedeki `<state>/yakala/ajan/config.json` içinde saklanır. Vault'a ve kullanıcıya ait
+CLI oturumuna bağlıdır; başka makinede kendiliğinden etkinleşmez. Ayar dosyasında değiştirmek
+istediğin alanları ver, ardından istemciyi açıkça seç:
+
+```json
+{
+  "timeout_seconds": 600,
+  "max_queue": 8,
+  "max_budget_usd": 1.0,
+  "extra_args": ["--model", "sonnet"]
+}
+```
+
+```sh
+py -3 beyin.py yakala ajan claude --ayar yakala-ajan.json
+```
+
+| Alan | Varsayılan ve sınır |
+|---|---|
+| `client` | `kapali`; CLI üzerinden `claude`, `codex` veya `kapali` seçilir |
+| `timeout_seconds` | 900 saniye; 30 ile 3600 arası. CLI çalışma süresidir; hazırlık ve hafıza kapanışı ayrıca sürebilir |
+| `max_queue` | 32; çalışan dahil 1 ile 32 arası aktif iş. Eşzamanlı çalışma sınırı sabit 1'dir |
+| `max_budget_usd` | 1.0; 0.05 ile 20 arası. Claude'un tahmini harcama sınırıdır; Codex'e uygulanmaz, kesin fatura tavanı değildir |
+| `extra_args` | `[]`; yalnız `--model DEĞER` ve Claude için `--effort DEĞER`, her biri en fazla bir kez |
+| `executable` | `null`; PATH'ten bulunur. Özelleştirilecekse tek bir mutlak executable veya tanınan npm shim yolu |
+| `downloads_dir` | İlk kurulumda işletim sisteminin İndirilenler klasörü, bulunamazsa `~/Downloads`; mutlak yerel klasör |
+| `last_session_path` | Eski ayarlarla uyumluluk için okunur ve yok sayılır; yeni ayarlara yazılmaz |
+| `schema`, `vault` | Modülün sürüm ve vault sahipliği alanları; başka vault'a taşımak için değiştirme |
+
+JSON en fazla 16 KiB olabilir; bilinmeyen anahtarlar, serbest komut şablonları ve izin bayrakları
+reddedilir. Windows'ta `\` karakterini JSON içinde `\\` yaz. CLI kullanıcı notunu UTF-8 stdin'den
+alır; istek en fazla 16.000 karakterdir. Kullanıcı metni kabuk komutuna gömülmez. Npm `.cmd`/`.bat`
+dosyası çalıştırılmaz; yalnız bilinen Claude/Codex paket girişleri doğrudan Node ile açılır.
+Tanımsız shim için komut yorumlayıcıya geri düşülmez.
+
+Companion klasörü veya Last-Session araması yapılmaz. Eski `last_session_path` hedefi artık
+bulunmasa da ayar ve iş kaydı okunabilir. Yeni `job.json` kayıtlarında `last_session` yerine
+vault-göreli `journal` yolu ve tekrar koruması için `journal_time` bulunur. Eski `last_session`
+alanını taşıyan kayıtlar yüklenebilir; eski Last-Session kartları taşınmaz veya silinmez.
+
+### Ajan neleri yapabilir?
+
+Bu oturum normal vault klasöründe, mevcut istemci ayarlarıyla açılır. Claude'da `--bare`,
+`--safe-mode` ve `--no-session-persistence` kullanılmaz; hafıza yüklemesini veya oturum saklamayı
+kapatan bilinen ortam ayarları sessizce aşılmaz. Codex'in proje/hook güveni önceden normal bir
+oturumda verilmiş olmalıdır. Yeni bir giriş, UAC veya onay penceresi açılması bu akışın parçası değildir.
+
+Gorevin yerel okuma, yazma ve izinli muzik islemleri icin ayni Python modulu
+stdin/stdout uzerinden sekiz yetenek sunar. Muzik araclarinin ek izinleri
+asagidaki "Istege bagli: videodaki muzigi tanima" bolumunde aciklanir:
+
+| Araç | Yetki |
+|---|---|
+| `read_note` | Sınırlar içinde mevcut Markdown/metin notunu ve bu kartın bağlı metnini okur |
+| `search_notes` | Görünür notlarda sınırlı arama yapar; en fazla 30 sonuç verir |
+| `fetch_source` | Herkese açık HTTP(S) kaynağından sınırlı metin okur; `kisitli` ağda yalnız yakalanan adres ve izinli sayfanın bağlantıları; `download` ile toplam 8 çağrı |
+| `download` | Doğrudan medya/metin/PDF dosyasını en fazla 50 MiB olarak hazırlar; `fetch_source` ile toplam 8 çağrı; manifestteki ek 10 dosya tavanı korunur; adres kuralı `fetch_source` ile aynı |
+| `music_info` | Yalniz bu kartin video sayfasindaki muzik meta verisini okur; kaynak iddiasi ses eslesmesi degildir |
+| `music_identify` | Host CLI'nin is basina ses izniyle kisa yerel ornek; ayri yukleme izni ve anahtarla en fazla bir AudD istegi |
+| `write_note` | Yalnız bu işin klasöründe en fazla 30 yeni sonuç notu oluşturur; mevcut notu değiştirmez |
+| `complete` | Doğrulanacak sonuç bildirir; kartı, receipt'i ve aylık ajan günlüğünü güvenilen çalışan günceller |
+
+İndirme için dosya türü ve hash denetlenir; çalıştırılabilir dosya türleri verilmez. Başarılı
+dosya, İndirilenler'e iş kimliği eklenmiş yeni adla yazılır; var olan kullanıcı dosyasının üzerine
+yazılmaz. Önce `.part` dosyası oluşturulur; tamamlanan kopya SHA-256 ile doğrulanıp aynı dosya
+sisteminde son adına yayımlanır. Önce hard link denenir; desteklenmiyorsa Linux'ta
+`renameat2(RENAME_NOREPLACE)`, macOS'ta `renamex_np(RENAME_EXCL)`, Windows'ta mevcut hedefi
+reddeden `os.rename` kullanılır. Sonuç notu ve tamamlama dosyaları da aynı yardımcıdan geçer.
+Var olan hedefin üzerine yazılmaz, son ad altında yarım kopya oluşturulmaz. Dosya sistemi hem
+hard link hem özel yeniden adlandırmayı reddederse, disk dolarsa veya hedef çakışırsa indirme
+`.part` dosyası korunur ve kart inceleme bekler. Her ağ dosya sistemi için destek garantisi
+yoktur. Birden fazla dosyada önceki
+başarılar kaybolmaz: her yayın niyeti ve tamamlanan dosya ayrı kaydedilir, kısmi sonuç da
+receipt ve ajan günlüğü kapanışına dahil edilir.
+Bridge gizli/hassas yolları, sembolik bağları ve Windows junction'larını reddeder.
+Ajan kendisine verilen karti adi ne olursa olsun okur; diger hassas notlara erisim degismez.
+`remote_allowed: false`, hassas `sensitivity` veya engellenmiş `kaynak_guveni` metadata'sı olan
+notları okumaz. `visibility: private` notlar hook bağlamına girmediği gibi bu işe de açılmaz;
+yalnız işin kendi kartı, ham metni, ekleri ve kendi sonuç notları okunur.
+`Dosyalar` adı tek başına engelleme nedeni değildir. Güncel yakalama klasörünün ve kart ya da
+Yakala'nın `*` içeren `.gitignore` iziyle tanınan eski yakalama klasörlerinin ek depoları
+korunur; ilgisiz `knowledge/Dosyalar` notları diğer notlarla aynı politikadan geçer. Kartları
+taşınmış eski bir ek deposu, bu iz duruyorsa aramaya açılmaz. Kart/ham metin/izinli eklerin
+`read_note` cevabı `source_trust: untrusted` taşır; sıradan hafıza notları `vault-data` kalır.
+Bu mahremiyet kontrolü canonical JSON frontmatter ve düz skaler YAML alanlarını okur;
+tekrarlanan anahtar, bozuk/kapanmamış metadata veya desteklenmeyen biçim sessizce atlanmaz.
+
+Claude profili `dontAsk`, `--permission-prompts none`, sınırlı built-in araçlar ve yalnız bu
+MCP yapılandırmasıyla çalışır; `--permission-prompts` için en az 2.1.259 gerekir. Codex için
+desteklenen en eski kararlı sürüm **0.155.1**'dir. Codex profili `-a never`, `--strict-config`
+ve `-c agents.enabled=false` kullanır. Linux/macOS'ta her çalıştırmaya rastgele adlı bir
+izin profili verilir. Tek dosya sistemi girdisi `":root"="deny"` olduğu için yerel
+araçlara okuma/yazma kökü verilmez. Bu profil `-c default_permissions=...` ile seçilir;
+POSIX'te `-s read-only` eklenmez: eski seçici adlı profili devre dışı bırakır.
+**Windows'ta `-s read-only` uyumluluk yolu kullanılır; içerik tahmini kanalı açık kalır.**
+Windows `elevated` sandbox kök okuma izni istediği için root-deny başlangıcı durdurmuştur;
+Windows komutuna named profile eklenmez. Kullanıcının sandbox türü/config'i değiştirilmez.
+Gizli çalışmada `--ignore-rules` da kullanılır. Ön kontrol önce bayraksız
+`codex features list` düz tablosunu okur; bu komuta `--json` verilmez. Ardından işin kapatma
+bayraklarıyla etkin durumları doğrular. Eksik, kaldırılmış, yinelenen veya ayrıştırılamayan
+gerekli özellik; eski/ön sürüm; başarısız ya da aşırı büyük envanter çıktısı işi durdurur.
+
+Her iş için şu 14 özellik kapatılır: `shell_tool`, `unified_exec`, `view_image`, `apps`,
+`multi_agent`, `multi_agent_v2`, `plugins`, `remote_plugin`, `computer_use`, `browser_use`,
+`browser_use_external`, `in_app_browser`, `image_generation`, `goals`. Her iki alt ajan kapısı
+ve `agents.enabled=false` birlikte gereklidir; model metadatasından V2 seçimi de engellenir.
+Ölçülen 0.155.1, `--disable unified_exec` verilse de bu özelliği `true` gösterir. Yalnız
+`shell_tool=false` doğrulanmışsa bu durum kabul edilir: resmî kaynakta kabuk araçlarının
+tamamı bu ana kapının arkasındadır. Diğer gerekli etkin özellikler için böyle bir istisna yoktur.
+
+Mevcut MCP sunucuları adlarıyla yalnız o işte kapatılır ve sonuç yeniden denetlenir; kullanıcının
+config dosyası değiştirilmez. Eklenti/app kapıları da iş bazında kapanır. Envanter veya etkin
+durum doğrulanamazsa iş durur; etkin MCP'si bulunan her makine topluca reddedilmez.
+Codex'in MCP araçlarını çağıran kod modu korunur. Genel kabuk veya yerel dosya sistemi aracı
+olarak açılmaz. Web araması yalnız `ag: acik` iken
+açıktır (Claude `WebSearch`, Codex `web_search="live"`). `bypassPermissions` ve tam dosya sistemi yazma izni verilmez. [belge: CLI, config ve izin kaynakları]
+
+Önceki dalın bakımcı ölçümü (18.10.2026; Claude Code 2.1.302, Codex 0.160.0, macOS): `kisitli` ağda Claude oturumunun araç listesi
+yalnız altı `mcp__yakala__*` aracıdır, `acik` ağda buna `WebSearch` eklenir; Bash ve dosya araçları
+yoktur. `kisitli` ağda model URL'ye not metni ekleyince köprü adresi reddetti. Bu kayıt güncel
+dalın Windows üzerinde ölçümü değildir. [#384 bakımcı yorumu](https://github.com/avenoxai/avenoxbeyin/pull/384#issuecomment-6243678257)
+
+Önceki `read-only` profilinin ölçümü (19.10.2026 Türkiye saati; 18.10.2026 23:12-23:14 UTC): resmî Linux Codex 0.155.1,
+boş/geçici `CODEX_HOME`, zararsız test dosyaları ve yerel sahte Responses API kullanıldı.
+Gerçek hesaba/model hizmetine istek gönderilmedi. Zorlanan `view_image`, `exec_command` ve
+`spawn_agent` çağrıları desteklenmeyen araç olarak reddedildi. Vault içinde/dışında mevcut
+dosyayı değiştirme ve yeni dosya oluşturma olmak üzere dört `apply_patch` yazması reddedildi;
+test dosyaları değişmedi. Etkin `local_mcp` bulunan ayrı ön kontrol onu iş için kapattı,
+config dosyasının hash'i aynı kaldı. Bu deneme gerçek modelin altı MCP aracıyla bir işi
+bitirdiğini veya Windows sandbox davranışını ölçmez.
+
+**Codex `apply_patch`, #384 bulgu 2 için yeni düzeltme (19.10.2026 UTC):** Araç yüzeyinde
+`apply_patch` kalabilir; `apply_patch_freeform` 0.155.1 ve güncel kararlı 0.163.0'da
+kaldırılmıştır ve güvenlik anahtarı değildir. Eski `read-only` profili 0.163.0'da da doğru
+ve yanlış satır tahminine farklı hatalar verdi. Bu dal Linux/macOS'ta resmî belgelerdeki
+**adlı dosya sistemi izin profilini** kullanır. `":root"="deny"`, yama doğrulamasının
+dosya okumasına da uygulanır. Kullanıcının aynı ad altındaki daha dar izinleri birleşerek
+yeniden açılmasın diye her komut için yeni 128 bit rastgele profil adı üretilir; config
+dosyası düzenlenmez. `:minimal`, vault, geçici dizin veya Python köküne ek okuma izni verilmez.
+
+Resmî **Linux 0.155.1, 0.160.0 ve 0.163.0** ikilileriyle, her sürümde iki testin her birinde
+28 zorlanmış `apply_patch` çağrısı sınandı: göreli/mutlak, vault içi/dışı yollar; Update/Move için doğru
+ve yanlış bağlam; Delete; mevcut/yeni dosyaya Add. Doğru/yanlış çiftleri aynı okuma hatasıyla
+reddedildi, içerik açığa çıkmadı ve mevcut dosya hash'leri değişmedi. Her sürümde ayrıca gerçek
+Yakala MCP köprüsü izinli notu ve `AGENTS.md`'yi okudu, private notu reddetti, sonuç notunu
+yazdı ve `complete` teslimini kabul etti. Normal hash güveni verilmiş sentetik `SessionStart`
+hook'u ilk isteğe hafıza bağlamı ekledi. Yerel sahte Responses API kullanıldı; gerçek hesap
+ve model hizmeti kullanılmadı. Bu, `complete` teslim kanıtıdır; canlı masaüstünde receipt,
+ajan günlüğü ve bildirimin tamamlandığı ölçümü değildir. Testler mevcut kullanıcı
+config'inde `workspace-write` ile ayrıca seçilmiş config profilinde `read-only` bulunan
+durumları kapsar; yeni izin seçiminin bu legacy ayarlar altında da etkinliği ölçüldü.
+
+İzin profilleri resmî belgede **beta** durumundadır. `--strict-config`, bilinmeyen üst düzey
+ayarların sessizce yok sayılmasını önler; gelecekteki bütün davranış değişikliklerini
+saptayan bir güvenlik kanıtı değildir. En yeni görülen ön sürüm **0.164.0-alpha.3** yalnız
+kaynakta incelendi; mevcut kararlı sürüm kapısı bunu kabul etmez. Linux'ta bu tahmin kanalı
+kapatıldı; macOS native sonucu henüz ölçülmedi. **Windows bulgu 2 kısmen açıktır:**
+kullanıcı 19.10.2026'da gerçek Windows 11 / Codex 0.155.1 üzerinde `dc2a1bc2` root-deny
+profilinin `AGENTS.md` başlangıcını durdurduğunu, eski `69ac79c` salt okuma yolunun iki
+görünümde de tamamlandığını bildirdi. Bu dal Windows'a salt okuma seçicisini geri getirir;
+yazma ve diğer araç kısıtları korunur, `apply_patch` tahmin doğrulaması kapanmış sayılmaz.
+Düzeltilmiş dalın native Windows başlangıcı ve receipt/ajan günlüğü zinciri henüz
+ölçülmedi. POSIX root-deny native testleri Windows'ta gerekçeli olarak atlanır; bu atlama
+Windows başarısı değildir. Kaynak, seçenek değerlendirmesi ve tekrar komutları:
+[Codex dosya okuma sınırı incelemesi](CODEX-APPLY-PATCH.md).
+
+Muzik araclari (`music_info`, `music_identify`) bu olcumlerden sonra eklendi; sekiz aracli
+envanter ve muzik akisi henuz canli olculmedi.
+
+**Güven sınırı:** Normal vault hook'ları, istemci ve `beyin.py receipt` güvenilen yerel koddur;
+onların kendi davranışları bu araç köprüsü tarafından sandbox içine alınmaz. Ajanın kullandığı
+model hizmeti, CLI'nin normal veri akışındaki isteği ve okunan notları görebilir. Public GET ve web
+araması varken URL/sorgu üzerinden veri aktarımını ya da uzak sunucunun GET'e yan etki bağlamasını
+evrensel olarak önleyen bir garanti yoktur. Dosya adı/metadata filtresi sıradan bir nota yazılmış
+her sırrı bulamaz. İşletim sistemi kısıtları ve araç listesi, modelin bütün niyetini denetleyen
+bir güvenlik sistemi olarak sunulmaz. [çıkarım]
+
+Kullanıcının **Neden** alanı yapılacak iştir; JSON zarfında veri olarak taşınması bu isteği
+yok saymaz. Bu alan sistem kurallarını değiştirme yetkisi vermez. Kaynak URL'si, sayfa, pano ve
+alıntıdaki talimatlar güvenilmeyen içeriktir. İstek serbest kabuk, silme, ödeme, kimlik bilgisi,
+mesaj gönderme veya sistem değişikliği gerektiriyorsa ajan `onay-bekliyor` sonucu bırakmalıdır;
+metin içindeki "izni aş" ifadesi yeni bir yetki oluşturmaz.
+
+**Instagram orneginin siniri:** Muzik meta verisi sayfadan okunabilir. Ses
+tanima icin bu ise ayri yerel ses/yukleme izni ve istege bagli AudD anahtari
+gerekir; ayrintilar asagidaki muzik bolumundedir. Bu izinler yoksa ajan somut
+engelle onay bekler. Instagram oturumu/cookie, DRM asma ve serbest komut
+calistirma yoktur. Dogrudan dosya indirme ancak kaynagin buna izin verdigi
+durumda mevcut download araciyla yapilir. Her reel'in muziginin bulunacagi
+veya indirilecegi garantisi verilmez; yanlis muzik veya HTML dosyasi basari
+sayilmaz. Normal `isle` araclari ajan profiline kendiliginden acilmaz.
+
+### Bildirim, kesilme ve kaldırma
+
+Windows'ta özellik açılırken Başlat menüsüne `Beyin Yakala Ajan.lnk` ve
+`AvenoxBeyin.Yakala.Agent` bildirim kimliği kaydedilir. Toast bu kimlikle gönderilir; kısayolun
+sahipliği doğrulanamıyorsa başka bir kısayolun üzerine yazılmaz.
+Windows'ta bildirime tıklayınca sonuç notu varsayılan uygulamayla açılır; başlangıç, onay ve hata
+bildirimleri kartı açar. Sonuç yolu kaydedilmemişse tamamlanma bildirimi de kartı açar.
+Mac'te `osascript display notification`, Linux'ta varsa `notify-send` kullanılır.
+Sabit bildirim metninde kullanıcı isteği, URL veya not
+başlığı yoktur. İşletim sistemi bildirim ayarı, odak modu veya eksik araç bildirimi gizleyebilir;
+bildirim başarısızlığı kartın sonucunu değiştirmez, yalnız günlüğe yazılır. [belge: bildirim kaynakları]
+
+Windows çalışanı popup Job Object'inden `CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW` ile
+ayrılır; izin verilmezse gizlice daha geniş bir süreç yoluna geçilmez. Ajanın kendi süreç ağacı
+ayrı sonlandırılabilir Job Object'inde tutulur. Mac/Linux'ta bağımsız bir gözetmen süreç kendi
+oturum ve süreç grubunu açar; CLI bu grupta çalışır. Yalnız worker'ın yazma ucunu tuttuğu
+pipe kapanınca, CLI çıkınca veya monoton zaman bütçesi dolunca gözetmen kendi grubunu
+sonlandırır. Worker SIGKILL ile ölse de bu sınır worker'ın finally bloğuna bağlı değildir.
+Kalıcı kayıttan alınan eski PID'ye sinyal gönderilmez. CLI bütçesi ön kontrol/hazırlık bittikten
+sonra başlar; CLI'yi başlatmadan tükenmiş bütçe kabul edilmez. Popup veya dinleyicinin kapanması
+normal işi iptal etmez; timeout veya `ajan kapali` çalışan işi sonlandırır.
+Bu masaüstü özelliği yeni bir ağ sunucusu ya da sürekli çalışan bulut görevi kurmaz.
+
+İş ve köprü yetkisi yalnız PID sayısına değil süreç oluşturulma kimliğine bağlıdır: Linux'ta
+boot kimliği ve `/proc` başlangıç sayacı, macOS'ta `proc_pidinfo` başlangıç zamanı, Windows'ta
+aynı handle üzerinden canlılık ve `GetProcessTimes` kullanılır. Her MCP isteğinde, araç
+kilidi alındıktan sonra ve veri döndürmeden önce worker kimliği/zaman sınırı doğrulanır.
+`complete` yalnız teslim alınan anlık sonucu `submitted` diye onaylar; başarılı kapanışı
+çalışan yapar. Worker'ı ölen görünür Windows konsolu açık kalabilir, ancak eski işin köprü
+araçları kapalıdır. Eski şemalı, yeniden kullanılmış veya sorgulanamayan PID içeren kesilmiş
+işler yeniden çalıştırılmaz; belirsiz iş incelemeye alınır ve sıradaki işe geçilir.
+
+Tanı için `<state>/yakala/ajan/<kart-id>.log` ve `ajan` durumunu kullan. İş dosyaları
+`<state>/yakala/ajan/jobs/<iş-UUID>/` altındadır. Günlüklerde istek, kaynak ve araç çıktıları
+bulunabilir; bunları herkese açık issue'ya kontrol etmeden ekleme. Ağ/giriş/limit hatasında kart
+korunur. Süreç veya bilgisayar beklenmedik şekilde kapanırsa kısmi etkiler bilinmeyebilir;
+`ajan-devam` aynı işi kendiliğinden tekrar etmez, inceleme gerektirir.
+
+Yakala işlerinin kendi yazıları kilitlenir; normal başka bir ajan veya editör aynı kilidi
+kullanmıyorsa aylık ajan günlüğünü sonradan bütünüyle değiştirip eklenen satırı kaybedebilir. Bağımsız
+sonuç notu ve receipt bağlantısı bu nedenle korunur. Ortak vault'u iki makinede açmak tek bir
+dağıtık kuyruk veya bütün ajanlar arasında ortak dosya kilidi sağlamaz.
+
+POSIX kart kilidi artık vault köküne `.beyin-yakala-card.lock` yazmaz; kullanıcının yerel
+state alanındaki ortak kilit dizinindedir. Kilit mevcut vault'un dosya sistemi kimliğine
+bağlanır; aynı dizine ait yol takma adları ve farklı özel state seçimleri tek kilitte buluşur.
+Ajan kapalıyken normal yakalama da bu kilidi kullanır. Windows named mutex yolu korunur.
+Güncellemede bütün eski Yakala dinleyici/worker süreçlerini kapatıp `yakala kur` ile yenile;
+eski ve yeni kilit düzenini kullanan sürümleri aynı vault'ta birlikte çalıştırma.
+
+`yakala kaldir`, ajan ayarını önce `kapali` yapar ve mevcut Yakala kısayol/skill kaldırmasını
+uygular. Kartlar, ajan sonuçları, receipt'ler, indirilmiş dosyalar ve tanı kayıtları silinmez.
+Bu sürüm yeni `Beyin Yakala Ajan.lnk` toast kısayolunu ve kayıt işaretini de korur; istersen
+Başlat menüsündeki bu adlı kısayolu ayrıca kaldırabilirsin. Kaldırma, önceden yapılmış dosya
+etkilerini geri alma işlemi değildir. Bu bölümdeki ağ davranışı yalnız açıkça gönderilen ajan
+işleri içindir; aşağıdaki normal yakalama akışı kart yazarken ağa çıkmaz.
+
+### Windows kabul testi
+
+Birim testleri gerçek model hizmeti çalıştırmaz. POSIX yaşam döngüsü testleri gerçek geçici
+Python süreçleri açıp sonlandırır; Windows/macOS API modelleri yerel ölçüm yerine geçmez.
+Depo kökünde bütün Yakala paketini çalıştır:
+
+```sh
+py -3 -m unittest discover -s tests -p "v3_yakala*_test.py"
+```
+
+Windows 11 üzerinde aşağıdakileri ayrıca dene. Her kayda tarih, Windows/Python/CLI sürümü,
+istemci, `gizli`/`pencere`, `kisitli`/`acik`, dosya sistemi ve beklenen/gerçek sonucu ekle.
+Gerçek kullanıcı sırları yerine ayırt edilebilir zararsız test notları kullan.
+
+1. `kur --ajan kapali` ile düz Enter'ın eski kaydı yaptığını ve Ctrl+Enter satırının görünmediğini doğrula.
+2. Normal terminalde seçilen CLI'ye giriş yap, vault/hook güvenini ve `beyin.py receipt --help`
+   sözleşmesini kontrol et; `kur --ajan claude` veya `codex` çalıştır.
+3. Zararsız bir not araştırmasını Ctrl+Enter ile gönder. Popup'ı ve dinleyiciyi kapat; konsol
+   penceresi açılmadan işin ilerlediğini, karttaki gerçek oturum kimliğini ve bildirimi doğrula.
+4. Bilinen herkese açık küçük bir dosyayı indir. Yeni hedef adı, hash, sonuç notu, receipt ve
+   ajan günlüğü bağlantıları birlikte doğrulandıktan sonra `islendi` olmasını kontrol et.
+5. Silme/giriş isteyen bir iş, özel IP URL'si, eksik CLI, ağ hatası ve kısa timeout dene.
+   Kartların korunduğunu, gerekçenin yazıldığını ve başarı bildirimi verilmediğini doğrula.
+6. Art arda iki istek gönder; tek CLI çalıştığını kontrol et. Aynı kartta normal `isle`/`bitti`
+   çağrılarını, kesilme sonrası `ajan-devam` davranışını ve açık `ajan-serbest` devrini dene.
+7. Bildirimleri kapatıp işi tekrarla; sonuç ve günlük oluşmalıdır. Yeni normal oturumdan önceki
+   kartı ve indirme yolunu bulmayı, son olarak `ajan kapali` ve `kaldir` davranışını doğrula.
+8. Claude ve Codex'i hem `gizli` hem `pencere` kipinde çalıştır. Codex 0.155.1 ve kullanılacak
+   yeni sürümde `codex --version`, bayraksız `codex features list` ve işin kapatma bayraklı
+   tablosunu kaydet. `view_image`/kabuk/alt ajan çağrılarının reddini, `kisitli` kipte web
+   aramasının yokluğunu doğrula. Kod moduyla Yakala MCP çağrısı ve gerçek oturum UUID'si
+   eşleşmelidir. Claude pencere argv'sindeki `--` ve `--tools ""` davranışını ayrıca gözle.
+9. Önceden etkin MCP ve eklenti bulunan geçici CLI profilinde işi çalıştır; başka sunucunun
+   aracı açılmamalı, kullanıcı config hash'i değişmemeli. Claude `--model haiku` ve özel
+   executable seçildikten sonra Codex'e geç; yeni iş varsayılan Codex seçeneğiyle başlamalı.
+10. Windows Codex salt okuma uyumluluk yolunu hem gizli hem pencere kipinde doğrula:
+    `AGENTS.md` ve normal hafıza başlangıcı, izinli MCP okuması, private reddi, sonuç,
+    receipt ve ajan günlüğü zinciri çalışmalı. Sandbox türünü ve CLI sürümünü kaydet.
+    Zararsız notlarla vault içinde/dışında Update/Move/Delete ve mevcut/yeni Add yazmaları
+    reddedilmeli; hiçbir mevcut dosyanın hash'i değişmemeli. Doğru/yanlış bağlam hataları
+    farklı olabilir: Windows `-s read-only` yolunu kapalı içerik tahmin sınırı olarak sunma.
+11. İzinli `fetch_source`/`download` çağrılarını karışık ve başarısız denemelerle toplam 8'e
+    getir. Dokuzuncu çağrı ağdan önce reddedilmeli. Aynı işe yeni MCP bağlantısı açmak hakkı
+    yenilememeli; `complete` yine çalışmalı. `acik` araç açıklaması yeni public URL'yi
+    yasakladığını söylememeli; hosted web araması bu sayaçta değildir.
+12. Gizli işin yalnız worker sürecini beklenmedik biçimde kapat; CLI/alt süreç Job Object
+    kapanışıyla sonlanmalı. Görünür konsol açık kalsa da ölen worker'ın MCP'si not
+    döndürmemeli. Kısa timeout, `ajan kapali`, `ajan-devam` ve `ajan-serbest` sonuçlarını
+    incele. PID nesli uyuşmazlığı ve AccessDenied regresyonlarını otomatik testte çalıştır;
+    rastgele sistem sürecini sonlandırarak PID yeniden kullanımını üretmeye çalışma.
+13. NTFS, gerçek exFAT/FAT USB ve kullanılacak ağ paylaşımında yeni not ve indirme yayımla.
+    Var olan hedefin hash'i değişmemeli; yarışta tek yayın kazanmalı; yazma ortasında hata
+    son ad altında yarım dosya bırakmamalı. Hem hard link hem exclusive rename desteklenmiyorsa
+    açık hata ve korunmuş `.part` beklenir. Junction/symlink reddi devam etmelidir.
+14. İlgisiz `knowledge/Dosyalar` notu okunmalı; başka kartın ekleri, eski kartları taşınmış
+    ek deposu, private/hassas notlar açılmamalı. Kendi kart/ham metin/bağlı metin ekinin
+    güven etiketi `untrusted` olmalı. Büyük/küçük harf yol takma adlarını da dene.
+15. Ajan kapalı normal yakalama vault köküne yeni kilit yazmamalı. Farklı `--state` seçimleri
+    aynı kartı eşzamanlı güncellerken kayıt kaybolmamalı. Birden fazla companion veya arşivde
+    Last-Session bulunması işi etkilememeli; Last-Session baytları değişmemeli. Aylık günlükte
+    tek girdi, tekrar çağrıda aynı baytlar ve `private` kartta özetsiz durum/bağlantılar beklenir.
+
+**Linux/macOS için ayrı Codex okuma sınırı ölçümü:**
+[isteğe bağlı gerçek CLI regresyonunu](CODEX-APPLY-PATCH.md) çalıştır. Root-deny altında
+göreli/mutlak, vault içi/dışı Update/Move/Delete ve Add denemelerinde dosyalar korunmalı;
+aynı yol/işlemde doğru ve yanlış bağlam aynı içeriksiz hataya dönmeli. Aynı oturumdaki
+normal hook ve izinli MCP teslimi de geçmeli. Başlangıç/politika hatasını başarı sayma;
+bu POSIX profilini salt okuma seçicisi veya ek okuma köküyle otomatik genişletme. Linux
+ölçümü macOS native ölçümü değildir; platform, CLI ve gerçek sonucu ayrı kaydet.
+
+**Esc ve Opera One/GX, #383 için ek masaüstü ölçümü:**
+
+- Kaynak pencere, popup ve başka pencere öndeyken yalın Esc davranışını dene. Ctrl+Shift+Esc,
+  Ctrl+Esc, Alt+Esc, Shift+Esc ve Win+Esc kancadan geçmeli. Değiştiriciyi popup açılmadan
+  önce basılı tutmayı, sol/sağ Ctrl birlikteyken yalnız birini bırakmayı ve sonrasında yalın
+  Esc'i dene. Windows'un ayırdığı kısayolun gerçekten çalıştığını ekran üzerinden kaydet.
+- Opera Air, One ve GX için tam sürüm/build ve profil/eklenti durumunu kaydet. Normal
+  makale, X tek gönderi, giriş yapılmış ağır X akışı ve Instagram'da adres/metin/bağlantı
+  seçimini ölç. `abc2h` gibi kullanıcı adı ile `2h` zaman etiketinin başlığı bozmadığını dene.
+- Her senaryoda en az 20 tekrar için okuma süresini ms, doğru URL oranını, URL'siz dönüşü ve
+  bir saniyelik bütçe aşımını kaydet; medyan, p95 ve en büyük süreyi raporla. Bunlar ölçüm
+  hedefidir, bu dal için yapılmış performans ölçümü değildir.
+- İki görünür renderer, yabancı renderer, iki okuma arasında belge/foreground değişimi ve
+  yoğun UIA ağacında belirsiz sonuç URL'siz kalmalı. Main/base ile aynı koşulları karşılaştır;
+  omnibox kaldırılmasının One/GX üzerindeki etkisini doğru URL ve süreyle birlikte ölç.
+  Belirsizliği gizlemek için eski omnibox yolunu kendiliğinden açma.
+
+### Teknik kaynaklar
+
+İlk CLI/bildirim bağlantılarının erişim tarihi **17.10.2026**; aşağıdaki sürüm sabitli Codex,
+süreç, atomik yayın ve klavye kaynakları ilk düzeltmede **19.10.2026 Türkiye saati** ile
+incelenmiştir (UTC kayıtları 18.10.2026). Adlı Codex izin profili araştırması ve üç resmî
+ikiliyle regresyon **19.10.2026 UTC** tarihinde yapıldı. CLI seçenekleri değişebilir;
+belge desteği bu bilgisayarda canlı çalıştırma kanıtı değildir.
+
+- İnceleme: [#384 ana yorum](https://github.com/avenoxai/avenoxbeyin/pull/384#issuecomment-6243678257),
+  [özellik tablosu ek notu](https://github.com/avenoxai/avenoxbeyin/pull/384#issuecomment-6243771486),
+  [#383 merge yorumu](https://github.com/avenoxai/avenoxbeyin/pull/383#issuecomment-6243513321),
+  tümü 18.10.2026 UTC.
+- Codex 0.155.1: [resmî binary](https://github.com/openai/codex/releases/tag/rust-v0.155.1),
+  [özellik adları](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/features/src/lib.rs),
+  [kabuk/view_image/apply_patch kayıtları](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/core/src/tools/spec_plan.rs),
+  [alt ajan seçimi](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/core/src/config/mod.rs),
+  [apply_patch doğrulama sırası](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/core/src/tools/handlers/apply_patch.rs).
+  Linux musl binary SHA-256: `a0ef8b2debc3bf747e07b1a039354de31300ac0dcc2276498ba281470b5d9115`.
+  [0.160.0 özellik tablosu](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/features/src/lib.rs)
+  kaynakta karşılaştırıldı; bu düzeltmede 0.160.0 ikilisiyle de sentetik CLI/MCP testi yapıldı.
+- Codex izin sınırı: [resmî beta profiller ve kapsam](https://learn.chatgpt.com/docs/permissions),
+  [0.163.0 sürümü](https://github.com/openai/codex/releases/tag/rust-v0.163.0),
+  [0.164.0-alpha.3 ön sürümü](https://github.com/openai/codex/releases/tag/rust-v0.164.0-alpha.3),
+  [0.163.0 yama doğrulaması](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/core/src/tools/handlers/apply_patch.rs),
+  [izin profilinin derlenmesi](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/core/src/config/permissions.rs),
+  [CLI profil seçimi](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/core/src/config/mod.rs),
+  [normal hook güven sözleşmesi](https://learn.chatgpt.com/docs/hooks).
+  Ayrıntı ve SHA-256 listesi [araştırma notunda](CODEX-APPLY-PATCH.md).
+- Süreç: [Linux /proc](https://docs.kernel.org/filesystems/proc.html),
+  [Windows GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes),
+  [WaitForSingleObject](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject),
+  [Apple proc_info.h](https://github.com/apple/darwin-xnu/blob/main/bsd/sys/proc_info.h).
+- Atomik yayın: [Python 3.12 os.rename](https://docs.python.org/3.12/library/os.html#os.rename),
+  [Linux rename(2)](https://man7.org/linux/man-pages/man2/rename.2.html),
+  [Apple RENAME_EXCL](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/stdio.h).
+- Klavye: [LowLevelKeyboardProc](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelkeyboardproc),
+  [KBDLLHOOKSTRUCT](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-kbdllhookstruct),
+  [GetAsyncKeyState](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getasynckeystate).
+
+- Claude Code: [CLI referansı](https://code.claude.com/docs/en/cli-reference),
+  [başsız çalışma](https://code.claude.com/docs/en/headless),
+  [izin modları](https://code.claude.com/docs/en/permission-modes),
+  [sandbox sınırları](https://code.claude.com/docs/en/sandboxing),
+  [yönetilen MCP](https://code.claude.com/docs/en/managed-mcp).
+- Codex: [CLI komutları](https://learn.chatgpt.com/docs/developer-commands?surface=cli),
+  [başsız çalışma ve thread kimliği](https://learn.chatgpt.com/docs/non-interactive-mode),
+  [config referansı](https://learn.chatgpt.com/docs/config-file/config-reference),
+  [onay ve güvenlik](https://learn.chatgpt.com/docs/agent-approvals-security),
+  [rules](https://learn.chatgpt.com/docs/agent-configuration/rules),
+  [hook güveni](https://learn.chatgpt.com/docs/hooks),
+  [Windows sandbox](https://learn.chatgpt.com/docs/windows/windows-sandbox).
+- Microsoft: [süreç oluşturma bayrakları](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags)
+  ve [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+  (güncelleme 14.07.2025),
+  [AUMID ile masaüstü toast kaydı](https://learn.microsoft.com/en-us/windows/win32/shell/enable-desktop-toast-with-appusermodelid)
+  (07.01.2021),
+  [masaüstü toast gönderme](https://learn.microsoft.com/en-us/windows/win32/shell/quickstart-sending-desktop-toast)
+  (20.06.2022).
+- Apple: [Display Notifications](https://developer.apple.com/library/archive/documentation/LanguagesUtilities/Conceptual/MacAutomationScriptingGuide/DisplayNotifications.html)
+  (güncelleme 13.06.2016).
+- Freedesktop: [Desktop Notifications 1.3](https://specifications.freedesktop.org/notification/latest-single/)
+  (18.08.2024); GNOME: [libnotify](https://gnome.pages.gitlab.gnome.org/libnotify/).
+
+## Istege bagli: videodaki muzigi tanima
+
+Bu ozellik sarkiyi tanitir ve mesru dinleme baglantisi verir. Tam sarki indirme,
+hesap/cookie okuma, DRM asma, tarayici oturumu kullanma veya modelin komut
+yazmasi bu yetenege dahil degildir. Python tarafi yalniz stdlib ve Windows'ta
+ctypes kullanir; AudD SDK veya yeni Python paketi gerekmez.
+
+### Acik izin ve ornek kullanim
+
+Yeni iki MCP araci parametre almaz. `music_info`, yalniz bu kartin yakalanmis
+Instagram reel/video, TikTok veya YouTube/Shorts sayfasinin muzik meta verisini
+okur. `music_identify`, asagidaki ayri izinlerle yerel ses ornegi cikarir ve
+istenmisse AudD'ye gonderir. Kaynak URL, dosya yolu, arama sorgusu, komut,
+anahtar veya onay model tarafindan arac argumani olarak verilemez.
+
+```sh
+# Kullandigin istemciyi sec; ag acik tek basina ses yukleme izni vermez.
+python beyin.py yakala ajan claude --ag acik
+
+# Bir defa: anahtari terminalde gizli gir. Bu komut servis istegi yapmaz.
+python beyin.py yakala ajan-muzik audd
+
+# Kaynagi normal yakala, ardindan gercek kart kimligini kullan.
+python beyin.py yakala ekle "https://www.instagram.com/reel/VIDEO_ID/" --neden "Sarkiyi tani"
+python beyin.py yakala ajan-gonder KART_ID --istek "Sarkiyi tani ve mesru dinleme baglantisi ver" --ses-isle --tani-servise-gonder
+
+# Yalniz yerel inceleme: ornek hicbir tani servisine gonderilmez.
+python beyin.py yakala ajan-gonder KART_ID --istek "Video meta verisini incele" --ses-isle
+
+# Servis durumu ve kapatma.
+python beyin.py yakala ajan-muzik
+python beyin.py yakala ajan-muzik kapali
+```
+
+`--ses-isle`, kullanicinin isleme izni bulunan videodan bu is icin en fazla
+12 saniyelik ornek cikarmaya verdigi acik izindir. `--tani-servise-gonder`,
+o ornegin AudD'ye yuklenmesine ayri izindir; `--ses-isle` olmadan reddedilir.
+Her iki izin de is kaydina, worker uyandirilmasindan once host tarafindan
+yazilir. Neden/istek metnindeki "indir", "tani" veya "izin veriyorum"
+sozcukleri, popup Ctrl+Enter, genel `ag: acik` ayari veya toplu gonderim bu
+izinleri kendiliginden vermez. Eksik izinde ajan `approval_required` sonucu
+ve gereken CLI seceneklerini sunar. Ayni karttaki onceki is bitmeden ikinci
+is kuyruga alinamaz; onay-bekliyor sonucu incelendikten sonra yeni komut
+verilir. Eski is kendiliginden yeniden baslamaz.
+
+Etkilesimsiz anahtar girisi icin `ajan-muzik audd --anahtar-dosyasi DOSYA`
+kullanilabilir. Dosya vault disinda, yerel diskte UTF-8 olmali; symlink/junction
+kabul edilmez. Anahtari CLI metnine, JSON ajan ayarina, ortam degiskenine,
+vault notuna veya prompta koyma. Giris dosyasi otomatik silinmez; kullanici
+kendi guvenli anahtar kaynagini yonetir. Kalici servis anahtari state altindaki
+`yakala/ajan/credentials/audd.json` icindedir. Cozulmus state yolu vault icinde
+kalirsa servis ayari reddedilir. Windows'ta CurrentUser DPAPI kullanilir.
+POSIX'te dosya sahibi ve `0600` izinleri dogrulanir; bu yol sifreleme iddiasi
+tasimaz. Anahtar ayni isletim sistemi hesabi disindaki bir sistem/hesaba
+tasindiginda yeniden girilmelidir. Model/alt arac ortamindan AudD degiskenleri
+cikarilir; bridge anahtari yalniz sabit AudD POST govdesine ekler.
+
+`ajan-muzik kapali`, anahtar kaydini kaldirir. Video islenirken servis
+kapatilirsa bridge yeni yuklemeden hemen once anahtari ve isin durumunu
+yeniden kontrol eder; eski anahtarla yeni istek baslatmaz. Zaten baslamis bir
+istegi geri almak veya servis tarafindaki veriyi silmek bu komutun isi degildir.
+Kapatma/anahtar degistirme ile son izin kontrolu ve POST, ayni yerel OS kilidi
+altinda siralanir. Kapatma komutu donmeden once siradaki yeni yukleme durur;
+devam eden POST varsa komut onun en fazla 7 sn ag asamasini bekleyebilir.
+
+### Ag, kanit ve sonuc
+
+| Durum | Sayfa meta verisi | yt-dlp / yerel ornek | AudD yukleme |
+| --- | --- | --- | --- |
+| `ag: kisitli` | Yalniz yakalanan destekli URL ve izinli platform yonlendirmeleri | Kapali | Kapali |
+| `ag: acik`, ek izin yok | Ayni dar arac | Kapali | Kapali |
+| `ag: acik` ve `--ses-isle` | Acik | Bu is icin acik | Kapali |
+| Onceki satir ve `--tani-servise-gonder` | Acik | Acik | Yalniz AudD anahtari varsa, en fazla bir deneme |
+
+Genel acik agin mevcut gizlilik talimati degismez: not/kisisel/ozel icerik
+arama sorgusuna veya URL'ye konmaz. Buradaki AudD izni yalniz sabit kisa ses
+orneginin gonderilmesini kapsar; notlar, istek metni, kart kimligi, vault yolu
+ve kaynak URL servise gonderilmez. Ornekte insan sesi/konusma bulunabilir;
+ornek gonderme karari bunu da kapsar. Model bu izni baska servise genisletemez.
+
+Meta veri kaynaklari: HTML `og:title`/`og:description`, YouTube
+`ytInitialPlayerResponse` aciklamasi, Instagram muzik/orijinal ses alanlari,
+TikTok `music`, JSON-LD `MusicRecording`, ayrica izinli yt-dlp ciktisindaki
+`track`/`artist`. Sayfanin "Orijinal ses" etiketi bir sarki kimligi kaniti
+degildir. Bu sonuclar `verification: source_metadata_only` ve
+`recognized: false` tasir. Gercek AudD eslesmesi
+`verification: provider_acoustic_match` tasir; saglayicinin vermedigi bir
+guven yuzdesi uydurulmaz (`confidence: null`). Servis sonucunda eslesme yoksa
+`unmatched`, servis/arac yoksa veya guvenli isleme mumkun degilse `unavailable`
+doner. Kaynak/meta veri iddiasi, model tahmini ve ses eslesmesi birbirine
+karistirilmaz.
+
+Donen dinleme baglantilari yalniz `music.apple.com`, `open.spotify.com` ve
+`lis.tn` HTTPS adreslerinden kabul edilir. Apple'in sarki secen sayisal `i`
+parametresi korunur; diger sorgu/takip ve fragment alanlari atilir. Bu
+baglantilar otomatik acilmaz, indirilmez veya kisitli agin indirme izin
+listesine eklenmez. Spotify/Apple preview adresi ve AudD eslesmesi indirme
+lisansi sayilmaz. Kullanici izni ve kaynagin acik izni bulunan dogrudan bir
+dosya icin mevcut `download` yetenegi kullanilabilir; bu ozellik yeni bir
+tam sarki indirme yolu acmaz.
+
+### Sabit araclar ve butceler
+
+- Her is icin sayfa okuma ve ses isleme en fazla birer kalici denemedir.
+  Sonuclar state icinde onbelleklenir. Kesinti/zaman asimi sonrasi otomatik
+  tekrar yoktur; yeniden denemek acik yeni is gerektirir. Bu tercih gecici
+  bir ag hatasinda yeniden komut gerektirebilir, fakat belirsiz bir ucretli
+  istegin otomatik tekrarini onler.
+- AudD deneme kaydi POST'tan once yazilir. `music-provider-attempt.json`
+  varsa ayni is yeniden ucretli istek gondermez. Sonuc kaydi yazilamadan
+  surec kesilse de onceki sonuc "bilinmiyor" sayilir; basarili diye sunulmaz.
+- Sayfa en fazla 512 KiB; yt-dlp JSON stdout en fazla 4 MiB; alinacak tek
+  dogrudan medya dosyasi en fazla 32 MiB'dir. Ses ilk en fazla 12 saniyedir:
+  mono, 16 kHz, 16-bit PCM WAV. Tam 12 saniyede 384044 bayt uretilir.
+  Ses secme/ofset/model filtre argumani veya mikrofon kaydi yoktur.
+- yt-dlp yalniz metadata cikarir. Sabit argv; `shell=False`,
+  `--ignore-config`, `--no-plugin-dirs`, `--no-js-runtimes`,
+  `--no-remote-components`, `--no-exec`, `--no-playlist`, `--simulate`,
+  cookie/cache kapatma ve sifir yeniden deneme kullanilir. Playlist,
+  genel extractor ve model tarafindan verilen URL/komut kullanilmaz.
+- yt-dlp HTTPS erisimi rastgele kimlik bilgili, yalniz loopback'te yasayan
+  bir CONNECT vekilinden gecer. Vekil yalniz ilgili platformun sabit
+  platform/CDN alanadi son eklerini, port 443'u ve dogrulanmis genel IP'leri
+  kabul eder. IP sabitleme DNS yeniden baglama ve ozel IP yonlendirmesini
+  engeller. DNS sonuclari kamu/ozel IP karisiksa reddedilir. Bu bir isletim
+  sistemi sandbox'i degildir; kurulu yt-dlp/ffmpeg ikilileri guvenilen yerel
+  bagimliliklardir. Cookie/giris veya guvenlik bayragi kaldirma fall back'i yoktur.
+- Vekil siniri 24 CONNECT tuneli ve iki yonde toplam 12 MiB sifreli aktarimdir.
+  TLS icindeki HTTP istek sayisi gorulmez; 24 siniri HTTP istek sayisi iddiasi
+  degildir. TLS sertifika kontrolunu yt-dlp yapar; vekil hedefin sayisal IP'sini
+  dogrular ve sabitler. Vekil kapaninca tum tuneller kapatilir.
+- Tek arac cagrisinin asama sureleri: sayfa 7 sn, yt-dlp 18 sn, medya 10 sn,
+  ffmpeg 5 sn, AudD 7 sn; ortak son tarih 50 sn veya calisan isinin kalan
+  suresinden kisa olanidir. Yeni bir ag/yerel islem asamasindan once ve AudD
+  deneme kaydi kalici yazildiktan sonra calisanin PID + baslangic kimligi ile
+  is suresi yeniden dogrulanir. Calisan sona erdiyse yeni medya istegi veya
+  ses yuklemesi baslatilmaz. Baslamis bir HTTP istegi geri alinamaz. DNS son tarihi ve
+  soketi son tarihte kapatan bekci, yavas DNS/baslik akisini da durdurur.
+  OS DNS cagrisi iptal edilemezse surec basina en fazla dort daemon cozumleyici
+  kalabilir; bunlar baglanti acamaz ve tamamlanana kadar yeni DNS kapasitesini
+  tutar. Bu sureler uygulama tavanlaridir, servis gecikmesi olcumu degildir.
+- Medya URL'sini yt-dlp'nin dondugu veri belirler; bridge ayri IP sabitlemeli,
+  sinirli HTTPS GET yapar. HLS/DASH manifesti, canli yayin, DRM, cookie veya
+  izin listesi disi CDN guvenli hata verir. Bir sayfayi mp3 diye kaydetmez.
+- ffmpeg yalniz stdin'den alinan baytlari acar. Medya sihirli basligi kontrol
+  edilir, demuxer sabitlenir, `-protocol_whitelist pipe` kullanilir. Dosya,
+  HTTP, concat veya baska bir protokolle ek girdi okuyamaz. PCM stdout ayri
+  boyut siniriyla okunur ve WAV basligini stdlib yazar. Ham medya ve ses
+  ornegi RAM'de kalir; Downloads'a veya vault'a dosya cikmaz.
+- Normal MP4 dosyalarinin sonda duran `moov` kutusu, yalniz tek `moov` ve
+  tek `mdat` iceren destekli progressive duzende RAM icinde one tasinir;
+  `stco`/`co64` adresleri dogrulanip duzeltilir. Kutu/derinlik/tablo boyut
+  sinirlari, gercek `mdat` payload adresleri ve sayi tasmalari kontrol edilir.
+  Sifir uzunluklu sona-acik `moov`, bu duzendeki fragment/index kutulari veya
+  desteklenmeyen konum bilgisi reddedilir. Bu genel bir MP4 onarma araci
+  degildir. `moov` zaten bastaysa dosya degismez.
+
+### Servis tercihi ve Windows kabul testi
+
+AudD, stdlib HTTP ile tek sabit endpoint ve kisa ses ornegini destekledigi
+icin bu surumun istege bagli saglayicisidir. Anahtar yokken servis kapali
+kalir, kullanici anahtari eklese bile is basina yukleme izni gerekir. AcoustID/
+Chromaprint, ACRCloud ve Shazam ekleri bu yamada uygulanmadi; alternatiflerin
+maliyet, girdi/lisans ve gizlilik kosullari ayrica degerlendirilmelidir.
+
+19.10.2026 kontrolu: AudD ana sayfasi ilk 300 istegi ucretsiz, devamini
+1000 istek icin 5 USD olarak listeler. API belgesi standart endpoint icin
+10 MB dosya tavani; ana sayfa yaklasik ilk 12 saniyeyi isleme bilgisini verir.
+Buradaki 384044 bayt/12 sn uygulama tavanidir; fiyat veya dogruluk garantisi
+degildir. Kullanmadan once guncel fiyat/kota ve kosullari kontrol et:
+
+- https://audd.io/
+- https://docs.audd.io/
+- https://audd.io/terms/index.php (kosul surumu 07.07.2026)
+- https://audd.io/privacy/index.php
+- https://github.com/yt-dlp/yt-dlp#usage-and-options
+- https://ffmpeg.org/ffmpeg-protocols.html
+
+AudD'nin sozlesmesi kimliksizlestirilmis/toplulastirilmis musteri icerigiyle
+hizmeti gelistirme hakkini sakli tutar; genel bir "veri tutulmaz/egitimde
+kullanilmaz" garantisi verilmez. Tani, kaynak platformunun kosullarini veya
+telif sahibinin izin gereksinimini ortadan kaldirmaz.
+
+Otomatik testler gercek ucretli servise veya kullanici hesabina baglanmaz.
+Gercek yerel loopback vekili, yavas HTTP basligi/DNS sure sonu, anonim WAV,
+normal ve faststart AAC MP4 ile ayni 12 sn ffmpeg cikisi, sonuclari tekrar
+ucretlendirmeme, iptal edilen servis izni, token redaksiyonu ve negatif
+yetki/URL/medya senaryolari denetlenir:
+
+```sh
+python -m unittest discover -s tests -p "v3_yakala_muzik_test.py"
+python -m unittest discover -s tests -p "v3_yakala*_test.py"
+```
+
+Windows 11'de kendi makinenizde dogrulanacaklar: PATH'teki gercek yt-dlp/ffmpeg
+surumlerinin tum sabit guvenlik seceneklerini desteklemesi, Turkce/bosluklu
+yollar, DPAPI saklama/acma ve farkli hesabin acamamasi, gercek izinli reel/
+TikTok/YouTube orneklerinde metadata ve ses erisimi, servis izni verilmeden
+hicbir yukleme olmamasi, AudD ile izinli bir ornegin gercek eslesmesi,
+baglantinin dogru parcayi acmasi, zaman asimi/servis kapatma ve islemin bellege
+tam teslimi. Canli platformlar giris, bolge, CDN veya JS gerektirebilir.
+Ozellikle yeni YouTube akislari JS runtime gerektirdiginde bu surum bunu
+acmaz ve guvenli `unavailable` doner. Bu durumlarda kullanicinin resmi
+platform/manuel tanima yoluna gecmesi gerekir. Otomatik hesap girisi,
+browser cookie alma veya protokol izni genisletme onerilmez.
 
 ## İşleme nasıl çalışır
 
