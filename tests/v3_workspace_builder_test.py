@@ -31,6 +31,12 @@ class WorkspaceBuilderTest(unittest.TestCase):
         self.state = Path(self.tmp.name) / "state"
         self.state.mkdir()
 
+    def test_positional_dry_run_leaves_vault_untouched(self):
+        before = list(self.vault.iterdir())
+        result = workspaces.provision_workspace(self.vault, 'preview', 'general', None, None, None, None, True)
+        self.assertEqual(result['status'], 'dry_run')
+        self.assertEqual(list(self.vault.iterdir()), before)
+
     def test_provision_binds_note_root_to_workspace(self):
         workspaces.provision_workspace(self.vault, 'alpha')
         scopes = projects.read_project_scopes(self.vault)
