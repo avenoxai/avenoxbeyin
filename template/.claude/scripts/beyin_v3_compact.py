@@ -555,7 +555,7 @@ def _compact_files(vault, target, configured, dry_run=False, now=None):
                 # A concurrent caller that already committed its own archive is never reverted.
                 if archive.exists() and archive.read_bytes() == archive_written.encode('utf-8'):
                     if previous is None:
-                        archive.unlink()
+                        archive.unlink(missing_ok=True)
                     else:
                         _write(archive, previous.decode('utf-8'))
                 report.pop('backup', None)

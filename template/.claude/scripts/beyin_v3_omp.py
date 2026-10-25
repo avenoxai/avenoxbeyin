@@ -178,8 +178,19 @@ def plan_plugin(vault, state):
     """Return hook bytes; vault and interpreter are pinned, state comes from .beyin-runtime.json."""
     if any(char in sys.executable for char in '\r\n\x00'):
         raise ValueError('Unsupported interpreter path')
+    vault_str = str(vault or '')
+    if any(char in vault_str for char in '\r\n\x00'):
+        raise ValueError('Unsupported vault path')
+    try:
+        resolved_vault = str(Path(vault).resolve())
+    except (ValueError, OSError) as exc:
+        raise ValueError(f'Invalid vault path: {exc}') from exc
+    if any(char in resolved_vault for char in '\r\n\x00'):
+        raise ValueError('Unsupported vault path')
+    if state is not None and any(char in str(state) for char in '\r\n\x00'):
+        raise ValueError('Unsupported state path')
     source = (PLUGIN.replace('__PYTHON__', json.dumps(sys.executable))
-              .replace('__VAULT__', json.dumps(str(Path(vault).resolve())))
+              .replace('__VAULT__', json.dumps(resolved_vault))
               .replace('__TIMEOUT__', '20000' if os.name == 'nt' else '6000')
               .replace('__WRITE_TOOLS__', json.dumps(list(WRITE_TOOLS))))
     return {'.omp/hooks/pre/beyin-v3.ts': source.encode('utf-8')}

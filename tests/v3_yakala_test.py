@@ -53,7 +53,7 @@ class WindowsSourceDecisionTest(unittest.TestCase):
                 self.assertIsNone(chosen['url'])
                 self.assertEqual(chosen['files'], [])  # a window picture waits for Alt+W, like the stale clipboard
 
-    def test_url_toggle_excludes_other_urls_but_preserves_text_and_images(self):
+    def test_url_selection_preserves_text_and_images(self):
         sources = yakala.windows_sources({'url': 'https://example.com/page'},
                                          'copied text', True, {'path': 'image.png', 'on': True})
         for key in ('m', 'g'):  # clipboard text and picture are offered off next to a link; switch them on
@@ -351,7 +351,8 @@ class YakalaUnitTest(unittest.TestCase):
         class Canvas:  # stands in for a Tk canvas: the cache lives on it
             pass
         first, second = Canvas(), Canvas()
-        with patch('tkinter.font.Font', Font):
+        tkfont = Mock(Font=Font)
+        with patch.dict(sys.modules, {'tkinter': Mock(font=tkfont), 'tkinter.font': tkfont}):
             self.assertEqual(yakala._fit(first, 'kisa', ('f', 12), 100), 'kisa')
             self.assertEqual(yakala._fit(first, 'abcdefghijkl', ('f', 12), 60), 'abcde…')
             self.assertEqual(yakala._fit(first, 'ab   cdefgh', ('f', 12), 60), 'ab…')
@@ -692,6 +693,7 @@ class YakalaUnitTest(unittest.TestCase):
             commands.append(command)
             return subprocess.CompletedProcess(command, code, clip if isinstance(clip, bytes) else clip.encode('utf-8'), b'')
         with patch.object(yakala.sys, 'platform', 'linux'), patch.dict(yakala.os.environ, {'WAYLAND_DISPLAY': 'wayland-0'}), \
+                patch.object(yakala, 'linux_browser_context', return_value={}), \
                 patch.object(yakala, '_which', lambda *names: next(('/usr/bin/' + n for n in names if n not in missing), None)), \
                 patch.object(yakala.subprocess, 'run', run):
             if not wayland:

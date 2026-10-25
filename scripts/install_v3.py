@@ -45,6 +45,47 @@ STOCK_DOCTOR_HASH = "fd7919c86d140314de82660b2b6f428e2804c4e4d5df35e68d9904dc0ab
 # scripts/skill.beyin-doktor.windows.md: from v3.0.2 on, install.ps1 swaps this edition in at
 # .claude before copying .claude\skills\* to .agents\skills, so a Windows V2 vault holds it twice.
 WINDOWS_STOCK_DOCTOR_HASH = "4b0e9aeae1067ae084380f7f179f12b9090213f3990c2973adbef999321e9a87"  # v3.0.2-v3.4.0
+# V1 and V2 were never tagged: SETUP.md installed them by cloning main and copying template/, so an
+# untouched vault holds whatever bytes main had on its install day (#155). The release manifest's
+# legacy_hashes, built from template/, and the doctor digests above cover only the last of them;
+# these are the earlier ones, every other blob these paths had on main's first-parent history.
+# Regenerate per template path from `git log --first-parent --reverse --format=%H main -- <path>`
+# and the sha256 of `git show <commit>:<path>`; tests/v3_install_legacy_test.py walks that history
+# and names any version missing here.
+V2_STOCK_RUNNER_HASHES = {
+    ".claude/hooks/session-start.sh": (
+        "fe0c7a6c3cb429a2594e5536bd8bc0de63331f431545cc617166df10f1d0ed05",  # 2026-06-28 (V1)
+        "b7d215fe30b97d275177a46e65092a70bf8fa79322050b5df7ce448be5b14ff4",  # 2026-08-22
+        "f223b7d1834b94d072917e91a64e39a359300a7c9980a48241af190833a7a268",  # 2026-08-22
+        "bb1ec6afc99393ee06668853f953b84080bdf87ee5166c383de84f3b1da410a0"),  # 2026-08-23
+    ".claude/hooks/session-end.sh": (
+        "91ae0fa7fe51981a43a27975c06f898ec532d6a06b16c5ae0c589a7bbe880734",  # 2026-06-28 (V1)
+        "68f71e9f866b06c34b6cc583405defa2b39043c1c7ee4d8130e3047e0f3c7387"),  # 2026-08-22
+    ".claude/hooks/prompt-counter.sh": (
+        "dfb26ab2caeee0fe33fa2bd13266eedff3df44fa36b52c728d62cebeb951b02f",  # 2026-06-28 (V1)
+        "4de95b5d9329622dda90a67d9129188aaf3738c6ffc6b4949ae3f7ae0c367594"),  # 2026-08-22
+    ".claude/scripts/flush.py": (
+        "89f5b6f8f8f5692ea468db98b80c69977decb8e7217bef1f5f2714a456ac12ad",  # 2026-08-22
+        "2017144540560e1428d408906bdebaa5b7e562f66280bce524c9a3ef67f0f9a0",  # 2026-08-22
+        "913e35e6aaf3886b8b86314381496cc78a8ea0043c3d5bc3fb35ddafc735c77e",  # 2026-08-23
+        "1ac1ad227c62e808eaf8a0f8f6d6f425298db928c105128e3bfa286c2e2cfb58",  # 2026-08-28
+        "6104779524c66a2a021bdcd281fadfc76bf24cb7a2c3a8597a1a5180023dc0e1",  # 2026-08-28
+        "e52b47dd5412a2d63703b7e03d9d44c0c98c69191984a8d5657e9195932e7656"),  # 2026-08-29
+    ".claude/scripts/compile.py": (
+        "a18c6e347ea4da3be490afee08df745a18faacccdc18982cc1084f0dad374339",  # 2026-08-22
+        "bd1a0d817b9171720c4af86542a4dca7812c320d061cc47e8aecc5fa6e18e2b5",  # 2026-08-23
+        "afb2a70888a154f3f5da529e6da64d386eef2cc6e0b940a2c491de28b516cb19",  # 2026-08-28
+        "097e09699fd51a9672781d354393f10be0cf01387f7c941e06258f9f2a30ca26",  # 2026-08-28
+        "455864c25f6331ff6da4fa0aceeff9e503590d253426394a05fdadf54c40f072"),  # 2026-08-29
+}
+# template/.claude/skills/beyin-doktor/SKILL.md before OLDER_STOCK_DOCTOR_HASH. Like that one, these
+# are exempt at every skill root, since V2's Windows installer copied .claude\skills to .agents.
+V2_STOCK_DOCTOR_HASHES = (
+    "04f7fb4f4f4a5c27c7860eeebd38c88330d31835320a8761519839f778ca2c33",  # 2026-08-22
+    "ec97cdc8c3d0a55d4cc9de14ff29bcf03960965be7c6385a8a7f52b46d0dfe97",  # 2026-08-24
+    "cd143814fb0d5b1ae1186e92a709fe5ee7b318f333421245fc72aa3ef9024e27",  # 2026-08-29
+    "1b818b6ad9e3103c8d69eeda1613bd290d4fb82021325d6653deccef3595c2a1",  # 2026-09-03
+)
 RETIRED_STUB = b"# BEYIN_V3_LEGACY_RETIRED: canonical source runtime owns new outcomes.\n"
 
 
@@ -157,6 +198,11 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def stock_legacy_runner(name, current, expected):
+    """A legacy runner digest that the release lists, or that main shipped before its last change."""
+    return current == expected or current in V2_STOCK_RUNNER_HASHES.get(name, ())
+
+
 def default_skill_hashes():
     """Exempt only the starter-skill bytes released tags actually left at each managed path."""
     hashes = {root + "/skills/" + name + "/SKILL.md": list(RELEASED_SKILL_HASHES[name])
@@ -165,7 +211,7 @@ def default_skill_hashes():
     # instead of linking it, so the stock doctor bytes were left at both roots there.
     for root in SKILL_ROOTS:
         hashes[root + "/skills/beyin-doktor/SKILL.md"] += [OLDER_STOCK_DOCTOR_HASH, STOCK_DOCTOR_HASH,
-                                                           WINDOWS_STOCK_DOCTOR_HASH]
+                                                           WINDOWS_STOCK_DOCTOR_HASH, *V2_STOCK_DOCTOR_HASHES]
     source = ROOT / "template/.claude/skills/beyin-doktor/SKILL.md"
     if source.exists():
         hashes[".claude/skills/beyin-doktor/SKILL.md"].append(digest(source.read_bytes()))
@@ -237,15 +283,34 @@ def semantic_unchanged(name, baseline, current, previous, kept=(), user_excluded
         if name == ".beyin-runtime.json":
             # The installer pins a resolved absolute path. A pin that is not absolute here was
             # written by another OS through a synced vault (#249); it cannot name this machine's
-            # state, so the reinstall replaces it. Any other change still conflicts.
+            # state, so the reinstall replaces it. Standard default state layouts (.../beyin-v3/<key>)
+            # and package-redirected paths are also reconciled across moves without conflicting.
             data, before = json.loads(current), json.loads(baseline)
-            if not isinstance(data, dict) or not isinstance(before, dict) or not isinstance(data.get("state"), str):
+            if not isinstance(data, dict) or not isinstance(before, dict) or not isinstance(data.get("state"), str) or not isinstance(before.get("state"), str):
                 return False
+            if dict(data, state=None) != dict(before, state=None):
+                return False
+            cur_state, bef_state = data["state"], before["state"]
+            if cur_state == bef_state:
+                return True
             try:
-                foreign = not Path(data["state"]).expanduser().is_absolute()
-            except RuntimeError:
+                if not Path(cur_state).expanduser().is_absolute() and Path(bef_state).expanduser().is_absolute():
+                    return True
+            except (RuntimeError, ValueError):
                 return False
-            return foreign and dict(data, state=None) == dict(before, state=None)
+            def _is_default_layout(s):
+                portable = str(s).replace("\\", "/").rstrip("/")
+                return bool(re.search(r"/beyin-v3/[0-9a-fA-F]{16}$", portable))
+            if _is_default_layout(cur_state) and _is_default_layout(bef_state):
+                return True
+            try:
+                p_cur = Path(cur_state).expanduser().resolve()
+                p_bef = Path(bef_state).expanduser().resolve()
+                if p_cur == p_bef or (p_cur.exists() and p_bef.exists() and os.path.samefile(p_cur, p_bef)):
+                    return True
+            except (RuntimeError, ValueError, OSError):
+                pass
+            return False
         if name in (".claude/settings.local.json", ".claude/settings.json", ".codex/hooks.json", ".agents/hooks.json"):
             def owned(raw):
                 data = json.loads(raw)
@@ -494,7 +559,7 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
             continue
         path = vault / name
         if path.exists() and name not in manifest['files']:
-            if digest(path.read_bytes()) != expected:
+            if not stock_legacy_runner(name, digest(path.read_bytes()), expected):
                 raise ValueError('Customized legacy runner requires review ' + name)
             stub = RETIRED_STUB + (b'raise SystemExit(0)\n' if name.endswith('.py') else b'exit 0\n')
             if name.endswith('.sh'): stub = b'#!/bin/sh\n' + stub
@@ -545,9 +610,11 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
     add(".claude/scripts/beyin_v3_cli.py", (ROOT / "scripts/beyin_v3.py").read_bytes())
     hook = vault / ".claude/scripts/beyin_v3_hook.py"
     kiro_adapter = vault / ".claude/scripts/beyin_v3_kiro.py"
+    # The hook files are the user's, and Windows PowerShell 5.1 (Set-Content -Encoding UTF8) and
+    # many editors save JSON with a UTF-8 BOM, which json.loads refuses in a str (#336).
     for harness, name in (("claude", ".claude/settings.local.json"), ("codex", ".codex/hooks.json")):
         path = vault / name
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
         hooks = data.setdefault("hooks", {})
         for event, groups in list(hooks.items()):
             cleaned = []
@@ -586,13 +653,13 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
     # Claude merges checked-in and local settings; retire only recognized legacy adapters.
     path = vault / ".claude/settings.json"
     if path.exists():
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         for event, groups in data.get("hooks", {}).items():
             data["hooks"][event] = [dict(group, hooks=remaining) for group in groups
                                      if (remaining := [h for h in group.get("hooks", []) if not managed_handler(h, manifest.get("commands", []), kept)])]
         add(".claude/settings.json", jbytes(data))
     path = vault / ".agents/hooks.json"
-    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
     data.pop("avenox-beyin", None)
     if "harnesses/antigravity" in user_excluded:
         data.pop("beyin-v3", None)
@@ -696,7 +763,8 @@ Use Markdown source files as truth; run `python3 beyin.py sync` in the vault roo
                                  " (" + conflict_case(current) + ")")
         elif not item and current is not None and not line_endings_only(planned[name], current):
             semantic = name in ("AGENTS.md", "CLAUDE.md", ".claude/settings.local.json", ".claude/settings.json", ".codex/hooks.json", ".agents/hooks.json", ".codex/config.toml", ".beyin-version")
-            legacy = digest(current) in legacy_skill_hashes.get(name, []) or legacy_hashes.get(name) == digest(current)
+            legacy = (digest(current) in legacy_skill_hashes.get(name, []) or
+                      stock_legacy_runner(name, digest(current), legacy_hashes.get(name)))
             if not semantic and not legacy:
                 raise ValueError("Unmanaged file conflict " + name)
     # A file an excluded component installed earlier is planned as None (delete) when untouched,

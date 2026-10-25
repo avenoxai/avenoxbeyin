@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Passage-level strict context (#83): synthetic local vaults only, no network, no model."""
+import hashlib
 import importlib.util
 import json
 import os
@@ -308,6 +309,23 @@ class ConfigAndCacheTest(Vault):
         blob['records'] = {key: [['sahte', 0, 5, 'zirkon kova yedekleme']] for key in blob['records']}
         cache.write_text(json.dumps(blob), encoding='utf-8')
         self.assertEqual(self.strict('yedekleme zirkon kovası hangisiydi'), first)
+
+    def test_cache_from_an_older_stemmer_is_rebuilt(self):
+        # 3.11.0 wrote its own stems ("kurulmas") under a probe the #430 rules leave intact.
+        old_probe = 'Kütüphanesindeki notlarımızı güncellediler; running tests quickly İstanbul ŞEHİR 2026'
+        old_params = [passage.BLOCK_TARGET, passage.BLOCK_OVERLAP,
+                      hashlib.sha256(' '.join(sorted(runtime._tokens(old_probe))).encode()).hexdigest()[:16]]
+        self.ingest('mem0', 'Mem0 kurulmasın; yerel hafıza yeterli.', 'knowledge/mem0.md')
+        self.assertEqual(self.sources('Mem0 kurulmalı mı'), ['knowledge/mem0.md'])
+        cache = self.store.state_dir / passage.CACHE_NAME
+        blob = json.loads(cache.read_text(encoding='utf-8'))
+        blob['params'] = old_params
+        blob['records'] = {key: [[head, start, end, ' '.join('kurulmas' if t == 'kurul' else t for t in tokens.split())]
+                                 for head, start, end, tokens in entries]
+                           for key, entries in blob['records'].items()}
+        blob.pop('pool', None)
+        cache.write_text(json.dumps(blob), encoding='utf-8')
+        self.assertEqual(self.sources('Mem0 kurulmalı mı'), ['knowledge/mem0.md'])
 
     def test_changed_record_is_reindexed(self):
         self.ingest('a', 'Zirkon kovası için karar.', 'knowledge/a.md')

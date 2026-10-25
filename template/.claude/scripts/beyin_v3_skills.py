@@ -102,6 +102,7 @@ def sync_skills(vault, state, mode=None):
         # Under the lock, so two syncs never race for the same parked folder.
         relocated=[name for root in roots for name in _relocate_parked(root)]
         if relocated:result['relocated_backups']=relocated
+        existing=dict(db.execute('SELECT name, hash FROM skills').fetchall())
         names=sorted({p.name for root in roots for p in root.iterdir() if not p.name.startswith('.')})
         for name in names:
             paths=[root/name for root in roots]
@@ -118,8 +119,7 @@ def sync_skills(vault, state, mode=None):
                         result['unmanaged'].append(name)
                         continue
                     raise ValueError('external skill collides with managed skill')
-                old=db.execute('SELECT hash FROM skills WHERE name=?',(name,)).fetchone()
-                previous=old[0] if old else None
+                previous=existing.get(name)
                 if not previous and not any((p.is_dir() and (p/'SKILL.md').is_file()) for p in paths):
                     # Licenses, shared helper folders and caches live beside skills.
                     # Never owned, so never a conflict; a skill that LOST its
@@ -146,7 +146,7 @@ def sync_skills(vault, state, mode=None):
                         except OSError:_copy(source,target,None,vault)
                     else:_copy(source,target,current,vault)
                 if h:
-                    db.execute('INSERT OR REPLACE INTO skills VALUES (?,?)',(name,h));result['synced'].append(name)
+                    db.execute('INSERT OR REPLACE INTO skills VALUES (?,?)',(name,h));existing[name]=h;result['synced'].append(name)
             except (ValueError,OSError):result['conflicts'].append(name)
         db.commit()
     finally:db.close()

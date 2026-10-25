@@ -15,6 +15,7 @@ import math
 # metadata row: the folded directory names the last sync kept out of the index, as a JSON list.
 EXCLUDED_DIRS_ROW = 'index_excluded_dirs'
 RECEIPT_VIEW_SOURCES_ROW = 'receipt_view_sources'
+RECEIPT_VIEW_RECEIPT_SUFFIX = '.md.view-provenance.json'
 
 
 def _record_excluded_dirs(engine, db):
@@ -493,15 +494,47 @@ RECEIPT_VIEW_REASONS = frozenset((
 ))
 
 
-def is_receipt_view_source(source):
+def is_receipt_view_source(source, *, proven=False):
+    """Legacy reserved paths, or a flat path with independent ownership evidence.
+
+    A flat filename alone is never evidence: ordinary human daily notes use it too.
+    Callers may prove ownership with tracking rows, generated metadata or an archive.
+    """
     return isinstance(source, str) and (source == 'knowledge/v3/outcomes.md' or
-        re.fullmatch(r'daily/v3/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md', source) is not None)
+        re.fullmatch(r'daily/v3/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md', source) is not None or
+        (proven and re.fullmatch(r'daily/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md', source) is not None))
+
+
+def _receipt_view_table(relative):
+    # Older engines reject flat paths in receipt_views during every sync.
+    return ('receipt_flat_views' if re.fullmatch(r'daily/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md', relative)
+            else 'receipt_views')
+
+
+def receipt_view_rows(db):
+    """Read both ownership tables, including before the first projection."""
+    rows = {}
+    for table in ('receipt_views', 'receipt_flat_views'):
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+            rows.update(db.execute(f'SELECT path, hash FROM {table}'))
+    return sorted(rows.items())
+
+
+def _prepare_receipt_views(db):
+    for table in ('receipt_views', 'receipt_flat_views'):
+        db.execute(f'CREATE TABLE IF NOT EXISTS {table}(path TEXT PRIMARY KEY, hash TEXT NOT NULL)')
+    # Preserve ownership from the initial flat-layout implementation, including
+    # edited views whose original hash is required for safe recovery.
+    for relative, digest in db.execute('SELECT path, hash FROM receipt_views').fetchall():
+        if _receipt_view_table(relative) == 'receipt_flat_views':
+            db.execute('INSERT OR IGNORE INTO receipt_flat_views VALUES (?,?)', (relative, digest))
+            db.execute('DELETE FROM receipt_views WHERE path=?', (relative,))
 
 
 def is_receipt_view_conflict(item):
     # Both provenance and diagnosis are required. A source conflict must never
     # become writable merely because its name falls under a generated directory.
-    return (isinstance(item, dict) and is_receipt_view_source(item.get('source')) and
+    return (isinstance(item, dict) and is_receipt_view_source(item.get('source'), proven=True) and
             item.get('reason') in RECEIPT_VIEW_REASONS)
 
 
@@ -574,7 +607,7 @@ def archived_receipt_view_aliases(engine, warnings):
     also accepted; unrelated equal-content files at other paths are not.
     """
     aliases = set()
-    for root in (engine.root / 'knowledge/v3', engine.root / 'daily/v3'):
+    for root in (engine.root / 'knowledge/v3', engine.root / 'daily/v3', engine.root / 'daily'):
         archive_dir = root / '.archive'
         if archive_dir.is_symlink() or not archive_dir.is_dir():
             continue
@@ -594,8 +627,8 @@ def archived_receipt_view_aliases(engine, warnings):
                 archive = sidecar.with_name(sidecar.name[:-len('.provenance.json')])
                 if (not isinstance(data, dict) or data.get('schema') != 1 or
                         data.get('archive') != archive.name or
-                        not is_receipt_view_source(data.get('view')) or
-                        data['view'].split('/')[0:2] != list(root.relative_to(engine.root).parts) or
+                        not is_receipt_view_source(data.get('view'), proven=True) or
+                        Path(data['view']).parent != root.relative_to(engine.root) or
                         not isinstance(data.get('aliases'), list) or archive.is_symlink()):
                     raise ValueError('invalid receipt view provenance')
                 engine._path(archive.relative_to(engine.root).as_posix(), existing=True)
@@ -640,9 +673,12 @@ def receipt_day(created_at, zone=None):
         return None
 
 
-def _receipt_view_contents(engine, db, warnings=None):
-    """Desired views from immutable receipts, without writing files or tracking state."""
+def _receipt_view_contents(engine, db, warnings=None, *, include_human_daily=False):
+    """Render receipts without side effects; include_human_daily is for comparison only."""
     _hash, _, render = engine.projection_helpers()
+    from beyin_v3_preferences import read_daily_layout
+    layout = read_daily_layout(engine.root)
+    tracked = {row[0] for row in receipt_view_rows(db)}
     migration = engine.state/'v2-migration.json'
     previous = json.loads(migration.read_text(encoding='utf-8')) if migration.exists() else {}
     historical = set(previous.get('historical_receipts', []))
@@ -667,13 +703,102 @@ def _receipt_view_contents(engine, db, warnings=None):
         for _, at, source, summary in sorted(items):
             entries.append(f'## {at}\n\n{summary}\n\nSource: [[{source}]]\n')
             outcomes.append(f'- {day}: {summary}\n  Source: [[{source}]]\n')
-        desired[f'daily/v3/{day}.md'] = render({'generated': True, 'kind': 'receipt-index'}, '# Recorded outcomes\n\nAgent-authored claims, not independently verified facts.\n\n'+'\n'.join(entries))
+        relative = f'daily/{day}.md' if layout == 'flat' else f'daily/v3/{day}.md'
+        # Omit human notes before sync claims desired paths as view provenance.
+        # Outcomes were collected above and remain available in the shared index.
+        if include_human_daily or layout != 'flat' or not _human_daily(engine, relative, tracked, warnings):
+            desired[relative] = render({'generated': True, 'kind': 'receipt-index'}, '# Recorded outcomes\n\nAgent-authored claims, not independently verified facts.\n\n'+'\n'.join(entries))
     if outcomes:
         desired['knowledge/v3/outcomes.md'] = render({'generated': True, 'kind': 'receipt-index'}, '# Outcome source index\n\nThis index links semantic receipts. It is not an automatic knowledge compiler.\n\n'+''.join(outcomes))
     return desired
 
 
-def quarantine_receipt_view_history(db, sources):
+def _human_daily(engine, relative, tracked, warnings=None):
+    """Unowned flat notes without receipt-index metadata win, including during recovery."""
+    if not relative.startswith('daily/') or relative.startswith('daily/v3/'):
+        return False
+    try:
+        # Path proof must happen even for tracked paths. A symlink or an
+        # unreadable human daily is a skipped source, never a failed vault sync.
+        path = engine._path(relative)
+        if relative in tracked or not path.exists():
+            return False
+        from beyin_v3_sync import parse
+        try:
+            metadata = parse(path.read_text(encoding='utf-8'))[0]
+            return metadata.get('generated') is not True or metadata.get('kind') != 'receipt-index'
+        except (ValueError, UnicodeError):
+            return True
+    except (ValueError, OSError) as exc:
+        issue = {'source': relative, 'reason': str(exc)}
+        if warnings is not None and issue not in warnings:
+            warnings.append(issue)
+        return True
+
+
+def _durable_receipt_quarantine(engine, db, sources, warnings):
+    """Keep per-event exclusion evidence beside immutable receipts, across state loss.
+
+    An event id is immutable. A marker hides only that id, not every future
+    receipt referring to a human daily that reuses the former view's path.
+    Independent, deterministic markers merge across machines without a shared
+    read/modify/write manifest. They never authorize writes to a view or note.
+    """
+    _hash, atomic, _ = engine.projection_helpers()
+    try:
+        directory = engine._path('receipts')
+        names = set(os.listdir(directory)) if directory.exists() else set()
+    except (ValueError, OSError) as exc:
+        warnings.append({'source': 'receipts', 'reason': 'receipt quarantine provenance unavailable: ' + str(exc)})
+        return False
+    withheld = _withheld_view_receipts(db)
+    durable = True
+    checked_marker = False
+    for ident, payload in db.execute('SELECT id,payload FROM receipts').fetchall():
+        refs = json.loads(payload).get('refs', [])
+        proven = isinstance(refs, list) and any(isinstance(ref, str) and
+                     (ref in sources or is_receipt_view_source(ref)) for ref in refs)
+        digest = _hash(ident)
+        name = digest + RECEIPT_VIEW_RECEIPT_SUFFIX
+        if not proven and ident not in withheld and name not in names:
+            continue
+        # An unreadable marker remains fail-closed for this id alone. Its
+        # warning also prevents destroying the remaining live view evidence.
+        db.execute('INSERT OR IGNORE INTO receipt_view_receipts VALUES (?)', (ident,))
+        relative = 'receipts/' + name
+        expected = {'schema': 1, 'kind': 'receipt-view-quarantine', 'event_id_sha256': digest}
+        try:
+            path = engine._path(relative)
+            if name in names or path.exists():
+                with path.open('rb') as handle:
+                    raw = handle.read(4097)
+                data = json.loads(raw) if len(raw) <= 4096 else None
+                if data != expected or type(data.get('schema')) is not int:
+                    raise ValueError('invalid receipt quarantine marker')
+            else:
+                atomic(path, json.dumps(expected, ensure_ascii=True, sort_keys=True) + '\n')
+            checked_marker = True
+        except (ValueError, OSError, UnicodeError) as exc:
+            warnings.append({'source': relative, 'reason': 'receipt quarantine provenance unavailable: ' + str(exc)})
+            durable = False
+    # atomic's best-effort directory barrier is insufficient before a view
+    # can be unlinked. Batch the required barriers after all markers, including
+    # receipts/ itself if created here. Windows has no directory fsync API.
+    if checked_marker and os.name != 'nt':
+        try:
+            for parent in (directory, engine.root):
+                descriptor = os.open(parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+        except OSError as exc:
+            warnings.append({'source': 'receipts', 'reason': 'receipt quarantine provenance not durable: ' + str(exc)})
+            durable = False
+    return durable
+
+
+def quarantine_receipt_view_history(engine, db, sources, warnings):
     """Withhold snapshots through this sync for proven views, without rewriting audit bytes.
 
     A per-source event cutoff survives view retirement, but does not ban a future
@@ -682,16 +807,12 @@ def quarantine_receipt_view_history(db, sources):
     # Receipt summaries that referred to a claimed view must not become public
     # merely because that view is retired or an ordinary note reuses its path.
     # Canonical view paths are also recognizable from immutable receipt refs
-    # after a database reset, when prior tracking rows no longer exist. Keep
-    # this provenance by immutable event id without rewriting receipt files.
+    # after a database reset, when prior tracking rows no longer exist. Flat
+    # paths require sources evidence; their names alone also fit human notes.
     db.execute('CREATE TABLE IF NOT EXISTS receipt_view_receipts(id TEXT PRIMARY KEY)')
-    for ident, payload in db.execute('SELECT id,payload FROM receipts').fetchall():
-        refs = json.loads(payload).get('refs', [])
-        if isinstance(refs, list) and any(isinstance(ref, str) and
-                                          (ref in sources or is_receipt_view_source(ref)) for ref in refs):
-            db.execute('INSERT OR IGNORE INTO receipt_view_receipts VALUES (?)', (ident,))
+    durable = _durable_receipt_quarantine(engine, db, sources, warnings)
     if not sources:
-        return
+        return durable
     db.execute('CREATE TABLE IF NOT EXISTS receipt_view_history('
                'source TEXT PRIMARY KEY, through_sequence INTEGER NOT NULL)')
     sequence = db.execute('SELECT COALESCE(MAX(sequence), 0) FROM events').fetchone()[0]
@@ -699,17 +820,67 @@ def quarantine_receipt_view_history(db, sources):
                    'ON CONFLICT(source) DO UPDATE SET through_sequence=excluded.through_sequence '
                    'WHERE receipt_view_history.through_sequence < excluded.through_sequence',
                    [(source, sequence) for source in sorted(sources)])
+    return durable
 
 
-def project_receipts(engine, db, warnings=None, recover_views=False, recovered=None, desired=None):
+def _adopt_stale_receipt_views(engine, db, desired, _hash):
+    """Recover stale ownership without calling possibly edited bytes engine-authored."""
+    discovered = dict(getattr(engine, 'discovered_receipt_views', {}))
+    tracked = {row[0] for row in receipt_view_rows(db)}
+    # A state built by the original flat-layout code may already have saved
+    # its orphan as an alias. Such paths bypass _scan's metadata parsing; prove
+    # the header here as well, without treating all alias paths as owned views.
+    for relative in getattr(engine, 'receipt_view_sources', ()):
+        if (relative in desired or relative in tracked or relative in discovered or
+                not is_receipt_view_source(relative, proven=True)):
+            continue
+        try:
+            from beyin_v3_sync import parse
+            raw = engine._path(relative, existing=True).read_bytes()
+            metadata = parse(raw.decode('utf-8'))[0]
+            if metadata.get('generated') is True and metadata.get('kind') == 'receipt-index':
+                discovered[relative] = _hash(raw)
+        except (ValueError, OSError, UnicodeError):
+            continue  # the scan already reported unsafe paths; no new ownership
+    comparison_views = None
+    for relative, observed_hash in discovered.items():
+        if relative in desired:
+            continue
+        # Metadata proves an orphan belongs to receipt projections; it does
+        # not prove its present bytes were never edited. Only an exact match
+        # to the opposite layout's deterministic output permits clean removal.
+        alternate = ('daily/' + relative[len('daily/v3/'):] if relative.startswith('daily/v3/')
+                     else 'daily/v3/' + relative[len('daily/'):] if relative.startswith('daily/') else None)
+        expected = desired.get(alternate)
+        if expected is None and alternate is not None:
+            # A human-owned target is absent from the write plan, but its
+            # deterministic receipt bytes can still prove the old view unchanged.
+            if comparison_views is None:
+                comparison_views = _receipt_view_contents(engine, db, include_human_daily=True)
+            expected = comparison_views.get(alternate)
+        owned_hash = observed_hash if expected is not None and observed_hash == _hash(expected) else ''
+        db.execute(f'INSERT OR IGNORE INTO {_receipt_view_table(relative)} VALUES (?,?)', (relative, owned_hash))
+
+
+def project_receipts(engine, db, warnings=None, recover_views=False, recovered=None, desired=None,
+                     allow_view_writes=True):
     _hash, atomic, _ = engine.projection_helpers()
     _record_excluded_dirs(engine, db)
-    db.execute('CREATE TABLE IF NOT EXISTS receipt_views(path TEXT PRIMARY KEY, hash TEXT NOT NULL)')
+    _prepare_receipt_views(db)
+    if not allow_view_writes:
+        # Indexing and context gates can still commit. Keep the last live
+        # provenance until the marker can be saved, then retry on the next sync.
+        refresh_gaps(engine, db)
+        return []
     if desired is None:
         desired = _receipt_view_contents(engine, db, warnings)
+    _adopt_stale_receipt_views(engine, db, desired, _hash)
     conflicts = []
-    tracked_views = dict(db.execute('SELECT path, hash FROM receipt_views'))
+    tracked_views = dict(receipt_view_rows(db))
     for relative, content in desired.items():
+        # A note may have appeared since the desired view plan was built.
+        if _human_daily(engine, relative, tracked_views, warnings):
+            continue
         path = engine._path(relative)
         old = _hash(path.read_bytes()) if path.exists() else None
         desired_hash = _hash(content)
@@ -722,7 +893,7 @@ def project_receipts(engine, db, warnings=None, recover_views=False, recovered=N
                 except (OSError, ValueError):
                     conflicts.append({'source': relative, 'reason': 'receipt view recovery failed; preserved'})
                     continue
-                db.execute('INSERT OR REPLACE INTO receipt_views VALUES (?,?)', (relative, desired_hash))
+                db.execute(f'INSERT OR REPLACE INTO {_receipt_view_table(relative)} VALUES (?,?)', (relative, desired_hash))
                 if recovered is not None:
                     recovered.append({'source': relative, 'archive': archive_path.relative_to(engine.root).as_posix(),
                                       'status': 'recovered'})
@@ -737,7 +908,7 @@ def project_receipts(engine, db, warnings=None, recover_views=False, recovered=N
                 continue
             atomic(path, content)
         if tracked != desired_hash:
-            db.execute('INSERT OR REPLACE INTO receipt_views VALUES (?,?)', (relative, desired_hash))
+            db.execute(f'INSERT OR REPLACE INTO {_receipt_view_table(relative)} VALUES (?,?)', (relative, desired_hash))
     conflicts.extend(_retire_stale_views(engine, db, desired, _hash, recover_views=recover_views, recovered=recovered))
     refresh_gaps(engine, db)
     return conflicts
@@ -750,10 +921,10 @@ def _retire_stale_views(engine, db, desired, _hash, recover_views=False, recover
     file is never touched and stays a visible conflict until the person moves or deletes it.
     """
     conflicts = []
-    for relative, tracked in db.execute('SELECT path, hash FROM receipt_views ORDER BY path').fetchall():
+    for relative, tracked in receipt_view_rows(db):
         if relative in desired:
             continue
-        if not is_receipt_view_source(relative):
+        if not is_receipt_view_source(relative, proven=True):
             conflicts.append({'source': relative, 'reason': 'unexpected receipt view path; preserved'})
             continue
         try:
@@ -763,7 +934,7 @@ def _retire_stale_views(engine, db, desired, _hash, recover_views=False, recover
             conflicts.append({'source': relative, 'reason': 'stale receipt view unreadable; preserved'})
             continue
         if current is None and not path.exists():
-            db.execute('DELETE FROM receipt_views WHERE path=?', (relative,))
+            db.execute(f'DELETE FROM {_receipt_view_table(relative)} WHERE path=?', (relative,))
             continue
         if current != tracked:
             if recover_views:
@@ -773,7 +944,7 @@ def _retire_stale_views(engine, db, desired, _hash, recover_views=False, recover
                 except (OSError, ValueError):
                     conflicts.append({'source': relative, 'reason': 'receipt view recovery failed; preserved'})
                     continue
-                db.execute('DELETE FROM receipt_views WHERE path=?', (relative,))
+                db.execute(f'DELETE FROM {_receipt_view_table(relative)} WHERE path=?', (relative,))
                 if recovered is not None:
                     recovered.append({'source': relative, 'archive': archive_path.relative_to(engine.root).as_posix(),
                                       'status': 'archived_and_retired'})
@@ -787,7 +958,7 @@ def _retire_stale_views(engine, db, desired, _hash, recover_views=False, recover
         except OSError:
             conflicts.append({'source': relative, 'reason': 'stale receipt view could not be removed'})
             continue
-        db.execute('DELETE FROM receipt_views WHERE path=?', (relative,))
+        db.execute(f'DELETE FROM {_receipt_view_table(relative)} WHERE path=?', (relative,))
     return conflicts
 
 

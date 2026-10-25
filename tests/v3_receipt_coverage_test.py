@@ -1,5 +1,7 @@
 """Receipt coverage ratio tests (Issue #78)."""
 from datetime import datetime, timezone
+import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -8,11 +10,16 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
 
+cli_spec = importlib.util.spec_from_file_location('cli_beyin_v3', ROOT / 'scripts/beyin_v3.py')
+cli_beyin_v3 = importlib.util.module_from_spec(cli_spec)
+cli_spec.loader.exec_module(cli_beyin_v3)
+mark_session_edit = cli_beyin_v3.mark_session_edit
 import beyin_entry
 import beyin_v3_hook as hook
 from beyin_v3_projections import receipt_coverage, _checkpoint_schema
@@ -369,6 +376,51 @@ class ReceiptCoverageTest(unittest.TestCase):
             self.assertEqual(cov['total'], 2)
             self.assertEqual(cov['no_observed_edit'], 1)
             self.assertEqual(cov['last_7d']['no_observed_edit'], 1)
+
+    def test_mark_session_edit_records_session_marker(self):
+        """mark_session_edit creates a receipt reminder marker for the active Claude session (#212)."""
+        session_id = "test-session-uuid-1234"
+        with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": session_id}, clear=False):
+            mark_session_edit(self.state)
+
+        reminders_dir = self.state / "receipt-reminders"
+        self.assertTrue(reminders_dir.is_dir())
+        expected_hash = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+        marker_file = reminders_dir / f"{expected_hash}.edited"
+        self.assertTrue(marker_file.is_file())
+        data = json.loads(marker_file.read_text(encoding="utf-8"))
+        self.assertIn("at", data)
+        original_mtime = marker_file.stat().st_mtime_ns
+
+        # Second call is idempotent and returns early
+        with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": session_id}, clear=False):
+            mark_session_edit(self.state)
+        self.assertEqual(marker_file.stat().st_mtime_ns, original_mtime)
+
+    def test_mark_session_edit_skips_when_env_unset_or_suppressed(self):
+        """mark_session_edit no-ops if session id is missing or reminder is disabled."""
+        reminders_dir = self.state / "receipt-reminders"
+
+        # Missing CLAUDE_CODE_SESSION_ID
+        env_without_session = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+        with patch.dict(os.environ, env_without_session, clear=True):
+            mark_session_edit(self.state)
+        self.assertFalse(reminders_dir.exists())
+
+        # BEYIN_V3_NO_RECEIPT_REMINDER is set
+        with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "sess-abc", "BEYIN_V3_NO_RECEIPT_REMINDER": "1"}, clear=False):
+            mark_session_edit(self.state)
+        self.assertFalse(reminders_dir.exists())
+
+    def test_mark_session_edit_handles_oserror_gracefully(self):
+        """mark_session_edit never raises on filesystem errors."""
+        invalid_state = self.state / "nonexistent" / "file.txt"
+        invalid_state.parent.mkdir(parents=True, exist_ok=True)
+        invalid_state.write_text("not a directory", encoding="utf-8")
+        # Passing a file as state causes folder.mkdir to fail with NotADirectoryError / OSError
+        with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "sess-xyz"}, clear=False):
+            # Must not raise
+            mark_session_edit(invalid_state)
 
 
 if __name__ == '__main__':

@@ -46,6 +46,9 @@ def jev_lines(result):
         lines.append('Otomatik baglam acik: her turda istemin ve en fazla 8 aday ic/kamu notunun basligi ile'
                      ' ilk 600 karakteri ' + ('yerel Laya sunucusuna' if laya else 'saglayiciya') +
                      ' gider. Ozel notlar gonderilmez.')
+        if result.get('context_mode_notice'):
+            lines.append("Uyari: otomatik baglam yalniz 'context_mode: turn' ile calisir; su anki ayar '" +
+                         ascii_text(result.get('context_mode', '?')) + "' (etkinlestirmek icin: beyin.py preferences --context-mode turn).")
         if laya and not result.get('auto_context_applied'):
             lines.append('Laya yalniz golge modda calisir: otomatik baglam puanlari yalniz kaydedilir, baglami degistirmez.')
     if laya:
@@ -211,6 +214,12 @@ def human_result(result, command, installed_version=None):
             return format_human(result)
         except Exception:
             return json.dumps(result, ensure_ascii=False, indent=2)
+    if command == 'audit':
+        try:
+            from beyin_v3_audit import format_audit_human
+            return format_audit_human(result)
+        except Exception:
+            return json.dumps(result, ensure_ascii=False, indent=2)
     if command == 'jev':
         features = result.get('features', {})
         provider = result.get('provider')
@@ -238,6 +247,10 @@ def human_result(result, command, installed_version=None):
                  'Sir suzgeci: ' + ('acik' if prefs['secret_filter'] else 'kapali'),
                  'Surum bildirimi: ' + ('acik' if result.get('update_notifications', {}).get('effective') else 'kapali'),
                  'Proje oturum basi baglami: ' + ('acik' if result.get('project_context') == 'on' else 'kapali')]
+        if result.get('daily_layout') in ('flat', 'v3'):
+            layout = result['daily_layout']
+            lines.append('Daily duzeni: ' + layout + ' (' +
+                         ('daily/YYYY-MM-DD.md' if layout == 'flat' else 'daily/v3/YYYY-MM-DD.md') + ')')
         opening = (result.get('companion_context') or {}).get('context_chars')
         if opening is not None:
             lines.append('Oturum basi hafiza baglami: ' + (str(opening) + ' karakter' if opening else 'baglam ust siniri kadar'))
@@ -356,6 +369,10 @@ def human_result(result, command, installed_version=None):
                          (', saglayici: laya (' if jev.get('provider') == 'laya' else ' (') + 'otomatik baglam: ' +
                          ('acik' if jev.get('automatic_model_calls') else 'kapali') + '), son 24 saat ' +
                          str(jev.get('last_24h', {}).get('calls', 0)) + ' cagri')
+            if jev.get('context_mode_notice'):
+                cm = ascii_text(jev.get('context_mode', (result.get('preferences') or {}).get('context_mode', '?')))
+                lines.append("Jev otomatik baglam yalniz 'context_mode: turn' ile calisir; su an '" +
+                             cm + "' modunda. Etkinlestirmek icin: beyin.py preferences --context-mode turn")
         if result.get('secrets_redacted'):
             lines.append('Sir suzgeci ' + str(result['secrets_redacted']) + ' eslesmeyi [REDACTED] olarak yazdi.')
         cov = result.get('receipt_coverage')
@@ -585,6 +602,26 @@ def human_result(result, command, installed_version=None):
             if not pruned:
                 return 'Temizlenecek eksik klasor bulunmadi; tum klasorler kasada mevcut.'
             return 'Kasada bulunmayan ' + str(len(pruned)) + ' klasor kapsamdan cikarildi: ' + ', '.join(plain_text(f) for f in pruned)
+    elif command == 'bridge':
+        status = result.get('status')
+        harness = result.get('harness', 'bilinmiyor')
+        if status == 'installed':
+            lines = ['Global kopru kuruldu (' + harness + '):']
+            if result.get('hook_file'):
+                lines.append('  Hook ayari: ' + plain_text(result['hook_file']))
+            if result.get('gemini_md'):
+                lines.append('  Global yonerge: ' + plain_text(result['gemini_md']))
+            if result.get('project_roots'):
+                lines.append('  Kapsanan proje kokleri: ' + ', '.join(plain_text(r) for r in result['project_roots']))
+            lines.append('Mevcut kullanici ayarlari korundu; .bak yedegi alindi.')
+            return '\n'.join(lines)
+        elif status == 'uninstalled':
+            lines = ['Global kopru kaldirildi (' + harness + '):']
+            if result.get('hook_file'):
+                lines.append('  Hook ayari: ' + plain_text(result['hook_file']))
+            lines.append('  Kaldirilan kopru girdisi sayisi: ' + str(result.get('removed_count', 0)))
+            lines.append('Kullaniciya ait diger ayarlar korundu.')
+            return '\n'.join(lines)
     else:
         message = 'Islem sonucu: ' + str(status or 'tamamlandi')
         if command in ('sync', 'recover-views'):
@@ -596,10 +633,28 @@ def human_result(result, command, installed_version=None):
             message = '\n'.join([message] + index_exclusion_lines(result.get('index_exclusions'), pruned=True) +
                                 (sync_copy_lines(result) if command == 'sync' else []))
     if result.get('trust_review_required'):
-        message += '\nHook tanimi degisti: Codex /hooks guven incelemesini tamamla ve yeni oturum ac.'
+        message += '\n' + trust_review_line(result.get('trust_review_files'))
     if result.get('view_conflicts'):
         message += '\nReceipt gorunumleri korundu: ' + ', '.join(plain_text(c['source']) for c in result['view_conflicts']) + '. Kurtarma: beyin.py sync --recover-views'
     return message
+
+
+# Hook definition file -> the step its client needs before the new hooks run (SETUP-V3.md step 5).
+TRUST_REVIEW = {
+    '.codex/hooks.json': 'Codex: /hooks guven incelemesi',
+    '.kiro/hooks/beyin-v3.json': 'Kiro: Agent Hooks paneli veya CLI /hooks incelemesi',
+    '.agents/hooks.json': 'Antigravity: vault klasorune guven',
+    '.claude/settings.local.json': 'Claude Code: ek inceleme yok',
+}
+
+
+def trust_review_line(files):
+    """Name only the clients whose hook definitions changed; an older updater gives no list."""
+    changed = [name for name in TRUST_REVIEW if name in (files or ())]
+    if not changed:
+        return 'Hook tanimi degisti: kullandigin istemcide guven incelemesini tamamla ve yeni oturum ac.'
+    return ('Hook tanimi degisti (' + ', '.join(changed) + '). ' +
+            '; '.join(TRUST_REVIEW[name] for name in changed) + '. Ardindan yeni oturum ac.')
 
 
 def load_cli(directory):
@@ -612,7 +667,7 @@ def load_cli(directory):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    force_json = '--json' in argv
+    force_json = '--json' in argv or '--print-config' in argv
     human = ('--human' in argv or sys.stdout.isatty()) and not force_json
     argv = [arg for arg in argv if arg not in ('--human', '--json')]
     if human:
@@ -622,6 +677,8 @@ def main(argv=None):
             if hasattr(stream, 'reconfigure'):
                 stream.reconfigure(errors='replace')
     command = argv[0] if argv else 'doctor'
+    if command in ('note-read', 'note-edit'):
+        human = False  # These commands have a JSON contract, including on a terminal.
     vault = Path(__file__).resolve().parent
     stamp = vault / '.beyin-version'
     installed_version = None
@@ -638,7 +695,11 @@ def main(argv=None):
         if isinstance(raw_state, str) and raw_state and Path(raw_state).expanduser().is_absolute():
             cli = load_cli(directory)
             state = cli.resolve_state(vault, Path(raw_state))
-            if state != Path(raw_state).expanduser().resolve():
+            try:
+                pinned_state = Path(raw_state).expanduser().resolve()
+            except (OSError, ValueError, RuntimeError):
+                pinned_state = None
+            if state != pinned_state:
                 print('Uyari: yabanci varsayilan state yolu bu makinenin yerel state klasorune cozumlendi: ' +
                       plain_text(state) + '. Kalici duzeltme: bu makinede install_v3.py ile kur.', file=sys.stderr)
         else:
@@ -661,7 +722,15 @@ def main(argv=None):
         if argv and argv[0] in ('update', 'rollback', 'recover'):
             import argparse
             import beyin_v3_update as updater
-            parser = argparse.ArgumentParser()
+            class _UpdateArgumentParser(argparse.ArgumentParser):
+                def error(self, message):
+                    if force_json:
+                        error = {'error': 'SystemExit', 'message': message}
+                        print(json.dumps(error, ensure_ascii=True), file=sys.stderr)
+                        self.exit(2)
+                    super().error(message)
+
+            parser = _UpdateArgumentParser()
             parser.add_argument('command', choices=('update', 'rollback', 'recover'))
             parser.add_argument('--check', action='store_true')
             parser.add_argument('--package', type=Path)
@@ -684,7 +753,7 @@ def main(argv=None):
             print(human_result(result, command, installed_version) if human else json.dumps(result, ensure_ascii=True, indent=2))
             return 0
         cli = cli or load_cli(directory)
-        cli_args = ['--vault', str(vault), '--state', str(state)] + (argv or ['doctor'])
+        cli_args = ['--vault', str(vault), '--state', str(state)] + (['--json'] if force_json else []) + (argv or ['doctor'])
         if not human:
             return cli.main(cli_args)
         if hasattr(cli, 'main') and 'return_result' in getattr(getattr(cli, 'main'), '__code__', {}).co_varnames:

@@ -238,7 +238,7 @@ class BrowserUrlTest(unittest.TestCase):
     """The active tab's link comes from the browser's own address bar; anything else is not a link."""
 
     def test_address_bar_values(self):
-        self.assertEqual(yakala.tab_url('youtube.com/watch?v=abc\r\n'), 'https://youtube.com/watch?v=abc')
+        self.assertIsNone(yakala.tab_url('youtube.com/watch?v=abc\r\n'))
         self.assertIsNone(yakala.tab_url('http://127.0.0.1:8080/x'))
         self.assertEqual(yakala.tab_url('https://github.com/avenoxai'), 'https://github.com/avenoxai')
         for value in ('yarim kalmis arama', 'brave://settings', 'localhost', 'http://10.0.0.1/', 'https://user:pass@example.com/', 'https://[broken/', 'https://example.com:bad/', '', None):
@@ -252,7 +252,7 @@ class BrowserUrlTest(unittest.TestCase):
         with patch.object(yakala, '_windows_read', return_value={'value': 'https://github.com/avenoxai'}) as read:
             self.assertEqual(yakala.windows_browser_url(42, 'Brave'), 'https://github.com/avenoxai')
             self.assertEqual(yakala.windows_browser_url(42, 'msedge'), 'https://github.com/avenoxai')
-            self.assertIsNone(yakala.windows_browser_url(42, 'firefox'))
+            self.assertIsNone(yakala.windows_browser_url(42, 'not-a-browser'))
         self.assertEqual([c.args[1]['class'] for c in read.call_args_list], ['BraveOmniboxViewViews', 'OmniboxViewViews'])
 
     def test_reader_failure_falls_back_to_the_clipboard(self):

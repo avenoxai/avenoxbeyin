@@ -20,7 +20,7 @@ py -3 scripts/install_v3.py --vault "C:\Notlar\Beynim"
 
 Runtime varsayılan olarak işletim sisteminin yerel uygulama verisi alanına, vault dışında kurulur. İstersen kurulumda `--state "/ayri/yerel/dizin"` verebilirsin; yalnız bu uygulama için ayrılmış bir dizin seç. Kurulu giriş ve başlatıcılar bu seçimi hatırlar. Yeni hesap, Git, pip veya servis kurulmaz.
 
-İlk bağlantı için AI istemcisinde vault'u açıp yeni oturum başlat. Hook tanımları değiştiğinde istemcinin gerekli güven incelemesini tamamla; updater güven kaydı üretmez.
+İlk bağlantı için AI istemcisinde vault'u açıp yeni oturum başlat. Hook tanımları değiştiğinde istemcinin gerekli güven incelemesini tamamla; updater güven kaydı üretmez. `update` sonucu `trust_review_required: true` olduğunda `trust_review_files` hangi hook dosyalarının değiştiğini söyler; insan çıktısı yalnız o istemcilerin adımını gösterir (`.codex/hooks.json` → Codex `/hooks`, `.kiro/hooks/beyin-v3.json` → Kiro Agent Hooks paneli veya CLI `/hooks`, `.agents/hooks.json` → Antigravity klasör güveni, `.claude/settings.local.json` → Claude Code'da yeni oturum).
 
 ## Kontrol ve güncelleme
 
@@ -255,7 +255,7 @@ Kullanıcı gereksinim duymadığı bileşenleri (`skills/<ad>`, `adapters/<ad>`
 Repo kökünde:
 
 ```sh
-python3 scripts/build_v3_release.py --output "/tmp/beyin-v3-3.11.0.zip" --version 3.11.0
+python3 scripts/build_v3_release.py --output "/tmp/beyin-v3-3.12.0.zip" --version 3.12.0
 ```
 
 Bu komut yalnız yerel ZIP oluşturur, GitHub'a yayınlamaz. Paket `manifest.json`, izin verilen installer/giriş dosyaları, runtime modülleri ve üç skill'i içerir. Manifest sürüm, schema/runtime schema, minimum Python, dosya hashleri ve tanınan legacy hashlerini taşır. Release yayınlama ve final platform CI ayrı işlemlerdir.

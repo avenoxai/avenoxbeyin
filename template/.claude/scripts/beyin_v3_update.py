@@ -18,6 +18,8 @@ import zipfile
 
 OFFICIAL = 'https://api.github.com/repos/avenoxai/avenoxbeyin/releases/latest'
 MAX_PACKAGE = 32 * 1024 * 1024
+# Managed hook definitions whose change asks the client for a trust review (beyin_entry.TRUST_REVIEW).
+HOOK_FILES = ('.claude/settings.local.json', '.codex/hooks.json', '.agents/hooks.json', '.kiro/hooks/beyin-v3.json')
 # The installer mirrors each starter skill into all client roots. Mirrors
 # install_v3.MANAGED_SKILL_PATHS.
 MANAGED_SKILL_PATHS = frozenset(root + '/skills/' + name + '/SKILL.md' for root in ('.agents', '.claude', '.kiro')
@@ -277,11 +279,17 @@ def _runtime_health(state):
     try:
         if connection.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
             raise ValueError('installed runtime database integrity check failed')
-        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        for name, required in {'records': {'id','payload'}, 'receipts': {'id','payload'}, 'events': {'sequence','event_type','record_id','revision','record'}}.items():
-            if name in tables:
-                columns = {row[1] for row in connection.execute('PRAGMA table_info(' + name + ')')}
-                if not required <= columns:
+        required_tables = {'records': {'id','payload'}, 'receipts': {'id','payload'}, 'events': {'sequence','event_type','record_id','revision','record'}}
+        rows = connection.execute(
+            "SELECT m.name, p.name FROM sqlite_master m JOIN pragma_table_info(m.name) p "
+            "WHERE m.type='table' AND m.name IN ('records', 'receipts', 'events')"
+        ).fetchall()
+        table_cols = {}
+        for tname, cname in rows:
+            table_cols.setdefault(tname, set()).add(cname)
+        for name, required in required_tables.items():
+            if name in table_cols:
+                if not required <= table_cols[name]:
                     raise ValueError('installed runtime schema unsupported: ' + name)
     finally:
         connection.close()
@@ -429,16 +437,16 @@ def update(vault, state, package=None, check=False):
                 plan = installer.install(vault, state, plan_only=True, version=new,
                                          legacy_hashes=manifest.get('legacy_hashes', {}),
                                          legacy_skill_hashes=manifest.get('legacy_skill_hashes', {}))
-                trust_review = False
-                for name in ('.claude/settings.local.json', '.codex/hooks.json', '.agents/hooks.json',
-                             '.kiro/hooks/beyin-v3.json'):
+                trust_review = []
+                for name in HOOK_FILES:
                     if name in plan['planned']:
                         path = vault / name
                         before = json.loads(path.read_bytes()) if path.exists() else {}
                         planned = plan['planned'][name]
                         after = json.loads(planned) if planned is not None else {}
                         key = 'beyin-v3' if name == '.agents/hooks.json' else 'hooks'
-                        trust_review = trust_review or before.get(key) != after.get(key)
+                        if before.get(key) != after.get(key):
+                            trust_review.append(name)
                 operations = []
                 for name, data in plan['planned'].items():
                     if name == '.beyin-version': continue
@@ -469,7 +477,10 @@ def update(vault, state, package=None, check=False):
                         (state / 'release-cache.json').unlink(missing_ok=True)
                 except Exception:
                     pass
-        result = {'status': 'updated', 'from_version': old, 'version': new, 'trust_review_required': trust_review}
+        result = {'status': 'updated', 'from_version': old, 'version': new, 'trust_review_required': bool(trust_review)}
+        if trust_review:
+            # Which client's hook definitions changed, so the message names only the review it needs.
+            result['trust_review_files'] = trust_review
         if plan.get('removed'):
             result['removed'] = plan['removed']
         if plan.get('preserved_excluded'):

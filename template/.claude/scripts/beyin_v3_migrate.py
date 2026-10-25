@@ -1,6 +1,7 @@
 """Read-preserving V2 cutover guards and receipts; no legacy replay/model calls."""
 from contextlib import contextmanager, ExitStack
 from datetime import datetime, timezone
+import errno
 import fnmatch
 import hashlib
 import json
@@ -27,6 +28,11 @@ RECONCILE_HINT = ' with no V2 writer running, set its status to a terminal value
 # reads that same rule and never removes anything itself.
 STALE_LOCK_DIRECTORY_SECONDS = 8 * 86400
 FOREIGN_HINT = '; review it locally and move it out of the V2 state directory, then rerun'
+# The guard holds every V2 lock open until the cutover ends, one file descriptor each, and V2
+# flush leaves a flush-<key>.lock behind for every session it summarized: a long-used vault holds
+# hundreds, while macOS starts a process with a soft limit of 256 open files. The soft limit is
+# raised for the cutover to the lock count plus this many for what the installer opens meanwhile.
+OPEN_FILE_HEADROOM = 128
 
 
 def _hash(path):
@@ -84,6 +90,32 @@ def _legacy_lock(path):
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+def _make_room_for_locks(stack, count):
+    """Raise the soft open-file limit within the hard one until stack closes; best effort."""
+    try:
+        import resource
+    except ImportError:  # Windows: no such soft limit
+        return
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        wanted = count + OPEN_FILE_HEADROOM
+        if hard != resource.RLIM_INFINITY:
+            wanted = min(wanted, hard)
+        if soft == resource.RLIM_INFINITY or soft >= wanted:
+            return
+        resource.setrlimit(resource.RLIMIT_NOFILE, (wanted, hard))
+    except (ValueError, OSError):
+        return  # the lock that does not open then says how to raise it
+
+    def restore():
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+        except (ValueError, OSError):
+            pass
+    # Pushed before any lock is entered, so it runs after the last lock is released.
+    stack.callback(restore)
+
+
 @contextmanager
 def migration_guard(vault_root, state_dir):
     vault, state = Path(vault_root).resolve(), Path(state_dir).resolve()
@@ -108,7 +140,9 @@ def migration_guard(vault_root, state_dir):
                     raise RuntimeError('legacy writer state directory ' + legacy.relative_to(vault).as_posix() +
                                        ' cannot be read; make it readable for this user, then rerun')
             held = set()
-            for path in sorted(legacy.glob('*.lock')):
+            locks = sorted(legacy.glob('*.lock'))
+            _make_room_for_locks(stack, len(locks))
+            for path in locks:
                 relative = path.relative_to(vault).as_posix()
                 if path.is_symlink():
                     raise RuntimeError('legacy writer lock in ' + relative + ' is a symlink' + FOREIGN_HINT)
@@ -141,6 +175,11 @@ def migration_guard(vault_root, state_dir):
                 try:
                     stack.enter_context(_legacy_lock(path))
                 except OSError as exc:
+                    if exc.errno in (errno.EMFILE, errno.ENFILE):
+                        raise RuntimeError('legacy writer lock in ' + relative + ' cannot be opened: the open-file limit'
+                                           ' is too low for the ' + str(len(locks)) + ' legacy writer locks the cutover'
+                                           ' holds open together; raise it (for example ulimit -n ' +
+                                           str(len(locks) + 256) + ') and rerun') from exc
                     raise RuntimeError('legacy writer lock in ' + relative + ' cannot be opened (' +
                                        (exc.strerror or type(exc).__name__) +
                                        '); make it readable and writable for this user, then rerun') from exc

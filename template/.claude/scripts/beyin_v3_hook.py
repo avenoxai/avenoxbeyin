@@ -30,6 +30,12 @@ KNOWLEDGE_REMINDER = (
     "concept, then sync); "
     "if no permanent note is required, state that in one sentence to proceed."
 )
+NO_LEARNING_CHALLENGE_REMINDER = (
+    "Receipt declared no learnings ('Öğrenilen: yok') but files were edited in this session. "
+    "In V3, lasting lessons must be distilled into knowledge/ or staged as candidates: "
+    'python3 beyin.py learn --session {session} --candidate "Lesson". If this edit was purely mechanical/routine '
+    "without new lessons, state that in one sentence to proceed."
+)
 HARNESS_SYNTHETIC_PROMPT_PREFIXES = (
     "<task-notification>",
     "Another Claude session sent a message:",
@@ -107,6 +113,15 @@ def atomic(path, data):
         out.flush()
         os.fsync(out.fileno())
     _safe_replace(temporary, path)
+
+
+def record_error(state, exc):
+    """hook-error.json is a diagnostic only. A state folder that refuses the write (read-only,
+    full disk) must not turn the fail-open handler itself into a traceback (#417)."""
+    try:
+        atomic(Path(state) / "hook-error.json", {"at": time.time(), "error": type(exc).__name__})
+    except OSError:
+        pass
 
 
 def output_context(harness, event, text):
@@ -217,6 +232,38 @@ def _has_declared_learning(summary):
     return False
 
 
+_NO_LEARNING_EXPLAINED = re.compile(
+    r"(?:(?:kalici\s+)?(?:öğrenim|ogrenim|ders)(?:ler)?\s+)?"
+    r"(?:yok(?:tur)?|hi[çc]\s+yok|hi[çc]biri|bulunmuyor|bulunmadi|none|nothing|no|n/?a|-+)"
+    r"\s*\([^()]+\)")
+
+
+def _is_bare_no_learning(summary):
+    """True when receipt declares 'none'/'yok' without a parenthetical explanation.
+
+    An empty label is not an answer: "Öğrenilen:" often heads a list on the following lines,
+    and the challenge must not tell that agent it declared no learnings.
+    """
+    if not isinstance(summary, str):
+        return False
+    for line in summary.splitlines():
+        match = _LEARNING_LABEL.match(_tr_fold(line).strip())
+        if match:
+            content = match.group(1).strip().strip(".!*_` ").strip()
+            if content and _NO_LEARNING.fullmatch(content) and not _NO_LEARNING_EXPLAINED.fullmatch(content):
+                return True
+    return False
+
+
+def _has_staged_candidates(state, session, since):
+    """Candidates staged in this edit window; an older entry must not answer for a new session."""
+    try:
+        from beyin_v3_learning import has_candidates
+        return has_candidates(state, session, since=since)
+    except Exception:
+        return False
+
+
 def _has_knowledge_update(vault, receipt, since):
     """A knowledge ref is a citation, not evidence of a write in this edit window."""
     if not receipt:
@@ -313,16 +360,23 @@ def receipt_reminder(payload, state, harness, event, vault=None):
                 return {"decision": "block", "reason": RECEIPT_REMINDER.format(harness=harness, session=session)}
             return None
 
-        # Receipt exists! Check if receipt declared learning but knowledge/ was not updated.
-        if (not kdone.exists() and _has_declared_learning(receipt.get("summary", "")) and
-                marker.get("knowledge") is not True and not _has_knowledge_update(vault, receipt, since)):
-            folder.mkdir(parents=True, exist_ok=True)
-            try:
-                with kdone.open("x", encoding="utf-8"):
-                    pass
-            except FileExistsError:
-                return None
-            return {"decision": "block", "reason": KNOWLEDGE_REMINDER}
+        # Receipt exists! Check if receipt declared learning or explicitly claimed no learning.
+        # The knowledge tree walk and the ledger read run only when a reminder is still due.
+        if not kdone.exists():
+            summary = receipt.get("summary", "")
+            reason = (KNOWLEDGE_REMINDER if _has_declared_learning(summary)
+                      else NO_LEARNING_CHALLENGE_REMINDER.format(session=session)
+                      if _is_bare_no_learning(summary) else None)
+            if (reason and marker.get("knowledge") is not True and
+                    not _has_staged_candidates(state, session, since) and
+                    not _has_knowledge_update(vault, receipt, since)):
+                folder.mkdir(parents=True, exist_ok=True)
+                try:
+                    with kdone.open("x", encoding="utf-8"):
+                        pass
+                except FileExistsError:
+                    return None
+                return {"decision": "block", "reason": reason}
 
         edited.unlink(missing_ok=True)  # later edits open a new window
         return None
@@ -336,7 +390,7 @@ def enqueue_event(vault, state, payload, harness):
                 "session": hashlib.sha256(str(payload.get("session_id", "unknown")).encode()).hexdigest()[:24]}
     # Keep a bounded label and opaque identity, never the full project path.
     from beyin_v3_bridge import origin
-    project = origin(payload, harness)
+    project = origin(payload, harness, vault)
     if project:
         metadata.update(project)
     if payload.get('no_memory') is True:
@@ -387,7 +441,7 @@ def drain_queue(vault, state):
         if skills.get("unmanaged"):
             result = dict(result, skill_unmanaged=skills["unmanaged"])
     except Exception as exc:
-        atomic(state / "hook-error.json", {"at": time.time(), "error": type(exc).__name__})
+        record_error(state, exc)
         return {"processed": 0, "failed": len(pending), "pending": len(pending)}
     atomic(state / "hook-health.json", {"at": time.time(), "worker_pid": os.getpid(), "sync": result})
     # A degraded scan is complete but excluded one or more invalid sources. The
@@ -439,7 +493,11 @@ def main():
     vault = args.vault.resolve()
     from beyin_v3 import resolve_state
     state = resolve_state(vault, args.state)
-    if state != args.state.expanduser().resolve() and not os.environ.get('BEYIN_V3_INTERNAL') and os.environ.get('BEYIN_V3_SKIP') != '1':
+    try:
+        pinned_state = args.state.expanduser().resolve()
+    except (OSError, ValueError, RuntimeError):
+        pinned_state = None
+    if state != pinned_state and not os.environ.get('BEYIN_V3_INTERNAL') and os.environ.get('BEYIN_V3_SKIP') != '1':
         print('V3 state fallback: synced foreign default resolved to this machine; reinstall hooks locally.', file=sys.stderr)
     if state == vault or vault in state.parents:
         raise ValueError("Runtime state must be outside vault")
@@ -562,9 +620,7 @@ def main():
             print(json.dumps(reminder) if reminder else (json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == 'antigravity' else '{}')))
             return
         if event in ("SessionStart", "UserPromptSubmit"):
-            if not due and not disabled:
-                print(json.dumps(output_context(args.harness, event, notice + 'V3 automatic check deferred by your interval preference. Read current sources or use beyin.py context for fresh information.')))
-                return
+            deferred = not due and not disabled
             pending = False
             try:
                 if process is not None:
@@ -577,17 +633,21 @@ def main():
             # markdown_sources table, which the sync worker creates and every reader tolerates
             # missing, so the foreground skips importing the sync engine.
             from beyin_v3 import MemoryStore
-            if pending:
-                # A sync slower than SYNC_WAIT keeps running in the background. Retrieval reads the
-                # index the previous sync committed, read-only so it never contends for the
-                # worker's write lock; only a store that does not exist yet injects nothing.
-                # A sync that outgrows SQLite's page cache holds the exclusive lock until it commits;
-                # waiting the store's default 10 s would outlive the client's 5 s hook limit.
+            if pending or deferred:
+                # A sync slower than SYNC_WAIT keeps running in the background, or an interval preference
+                # defers source synchronization. Retrieval reads the index the previous sync committed,
+                # read-only so it never contends for the worker's write lock; only a store that does
+                # not exist yet injects nothing. A sync that outgrows SQLite's page cache holds the
+                # exclusive lock until it commits; waiting the store's default 10 s would outlive the
+                # client's 5 s hook limit.
                 try:
                     store = MemoryStore(state, vault, read_only=True,
                                         busy_timeout=max(0.1, HOOK_BUDGET - 1.0 - (time.monotonic() - started)))
                 except ValueError:
-                    print(json.dumps(output_context(args.harness, event, notice + "V3 source sync is pending. Verify current Markdown sources before using prior context.")))
+                    msg = ("V3 source sync is pending. Verify current Markdown sources before using prior context."
+                           if pending else
+                           "V3 automatic check deferred by your interval preference. Read current sources or use beyin.py context for fresh information.")
+                    print(json.dumps(output_context(args.harness, event, notice + msg)))
                     return
             else:
                 store = MemoryStore(state, vault)
@@ -595,8 +655,14 @@ def main():
             project = payload.get('project')
             project = project if isinstance(project, str) and project.strip() else None
             session = hashlib.sha256(str(payload.get('session_id', 'unknown')).encode()).hexdigest()[:24]
-            warning = ('V3 source sync is still running; this context comes from the previous index. '
-                       'Verify current Markdown sources before relying on it.\n') if pending else ''
+            if pending:
+                warning = ('V3 source sync is still running; this context comes from the previous index. '
+                           'Verify current Markdown sources before relying on it.\n')
+            elif deferred:
+                warning = ('V3 automatic check deferred by your interval preference; this context comes from the previous index. '
+                           'Read current sources or use beyin.py context for fresh information.\n')
+            else:
+                warning = ''
             health = state / "hook-health.json"
             if health.exists():
                 sync = json.loads(health.read_text(encoding="utf-8")).get("sync", {})
@@ -619,13 +685,26 @@ def main():
             limit = client_budget(args.harness, settings['context_chars'])
             receipt = receipt_context(vault, state)
             if event == 'SessionStart' or relevant(query):
+                # Claude Code and Antigravity send a working directory, not a project (#288, #403).
+                # A project found from it selects the project rules only: as a retrieval scope it
+                # would hide every note that does not carry that project field.
+                rules_project = project
+                if rules_project is None:
+                    from beyin_v3_bridge import working_directory
+                    from beyin_v3_projects import resolve_active_project
+                    try:
+                        rules_project = resolve_active_project(vault, working_directory(payload, args.harness))
+                    except Exception:
+                        rules_project = None
                 # The opening may carry its own machine-local budget (#140); never a vault preference.
                 limit = client_budget(args.harness, opening_budget(state, settings['context_chars']))
-                text = companion_context(store, limit, session, args.harness, query, receipt, warning, project=project)
+                text = companion_context(store, limit, session, args.harness, query, receipt, warning, project=project,
+                                         rules_project=rules_project)
                 smaller = client_rebudget(args.harness, limit, notice + text)
                 if smaller is not None:
                     limit = smaller
-                    text = companion_context(store, limit, session, args.harness, query, receipt, warning, project=project)
+                    text = companion_context(store, limit, session, args.harness, query, receipt, warning,
+                                             project=project, rules_project=rules_project)
             else:
                 # Per-turn automatic context is strict: only meaningful lexical matches are
                 # injected, and an empty match injects nothing at all instead of a receipt
@@ -703,12 +782,15 @@ def main():
         else:
             print(json.dumps(reminder) if reminder else (json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == "antigravity" else "{}")))
     except Exception as exc:
-        if locals().get("pending") is True and type(exc).__module__ == "sqlite3":
-            # The previous index stayed locked by the running sync past the hook budget: the
-            # worker is not failing, so keep the pending notice and record no hook error.
-            print(json.dumps(output_context(args.harness, event, notice + "V3 source sync is pending. Verify current Markdown sources before using prior context.")))
+        if (locals().get("pending") is True or locals().get("deferred") is True) and type(exc).__module__ == "sqlite3":
+            # The previous index stayed locked past the hook budget: the
+            # worker is not failing, so keep the pending/deferred notice and record no hook error.
+            msg = ("V3 source sync is pending. Verify current Markdown sources before using prior context."
+                   if locals().get("pending") is True else
+                   "V3 automatic check deferred by your interval preference. Read current sources or use beyin.py context for fresh information.")
+            print(json.dumps(output_context(args.harness, event, notice + msg)))
             return
-        atomic(state / "hook-error.json", {"at": time.time(), "error": type(exc).__name__})
+        record_error(state, exc)
         if not args.metadata_only and locals().get("event") in ("SessionStart", "UserPromptSubmit"):
             print(json.dumps(output_context(args.harness, event, notice + "V3 source sync failed or conflicted; metadata remains queued. Run the local CLI doctor and verify current Markdown sources.")))
         else:

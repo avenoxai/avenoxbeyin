@@ -8,6 +8,55 @@ Alanlar: `auto_sync` boolean; `interval_minutes` 0–1440 (0 her olay); `context
 
 Ekonomik profil: auto_sync=true, interval_minutes=15, context_mode=session, context_chars=2000. Manuel: auto_sync=false ve context_mode=off. Mevcut ayarların yalnız bir alanını değiştirmek için örneğin `preferences --interval-minutes 30`; profil seçmek otomatik kontrol ve bağlam alanlarını o profile sıfırlar, bağımsız sır süzgeci tercihini korur. Aralık değiştirmek kapalı kontrolü açmaz.
 
+## Günlük receipt düzeni
+
+`python3 beyin.py preferences --daily-layout flat` günlük receipt görünümlerini
+`daily/YYYY-MM-DD.md` yoluna yazar. Varsayılan `v3`, mevcut `daily/v3/YYYY-MM-DD.md`
+düzenini korur; geri dönmek için `--daily-layout v3` kullan. Tercih sonraki `sync` ile
+uygulanır. Ayar vault kökündeki `.beyin-daily-layout.json` dosyasındadır; vault'u Git ile
+eşitliyorsan bu dosyayı da eşitle. Makineye özel değildir, profil değişimleri etkilemez.
+Ayrı dosya eski sürümlerin sıkı `.beyin-preferences.json` şemasıyla uyumluluğu korur;
+eski motorlar bu tercihi uygulamaz, aynı vault'a yazan tüm makineleri güncelle.
+Düz görünüm sahipliği ayrı `receipt_flat_views` tablosunda tutulur; 3.11.0'a
+`rollback` eski motorun görünüm tablosuna tanımadığı yollar bırakmaz. Eski motor
+`daily/v3/` düzenini kullanır ve mevcut düz görünümleri korur. Yeniden güncelleme
+sonrası tercih tekrar uygulanır. Obsidian günlük not eklentisi düz görünümü açarsa
+oraya yazılan metin de elle düzenlenmiş görünüm sayılır ve kurtarmada arşivlenir.
+
+Flat hedefinde motorun takip etmediği, generated olmayan bir insan günlüğü varsa dosya
+korunur, görünüm yazılmaz ve çakışma oluşmaz. Receipt'ler `knowledge/v3/outcomes.md`
+içinde kalır; insan günlüğüne referans veren receipt'ler bağlamdan gizlenmez.
+Düzen değişince eski takip edilen görünüm yalnız son yazılan baytlarla aynıysa kaldırılır.
+Elle düzenlenmiş görünüm korunur ve `sync` ile `doctor` görünür uyarı verir.
+`python3 beyin.py sync --recover-views` bu düzenlemeyi yanındaki `.archive/` içine
+kayıpsız arşivleyip görünümü yeniden üretir veya eski görünümü kaldırır. Bu komut da
+takip edilmeyen insan günlüğüne dokunmaz.
+
+`preferences --human` etkin düzeni ve hedef yol kalıbını gösterir. Flat hedefi sembolik
+bağlantıysa hedef dosyaya dokunulmaz; `sync` kaynak uyarısı ile diğer notları işlemeye
+devam eder. State yeniden kurulduktan sonra eski düzende kalan `generated: true` ve
+`kind: receipt-index` görünümleri de bulunur. Baytları yeni düzende üretilecek içerikle
+aynıysa emekliye ayrılır; eşleşmiyorsa elle değiştirilmiş olabilecekleri için korunur
+ve yalnız `--recover-views` ile kayıpsız arşivlenir. Flat dosya adı tek başına sahiplik
+kanıtı değildir; state ve generated başlığı birlikte kaybolmuşsa insan notu sayılır.
+
+Üretilmiş bir görünüme dayandığı için bağlamdan dışlanan receipt'in kimlik kanıtı
+`receipts/<event-id-sha256>.md.view-provenance.json` içinde kalır. Receipt Markdown'ı
+değişmez; işaret özet metni veya not içeriği taşımaz. State silinip yeniden kurulduğunda
+ya da başka makineye geçildiğinde bu receipt dışarıda kalır; aynı eski günlük yolunu
+sonradan kullanan insan notuna dayanan **yeni kimlikli** receipt'ler görünür olabilir.
+`receipts/` eşitlenirken bu JSON dosyalarını da eşitle ve geçmiş kanıtı korumak için
+silme. İşaret bozuksa sessizce onarılmaz; ilgili receipt dışarıda tutulur, uyarı verilir
+ve mevcut görünümler korunur. İşaret yazılamadığında veya POSIX dizin `fsync` başarısız
+olduğunda da görünümün son kopyası silinmez; sorun giderilip `sync` yeniden çalıştırılır.
+Windows'ta Python'un standart API'siyle dizin `fsync` yoktur; dosya `fsync` ve atomik
+yenileme uygulanır. Eski motorlar yeni JSON işaretlerini okuyamaz; dosya biçimi onları
+bozmasa da state kaybından sonraki bu dışlama güvencesi için tüm makineleri güncelle.
+Önceki sürümden kalan SQLite dışlama satırları ilk `sync` sırasında bu işaretlere
+aktarılır. Güncellemeden önce hem state hem eski görünümün kanıtı zaten kaybolmuşsa
+geçmiş güvenle çıkarılamaz; eski state veya vault yedeği gerekir. İnsan günlüklerini
+yanlışlıkla gizlememek için yalnız dosya adından geçmiş sahiplik uydurulmaz.
+
 ## Hafıza dosyası sınırları
 
 `Last-Session.md` varsayılan olarak 3.000, `Threads.md` 8.000 karakterle sınırlıdır.
@@ -245,7 +294,7 @@ Kurulum, Claude ve Codex için PostToolUse hook'unu yalnız dosya düzenleyen ar
 
 Stop olayı hatırlatmadan önce kuyruğa alınır. Runtime kaydı okunamazsa akış durdurulmaz. `stop_hook_active` taşıyan ikinci Stop, manuel profil (`auto_sync: false`) ve global köprü hatırlatma yapmaz; tek seferlik hakkı da harcamaz. Kullanıcı mesajında `[kaydetme]` yazarak bu oturumdaki hatırlatmayı kapatabilir; `BEYIN_V3_NO_RECEIPT_REMINDER=1` özelliği tamamen kapatır.
 
-Receipt özetinde kalıcı bir öğrenim ayrı bir satırda, satır başında beyan edilir: `Öğrenilen: <tek cümle>` (ya da `Ders:`, `Learned:`, `Kalıcı öğrenim:`). Öğrenim yoksa `Öğrenilen: yok` yazılır; `yok`, `hiçbiri`, `bulunmadı`, `none` gibi cevaplar ve boş etiket beyan sayılmaz. Cevabın sonundaki parantezli açıklama da (`Öğrenilen: yok (rutin kontrol)`) cevabı değiştirmez; parantezden sonra gelen metin ise beyan sayılır. Etiket yalnız kendi satırında okunur; metin içinde geçen `machine learning:` gibi ifadeler beyan değildir. Receipt öğrenim beyan ettiği halde oturumda `knowledge/`, `🧠 500-Knowledge/` veya `500-Knowledge/` altında bir not yazılmadıysa ya da refs içinde böyle bir not yoksa, Stop kancası oturum başına bir kez ajana öğrenimi `knowledge/concepts/` altına damıtmasını hatırlatır. `knowledge/index.md`, `knowledge/log.md` ve `knowledge/v3/` damıtma sayılmaz; bunlar derleyici, git veya eşitleme tarafından da değişebilir. Receipt hatırlatmasına cevap olarak yazılan receipt, `stop_hook_active` taşıyan Stop'ta değil sonraki Stop'ta kontrol edilir. Kalıcı kavram gerekmiyorsa ajanın bunu tek cümleyle belirtmesi yeterlidir; kanca ikinci kez engellemez. Öğrenim beyan etmeyen receipt'lerde klasör taranmaz.
+Receipt özetinde kalıcı bir öğrenim ayrı bir satırda, satır başında beyan edilir: `Öğrenilen: <tek cümle>` (ya da `Ders:`, `Learned:`, `Kalıcı öğrenim:`). Öğrenim yoksa gerekçe aynı satırda belirtilir: `Öğrenilen: yok (rutin kontrol)`. `yok`, `hiçbiri`, `bulunmadı`, `none` gibi cevaplar ve boş etiket öğrenim beyanı sayılmaz. Dosya düzenlenen bir oturumda gerekçesiz yalın `Öğrenilen: yok` cevabı bir kez sorgulanır; boş etiket liste başlığı olabileceğinden sorgulanmaz. Cevabın sonundaki parantezli açıklama da (`Öğrenilen: yok (rutin kontrol)`) cevabı değiştirmez; parantezden sonra gelen metin ise beyan sayılır. Etiket yalnız kendi satırında okunur; metin içinde geçen `machine learning:` gibi ifadeler beyan değildir. Receipt öğrenim beyan ettiği halde oturumda `knowledge/`, `🧠 500-Knowledge/` veya `500-Knowledge/` altında bir not yazılmadıysa ya da refs içinde böyle bir not yoksa, Stop kancası oturum başına bir kez ajana öğrenimi `knowledge/concepts/` altına damıtmasını hatırlatır. `knowledge/index.md`, `knowledge/log.md` ve `knowledge/v3/` damıtma sayılmaz; bunlar derleyici, git veya eşitleme tarafından da değişebilir. Receipt hatırlatmasına cevap olarak yazılan receipt, `stop_hook_active` taşıyan Stop'ta değil sonraki Stop'ta kontrol edilir. Kalıcı kavram gerekmiyorsa ajanın bunu tek cümleyle belirtmesi yeterlidir; kanca ikinci kez engellemez. Henüz kalıcı nota dönüşmemiş öğrenimler `python3 beyin.py learn --session SESSION --candidate "Öğrenim" --source notes/kaynak.md --scope PROJE` ile runtime içindeki `learning-state.jsonl` defterine kaydedilebilir; `learn --list` aktif adayları listeler. `--scope` verilmezse kapsam globaldir. Session değeri hook'un verdiği değer olmalıdır. Bu düzenleme penceresinin başlangıcından sonra kaydedilen bir aday, hem bilgi damıtımı hatırlatmasını hem de yalın `yok` sorgusunu karşılar; eski aday sonraki pencerelerde geçerli değildir. Gerekçeli `yok` cevabında, boş etikette ve hatırlatma gerekmeyen diğer receipt'lerde klasör taranmaz. Defter yerel bir ara kayıttır; otomatik damıtma yapmaz.
 
 `beyin.py doctor` komutu sessiz durgunluğu görünür kılmak için son bilgi damıtmasının kaç gün önce yapıldığını ve o tarihten bu yana kaç receipt kaydedildiğini yazar. Gerçek çıktı ASCII'dir, diğer doctor satırları gibi: `Son bilgi damitmasi: 3 gun once (o tarihten beri 12 makbuz)`; hiç kavram notu yoksa `Son bilgi damitmasi: henuz kavram notu damitilmadi (toplam N makbuz)`; ölçüm başarısız olursa `Son bilgi damitmasi: olculemedi (<hata>)`. Stop hatırlatıcısıyla aynı klasörler sayılır: `knowledge/`, `🧠 500-Knowledge/` ve `500-Knowledge/` altındaki Markdown notları. Bu yüzden elle düzenlenen bir `🧠 500-Knowledge/` notu da damıtma sayılır ve sayacı sıfırlar; 3.9.0 ve öncesinde doctor yalnız `knowledge/` klasörüne bakıyordu. Frontmatter'ında `generated: true` olan notu doctor saymaz; Stop hatırlatıcısı bu ayrımı yapmaz. Tarih notun frontmatter'ındaki `updated` ya da `modified` alanından, bu alan yoksa dosya zamanından okunur; çünkü git checkout ve iCloud geri yüklemesi dosya zamanını sıfırlar. `knowledge/index.md`, `knowledge/log.md` ve `knowledge/v3/` sayılmaz, her nottan yalnız ilk 4 KB okunur.
 

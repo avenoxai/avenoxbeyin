@@ -289,6 +289,48 @@ class MigrationTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, r'legacy writer lock in \.claude/scripts/\.state/flush-example\.lock is a symlink; review it locally'):
             self.m.migrate_v2(self.root, self.state)
 
+    def low_open_file_limit(self, locks):
+        """locks V2 flush locks under a soft open-file limit of 256, the macOS default; restored after."""
+        import resource
+        for index in range(locks):
+            self.source('.claude/scripts/.state/flush-%04d.lock' % index, '')
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if hard != resource.RLIM_INFINITY and hard < 2 * locks:
+            self.skipTest('hard open-file limit too low to hold the locks at all')
+        # Only the soft limit: an unprivileged process cannot raise a lowered hard limit again.
+        self.addCleanup(resource.setrlimit, resource.RLIMIT_NOFILE, (soft, hard))
+        resource.setrlimit(resource.RLIMIT_NOFILE, (256, hard))
+        return resource, (256, hard)
+
+    @unittest.skipUnless(os.name == 'posix', 'the soft open-file limit is a POSIX rlimit')
+    def test_hundreds_of_v2_locks_fit_under_a_low_open_file_limit(self):
+        # V2 flush leaves one flush-<key>.lock per summarized session and never removes it, so a
+        # long-used vault holds hundreds, and the guard holds every one open until the cutover ends.
+        resource, limit = self.low_open_file_limit(400)
+        with self.m.migration_guard(self.root, self.state):
+            self.assertGreater(resource.getrlimit(resource.RLIMIT_NOFILE)[0], 400)
+            # Every lock is really held: another open description cannot take one.
+            with self.assertRaisesRegex(RuntimeError, 'legacy writer lock is active'):
+                with self.m._legacy_lock(self.root / '.claude/scripts/.state/flush-0399.lock'):
+                    pass
+        self.assertEqual(resource.getrlimit(resource.RLIMIT_NOFILE), limit)
+        with self.m._legacy_lock(self.root / '.claude/scripts/.state/flush-0399.lock'):
+            pass
+
+    @unittest.skipUnless(os.name == 'posix', 'the soft open-file limit is a POSIX rlimit')
+    def test_an_open_file_limit_it_cannot_raise_is_named_in_the_error(self):
+        from unittest import mock
+        resource, limit = self.low_open_file_limit(400)
+        with mock.patch.object(resource, 'setrlimit', side_effect=ValueError('not allowed to raise maximum limit')):
+            with self.assertRaisesRegex(RuntimeError, r'legacy writer lock in \.claude/scripts/\.state/flush-\d{4}\.lock'
+                                                      r' cannot be opened: the open-file limit is too low for the 400 legacy'
+                                                      r' writer locks .*ulimit -n 656\) and rerun') as raised:
+                self.m.migrate_v2(self.root, self.state)
+        self.assertNotIn('readable and writable', str(raised.exception))
+        self.assertNotIn(self.temp.name, str(raised.exception))
+        self.assertEqual(resource.getrlimit(resource.RLIMIT_NOFILE), limit)
+        self.assertFalse((self.state / 'v2-migration.json').exists())
+
     def test_lock_that_cannot_be_opened_blocks_with_its_path(self):
         if hasattr(os, 'geteuid') and os.geteuid() == 0:
             self.skipTest('root opens a file whatever its mode')

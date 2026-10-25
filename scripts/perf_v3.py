@@ -112,6 +112,9 @@ def modules(vault):
             del sys.modules[name]
     sys.path.insert(0, directory)
     try:
+        # Recovery imports the note writer lazily after this temporary path is
+        # removed. Keep that dependency bound to the same installed runtime.
+        importlib.import_module('beyin_v3_notes')
         return importlib.import_module('beyin_v3_sync'), importlib.import_module('beyin_v3_hook')
     finally:
         sys.path.remove(directory)

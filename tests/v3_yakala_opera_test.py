@@ -30,12 +30,14 @@ class OperaSnapshotTest(unittest.TestCase):
         with patch.object(C, 'WinDLL', return_value=user, create=True), \
                 patch.object(y, '_opera_renderer', side_effect=renderers, return_value=(55, 100)) as renderer, \
                 patch.object(y, '_msaa_document', side_effect=documents, return_value=dict(DOCUMENT)) as document, \
-                patch.object(y, '_uia_link_at_cursor', return_value=hover) as hovered:
+                patch.object(y, '_uia_link_at_cursor', return_value=hover) as hovered, \
+                patch.object(y, '_uia_touch', return_value=True) as self.touch:
             yield user, renderer, document, hovered
 
     def test_stable_document_and_hover_use_renderer_but_guard_browser_window(self):
         with self.snapshot(hover={'value': LINK, 'name': 'Video'}) as (_, renderer, document, hover):
             result = y._opera_snapshot(42, [10, 20])
+        self.touch.assert_not_called()  # accessibility already on: nothing extra is asked
         self.assertEqual(result.get('value'), PAGE)
         self.assertEqual(result.get('hover_value'), LINK)
         self.assertEqual(result.get('hover_name'), 'Video')
@@ -58,9 +60,27 @@ class OperaSnapshotTest(unittest.TestCase):
                 self.assertFalse(y._opera_snapshot(42, [10, 20]))
 
     def test_no_document_never_returns_unverified_hover(self):
-        with self.snapshot(documents=[{}], hover={'value': LINK}) as (_, _, _, hovered):
+        with patch.object(y, 'OPERA_WARMUP', 0), \
+                self.snapshot(documents=[{}], hover={'value': LINK}) as (_, _, _, hovered):
             self.assertFalse(y._opera_snapshot(42, [10, 20]))
         hovered.assert_not_called()
+
+    def test_placeholder_first_read_waits_for_the_accessibility_tree(self):
+        # Accessibility was off: the first reads see Chromium's placeholder, then the document.
+        documents = [{}, {}, DOCUMENT, DOCUMENT]
+        with patch.object(y.time, 'sleep'), \
+                self.snapshot(documents=documents, hover={'value': LINK, 'name': 'Post'}) as (_, _, document, _):
+            result = y._opera_snapshot(42, [10, 20])
+        self.assertEqual(result.get('value'), PAGE)
+        self.assertEqual(result.get('hover_value'), LINK)
+        self.assertEqual(document.call_count, 4)
+        # MSAA alone never turns Chromium accessibility on; one UIA request on the renderer does.
+        self.touch.assert_called_once_with(55)
+
+    def test_warmup_gives_up_when_the_renderer_changes(self):
+        with patch.object(y.time, 'sleep'), \
+                self.snapshot(documents=[{}, DOCUMENT, DOCUMENT], renderers=[(55, 100), (56, 100)]):
+            self.assertFalse(y._opera_snapshot(42, [10, 20]))
 
     def test_invalid_hover_keeps_verified_document(self):
         for value in ('youtube.com/watch?v=video', 'javascript:alert(1)', 'http://127.0.0.1/', ''):

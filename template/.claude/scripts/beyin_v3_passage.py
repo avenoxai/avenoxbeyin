@@ -232,8 +232,9 @@ def _valid(entry, text):
 
 
 # Derived tokens depend on the stemmer, not only on the record: a release that changes
-# _tokens must rebuild the cache instead of mixing old and new stems.
-_PROBE = "Kütüphanesindeki notlarımızı güncellediler; running tests quickly İstanbul ŞEHİR 2026"
+# _tokens must rebuild the cache instead of mixing old and new stems. The probe needs a
+# word every new rule changes; the #430 verb and vowel-loss rules left the 3.11 probe alone.
+_PROBE = "Kütüphanesindeki notlarımızı güncellediler; running tests quickly İstanbul ŞEHİR 2026 kurulmalı metni claude"
 _PARAMS = [BLOCK_TARGET, BLOCK_OVERLAP, hashlib.sha256(" ".join(sorted(_tokens(_PROBE))).encode()).hexdigest()[:16]]
 
 

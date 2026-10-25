@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import ExitStack
 from datetime import datetime, timezone
 import json
 import os
@@ -12,6 +13,7 @@ import stat
 import tempfile
 import sys
 import time
+import unicodedata
 
 # Keep adjacent installed modules importable when this file is loaded by path.
 _MODULE_DIR = str(Path(__file__).resolve().parent)
@@ -24,10 +26,12 @@ from beyin_v3_index import applied_keys, dir_key, exclusions as index_exclusions
 from beyin_v3_hygiene import sensitive_excluded, sensitive_source
 from beyin_v3_projections import (is_receipt_view_source, is_receipt_view_conflict, project_receipts,
                                   quarantine_receipt_view_history, archived_receipt_view_aliases,
-                                  _receipt_view_contents,
+                                  _receipt_view_contents, receipt_view_rows,
                                   RECEIPT_VIEW_SOURCES_ROW)
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
+from beyin_v3_notes import (NoteConflict, locked as note_locked,
+                            read as note_read_source, apply as note_apply_edits)
 
 
 def _hash(data):
@@ -601,7 +605,11 @@ class SyncEngine:
         if not isinstance(relative, str) or Path(relative).is_absolute() or '..' in Path(relative).parts:
             raise ValueError('relative source required')
         path = self.root / relative
-        if not path.resolve().is_relative_to(self.root):
+        try:
+            resolved = path.resolve()
+        except (RuntimeError, OSError):
+            raise ValueError('symlink source rejected')
+        if not resolved.is_relative_to(self.root):
             raise ValueError('source outside vault')
         cursor = path
         while cursor != self.root:
@@ -640,7 +648,7 @@ class SyncEngine:
             stat = None
         if stat is not None and stat.st_ino:
             return stat.st_dev, stat.st_ino
-        return os.path.normcase(str(path))
+        return unicodedata.normalize('NFC', os.path.normcase(str(path)))
 
     def _canonical_refs(self, metadata):
         """Store validated refs as vault-relative POSIX paths, like receipt refs."""
@@ -775,6 +783,7 @@ class SyncEngine:
         # taking their identities so aliases on case-insensitive volumes are also
         # excluded, without treating distinct case-sensitive files as the same note.
         view_paths = self.receipt_view_sources = set(receipt_views)
+        self.discovered_receipt_views = {}
         view_identities = set(alias_identities)
         for relative in view_paths:
             try:
@@ -836,6 +845,10 @@ class SyncEngine:
                     if metadata.get('kind') == 'task' and body.lstrip().startswith('---'):
                         raise ValueError('task has embedded frontmatter; reconcile metadata and body explicitly')
                     if metadata.get('kind') == 'receipt' or metadata.get('generated') is True:
+                        if (metadata.get('generated') is True and metadata.get('kind') == 'receipt-index' and
+                                is_receipt_view_source(relative, proven=True)):
+                            view_paths.add(relative)
+                            self.discovered_receipt_views[relative] = _hash(raw)
                         continue
                     record = dict(metadata, source=relative, text=body)
                     record.setdefault('id', 'md-' + _hash(relative)[:24])
@@ -869,19 +882,34 @@ class SyncEngine:
             candidate['same_content'] = None
         return candidate
 
-    def _recover(self, db):
+    def _recover(self, db, note_locks=None):
         completed, conflicts = [], []
         for entry in sorted(self.journal.glob('*.json')):
             try:
                 intent = json.loads(entry.read_text(encoding='utf-8'))
-                path = self._path(intent['source'])
-                actual = _hash(path.read_bytes()) if path.exists() else None
-                desired = _hash(intent['content'])
-                if actual == intent['old_hash']:
-                    atomic(path, intent['content'])
-                elif actual != desired:
-                    conflicts.append({'source': intent['source'], 'reason': 'recovery conflict; manual edit preserved'})
-                    continue
+                # Failed note-create operations can leave an intent behind. Its
+                # replay is a note writer too. Never wait here while holding a DB
+                # transaction: another writer may hold the note lock and need it.
+                with ExitStack() as guard:
+                    if intent.get('kind') == 'note':
+                        try:
+                            guard.enter_context(note_locked(self, timeout=0))
+                        except NoteConflict:
+                            # A live writer holds the lock (the OS releases it when a
+                            # process dies). Its own sync, or a later one, replays this
+                            # journal; a concurrent hook sync is not a source conflict.
+                            continue
+                    path = self._path(intent['source'])
+                    actual = _hash(path.read_bytes()) if path.exists() else None
+                    desired = _hash(intent['content'])
+                    if actual == intent['old_hash']:
+                        atomic(path, intent['content'])
+                    elif actual != desired:
+                        conflicts.append({'source': intent['source'], 'reason': 'recovery conflict; manual edit preserved'})
+                        continue
+                    if note_locks is not None:
+                        # Reserve replayed notes until commit AND journal cleanup.
+                        note_locks.enter_context(guard.pop_all())
                 if intent['kind'] == 'receipt':
                     event = intent['event']
                     for ref in event['refs']:
@@ -893,7 +921,7 @@ class SyncEngine:
                             raise ReceiptConflict('event id collision during recovery')
                     db.execute('INSERT OR IGNORE INTO receipts VALUES (?,?)', (event['event_id'], _json(event)))
                 completed.append(entry)
-            except (ValueError, OSError, KeyError) as exc:
+            except (ValueError, OSError, KeyError, NoteConflict) as exc:
                 conflicts.append({'journal': entry.name, 'reason': str(exc)})
         return completed, conflicts
 
@@ -986,6 +1014,10 @@ class SyncEngine:
 
     def sync(self, full=False, recover_views=False):
         """Index the vault. `full` reads every source: no stored stat signature is taken on trust."""
+        with ExitStack() as note_locks:
+            return self._sync(full, recover_views, note_locks)
+
+    def _sync(self, full, recover_views, note_locks):
         # Serialize recovery, source scan and projection across local processes.
         with self.store._connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -1004,16 +1036,25 @@ class SyncEngine:
                 except (ValueError, TypeError):
                     pass
             db.execute("INSERT OR REPLACE INTO metadata VALUES ('last_sync_time', ?)", (str(now_sec),))
-            completed, recovery_conflicts = self._recover(db)
+            completed, recovery_conflicts = self._recover(db, note_locks)
             receipt_warnings, receipt_conflicts = self._scan_receipts(db)
-            desired_views = _receipt_view_contents(self, db, receipt_warnings)
+            # The layout file is shared through git and can arrive malformed (for
+            # example with merge markers). Indexing, receipts and hooks keep working;
+            # receipt views stay exactly as they are until the file is valid again.
+            layout_issue = None
+            try:
+                from beyin_v3_preferences import read_daily_layout
+                read_daily_layout(self.root)
+            except (ValueError, OSError) as exc:
+                layout_issue = {'source': '.beyin-daily-layout.json',
+                                'reason': 'invalid daily layout; receipt views left unchanged: ' + str(exc)}
+            desired_views = {} if layout_issue else _receipt_view_contents(self, db, receipt_warnings)
             view_paths = set(desired_views)
             # First sync has no tracking table. Keep edited stale views excluded
             # even when no receipt currently produces them; unexpected tracking
             # paths are source conflicts, never authority to hide ordinary notes.
-            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='receipt_views'").fetchone():
-                view_paths.update(row[0] for row in db.execute('SELECT path FROM receipt_views')
-                                  if is_receipt_view_source(row[0]))
+            view_paths.update(path for path, _ in receipt_view_rows(db)
+                              if is_receipt_view_source(path, proven=True))
             canonical_view_paths = set(view_paths)
             # A hard link to an edited view keeps the old inode when recovery
             # atomically replaces the canonical path. Retain only identities
@@ -1044,8 +1085,9 @@ class SyncEngine:
             old_payloads = dict(db.execute('SELECT id, payload FROM records'))
             cache = _SignatureCache(db, old_sources, old_payloads, full=full)
             records, warnings, conflicts = self._scan(cache, view_paths, alias_identities)
+            canonical_view_paths.update(self.discovered_receipt_views)
             warnings.extend(state_regression_warnings)
-            warnings.extend(receipt_warnings)
+            warnings.extend(issue for issue in receipt_warnings if issue not in warnings)
             conflicts.extend(recovery_conflicts + receipt_conflicts)
             deleted = 0
             for id in old_owned - records.keys():
@@ -1094,12 +1136,15 @@ class SyncEngine:
                     continue
             # Include the deletion event just written, and already-deleted snapshots
             # at these proven paths. Audit payloads remain immutable.
-            quarantine_receipt_view_history(db, self.receipt_view_sources)
+            provenance_durable = quarantine_receipt_view_history(self, db, self.receipt_view_sources, warnings)
+            if layout_issue:
+                warnings.append(layout_issue)
             db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',
                        (RECEIPT_VIEW_SOURCES_ROW, _json(sorted(self.receipt_view_sources))))
             recovered_views = [] if recover_views else None
             view_issues = project_receipts(self, db, warnings, recover_views=recover_views,
-                                          recovered=recovered_views, desired=desired_views)
+                                          recovered=recovered_views, desired=desired_views,
+                                          allow_view_writes=provenance_durable and not layout_issue)
             for issue in view_issues:
                 if is_receipt_view_conflict(issue):
                     warnings.append(dict(issue, kind='receipt_view'))
@@ -1215,7 +1260,20 @@ class SyncEngine:
         self._record_redactions(redacted)
         return self._write_diagnostics(dict(result_record, redacted=redacted, secrets_redacted=redacted), result)
 
+    # The notes writer also imports this module when it validates human sources.
+    def note_read(self, source):
+        if _MODULE_DIR not in sys.path:
+            sys.path.insert(0, _MODULE_DIR)
+        return note_read_source(self, source)
+
+    def note_edit(self, request):
+        if _MODULE_DIR not in sys.path:
+            sys.path.insert(0, _MODULE_DIR)
+        return note_apply_edits(self, request)
+
     def note_create(self, source, text, metadata=None):
+        if _MODULE_DIR not in sys.path:
+            sys.path.insert(0, _MODULE_DIR)
         if not isinstance(text, str) or not text.strip() or (metadata is not None and not isinstance(metadata, dict)):
             raise ValueError('note text and metadata required')
         if text.lstrip().startswith('---'):
@@ -1251,24 +1309,28 @@ class SyncEngine:
         text, redacted = self._protect(text)
         metadata, meta_redacted = self._protect_metadata(metadata)
         redacted += meta_redacted
-        path = self._path(source)
         intended = render(metadata, text+'\n')
-        with self.store._connect() as db:
-            db.execute('BEGIN IMMEDIATE')
-            if path.exists():
-                raise ValueError('source exists; preserve and edit deliberately')
-            self._intent(source, None, intended, 'note')
-        result = self.sync()
-        record_id = metadata.get('id', 'md-' + _hash(source)[:24])
-        if self._source_issues(result, source, record_id):
-            raise RevisionConflict('note requires projection review')
-        with self.store._connect() as db:
-            row = db.execute('SELECT payload FROM records WHERE id=?', (record_id,)).fetchone()
-        if not row:
-            raise RevisionConflict('created note missing from projection')
-        record = json.loads(row[0])
-        if record.get('source') != source or record.get('source_sha256') != _hash(intended) or path.read_bytes() != intended.encode('utf-8'):
-            raise RevisionConflict('created note source readback mismatch')
+        # All participating note writers share this vault-local lock, even when
+        # clients use different state roots. Acquire it before the DB transaction.
+        with note_locked(self):
+            self._refuse_excluded(source)
+            path = self._path(source)
+            with self.store._connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                if path.exists():
+                    raise ValueError('source exists; preserve and edit deliberately')
+                self._intent(source, None, intended, 'note')
+            result = self.sync()
+            record_id = metadata.get('id', 'md-' + _hash(source)[:24])
+            if self._source_issues(result, source, record_id):
+                raise RevisionConflict('note requires projection review')
+            with self.store._connect() as db:
+                row = db.execute('SELECT payload FROM records WHERE id=?', (record_id,)).fetchone()
+            if not row:
+                raise RevisionConflict('created note missing from projection')
+            record = json.loads(row[0])
+            if record.get('source') != source or record.get('source_sha256') != _hash(intended) or path.read_bytes() != intended.encode('utf-8'):
+                raise RevisionConflict('created note source readback mismatch')
         self._record_redactions(redacted)
         return {'status': 'succeeded', 'source': source, 'redacted': redacted,
                 'secrets_redacted': redacted, 'warnings': result['warnings'],

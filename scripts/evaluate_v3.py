@@ -28,6 +28,9 @@ def read_fixture():
 def load_runtime():
     if not RUNTIME.is_file():
         return None
+    runtime_dir = str(RUNTIME.parent)
+    if runtime_dir not in sys.path:
+        sys.path.insert(0, runtime_dir)
     spec = importlib.util.spec_from_file_location('beyin_v3_evaluation_runtime', RUNTIME)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module

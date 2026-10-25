@@ -4,7 +4,7 @@ Claude Code, Codex, Google Antigravity veya Kiro ile kullanabileceğin yerel iki
 
 Python **3.11 veya üzeri** yeterli. Git, pip, Mem0 hesabı, API anahtarı veya sürekli açık sunucu gerekmez. Kullandığın AI istemcisinin kendi kurulumu ve hesabı ayrı olarak gerekir.
 
-> **V3.11.0:** Aynı oturumda aynı notu yeniden göndermeyen isteğe bağlı bağlam modu (`preferences --context-dedupe on`), Kiro desteği, Windows'ta tarayıcı ve imleç bağlantısını ya da pencere görüntüsünü kaydeden yakala, zamanlanmış sağlık denetimi (`scheduled-check`) ve hassas adlı klasörlerin indeks dışında kalması geldi; uzun `Kurallar.md` açılışta başını kaybetmiyor, `--uninstall` kullanıcı metnini koruyor. Mevcut kurulumda vault içinde `python3 beyin.py update` çalıştır; yakala kullanıyorsan ardından bir kez `python3 beyin.py yakala kur`. [Sürüm notları](docs/v3/releases/3.11.0.md) · [Yakala](docs/v3/YAKALA.md) · [Güncelleme rehberi](docs/v3/UPDATE.md).
+> **V3.12.0:** Yakala birden çok bağlantıyı ve isteğe bağlı pencere görüntüsünü birlikte kaydediyor; Windows dinleyicisi geçici hatalardan toparlanıyor, tarayıcı adres okuma desteği genişliyor. Aynı makinedeki ajanlar için hash kontrollü `note-read` / `note-edit`, yerel hafıza denetimi (`audit`), öğrenim adayları (`learn`) ve isteğe bağlı düz günlük düzeni geldi. Mevcut kurulumda vault içinde `python3 beyin.py update` çalıştır; yakala kullanıyorsan ardından bir kez `python3 beyin.py yakala kur`. [Sürüm notları](docs/v3/releases/3.12.0.md) · [Yakala](docs/v3/YAKALA.md) · [Güncelleme rehberi](docs/v3/UPDATE.md).
 
 ## En kolay kurulum: bir klasör, bir mesaj
 
@@ -162,6 +162,6 @@ Arama yerel kelime eşleştirmesi kullanır; genel doğal dil anlama veya her so
 
 ## Geliştiriciler
 
-[Kaynak formatı](docs/v3/MARKDOWN.md) · [Runtime](docs/v3/RUNTIME.md) · [Semantik test sözleşmesi](docs/v3/SEMANTIC-TEST-CONTRACT.md) · [Sürüm paketi ve updater](docs/v3/UPDATE.md) · [Birden çok makine](docs/v3/MULTI-MACHINE.md).
+[Katkı rehberi](CONTRIBUTING.md) · [Kaynak formatı](docs/v3/MARKDOWN.md) · [Runtime](docs/v3/RUNTIME.md) · [Semantik test sözleşmesi](docs/v3/SEMANTIC-TEST-CONTRACT.md) · [Sürüm paketi ve updater](docs/v3/UPDATE.md) · [Birden çok makine](docs/v3/MULTI-MACHINE.md).
 
 Açık kaynak, [MIT lisansı](LICENSE). Avenox tarafından günlük ikinci beyin iş akışlarından geliştirildi. V2 bilgi derleme fikri için [Karpathy'nin bilgi tabanı desenine](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) teşekkürler.

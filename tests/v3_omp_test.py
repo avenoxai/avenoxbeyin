@@ -229,10 +229,32 @@ class OMPHarnessTest(unittest.TestCase):
         global_dir = Path.home() / '.omp/agent/hooks/pre'
         global_dir.mkdir(parents=True, exist_ok=True)
         global_link = global_dir / 'beyin-v3.ts'
-        global_link.symlink_to(self.hook_file)
+        try:
+            global_link.symlink_to(self.hook_file)
+        except OSError:
+            self.skipTest('symlinks unavailable on host')
         self.addCleanup(lambda: (global_link.unlink(missing_ok=True), global_dir.rmdir()))
         doctor = json.loads(self.cli('doctor').stdout)
         self.assertNotIn('omp_global_hook', doctor)
+
+    def test_plan_plugin_rejects_null_byte_and_control_chars(self):
+        """OMP plan_plugin validates paths against null byte injection and control chars."""
+        omp = load(ROOT / 'template/.claude/scripts/beyin_v3_omp.py', 'test_omp_planner')
+        for bad_vault in ('/bad\x00/vault', '/bad\n/vault', '/bad\r/vault'):
+            with self.assertRaises(ValueError):
+                omp.plan_plugin(bad_vault, self.state)
+        for bad_state in ('/bad\x00/state', '/bad\n/state', '/bad\r/state'):
+            with self.assertRaises(ValueError):
+                omp.plan_plugin(self.vault, bad_state)
+
+    def test_plan_plugin_immune_to_injection_and_properly_escaped(self):
+        """OMP plan_plugin safely escapes valid complex path characters into JSON."""
+        omp = load(ROOT / 'template/.claude/scripts/beyin_v3_omp.py', 'test_omp_planner_escape')
+        tricky_vault = self.vault / "quotes ' and spaces & unicode test"
+        tricky_vault.mkdir(exist_ok=True)
+        plan = omp.plan_plugin(tricky_vault, self.state)
+        content = plan['.omp/hooks/pre/beyin-v3.ts'].decode('utf-8')
+        self.assertIn(json.dumps(str(tricky_vault.resolve())), content)
 
     @unittest.skipUnless(BUN, 'bun is required to execute the OMP hook')
     def test_session_shutdown_forgets_the_subagent_decision(self):

@@ -70,7 +70,9 @@ ve kısayolu siler. Masaüstü `XDG_CURRENT_DESKTOP` değişkeninden tanınır; 
 masaüstü oturumundaki bir terminalden çalıştır. SSH gibi bu değişkenin olmadığı bir oturumda
 kısayol kurulmaz, kaldırırken de masaüstündeki kısayol ayarı yerinde kalır.
 
-Pencere neyi kaydedeceğini panodan okur: Wayland'da `wl-clipboard` paketi (`wl-paste`) gerekir.
+Gercek X11 oturumunda pencere once asagidaki tarayici okuyucusunu dener. Tarayici baglami
+alinamazsa pano akisi kullanilir. Wayland'da otomatik sayfa/imlec okuma yoktur; pencere neyi
+kaydedecegini panodan okur. Wayland'da `wl-clipboard` paketi (`wl-paste`) gerekir.
 Kurulu değilse kısayol çalışsa bile pano bağlantısı/metni pencereye gelmeyebilir; `yakala kur`,
 `yakala durum` ve boş yakalama penceresi bunu belirtir. Paketi dağıtımının paket yöneticisiyle
 kurduktan sonra `yakala durum` ile uyarının kaybolduğunu kontrol et; Yakala'yı yeniden kurman gerekmez.
@@ -120,6 +122,148 @@ Dinleyici `kur`'un yazdığı bir kopyadan çalışır: bir güncellemeden sonra
 `python3 beyin.py yakala kur` komutunu yeniden çalıştır (tuşun korunur). Çalışıp çalışmadığını
 `python3 beyin.py yakala durum` söyler.
 
+### Tarayici sayfasi ve imlec baglantisi
+
+19.10.2026 eklemesi; kod tabani `d9aa301`. Bu bolumdeki yeni Windows Gecko/Yandex, macOS AX ve
+Linux X11 yollarinin **gercek cihaz dogrulamasi yapilmadi**. Birim testleri saglayici, ABI,
+nesne sahipligi, zaman asimi ve belirsizlik kurallarini denetler; kurulu tarayicinin bu
+sozlesmeyi sundugunu kanitlamaz. Eski Opera Air olcumu asagida kendi surumuyle belirtilmistir.
+
+Hucreler `sayfa / imlec` yolunu gosterir. `UIA` mevcut Windows adres cubugu/Hyperlink yolu;
+`MSAA+UIA` renderer belge degeri ve renderer Hyperlink'i; `Gecko` yeni MSAA Document/Link yolu;
+`AX` macOS AXWebArea/AXLink yolu; `AS` yalniz sayfa icin sabit AppleScript yedegi;
+`SPI` gercek X11 penceresine baglanan AT-SPI Document/Hyperlink yoludur.
+`Bekliyor` okuyucu etkin degil, `Urun yok` ilgili platform icin guncel resmi dagitim yok demektir.
+UIA hucrelerinde sema gizliyse ayni child/butcede renderer belge URL'siyle dogrulama gerekir.
+
+| Aile / urun | Windows | macOS | Linux X11 | Linux Wayland |
+|---|---|---|---|---|
+| Chrome / Chromium | UIA / UIA | AX veya AS / AX | SPI / SPI | Okunmaz |
+| Edge | UIA / UIA | AX veya AS / AX | SPI / SPI | Okunmaz |
+| Safari / STP | Urun yok | AX veya AS / AX | Urun yok | Urun yok |
+| Firefox | Gecko / Gecko | AX / AX | SPI / SPI | Okunmaz |
+| Opera | MSAA+UIA | AX veya AS / AX | SPI / SPI | Okunmaz |
+| Opera GX | `opera.exe` ise MSAA+UIA | AX veya AS / AX | Urun var; GX kimligi bekliyor | Okunmaz |
+| Opera Air | `opera.exe` ise MSAA+UIA | AX veya AS / AX | Urun yok | Urun yok |
+| Brave | UIA / UIA | AX veya AS / AX | SPI / SPI | Okunmaz |
+| Vivaldi | UIA / UIA | AX veya AS / AX | SPI / SPI | Okunmaz |
+| Arc | Bekliyor | AX / AX | Urun yok | Urun yok |
+| Zen | Gecko / Gecko | AX / AX | SPI / SPI | Okunmaz |
+| Yandex | MSAA+UIA, urun yolu zorunlu | AX / AX | SPI / SPI | Okunmaz |
+| Samsung Browser | Urun var; okuyucu bekliyor | Resmi dagitim bulunamadi | Resmi dagitim bulunamadi | Resmi dagitim bulunamadi |
+
+Ana hedef 10 ailedir: Chrome, Edge, Safari, Firefox, Opera, Brave, Vivaldi, Arc, Zen, Yandex.
+Opera varyantlari ayni aile icinde ayrica olculur; Samsung ek izleme adayidir. StatCounter'in
+Eylul 2026 dunya masaustu tablosunda ilk alti Chrome %65,09, Edge %14,64, Safari %8,06,
+Firefox %6,11, Opera %2,38, Brave %1,12'dir. Turkiye tablosunda Yandex %1,21 ile gorunur.
+Bu olcum sayfa goruntuleme payidir; kurulum veya tekil kullanici payi degildir. Vivaldi/Arc/Zen
+icin kesin ilk 10 sirasi iddia edilmiyor. [Dunya](https://gs.statcounter.com/browser-market-share/desktop/worldwide/),
+[Turkiye](https://gs.statcounter.com/browser-market-share/desktop/turkey/),
+[yontem](https://gs.statcounter.com/faq); erisim 19.10.2026.
+
+**macOS.** Okuyucu NSWorkspace uygulama PID/bundle kimligini ve pencere sunucusunun gorunur
+pencere kimligi/sinirlarini kaydeder. Accessibility izni varsa, sonlandirilabilir yardimci
+surecte odakli pencerenin altindaki tek gorunur ust AXWebArea'nin AXURL degeri okunur.
+Imlec linki sistemin nokta testiyle bulunur; AXLink siniri imleci icermeli, ust nesne zinciri
+ayni belge ve pencereye ulasmalidir. Iki belge/link okumasinda URL ve nesne kimlikleri, sonda
+uygulama/pencere/sinirlar ve sheet durumu ayni kalmalidir. Hareket eden imlecin linki atilir.
+AXLoadingProgress varsa sonlu ve tam 1 olmali; iki okumada bulunabilirligi de degismemelidir.
+Bu ek kontrol, incelenen Mozilla kaynaginda AXLoaded maskesinin yuklenmeyi kacirabilmesi
+nedeniyle eklendi; gercek Firefox/macOS surum davranisi ayrica olculmelidir.
+
+Privacy & Security > Accessibility izni link icin gerekir. Automation ayri izindir; AX
+erisimi yoksa Safari ve izin listesindeki Chromium turevlerinde yalniz sayfa icin sabit
+`/usr/bin/osascript` denenebilir. Script on uygulama, pencere, etkin sekme ve iki tam URL'yi
+kontrol eder. AX iki belge/eksik belge URL'si gibi bir belirsizlik gorduyse AppleScript ile
+bu karar asilmaz. Izinler otomatik acilmaz. Safari'nin yerel SDEF'i ve her turevin sozlugu
+cihazda teyit edilmeli; ozellik/derleme/izin hatasinda adres yoktur. Arc/Firefox/Zen/Yandex
+genel Chromium AppleScript sozlugune zorlanmaz. Accessibility kapaliyken ayni pencereye
+bagli native sheet ve split view davranisi AppleScript kabul testinde ayrica olculmelidir.
+
+**Linux X11.** `XDG_SESSION_TYPE=x11`, yerel `DISPLAY=:N[.S]` ve bos `WAYLAND_DISPLAY`
+gerekir. Yeni Python paketi yoktur; sistemde `libX11.so.6`, `libatspi.so.0`, GLib/GObject ve
+erisebilir AT-SPI oturum bus'i bulunmalidir. Eksik kutuphane/izin/agac bos sonuc verir;
+kurulum veya ayar degisikligi kendiliginden yapilmaz. EWMH etkin pencere, gercek X input focus,
+`/proc` PID/exe/baslangic zamani ve AT-SPI uygulama PID'si eslestirilir. `_NET_WM_PID` istemci
+ozelligidir; normal yerel X11 masaustu guveni varsayilir, kotucul ayni kullanici sureclerine
+karsi yeni bir guvenlik siniri ilan edilmez.
+
+Tek aktif AT-SPI frame'in sinirlari X11 client sinirlariyla tam eslesmelidir. Chromium
+ailesinde Document `URI`, Gecko'da `DocURL` okunur. Iki gorunur dis belge, gecersiz URL'li
+ikinci panel, busy/stale agac veya degisen kimlik reddedilir. Iframe sayfa yerine secilmez.
+Imlec linkinde nokta testi frame'den baslar; secilen belgeye ulasan gercek LINK, tek valid
+Hyperlink anchor'i ve tam URL gerekir. DPI/dekorasyon ofseti tahmin edilmez. Snap, Flatpak,
+AppImage, PID namespace, farkli exe adi veya olcek nedeniyle esleme kurulamiyorsa sonuc yoktur.
+Opera GX Linux 19.03.2026'da cikti; bu kod yalniz exe gercekte `opera` ise ortak yolu
+kullanabilir. GX paketi ve agaci ayri olcum bekler.
+
+**Wayland.** KDE/GNOME/Hyprland/Sway'de AT-SPI bulunmasi tek basina global foreground ve
+imlec sahipligi kaniti degildir. XWayland etkin penceresi, native Wayland uygulamasi ondeyken
+eski kalabilir. Compositor'a ozel, izin modeli dogrulanmis bir uyarlayici eklenene kadar bu
+surum otomatik sayfa ve imlec URL'si vermez; mevcut pano/dosya/metin yakalama devam eder.
+`DISPLAY` varligi veya oturum degiskenlerini degistirmek bu denetimi asmak icin kullanilmaz.
+Linux'ta ilk pencere/imlec ornegi yardimci surec basladiginda alinir; fiziksel kisayol
+aninin kaydedilmis noktasini temsil etmez.
+
+**Secim ve sure.** macOS/Linux tam Tk penceresinde, dogrulanmis sayfa ve ondan farkli imlec
+linki varsa `Imlecin altindaki baglanti` varsayilan, `Etkin sayfa` alternatif gelir.
+macOS'ta Option+I/Option+S, Linux'ta Alt+I/Alt+S veya satira tiklama kullanilir.
+Pano bağlantısı bu durumda kapalı bir seçenektir. macOS/Linux bu sayfa+imleç yolunda
+pano metninin tazeliğini doğrulamadığından metin kartı sunulmaz; not kutusuna elle
+yazılabilir veya açıkça yapıştırılabilir. Mevcut pano görseli okuyucusu da sayfa varken
+görsel teklif etmez. Linux'ta panodaki yerel dosya listesi tarayıcı bağlamına önceliklidir:
+dosya önizlemesi gösterilir ve yalnız dosyalar kaydedilir; sayfa ve imleç URL'si karta eklenmez.
+Yalnız sayfa akışı mevcut davranışını korur. Tk olmayan `kdialog`/`zenity`/macOS basit soru yedeginde
+imlec ve sayfa secicisi yoktur; dogrulanmis sayfa kullanilir.
+
+Yeni Windows belge okuyucusu 1 saniye; macOS tarayici okuma toplami 2,5 saniye (AX payi en
+fazla 1 saniye); Linux tarayici cocugu 2 saniye nominal butcelidir. Native tarayici saglayici
+cagrilari sonlandirilabilir surectedir. Baslatma/temizleme, macOS pencere sunucusu ve Linux
+pano/popup giderleri bu rakamlara eklenebilir. Bunlar olculmus gecikme veya sert gercek zaman
+garantisi degildir. Yakalama fiziksel olarak atomik degildir; ornekler arasinda fark edilmeyen
+cok hizli degisim olasiligi cihaz testleriyle de tamamen ortadan kaldirilamaz.
+
+Yeni yollar History/session/cookie/profil dosyasi, debug portu, uzanti, tarayici yeniden
+baslatma bayragi, sentetik tus veya JS kullanmaz. Izin verilen kaynaktan tam HTTP(S) adresi
+gelmezse sema uydurulmaz. Mevcut localhost/ozel IP guvenlik kurallari korunur.
+
+**Cihaz kabul araci.** Repo kokunde, bilinen genel test sayfasina gecmek icin geri sayimi kullan:
+
+```sh
+python3 tests/manual_browser_capture.py --delay 5 --repeat 20 --interval 1
+python3 tests/manual_browser_capture.py --delay 5 --expected-page https://example.com/
+python3 tests/manual_browser_capture.py --delay 5 --expect-empty
+```
+
+Windows'ta `python3` yerine `py -3` kullan. Bilinen gercek link icin `--expected-hover TAM_URL`
+ekle. Arac kart yazmaz; URL'leri varsayilan gizler, p50/p95 ve tam esitlik sonucunu JSON verir.
+`--show-urls` yalniz paylasilabilir test adresleriyle kullanilmali. Beklenen adres verilmediyse
+`checked_samples=0`; cikis kodu 0, dogru URL olculdu demek degildir. Beklenti tutmazsa cikis 1'dir.
+Her tarayicida normal sayfa/link, taslak adres cubugu, iframe, ayni URL'li iki panel, sekme/
+pencere degisimi, ortucu pencere, ikinci monitor/DPI, izin reddi ve soguk saglayiciyi dene.
+Yanlis adresi tek ornekte bile kabul etme; bos sonuc oranini basarili yakalamadan ayri kaydet.
+
+Birincil arayuz kaynaklari (erisim 19.10.2026):
+
+- [Mozilla erisilebilirlik mimarisi](https://firefox-source-docs.mozilla.org/accessible/Architecture.html):
+  Windows'ta MSAA, IA2 ve UIA provider birlikte vardir; Firefox icin UIA yok denmez.
+- [Chromium erisilebilirlik mimarisi](https://chromium.googlesource.com/chromium/src/+/HEAD/docs/accessibility/overview.md)
+  ve [Chromium SDEF](https://chromium.googlesource.com/chromium/src.git/+/lkgr/chrome/browser/ui/cocoa/applescript/scripting.sdef).
+- [Apple Accessibility izni](https://support.apple.com/guide/mac-help/allow-accessibility-apps-to-access-your-mac-mh43185/mac)
+  ve [Automation izni](https://support.apple.com/en-au/guide/mac-help/mchl07817563/mac).
+- [AT-SPI Document](https://gnome.pages.gitlab.gnome.org/at-spi2-core/libatspi/method.Document.get_document_attribute_value.html),
+  [EWMH](https://specifications.freedesktop.org/wm/latest-single/),
+  [Wayland](https://wayland.freedesktop.org/docs/book/Protocol.html),
+  [XWayland](https://wayland.freedesktop.org/docs/book/Xwayland.html).
+- [Chromium URI](https://github.com/chromium/chromium/blob/main/ui/accessibility/platform/ax_platform_node_auralinux.cc)
+  ve [Mozilla DocURL](https://github.com/mozilla/gecko-dev/blob/master/accessible/atk/nsMaiInterfaceDocument.cpp):
+  motora ozel Document attribute adlari.
+- [Opera GX Linux duyurusu](https://press.opera.com/2026/03/19/opera-gx-gaming-browser-lands-on-linux/)
+  (19.03.2026), [Opera indirmeleri](https://www.opera.com/download),
+  [Arc platform sinirlari](https://resources.arc.net/hc/en-us/articles/19400148671383-Unsupported-Devices),
+  [Samsung Windows duyurusu](https://news.samsung.com/global/samsung-takes-its-browser-beyond-mobile-extending-agentic-ai-across-devices)
+  (26.03.2026).
+
 ### Tarayıcı: Obsidian Web Clipper
 
 1. [Obsidian Web Clipper](https://obsidian.md/clipper) eklentisini kur (Chrome, Firefox, Safari, Edge, Arc, Brave).
@@ -128,15 +272,20 @@ Dinleyici `kur`'un yazdığı bir kopyadan çalışır: bir güncellemeden sonra
 3. Bir sayfada eklentiye bas, "Beyne at" şablonunu seç, istersen **Neden** bölümüne bir satır yaz, ekle.
 
 Web Clipper sayfayı tarayıcının içinden okur; giriş isteyen sayfalar (Gmail, ücretli makale) da böylece yakalanır.
+Bu mevcut istege bagli kurulum, yukaridaki yerel kisayol okuyucularinin gereksinimi degildir.
 
 ### Windows: kısayol dinleyicisi
 
 Windows'ta kısayol, tarayıcının (Chrome/Edge/Brave/Vivaldi) adres çubuğunu okur. Adres çubuğu
 odaktaysa (yazılıp Enter'a basılmamış taslak) veya değer iki okumada değişiyorsa URL sayılmaz.
-Chromium şemayı gizlediği için şemasız adrese `https://` eklenir. Kısayol anında fare bir linkin
+Chromium semayi gizlerse ayni sure siniri icinde tek gorunur renderer'in acik MSAA belge
+URL'siyle dogrulama yapilir; gorunen metin ve ikinci odaksiz UIA okumasi uyusmalidir.
+`https://` tahmini yapilmaz. Yalniz kok adresin sondaki `/` farki kabul edilir; `www`, IDN
+ve percent-encoding gosterim farki veya soguk renderer bos sonuca yol acabilir.
+Kısayol anında fare bir linkin
 (ör. YouTube ana sayfasındaki bir video kartı) üstündeyse o link varsayılan kaynak olur; açık
 sayfa **Alt+S**, imlecin altındaki link **Alt+I** ile seçilir. Okuma sırasında pencere veya sekme
-değişirse (başlık değişir) iki link de atılır. Link yoksa kaynak pencerenin görüntüsü sunulur
+değişirse (başlık değişir) iki link de atılır. Link varken de kaynak pencerenin görüntüsü sunulur
 (önce Windows.Graphics.Capture, olmazsa PrintWindow). Görüntü kapalı gelir; **Alt+W** veya satıra
 tıklama ile eklenir, çünkü `isle` görseli ajana olduğu gibi okutur. History/oturum veritabanı okunmaz;
 localhost/özel IP için mevcut ağ güvenliği sınırı korunur.
@@ -160,25 +309,53 @@ okunmaz; açık sayfanın yüklenmiş adresi kullanılır. Eklenti, yeniden baş
 erişilebilirlik başlatma bayrağı gerekmez. Tek görünür renderer, pencere/süreç sahipliği ve
 okuma öncesi/sonrası sayfa URL'si doğrulanır. Birden fazla görünür renderer, görünmeyen belge,
 değişen sayfa veya zaman aşımı varsa URL verilmez. Bağlantı iki okumada değişirse yalnız imleç
-bağlantısı atılır. Sayfa ve imleç okuması tek bir yardımcı süreçte, 1 saniyelik bütçe içinde
-yapılır.
+bağlantısı atılır. Sayfa ve imleç okuması tek bir yardımcı süreçte, 1,8 saniyelik bütçe içinde
+yapılır. Chromium web erişilebilirliğini bir süre kullanılmayınca kapatır; o zaman ilk okuma boş
+gelir, renderer'a bir UI Automation isteğiyle erişilebilirlik açılır ve belge en fazla 0,8 saniye
+beklenir. Erişilebilirlik zaten açıksa okuma eskisi gibi kısa sürer.
 Opera Air 136.0.6008.70 üzerinde bayraksız ayrı profilde temel sağlayıcı yolu ölçüldü;
 oturum açılmış YouTube/Instagram akışlarında kullanıcı kabul testi ayrıca yapılmalıdır.
 
-Tarayıcıdan okunan link (imlecin altındaki ya da açık sayfa) varsa varsayılan odur; pano içeriği
-yalnız seçenek olarak, işaretsiz sunulur. Link yoksa dinleyicinin başlangıcından itibaren gözlenen,
-başarılı kayıtta kullanılmamış pano revision'ı önceliklidir. İlk kullanım/yeniden başlatmada eldeki panonun yaşı bilinmez: içerik kapalı
-seçenek olarak kalır. Snipping Tool dosya zamanı tek başına otomatik tazelik sağlamaz.
+**Firefox / Zen / Yandex:** Firefox ve Zen icin `MozillaWindowClass`, foreground/PID ve
+gercek exe adi dogrulanir. MSAA agacinda tek gorunur ust Document'in tam degeri okunur;
+iframe icine inilmez. Nokta altindaki gercek Link, fiziksel siniri ve ayni Document'e ulasan
+IUnknown kimligiyle dogrulanir. Iki link okumasinin URL, ad ve nesne kimligi de ayni olmalidir.
+Yandex `browser.exe` adi ancak gercek yol `\\YandexBrowser\\Application\\browser.exe` ile
+bitiyorsa kabul edilir; mevcut Opera renderer/MSAA yolu kullanilir. Ozel portable/beta yolu
+bu kurala uymuyorsa destek verilmez. Arc/Samsung'in Windows okuyucusu henuz etkin degildir.
+
+Opera Air soguk erisilebilirlik olcumu ve tek UIA uyandirma istegi ayri
+[#399](https://github.com/avenoxai/avenoxbeyin/pull/399) calismasidir; bu ekleme o PR'yi
+icermiyor. Yandex ortak renderer yolunu kullandigi icin soguk/sicak saglayici sonucu ve
+#399 oncesi/sonrasi ayrica olculmelidir. Eski Opera Air sonucu yeni tarayicilar icin kanit degildir.
+
+Tarayıcıdan okunan link (imlecin altındaki ya da açık sayfa) varsa varsayılan odur. Pano metni
+yalnız tazeliği doğrulanmışsa görünür; linkin yanında kapalı gelir. Eski pano metni gösterilmez.
+Link yoksa dinleyicinin başlangıcından itibaren gözlenen, başarılı kayıtta kullanılmamış pano
+revision'ı önceliklidir. İlk kullanım/yeniden başlatmada eldeki panonun yaşı bilinmez: metin
+gizlenir; bağlantı ve görüntü kapalı seçenek olarak kalır. Snipping Tool dosya zamanı tek başına
+otomatik tazelik sağlamaz.
 İptal ve yalnız sayfayı kaydetmek panoyu tüketmez. Pano değişimi yakalama tuşundan sonra
 olduysa yeni içerik kendiliğinden kaynak seçilmez. Metin/görüntü aynı pano oturumundan
 kopyalanır; gecikmeli veya tutarsız okuma güvenli biçimde atlanır.
 
 Seçim yolları: **Alt+I** imlecin altındaki bağlantı, **Alt+S** etkin sayfa, **Alt+A** alıntılanan
 gönderi, **Alt+P** pano bağlantısı, **Alt+M** metin, **Alt+G** pano görüntüsü, **Alt+W** pencere
-görüntüsü.
-Alternatifler birbirini silmez. Bir URL seçimi diğer URL'yi kapatır. Pano metni/dosya eklenen
-mevcut URL kartı da `private` olur. Aynı popup'ın kayıt kimliği tekrar oynatılsa bile ikinci
+görüntüsü. Kısayollar not kutusunda da çalışır; büyük harf ve Türkçe I/İ desteklenir.
+Birden çok bağlantı birlikte seçilebilir. Ana `url` önceliği: imleç bağlantısı, etkin sayfa,
+alıntılanan gönderi, pano bağlantısı. Diğer seçilen adresler kartın `Ek bağlantılar` bölümünde
+ve isteğe bağlı `ek_urller` listesinde tutulur; `isle` ana URL'yi işler. Aynı adres ikinci kart
+olarak gösterilmez. Yalnız bir bağlantıyı kaydetmek için diğerlerinin işaretini kaldır.
+Pano metni, dosya veya mail adresi eklenen mevcut URL kartı da `private` olur.
+Mail adresi ana kaynak yerine `ek_urller` içinde seçilmiş olsa da bütün kart özel kalır.
+Aynı popup'ın kayıt kimliği tekrar oynatılsa bile ikinci
 commit yapılmaz.
+
+Popup sıcak nötr zemin, kiremit vurgu ve küçük kısayol rozetleri kullanır. Seçili kaynaklar
+renkli çerçeve ve onay işaretiyle ayrılır. Pencere kaynak monitörün çalışma alanına sığar;
+uzun kaynak listesi fare tekerleği veya PgUp/PgDn ile kaydırılır. Not kutusu ve kaydetme
+ipuçları yerinde kalır. Pencere görüntüsü kullanıcı seçmeden karta eklenmez; link ve görüntü
+birlikte kaydedilebilir.
 
 Aynı sayfanın ikinci yakalaması yeni kart açmaz, mevcut karta eklenir. Sayfa kimliği her
 sistemde aynı kuralla hesaplanır (senkronlanan bir vault'u Mac ve Windows birlikte okuyabilir):
@@ -196,6 +373,13 @@ ile dinleyici kopyasını yenilemek gerekir. IPC pipe'ları hotkey thread'ini bl
 Dinleyici kapanışı önce STOP gönderir; yanıt vermeyen pencere ve okuyucuları sahip olunan
 Job Object üzerinden sonlandırılır. Başka bir vault'a ait state silinmez.
 
+Windows'ta geçici el sıkışma zaman aşımı veya popup'ın beklenmedik kapanması kısayolu bırakmaz.
+Önce eski süreç sonlandırılıp beklenir, ardından 0,5 saniye sonra yeni pencere ısıtılır.
+Sonucu bilinmeyen yakalama otomatik tekrarlanmaz; sonraki basış yeni yakalamadır.
+120 saniye içinde üçüncü geçici hatada dinleyici kapanır ve `yakala kur` ile yenilenmesi istenir.
+Protokol uyumsuzluğu veya eski sürecin sonlandırılamaması doğrudan kapanma nedenidir.
+Hata aşaması ve toparlanma kararı `yakala/dinleyici.log` içine yazılır.
+
 Popup kaynak monitörde açılır. Windows tarafında Tk yönetilen pencere kullanır; özel
 palet/canvas görünümü korunmak üzere yerel başlık/çerçeve stili kaldırılır. **Esc** yerel
 odakta hemen iptal eder. Kaynaklar okunurken ve popup açık olduğu sürece, odak nerede olursa
@@ -209,14 +393,15 @@ Görünür **Kapat** ve Alt+F4 da iptaldir. Windows güvenli masaüstü/UIPI/hoo
 her durumda global Esc garantisi yoktur. Kartın disk commit'i başladıysa Esc kaydedilmiş
 veriyi geriye dönük iptal etmez; yavaş disk I/O'su sırasında arayüz yanıtı gecikebilir.
 
-URL doğrulanmışsa ek ekran görüntüsü işi yapılmaz. Diğer durumda **WGC → PrintWindow →
-görüntü yok** sırası izlenir; her backend ayrı, sonlandırılabilir süreçtedir. Önizleme yöntem
+Pencere görüntüsü için link olsa da **WGC → PrintWindow → görüntü yok** sırası izlenir;
+her backend ayrı, sonlandırılabilir süreçtedir. Bu hazırlık popup açılışına süre ekleyebilir.
+Yakalama başarısızsa görüntü seçeneği oluşmaz. Önizleme yöntem
 adını gösterir. Ekran DC'sinden BitBlt yoktur. Kaynak pencere değişirse sonuç atılır.
 WGC, Windows 10 1903+ API yoludur; destek/izin/sürücü başarısızsa PrintWindow denenir.
 Korumalı/GPU/exclusive-fullscreen uygulamaların tamamı için başarı veya HDR renk doğruluğu
 iddia edilmez. Herhangi bir başarısızlık eski panoyu otomatik kaynak yapmaz.
 
-UIA/pano için dış bekleme 1 saniye, WGC için 2,5 saniye, PrintWindow için 1,2 saniyedir;
+UIA/pano için dış bekleme 1 saniye (Opera okuyucusu 1,8 saniye), WGC için 2,5 saniye, PrintWindow için 1,2 saniyedir;
 süreç başlatma/sonlandırma ek giderleri olabilir. PNG/DIB en fazla **16.777.216 piksel**,
 görüntü payload'ı 64 MiB, metin UTF-8 payload'ı 4 MiB, IPC metadata'sı 64 KiB kabul eder.
 Büyük ilan edilmiş PNG boyutu Tk'ye verilmez. Kart/ham geçici yazım hataları temizlenir;
@@ -235,7 +420,7 @@ ABI kaynakları, sınırlamalar ve gerçek masaüstü kabul komutları:
 ## Kullanım
 
 1. **Yakala.** Kısayola bas. Pencere neyin kaydedileceğini gösterir: tarayıcıdaki sayfa
-   (Mac'te Chrome, Arc, Brave, Edge, Safari), Finder'da seçili dosya ya da panodaki metin.
+   (yukarıdaki platform matrisi), Finder'da seçili dosya ya da panodaki metin.
    İstersen tek satır "neden" yaz, Enter. Esc vazgeçer.
 
    Windows'ta panoda görüntü varsa pencere onu küçük önizlemesiyle gösterir. Son başarılı kayıttan
@@ -333,7 +518,8 @@ elde olanla devam edilir.
 - Yakalama ağa çıkmaz; yalnız vault'a bir dosya yazar.
 - Ağ yalnız `isle` adımında ve yalnız yakaladığın kaynaklar için kullanılır. Defuddle,
   X gönderisi sayfada yoksa gönderi adresini FxTwitter API'sine sorar.
-- Mail, pano metni ve dosya kartları `visibility: private` ile yazılır.
+- Mail, pano metni ve dosya kartları `visibility: private` ile yazılır. Seçilen ek
+  bağlantılardan biri mail adresiyse ana kaynak herkese açık olsa da aynı kural uygulanır.
 - Kaldırmak için `python3 beyin.py yakala kaldir`: kısayol, skill ve bildirim gider, kartların kalır.
 
 ## Komutlar
@@ -356,6 +542,9 @@ URL kullanıcı bilgileri ve bozuk adresler reddedilir. Defuddle ve yt-dlp'ye UR
 DNS yanıtları da denetlenir; Python HTTP yolunun yönlendirmeleri aynı kapıdan geçer. DNS geçici
 olarak çözümlenemezse kart hata notuyla kalır, sıradaki kartlar işlenmeye devam eder.
 
-Bu denetimler ilk hedefteki özel adresleri engeller. Yardımcı araçların kendi yönlendirmeleri ve
-DNS rebinding için tam ağ izolasyonu sağlamaz. Ham kaynak metni güvenilmeyen veri olarak işaretlenir;
+Python HTTP yolu bağlanırken adı yeniden çözer, her cevabı aynı kapıdan geçirir ve soketi denetlenen
+IP adresine açar (TLS yine asıl sunucu adını doğrular). Denetimden sonra değişen bir DNS cevabı
+(rebinding) bu yolu yerel adrese yönlendiremez. Sistemde proxy ayarlıysa hedefi proxy çözer; bu bağlama
+proxy'nin kendisine uygulanmaz. Defuddle ve yt-dlp adı kendileri yeniden çözer ve kendi yönlendirmelerini
+izler; bu iki yardımcı için ağ çıkışı izolasyonu yoktur. Ham kaynak metni güvenilmeyen veri olarak işaretlenir;
 metnin içindeki rol değişikliği, komut çalıştırma ve dosya silme istekleri talimat sayılmaz.

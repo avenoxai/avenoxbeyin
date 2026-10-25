@@ -366,6 +366,163 @@ class ProjectScopesTest(unittest.TestCase):
         self.assertEqual(added['status'], 'saved')
         self.assertIn('Projeler/Beta', added['folders'])
 
+    def test_resolve_active_project_conventions(self):
+        """resolve_active_project resolves a vault working directory to its project (#288, #403)."""
+        import beyin_v3_projects as projects
+        # Standard conventions: projects/<name>, Projeler/<name>, projeler/<name>
+        (self.vault / 'projects/alpha').mkdir(parents=True, exist_ok=True)
+        self.assertEqual(projects.resolve_active_project(self.vault, self.vault / 'projects/alpha'), 'alpha')
+
+        (self.vault / 'Projeler/Beta/nested').mkdir(parents=True, exist_ok=True)
+        self.assertEqual(projects.resolve_active_project(self.vault, self.vault / 'Projeler/Beta/nested'), 'Beta')
+
+        # Negative controls: vault root itself or outside directories return None
+        self.assertIsNone(projects.resolve_active_project(self.vault, self.vault))
+        outside = Path(self.tmp.name) / 'outside'
+        outside.mkdir(parents=True, exist_ok=True)
+        self.assertIsNone(projects.resolve_active_project(self.vault, outside))
+
+    def test_resolve_active_project_from_scoped_folder_and_companion_loading(self):
+        """Active project resolves from .beyin-projects.json and companion loads its Kurallar.md (#288)."""
+        import beyin_v3_projects as projects
+        import beyin_v3_companion as companion
+        custom_folder = '🏰 300-Projects/serai'
+        (self.vault / custom_folder).mkdir(parents=True, exist_ok=True)
+        self.scopes({'folders': {custom_folder: 'serai'}})
+
+        # CWD inside mapped folder resolves project
+        self.assertEqual(projects.resolve_active_project(self.vault, self.vault / custom_folder), 'serai')
+
+        # Companion context loads rules from this custom mapped project folder
+        comp_dir = self.vault / '🔮 850-Companion'
+        comp_dir.mkdir(parents=True, exist_ok=True)
+        (comp_dir / 'Core.md').write_text('# Core\nKimlik.\n', encoding='utf-8')
+        (comp_dir / 'Kurallar.md').write_text('# Kurallar\n- **kural:** GLOBAL_RULE\n- [kapsam: other] OTHER_RULE\n', encoding='utf-8')
+        (comp_dir / 'Last-Session.md').write_text('# Son oturum\n', encoding='utf-8')
+        (comp_dir / 'Threads.md').write_text('# Threads\n', encoding='utf-8')
+        (self.vault / custom_folder / 'Kurallar.md').write_text('# Serai Kuralları\n- **kural:** SERAI_CUSTOM_RULE\n', encoding='utf-8')
+
+        for f in ('Core.md', 'Kurallar.md', 'Last-Session.md', 'Threads.md'):
+            self.store.ingest({'id': f, 'kind': 'note', 'status': 'active',
+                               'source': f'🔮 850-Companion/{f}', 'text': (comp_dir / f).read_text(encoding='utf-8')})
+        self.store.ingest({'id': 'serai-rules', 'kind': 'note', 'status': 'active',
+                           'source': f'{custom_folder}/Kurallar.md', 'text': (self.vault / custom_folder / 'Kurallar.md').read_text(encoding='utf-8')})
+
+        text = companion.context(self.store, 8000, 'test-session', 'claude', project='serai')
+        self.assertIn('SERAI_CUSTOM_RULE', text)
+        self.assertIn('GLOBAL_RULE', text)
+        self.assertNotIn('OTHER_RULE', text)
+
+    def test_mapped_rules_preserve_path_spelling_and_visibility(self):
+        import beyin_v3_companion as companion
+        from beyin_v3_sync import SyncEngine
+        folder = self.vault / 'Custom/MiXeD'
+        folder.mkdir(parents=True)
+        self.scopes({'folders': {'CUSTOM/mixed': 'alpha'}})
+        source = folder / 'Kurallar.md'
+        for fields, visible in (({'visibility': 'internal'}, True),
+                                ({'visibility': 'private'}, False),
+                                ({'visibility': 'internal', 'trust': 'untrusted'}, False)):
+            with self.subTest(fields=fields):
+                source.write_text('---\n' + json.dumps(dict(id='alpha-rules', kind='note', **fields)) +
+                                  '\n---\n- **kural:** MAPPED_RULE_SENTINEL\n', encoding='utf-8')
+                SyncEngine(self.vault, self.store.state_dir).sync()
+                text = companion.context(self.store, 10000, 'mapped-rules', 'claude', rules_project='alpha')
+                self.assertEqual('\n[Custom/MiXeD/Kurallar.md]\n' in text, visible)
+                self.assertEqual('MAPPED_RULE_SENTINEL' in text, visible)
+                self.assertLessEqual(len(text), 10000)
+
+
+class TestResolveActiveProject(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.vault = Path(self.tmp.name) / 'vault'
+        self.vault.mkdir()
+
+    def test_resolve_active_project_standard_folder(self):
+        import beyin_v3_projects
+        cwd = self.vault / 'projects' / 'my-project' / 'src'
+        cwd.mkdir(parents=True)
+        self.assertEqual(beyin_v3_projects.resolve_active_project(self.vault, cwd), 'my-project')
+
+    def test_resolve_active_project_json_mapping(self):
+        import beyin_v3_projects
+        (self.vault / '.beyin-projects.json').write_text(json.dumps({
+            "folders": {"custom/path": "mapped-project"}
+        }))
+        (self.vault / 'custom' / 'path').mkdir(parents=True)
+        cwd = self.vault / 'custom' / 'path' / 'inside'
+        cwd.mkdir(parents=True)
+        self.assertEqual(beyin_v3_projects.resolve_active_project(self.vault, cwd), 'mapped-project')
+
+    def test_resolve_active_project_missing_json(self):
+        import beyin_v3_projects
+        cwd = self.vault / 'other' / 'folder'
+        cwd.mkdir(parents=True)
+        self.assertIsNone(beyin_v3_projects.resolve_active_project(self.vault, cwd))
+
+    def test_malformed_json_fallback(self):
+        import beyin_v3_projects
+        (self.vault / '.beyin-projects.json').write_text("{malformed")
+        cwd = self.vault / 'projects' / 'fallback-proj'
+        cwd.mkdir(parents=True)
+        # Should gracefully fallback to standard folders
+        self.assertEqual(beyin_v3_projects.resolve_active_project(self.vault, cwd), 'fallback-proj')
+
+    def test_symlink_loop(self):
+        import beyin_v3_projects
+        # A real cycle: a -> b -> a. A link to its own parent resolves normally and is no loop.
+        loop_dir = self.vault / 'projects' / 'dongu'
+        loop_dir.mkdir(parents=True)
+        try:
+            os.symlink(loop_dir / 'b', loop_dir / 'a')
+            os.symlink(loop_dir / 'a', loop_dir / 'b')
+        except OSError:
+            self.skipTest('symlinks unavailable on this platform')
+        self.assertIsNone(beyin_v3_projects.resolve_active_project(self.vault, loop_dir / 'a'))
+        self.assertIsNone(beyin_v3_projects.resolve_active_project(self.vault, str(loop_dir / 'a' / 'src')))
+
+    def test_ntfs_junction_and_symlinks_resolve_properly(self):
+        import beyin_v3_projects
+        # test that resolved path gets the correct active project
+        (self.vault / '.beyin-projects.json').write_text(json.dumps({
+            "folders": {"custom": "my-project"}
+        }))
+        target = self.vault / 'custom'
+        target.mkdir()
+
+        # create symlink outside
+        symlink_dir = Path(self.tmp.name) / 'symlink'
+        created = False
+        try:
+            os.symlink(target, symlink_dir)
+            created = True
+        except OSError:
+            if os.name == 'nt':
+                try:
+                    import _winapi
+                    _winapi.CreateJunction(str(target), str(symlink_dir))
+                    created = True
+                except (ImportError, AttributeError, OSError):
+                    pass
+        if not created:
+            self.skipTest('symlinks and junctions unavailable on this platform')
+        self.assertEqual(beyin_v3_projects.resolve_active_project(self.vault, symlink_dir), 'my-project')
+
+    def test_deleted_directory_graceful_handling(self):
+        import beyin_v3_projects
+        target = self.vault / 'projects' / 'deleted-proj'
+        target.mkdir(parents=True)
+        cwd = target / 'sub'
+        cwd.mkdir()
+        cwd_path = str(cwd)
+        import shutil
+        shutil.rmtree(str(target))
+        # The cwd still points to a deleted directory, resolving should handle gracefully
+        # Using the string path since the Path object might fail to resolve
+        self.assertIsNone(beyin_v3_projects.resolve_active_project(self.vault, cwd_path))
+
 
 if __name__ == '__main__':
     unittest.main()
