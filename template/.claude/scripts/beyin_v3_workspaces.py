@@ -396,6 +396,7 @@ def plan_workspace(vault_root, workspace_id, kind="general", name=None, descript
     }
 
 
+@_serialized_write
 def provision_workspace(vault_root, workspace_id, kind="general", name=None, description=None, sources=None, rules=None, dry_run=False):
     """Provision a workspace with atomic rollback, template scaffolding, and verification (RFC #368 P0-D)."""
     vault_root = Path(vault_root)
@@ -416,6 +417,7 @@ def provision_workspace(vault_root, workspace_id, kind="general", name=None, des
     created_dirs = []
     created_files = []
     manifest_backup = None
+    manifest_written = None
     manifest_path = vault_root / PROJECT_SCOPES_FILE
     if manifest_path.exists():
         manifest_backup = manifest_path.read_bytes()
@@ -451,10 +453,12 @@ def provision_workspace(vault_root, workspace_id, kind="general", name=None, des
             workspace_id=plan["workspace_id"],
             name=plan["name"],
             kind=plan["kind"],
-            sources=plan["sources"],
+            sources=list(dict.fromkeys(plan["sources"] + plan["note_roots"])),
             rules_file=plan["rules_file"],
             note_roots=plan["note_roots"],
         )
+
+        manifest_written = manifest_path.read_bytes()
 
         # 4. Self-verification
         verification = inspect_workspace(vault_root, workspace_id)
@@ -487,13 +491,15 @@ def provision_workspace(vault_root, workspace_id, kind="general", name=None, des
                     d.rmdir()
             except OSError:
                 pass
-        if manifest_backup is not None:
-            manifest_path.write_bytes(manifest_backup)
-        elif manifest_path.exists():
-            try:
+        # Restore only our own unchanged snapshot. Preserve intervening changes
+        # from an editor or a reentrant caller rather than rolling them back.
+        current_manifest = manifest_path.read_bytes() if manifest_path.exists() else None
+        if manifest_written is not None and current_manifest == manifest_written:
+            if manifest_backup is not None:
+                from beyin_v3_sync import atomic
+                atomic(manifest_path, manifest_backup.decode('utf-8'))
+            else:
                 manifest_path.unlink()
-            except OSError:
-                pass
         raise
 
 
