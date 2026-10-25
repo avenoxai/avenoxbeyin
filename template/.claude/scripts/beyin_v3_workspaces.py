@@ -40,11 +40,13 @@ def _source_key(value):
 
 def _serialized_write(function):
     from functools import wraps
+    from inspect import signature
+    call_signature = signature(function)
     @wraps(function)
     def wrapped(vault_root, *args, **kwargs):
         from types import SimpleNamespace
         from beyin_v3_notes import locked
-        if kwargs.get('dry_run'):
+        if call_signature.bind(vault_root, *args, **kwargs).arguments.get('dry_run'):
             return function(vault_root, *args, **kwargs)
         with locked(SimpleNamespace(root=Path(vault_root).resolve())):
             return function(vault_root, *args, **kwargs)
