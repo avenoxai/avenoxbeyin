@@ -5,6 +5,7 @@ Markdown stays with SyncEngine's writer and is never copied here.
 """
 import os
 from pathlib import Path
+import secrets
 import tempfile
 import unicodedata
 
@@ -21,6 +22,9 @@ COPY_SUFFIXES = {'.pdf', '.docx', '.odt', '.xlsx', '.pptx', '.txt', '.csv', '.zi
                  '.svg', '.psd', '.ai', '.mp3', '.wav', '.mp4', '.mov'}
 MANAGED_TARGET_PARTS = {'scripts', 'skills', 'hooks', 'tasks', 'receipts',
                         'node_modules', '__pycache__'}
+ANCHORED_PUBLISH = (hasattr(os, 'O_NOFOLLOW') and hasattr(os, 'O_DIRECTORY')
+                    and all(fn in os.supports_dir_fd for fn in
+                            (os.open, os.mkdir, os.link, os.unlink, os.stat)))
 
 
 def _attachment_name(name):
@@ -40,6 +44,99 @@ def _alias_check(root, name):
                 if child.name != part and unicodedata.normalize('NFC', child.name).casefold() == key:
                     raise WorkspaceError('destination_alias_conflict')
         parent = parent / part
+
+
+def _anchored_parent(vault, path, *, create=False):
+    """Open each destination directory beneath the vault without following links.
+
+    The caller owns the returned descriptor.  A path-only check followed by a
+    publish would let another process replace an intermediate directory with a
+    symlink between those two operations.
+    """
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(vault, flags)
+    try:
+        for part in path.parent.relative_to(vault).parts:
+            try:
+                child = os.open(part, flags, dir_fd=fd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+                child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _read_anchored(vault, path, limit):
+    parent_fd = _anchored_parent(vault, path)
+    try:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        with os.fdopen(fd, 'rb') as stream:
+            raw = stream.read(limit + 1)
+        if len(raw) > limit:
+            raise WorkspaceError('source_too_large')
+        return raw
+    finally:
+        os.close(parent_fd)
+
+
+def _sync_target_parent(vault, path):
+    parent_fd = _anchored_parent(vault, path)
+    try:
+        try:
+            os.fsync(parent_fd)
+        except OSError as exc:
+            raise WorkspaceError('copy_durability_unavailable') from exc
+    finally:
+        os.close(parent_fd)
+
+
+def _publish_anchored(vault, path, raw, expected_hash, recheck):
+    """Stage and exclusively publish through one opened destination directory."""
+    parent_fd = _anchored_parent(vault, path, create=True)
+    name = '.beyin-copy-' + secrets.token_hex(16) + '.tmp'
+    temp_identity = None
+    try:
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=parent_fd)
+        temp_identity = os.fstat(fd)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        staged = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        with os.fdopen(staged, 'rb') as stream:
+            if content_hash(stream.read(len(raw) + 1)) != expected_hash:
+                raise WorkspaceError('copy_stage_changed')
+        recheck()
+        try:
+            os.link(name, path.name, src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd, follow_symlinks=False)
+        except FileExistsError as exc:
+            raise WorkspaceError('destination_conflict') from exc
+        except OSError as exc:
+            raise WorkspaceError('exclusive_publish_unavailable') from exc
+        try:
+            os.fsync(parent_fd)
+        except OSError as exc:
+            raise WorkspaceError('copy_durability_unavailable') from exc
+    finally:
+        if temp_identity is not None:
+            try:
+                now = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                if (now.st_dev, now.st_ino) == (temp_identity.st_dev, temp_identity.st_ino):
+                    os.unlink(name, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+        os.close(parent_fd)
 
 
 def _plan_hash(plan):
@@ -177,56 +274,67 @@ class WorkspaceOrganizer:
             if not self.resolver.authority.allows_organization_plan(plan):
                 raise WorkspaceError('plan_authority_required')
             if prior is not None and prior['status'] == 'verified':
-                if not path.is_file() or content_hash(self.resolver._read_bytes(path)) != source['content_sha256']:
+                if not path.is_file() or content_hash(self._target_bytes(path)) != source['content_sha256']:
                     raise WorkspaceError('destination_changed')
                 self._target(wid, grant, target['source_id'], target['relative_path'])
                 return {'status': 'replayed', 'writes_performed': False,
                         'plan_sha256': plan['plan_sha256'], 'destination_sha256': source['content_sha256']}
             created=False
             if path.exists():
-                if prior is None or not path.is_file() or content_hash(self.resolver._read_bytes(path)) != source['content_sha256']:
+                if prior is None or not path.is_file() or content_hash(self._target_bytes(path)) != source['content_sha256']:
                     raise WorkspaceError('destination_conflict')
             else:
                 if prior is None:
                     journal.parent.mkdir(parents=True, exist_ok=True)
                     atomic(journal, canonical_bytes(dict(expected, status='pending')).decode('utf-8'))
-                path.parent.mkdir(parents=True, exist_ok=True)
-                self._target(wid, grant, target['source_id'], target['relative_path'])
-                fd,temp_name=tempfile.mkstemp(prefix='.beyin-copy-',suffix='.tmp',dir=path.parent)
-                temp=Path(temp_name)
-                temp_identity=temp.stat()
-                try:
-                    with os.fdopen(fd,'wb') as stream:
-                        stream.write(raw)
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    if content_hash(self.resolver._read_bytes(temp)) != source['content_sha256']:
-                        raise WorkspaceError('copy_stage_changed')
+                if ANCHORED_PUBLISH:
+                    _publish_anchored(self.registry.vault, path, raw, source['content_sha256'],
+                        lambda: self._target(wid, grant, target['source_id'], target['relative_path']))
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
                     self._target(wid, grant, target['source_id'], target['relative_path'])
+                    fd,temp_name=tempfile.mkstemp(prefix='.beyin-copy-',suffix='.tmp',dir=path.parent)
+                    temp=Path(temp_name)
+                    temp_identity=temp.stat()
                     try:
-                        os.link(temp, path)
-                    except FileExistsError as exc:
-                        raise WorkspaceError('destination_conflict') from exc
-                    except OSError as exc:
-                        raise WorkspaceError('exclusive_publish_unavailable') from exc
-                    created=True
-                finally:
-                    # Only remove this invocation's staging file. An older
-                    # interrupted temp belongs to recovery, not this replay.
-                    try:
-                        now=temp.stat()
-                        if (now.st_dev,now.st_ino)==(temp_identity.st_dev,temp_identity.st_ino):
-                            temp.unlink()
-                    except FileNotFoundError:
-                        pass
+                        with os.fdopen(fd,'wb') as stream:
+                            stream.write(raw)
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                        if content_hash(self.resolver._read_bytes(temp)) != source['content_sha256']:
+                            raise WorkspaceError('copy_stage_changed')
+                        self._target(wid, grant, target['source_id'], target['relative_path'])
+                        try:
+                            os.link(temp, path)
+                        except FileExistsError as exc:
+                            raise WorkspaceError('destination_conflict') from exc
+                        except OSError as exc:
+                            raise WorkspaceError('exclusive_publish_unavailable') from exc
+                    finally:
+                        # Only remove this invocation's staging file. An older
+                        # interrupted temp belongs to recovery, not this replay.
+                        try:
+                            now=temp.stat()
+                            if (now.st_dev,now.st_ino)==(temp_identity.st_dev,temp_identity.st_ino):
+                                temp.unlink()
+                        except FileNotFoundError:
+                            pass
+                created=True
             # Both source and target grants, source bytes, and target bytes are
             # checked again before recording a verified effect.
             fresh_source, fresh_raw = self._source(wid, grant, source['source_id'], source['relative_path'])
             self._target(wid, grant, target['source_id'], target['relative_path'])
             if fresh_source != source_path or content_hash(fresh_raw) != source['content_sha256']:
                 raise WorkspaceError('stale_source')
-            if content_hash(self.resolver._read_bytes(path)) != source['content_sha256']:
+            if content_hash(self._target_bytes(path)) != source['content_sha256']:
                 raise WorkspaceError('destination_changed')
+            if ANCHORED_PUBLISH and not created:
+                _sync_target_parent(self.registry.vault, path)
             atomic(journal, canonical_bytes(dict(expected, status='verified')).decode('utf-8'))
             return {'status': 'copied' if created else 'reconciled', 'writes_performed': created,
                     'plan_sha256': plan['plan_sha256'], 'destination_sha256': source['content_sha256']}
+
+    def _target_bytes(self, path):
+        if ANCHORED_PUBLISH:
+            return _read_anchored(self.registry.vault, path, self.resolver.max_source_bytes)
+        return self.resolver._read_bytes(path)

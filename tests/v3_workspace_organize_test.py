@@ -1,5 +1,7 @@
 """P5a physical copy and no-write organization regressions."""
 from pathlib import Path
+import os
+import stat
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -11,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
 sys.path.insert(0, str(ROOT / 'tests'))
 
-from beyin_v3_workspace_organize import WorkspaceOrganizer
+from beyin_v3_workspace_organize import ANCHORED_PUBLISH, WorkspaceOrganizer
 from beyin_v3_workspaces import (WorkspaceError, envelope, render_document,
                                   content_hash)
 from v3_workspace_helpers import install_fixture
@@ -203,12 +205,12 @@ class OrganizationTest(unittest.TestCase):
         self.permit_copy()
         plan = self.preview(action='copy', target_source_id='academic-working', target='working/logo.png')
         self.approve(plan)
-        original = self.organizer.resolver._read_bytes
+        original = self.organizer._target_bytes
         def corrupt_read(path):
             if path == self.target and path.exists():
                 return b'corrupt readback'
             return original(path)
-        with patch.object(self.organizer.resolver, '_read_bytes', side_effect=corrupt_read):
+        with patch.object(self.organizer, '_target_bytes', side_effect=corrupt_read):
             with self.assertRaisesRegex(WorkspaceError, 'destination_changed'):
                 self.organizer.apply(plan)
         self.assertEqual(self.target.read_bytes(), self.source_hash)
@@ -269,6 +271,45 @@ class OrganizationTest(unittest.TestCase):
         (self.target_root / 'Café').mkdir()
         with self.assertRaisesRegex(WorkspaceError, 'destination_alias_conflict'):
             self.preview(action='copy', target_source_id='academic-working', target='Cafe\u0301/logo.png')
+
+    @unittest.skipUnless(ANCHORED_PUBLISH, 'directory-descriptor publish is unavailable')
+    def test_parent_swap_during_publish_cannot_write_outside_vault(self):
+        self.permit_copy()
+        plan = self.preview(action='copy', target_source_id='academic-working', target='working/logo.png')
+        self.approve(plan)
+        outside = self.base / 'outside'
+        outside.mkdir()
+        moved = self.target_root / 'moved-working'
+        original_link = __import__('os').link
+
+        def swap_then_link(source, destination, **kwargs):
+            self.target.parent.rename(moved)
+            self.target.parent.symlink_to(outside, target_is_directory=True)
+            return original_link(source, destination, **kwargs)
+
+        with patch('beyin_v3_workspace_organize.os.link', side_effect=swap_then_link):
+            with self.assertRaisesRegex(WorkspaceError, 'redirected_path'):
+                self.organizer.apply(plan)
+        self.assertFalse((outside / 'logo.png').exists())
+        self.assertEqual((moved / 'logo.png').read_bytes(), self.source_hash)
+
+    @unittest.skipUnless(ANCHORED_PUBLISH, 'directory-descriptor fsync is unavailable')
+    def test_directory_sync_failure_keeps_journal_pending(self):
+        self.permit_copy()
+        plan = self.preview(action='copy', target_source_id='academic-working', target='working/logo.png')
+        self.approve(plan)
+        original_fsync = os.fsync
+        def fail_directory_fsync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError('directory sync unavailable')
+            return original_fsync(fd)
+        with patch('beyin_v3_workspace_organize.os.fsync', side_effect=fail_directory_fsync):
+            with self.assertRaisesRegex(WorkspaceError, 'copy_durability_unavailable'):
+                self.organizer.apply(plan)
+        journal = self.runtime.registry.state / 'workspace-copy' / (plan['plan_sha256'] + '.json')
+        self.assertEqual(json.loads(journal.read_text(encoding='utf-8'))['status'], 'pending')
+        self.assertEqual(self.target.read_bytes(), self.source_hash)
+        self.assertEqual(self.organizer.apply(plan)['status'], 'reconciled')
 
     def test_cli_preview_and_apply_use_same_plan(self):
         self.permit_copy()

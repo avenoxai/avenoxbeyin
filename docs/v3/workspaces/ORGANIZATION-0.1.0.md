@@ -29,8 +29,8 @@ Copy yalnız açık doküman/medya uzantılarını kabul eder. Kanonik `.md` ve 
 dosyası kopyası reddedilir; böylece aynı kayıt ID'siyle ikinci Markdown
 üretilmez. Kaynak baytları değişmez. Hedef boş olmalıdır. Aynı baytlı mevcut
 dosya bile bu planın kalıcı köken journal'ı yoksa çakışmadır. Case/Unicode
-takma yolları, symlink/junction, yönetilen/gizli hedef dizinleri ve kaynağın
-kendisinin hedef olması reddedilir.
+takma yolları, kontrol anındaki symlink/junction, yönetilen/gizli hedef
+dizinleri ve kaynağın kendisinin hedef olması reddedilir.
 
 Yerel `workspace-copy/<plan_sha256>.json` journal'ı kaynak/hedef kimliğini ve
 plan hash'ini staging öncesi kaydeder. Writer aynı hedef dizininde benzersiz
@@ -41,7 +41,24 @@ baytları ve güncel yetki yeniden denetlenir; ikinci kopya oluşmaz. Pending
 journal ve exact hedef doğrulamayı tamamlayabilir; kısmi veya kullanıcıca
 değişmiş hedef çakışma olarak kalır. Eski geçici dosya silinmez. Move, geri
 alma ve daha geniş kesinti kurtarması P5b kapsamındadır. Bu journal yerel
-kökendir; yeni kanonik kayıt ya da kaynak kopyası değildir.
+kökendir; yeni kanonik kayıt ya da kaynak kopyası değildir. Pending durumda
+aynı baytlı hedefin hangi süreç tarafından yayımlandığı kesin olarak
+kanıtlanamaz; `reconciled` yalnız planın kaynak/hedef kimliği ile güncel
+baytların eşleştiğini bildirir.
+
+`dir_fd` destekleyen sistemlerde hedefin ara dizinleri vault'tan başlayarak
+`O_NOFOLLOW` ile açılır; staging, exclusive publish ve geri okuma açık dizin
+tanıtıcısına bağlanır. Bu, son yol kontrolünden hemen sonra ara dizinin
+symlink'e çevrilerek kopyanın vault dışına yönlendirilmesini önler. Windows
+gibi `dir_fd` sunmayan sistemlerde yol yeniden denetlenir ve exclusive publish
+uygulanır; aynı hedef ağacını eşzamanlı değiştirebilen başka bir süreç bu
+yol tabanlı sınırın dışındadır. Açık dizinin kendisini vault dışına taşıma
+yetkisi bulunan eşzamanlı süreç de burada güvenilen yerel dosya sistemi
+sınırıdır; ürün bu koşulda tam OS izolasyonu vaat etmez.
+`dir_fd` yolunda yayımlamanın bağlı olduğu açık hedef dizini verified
+journal'dan önce fsync edilir; bu
+başarısızsa journal pending kalır. Windows yolunda dizin fsync garantisi
+verilmez; açılışta verified journal hedef baytları yeniden denetler.
 
 Logo çalışma kopyası için örnek önizleme isteği:
 
