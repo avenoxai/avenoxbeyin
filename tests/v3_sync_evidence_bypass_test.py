@@ -32,6 +32,14 @@ class TestSyncEvidenceBypass(unittest.TestCase):
         except OSError:
             self.skipTest('Symlink privilege not held on this system')
 
+    def test_evidence_scan_is_bounded_by_utf8_bytes(self):
+        evidence = self.root / 'bounded.md'
+        evidence.write_text('ş' * (512 * 1024) + ' T-1', encoding='utf-8')
+        issue = self.engine._completion_issue({'id': 'T-1', 'status': 'done',
+            'completion_contract': 'strict', 'completion_criterion': 'result',
+            'evidence_refs': ['bounded.md']}, 'task.md')
+        self.assertIn('matching task identifier', issue)
+
     def test_update_rejects_another_task_identifier_substring(self):
         self.engine.task_create('tasks/task.md', 'Synthetic task',
             {'id': 'T-1', 'owner': 'Reviewer', 'status': 'active',

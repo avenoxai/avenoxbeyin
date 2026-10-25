@@ -695,9 +695,9 @@ class SyncEngine:
                     if hasattr(stat, 'st_mtime') and stat.st_mtime > time.time() + 5:
                         return 'evidence file has an invalid future modification time'
 
-                    with path.open('rt', encoding='utf-8', errors='replace') as f:
+                    with path.open('rb') as f:
                         if not re.search(r'(?<![\w.-])' + re.escape(str(metadata['id'])) +
-                                         r'(?![\w.-])', f.read(1024 * 1024)):
+                                         r'(?![\w.-])', f.read(1024 * 1024).decode('utf-8', errors='replace')):
                             return 'evidence file must contain the matching task identifier'
                 except OSError:
                     return 'evidence file must contain the matching task identifier'
