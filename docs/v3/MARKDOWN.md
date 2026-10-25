@@ -72,3 +72,9 @@ A changed managed source advances the indexed effective revision even when its a
 Skipped unsupported metadata returns `status: degraded` with warnings. Context adapters must surface this rather than treating an incomplete scan as healthy.
 
 `store.snapshot_context(audience='internal', budget_chars=6000, limit=5)` (also available on SyncEngine) selects recent active/waiting records and statusless notes/facts using the same visibility, trust, source-freshness and budget checks as retrieval. A task without explicit status is unknown and excluded from this current-state snapshot; no active or completed state is invented. It is explicit: an empty ordinary retrieval query continues to abstain. Receipts remain separate historical agent claims; adapters may include a bounded latest receipt with that label, never convert it into verified facts. New source receipts have an immutable ISO `created_at` timestamp retained on replay.
+
+### Strict evidence identity validation
+
+Strict completed tasks require every evidence source to contain the exact task ID in the first 1 MiB of text. An ID must not be part of a longer word, dotted identifier or hyphenated identifier (`T-10` and `OTHER-T-1` do not establish `T-1`). Backticks, spaces and punctuation such as a colon can delimit it. Evidence modification times more than five seconds ahead of the local clock are rejected; the five-second tolerance accommodates filesystem clock granularity, not verification of the outcome.
+
+This strengthens validation of existing strict tasks too. No evidence or task is rewritten automatically. Before adopting this change, review existing completed strict tasks with `doctor`: add the actual matching ID to genuine evidence using `note-read` / `note-edit`, or reopen the task and supply correct evidence. Merely inserting an ID is not proof of completion. Existing non-strict tasks are unchanged.

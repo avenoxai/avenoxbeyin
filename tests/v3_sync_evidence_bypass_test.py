@@ -32,6 +32,19 @@ class TestSyncEvidenceBypass(unittest.TestCase):
         except OSError:
             self.skipTest('Symlink privilege not held on this system')
 
+    def test_update_rejects_another_task_identifier_substring(self):
+        self.engine.task_create('tasks/task.md', 'Synthetic task',
+            {'id': 'T-1', 'owner': 'Reviewer', 'status': 'active',
+             'completion_contract': 'strict', 'completion_criterion': 'Result recorded'})
+        evidence = self.root / 'result.md'
+        for text in ('Result for T-10 only', 'Result for OTHER-T-1 only', 'Result for T-1-extra'):
+            evidence.write_text(text, encoding='utf-8')
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, 'matching task identifier'):
+                self.engine.update_task('T-1', 1, {'status': 'done', 'evidence_refs': ['result.md']})
+        evidence.write_text('Result for `T-1`: complete.', encoding='utf-8')
+        self.assertEqual(self.engine.update_task('T-1', 1,
+            {'status': 'done', 'evidence_refs': ['result.md']})['status'], 'done')
+
     def test_case_variation(self):
         evidence = self.root / 'Evidence.txt'
         evidence.write_text('evidence', encoding='utf-8')
