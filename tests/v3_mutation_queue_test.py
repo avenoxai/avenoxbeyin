@@ -28,6 +28,46 @@ class MutationQueueTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def test_empty_note_update_uses_guarded_writer_and_preserves_backup(self):
+        import base64
+        path = self.vault / 'notes/empty.md'
+        path.parent.mkdir()
+        path.write_bytes(b'')
+        mutation.enqueue_mutation(self.state, 'note_update', 'notes/empty.md',
+            {'text': 'Recovered note', 'expected_hash': _hash(b'')})
+        result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertEqual(result['applied'], 1, result)
+        self.assertEqual(result['failed'], 0, result)
+        self.assertIn('Recovered note', path.read_text(encoding='utf-8'))
+        backups = list((self.vault / '.beyin-note-write/backups').glob('*.json'))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(base64.b64decode(json.loads(backups[0].read_text())['bytes_base64']), b'')
+
+    def test_empty_note_update_preserves_an_intervening_write(self):
+        from unittest.mock import patch
+        path = self.vault / 'notes/empty.md'
+        path.parent.mkdir()
+        path.write_bytes(b'')
+        mutation.enqueue_mutation(self.state, 'note_update', 'notes/empty.md',
+            {'text': 'Queued update', 'expected_hash': _hash(b'')})
+        original = self.sync.note_edit
+        def intervening_edit(request):
+            path.write_text('Newer live note', encoding='utf-8')
+            return original(request)
+        with patch.object(self.sync, 'note_edit', side_effect=intervening_edit):
+            result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertEqual(result['conflicts'], 1, result)
+        self.assertEqual(path.read_text(encoding='utf-8'), 'Newer live note')
+
+    def test_empty_edit_anchor_cannot_insert_into_nonempty_source(self):
+        path = self.vault / 'notes/live.md'
+        path.parent.mkdir()
+        path.write_bytes(b'Live note')
+        with self.assertRaisesRegex(ValueError, 'nonempty old'):
+            self.sync.note_edit({'source': 'notes/live.md', 'expected_sha256': _hash(b'Live note'),
+                'edits': [{'old': '', 'new': 'Unanchored insert'}]})
+        self.assertEqual(path.read_bytes(), b'Live note')
+
     def test_malformed_queue_is_not_silently_rewritten(self):
         queue = self.state / mutation.MUTATION_QUEUE_FILE
         original = b'{broken JSON\n'

@@ -265,7 +265,10 @@ def _apply(engine, request, committed):
                 if not isinstance(edit, dict):
                     raise ValueError('each edit must be an object')
                 old, new = edit.get('old'), edit.get('new')
-                if not isinstance(old, str) or not old or not isinstance(new, str):
+                # The empty source has one unambiguous insertion point. The full
+                # source hash was checked under the writer lock above.
+                empty_source_edit = raw == b'' and len(request['edits']) == 1 and old == ''
+                if not isinstance(old, str) or (not old and not empty_source_edit) or not isinstance(new, str):
                     raise ValueError('each edit requires nonempty old and string new')
                 position = text.find(old)
                 if position < 0 or text.find(old, position + 1) >= 0:
