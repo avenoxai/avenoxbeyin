@@ -72,3 +72,8 @@ A changed managed source advances the indexed effective revision even when its a
 Skipped unsupported metadata returns `status: degraded` with warnings. Context adapters must surface this rather than treating an incomplete scan as healthy.
 
 `store.snapshot_context(audience='internal', budget_chars=6000, limit=5)` (also available on SyncEngine) selects recent active/waiting records and statusless notes/facts using the same visibility, trust, source-freshness and budget checks as retrieval. A task without explicit status is unknown and excluded from this current-state snapshot; no active or completed state is invented. It is explicit: an empty ordinary retrieval query continues to abstain. Receipts remain separate historical agent claims; adapters may include a bounded latest receipt with that label, never convert it into verified facts. New source receipts have an immutable ISO `created_at` timestamp retained on replay.
+
+A guarded `note-edit` may initialize an existing zero-byte human note with one
+`edits` entry whose `old` is the empty string. The matching full SHA-256 is still
+required and checked under the writer lock; nonempty sources and multi-edit
+requests still reject empty anchors. Backup and before-replace checks apply.
