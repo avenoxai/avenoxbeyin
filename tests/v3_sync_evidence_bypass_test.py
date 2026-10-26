@@ -40,6 +40,25 @@ class TestSyncEvidenceBypass(unittest.TestCase):
             'evidence_refs': ['bounded.md']}, 'task.md')
         self.assertIn('matching task identifier', issue)
 
+    def test_update_rejects_identifier_followed_by_partial_utf8_at_scan_limit(self):
+        self.engine.task_create('tasks/task.md', 'Synthetic task',
+            {'id': 'T-1', 'owner': 'Reviewer', 'status': 'active',
+             'completion_contract': 'strict', 'completion_criterion': 'Result recorded'})
+        evidence = self.root / 'bounded.md'
+        evidence.write_bytes(b' ' * (1024 * 1024 - 4) + 'T-1ş'.encode('utf-8'))
+        with self.assertRaisesRegex(ValueError, 'matching task identifier'):
+            self.engine.update_task('T-1', 1,
+                {'status': 'done', 'evidence_refs': ['bounded.md']})
+
+    def test_update_accepts_identifier_at_exact_scan_limit_eof(self):
+        self.engine.task_create('tasks/task.md', 'Synthetic task',
+            {'id': 'T-1', 'owner': 'Reviewer', 'status': 'active',
+             'completion_contract': 'strict', 'completion_criterion': 'Result recorded'})
+        evidence = self.root / 'bounded.md'
+        evidence.write_bytes(b' ' * (1024 * 1024 - 3) + b'T-1')
+        self.assertEqual(self.engine.update_task('T-1', 1,
+            {'status': 'done', 'evidence_refs': ['bounded.md']})['status'], 'done')
+
     def test_evidence_scan_is_bounded_by_utf8_bytes(self):
         evidence = self.root / 'bounded.md'
         evidence.write_text('ş' * (512 * 1024) + ' T-1', encoding='utf-8')
