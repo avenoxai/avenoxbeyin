@@ -277,6 +277,43 @@ class DshIntegrationTest(unittest.TestCase):
         self.assertNotIn("- id: sandbox-policy", self.profile.read_text(encoding="utf-8"))
         self.assertFalse((self.state / "dsh-profile.json").exists())
 
+    def test_cli_discovers_a_single_profile_under_a_fake_home(self):
+        self.install()
+        home = Path(self.temp.name) / "home"
+        profile = home / ".dsh/profiles/synthetic"
+        profile.mkdir(parents=True)
+        profile_file = profile / "cordis.patch.yml"
+        profile_file.write_text(
+            "- id: agent-default-model\n"
+            '  name: "@deepseek-ai/dsh-agent-default-model"\n'
+            "  config:\n"
+            "    provider: synthetic\n", encoding="utf-8")
+        env = dict(self.env, HOME=str(home), USERPROFILE=str(home))
+        applied = json.loads(self.run_python(self.vault / "beyin.py", "dsh-profile", "apply", env=env))
+        self.assertEqual(applied["status"], "applied")
+        text = profile_file.read_text(encoding="utf-8")
+        self.assertIn("- id: sandbox-policy", text)
+        self.assertIn("- id: hooks-claude-code", text)
+        self.assertTrue(list(profile.glob("cordis.patch.yml.bak-beyin-*")))
+        status = json.loads(self.run_python(self.vault / "beyin.py", "dsh-profile", "status", env=env))
+        self.assertEqual(status["status"], "present")
+        self.assertEqual(status["hook_entry"]["status"], "present")
+        self.assertTrue(status["hook_entry"]["current"])
+        # Two profiles are ambiguous: refuse instead of patching a guessed one. The recorded
+        # path wins over discovery, so drop it first to exercise the discovery branch again.
+        (self.state / "dsh-profile.json").unlink()
+        other = home / ".dsh/profiles/other"
+        other.mkdir(parents=True)
+        other_file = other / "cordis.patch.yml"
+        other_file.write_text("- id: agent-default-model\n", encoding="utf-8")
+        refused = subprocess.run([sys.executable, str(self.vault / "beyin.py"),
+                                  "dsh-profile", "apply"],
+                                 text=True, encoding="utf-8", capture_output=True,
+                                 cwd=str(self.vault), env=env, timeout=120)
+        self.assertEqual(refused.returncode, 1, refused.stderr)
+        self.assertIn("More than one DSH profile", refused.stderr)
+        self.assertEqual(other_file.read_text(encoding="utf-8"), "- id: agent-default-model\n")
+
     def test_doctor_reports_hook_config_and_profile(self):
         self.install("--dsh-profile", self.profile_dir)
         self.cli("sync")

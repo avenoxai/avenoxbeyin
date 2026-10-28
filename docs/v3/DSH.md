@@ -35,6 +35,10 @@ python3 beyin.py dsh-profile status --profile "$HOME/.dsh/profiles/desktop"
 python3 beyin.py dsh-profile remove --profile "$HOME/.dsh/profiles/desktop"
 ```
 
+`--profile` verilmezse önce kayıtlı profil, yoksa `~/.dsh/profiles/*/cordis.patch.yml`
+altındaki tek profil kullanılır; birden fazla profil varsa komut tahmin etmez, hata
+verip `--profile` ister.
+
 `apply` iki bloğu da ekler. Profilde zaten yönetilmeyen bir `sandbox-policy`
 veya `hooks-claude-code` girdisi varsa ona **dokunmaz**, uyarır. Bu durumda
 mevcut girdinin `workspaceRoot` değerini state dizinine, `configPath` değerini
