@@ -61,8 +61,8 @@ V3 writes exclusively to its explicit managed vault files:
 - Scripts: `.claude/scripts/beyin_v3*.py`.
 - Managed starter skills: `.agents/skills/{beyin,beyin-doktor,beyin-guncelle}/`, `.claude/skills/...`, and `.kiro/skills/...`.
 - Platform launchers: `Beyni Guncelle.cmd`, `Beyni Güncelle.sh`, `Beyni Guncelle.command`, `Beyni Güncelle.desktop`.
-- Adapter shims: `.claude/hermes-plugin/`, `.claude/scripts/beyin_v3_kiro.py`, `.opencode/plugins/`, `.omp/hooks/`.
-- Harness hook declarations: `.claude/settings.local.json`, `.codex/hooks.json`, `.codex/config.toml`, `.agents/hooks.json`, `.kiro/hooks/beyin-v3.json`.
+- Adapter shims: `.claude/hermes-plugin/`, `.claude/scripts/beyin_v3_kiro.py`, `.claude/scripts/beyin_v3_dsh.py`, `.opencode/plugins/`, `.omp/hooks/`.
+- Harness hook declarations: `.claude/settings.local.json`, `.codex/hooks.json`, `.codex/config.toml`, `.agents/hooks.json`, `.kiro/hooks/beyin-v3.json`, `.claude/dsh/beyin-v3-hooks.json`.
 - Companion instruction blocks: `AGENTS.md`, `CLAUDE.md`.
 
 All other paths belong to the user. In particular, `.brain/` and `custom/` directories are reserved as an untouched, unmanaged user layer. Installer, updater, and `doctor` checks never treat files under `.brain/` or `custom/` as conflicts or unmanaged system intrusions.

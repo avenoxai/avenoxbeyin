@@ -20,7 +20,7 @@ py -3 scripts/install_v3.py --vault "C:\Notlar\Beynim"
 
 Runtime varsayılan olarak işletim sisteminin yerel uygulama verisi alanına, vault dışında kurulur. İstersen kurulumda `--state "/ayri/yerel/dizin"` verebilirsin; yalnız bu uygulama için ayrılmış bir dizin seç. Kurulu giriş ve başlatıcılar bu seçimi hatırlar. Yeni hesap, Git, pip veya servis kurulmaz.
 
-İlk bağlantı için AI istemcisinde vault'u açıp yeni oturum başlat. Hook tanımları değiştiğinde istemcinin gerekli güven incelemesini tamamla; updater güven kaydı üretmez. `update` sonucu `trust_review_required: true` olduğunda `trust_review_files` hangi hook dosyalarının değiştiğini söyler; insan çıktısı yalnız o istemcilerin adımını gösterir (`.codex/hooks.json` → Codex `/hooks`, `.kiro/hooks/beyin-v3.json` → Kiro Agent Hooks paneli veya CLI `/hooks`, `.agents/hooks.json` → Antigravity klasör güveni, `.claude/settings.local.json` → Claude Code'da yeni oturum).
+İlk bağlantı için AI istemcisinde vault'u açıp yeni oturum başlat. Hook tanımları değiştiğinde istemcinin gerekli güven incelemesini tamamla; updater güven kaydı üretmez. `update` sonucu `trust_review_required: true` olduğunda `trust_review_files` hangi hook dosyalarının değiştiğini söyler; insan çıktısı yalnız o istemcilerin adımını gösterir (`.codex/hooks.json` → Codex `/hooks`, `.kiro/hooks/beyin-v3.json` → Kiro Agent Hooks paneli veya CLI `/hooks`, `.agents/hooks.json` → Antigravity klasör güveni, `.claude/settings.local.json` → Claude Code'da yeni oturum, `.claude/dsh/beyin-v3-hooks.json` → DSH profil `configPath` incelemesi ve yeniden başlatma).
 
 ## Kontrol ve güncelleme
 
@@ -220,10 +220,12 @@ bir düzeltmenin kurulu olduğunu varsayma. Mevcut V3.2.0'a hemen geçmek için:
    önce değişikliği incele. `.beyin-version` veya kurulu Python dosyalarını
    elle değiştirme.
 5. Vault içinde `python3 beyin.py doctor` ile sonucu kontrol et. Hook
-   tanımları değiştiyse Codex `/hooks`, Kiro Agent Hooks paneli veya CLI `/hooks`
+   tanımları değiştiyse Codex `/hooks`, Kiro Agent Hooks paneli veya CLI `/hooks`,
+   DSH profil `configPath` incelemesi ve DSH yeniden başlatma
    incelemesini tamamla ve yeni oturum aç.
    Sonraki güncellemeler yine normal `update` komutunu kullanır; gerekirse
-   `rollback` önceki kurulumu geri getirir.
+   `rollback` önceki kurulumu geri getirir. DSH adaptörünü içermeyen bir sürüme
+   rollback, kayıtlı profil bloklarını da kaldırır.
 
 Windows'ta Python komutları için `py -3` kullan. Bu yol kurulu eski
 paket doğrulayıcısını çağırmak yerine doğrulanmış resmi paketin installer'ını

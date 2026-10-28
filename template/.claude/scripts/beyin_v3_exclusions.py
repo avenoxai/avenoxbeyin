@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 
 EXCLUDABLE_COMPONENTS = (
-    'agents_block', 'adapters', 'adapters/hermes', 'adapters/kiro', 'adapters/omp', 'adapters/opencode',
+    'agents_block', 'adapters', 'adapters/dsh', 'adapters/hermes', 'adapters/kiro', 'adapters/omp', 'adapters/opencode',
     'harnesses/antigravity', 'launchers', 'skills', 'skills/beyin',
     'skills/beyin-doktor', 'skills/beyin-guncelle'
 )

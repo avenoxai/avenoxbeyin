@@ -1,7 +1,7 @@
 # V3 local foundation quickstart
 
 V3 is an **opt-in project-local installation**. The Python installer wires Claude,
-Codex, Antigravity and Kiro to one source-backed engine. It installs no system service,
+Codex, Antigravity, Kiro and DeepSeek Harness (DSH) to one source-backed engine. It installs no system service,
 connects no account, calls no model and does not enable Mem0. Existing legacy
 installers are separate; run the V3 installer below to choose this runtime.
 
@@ -189,7 +189,11 @@ never fabricates trust hashes or bypasses review. Antigravity also requires
 trusting the vault folder before project hooks can run; review its folder trust
 prompt in the client. Kiro IDE 1.x and CLI V3 load `.kiro/hooks/beyin-v3.json`;
 review it in the Agent Hooks panel or CLI `/hooks` (see [KIRO.md](KIRO.md)).
-Start a fresh Claude/Codex/Antigravity/Kiro session. Files
+DSH loads `.claude/dsh/beyin-v3-hooks.json` after the profile patch points
+`hooks-claude-code.configPath` at it; `--dsh-profile` or
+`beyin.py dsh-profile apply` adds that block and the `sandbox-policy` root, and
+DSH must be restarted (see [DSH.md](DSH.md)).
+Start a fresh Claude/Codex/Antigravity/Kiro/DSH session. Files
 existing on disk do not prove actual client delivery.
 
 For Antigravity print mode, explicitly attach the vault workspace. Running from
@@ -221,7 +225,7 @@ updates. Plain notes are indexed too. Receipts write a source note before local
 state acknowledgement. `sync` handles edited and deleted sources. This supersedes
 using low-level `ingest` as the routine source management path.
 
-Shared skills live in `.agents/skills`; Claude and Kiro see project-local mirrors.
+Shared skills live in `.agents/skills`; Claude, Kiro and DSH see project-local mirrors.
 POSIX defaults to symlinks and Windows to tracked copies. Copy reconciliation
 preserves simultaneous conflicting changes and reports them. `skill-import`
 imports only the explicitly selected directory; no global skill scan occurs.

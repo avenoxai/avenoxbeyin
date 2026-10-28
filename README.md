@@ -1,6 +1,6 @@
 # 🧠 avenoxbeyin V3
 
-Claude Code, Codex, Google Antigravity veya Kiro ile kullanabileceğin yerel ikinci beyin. Notların Markdown dosyalarında kalır; bir istemcide kaydettiğin kaynak ve iş sonucu diğerinde de bulunabilir. Obsidian ile açabilir, normal bir metin editörüyle düzenleyebilirsin.
+Claude Code, Codex, Google Antigravity, Kiro veya DeepSeek Harness (DSH) ile kullanabileceğin yerel ikinci beyin. Notların Markdown dosyalarında kalır; bir istemcide kaydettiğin kaynak ve iş sonucu diğerinde de bulunabilir. Obsidian ile açabilir, normal bir metin editörüyle düzenleyebilirsin.
 
 Python **3.11 veya üzeri** yeterli. Git, pip, Mem0 hesabı, API anahtarı veya sürekli açık sunucu gerekmez. Kullandığın AI istemcisinin kendi kurulumu ve hesabı ayrı olarak gerekir.
 
@@ -47,6 +47,8 @@ OpenCode için ek adım yok: installer vault içine eklentisini yazar, OpenCode 
 OMP (Oh My Pi) için ek adım yok: installer vault içine `.omp/hooks/pre/beyin-v3.ts` yazar, OMP vault klasöründe açılınca aynı motora bağlanır. Dosyayı global agentDir'e kopyalama; vault dışında işe yaramaz. Adımlar: [docs/v3/OMP.md](docs/v3/OMP.md).
 
 Kiro IDE 1.x ve CLI V3 için bu kaynak checkout'u `.kiro/hooks/beyin-v3.json` ve `.kiro/skills/` kurar. Kiro'da vault'u açıp hook'ları inceleyerek yeni oturum başlat. Eski ZIP paketlerinde bu dosyalar bulunmayabilir; kaynak kurulum adımları ve istemci sınırları: [docs/v3/KIRO.md](docs/v3/KIRO.md).
+
+DeepSeek Harness (DSH) için installer vault içine `.claude/dsh/beyin-v3-hooks.json` yazar. Profil bağlantısı tek seferliktir: `--dsh-profile "$HOME/.dsh/profiles/desktop"` ile kurulumda ya da sonradan `beyin.py dsh-profile apply` ile iki işaretli blok eklenir ve DSH yeniden başlatılır. Hook'lar oturum politikası taşımadığı için state yazma izni ayrıca verilir; ayrıntı ve sınırlar: [docs/v3/DSH.md](docs/v3/DSH.md).
 
 ## İlk konuşma
 

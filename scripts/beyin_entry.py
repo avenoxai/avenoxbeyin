@@ -643,6 +643,7 @@ def human_result(result, command, installed_version=None):
 TRUST_REVIEW = {
     '.codex/hooks.json': 'Codex: /hooks guven incelemesi',
     '.kiro/hooks/beyin-v3.json': 'Kiro: Agent Hooks paneli veya CLI /hooks incelemesi',
+    '.claude/dsh/beyin-v3-hooks.json': 'DeepSeek Harness: profil configPath incelemesi, DSH yeniden baslatma',
     '.agents/hooks.json': 'Antigravity: vault klasorune guven',
     '.claude/settings.local.json': 'Claude Code: ek inceleme yok',
 }
