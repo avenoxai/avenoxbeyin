@@ -50,7 +50,7 @@ Kurallar:
   değerini yukarıdakiyle değiştir. DSH aynı id'yi son gelen girdiyle uygular;
   çift `insert` kaydı hook'ları iki kez çalıştırabilir.
 - `workspaceRoot`, state dizinini (ya da onun bir üst dizinini) kapsamalıdır.
-  State yolu `beyin.py doctor --json` içindeki `state_location` alanında yazar.
+  State yolu `beyin.py doctor --json` içindeki `state_location.effective_state` alanında yazar.
 - **`mode` satırını `workspace-write` gibi sabit bir değere çevirme.** Profil
   yaması bir girdinin `config` değerini bütünüyle değiştirir, birleştirmez;
   sabit değer kullanıcının `DSH_PERMISSION_MODE` seçimini ezer. Ayrıca
