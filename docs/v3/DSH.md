@@ -3,47 +3,87 @@
 DSH desktop, Claude Code uyumlu komut hook'larını `dsh-hooks-claude-code`
 eklentisiyle çalıştırır. V3 bu köprüyü kullanır: ortak `beyin_v3_hook.py` aynı
 Claude biçimli payload'ı ve aynı `hookSpecificOutput.additionalContext` cevabını
-alır. DSH hesabı veya uygulaması kurucu tarafından kurulmaz.
+alır. DSH hesabı veya uygulaması kurucu tarafından kurulmaz ve **kurucu
+`~/.dsh` altındaki hiçbir dosyayı yazmaz**; profil yaması kullanıcıya aittir.
 
 ## Kurulum
 
 Vault klasörünü seç ve repo kökünden çalıştır:
 
 ```sh
-python3 scripts/install_v3.py --vault "/tam/yol/Beynim" --dsh-profile "$HOME/.dsh/profiles/desktop"
-python3 "/tam/yol/Beynim/beyin.py" doctor --json
+python3 scripts/install_v3.py --vault "/tam/yol/Beynim"
+python3 "/tam/yol/Beynim/beyin.py" sync
+python3 "/tam/yol/Beynim/beyin.py" doctor
 ```
 
-Windows'ta `python3` yerine `py -3` kullan. `--dsh-profile` isteğe bağlıdır;
-profil klasörünü ya da doğrudan `cordis.patch.yml` dosyasını verebilirsin.
-Kurucu şunları yazar:
+Windows'ta `python3` yerine `py -3` kullan. Kurucu vault içine şunu yazar:
 
-- `.claude/dsh/beyin-v3-hooks.json`: DSH'nin okuduğu Claude biçimli dört
-  komut (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`). Vault,
-  state ve Python yolu mutlaktır.
-- `--dsh-profile` verildiyse profil yamasına iki işaretli blok: `sandbox-policy`
-  ve `hooks-claude-code` insert'i. İşlem idempotenttir; ilk yazımdan önce
-  `cordis.patch.yml.bak-beyin-<zaman>` yedeği alınır.
+- `.claude/dsh/beyin-v3-hooks.json`: DSH'nin okuduğu Claude biçimli dört komut
+  (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`). Vault, state ve
+  Python yolu mutlaktır; `PostToolUse` eşleştiricisi DSH'nin küçük harfli araç
+  adlarını (`edit|write|str_replace_editor`) kullanır.
 
-Profil yaması `~/.dsh/profiles/<profil>/cordis.patch.yml` dosyasıdır ve DSH
-tarafından izlenmez; değişiklikten sonra **DSH'yi yeniden başlat**. Profili
-sonradan bağlamak için:
+## Profil yaması (bir kez, elle)
 
-```sh
-python3 beyin.py dsh-profile apply  --profile "$HOME/.dsh/profiles/desktop"
-python3 beyin.py dsh-profile status --profile "$HOME/.dsh/profiles/desktop"
-python3 beyin.py dsh-profile remove --profile "$HOME/.dsh/profiles/desktop"
+`beyin.py doctor --json` çıktısındaki `dsh.manual_setup.block` alanı, profiline eklenecek
+girdileri hazır verir. Profil dosyası `~/.dsh/profiles/<profil>/cordis.patch.yml`
+(desktop için genelde `desktop`) ve DSH tarafından **izlenmez**; değişiklikten
+sonra DSH'yi yeniden başlat. Tipik blok:
+
+```yaml
+- id: sandbox-policy
+  name: "@deepseek-ai/dsh-sandbox-policy"
+  config:
+    mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
+    workspaceRoot: "/tam/yol/state"
+- insert:
+    - id: hooks-claude-code
+      name: "@deepseek-ai/dsh-hooks-claude-code"
+      config:
+        configPath: "/tam/yol/Beynim/.claude/dsh/beyin-v3-hooks.json"
 ```
 
-`--profile` verilmezse önce kayıtlı profil, yoksa `~/.dsh/profiles/*/cordis.patch.yml`
-altındaki tek profil kullanılır; birden fazla profil varsa komut tahmin etmez, hata
-verip `--profile` ister.
+Kurallar:
 
-`apply` iki bloğu da ekler. Profilde zaten yönetilmeyen bir `sandbox-policy`
-veya `hooks-claude-code` girdisi varsa ona **dokunmaz**, uyarır. Bu durumda
-mevcut girdinin `workspaceRoot` değerini state dizinine, `configPath` değerini
-`.claude/dsh/beyin-v3-hooks.json` dosyasına kendin çevir. State kökü taşındıysa
-`apply --replace` yalnız kendi `sandbox-policy` bloğunu yeniden yazar.
+- Profilde zaten bir `sandbox-policy` ya da `hooks-claude-code` girdisi varsa
+  **ikinci bir girdi ekleme**; var olanın `workspaceRoot` / `configPath`
+  değerini yukarıdakiyle değiştir. DSH aynı id'yi son gelen girdiyle uygular;
+  çift `insert` kaydı hook'ları iki kez çalıştırabilir.
+- `workspaceRoot`, state dizinini (ya da onun bir üst dizinini) kapsamalıdır.
+  State yolu `beyin.py doctor --json` içindeki `state_location` alanında yazar.
+- **`mode` satırını `workspace-write` gibi sabit bir değere çevirme.** Profil
+  yaması bir girdinin `config` değerini bütünüyle değiştirir, birleştirmez;
+  sabit değer kullanıcının `DSH_PERMISSION_MODE` seçimini ezer. Ayrıca
+  `permission.defaultPreset` açıkça yazılmamışsa `danger-full-access` gibi bir
+  modda sandbox modu ile approval politikası hiçbir preset'e uymaz ve DSH
+  0.2.1-rc.3 açılmaz (DSH upstream #7567).
+  `doctor`, `defaultPreset` yokken varsayılan dışı bir mod görürse uyarır.
+- `permission.defaultPreset` açıksa yeni oturumların presetini o belirler;
+  `sandbox-policy` girdisi yalnız oturumsuz hook çağrılarını etkiler.
+
+**Bu adım DSH 0.2.1-rc.3'e özgüdür.** DSH hook komutlarına oturum sandbox
+politikasını geçirmeye başladığında (ya da hook başına kum havuzu atlama /
+`additionalWritableRoots` verdiğinde) `sandbox-policy` girdisi gereksizleşir ve
+kaldırılmalıdır. Aynı nedenle `additionalWritableRoots` rc.3'te yoktur ve
+yazılmamalıdır.
+
+## Doctor yalnız okur
+
+`beyin.py doctor --json` çıktısındaki `dsh` alanı:
+
+- `hook_config`: yönetilen hook dosyası, dört olay, adaptörün bu vault'a
+  sabitlenmesi ve `PostToolUse` eşleştiricisi.
+- `state`: state dizininin bu kabuktan yazılabilirliği, **son gözlenen DSH hook
+  olayı** ve yaşı, son eşitleme durumu ve varsa son hook hatası. DSH'nin kum
+  havuzu dışarıdan ölçülemez; `writable` yalnız bu kabuğun görünümüdür, gerçek
+  kanıt `last_hook_event` alanıdır.
+- `profiles`: bulunan her `cordis.patch.yml` için `hook`, `sandbox` ve
+  `permission_default_preset`; okunamayan girdi varsa profil `ok` sayılmaz.
+- `manual_setup`: eksikse eklenecek blok ve düzeltme notları.
+
+`dsh` durumu `ok`, `manual_setup`, `needs_attention` ya da
+`hook_config_missing` olur. Doctor ve `beyin.py doctor` profili **değiştirmez**,
+yedek almaz ve `dsh-profile` benzeri bir yazma komutu yoktur.
 
 ## Hook davranışı ve sınırlar
 
@@ -51,51 +91,36 @@ DSH hook komutlarını ajanın kullandığı `ctx.shell` üzerinden çalıştır
 isteği oturum politikası taşımadığı için kum havuzu **oturumsuz** çözülür:
 deployment modu ve `workspaceRoot`. Varsayılan kök DSH profil klasörüdür; state
 dizini orada olmadığından hook yazımı `Operation not permitted` ile reddedilir.
-Bu yüzden `sandbox-policy` bloğu `mode: workspace-write` ve
-`workspaceRoot: <state dizini>` yazar. DSH 0.2.1-rc.3'te yalnız bu iki anahtar
-okunur; `additionalWritableRoots` yoktur ve yazılmamalıdır. Profil yaması
-girdinin `config` değerini bütünüyle değiştirir, birleştirmez; bu yüzden `mode`
-her zaman `workspaceRoot` ile birlikte yazılır. Blok yalnız oturumsuz çağrıları
-etkiler; normal oturumların kendi sandbox preseti değişmez.
+Bu yüzden yukarıdaki `sandbox-policy` girdisi gerekir.
 
-DSH tek profille her klasörü açabilir. Kurulu adaptör çalışma dizini vault
-dışındaysa sessizce `{}` döner; böylece başka projelerde Beyin bağlamı
-enjekte edilmez. `PostToolUse` eşleştiricisi DSH'nin küçük harfli araç adlarını
-(`edit|write|str_replace_editor`) kullanır. DSH'nin köprüsü `PreCompact` ve
-`SessionEnd` olaylarını taşımaz; bunlar kaydedilmez ve eşitleme `Stop` ile
-sürer. Kabuk komutuyla yapılan düzenlemeler `PostToolUse` üretmez; sonraki tur
-veya `beyin.py sync` kaynağı tazeler. Hook bir model çağırmaz ve sohbet
+DSH tek profille her klasörü açabilir. Kurulu adaptör çalışma dizini (payload
+`cwd`) vault dışındaysa sessizce `{}` döner; böylece başka projelerde Beyin
+bağlamı enjekte edilmez. DSH'nin köprüsü `PreCompact` ve `SessionEnd`
+olaylarını taşımaz; bunlar kaydedilmez ve eşitleme `Stop` ile sürer. Kabuk
+komutuyla yapılan düzenlemeler `PostToolUse` üretmez; sonraki tur veya
+`beyin.py sync` kaynağı tazeler. Hook bir model çağırmaz ve sohbet
 transkriptini arşivlemez.
 
-## YAML düzenleme sınırı
-
-Kurucu Python standart kütüphanesiyle çalışır ve genel bir YAML ayrıştırıcısı
-değildir. Profil yaması için yalnız şu dar biçimi destekler:
-
-- üst düzeyde `- ` ile başlayan girdilerden oluşan bir dizi;
-- kendi `# beyin-v3:begin ...` / `# beyin-v3:end ...` işaretli blokları;
-- basit `id:`, `name:`, `configPath:` ve `workspaceRoot:` skalerleri.
-
-Flow biçimi (`[{...}]`), üst düzey eşleme, bozuk veya çift işaretli blok
-reddedilir; dosya değiştirilmez. Yazma sırasında `.bak-beyin-*` yedeği alınır ve
-geçici dosya atomik olarak yerine konur. İşaretli blokların dışındaki kullanıcı
-metni korunur. Bu yüzden elle eklenen karmaşık YAML'ı kurucuya düzelttirmeye
-çalışma; önce dosyayı kendin sadeleştir.
+DSH köprüsü `additionalContext` metnini kırpmadan geçirir (kurulu
+`dsh-hook-protocol` kaynağında bir üst sınır yok). Bu yüzden `dsh`,
+`CLIENT_TEXT_LIMITS` tablosuna eklenmez — o tablo yalnız belgelenmiş kesme
+davranışı olan istemcileri tutar — ve otomatik bağlamın tek tavanı
+`context_chars` ayarıdır.
 
 ## Kaldırma ve geri alma
 
-`beyin.py dsh-profile remove` yalnız kendi iki bloğunu siler; yabancı girdiler
-kalır. `install_v3.py --uninstall` kayıtlı profili de temizler. DSH adaptörünü
-içermeyen bir sürüme `rollback` yapıldığında profil blokları otomatik kaldırılır;
-aksi halde DSH silinmiş bir hook dosyasına işaret ederdi. Profil yedeği
-`cordis.patch.yml.bak-beyin-*` adıyla yanında durur.
+`install_v3.py --uninstall` ve `rollback` yalnız vault'a ait dosyaları
+(`.claude/dsh/`, adaptör) kaldırır. Profil yaması kullanıcıya ait olduğu için
+otomatik temizlenmez: DSH adaptörünü içermeyen bir sürüme dönüldüğünde
+`sandbox-policy` ve `hooks-claude-code` girdilerini kendin silmelisin; yoksa
+DSH silinmiş bir hook dosyasına işaret eder ve köprü hiç hook kaydetmez
+(fail-open). Aynı şey DSH'yi artık kullanmayacaksan da geçerlidir.
 
 ## Doğrulama
 
-`beyin.py doctor --json` çıktısındaki `dsh` alanı hook dosyasını, dört olayı,
-komutların bu vault'a sabitlenip sabitlenmediğini, state yazılabilirliğini ve
-profilin iki bloğunu raporlar. Beklenen `status: ok` değeridir. DSH yeniden
-başlatıldıktan sonra özel veri içermeyen bir deneme notu oluştur, `beyin.py sync`
-çalıştır ve yeni oturumda bilgiyi yalnız hook bağlamından iste. Bağlam gelmiyorsa
-`beyin.py context "konu" --harness dsh` ile kaynağı doğrudan kontrol et ve
-`doctor` içindeki `dsh.profile` uyarısını oku.
+`beyin.py sync` çalıştır, DSH'yi yeniden başlat ve özel veri içermeyen bir
+deneme notu oluştur. Yeni oturumda bilgiyi yalnız hook bağlamından iste; ardından
+`beyin.py doctor --json` içindeki `dsh.state.last_hook_event` alanının dolduğunu
+ve `last_sync_status` değerinin `succeeded` olduğunu kontrol et. Bağlam
+gelmiyorsa `beyin.py context "konu" --harness dsh` ile kaynağı doğrudan kontrol
+et ve `dsh.profiles[].warnings` alanını oku.

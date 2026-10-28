@@ -982,15 +982,6 @@ def parser(note_namespace=None, is_json=False):
                            help="Opt-in OS notification when the result changes; issue kinds and counts only")
     hook_rec = sub.add_parser("hook-reconcile", help="Reconcile stale hook paths with backup")
     hook_rec.add_argument("--force", action="store_true", help="Reconcile hook paths even if not reported stale")
-    dsh_profile = sub.add_parser(
-        "dsh-profile",
-        help="Point a DeepSeek Harness profile at the vault hook config and the Beyin state root")
-    dsh_profile.add_argument("mode", choices=("status", "apply", "remove"))
-    dsh_profile.add_argument("--profile", type=Path, metavar="PATH",
-                             help="DSH profile directory or its cordis.patch.yml; without it the recorded "
-                                  "path or the single ~/.dsh/profiles/*/cordis.patch.yml is used")
-    dsh_profile.add_argument("--replace", action="store_true",
-                             help="rewrite our own sandbox-policy entry when the state root moved")
     recap = sub.add_parser("recap", help="Read recent source-linked outcomes without a model call")
     recap.add_argument("--days", type=int, help="Calendar days in UTC, including today (1..366, default 7); "
                                                 "not allowed with --since/--until")
@@ -1441,36 +1432,6 @@ def main(argv=None, return_result=False):
                 result["changed"] = True
         elif args.command == "hook-reconcile":
             result = hook_reconcile(vault, state, force=getattr(args, 'force', False))
-        elif args.command == "dsh-profile":
-            _ensure_scripts_path()
-            import beyin_v3_dsh as dsh
-            target = args.profile
-            if target is None:
-                target = dsh.read_record(state)
-            if target is None:
-                found = dsh.discover_profiles()
-                if len(found) > 1:
-                    raise ValueError("More than one DSH profile found; pass --profile " +
-                                     ", ".join(str(path) for path in found))
-                target = found[0] if found else None
-            if target is None:
-                raise ValueError("No DSH profile found; pass --profile <profile>/cordis.patch.yml")
-            target = dsh.profile_file(target)
-            if args.mode == "apply":
-                result = dsh.apply_profile(target, state, vault, replace=args.replace)
-                if result.get('status') not in ('missing', 'unreadable', 'damaged'):
-                    result['record'] = dsh.save_record(state, target)
-            elif args.mode == "remove":
-                result = dsh.remove_profile(target)
-                if result.get('status') in ('removed', 'absent', 'foreign', 'missing'):
-                    dsh.clear_record(state)
-            else:
-                if args.replace:
-                    raise ValueError("--replace works only with dsh-profile apply")
-                result = dsh.read_profile_status(target, state, vault)
-                result['hook_config_referenced'] = dsh.references_hook_config(target, vault)
-                result['hook_config'] = str(vault / dsh.HOOK_FILE)
-            result['changed'] = args.mode != 'status'
         elif args.command == "doctor":
             _ensure_scripts_path()
             from beyin_v3_hook_done import summary as hook_done_summary

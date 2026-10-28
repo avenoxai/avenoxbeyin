@@ -544,6 +544,19 @@ def human_result(result, command, installed_version=None):
             lines.append('Proje kapsamlari (.beyin-projects.json) dikkat gerektiriyor: ' + '; '.join(details) +
                          '. Duzenlemek veya temizlemek icin: ' + ('py -3' if sys.platform == 'win32' else 'python3') +
                          ' beyin.py project-scope prune')
+        dsh = result.get('dsh') or {}
+        setup = dsh.get('manual_setup') or {}
+        if setup.get('block') or setup.get('notes'):
+            lines.append('DSH: profil yamasi elle tamamlanmali (sandbox-policy ve/veya hooks-claude-code). '
+                         'Gerekli blogu ve duzeltme notlarini `beyin.py doctor --json` ciktisindaki '
+                         'dsh.manual_setup alanindan al; ~/.dsh/profiles/<profil>/cordis.patch.yml dosyasina ekle, '
+                         'sonra DSH\'yi yeniden baslat.')
+        elif dsh.get('status') == 'ok':
+            lines.append('DSH: hook kaydi ve state koku yerinde; son hook olayi: ' +
+                         (plain_text(dsh['state'].get('last_hook_event')) + ', ' + str(dsh['state'].get('last_hook_age_seconds')) + ' saniye once'
+                          if dsh.get('state', {}).get('last_hook_event') else 'henuz gozlenmedi'))
+        elif dsh.get('status') not in (None, 'not_installed'):
+            lines.append('DSH: kontrol gerekiyor; ayrinti icin beyin.py doctor --json ciktisindaki dsh alanina bak.')
         if status in ('needs_attention', 'pending'):
             lines.append('Ajanina "beyin doktor" diyerek ayrintiyi inceletebilirsin.')
         return '\n'.join(lines + update_lines(result.get('updates', {})))

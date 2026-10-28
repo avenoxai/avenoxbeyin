@@ -518,36 +518,6 @@ def _merge_json(base, current, target):
     return jbytes(merge(json.loads(base), json.loads(current), json.loads(target)))
 
 
-def _load_dsh_module():
-    """The DSH adapter from the release being rolled back, while its file still exists."""
-    path = Path(__file__).with_name('beyin_v3_dsh.py')
-    if not path.is_file():
-        return None
-    try:
-        spec = importlib.util.spec_from_file_location('beyin_rollback_dsh', path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    except Exception:
-        return None
-
-
-def _drop_dsh_profile(dsh, vault, state, result):
-    """Remove the profile blocks only when the rollback target has no DSH adapter."""
-    if dsh is None or (vault / '.claude/scripts/beyin_v3_dsh.py').exists():
-        return result
-    try:
-        record = dsh.read_record(state)
-        if record is not None:
-            report = dsh.remove_profile(record)
-            result['dsh_profile'] = report
-            if report.get('status') in ('removed', 'absent', 'foreign', 'missing'):
-                dsh.clear_record(state)
-    except Exception as exc:
-        result['dsh_profile'] = {'status': 'unavailable', 'error': type(exc).__name__}
-    return result
-
-
 def rollback(vault, state):
     vault, state = roots(vault, state)
     with locked(vault, state):
@@ -556,13 +526,11 @@ def rollback(vault, state):
         if not backup.exists(): raise ValueError('no update backup available')
         original = json.loads(backup.read_text(encoding='utf-8'))
         if original.get('vault') != str(vault): raise ValueError('backup belongs to another vault')
-        dsh = _load_dsh_module()
         # A pending rollback already contains the intended restore direction.
         # Reversing it again would restore the upgrade instead of finishing rollback.
         if pending.exists() and original.get('direction') == 'rollback':
             _apply(vault, state, original)
-            result = {'status': 'rolled_back' if (vault/'.beyin-version').exists() else 'uninstalled', 'version': current_version(vault) if (vault/'.beyin-version').exists() else None}
-            return _drop_dsh_profile(dsh, vault, state, result)
+            return {'status': 'rolled_back' if (vault/'.beyin-version').exists() else 'uninstalled', 'version': current_version(vault) if (vault/'.beyin-version').exists() else None}
         operations = []
         for item in original['operations']:
             path = _destination(vault, state, item)
@@ -595,5 +563,4 @@ def rollback(vault, state):
             (state / 'release-cache.json').unlink(missing_ok=True)
         except Exception:
             pass
-        result = {'status': 'rolled_back' if (vault/'.beyin-version').exists() else 'uninstalled', 'version': current_version(vault) if (vault/'.beyin-version').exists() else None}
-        return _drop_dsh_profile(dsh, vault, state, result)
+        return {'status': 'rolled_back' if (vault/'.beyin-version').exists() else 'uninstalled', 'version': current_version(vault) if (vault/'.beyin-version').exists() else None}

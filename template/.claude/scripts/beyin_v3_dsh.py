@@ -1,7 +1,7 @@
-"""DeepSeek Harness (dsh) hook adapter and profile patch helper.
+"""DeepSeek Harness (dsh) hook adapter and read-only profile report.
 
 DSH desktop loads Claude Code command hooks through the ``dsh-hooks-claude-code``
-plugin: the profile's ``cordis.patch.yml`` points ``configPath`` at a Claude
+plugin: a profile's ``cordis.patch.yml`` points ``hooks-claude-code`` at a Claude
 ``hooks.json`` and the plugin runs each command through ``ctx.shell`` — the same
 sandboxed executor its own tools use. Two properties of that bridge shape this
 module:
@@ -10,20 +10,19 @@ module:
   the shared ``beyin_v3_hook.py`` output passes through unchanged.
 * The hook runs with the session's working directory as ``cwd`` but with the
   *deployment* sandbox root and no per-session policy, which is the DSH profile
-  directory. Hooks therefore cannot write
-  the Beyin state directory until the profile patch names it (see
-  ``sandbox_policy_block``). ``in_vault`` closes the other half: one profile
-  serves every folder DSH opens, so a hook outside the vault answers ``{}``.
+  directory. Hooks therefore cannot write the Beyin state directory until the
+  profile names one (``sandbox_policy_block``). ``in_vault`` closes the other
+  half: one profile serves every folder DSH opens, so a hook outside the vault
+  answers ``{}``.
+
+V3 deliberately never edits that profile: it is a user-global YAML file, and a
+safe structural edit needs a real parser plus a rollback story the installer's
+journal cannot cover. ``doctor`` reads it instead and prints the exact entries
+to paste when one is missing or stale.
 
 Only the four events DSH bridges are registered: SessionStart, UserPromptSubmit,
 PostToolUse and Stop. PreCompact and SessionEnd are not part of the bridge's
 event list, so queueing them would be dead configuration.
-
-``dsh-profile apply`` writes two marked entries into the user's profile patch:
-the ``sandbox-policy`` override that lets session-less hooks write the state
-directory, and the ``hooks-claude-code`` insert that points DSH at the
-vault-owned hook file. Both are opt-in, backed up, and skipped when an entry we
-do not own already exists.
 """
 from __future__ import annotations
 
@@ -31,7 +30,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -43,28 +41,24 @@ EVENTS = ("SessionStart", "UserPromptSubmit", "PostToolUse", "Stop")
 WRITE_TOOLS = ("edit", "write", "str_replace_editor")
 HOOK_FILE = ".claude/dsh/beyin-v3-hooks.json"
 PROFILE_FILE = "cordis.patch.yml"
-RECORD_FILE = "dsh-profile.json"
-
-# The profile patch layer replaces a targeted entry's config wholesale and merges nothing
-# (dsh-app-boot), so ``mode`` is written next to ``workspaceRoot`` even though the bundle
-# default is already ``workspace-write``. 0.2.1-rc.3 accepts only these two keys; a newer
-# ``additionalWritableRoots`` is deliberately not guessed here.
 SANDBOX_ID = "sandbox-policy"
 SANDBOX_NAME = "@deepseek-ai/dsh-sandbox-policy"
-BEGIN = "# beyin-v3:begin sandbox-policy (managed block; remove with beyin.py dsh-profile remove)"
-END = "# beyin-v3:end sandbox-policy"
 HOOK_ID = "hooks-claude-code"
 HOOK_NAME = "@deepseek-ai/dsh-hooks-claude-code"
-HOOK_BEGIN = "# beyin-v3:begin hooks-claude-code (managed block; remove with beyin.py dsh-profile remove)"
-HOOK_END = "# beyin-v3:end hooks-claude-code"
+PERMISSION_ID = "permission"
+PERMISSION_NAME = "@deepseek-ai/dsh-permission-presets"
+ENV_MODE = "DSH_PERMISSION_MODE"
+DEFAULT_MODE = "workspace-write"
 
 
-class ProfilePatchError(ValueError):
-    """The profile patch cannot be edited safely; nothing was written."""
+class _Unreadable(ValueError):
+    """The profile text uses YAML this reader deliberately does not model."""
 
 
 def canonical(path):
     """Comparable form of a path: resolved, case-folded on Windows, forward slashes."""
+    if path is None or str(path) == "":
+        return ""  # An empty value is not the process working directory.
     try:
         text = str(Path(path).expanduser().resolve())
     except (OSError, ValueError, RuntimeError):
@@ -138,108 +132,264 @@ def plan_plugin(vault, state, command):
     return {HOOK_FILE: (json.dumps({"hooks": hooks}, ensure_ascii=False, indent=2) + "\n").encode("utf-8")}
 
 
+def _json_path(path):
+    return json.dumps(str(Path(path).resolve()).replace("\\", "/"), ensure_ascii=False)
+
+
 def sandbox_policy_block(state):
-    """The marked profile entry that points DSH's session-less sandbox at the state root."""
-    root = str(Path(state).resolve()).replace("\\", "/")
-    lines = [
-        BEGIN,
-        "# Hooks run without a session, so dsh-sandbox-policy falls back to the deployment",
-        "# mode and root. Without this entry that root is the DSH profile folder and every",
-        "# Beyin state write is denied. Only ``mode`` and ``workspaceRoot`` exist in",
-        "# 0.2.1-rc.3, and a patched entry replaces its config completely.",
-        f"- id: {SANDBOX_ID}",
-        f'  name: "{SANDBOX_NAME}"',
+    """The profile entry a user pastes when session-less hooks cannot write the state root.
+
+    ``mode`` keeps the bundle's own expression: a literal would override the user's
+    ``DSH_PERMISSION_MODE`` and, when the profile names no ``defaultPreset``, DSH 0.2.1-rc.3
+    refuses to start because the patched mode and approval policy match no preset (#7567).
+    """
+    return "\n".join([
+        "- id: sandbox-policy",
+        '  name: "@deepseek-ai/dsh-sandbox-policy"',
         "  config:",
-        "    mode: workspace-write",
-        "    workspaceRoot: " + json.dumps(root, ensure_ascii=False),
-        END,
-    ]
-    return "\n".join(lines) + "\n"
+        f"    mode: !!js process.env.{ENV_MODE} ?? '{DEFAULT_MODE}'",
+        "    workspaceRoot: " + _json_path(state),
+    ]) + "\n"
 
 
 def hook_entry_block(vault):
-    """The marked profile insert that loads the vault-owned Claude-shaped hook file."""
-    target = str(Path(vault).resolve() / HOOK_FILE).replace("\\", "/")
-    lines = [
-        HOOK_BEGIN,
-        "# DSH has no project-local hook file: this insert points its Claude-hook bridge at",
-        "# the managed JSON above. Restart DSH after changing the profile patch.",
+    """The profile insert a user pastes to load the vault-owned Claude-shaped hook file."""
+    return "\n".join([
         "- insert:",
         f"    - id: {HOOK_ID}",
         f'      name: "{HOOK_NAME}"',
         "      config:",
-        "        configPath: " + json.dumps(target, ensure_ascii=False),
-        HOOK_END,
-    ]
-    return "\n".join(lines) + "\n"
+        "        configPath: " + _json_path(Path(vault) / HOOK_FILE),
+    ]) + "\n"
 
 
-def _block_span(lines, begin=BEGIN, end=END, label=SANDBOX_ID):
-    """Line indexes ``(begin, end)`` of one marked block, or ``None`` when it is absent."""
-    begins = [index for index, line in enumerate(lines) if line.strip() == begin]
-    ends = [index for index, line in enumerate(lines) if line.strip() == end]
-    if not begins and not ends:
-        return None
-    if len(begins) != 1 or len(ends) != 1 or begins[0] > ends[0]:
-        raise ProfilePatchError(f"The managed {label} block is damaged; fix the file by hand")
-    return begins[0], ends[0]
+def _strip_comment(line):
+    """Drop a trailing YAML comment; a ``#`` inside quotes or a URL stays content."""
+    quote, index = None, 0
+    while index < len(line):
+        char = line[index]
+        if quote:
+            if quote == '"' and char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+        elif char in "'\"":
+            quote = char
+        elif char == "#" and (index == 0 or line[index - 1] in " \t"):
+            return line[:index]
+        index += 1
+    return line
 
 
-def _is_sequence(lines):
-    """Cheap, deliberately shallow check: a top-level YAML sequence of entries.
+def _clean(line):
+    return _strip_comment(line).rstrip()
 
-    Anything else (flow style ``[...]``, a top-level mapping, a bare ``!!js`` scalar) is
-    refused rather than guessed at. Indented lines are content of the preceding entry.
+
+def _indent_of(line):
+    return len(line) - len(line.lstrip(" "))
+
+
+_ITEM = re.compile(r"^(?P<indent> *)-(?P<gap> +)?(?P<inline>.*)$")
+
+
+def _split_quoted(text):
+    """Decoded value of a quoted scalar that starts at ``text[0]``, or ``None`` if unclosed."""
+    quote = text[0]
+    index = 1
+    while index < len(text):
+        char = text[index]
+        if quote == '"' and char == "\\":
+            index += 2
+            continue
+        if char == quote:
+            raw = text[:index + 1]
+            if quote == "'":
+                return raw[1:-1].replace("''", "'")
+            try:
+                value = json.loads(raw)
+            except ValueError as exc:
+                raise _Unreadable("invalid double-quoted scalar") from exc
+            return value
+        index += 1
+    return None
+
+
+def _flow_end(text):
+    """True when every ``[]``/``{}`` in the value is closed outside quotes."""
+    depth, quote, index = 0, None, 0
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if quote == '"' and char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+        elif char in "'\"":
+            quote = char
+        elif char in "[{":
+            depth += 1
+        elif char in "]}":
+            depth -= 1
+        index += 1
+    return depth <= 0
+
+
+def _scalar(lines, index, rest):
+    """Read one scalar; a quoted value folded over several lines is joined with spaces."""
+    if rest.startswith("!!js"):
+        expression = rest[4:].strip()
+        if not expression:
+            raise _Unreadable("empty !!js expression")
+        if expression[0] in "'\"":
+            value = _split_quoted(expression)
+            cursor = index
+            while value is None:
+                cursor += 1
+                if cursor >= len(lines):
+                    raise _Unreadable("unterminated quoted expression")
+                expression += " " + _clean(lines[cursor]).strip()
+                value = _split_quoted(expression)
+            return "!!js " + str(value), cursor + 1
+        return rest, index + 1
+    if rest[0] in "'\"":
+        value = _split_quoted(rest)
+        cursor = index
+        while value is None:
+            cursor += 1
+            if cursor >= len(lines):
+                raise _Unreadable("unterminated quoted scalar")
+            rest += " " + _clean(lines[cursor]).strip()
+            value = _split_quoted(rest)
+        return str(value), cursor + 1
+    if rest[0] in "[{":
+        value = rest
+        cursor = index
+        while not _flow_end(value):
+            cursor += 1
+            if cursor >= len(lines):
+                raise _Unreadable("unterminated flow collection")
+            value += " " + _clean(lines[cursor]).strip()
+        return value, cursor + 1
+    return rest, index + 1
+
+
+def _mapping(lines, start, indent):
+    """Read the block mapping whose keys sit at ``indent``; return ``(values, next index)``.
+
+    Only the shapes a DSH profile patch actually uses are modelled: nested block mappings,
+    block sequences (kept as an empty list marker) and scalar values. Anything else raises
+    ``_Unreadable`` so no caller mistakes an unknown entry for an absent one.
     """
+    values, index = {}, start
+    while index < len(lines):
+        cleaned = _clean(lines[index])
+        if not cleaned.strip():
+            index += 1
+            continue
+        current = _indent_of(cleaned)
+        if current < indent:
+            break
+        if current > indent:  # content of a value this reader already consumed
+            index += 1
+            continue
+        text = cleaned[indent:]
+        if text.startswith("- ") or text == "-":
+            break
+        key, separator, rest = text.partition(":")
+        if not separator or not key.strip() or key != key.strip():
+            raise _Unreadable("not a block mapping")
+        rest = rest.strip()
+        if rest:
+            values[key], index = _scalar(lines, index, rest)
+            continue
+        following = index + 1
+        while following < len(lines) and not _clean(lines[following]).strip():
+            following += 1
+        if following >= len(lines):
+            values[key], index = {}, following
+            continue
+        nested = _clean(lines[following])
+        if _indent_of(nested) <= indent:
+            values[key], index = {}, following
+            continue
+        if _ITEM.match(nested):
+            values[key] = []
+            cursor = following
+            while cursor < len(lines):
+                candidate = _clean(lines[cursor])
+                if candidate.strip() and _indent_of(candidate) <= indent:
+                    break
+                cursor += 1
+            index = cursor
+            continue
+        values[key], index = _mapping(lines, following, _indent_of(nested))
+    return values, index
+
+
+def _entry_values(lines, index, match):
+    """The mapping of one ``- `` sequence entry, including ``- id: x`` and ``-`` + body forms."""
+    indent = len(match.group("indent"))
+    inline = (match.group("inline") or "").strip()
+    gap = match.group("gap") or " "
+    if inline.startswith(("{", "[")):
+        raise _Unreadable("flow-style sequence entry")
+    body, cursor = [], index + 1
+    while cursor < len(lines):
+        cleaned = _clean(lines[cursor])
+        if cleaned.strip() and _indent_of(cleaned) <= indent:
+            break
+        body.append(lines[cursor])
+        cursor += 1
+    if inline:
+        if ":" not in inline:
+            return {}  # a scalar sequence item (``- --flag``), not an entry
+        content_indent = indent + 1 + len(gap)
+        values, _ = _mapping([" " * content_indent + inline] + body, 0, content_indent)
+        return values
+    first = None
+    for offset, line in enumerate(body):
+        if _clean(line).strip():
+            first = offset
+            break
+    if first is None or _ITEM.match(_clean(body[first])):
+        return {}
+    values, _ = _mapping(body, first, _indent_of(_clean(body[first])))
+    return values
+
+
+def _entries(lines):
+    """Every readable sequence entry, in file order, plus a count of entries we could not read."""
+    entries, unreadable = [], 0
+    for index, line in enumerate(lines):
+        match = _ITEM.match(_clean(line))
+        if not match:
+            continue
+        try:
+            entries.append(_entry_values(lines, index, match))
+        except _Unreadable:
+            unreadable += 1
+    return entries, unreadable
+
+
+def _block_sequence(lines):
+    """True for an empty profile (``[]``, comments only) or a top-level block sequence."""
     for line in lines:
-        if not line.strip() or line.startswith("#"):
+        cleaned = _clean(line).strip()
+        if not cleaned:
             continue
-        if line[0] in " \t":
-            continue
-        if line == "-" or line.startswith("- "):
-            continue
-        return False
+        return cleaned == "[]" or _ITEM.match(cleaned) is not None
     return True
 
 
-def _yaml_scalar(raw):
-    """Read one scalar written as JSON, single-quoted YAML, or a plain value."""
-    value = raw.strip()
-    if not value:
-        return ""
-    if value.startswith('"'):
-        try:
-            return json.loads(value)
-        except ValueError:
-            return value.strip('"')
-    if value.startswith("'") and value.endswith("'"):
-        return value[1:-1].replace("''", "'")
-    return value.split(" #", 1)[0].strip()
+def _text(value):
+    return value.strip() if isinstance(value, str) else ""
 
 
-def _entry_lines(lines, entry_id):
-    """Lines of the first top-level entry with this id, or ``None``."""
-    pattern = re.compile(rf'^- id:\s*["\']?{re.escape(entry_id)}["\']?\s*$')
-    start = None
-    for index, line in enumerate(lines):
-        if line.startswith("- ") or line == "-":
-            if start is not None:
-                return lines[start:index]
-            if pattern.match(line):
-                start = index
-    return lines[start:] if start is not None else None
-
-
-def _field(lines, name):
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith(name + ":"):
-            return _yaml_scalar(stripped.split(":", 1)[1])
-    return ""
-
-
-def _policy_root(block_lines):
-    return canonical(_field(block_lines, "workspaceRoot"))
+def _find(entries, entry_id, name):
+    return [entry for entry in entries
+            if _text(entry.get("id")) == entry_id or _text(entry.get("name")) == name]
 
 
 def _covers(root, state):
@@ -248,221 +398,101 @@ def _covers(root, state):
     return bool(root) and bool(wanted) and (wanted == root or wanted.startswith(root + "/"))
 
 
-def _foreign_entry(lines, entry_id, name):
-    """True when an entry we do not own already declares this id or plugin name."""
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith(("- id:", "id:")) and _yaml_scalar(stripped.split(":", 1)[1]) == entry_id:
-            return True
-        if stripped.startswith(("- name:", "name:")) and _yaml_scalar(stripped.split(":", 1)[1]) == name:
-            return True
-    return False
-
-
-def read_profile_status(patch, state=None, vault=None):
-    """Read-only view of one profile patch: our two entries, and whether they are current."""
+def profile_status(patch, state, vault, env_mode=None):
+    """Read one profile patch: the Beyin hook entry and the session-less sandbox entry."""
     path = Path(patch).expanduser()
     report = {"path": str(path), "exists": path.is_file()}
     if not report["exists"]:
-        report["status"] = "missing"
-        report["hook_entry"] = {"status": "missing"}
+        report.update(status="missing", hook={"status": "absent"}, sandbox={"status": "absent"})
         return report
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
-        report["status"] = "unreadable"
-        report["error"] = type(exc).__name__
-        report["hook_entry"] = {"status": "unreadable"}
+        report.update(status="unreadable", error=type(exc).__name__,
+                      hook={"status": "absent"}, sandbox={"status": "absent"})
         return report
-    lines = text.splitlines()
-    try:
-        span = _block_span(lines)
-        hook_span = _block_span(lines, HOOK_BEGIN, HOOK_END, HOOK_ID)
-    except ProfilePatchError as exc:
-        report["status"] = "damaged"
-        report["error"] = str(exc)
-        report["hook_entry"] = {"status": "damaged", "error": str(exc)}
-        return report
-    foreign = span is None and _foreign_entry(lines, SANDBOX_ID, SANDBOX_NAME)
-    report["foreign_entry"] = foreign
-    if span is None:
-        report["status"] = "foreign" if foreign else "absent"
-        if foreign and state is not None:
-            entry = _entry_lines(lines, SANDBOX_ID) or []
-            root = _policy_root(entry)
-            report["workspaceRoot"] = root
-            report["current"] = _covers(root, state)
-    else:
-        report["status"] = "present"
-        report["workspaceRoot"] = _policy_root(lines[span[0]:span[1] + 1])
-        if state is not None:
-            report["current"] = report["workspaceRoot"] == canonical(state)
-            if not report["current"]:
-                report["status"] = "outdated"
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    entries, unreadable = _entries(lines)
+    if not _block_sequence(lines):
+        unreadable += 1  # flow root, a mapping, or a scalar: not a shape we can trust
+    warnings = []
+    hooks = _find(entries, HOOK_ID, HOOK_NAME)
     hook = {"status": "absent"}
-    if hook_span is not None:
-        block = lines[hook_span[0]:hook_span[1] + 1]
-        hook["status"] = "present"
-        hook["configPath"] = _field(block, "configPath")
-        if vault is not None:
-            hook["current"] = canonical(hook["configPath"]) == canonical(Path(vault) / HOOK_FILE)
+    if hooks:
+        config = hooks[-1].get("config")
+        target = _text(config.get("configPath")) if isinstance(config, dict) else ""
+        if not target:
+            hook = {"status": "unreadable"}
+            warnings.append("The hooks-claude-code entry has no readable configPath.")
+        else:
+            hook = {"status": "present", "configPath": target,
+                    "current": canonical(target) == canonical(Path(vault) / HOOK_FILE)}
             if not hook["current"]:
                 hook["status"] = "outdated"
-    elif _foreign_entry(lines, HOOK_ID, HOOK_NAME):
-        hook["status"] = "foreign"
-    report["hook_entry"] = hook
-    return report
-
-
-def _backup(path):
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    target = path.with_name(path.name + ".bak-beyin-" + stamp)
-    suffix = 1
-    while target.exists():
-        target = path.with_name(path.name + ".bak-beyin-" + stamp + "-" + str(suffix))
-        suffix += 1
-    shutil.copy2(path, target)
-    return target
-
-
-def _write(path, text):
-    temporary = path.with_name(path.name + ".beyin-tmp")
-    mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
-    temporary.write_text(text, encoding="utf-8")
-    os.chmod(temporary, mode)
-    os.replace(temporary, path)
-
-
-def apply_profile(patch, state, vault, replace=False):
-    """Add both marked profile entries once; never touch an entry we do not own."""
-    path = Path(patch).expanduser()
-    status = read_profile_status(path, state, vault)
-    if status["status"] == "missing":
-        return dict(status, applied=False,
-                    message="The DSH profile patch does not exist yet; start DSH once, then retry")
-    if status["status"] in ("unreadable", "damaged"):
-        return dict(status, applied=False)
-    text = path.read_text(encoding="utf-8")
-    lines = text.splitlines()
-    if not _is_sequence(lines):
-        return dict(status, applied=False,
-                    warning="The profile patch is not a top-level YAML sequence; edit it by hand")
-    if status["status"] == "outdated" and not replace:
-        return dict(status, applied=False,
-                    warning="Our sandbox-policy entry names another workspaceRoot; pass --replace to rewrite it")
-    changes, append, warnings = [], [], []
-    sandbox_foreign = status["status"] == "foreign"
-    if sandbox_foreign:
-        warnings.append("An unmanaged sandbox-policy entry already exists; left it unchanged. "
-                        "Point its workspaceRoot at the Beyin state directory yourself.")
-    elif status["status"] == "outdated":
-        changes.append((*_block_span(lines), sandbox_policy_block(state).splitlines()))
-    elif status["status"] != "present":
-        append.append(sandbox_policy_block(state))
-    if status["hook_entry"]["status"] == "present":
-        if not status["hook_entry"].get("current", False):
-            changes.append((*_block_span(lines, HOOK_BEGIN, HOOK_END, HOOK_ID),
-                            hook_entry_block(vault).splitlines()))
-    elif status["hook_entry"]["status"] == "foreign":
-        warnings.append("An unmanaged hooks-claude-code entry already exists; left it unchanged. "
-                        "Point its configPath at " + str(Path(vault) / HOOK_FILE) + " yourself.")
+                warnings.append("hooks-claude-code.configPath must name " + str(Path(vault) / HOOK_FILE) + ".")
+        if len(hooks) > 1:
+            warnings.append("hooks-claude-code appears %d times; DSH keeps the last entry." % len(hooks))
+    policies = _find(entries, SANDBOX_ID, SANDBOX_NAME)
+    sandbox = {"status": "absent"}
+    boot_risk = False
+    if policies:
+        config = policies[-1].get("config")
+        mode = _text(config.get("mode")) if isinstance(config, dict) else ""
+        root = _text(config.get("workspaceRoot")) if isinstance(config, dict) else ""
+        if not mode:
+            sandbox = {"status": "unreadable"}
+            warnings.append("The sandbox-policy entry has no readable mode.")
+        else:
+            from_env = ENV_MODE in mode
+            sandbox = {"status": "present", "mode": mode, "env_mode": from_env,
+                       "workspaceRoot": root or None, "covers_state": _covers(root, state)}
+            if not root:
+                warnings.append("sandbox-policy.workspaceRoot is missing; DSH would fall back to its own "
+                                "working directory, not the state directory.")
+            elif not sandbox["covers_state"]:
+                warnings.append("sandbox-policy.workspaceRoot does not contain the state directory " +
+                                str(Path(state)) + ".")
+            if "read-only" in mode:
+                warnings.append("sandbox-policy.mode is read-only, so hooks cannot write the state directory.")
+            elif from_env and (env_mode or DEFAULT_MODE) == "read-only":
+                warnings.append(f"{ENV_MODE} is read-only, so the session-less hook runs read-only.")
+        if len(policies) > 1:
+            warnings.append("sandbox-policy appears %d times; DSH keeps the last entry." % len(policies))
+    permissions = _find(entries, PERMISSION_ID, PERMISSION_NAME)
+    preset = ""
+    if permissions:
+        config = permissions[-1].get("config")
+        preset = _text(config.get("defaultPreset")) if isinstance(config, dict) else ""
+    if not preset and env_mode and env_mode != DEFAULT_MODE:
+        boot_risk = True
+        warnings.append(f"permission.defaultPreset is not set and {ENV_MODE}={env_mode}: the patched "
+                        "sandbox mode and the approval policy match no preset, so DSH 0.2.1-rc.3 "
+                        "refuses to start (#7567). Set permission.defaultPreset explicitly.")
+    hook_ready = hook.get("status") == "present" and bool(hook.get("current"))
+    sandbox_ready = (sandbox.get("status") == "present" and bool(sandbox.get("covers_state"))
+                     and "read-only" not in str(sandbox.get("mode") or "")
+                     and not (sandbox.get("env_mode") and (env_mode or DEFAULT_MODE) == "read-only"))
+    if unreadable:
+        # An entry we cannot model may override ours: never report this profile as ready.
+        report["status"] = "unreadable"
+        report["entries_unreadable"] = unreadable
+        warnings.append("%d profile entr%s could not be read; inspect the file by hand."
+                        % (unreadable, "y" if unreadable == 1 else "ies"))
+    elif hook_ready and sandbox_ready and not boot_risk:
+        report["status"] = "ok"
+    elif hook["status"] == "absent" and sandbox["status"] == "absent":
+        report["status"] = "not_configured"
     else:
-        append.append(hook_entry_block(vault))
-    if not changes and not append:
-        result = dict(status, applied=False, unchanged=True)
-        if warnings:
-            result["warnings"] = warnings
-        return result
-    backup = _backup(path)
-    for begin, end, replacement in sorted(changes, reverse=True):
-        lines = lines[:begin] + replacement + lines[end + 1:]
-    for block in append:
-        while lines and not lines[-1].strip():
-            lines.pop()
-        lines += [""] + block.splitlines()
-    _write(path, "\n".join(lines) + "\n")
-    report = dict(read_profile_status(path, state, vault), status="applied", applied=True,
-                  replaced=status["status"] == "outdated", backup=str(backup))
-    if not sandbox_foreign:
-        report["workspaceRoot"] = canonical(state)
-    if warnings:
-        report["warnings"] = warnings
-        report["warning"] = warnings[0]
+        report["status"] = "needs_attention"
+    report["hook"], report["sandbox"] = hook, sandbox
+    report["permission_default_preset"] = preset or None
+    report["boot_risk"] = boot_risk
+    report["warnings"] = warnings
     return report
-
-
-def remove_profile(patch):
-    """Delete only our marked blocks; a foreign entry stays untouched."""
-    path = Path(patch).expanduser()
-    status = read_profile_status(path)
-    if status["status"] in ("missing", "unreadable", "damaged"):
-        return dict(status, removed=False)
-    lines = path.read_text(encoding="utf-8").splitlines()
-    spans = []
-    for begin_marker, end_marker, label in ((BEGIN, END, SANDBOX_ID),
-                                            (HOOK_BEGIN, HOOK_END, HOOK_ID)):
-        try:
-            span = _block_span(lines, begin_marker, end_marker, label)
-        except ProfilePatchError as exc:
-            return dict(status, removed=False, error=str(exc))
-        if span is not None:
-            spans.append((span[0], span[1], label))
-    if not spans:
-        return dict(status, removed=False)
-    backup = _backup(path)
-    removed = []
-    for begin, end, label in sorted(spans, reverse=True):
-        while begin > 0 and not lines[begin - 1].strip():
-            begin -= 1
-        del lines[begin:end + 1]
-        removed.append(label)
-    while lines and not lines[-1].strip():
-        lines.pop()
-    _write(path, ("\n".join(lines) + "\n") if lines else "")
-    return {"path": str(path), "status": "removed", "removed": True, "backup": str(backup),
-            "removed_blocks": sorted(removed)}
-
-
-def record_path(state):
-    return Path(state) / RECORD_FILE
-
-
-def read_record(state):
-    """The profile patch this install owns, if the user pointed one out."""
-    path = record_path(state)
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    value = data.get("patch") if isinstance(data, dict) else None
-    return Path(value) if isinstance(value, str) and Path(value).is_absolute() else None
-
-
-def save_record(state, patch):
-    path = record_path(state)
-    document = {"schema": 1, "patch": str(Path(patch).expanduser().resolve())}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".beyin-tmp")
-    temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
-    return document
-
-
-def clear_record(state):
-    record_path(state).unlink(missing_ok=True)
-
-
-def profile_file(path):
-    """Accept either ``cordis.patch.yml`` or the profile directory that holds it."""
-    candidate = Path(path).expanduser()
-    return candidate / PROFILE_FILE if candidate.is_dir() else candidate
 
 
 def discover_profiles(home=None):
-    """Every DSH profile patch under ``~/.dsh/profiles``; used only when no path is given."""
+    """Every DSH profile patch under ``~/.dsh/profiles``; read-only and never guessed."""
     base = Path(home or Path.home()) / ".dsh" / "profiles"
     try:
         return sorted(path / PROFILE_FILE for path in base.iterdir() if (path / PROFILE_FILE).is_file())
@@ -470,13 +500,42 @@ def discover_profiles(home=None):
         return []
 
 
-def references_hook_config(patch, vault):
-    """True when the profile text names our hook config; DSH has no project-local hooks."""
+def _hook_config_report(vault):
+    """Read the managed hook JSON: events, pinned adapter and vault, PostToolUse matcher."""
+    hook = Path(vault) / HOOK_FILE
+    report = {"path": HOOK_FILE, "present": hook.is_file(), "events": [], "adapter_pinned": None,
+              "matcher": None}
+    if not hook.is_file():
+        return report
     try:
-        text = Path(patch).expanduser().read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
-        return False
-    return str(Path(vault) / HOOK_FILE) in text or HOOK_FILE in text
+        data = json.loads(hook.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        report["adapter_pinned"] = False
+        return report
+    hooks = data.get("hooks") if isinstance(data, dict) else None
+    report["events"] = sorted(hooks) if isinstance(hooks, dict) else []
+    root, pinned = canonical(vault), set(report["events"]) == set(EVENTS)
+    matcher_ok = True
+    for event, groups in (hooks or {}).items():
+        for group in groups if isinstance(groups, list) else ():
+            if not isinstance(group, dict):
+                continue
+            if event == "PostToolUse" and group.get("matcher") != "|".join(WRITE_TOOLS):
+                matcher_ok = False
+            for handler in group.get("hooks", []) if isinstance(group.get("hooks"), list) else ():
+                args = _command_arguments(str(handler.get("command", "")))
+                paths = [argument.replace("\\", "/") for argument in args]
+                if not any(path.endswith("/beyin_v3_dsh.py") for path in paths):
+                    pinned = False
+                elif "--vault" not in args:
+                    pinned = False
+                else:
+                    index = args.index("--vault")
+                    if index + 1 >= len(args) or canonical(args[index + 1]) != root:
+                        pinned = False
+    report["adapter_pinned"] = pinned
+    report["matcher"] = matcher_ok
+    return report
 
 
 def _command_arguments(command):
@@ -496,59 +555,126 @@ def _command_arguments(command):
         return []
 
 
-def doctor(vault, state):
-    """Read-only DSH report: our hook config, the recorded profile, and the sandbox root."""
-    report = {}
-    hook = Path(vault) / HOOK_FILE
-    events, adapter_ok = [], False
-    if hook.is_file():
-        try:
-            data = json.loads(hook.read_text(encoding="utf-8"))
-            hooks = data.get("hooks") if isinstance(data, dict) else None
-            events = sorted(hooks) if isinstance(hooks, dict) else []
-            # The adapter pins --harness dsh and the vault for the shared handler; the command
-            # itself names the adapter, so that is what a stale or foreign config loses first.
-            root, adapter_ok = canonical(vault), set(events) == set(EVENTS)
-            for groups in (hooks or {}).values():
-                for group in groups if isinstance(groups, list) else ():
-                    for handler in group.get("hooks", []) if isinstance(group, dict) else ():
-                        args = _command_arguments(str(handler.get("command", "")))
-                        paths = [argument.replace("\\", "/") for argument in args]
-                        if not any(path.endswith("/beyin_v3_dsh.py") for path in paths):
-                            adapter_ok = False
-                        elif "--vault" not in args:
-                            adapter_ok = False
-                        else:
-                            index = args.index("--vault")
-                            if index + 1 >= len(args) or canonical(args[index + 1]) != root:
-                                adapter_ok = False
-        except (OSError, ValueError, UnicodeError):
-            events, adapter_ok = [], False
-    report["hook_config"] = {"path": HOOK_FILE, "present": hook.is_file(), "events": events,
-                             "adapter_pinned": adapter_ok if hook.is_file() else None}
-    report["state_writable"] = os.access(state, os.W_OK)
-    record = read_record(state)
-    if record is None:
-        report["profile"] = {"status": "not_configured",
-                             "hint": "python3 beyin.py dsh-profile apply --profile <profile>/cordis.patch.yml"}
-        report["status"] = "not_configured" if hook.is_file() else "not_installed"
-        return report
-    status = read_profile_status(record, state, vault)
-    status["hook_config_referenced"] = references_hook_config(record, vault)
-    report["profile"] = status
-    warnings = []
-    if status["status"] == "foreign":
-        warnings.append("The sandbox-policy entry is unmanaged; verify its workspaceRoot covers the state directory.")
-    if status["hook_entry"]["status"] == "foreign":
-        warnings.append("The hooks-claude-code entry is unmanaged; verify its configPath names the managed hook file.")
-    if warnings:
-        report["warnings"] = warnings
-    if not hook.is_file():
+def _state_report(state, now=None):
+    """Observable state signals. ``writable`` is this shell's view, not DSH's sandbox."""
+    now = time.time() if now is None else now
+    root = Path(state)
+    report = {"writable": os.access(root, os.W_OK),
+              "last_hook_event": None, "last_hook_event_at": None, "last_hook_age_seconds": None,
+              "last_sync_at": None, "last_sync_age_seconds": None, "last_sync_status": None,
+              "last_error": None, "last_error_at": None}
+    newest = None
+    try:
+        for path in (root / "hook-done").glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, UnicodeError):
+                continue
+            if not isinstance(data, dict) or data.get("harness") != "dsh":
+                continue
+            at = data.get("at")
+            if not isinstance(at, (int, float)):
+                try:
+                    at = path.stat().st_mtime
+                except OSError:
+                    continue
+            if newest is None or at > newest[0]:
+                newest = (at, str(data.get("event") or "unknown"))
+    except OSError:
+        pass
+    if newest is not None:
+        report["last_hook_event"], report["last_hook_event_at"] = newest[1], newest[0]
+        report["last_hook_age_seconds"] = max(0, int(now - newest[0]))
+    try:
+        health = json.loads((root / "hook-health.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        health = None
+    if isinstance(health, dict):
+        at, sync = health.get("at"), health.get("sync")
+        if isinstance(at, (int, float)):
+            report["last_sync_at"] = at
+            report["last_sync_age_seconds"] = max(0, int(now - at))
+        if isinstance(sync, dict):
+            report["last_sync_status"] = sync.get("status")
+    try:
+        error = json.loads((root / "hook-error.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        error = None
+    if isinstance(error, dict):
+        report["last_error"] = error.get("error")
+        report["last_error_at"] = error.get("at")
+    return report
+
+
+def _manual_setup(reports, vault, state, home=None):
+    """The exact entries to paste, for the profile that should carry them."""
+    setup = {"path": None, "entries": [], "notes": [], "block": ""}
+    wired = [item for item in reports if item.get("hook", {}).get("current")]
+    target = wired[0] if len(wired) == 1 else (reports[0] if len(reports) == 1 else None)
+    if target is None and reports:
+        setup["notes"].append("Several DSH profiles exist; add the entries below to the profile DSH "
+                              "desktop loads: " + ", ".join(item["path"] for item in reports))
+    if target is not None:
+        setup["path"] = target["path"]
+        if target.get("status") == "unreadable":
+            setup["notes"].append("The profile patch contains entries this reader cannot model; "
+                                  "inspect the file by hand instead of adding a second entry.")
+            return setup
+        hook, sandbox = target.get("hook", {}), target.get("sandbox", {})
+        if target.get("boot_risk"):
+            setup["notes"].append("Set permission.defaultPreset explicitly: with the current " + ENV_MODE +
+                                  " the patched sandbox mode matches no preset and DSH will not start (#7567).")
+        if hook.get("status") == "absent":
+            setup["entries"].append(hook_entry_block(vault))
+        elif hook.get("status") == "outdated":
+            setup["notes"].append('Set hooks-claude-code.configPath to ' +
+                                  _json_path(Path(vault) / HOOK_FILE) + " (do not add a second entry).")
+        elif hook.get("status") == "unreadable":
+            setup["notes"].append("The hooks-claude-code entry is unreadable; inspect it by hand.")
+        if sandbox.get("status") == "absent":
+            setup["entries"].append(sandbox_policy_block(state))
+        elif sandbox.get("status") == "present":
+            if not sandbox.get("covers_state"):
+                setup["notes"].append("Set sandbox-policy.workspaceRoot to " + _json_path(state) +
+                                      " (do not add a second entry).")
+            mode = str(sandbox.get("mode") or "")
+            if not mode or mode == "read-only":
+                setup["notes"].append("Set sandbox-policy.mode to " +
+                                      sandbox_policy_block(state).splitlines()[3].strip())
+        elif sandbox.get("status") == "unreadable":
+            setup["notes"].append("The sandbox-policy entry is unreadable; inspect it by hand.")
+    if not reports:
+        setup["path"] = str(Path(home or Path.home()) / ".dsh" / "profiles" / "<profile>" / PROFILE_FILE)
+        setup["entries"] = [sandbox_policy_block(state), hook_entry_block(vault)]
+        setup["notes"].append("Start DSH once so it creates the profile patch, then add these entries.")
+    setup["block"] = "".join(setup["entries"])
+    return setup
+
+
+def doctor(vault, state, home=None, environ=None):
+    """Read-only DSH report: hook config, state signals, and every profile patch."""
+    environ = os.environ if environ is None else environ
+    env_mode = environ.get(ENV_MODE) or None
+    hook_config = _hook_config_report(vault)
+    profiles = discover_profiles(home)
+    reports = [profile_status(path, state, vault, env_mode) for path in profiles]
+    report = {"hook_config": hook_config, "state": _state_report(state),
+              "profiles": reports, "env_mode": env_mode}
+    setup = _manual_setup(reports, vault, state, home)
+    hook_ok = bool(hook_config["present"] and hook_config["adapter_pinned"] and hook_config["matcher"])
+    if not hook_config["present"]:
         report["status"] = "hook_config_missing"
-    elif status["status"] in ("present", "foreign") and status.get("current", False) and status["hook_config_referenced"]:
+    elif any(item["status"] == "ok" for item in reports) and hook_ok:
         report["status"] = "ok"
+    elif not reports or setup["block"] or setup["notes"]:
+        report["status"] = "manual_setup"
     else:
         report["status"] = "needs_attention"
+    if report["status"] != "ok":
+        report["manual_setup"] = setup
+    if hook_config["present"] and (not hook_config["adapter_pinned"] or not hook_config["matcher"]):
+        report["warnings"] = ["The managed hook file does not pin the DSH adapter, this vault and the "
+                              "write-tool matcher; reinstall or run beyin.py hook-reconcile."]
     return report
 
 

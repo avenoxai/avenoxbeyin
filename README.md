@@ -48,7 +48,7 @@ OMP (Oh My Pi) için ek adım yok: installer vault içine `.omp/hooks/pre/beyin-
 
 Kiro IDE 1.x ve CLI V3 için bu kaynak checkout'u `.kiro/hooks/beyin-v3.json` ve `.kiro/skills/` kurar. Kiro'da vault'u açıp hook'ları inceleyerek yeni oturum başlat. Eski ZIP paketlerinde bu dosyalar bulunmayabilir; kaynak kurulum adımları ve istemci sınırları: [docs/v3/KIRO.md](docs/v3/KIRO.md).
 
-DeepSeek Harness (DSH) için installer vault içine `.claude/dsh/beyin-v3-hooks.json` yazar. Profil bağlantısı tek seferliktir: `--dsh-profile "$HOME/.dsh/profiles/desktop"` ile kurulumda ya da sonradan `beyin.py dsh-profile apply` ile iki işaretli blok eklenir ve DSH yeniden başlatılır. Hook'lar oturum politikası taşımadığı için state yazma izni ayrıca verilir; ayrıntı ve sınırlar: [docs/v3/DSH.md](docs/v3/DSH.md).
+DeepSeek Harness (DSH) için installer vault içine `.claude/dsh/beyin-v3-hooks.json` yazar. Profil bağlantısı tek seferliktir ve elle yapılır: `beyin.py doctor --json` çıktısındaki `dsh.manual_setup.block` girdilerini `~/.dsh/profiles/<profil>/cordis.patch.yml` dosyasına ekle ve DSH'yi yeniden başlat. Hook'lar oturum politikası taşımadığı için state yazma izni ayrıca verilir; ayrıntı ve sınırlar: [docs/v3/DSH.md](docs/v3/DSH.md).
 
 ## İlk konuşma
 

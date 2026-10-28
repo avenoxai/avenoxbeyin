@@ -224,8 +224,10 @@ bir düzeltmenin kurulu olduğunu varsayma. Mevcut V3.2.0'a hemen geçmek için:
    DSH profil `configPath` incelemesi ve DSH yeniden başlatma
    incelemesini tamamla ve yeni oturum aç.
    Sonraki güncellemeler yine normal `update` komutunu kullanır; gerekirse
-   `rollback` önceki kurulumu geri getirir. DSH adaptörünü içermeyen bir sürüme
-   rollback, kayıtlı profil bloklarını da kaldırır.
+   `rollback` önceki kurulumu geri getirir. Profil yaması kullanıcıya ait
+   olduğu için ne uninstall ne rollback onu değiştirir; DSH adaptörünü içermeyen
+   bir sürüme dönüldüğünde `sandbox-policy` ve `hooks-claude-code` girdilerini
+   elle kaldır ([DSH.md](DSH.md)).
 
 Windows'ta Python komutları için `py -3` kullan. Bu yol kurulu eski
 paket doğrulayıcısını çağırmak yerine doğrulanmış resmi paketin installer'ını

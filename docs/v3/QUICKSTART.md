@@ -190,9 +190,10 @@ trusting the vault folder before project hooks can run; review its folder trust
 prompt in the client. Kiro IDE 1.x and CLI V3 load `.kiro/hooks/beyin-v3.json`;
 review it in the Agent Hooks panel or CLI `/hooks` (see [KIRO.md](KIRO.md)).
 DSH loads `.claude/dsh/beyin-v3-hooks.json` after the profile patch points
-`hooks-claude-code.configPath` at it; `--dsh-profile` or
-`beyin.py dsh-profile apply` adds that block and the `sandbox-policy` root, and
-DSH must be restarted (see [DSH.md](DSH.md)).
+`hooks-claude-code.configPath` at it. Paste the entries printed by
+`beyin.py doctor --json` (`dsh.manual_setup.block`) into
+`~/.dsh/profiles/<profile>/cordis.patch.yml`; the installer never writes that
+file, and DSH must be restarted (see [DSH.md](DSH.md)).
 Start a fresh Claude/Codex/Antigravity/Kiro/DSH session. Files
 existing on disk do not prove actual client delivery.
 

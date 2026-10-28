@@ -201,7 +201,7 @@ def digest(data):
 
 
 def _dsh_module():
-    """Load the DSH adapter from this release, not from the vault an uninstall is restoring."""
+    """Load the DSH adapter from this release, never from the vault being installed."""
     path = ROOT / 'template/.claude/scripts/beyin_v3_dsh.py'
     if not path.exists():
         return None
@@ -451,7 +451,7 @@ def uninstalled_content(name, item, current, previous, kept):
 
 def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", legacy_hashes=None,
              legacy_skill_hashes=None, migration=None, migration_plan=None, accept_customized=(),
-             keep_customized=(), exclude_components=(), include_components=(), dsh_profile=None):
+             keep_customized=(), exclude_components=(), include_components=()):
     vault, state = vault.resolve(), state.resolve()
     if not vault.is_dir() or state == vault or vault in state.parents:
         raise ValueError("Existing vault and state outside vault required")
@@ -496,16 +496,6 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
         result = {"status": "uninstalled", "restored": len(manifest["files"])}
         if kept_user_text:
             result["kept_user_text"] = sorted(kept_user_text)
-        # The DSH profile lives outside the vault and outside this manifest, so its marked
-        # entry is removed explicitly; a foreign or damaged entry is reported, never rewritten.
-        dsh = _dsh_module()
-        recorded = dsh.read_record(state) if dsh is not None else None
-        if recorded is not None:
-            try:
-                result["dsh_profile"] = dsh.remove_profile(recorded)
-            except OSError as exc:
-                result["dsh_profile"] = {"status": "unavailable", "error": type(exc).__name__}
-            dsh.clear_record(state)
         return result
     planned = {}
     modes = {}
@@ -635,8 +625,8 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
             add(name, content)
     dsh = _dsh_module()
     if dsh is not None:
-        # DSH has no project-local hook file: one profile points its Claude-hook bridge at
-        # this vault-owned JSON; --dsh-profile writes the marked insert and sandbox root.
+        # DSH has no project-local hook file: the user points one profile's Claude-hook
+        # bridge at this vault-owned JSON (docs/v3/DSH.md); the installer writes the JSON.
         for name, content in dsh.plan_plugin(vault, state, commands).items():
             add(name, content)
     add(".claude/scripts/beyin_v3_cli.py", (ROOT / "scripts/beyin_v3.py").read_bytes())
@@ -874,22 +864,6 @@ Use Markdown source files as truth; run `python3 beyin.py sync` in the vault roo
         updater._apply(vault,state,journal,(migration,migration_plan) if migration else None)
     if sorted(user_excluded) != stored_excluded:
         exclusions.save_exclusions(vault, user_excluded)
-    # The DSH profile patch is a user-global file the installer's journal cannot cover, so it
-    # is written only when the caller names it, after the vault transaction has committed.
-    dsh_report = None
-    if dsh is not None:
-        target = dsh.profile_file(dsh_profile) if dsh_profile is not None else dsh.read_record(state)
-        if target is not None:
-            try:
-                dsh_report = (dsh.apply_profile(target, state, vault) if dsh_profile is not None
-                              else dsh.read_profile_status(target, state, vault))
-                if dsh_profile is not None and dsh_report.get('status') != 'missing':
-                    dsh.save_record(state, target)
-            except (OSError, ValueError) as exc:
-                dsh_report = {'status': 'unavailable', 'error': type(exc).__name__}
-        elif not is_component_excluded(dsh.HOOK_FILE, user_excluded):
-            dsh_report = {'status': 'not_configured',
-                          'next': 'python3 beyin.py dsh-profile apply --profile <profile>/cordis.patch.yml'}
     from beyin_v3_companion import initialize
     companion = initialize(vault, state)
     result = {'status':'installed','files':len(planned),'trust_review_required':True,'kept_legacy':kept,
@@ -898,8 +872,6 @@ Use Markdown source files as truth; run `python3 beyin.py sync` in the vault roo
               'companion': companion,
               'update_notice': 'New releases are checked on GitHub at most daily; notes are not sent. Disable with beyin.py preferences --update-notifications off.',
               'skills':{'synced':[s for s in ('beyin','beyin-doktor','beyin-guncelle') if not is_component_excluded(f'.agents/skills/{s}/', user_excluded)],'conflicts':[], 'mode':'managed'}}
-    if dsh_report is not None:
-        result['dsh_profile'] = dsh_report
     # V2 flush sentinels whose writer provably died: the cutover went ahead, and the summaries
     # they were writing most likely never reached daily/.
     if migration_plan and migration_plan.get('orphaned_legacy_state'):
@@ -942,7 +914,7 @@ def package_defaults():
 
 def install(vault, state, uninstall=False, plan_only=False, version=None, legacy_hashes=None,
             legacy_skill_hashes=None, accept_customized=(), keep_customized=(),
-            exclude_components=(), include_components=(), dsh_profile=None):
+            exclude_components=(), include_components=()):
     package = package_defaults()
     if package is not None:
         if version is not None and version != package['version']:
@@ -959,8 +931,7 @@ def install(vault, state, uninstall=False, plan_only=False, version=None, legacy
     if plan_only or uninstall:
         return _install(vault, state, uninstall, plan_only, version, legacy_hashes, legacy_skill_hashes,
                         accept_customized=accept_customized, keep_customized=keep_customized,
-                        exclude_components=exclude_components, include_components=include_components,
-                        dsh_profile=dsh_profile)
+                        exclude_components=exclude_components, include_components=include_components)
     directory = ROOT / 'template/.claude/scripts'
     if (Path(state).resolve() / 'update-journal.json').exists():
         spec = importlib.util.spec_from_file_location('beyin_install_recovery', directory / 'beyin_v3_update.py')
@@ -975,8 +946,7 @@ def install(vault, state, uninstall=False, plan_only=False, version=None, legacy
             return _install(vault, state, version=version, legacy_hashes=legacy_hashes,
                             legacy_skill_hashes=legacy_skill_hashes, migration=module, migration_plan=plan,
                             accept_customized=accept_customized, keep_customized=keep_customized,
-                            exclude_components=exclude_components, include_components=include_components,
-                            dsh_profile=dsh_profile)
+                            exclude_components=exclude_components, include_components=include_components)
     finally:
         sys.path.remove(str(directory))
 
@@ -1010,9 +980,6 @@ def main():
                         help="disable/exclude a managed component, skill, adapter, or launcher; repeatable")
     parser.add_argument("--include-component", action="append", default=[], metavar="COMPONENT",
                         help="re-enable a previously excluded component; repeatable")
-    parser.add_argument("--dsh-profile", type=Path, metavar="PATH",
-                        help="DeepSeek Harness profile directory or its cordis.patch.yml; point the hook "
-                             "sandbox at the Beyin state directory (written once, with backup)")
     args = parser.parse_args()
     spec = importlib.util.spec_from_file_location("beyin_cli_defaults", ROOT / "scripts/beyin_v3.py")
     defaults = importlib.util.module_from_spec(spec); spec.loader.exec_module(defaults)
@@ -1036,8 +1003,7 @@ def main():
         result = install(args.vault, args.state or default_state(args.vault.resolve()), args.uninstall,
                          plan_only=args.plan, accept_customized=accepted, keep_customized=kept,
                          exclude_components=excluded,
-                         include_components=included,
-                         dsh_profile=args.dsh_profile)
+                         include_components=included)
         print(json.dumps(plan_report(result) if args.plan else result))
     except Exception as exc:
         print(json.dumps({"error": type(exc).__name__, "message": str(exc)}), file=sys.stderr)
