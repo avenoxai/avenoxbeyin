@@ -298,6 +298,19 @@ class DshIntegrationTest(unittest.TestCase):
         self.assertFalse((self.state / "dsh-profile.json").exists())
         self.assertFalse(list(profile.parent.glob("cordis.patch.yml.bak-beyin-*")))
 
+    def test_doctor_with_several_profiles_still_prints_the_entries(self):
+        self.install()
+        for name in ("desktop", "headless"):
+            self.write_profile("- id: agent-default-model\n", name=name)
+        report = self.doctor()["dsh"]
+        self.assertEqual(report["status"], "manual_setup")
+        self.assertEqual(len(report["profiles"]), 2)
+        setup = report["manual_setup"]
+        self.assertIsNone(setup["path"])
+        self.assertIn("- id: sandbox-policy", setup["block"])
+        self.assertIn("- id: hooks-claude-code", setup["block"])
+        self.assertTrue(any("desktop" in note and "headless" in note for note in setup["notes"]))
+
     def test_hook_reconcile_repairs_dsh_commands_without_dropping_the_adapter(self):
         self.install()
         path = self.vault / HOOK_FILE

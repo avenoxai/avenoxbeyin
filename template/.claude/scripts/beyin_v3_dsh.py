@@ -614,6 +614,7 @@ def _manual_setup(reports, vault, state, home=None):
     if target is None and reports:
         setup["notes"].append("Several DSH profiles exist; add the entries below to the profile DSH "
                               "desktop loads: " + ", ".join(item["path"] for item in reports))
+        setup["entries"] = [sandbox_policy_block(state), hook_entry_block(vault)]
     if target is not None:
         setup["path"] = target["path"]
         if target.get("status") == "unreadable":
