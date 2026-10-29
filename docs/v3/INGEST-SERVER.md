@@ -51,6 +51,8 @@ Gelen kutusuna yeni bir not fırlatır.
 - `Content-Type: application/json`
 - `Authorization: Bearer <token>` *(Eğer token belirlenmişse)*
 
+`application/json` ile gönderilen bozuk JSON ve geçersiz UTF-8 gövdeleri HTTP 400 ile reddedilir; gelen kutusuna dosya yazılmaz. Düz metin göndermek için `Content-Type: text/plain` kullanın.
+
 **Örnek JSON Gövdesi:**
 ```json
 {

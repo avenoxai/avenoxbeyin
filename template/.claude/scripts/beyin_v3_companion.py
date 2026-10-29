@@ -517,27 +517,62 @@ def ends(text, budget):
     keep = budget - len(gap)
     if keep < 80:
         return None
-    # Cut on line boundaries so neither end is a half rule; the closing part also takes
-    # whatever the opening gave back.
-    head = text[:keep - keep // 2]
-    head = head[:head.rfind('\n') + 1] or head
-    closing = text[len(text) - (keep - len(head)):]
-    closing = closing[closing.find('\n') + 1:] or closing
-    # Snapping to line boundaries gives characters back. Spend them on whole lines,
-    # alternating between the two ends, never letting the ends meet (#151).
-    start = len(text) - len(closing)
+    if not total:
+        # Cut on line boundaries so neither end is a half line; the closing part also takes
+        # whatever the opening gave back.
+        head = text[:keep - keep // 2]
+        head = head[:head.rfind('\n') + 1] or head
+        closing = text[len(text) - (keep - len(head)):]
+        closing = closing[closing.find('\n') + 1:] or closing
+        # Snapping to line boundaries gives characters back. Spend them on whole lines,
+        # alternating between the two ends, never letting the ends meet (#151).
+        start = len(text) - len(closing)
+        grown = True
+        while grown:
+            grown = False
+            cut = text.rfind('\n', len(head), start - 1) + 1 or len(head)
+            if cut < start and len(head) + len(closing) + start - cut <= keep:
+                closing, start, grown = text[cut:], cut, True
+            end = text.find('\n', len(head), start) + 1
+            if end and len(closing) + end <= keep and end < start:
+                head, grown = text[:end], True
+        what = f'{start - len(head)} characters'
+        return head + f'\n[truncated: {what} omitted here; read source]\n' + closing
+
+    # Cut on rule boundaries so multi-line rules are never split in half (#535);
+    # the closing part also takes whatever the opening gave back.
+    target = keep - keep // 2
+    k = sum(r <= target for r in rules[1:]) if rules[0] <= target else 0
+    head = text[:rules[k]] if (k > 0 or rules[0] <= keep) else ''
+    rem = keep - len(head)
+    j = total
+    for candidate in range(k + 1, total):
+        if len(text) - rules[candidate] <= rem:
+            j = candidate
+            break
+    closing = text[rules[j]:] if j < total else ''
+
+    # Snapping to rule boundaries gives characters back. Spend them on whole rules,
+    # alternating between the two ends, never letting the ends meet (#151, #535).
     grown = True
     while grown:
         grown = False
-        cut = text.rfind('\n', len(head), start - 1) + 1 or len(head)
-        if cut < start and len(head) + len(closing) + start - cut <= keep:
-            closing, start, grown = text[cut:], cut, True
-        end = text.find('\n', len(head), start) + 1
-        if end and len(closing) + end <= keep and end < start:
-            head, grown = text[:end], True
-    first = sum(rule < len(head) for rule in rules) + 1
-    omitted = sum(len(head) <= rule < start for rule in rules)
-    what = f'rules {first}-{first + omitted - 1} ({omitted} of {total})' if omitted > 0 else f'{start - len(head)} characters'
+        if j - 1 > k:
+            cand_len = len(text) - rules[j - 1]
+            if len(head) + cand_len <= keep:
+                j -= 1
+                closing = text[rules[j]:]
+                grown = True
+        if k + 1 < j:
+            cand_len = rules[k + 1]
+            if cand_len + len(closing) <= keep:
+                k += 1
+                head = text[:rules[k]]
+                grown = True
+
+    first = k + 1
+    omitted = j - k
+    what = f'rules {first}-{j} ({omitted} of {total})'
     return head + f'\n[truncated: {what} omitted here; read source]\n' + closing
 
 

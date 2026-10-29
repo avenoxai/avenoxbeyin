@@ -125,6 +125,63 @@ class EndsTest(unittest.TestCase):
                 # Every line is the same length: the ends fill all that this one marker leaves.
                 self.assertGreater(len(head) + len(closing) + line, budget - widest)
 
+    def test_multiline_rules_never_split_and_counter_is_accurate(self):
+        # Multi-line rules (#535): continuation lines must not appear without rule header
+        rules = [f"- **kural:** Rule {i} first line of a long rule that wraps\n"
+                 f"  onto a second line {i}\n  and a third line {i}." for i in range(1, 11)]
+        text = "# Rules\n\n" + "\n".join(rules) + "\n"
+        for budget in range(150, 1050, 25):
+            with self.subTest(budget=budget):
+                result = ends(text, budget)
+                if result is None:
+                    continue
+                self.assertLessEqual(len(result), budget)
+                head, closing, named = split(text, result)
+                # Ensure no orphaned continuation line appears at start of closing
+                if closing:
+                    self.assertTrue(closing.startswith('- **kural:**'), f'Closing started mid-rule: {closing[:40]!r}')
+                # Ensure head does not cut mid-rule
+                if head.strip() != '# Rules':
+                    self.assertTrue(head.endswith('.\n'), f'Head ended mid-rule: {head[-40:]!r}')
+                # Verify rule counter accurately matches
+                match = re.search(r'rules (\d+)-(\d+) \((\d+) of (\d+)\)', named)
+                self.assertIsNotNone(match)
+                first, last, omitted, total = (int(g) for g in match.groups())
+                self.assertEqual(total, 10)
+                self.assertEqual(omitted, last - first + 1)
+                kept_head = head.count('- **kural:**')
+                kept_closing = closing.count('- **kural:**')
+                self.assertEqual(first, kept_head + 1)
+                self.assertEqual(last, 10 - kept_closing)
+                self.assertEqual(kept_head + omitted + kept_closing, 10)
+
+    def test_multiline_rules_with_subbullets_randomized(self):
+        for seed in range(50):
+            rng = random.Random(seed)
+            rule_count = rng.randint(5, 20)
+            rules = []
+            for i in range(1, rule_count + 1):
+                rule_lines = [f"{i}. **kural {i}:** baslik satiri"]
+                for sub in range(rng.randint(1, 3)):
+                    rule_lines.append(f"   - alt madde {sub}: detay metni " + 'z' * rng.randint(10, 30))
+                rules.append('\n'.join(rule_lines))
+            text = "# Kurallar\n\n" + '\n'.join(rules) + '\n'
+            budget = rng.randint(200, len(text) - 1)
+            result = ends(text, budget)
+            if result is None:
+                continue
+            with self.subTest(seed=seed, budget=budget):
+                self.assertLessEqual(len(result), budget)
+                head, closing, named = split(text, result)
+                match = re.search(r'rules (\d+)-(\d+) \((\d+) of (\d+)\)', named)
+                self.assertIsNotNone(match)
+                first, last, omitted, total = (int(g) for g in match.groups())
+                self.assertEqual(total, rule_count)
+                kept_head = sum(1 for line in head.splitlines() if re.match(r'^\d+\. \*\*kural', line))
+                kept_closing = sum(1 for line in closing.splitlines() if re.match(r'^\d+\. \*\*kural', line))
+                self.assertEqual(kept_head + omitted + kept_closing, rule_count)
+                self.assertNotIn('   - alt madde', closing.splitlines()[:1])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -204,25 +204,37 @@ class IngestHandler(BaseHTTPRequestHandler):
                 return
 
         # Read and bound request body
+        cl_header = self.headers.get("Content-Length")
+        if cl_header is None:
+            self.close_connection = True
+            self._send_json(411, {"error": "length_required", "message": "Content-Length header required"})
+            return
+
         try:
-            cl_header = self.headers.get("Content-Length")
-            if cl_header is None:
-                self.close_connection = True
-                self._send_json(411, {"error": "length_required", "message": "Content-Length header required"})
-                return
             length = int(cl_header)
-            if length < 0:
-                self.close_connection = True
-                self._send_json(400, {"error": "bad_request", "message": "Negative Content-Length"})
-                return
-            if length > MAX_PAYLOAD_BYTES:
-                self.close_connection = True
-                self._send_json(413, {"error": "payload_too_large", "message": "Payload exceeds 1MB limit"})
-                return
+        except ValueError:
+            self.close_connection = True
+            self._send_json(400, {"error": "bad_request", "message": "Invalid Content-Length"})
+            return
+
+        if length < 0:
+            self.close_connection = True
+            self._send_json(400, {"error": "bad_request", "message": "Negative Content-Length"})
+            return
+        if length > MAX_PAYLOAD_BYTES:
+            self.close_connection = True
+            self._send_json(413, {"error": "payload_too_large", "message": "Payload exceeds 1MB limit"})
+            return
+
+        try:
             raw = self.rfile.read(length)
             if len(raw) != length:
                 raise ValueError("Incomplete request body")
             body = raw.decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            self.close_connection = True
+            self._send_json(400, {"error": "bad_request", "message": "Invalid UTF-8 payload"})
+            return
         except (ValueError, OSError) as exc:
             self.close_connection = True
             self._send_json(400, {"error": "bad_request", "message": str(exc)})
@@ -232,12 +244,14 @@ class IngestHandler(BaseHTTPRequestHandler):
         if "application/json" in content_type:
             try:
                 data = json.loads(body)
-            except Exception:
-                data = body
+            except json.JSONDecodeError:
+                self.close_connection = True
+                self._send_json(400, {"error": "invalid_json", "message": "Malformed JSON payload"})
+                return
         else:
             try:
                 data = json.loads(body)
-            except Exception:
+            except json.JSONDecodeError:
                 data = body
 
         if not isinstance(data, (dict, str)):

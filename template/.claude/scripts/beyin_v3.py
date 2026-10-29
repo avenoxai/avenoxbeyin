@@ -5,6 +5,7 @@ from collections import Counter
 from contextlib import contextmanager
 from datetime import date, datetime
 import functools
+import difflib
 import hashlib
 import json
 import math
@@ -1501,6 +1502,27 @@ class MemoryStore:
                 ranked.append((score, record))
         if count_cache is not None and not self.read_only:
             count_cache.save()
+        # Typo tolerance: a query word that appears in no record ("zmaan", "anketii") also
+        # searches its closest vocabulary words, so misspelled prompts still reach the note.
+        # Strict mode stays exact so automatic injection never widens on a guess.
+        missing = {term for term in terms if len(term) >= 4 and not term.isdigit()}
+        if missing and not strict:
+            known = set().union(*vocabularies.values()) if vocabularies else set()
+            fixes = set()
+            for term in missing - known:
+                # Only swapped, missing or extra letters count as typos; a substituted letter makes
+                # another word (kural/kurul), so the letter counts may differ by at most one.
+                letters = Counter(term)
+                fixes.update(word for word in difflib.get_close_matches(term, known, n=3, cutoff=0.75)
+                             if sum(((letters - Counter(word)) + (Counter(word) - letters)).values()) <= 1)
+            fixes -= terms
+            if fixes:
+                terms = terms | fixes
+                seen = {record["id"] for _, record in ranked}
+                ranked = [(len(terms & vocabularies[record["id"]]), record) for _, record in ranked]
+                ranked += [(len(terms & vocabularies[record["id"]]), record) for record in eligible
+                           if record["id"] in vocabularies and record["id"] not in seen
+                           and terms & vocabularies[record["id"]]]
         if strict and not snapshot:
             ranked = self._strict_rank(ranked, terms, vocabularies, name_scores=name_scores,
                                        today=today, allowed_statuses=allowed_statuses)

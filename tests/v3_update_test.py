@@ -324,6 +324,22 @@ class OfflineUpdateTest(unittest.TestCase):
             self.assertIn('scripts/install_v3.py', metadata['files'])
             self.assertIn('scripts/beyin_entry.py', metadata['files'])
 
+    def test_manifest_invalid_json_type_rejected_without_crash(self):
+        def string_manifest(files):
+            files['manifest.json'] = b'"justastring"'
+        string_package = rewrite_zip(self.package, self.base / 'string_manifest.zip', string_manifest)
+        before = snapshot(self.vault)
+        with self.assertRaisesRegex(ValueError, 'unsupported package schema'):
+            self.module.update(self.vault, self.state, string_package)
+        self.assertEqual(snapshot(self.vault), before)
+
+        def list_manifest(files):
+            files['manifest.json'] = b'[]'
+        list_package = rewrite_zip(self.package, self.base / 'list_manifest.zip', list_manifest)
+        with self.assertRaisesRegex(ValueError, 'unsupported package schema'):
+            self.module.update(self.vault, self.state, list_package)
+        self.assertEqual(snapshot(self.vault), before)
+
     def test_corrupt_checksum_rejected_without_any_vault_write(self):
         def corrupt(files):
             files['template/.claude/scripts/beyin_v3.py'] += b'\n# corrupt undeclared content\n'

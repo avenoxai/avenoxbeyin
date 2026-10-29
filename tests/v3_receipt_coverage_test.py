@@ -426,7 +426,10 @@ class ReceiptCoverageTest(unittest.TestCase):
         cmd = [sys.executable, str(hook_path), '--vault', str(self.vault),
                '--state', str(self.state), '--harness', 'claude']
         payload = {'hook_event_name': 'SessionStart', 'session_id': 'sess_check_warning'}
-        proc = subprocess.run(cmd, input=json.dumps(payload), capture_output=True, text=True, check=True, env=inherited_env())
+        # This assertion reads the gaps drained above, not worker scheduling. A detached
+        # worker can outlive the hook and race TemporaryDirectory cleanup on slower CI.
+        proc = subprocess.run(cmd, input=json.dumps(payload), capture_output=True, text=True, check=True,
+                              env=inherited_env(BEYIN_V3_NO_SPAWN='1'))
         out = json.loads(proc.stdout)
         context = out.get('hookSpecificOutput', {}).get('additionalContext', '')
         self.assertIn('Prior checkpoints may lack structured receipts (3 in the last 7 days (1 without observed edits))', context)

@@ -384,5 +384,57 @@ class IngestServerTest(unittest.TestCase):
             self.assertEqual(resp.status, 200)
 
 
+
+    def raw_http_client(self):
+        import socket
+        server = ingest_server.create_server(self.vault, port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close(), thread.join(2)))
+
+        def exchange(payload):
+            with socket.create_connection(('127.0.0.1', server.server_address[1]), timeout=5) as connection:
+                connection.sendall(payload)
+                connection.shutdown(socket.SHUT_WR)
+                response = bytearray()
+                while True:
+                    chunk = connection.recv(4096)
+                    if not chunk:
+                        return bytes(response)
+                    response.extend(chunk)
+        return exchange
+
+    def test_malformed_utf8_request_line_returns_400(self):
+        # BaseHTTPRequestHandler decodes request lines as Latin-1. Its syntax
+        # validation already rejects these bytes; no UnicodeError catch is needed.
+        response = self.raw_http_client()(b'\xff\xfe\xfa\r\n\r\n')
+        self.assertIn(b'400', response)
+        self.assertFalse(any(self.vault.rglob('*.md')))
+
+    def test_malformed_requests_and_content_length_resilience(self):
+        exchange = self.raw_http_client()
+        for length, status, message in ((b'not-a-number', b'400', b'Invalid Content-Length'),
+                                        (b'-50', b'400', b'Negative Content-Length'),
+                                        (b'2000000', b'413', b'Payload exceeds')):
+            with self.subTest(length=length):
+                response = exchange(b'POST /ingest HTTP/1.1\r\nContent-Length: ' + length + b'\r\n\r\n')
+                self.assertIn(status, response.split(b'\r\n')[0])
+                self.assertIn(message, response)
+        for payload, message in ((b'{"text": "incomplete', b'Malformed JSON'),
+                                 (b'\xff', b'Invalid UTF-8 payload')):
+            with self.subTest(payload=payload):
+                response = exchange(b'POST /ingest HTTP/1.1\r\nContent-Type: application/json\r\n'
+                                    b'Content-Length: ' + str(len(payload)).encode() + b'\r\n\r\n' + payload)
+                self.assertIn(b'400', response.split(b'\r\n')[0])
+                self.assertIn(message, response)
+        self.assertFalse(any(self.vault.rglob('*.md')))
+        # Explicit plain text remains a supported ingest format.
+        payload = b'{this is plain text'
+        response = exchange(b'POST /ingest HTTP/1.1\r\nContent-Type: text/plain\r\n'
+                            b'Content-Length: ' + str(len(payload)).encode() + b'\r\n\r\n' + payload)
+        self.assertIn(b'201', response.split(b'\r\n')[0])
+        self.assertEqual(len(list(self.vault.rglob('*.md'))), 1)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -619,5 +619,24 @@ class MigrationTest(unittest.TestCase):
             shutil.copyfile = original_copyfile
 
 
+    def test_guard_plan_handles_invalid_install_manifest(self):
+        self.state.mkdir(parents=True, exist_ok=True)
+        runner = self.source(self.m.LEGACY_RUNNERS[0], 'user-owned runner\n')
+        manifest = self.state / 'v3-install.json'
+        for content in ('["not a dict"]', '{"kept_legacy": null}', '{"kept_legacy": 123}',
+                        '{"kept_legacy": ["runner", {}]}', '{broken', 'null'):
+            with self.subTest(content=content):
+                manifest.write_text(content, encoding='utf-8')
+                with self.assertRaisesRegex(RuntimeError, 'invalid v3-install.json'):
+                    with self.m.migration_guard(self.root, self.state):
+                        self.fail('invalid ownership must not yield a migration plan')
+                self.assertEqual(manifest.read_text(encoding='utf-8'), content)
+                self.assertEqual(runner.read_text(encoding='utf-8'), 'user-owned runner\n')
+                self.assertFalse((self.state / 'v2-migration.json').exists())
+        manifest.write_text(json.dumps({'kept_legacy': [self.m.LEGACY_RUNNERS[0]]}), encoding='utf-8')
+        with self.m.migration_guard(self.root, self.state) as plan:
+            self.assertEqual(plan['kept_legacy'], [self.m.LEGACY_RUNNERS[0]])
+
+
 if __name__ == '__main__':
     unittest.main()

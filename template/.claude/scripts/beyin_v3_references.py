@@ -16,6 +16,7 @@ COMMENT = re.compile(r'(?s)<!--.*?-->|%%.*?%%')
 WIKI = re.compile(r'!?\[\[([^\]\n]+)\]\]')
 LINK = re.compile(r'!?\[[^\]\n]*\]\((<[^>\n]+>|(?:[^()\s]|\([^()\s]*\))+)(?:\s+(?:"[^"\n]*"|\'[^\'\n]*\'))?\)')
 SCHEME = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*:')
+DRIVE = re.compile(r'^(?:[A-Za-z]:[\\/]|\\\\)')  # a drive or a UNC share, not a one-letter URI
 PLACEHOLDER = set('<>{}*$')
 LIMIT = 20
 TARGET_LIMIT = 200  # a runaway match never floods the doctor output
@@ -116,14 +117,15 @@ def _skill_root(vault, source):
 def _live(vault, source, target, index):
     """True when the target resolves, None when it leaves the vault, False when it is dead.
 
-    A path is tried from the file's folder, the vault root and the skill folder, then by Obsidian's
-    case-insensitive path-suffix lookup, so the answer is the same on macOS, Linux and Windows.
+    A relative path is tried from the file's folder, the vault root and the skill folder, then by
+    Obsidian's case-insensitive path-suffix lookup, so the answer is the same on macOS, Linux and
+    Windows. An absolute path names one place instead of a folder to search (see _target_paths).
     """
-    bases = [vault] if target.startswith('/') else [source.parent, vault, _skill_root(vault, source)]
-    target = target.lstrip('/')
+    paths = _target_paths(vault, source, target)
+    if paths is None:
+        return None  # the link leaves the vault
     inside = False
-    for base in [base for base in bases if base is not None]:
-        path = base / target
+    for path in paths:
         if not _inside(vault, path):
             continue
         inside = True
@@ -131,6 +133,51 @@ def _live(vault, source, target, index):
         if _exists(path) or _key(relative) in index:
             return True
     return False if inside else None
+
+
+def _target_paths(vault, source, target):
+    """Every path a link may name, in the order it is tried, or None when the link leaves the vault.
+
+    A relative path is searched from the file's folder, the vault root and the skill folder. An
+    absolute path names one place instead of a folder to search, so it is read as written: a link that
+    names a file in the vault by full path is judged like any other, and a path that exists outside
+    the vault leaves it, which is not ours to judge. The other platform's spelling cannot be opened
+    here and says nothing about the machine that wrote the link, so it is skipped the same way. A
+    leading slash also spells a vault-root link in Obsidian, so that reading is kept.
+    """
+    if not _absolute(target):
+        bases = (source.parent, vault, _skill_root(vault, source))
+        return [base / target for base in bases if base is not None]
+    written = Path(target) if _openable(target) else None
+    if written is not None and not _inside(vault, written) and _exists(written):
+        return None
+    paths = [written] if written is not None else []
+    if target.startswith('/'):
+        paths.append(vault / target.lstrip('/'))
+    return paths
+
+
+def _absolute(target):
+    """True when the target names one place instead of a folder to search.
+
+    The shape decides rather than Path.is_absolute, so `/x`, `C:\\x`, `C:/x` and `\\\\host\\share` read
+    the same on every platform.
+    """
+    return target.startswith('/') or _windows_path(target)
+
+
+def _windows_path(target):
+    """A drive, UNC or root-of-drive path, whether or not this platform can open it."""
+    return target.startswith('\\') or DRIVE.match(target) is not None
+
+
+def _openable(target):
+    """True when this file system can read the spelling of an absolute path.
+
+    Another platform's spelling is one odd local file name here, and a share on another machine is
+    that machine's disk, so neither is opened: the check never leaves this computer.
+    """
+    return not target.startswith('\\\\') and (os.name == 'nt' or not _windows_path(target))
 
 
 def _wiki_dead(vault, source, target, index):
@@ -142,7 +189,9 @@ def _wiki_dead(vault, source, target, index):
 
 def _link_dead(vault, source, target, index):
     target = unquote(target.strip('<>')).split('#', 1)[0].split('?', 1)[0].strip()
-    if not target or SCHEME.match(target) or target.startswith('//') or PLACEHOLDER & set(target):
+    if not target or target.startswith('//') or PLACEHOLDER & set(target):
+        return None
+    if SCHEME.match(target) and not _absolute(target):  # `C:\\x` is a drive, not a one-letter URI
         return None
     return target if _live(vault, source, target, index) is False else None
 

@@ -7,6 +7,7 @@ from contextlib import contextmanager
 import base64
 import errno
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -163,6 +164,11 @@ def vault_locked(vault, timeout=15):
     Order: note lock -> optional companion lock -> database transaction.
     Recovery already holding the DB may only try this lock with timeout=0.
     """
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        raise ValueError('timeout must be a number')
+    timeout = float(timeout)
+    if not math.isfinite(timeout) or timeout < 0:
+        raise ValueError('timeout must be finite and non-negative')
     vault = Path(vault).resolve()
     # Recovery can run inside note-create/note-edit's sync. Reuse only this
     # thread's lock; a forked child and other threads still need their own OS lock.

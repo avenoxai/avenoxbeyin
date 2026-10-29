@@ -18,6 +18,8 @@ def _desktop_quote(value):
 
 def plan_launchers(vault, state):
     """Return only native launcher bytes; the installer owns permissions/journaling."""
+    if not sys.executable:
+        raise ValueError('python-executable-missing')
     vault = Path(vault).resolve()
     entry = vault / 'beyin.py'
     if any(char in str(vault) + sys.executable for char in '\r\n\x00'):

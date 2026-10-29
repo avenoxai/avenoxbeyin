@@ -122,5 +122,53 @@ class PerfHarnessTest(unittest.TestCase):
             self.assertIn('| sync_cold | 1 |', self.invoke('report', results))
 
 
+    def test_summary_empty_samples(self):
+        spec = importlib.util.spec_from_file_location('perf_summary', HARNESS)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        result = module.summary([], [])
+        self.assertEqual(result['n'], 0)
+        self.assertIsNone(result['median_ms'])
+        self.assertIsNone(result['p95_ms'])
+        self.assertIsNone(result['min_ms'])
+        self.assertIsNone(result['max_ms'])
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'empty-results.json'
+            path.write_text(json.dumps({'scenarios': {'empty': result}}), encoding='utf-8')
+            self.assertIn('| empty | 0 | n/a | n/a | n/a | n/a |', self.invoke('report', path))
+
+
+    def test_evaluate_v3_decisions_percentile_empty(self):
+        spec = importlib.util.spec_from_file_location('evaluate_v3_decisions', ROOT / 'scripts/evaluate_v3_decisions.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        result = module.percentile([], 0.95)
+        self.assertIsNone(result)
+
+    def test_evaluate_v3_aggregate_empty(self):
+        spec = importlib.util.spec_from_file_location('evaluate_v3', ROOT / 'scripts/evaluate_v3.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        result = module.aggregate([])
+        self.assertEqual(result['cases'], 0)
+        self.assertIsNone(result['recall_at_5'])
+        self.assertIsNone(result['precision_at_5_diagnostic'])
+        self.assertIsNone(result['abstention_accuracy'])
+        self.assertIsNone(result['structured_fact_retention'])
+        self.assertFalse(result['passed'])
+
+    def test_evaluate_v3_decisions_summarize_empty(self):
+        spec = importlib.util.spec_from_file_location('evaluate_v3_decisions', ROOT / 'scripts/evaluate_v3_decisions.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        result = module.summarize([])
+        self.assertEqual(result['samples'], 0)
+        self.assertIsNone(result['recall'])
+        self.assertIsNone(result['precision'])
+        self.assertIsNone(result['candidate_exposure_recall'])
+        self.assertIsNone(result['abstention_accuracy'])
+        self.assertIsNone(result['p50_e2e_ms'])
+        self.assertIsNone(result['p95_e2e_ms'])
+
 if __name__ == '__main__':
     unittest.main()

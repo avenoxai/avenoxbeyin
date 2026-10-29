@@ -245,9 +245,14 @@ Hooks enqueue only event metadata, never raw prompts or transcripts. They start
 an opportunistic detached Python worker. Startup waits at most 1.5 seconds for
 source synchronization before context; a slower sync keeps running and the turn
 reads the previous index, labeled as such, never as fresh context. Before the
-first index exists the hook reports pending only. Stop and edit hooks return promptly. If a
-worker fails, metadata stays queued and the next event retries. Explicit repeated
-`event_id` values deduplicate queue acknowledgement; client events without an ID
+first index exists the hook reports pending only. A client that runs its hook
+commands without write access to the runtime state — a sandboxed lifecycle hook
+or a read-only state folder — can still read the vault and the previous index,
+so the turn answers from that index with a one-line note that automatic sync
+cannot run there. Without an index the failure notice stays. Stop and edit hooks
+return promptly. If a worker fails, metadata stays queued and the next event
+retries. Explicit repeated `event_id` values deduplicate queue acknowledgement;
+client events without an ID
 receive new local IDs. This is not a blanket exactly-once transport guarantee. There is no
 always-on daemon or guarantee of updates while every client is closed.
 `doctor` shows pending counts and the latest worker result. A synthetic/manual
