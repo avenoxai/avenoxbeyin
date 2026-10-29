@@ -784,13 +784,30 @@ def main():
                             rules_project = None
                 # The opening may carry its own machine-local budget (#140); never a vault preference.
                 limit = client_budget(args.harness, opening_budget(state, settings['context_chars']))
-                text = companion_context(store, limit, session, args.harness, query, receipt, warning, project=project,
+                text = companion_context(store, max(0, limit - len(notice)), session, args.harness, query, receipt, warning, project=project,
                                          rules_project=rules_project)
                 smaller = client_rebudget(args.harness, limit, notice + text)
-                if smaller is not None:
+                if smaller is not None and smaller < limit:
                     limit = smaller
-                    text = companion_context(store, limit, session, args.harness, query, receipt, warning,
+                    text = companion_context(store, max(0, limit - len(notice)), session, args.harness, query, receipt, warning,
                                              project=project, rules_project=rules_project)
+                    if client_rebudget(args.harness, limit, notice + text) is not None:
+                        # Protected sections can change the Unicode ratio after a
+                        # render. Bound further work by bisecting integer budgets:
+                        # at most limit.bit_length() renders, not one per character.
+                        # Keep a measured fitting rendering, never trim its tail to
+                        # make the rules/handoff disappear at the client guard.
+                        low, high, fitting = 0, limit, ''
+                        while high - low > 1:
+                            trial = (low + high) // 2
+                            candidate = companion_context(store, max(0, trial - len(notice)), session, args.harness,
+                                                          query, receipt, warning, project=project,
+                                                          rules_project=rules_project)
+                            if client_rebudget(args.harness, trial, notice + candidate) is None:
+                                low, fitting = trial, candidate
+                            else:
+                                high = trial
+                        limit, text = low, fitting
             else:
                 # Per-turn automatic context is strict: only meaningful lexical matches are
                 # injected, and an empty match injects nothing at all instead of a receipt

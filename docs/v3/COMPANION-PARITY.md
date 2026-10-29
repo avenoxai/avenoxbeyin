@@ -54,6 +54,30 @@ ve dosyayı okumak gerektiğini söyler. Kesme satır sınırındadır, yarım k
 haritası ve ilişkili kaynaklar payını aldıktan sonra artan bütçe kırpılmış companion
 bölümlerine geri verilir; sınır hiçbir durumda aşılmaz.
 
+Açılışta yer darsa tam genel/proje kuralları (gerekçeleri çıkarmak gerekebilir), en üstteki
+tarihli devir kartı ve bütün açık konuların kısa görünümü önce ayrılır. Kuralların taban
+payı kategoriye aittir; genel ve proje dosyaları aynı payı bölüşür. Kimlik, üslup, Journal,
+bilgi haritası, receipt ve sorgu sonuçları kalan alanı kullanır. Bu çekirdek de sığmıyorsa
+önce sığan kurallar korunur, konu ayrıntısının payı bütün başlıklara dağıtılır. Kuralların
+kendisi de sığmıyorsa sınırlı paylar ve açık kırpma işaretleri geçerlidir; keyfi uzunluktaki
+kuralların her sonlu bütçeye tam sığacağı söylenmez. Kaynak dosyalar bu işlemde değiştirilmez.
+
+`Threads.md` içindeki `###` başlıklarının her biri kısa görünümde korunur. `**Status:**` /
+`**Durum:**` ile `**Next step:**` / `**Sonraki adım:**` paragrafları varsa bunlar, devam
+satırlarıyla birlikte aynen alınır; kalın yazılmamış `Status:` / `Next:` alanları da tanınır.
+İlk durum ve sonraki adım alanı güncel karttır; sonraki tarihli geçmiş paragrafları bu kısa
+görünümü büyütmez. Ayrıntı paragrafı boş satırla ayrılır. Eski serbest
+metin biçiminde ilk cümle ve bekleyen iş/hatırlatma belirten cümleler aynen seçilir.
+Alan daralırsa bu eski biçimden bir bekleyen adım cümlesi seçilir; başlıkların kendisi de
+sığamayacak kadar küçük bütçelerde bütün başlıkların görünmesi garanti edilmez.
+Bu seçim anlamsal bir özet değildir; etiketsiz veya farklı ifadeli bir sonraki adımı
+bulacağı garanti edilmez. Kısa görünüm ayrıntı ve etiketsiz adımlar için kaynağa yönlendirir.
+Kapalı konular ve kod çitlerindeki örnek başlıklar bu görünümün parçası değildir.
+
+Claude/Codex açılışında yeniden üretim, istemcinin UTF-16/UTF-8 ölçüsüne sığana kadar
+küçülen bütçeyle tekrarlanır. Hook'un ayrı bildirimleri de karakter bütçesinden düşülür;
+sondaki güvenlik kesmesinin companion kaynaklarını kaybetmesine güvenilmez.
+
 Bu paylaşımdan önce companion dosyaları kaynak doğrulamalı anlık görüntüden 200.000
 karakterlik bir üst sınırla okunur ([#374](https://github.com/avenoxai/avenoxbeyin/issues/374)).
 Payından kısa kalan dosya artanı uzun dosyalara bırakır; böylece kural kırpması ve
@@ -114,7 +138,8 @@ Düzeltme dört parçadır:
   gösterilir, bunlara sınır uygulanmaz. Hook `Kurallar.md` dosyasını doğrudan okur ve
   sığmadığında başını ve sonunu atlanan kural aralığıyla birlikte verir (#45, #196).
   `doctor` ayrıca `companion_rules_opening` altında Claude Code açılışının kural metninin
-  en fazla kaç karakterini tam gösterdiğini (`share`) hook'un kendi hesabıyla verir; sayı
+  o anki karakter payını (`share`) hook'un kendi hesabıyla verir; sayı sabit bir tavan değildir,
+  daha kısa bir kural dosyası isteğe bağlı ayrıntının yerini alabilir. Pay
   öbür companion dosyalarının o anki boyutuna ve receipt'e göre değişir. Kurallar
   kırpılıyorsa `--human` çıktısında tek satır görünür. Bilgi amaçlıdır, `doctor` durumunu
   değiştirmez ve hiçbir dosya yazmaz (#374). Ayrıca açılışta `Kurallar.md` kırpılıyorsa oturum
