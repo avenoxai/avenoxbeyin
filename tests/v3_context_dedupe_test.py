@@ -311,6 +311,108 @@ class ContextDedupeHookTest(unittest.TestCase):
         self.assert_turn(self.invoke('UserPromptSubmit', prompt='why is the GoPlus quota wasted'),
                          ['knowledge/goplus-quota.md'], 'zebra-one')
 
+    # The receipt coverage notice is a session fact too: before this it repeated on every turn,
+    # with the same count, even when the turn had nothing else to say.
+
+    COVERAGE = 'Prior checkpoints may lack structured receipts'
+
+    def set_missing_receipts(self, count):
+        health = self.state / 'hook-health.json'
+        value = json.loads(health.read_text(encoding='utf-8')) if health.is_file() else {}
+        value.setdefault('sync', {}).update(status='succeeded', recent_missing_receipts=count)
+        health.write_text(json.dumps(value), encoding='utf-8')
+
+    def test_coverage_notice_is_said_once_per_session_and_again_when_it_changes(self):
+        self.cli('preferences', '--context-dedupe', 'on')
+        self.set_missing_receipts(26)
+        self.assertIn(self.COVERAGE + ' (26 in the last 7 days)', self.context_of(self.invoke('SessionStart', source='startup')))
+        text = self.assert_turn(self.invoke('UserPromptSubmit', prompt='why is the GoPlus quota wasted'),
+                                ['knowledge/goplus-quota.md'])
+        self.assertNotIn(self.COVERAGE, text, 'the opening already said it')
+        self.assertEqual(self.invoke('UserPromptSubmit', prompt='why is the GoPlus quota wasted'), {},
+                         'a turn with nothing new stays silent instead of repeating the notice')
+        self.set_missing_receipts(27)
+        text = self.assert_turn(self.invoke('UserPromptSubmit', prompt='how does postgres performance indexing work'),
+                                ['knowledge/postgres-index.md'])
+        self.assertIn(self.COVERAGE + ' (27 in the last 7 days)', text, 'a changed count is news')
+        self.assertNotIn(self.COVERAGE, self.context_of(
+            self.invoke('UserPromptSubmit', prompt='how does postgres performance indexing work')))
+        self.assertIn(self.COVERAGE, self.context_of(self.invoke('UserPromptSubmit', session_id='other-session',
+                                                                 prompt='why is the GoPlus quota wasted')), 'per session')
+        self.invoke('PreCompact')
+        self.assertIn(self.COVERAGE, self.context_of(self.invoke('UserPromptSubmit', prompt='why is the GoPlus quota wasted')),
+                      'compaction clears it')
+
+    def test_dedupe_off_repeats_the_coverage_notice_like_before(self):
+        self.set_missing_receipts(3)
+        for _ in range(2):
+            self.assertIn(self.COVERAGE, self.context_of(self.invoke('UserPromptSubmit', prompt='why is the GoPlus quota wasted')))
+        self.assertFalse((self.state / 'session-delivery').exists())
+
+    def test_coverage_without_matches_and_companion_delivery_share_the_session(self):
+        self.cli('preferences', '--context-dedupe', 'on')
+        self.set_missing_receipts(3)
+        # The diagnostic-only path must remember a notice even without retrieval records.
+        self.assertIn(self.COVERAGE, self.context_of(self.invoke('UserPromptSubmit', prompt='unmatched zeppelin')))
+        self.assertEqual(self.invoke('UserPromptSubmit', prompt='unmatched zeppelin'), {})
+        self.assertNotIn(self.COVERAGE, self.context_of(self.invoke('SessionStart')))
+        self.invoke('SessionEnd')
+        self.assertIn(self.COVERAGE, self.context_of(self.invoke('SessionStart')))
+        self.invoke('PreCompact')
+        self.assertIn(self.COVERAGE, self.context_of(self.invoke('UserPromptSubmit', prompt='where did we leave')))
+        self.assertNotIn(self.COVERAGE, self.context_of(self.invoke('UserPromptSubmit', prompt='where did we leave')))
+
+    def test_coverage_without_valid_session_or_with_corrupt_ledger_fails_open(self):
+        self.cli('preferences', '--context-dedupe', 'on')
+        self.set_missing_receipts(3)
+        for session in (None, '', 'unknown', [], 7, 'x' * 513):
+            for _ in range(2):
+                self.assertIn(self.COVERAGE, self.context_of(self.invoke(
+                    'UserPromptSubmit', session_id=session, prompt='unmatched zeppelin')))
+        self.assertFalse((self.state / 'session-delivery').exists())
+        from beyin_v3_dedupe import _session_file
+        ledger = _session_file(self.state, 'claude', 'test-session', create=True)
+        ledger.write_text('{broken', encoding='utf-8')
+        self.assertIn(self.COVERAGE, self.context_of(self.invoke('UserPromptSubmit', prompt='unmatched zeppelin')))
+        self.assertEqual(self.invoke('UserPromptSubmit', prompt='unmatched zeppelin'), {})
+
+    def test_clipped_coverage_notice_is_not_recorded_as_delivered(self):
+        self.cli('preferences', '--context-dedupe', 'on')
+        self.cli('preferences', '--context-chars', '1000')
+        # An oversized counter exercises the actual client clipping boundary without mocking
+        # the renderer or replacing the source-backed hook with a unit-test double.
+        self.set_missing_receipts(10 ** 1100)
+        from beyin_v3_dedupe import _session_file
+        for event in ('SessionStart', 'UserPromptSubmit'):
+            self.invoke('PreCompact')
+            text = self.context_of(self.invoke(event, prompt='unmatched zeppelin'))
+            self.assertLessEqual(len(text), 1000)
+            self.assertNotIn('current sources for unfinished work.', text)
+            ledger = _session_file(self.state, 'claude', 'test-session')
+            self.assertFalse(ledger.exists(), 'a clipped notice was not delivered in full')
+            self.cli('preferences', '--context-chars', '5000')
+            text = self.context_of(self.invoke(event, prompt='unmatched zeppelin'))
+            self.assertIn('current sources for unfinished work.', text)
+            self.assertNotIn(self.COVERAGE, self.context_of(self.invoke(event, prompt='unmatched zeppelin')))
+            self.cli('preferences', '--context-chars', '1000')
+
+    @unittest.skipIf(os.name == 'nt' or (hasattr(os, 'geteuid') and os.geteuid() == 0),
+                     'POSIX directory permissions require an unprivileged account')
+    def test_unwritable_delivery_ledger_repeats_notice_without_losing_context(self):
+        self.cli('preferences', '--context-dedupe', 'on')
+        self.set_missing_receipts(3)
+        folder = self.state / 'session-delivery'
+        folder.mkdir()
+        folder.chmod(0o500)
+        try:
+            for _ in range(2):
+                text = self.context_of(self.invoke('UserPromptSubmit', prompt='why is the GoPlus quota wasted'))
+                self.assertIn(self.COVERAGE, text)
+                self.assertIn('knowledge/goplus-quota.md', text)
+            self.assertEqual(list(folder.iterdir()), [])
+        finally:
+            folder.chmod(0o700)
+
     def test_receipt_fails_open_without_session_or_with_damaged_ledger(self):
         self.cli('preferences', '--context-dedupe', 'on')
         self.write_receipt('receipt-one', 'Receipt marker zebra-one: the ferry handoff is finished.')
