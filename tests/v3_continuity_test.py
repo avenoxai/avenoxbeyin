@@ -16,6 +16,8 @@ def full_scan_current(store, saved):
     """Original implementation retained as an independent compatibility oracle."""
     eligible = store._retrieve('', project=saved['project'], snapshot=True,
                                limit=100000, budget_chars=10000000)['records']
+    from beyin_v3_passage import pool, settings
+    eligible = pool(store, eligible, exclude=settings(store.state_dir)['exclude'])
     by_id = {r['id']: r for r in eligible if not r.get('text_truncated')}
     records = []
     for ref in saved['refs']:
@@ -58,7 +60,8 @@ class ContinuityTest(unittest.TestCase):
         self.assertNotIn('source_sha256', json.loads(text)['records'][0])
         continuity.remember(self.store, 'claude', 'session', 'Quartz deployment rollback', delivered, now=100)
         saved = json.loads(continuity._path(self.store, 'claude', 'session').read_text(encoding='utf-8'))
-        self.assertEqual(saved['refs'], [{k: target[k] for k in ('id', 'revision', 'source_sha256')}])
+        self.assertEqual(saved['refs'], [dict({k: target[k] for k in ('id', 'revision', 'source_sha256')},
+                                             ranges=[[0, len(delivered['records'][0]['text']) - len(runtime.CONTEXT_MARKER)]])])
         # A second render of the projection keeps the identities too.
         _text, again = runtime.render_context(delivered, 1500)
         self.assertEqual(again['records'][0]['source_sha256'], target['source_sha256'])
@@ -117,7 +120,7 @@ class ContinuityTest(unittest.TestCase):
             row = next(row for row in rows if row['id'] == 'invalid-path')
             db.execute('UPDATE records SET payload=? WHERE id=?',
                        (runtime._json(dict(row, source='../outside.md')), row['id']))
-        accepted = {'normal', 'public', 'daily', 'untrusted-replacement-target'}
+        accepted = {'normal', 'public', 'untrusted-replacement-target'}
         for row in rows:
             with self.subTest(record=row['id']):
                 saved = self.saved(row)

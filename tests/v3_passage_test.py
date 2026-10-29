@@ -112,8 +112,9 @@ class PassageContextTest(Vault):
         records = passage.context_for(self.store, 'claude', 'zirkon takvimi kredi planı', budget_chars=5000)['records']
         self.assertEqual([r['source'] for r in records], ['notes/zirkon-takvimi.md'])
         self.assertIn('aylık sınır kırk kredi', records[0]['text'])
-        self.assertIn('[…]', records[0]['text'])
-        self.assertTrue(records[0]['text_truncated'])
+        # The full source is a valid spare-room extension when it fits.
+        self.assertEqual(records[0]['text'], text)
+        self.assertFalse(records[0]['text_truncated'])
 
     def test_short_root_second_passage_preserves_due_ranking(self):
         text = ('# Zirkon\n\n## Özet\n\nZirkon boy kısa.\n\n'
@@ -157,7 +158,8 @@ class PassageContextTest(Vault):
                         '## Amaç\n\nZirkon takvimi kredi planı: sınır %d.\n' % (name, index, filler, index),
                         'notes/t%d.md' % index, title=name)
         context = passage.context_for(self.store, 'claude', 'zirkon takvimi kredi planı', budget_chars=5000)
-        self.assertTrue(all('[…]' in r['text'] for r in context['records']))  # room for every second passage
+        self.assertTrue(all('kredi özeti' in r['text'] and 'kredi planı' in r['text']
+                            for r in context['records']))  # room for every second passage
         primary = {r['id']: r['text'] for r in context.sources}
         narrow = runtime.PackedContext(context)
         narrow.sources = context.sources  # the same context without second passages
@@ -431,7 +433,7 @@ class ConfigAndCacheTest(Vault):
         self.assertIn('pool', json.loads(cache.read_text(encoding='utf-8')))
         self.assertNotEqual(finished, note_level)
         self.assertEqual(finished, self.strict('zirkon kovası yedekleme'))
-        self.assertTrue(all(r['text'].startswith('Not ') for r in finished['records']))
+        self.assertTrue(all(r['text'].lstrip('# ').startswith('Not ') for r in finished['records']))
 
 
 class BenchmarkTest(unittest.TestCase):

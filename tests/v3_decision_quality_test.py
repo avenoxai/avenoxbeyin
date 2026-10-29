@@ -414,7 +414,7 @@ class DecisionQualityTest(unittest.TestCase):
         self.assertFalse(self.follow('onu da test et')[1])
 
     def test_anchor_files_stay_at_the_cap_and_an_update_deletes_nothing(self):
-        delivered = dict(records=[dict(id='target', revision=1, source_sha256='0' * 64, project='demo')])
+        delivered = dict(records=[self.note('target')])
         folder = self.state / 'topic-refs'
         for index in range(continuity.MAX_SESSIONS):
             continuity.remember(self.store, 'claude', 'session-' + str(index), 'Quartz deployment', delivered, now=100)

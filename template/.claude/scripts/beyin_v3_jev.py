@@ -207,6 +207,18 @@ def _unclipped(context):
     return records
 
 
+def _card_heading(head, limit, overlap):
+    """Keep the maintainer's bounded, query-matching heading window."""
+    if len(head) <= limit:
+        return head
+    windows = [head[:limit]]
+    for match in re.finditer(r'\S+', head):
+        if overlap(match.group()):
+            start = max(0, match.end() - limit)
+            windows.append(head[start:start + limit])
+    return max(windows, key=overlap)
+
+
 def card_excerpt(record, query='', project=None):
     """Best-matching heading-aware passage excerpt for a Jev candidate card (#507).
 
@@ -249,15 +261,7 @@ def card_excerpt(record, query='', project=None):
             # Score only the bounded window that will actually reach the advisor.
             # Reserve up to a third for headings; long paragraphs are split above.
             head_limit = AUTO_EXCERPT // 3 - 2
-            if len(head) > head_limit:
-                # A long parent heading must not hide the matching subsection.
-                # Keep matched words whole and score what is actually sent.
-                windows = [head[:head_limit]]
-                for match in re.finditer(r'\S+', head):
-                    if overlap(match.group()):
-                        heading_start = max(0, match.end() - head_limit)
-                        windows.append(head[heading_start:heading_start + head_limit])
-                head = max(windows, key=overlap)
+            head = _card_heading(head, head_limit, overlap)
             body = text[start:end]
             passage = (head + '\n\n' + body if head else body)[:AUTO_EXCERPT]
             score = overlap(passage)
@@ -285,6 +289,10 @@ def auto_context(store, harness, query, context, *, budget_chars, timeout_cap=2.
     mode = client.inspect_config(store.state_dir)
     if (not mode['valid'] or mode['mode'] == 'off' or 'auto_context' not in mode['features']
             or not isinstance(query, str) or len(query.strip()) < AUTO_MIN_CHARS):
+        return context
+    # Projection-level privacy still applies when packing chose an extension
+    # and the unclipped source excerpt is a separate object.
+    if any(r.get('visibility') == 'private' for r in context.get('records') or []):
         return context
     strict = _unclipped(context)
     if any(r.get('visibility') == 'private' for r in strict):
@@ -316,6 +324,19 @@ def auto_context(store, harness, query, context, *, budget_chars, timeout_cap=2.
     remaining_slots = max(0, AUTO_POOL - len(evaluated_strict))
     evaluated_loose = loose_remote[:remaining_slots]
 
+    from beyin_v3_evidence import loose_passages, loose_delivery, card_excerpt
+    wider = dict(getattr(context, 'wider', {}))
+    extensions = dict(getattr(context, 'extensions', {}))
+    evidence = dict(getattr(context, 'evidence', {}))
+    selected_loose = []
+    for record in evaluated_loose:
+        narrow, broad, ref = loose_passages(record, query, project)
+        selected_loose.append(narrow)
+        evidence[record['id']] = ref
+        if broad is not None:
+            wider[record['id']] = broad
+    evaluated_loose = selected_loose
+
     remote_pool = evaluated_strict + evaluated_loose
     records = list(remote_pool)
     # Overflow or local-only strict records remain eligible locally without consuming remote slots.
@@ -326,7 +347,9 @@ def auto_context(store, harness, query, context, *, budget_chars, timeout_cap=2.
     if not keys:
         return context
     before = _signature(records)
-    cards = [dict(id=k, title=str(r.get('title', ''))[:160], excerpt=card_excerpt(r, query, project),
+    cards = [dict(id=k, title=str(r.get('title', ''))[:160],
+                  excerpt=card_excerpt(query, r, wider.get(r['id']), evidence.get(r['id']), AUTO_EXCERPT,
+                                       project=project),
                   project=str(r.get('project') or ''), status=str(r.get('status') or ''),
                   updated_at=str(r.get('updated_at') or '')) for k, r in keys.items()]
     sent_strict = sum(1 for r in keys.values() if r['id'] in known)
@@ -366,14 +389,29 @@ def auto_context(store, harness, query, context, *, budget_chars, timeout_cap=2.
         return context
     if not _fresh(store, records) or client.inspect_config(store.state_dir) != mode:
         return context
+    # Cards keep query-selected evidence. Delivery reserves the source's opening
+    # and adds the primary match only from genuinely spare envelope room.
+    for i, record in enumerate(keep):
+        ident = record['id']
+        if ident in known:
+            continue
+        narrow, broad, ref = loose_delivery(current[ident], evidence[ident], query)
+        keep[i] = narrow
+        evidence[ident] = ref
+        wider.pop(ident, None)
+        if broad is not None:
+            wider[ident] = broad
     ranked_remote = sorted([r for r in keep if remote_allowed(r)],
                            key=lambda r: (-by_record.get(r['id'], 0), r['id']))
     ranked_local = [r for r in keep if not remote_allowed(r) and r['id'] in known]
-    packed = pack_widened(_interleave([ranked_remote, ranked_local]), getattr(context, 'wider', {}), AUTO_LIMIT, budget_chars)
+    packed = pack_widened(_interleave([ranked_remote, ranked_local]), wider, AUTO_LIMIT, budget_chars,
+                          extensions=extensions)
     selected_ids = {r['id'] for r in packed['records']}
     # Report delivered membership changes, not pre-budget model intentions.
     result = PackedContext(context, **packed)
     result.sources, result.wider = packed.sources, packed.wider  # the final envelope repacks from these
+    result.extensions = packed.extensions
+    result.evidence = {ident: evidence[ident] for ident in selected_ids if ident in evidence}
     result['jev'] = dict(dropped=len(known - selected_ids), added=len(selected_ids - known))
     return result
 
