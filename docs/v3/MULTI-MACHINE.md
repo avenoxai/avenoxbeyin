@@ -63,6 +63,56 @@ knowledge/v3/
 
 Kontrol: kurulumdan ya da güncellemeden hemen sonra `git status --short` boş olmalıdır.
 
+### Aynı klasörde kullanıcı betikleri varsa
+
+Yukarıdaki `.claude/scripts/` satırı klasörün tamamını dışlar; kendi senkron betiğin de
+buradaysa onu Git'e eklemeyi engeller. Listeyi olduğu gibi uygulamadan önce klasördeki
+kullanıcı dosyalarını ayır. Örneğin yalnız `kendi-senkron.py` dosyanı eşitlemek istiyorsan,
+`.claude/scripts/` satırını şu iki satırla değiştir:
+
+```gitignore
+.claude/scripts/*
+!.claude/scripts/kendi-senkron.py
+```
+
+Burada klasörün kendisi dışlanmadığı için ikinci satır o dosyayı yeniden dahil edebilir.
+Üst klasörü dışlayan başka bir kural varsa onu da incele;
+`git check-ignore -v -- .claude/scripts/kendi-senkron.py` hangi kuralın eşleştiğini gösterir. `!` ile başlayan
+eşleşme dahil etme kuralıdır; dosyanın eklenebildiğini `git status --short` ile doğrula.
+Örnek dosya adını kendi dosyanla değiştir; yönetilen motor dosyalarını bu istisnaya ekleme.
+Yalnız `beyin_v3*.py` desenini dışlamak tüm kurulum dosyalarını kapsamaz: örneğin eski
+kurulumlardan kalan `compile.py` ve `flush.py` emekli kabukları da yönetilebilir.
+
+### Daha önce izlenen kurulum dosyalarını ayırmak
+
+`.gitignore` eklemek Git'in zaten izlediği dosyaları takipten çıkarmaz. `git rm --cached`
+seçilen dosyayı bu çalışma kopyasında bırakır, fakat silme kaydı commit edilince **diğer
+klonlarda bir sonraki pull o izlenen dosyayı silebilir**. Yerel değişiklik varsa Git bunun
+yerine pull'u durdurabilir; her iki durumda da kurulumu kontrol etmeden devam etme.
+
+1. Değişikliği paylaşmadan ve diğer makinelerde pull yapmadan **önce**, her makinede o
+   makinenin vault'unu ve vault dışındaki state klasörünü ayrı bir yere yedekle. Yedekler
+   Git'e ya da ortak senkron klasörüne girmesin. Makineye özgü yolları taşıyan dosyaları
+   başka makinenin kopyasıyla değiştirme.
+2. `git ls-files -- .beyin-runtime.json .claude/settings.local.json .codex/hooks.json`
+   gibi hedefli bir komutla izlenen dosyaları kontrol et; bu örnek tam liste değildir.
+   Yukarıdaki listeyi kendi kurulumunla karşılaştır, kullanıcı betiklerini ve özel hook
+   girdilerini koru. Yalnız seçtiğin kurulum dosyalarını `git rm --cached -- DOSYA` ile
+   takipten çıkar; tüm vault'u topluca takipten çıkarma. Commit öncesi staged diff'i incele.
+3. Her makinede pull sonrasında silinen makine dosyalarını **o makinenin kendi yedeğinden**
+   geri koy veya doğrulanmış Beyin paketinin kurucusunu bu makinede yeniden çalıştır.
+   `beyin.py` de silinmiş olabileceğinden paket içindeki `scripts/install_v3.py` girişini
+   kullanabilirsin; mevcut vault yolunu ve bu makinenin mevcut state yolunu ver.
+   Başka makinenin `v3-install.json` kaydını kopyalamak bu geçişin desteklenen yolu değildir.
+   Yerel state kaydı yoksa ya da kurucu çakışma bildirirse dosyaları ezerek aşma; aşağıdaki
+   [taşıma sınırlarını](#vaultu-başka-klasöre-ya-da-hesaba-taşımak) incele.
+4. Bu makinede `python3 beyin.py doctor` çalıştır; Windows'ta `py -3 beyin.py doctor`
+   kullan. Etkin state ve `hook_paths` bulgularını incele, özel hook girdilerinin korunduğunu
+   ve `git status --short` çıktısında beklenmedik silme/değişiklik olmadığını doğrula.
+
+Bu geçiş Git dosya takibini ayırır; doctor'ın izlenen tüm makine dosyalarını otomatik
+bulduğu anlamına gelmez ([#539](https://github.com/avenoxai/avenoxbeyin/issues/539)).
+
 `.beyin-runtime.json` yine de başka bir işletim sisteminden geldiyse (Windows'ta `C:\...`,
 macOS ya da Linux'ta `/...` yolu) bu makinede mutlak bir yol değildir. `beyin.py` o zaman bu
 makinenin varsayılan state dizinini kullanır; her komut bunu stderr'e tek satırla söyler
