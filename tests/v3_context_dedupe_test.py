@@ -349,6 +349,70 @@ class ContextDedupeHookTest(unittest.TestCase):
             self.assertIn(self.COVERAGE, self.context_of(self.invoke('UserPromptSubmit', prompt='why is the GoPlus quota wasted')))
         self.assertFalse((self.state / 'session-delivery').exists())
 
+    def test_coverage_without_matches_and_companion_delivery_share_the_session(self):
+        self.cli('preferences', '--context-dedupe', 'on')
+        self.set_missing_receipts(3)
+        # The diagnostic-only path must remember a notice even without retrieval records.
+        self.assertIn(self.COVERAGE, self.context_of(self.invoke('UserPromptSubmit', prompt='unmatched zeppelin')))
+        self.assertEqual(self.invoke('UserPromptSubmit', prompt='unmatched zeppelin'), {})
+        self.assertNotIn(self.COVERAGE, self.context_of(self.invoke('SessionStart')))
+        self.invoke('SessionEnd')
+        self.assertIn(self.COVERAGE, self.context_of(self.invoke('SessionStart')))
+        self.invoke('PreCompact')
+        self.assertIn(self.COVERAGE, self.context_of(self.invoke('UserPromptSubmit', prompt='where did we leave')))
+        self.assertNotIn(self.COVERAGE, self.context_of(self.invoke('UserPromptSubmit', prompt='where did we leave')))
+
+    def test_coverage_without_valid_session_or_with_corrupt_ledger_fails_open(self):
+        self.cli('preferences', '--context-dedupe', 'on')
+        self.set_missing_receipts(3)
+        for session in (None, '', 'unknown', [], 7, 'x' * 513):
+            for _ in range(2):
+                self.assertIn(self.COVERAGE, self.context_of(self.invoke(
+                    'UserPromptSubmit', session_id=session, prompt='unmatched zeppelin')))
+        self.assertFalse((self.state / 'session-delivery').exists())
+        from beyin_v3_dedupe import _session_file
+        ledger = _session_file(self.state, 'claude', 'test-session', create=True)
+        ledger.write_text('{broken', encoding='utf-8')
+        self.assertIn(self.COVERAGE, self.context_of(self.invoke('UserPromptSubmit', prompt='unmatched zeppelin')))
+        self.assertEqual(self.invoke('UserPromptSubmit', prompt='unmatched zeppelin'), {})
+
+    def test_clipped_coverage_notice_is_not_recorded_as_delivered(self):
+        self.cli('preferences', '--context-dedupe', 'on')
+        self.cli('preferences', '--context-chars', '1000')
+        # An oversized counter exercises the actual client clipping boundary without mocking
+        # the renderer or replacing the source-backed hook with a unit-test double.
+        self.set_missing_receipts(10 ** 1100)
+        from beyin_v3_dedupe import _session_file
+        for event in ('SessionStart', 'UserPromptSubmit'):
+            self.invoke('PreCompact')
+            text = self.context_of(self.invoke(event, prompt='unmatched zeppelin'))
+            self.assertLessEqual(len(text), 1000)
+            self.assertNotIn('current sources for unfinished work.', text)
+            ledger = _session_file(self.state, 'claude', 'test-session')
+            self.assertFalse(ledger.exists(), 'a clipped notice was not delivered in full')
+            self.cli('preferences', '--context-chars', '5000')
+            text = self.context_of(self.invoke(event, prompt='unmatched zeppelin'))
+            self.assertIn('current sources for unfinished work.', text)
+            self.assertNotIn(self.COVERAGE, self.context_of(self.invoke(event, prompt='unmatched zeppelin')))
+            self.cli('preferences', '--context-chars', '1000')
+
+    @unittest.skipIf(os.name == 'nt' or (hasattr(os, 'geteuid') and os.geteuid() == 0),
+                     'POSIX directory permissions require an unprivileged account')
+    def test_unwritable_delivery_ledger_repeats_notice_without_losing_context(self):
+        self.cli('preferences', '--context-dedupe', 'on')
+        self.set_missing_receipts(3)
+        folder = self.state / 'session-delivery'
+        folder.mkdir()
+        folder.chmod(0o500)
+        try:
+            for _ in range(2):
+                text = self.context_of(self.invoke('UserPromptSubmit', prompt='why is the GoPlus quota wasted'))
+                self.assertIn(self.COVERAGE, text)
+                self.assertIn('knowledge/goplus-quota.md', text)
+            self.assertEqual(list(folder.iterdir()), [])
+        finally:
+            folder.chmod(0o700)
+
     def test_receipt_fails_open_without_session_or_with_damaged_ledger(self):
         self.cli('preferences', '--context-dedupe', 'on')
         self.write_receipt('receipt-one', 'Receipt marker zebra-one: the ferry handoff is finished.')
