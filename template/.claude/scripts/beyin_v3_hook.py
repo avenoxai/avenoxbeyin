@@ -679,6 +679,7 @@ def main():
                            'Read current sources or use beyin.py context for fresh information.\n')
             else:
                 warning = ''
+            coverage = ''
             health = state / "hook-health.json"
             if health.exists():
                 sync = json.loads(health.read_text(encoding="utf-8")).get("sync", {})
@@ -698,8 +699,27 @@ def main():
                         detail = f'{recent} in the last 7 days ({no_edits} without observed edits)'
                     else:
                         detail = f'{recent} in the last 7 days'
-                    warning += (f'Prior checkpoints may lack structured receipts ({detail}); '
+                    coverage = (f'Prior checkpoints may lack structured receipts ({detail}); '
                                 'check Last-Session/Threads and current sources for unfinished work.\n')
+            topic_session = payload.get('session_id', 'unknown')
+            dedupe_enabled = (state / 'context-dedupe.json').is_file() or os.environ.get('BEYIN_V3_CONTEXT_DEDUPE') == '1'
+            # The coverage notice is a session fact like the receipt: said once, again when its count changes.
+            if coverage and dedupe_enabled:
+                try:
+                    from beyin_v3_dedupe import notice_delivered
+                    if notice_delivered(state, args.harness, topic_session, coverage):
+                        coverage = ''
+                except Exception:
+                    pass
+            warning += coverage
+
+            def remember_notice(shown):
+                if coverage and dedupe_enabled and coverage.strip() in shown:
+                    try:
+                        from beyin_v3_dedupe import record_delivered
+                        record_delivered(state, args.harness, topic_session, [], notice=coverage)
+                    except Exception:
+                        pass
             from beyin_v3_companion import (context as companion_context, relevant, opening_budget, client_budget,
                                             client_rebudget, fit_client)
             # Both budgets stop below a client's own cut-off; past it the client files the text away (#175).
@@ -742,7 +762,6 @@ def main():
                     context = {"records": []}
                 inherited = False
                 from beyin_v3_continuity import resolve, remember
-                topic_session = payload.get('session_id', 'unknown')
                 try:
                     context, inherited = resolve(store, args.harness, topic_session, query, context,
                                                  budget_chars=limit, project=project)
@@ -759,7 +778,6 @@ def main():
                                                    timeout_cap=min(2.0, remaining), project=project)
                         except Exception:
                             pass  # an advisor failure must never cost the local context
-                dedupe_enabled = (state / 'context-dedupe.json').is_file() or os.environ.get('BEYIN_V3_CONTEXT_DEDUPE') == '1'
                 duplicates = []
                 suffix = receipt
                 if dedupe_enabled and context.get("records"):
@@ -802,9 +820,12 @@ def main():
                     pass
                 if not delivered.get("records") and not receipt_only:
                     diagnostic = fit_client(args.harness, (notice + warning)[:limit])
+                    remember_notice(diagnostic)
                     print(json.dumps(output_context(args.harness, event, diagnostic)) if diagnostic else "{}")
                     return
-            output = output_context(args.harness, event, fit_client(args.harness, (notice + text)[:limit]))
+            shown = fit_client(args.harness, (notice + text)[:limit])
+            remember_notice(shown)
+            output = output_context(args.harness, event, shown)
             print(json.dumps(output))
         else:
             print(json.dumps(reminder) if reminder else (json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == "antigravity" else "{}")))

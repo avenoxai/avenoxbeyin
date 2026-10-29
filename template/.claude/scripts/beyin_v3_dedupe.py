@@ -1,7 +1,7 @@
 """Session-scoped context deduplication (#363): prevent re-injecting already delivered records.
 
 Each session tracks delivered records under `<state>/session-delivery/`, named by the hash
-of harness and session id. The file holds only `{version, harness, at, records: {id: {sha, windows}}, receipt}`;
+of harness and session id. The file holds only `{version, harness, at, records: {id: {sha, windows}}, receipt, notice}`;
 the raw session id is not stored. A record is a duplicate only if its id, its source_sha256 and its
 text window match a delivery earlier in the active session. If the source file was edited on disk, its
 sha256 changes and the note is delivered again.
@@ -9,7 +9,9 @@ sha256 changes and the note is delivered again.
 The latest receipt block that a turn appends after its records is a session fact as well: `receipt`
 is the sha256 of the receipt text last delivered, so the same receipt is said once per session and
 again only when a new receipt (or an edited one) changes that text, or after the ledger is cleared.
-A release without this key ignores it, so a rollback reads the ledger as before.
+The receipt coverage notice (`Prior checkpoints may lack structured receipts ...`) follows the same
+rule under `notice`: the session hears it once, again only when its count changes. A release without
+these keys ignores them, so a rollback reads the ledger as before.
 
 Turn context is passage based (#83): one long note answers different prompts with different windows
 under the same id and sha. A window is keyed by the hash of its first WINDOW_PREFIX characters, which
@@ -116,27 +118,29 @@ def receipt_key(receipt):
 
 
 def _read_ledger(path, now=None):
-    """Return (records, receipt key or None) of a current ledger; ({}, None) for anything else."""
+    """Return (records, receipt key or None, notice key or None) of a current ledger; ({}, None, None) for anything else."""
     try:
         if path is None or not path.is_file() or path.is_symlink() or path.stat().st_size > MAX_FILE_BYTES:
-            return {}, None
+            return {}, None, None
         now = time.time() if now is None else now
         value = json.loads(path.read_text(encoding='utf-8'))
         if not isinstance(value, dict) or value.get('version') != 1:
-            return {}, None
+            return {}, None, None
         at = value.get('at')
         if type(at) not in (int, float) or not 0 <= now - at < MAX_AGE_SECONDS:
-            return {}, None
+            return {}, None, None
         records = value.get('records')
         if not isinstance(records, dict):
-            return {}, None
+            return {}, None, None
         receipt = value.get('receipt')
+        notice = value.get('notice')
         return ({rid: entry for rid, entry in records.items()
                  if isinstance(entry, dict) and isinstance(entry.get('sha'), str)
                  and isinstance(entry.get('windows'), list)},
-                receipt if isinstance(receipt, str) else None)
+                receipt if isinstance(receipt, str) else None,
+                notice if isinstance(notice, str) else None)
     except (OSError, ValueError):
-        return {}, None
+        return {}, None, None
 
 
 def filter_novel(state, harness, session, records, now=None):
@@ -152,7 +156,7 @@ def filter_novel(state, harness, session, records, now=None):
     path = _session_file(state, harness, session)
     if path is None:
         return list(records), []
-    delivered, _ = _read_ledger(path, now=now)
+    delivered = _read_ledger(path, now=now)[0]
     if not delivered:
         return list(records), []
     novel, duplicates = [], []
@@ -200,11 +204,22 @@ def receipt_delivered(state, harness, session, receipt, now=None):
     return _read_ledger(path, now=now)[1] == receipt_key(receipt)
 
 
-def record_delivered(state, harness, session, records, now=None, receipt=None):
+def notice_delivered(state, harness, session, notice, now=None):
+    """True only if this exact notice text was already delivered in the session. Fail open: False."""
+    if not isinstance(notice, str) or not notice or not is_enabled(state):
+        return False
+    path = _session_file(state, harness, session)
+    if path is None:
+        return False
+    return _read_ledger(path, now=now)[2] == receipt_key(notice)
+
+
+def record_delivered(state, harness, session, records, now=None, receipt=None, notice=None):
     """Update the session delivery ledger with newly delivered records and, when the turn
-    showed it, the receipt text. Fail open."""
+    showed them, the receipt and notice texts. Fail open."""
     receipt = receipt_key(receipt) if isinstance(receipt, str) and receipt else None
-    if not records and receipt is None:
+    notice = receipt_key(notice) if isinstance(notice, str) and notice else None
+    if not records and receipt is None and notice is None:
         return
     if not is_enabled(state):
         return
@@ -212,9 +227,10 @@ def record_delivered(state, harness, session, records, now=None, receipt=None):
     path = _session_file(state, harness, session, create=True)
     if path is None:
         return
-    existing, delivered_receipt = _read_ledger(path, now=now)
-    changed = receipt is not None and receipt != delivered_receipt
+    existing, delivered_receipt, delivered_notice = _read_ledger(path, now=now)
+    changed = (receipt is not None and receipt != delivered_receipt) or (notice is not None and notice != delivered_notice)
     receipt = receipt or delivered_receipt
+    notice = notice or delivered_notice
     for r in records:
         if not (isinstance(r, dict) and r.get('id') and isinstance(r.get('source_sha256'), str)):
             continue
@@ -236,6 +252,8 @@ def record_delivered(state, harness, session, records, now=None, receipt=None):
     }
     if receipt is not None:
         payload['receipt'] = receipt
+    if notice is not None:
+        payload['notice'] = notice
     temporary = None
     try:
         parent = path.parent

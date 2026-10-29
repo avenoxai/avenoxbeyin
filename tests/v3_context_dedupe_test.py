@@ -311,6 +311,44 @@ class ContextDedupeHookTest(unittest.TestCase):
         self.assert_turn(self.invoke('UserPromptSubmit', prompt='why is the GoPlus quota wasted'),
                          ['knowledge/goplus-quota.md'], 'zebra-one')
 
+    # The receipt coverage notice is a session fact too: before this it repeated on every turn,
+    # with the same count, even when the turn had nothing else to say.
+
+    COVERAGE = 'Prior checkpoints may lack structured receipts'
+
+    def set_missing_receipts(self, count):
+        health = self.state / 'hook-health.json'
+        value = json.loads(health.read_text(encoding='utf-8')) if health.is_file() else {}
+        value.setdefault('sync', {}).update(status='succeeded', recent_missing_receipts=count)
+        health.write_text(json.dumps(value), encoding='utf-8')
+
+    def test_coverage_notice_is_said_once_per_session_and_again_when_it_changes(self):
+        self.cli('preferences', '--context-dedupe', 'on')
+        self.set_missing_receipts(26)
+        self.assertIn(self.COVERAGE + ' (26 in the last 7 days)', self.context_of(self.invoke('SessionStart', source='startup')))
+        text = self.assert_turn(self.invoke('UserPromptSubmit', prompt='why is the GoPlus quota wasted'),
+                                ['knowledge/goplus-quota.md'])
+        self.assertNotIn(self.COVERAGE, text, 'the opening already said it')
+        self.assertEqual(self.invoke('UserPromptSubmit', prompt='why is the GoPlus quota wasted'), {},
+                         'a turn with nothing new stays silent instead of repeating the notice')
+        self.set_missing_receipts(27)
+        text = self.assert_turn(self.invoke('UserPromptSubmit', prompt='how does postgres performance indexing work'),
+                                ['knowledge/postgres-index.md'])
+        self.assertIn(self.COVERAGE + ' (27 in the last 7 days)', text, 'a changed count is news')
+        self.assertNotIn(self.COVERAGE, self.context_of(
+            self.invoke('UserPromptSubmit', prompt='how does postgres performance indexing work')))
+        self.assertIn(self.COVERAGE, self.context_of(self.invoke('UserPromptSubmit', session_id='other-session',
+                                                                 prompt='why is the GoPlus quota wasted')), 'per session')
+        self.invoke('PreCompact')
+        self.assertIn(self.COVERAGE, self.context_of(self.invoke('UserPromptSubmit', prompt='why is the GoPlus quota wasted')),
+                      'compaction clears it')
+
+    def test_dedupe_off_repeats_the_coverage_notice_like_before(self):
+        self.set_missing_receipts(3)
+        for _ in range(2):
+            self.assertIn(self.COVERAGE, self.context_of(self.invoke('UserPromptSubmit', prompt='why is the GoPlus quota wasted')))
+        self.assertFalse((self.state / 'session-delivery').exists())
+
     def test_receipt_fails_open_without_session_or_with_damaged_ledger(self):
         self.cli('preferences', '--context-dedupe', 'on')
         self.write_receipt('receipt-one', 'Receipt marker zebra-one: the ferry handoff is finished.')
