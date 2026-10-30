@@ -1,8 +1,13 @@
 """DeepSeek Harness (dsh) contract: Claude-shaped hooks and a read-only profile report."""
+import ast
+from contextlib import closing
+from datetime import datetime, timezone
+import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -16,6 +21,8 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts/install_v3.py"
 SCRIPTS = ROOT / "template/.claude/scripts"
 HOOK_FILE = ".claude/dsh/beyin-v3-hooks.json"
+# The release whose receipt validator predates dsh; a rollback lands on exactly this code.
+RELEASED = "v3.12.0"
 SANDBOX_ENTRY = '  name: "@deepseek-ai/dsh-sandbox-policy"'
 HOOK_ENTRY = '      name: "@deepseek-ai/dsh-hooks-claude-code"'
 MODE_VALUE = "!!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'"
@@ -27,6 +34,54 @@ def load_adapter():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def load_script(name):
+    """Import one adjacent script by path so its own directory stays importable."""
+    spec = importlib.util.spec_from_file_location("beyin_test_dsh_" + name, SCRIPTS / (name + ".py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def receipt_source(event_id):
+    return "receipts/" + hashlib.sha256(event_id.encode("utf-8")).hexdigest() + ".md"
+
+
+def skip_or_fail(test, reason):
+    """Local clones may lack a ref; in CI that means the checkout is too shallow to prove anything."""
+    if os.environ.get("CI"):
+        test.fail(reason + "; CI must check out the full history (actions/checkout fetch-depth: 0)")
+    test.skipTest(reason)
+
+
+def harness_choices(path):
+    """Every `choices=(...)` on a `--harness` argument in a source file, in source order."""
+    tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+    found = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "add_argument" and node.args
+                and isinstance(node.args[0], ast.Constant) and node.args[0].value == "--harness"):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg == "choices":
+                found.append(tuple(ast.literal_eval(keyword.value)))
+    return found
+
+
+def assigned_constant(path_or_text, name, rev=None):
+    """Literal value of a module-level assignment, from a file, a blob or a git ref's copy."""
+    if rev is None:
+        text = (path_or_text.read_text(encoding="utf-8") if isinstance(path_or_text, Path) else path_or_text)
+    else:
+        text = subprocess.run(["git", "show", f"{rev}:{path_or_text}"], cwd=str(ROOT),
+                              capture_output=True, text=True, check=True).stdout
+    for node in ast.parse(text).body:
+        if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == name
+                                                for target in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"{name} not found")
 
 
 class DshIntegrationTest(unittest.TestCase):
@@ -369,7 +424,14 @@ class DshIntegrationTest(unittest.TestCase):
                         "--include-component", "adapters/dsh")
         self.assertTrue((self.vault / HOOK_FILE).is_file())
 
-    def test_update_adds_dsh_to_older_install_and_rollback_removes_it(self):
+    def test_update_adds_dsh_files_and_rollback_removes_them(self):
+        """Package upgrade and rollback of the two dsh files.
+
+        Deleting the files only fakes the file layout of an install that never received
+        dsh; it is no evidence that an older install can still read what the new code
+        writes, and it never ran an older validator. That claim belongs to
+        DshReceiptCompatibilityTest, which syncs a dsh receipt with the released code.
+        """
         self.install()
         dsh_paths = [HOOK_FILE, ".claude/scripts/beyin_v3_dsh.py"]
         manifest_path = self.state / "v3-install.json"
@@ -396,6 +458,297 @@ class DshIntegrationTest(unittest.TestCase):
         import zipfile
         with zipfile.ZipFile(package) as archive:
             self.assertIn("template/.claude/scripts/beyin_v3_dsh.py", archive.namelist())
+
+
+class DshReceiptCompatibilityTest(unittest.TestCase):
+    """A receipt written by the dsh build must survive a rollback to the released validator."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="v3-dsh-receipt-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.vault = self.root / "vault"
+        self.vault.mkdir()
+        self.state = self.root / "state"
+        self.sync_module = load_script("beyin_v3_sync")
+        self.engine = self.sync_module.SyncEngine(self.vault, self.state)
+        self.addCleanup(lambda: getattr(self.engine.store, "close", lambda: None)())
+        self.note = self.vault / "notes/dsh-work.md"
+        self.note.parent.mkdir()
+        self.note.write_text("Synthetic dsh checkpoint source.\n", encoding="utf-8")
+
+    def dsh_checkpoint(self, session="dsh-session-1", state=None):
+        """Record a real dsh checkpoint and return the session id the projections store."""
+        state = state or self.state
+        hook = load_script("beyin_v3_hook")
+        queue = state / "hook-queue"
+        queue.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        for offset, event in enumerate(("UserPromptSubmit", "PostToolUse", "Stop")):
+            item = queue / f"{int((now + offset) * 1000)}-{event}.json"
+            item.write_text(json.dumps({"harness": "dsh", "event": event, "session": session,
+                                        "at": now + offset}), encoding="utf-8")
+        hook.drain_queue(self.vault, state)
+        gaps = json.loads((state / "receipt-gaps.json").read_text(encoding="utf-8"))
+        self.assertEqual([item["harness"] for item in gaps["checkpoints"]], ["dsh"])
+        return gaps["checkpoints"][0]["session"]
+
+    def write_receipt(self, event_id, metadata, summary="Synthetic outcome.\n"):
+        metadata = dict({"kind": "receipt", "event_id": event_id, "visibility": "internal",
+                         "refs": ["notes/dsh-work.md"]}, **metadata)
+        path = self.vault / receipt_source(event_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("---\n" + json.dumps(metadata, ensure_ascii=False) + "\n---\n" + summary,
+                        encoding="utf-8")
+        return path
+
+    def old_release_scripts(self):
+        """Extract every script of the released tag into its own directory, never mixed with this tree."""
+        available = subprocess.run(["git", "rev-parse", "--verify", "-q", RELEASED + "^{commit}"],
+                                   cwd=str(ROOT), capture_output=True, text=True)
+        if available.returncode != 0:
+            skip_or_fail(self, f"{RELEASED} cannot be read from this clone (git missing, shallow or squashed "
+                               "history); the released validator cannot be extracted, so the rollback path stays unproven")
+        listing = subprocess.run(["git", "ls-tree", "-r", "--name-only", RELEASED,
+                                  "--", "template/.claude/scripts/"],
+                                 cwd=str(ROOT), capture_output=True, text=True, check=True).stdout.split()
+        target = self.root / (RELEASED + "-scripts")
+        target.mkdir()
+        for entry in listing:
+            if not entry.endswith(".py"):
+                continue
+            blob = subprocess.run(["git", "show", f"{RELEASED}:{entry}"], cwd=str(ROOT),
+                                  capture_output=True, text=True, check=True).stdout
+            (target / Path(entry).name).write_text(blob, encoding="utf-8")
+        self.assertTrue((target / "beyin_v3_sync.py").is_file())
+        return target
+
+    def test_the_written_receipt_names_the_client_a_released_validator_accepts(self):
+        session = self.dsh_checkpoint()
+        result = self.engine.receipt("dsh-outcome-1", "Synthetic dsh outcome.",
+                                     ["notes/dsh-work.md"], "dsh", session=session)
+        self.assertEqual(result["status"], "succeeded")
+        source = receipt_source("dsh-outcome-1")
+        metadata, body = self.sync_module.parse((self.vault / source).read_text(encoding="utf-8"))
+        self.assertEqual(metadata["harness"], "manual")
+        self.assertEqual(metadata["client"], "dsh")
+        self.assertEqual(metadata["event_id"], "dsh-outcome-1")
+        self.assertEqual(metadata["refs"], ["notes/dsh-work.md"])
+        self.assertEqual(metadata["session"], session)
+        self.assertIn("created_at", metadata)
+        self.assertEqual(body, "Synthetic dsh outcome.\n")
+        # This build still attributes the receipt to dsh: the stored name is not the identity.
+        self.assertEqual(self.engine._receipt_event(source)["harness"], "dsh")
+        with self.engine.store._connect() as db:
+            row = db.execute("SELECT payload FROM receipts WHERE id=?", ("dsh-outcome-1",)).fetchone()
+        self.assertEqual(json.loads(row[0])["harness"], "dsh")
+        # Re-submitting the same outcome is idempotent, not a manual-change conflict.
+        again = self.engine.receipt("dsh-outcome-1", "Synthetic dsh outcome.",
+                                    ["notes/dsh-work.md"], "dsh", session=session)
+        self.assertEqual(again["status"], "succeeded")
+
+    def test_the_dsh_checkpoint_is_closed_by_its_receipt(self):
+        session = self.dsh_checkpoint()
+        gaps = json.loads((self.state / "receipt-gaps.json").read_text(encoding="utf-8"))
+        self.assertEqual(gaps["potential_missing_receipts"], 1)
+        self.engine.receipt("dsh-outcome-2", "Synthetic dsh outcome.",
+                            ["notes/dsh-work.md"], "dsh", session=session)
+        self.engine.sync(full=True)
+        gaps = json.loads((self.state / "receipt-gaps.json").read_text(encoding="utf-8"))
+        self.assertEqual(gaps["potential_missing_receipts"], 0)
+        self.assertEqual(gaps["checkpoints"], [])
+        self.assertEqual(gaps["receipt_coverage"]["covered"], 1)
+        self.assertEqual(gaps["receipt_coverage"]["missing"], 0)
+
+    def test_an_unusable_client_leaves_the_receipt_manual(self):
+        for index, (harness, client) in enumerate((("manual", "not-a-client"), ("manual", 7),
+                                                   ("manual", ["dsh"]), ("manual", None),
+                                                   ("claude", "dsh"))):
+            event_id = f"manual-outcome-{index}"
+            metadata = {"harness": harness}
+            if client is not None:
+                metadata["client"] = client
+            source = receipt_source(event_id)
+            self.write_receipt(event_id, metadata)
+            event = self.engine._receipt_event(source)
+            expected = "manual" if harness == "manual" else "claude"
+            self.assertEqual(event["harness"], expected, (harness, client))
+
+    def run_released_sync(self, old_scripts, state, event_id):
+        """Sync the vault with the released code in its own process and report what it saw."""
+        driver = self.root / "old_release_sync.py"
+        driver.write_text(
+            "import json, sys\n"
+            "from pathlib import Path\n"
+            "import sqlite3\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "import beyin_v3_sync\n"
+            "engine = beyin_v3_sync.SyncEngine(Path(sys.argv[2]), Path(sys.argv[3]))\n"
+            "result = engine.sync()\n"
+            "source = 'receipts/' + __import__('hashlib').sha256(sys.argv[4].encode()).hexdigest() + '.md'\n"
+            "source_path = Path(sys.argv[2]) / source\n"
+            "with sqlite3.connect(str(Path(sys.argv[3]) / 'memory.sqlite3')) as db:\n"
+            "    rows = [json.loads(payload) for (payload,) in db.execute('SELECT payload FROM receipts')]\n"
+            "print(json.dumps({'status': result.get('status'),\n"
+            "                  'warnings': result.get('warnings', []),\n"
+            "                  'conflicts': result.get('conflicts', []),\n"
+            "                  'receipt_event': engine._receipt_event(source) if source_path.exists() else None,\n"
+            "                  'rows': rows}))\n",
+            encoding="utf-8")
+        completed = subprocess.run(
+            [sys.executable, "-I", str(driver), str(old_scripts), str(self.vault), str(state), event_id],
+            text=True, encoding="utf-8", capture_output=True, cwd=str(self.root),
+            env=inherited_env(PYTHONDONTWRITEBYTECODE="1", BEYIN_V3_NO_SPAWN="1"), timeout=180)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return json.loads(completed.stdout)
+
+    def test_rollback_to_the_released_validator_still_syncs_the_receipt(self):
+        old_scripts = self.old_release_scripts()
+        session = self.dsh_checkpoint()
+        self.engine.receipt("dsh-outcome-rollback", "Synthetic dsh rollback outcome.",
+                            ["notes/dsh-work.md"], "dsh", session=session)
+        # A rollback restores the vault, not the state directory it already wrote.
+        report = self.run_released_sync(old_scripts, self.state, "dsh-outcome-rollback")
+        reasons = [item.get("reason", "") for item in report["warnings"] + report["conflicts"]]
+        self.assertEqual(report["status"], "succeeded", reasons)
+        self.assertFalse([reason for reason in reasons if "invalid harness" in reason], reasons)
+        self.assertEqual(report["receipt_event"]["harness"], "manual")
+        self.assertEqual(report["receipt_event"]["event_id"], "dsh-outcome-rollback")
+        self.assertEqual(report["receipt_event"]["session"], session)
+        # A reset state re-indexes the same file from disk under the released name.
+        cold = self.run_released_sync(old_scripts, self.root / "cold-state", "dsh-outcome-rollback")
+        cold_reasons = [item.get("reason", "") for item in cold["warnings"] + cold["conflicts"]]
+        self.assertFalse([reason for reason in cold_reasons if "invalid harness" in reason], cold_reasons)
+        # Receipt sources are all accepted; the view files a later release formats differently are
+        # preservation notices, not receipt failures, and they exist with or without dsh.
+        self.assertFalse([item['source'] for item in cold["warnings"] + cold["conflicts"]
+                          if item.get("source", "").startswith("receipts/")], cold_reasons)
+        self.assertEqual([row["harness"] for row in cold["rows"]], ["manual"])
+        self.assertEqual([row["event_id"] for row in cold["rows"]], ["dsh-outcome-rollback"])
+        self.assertEqual([row["session"] for row in cold["rows"]], [session])
+
+    def test_a_rescan_restores_a_released_index_to_dsh(self):
+        old_scripts = self.old_release_scripts()
+        cold_state = self.root / "cold-state"
+        # The released build has already synced this vault once, so its receipt views are tracked
+        # and the scan below is the clean pass that records a signature.
+        first = self.run_released_sync(old_scripts, cold_state, "dsh-outcome-repair")
+        self.assertEqual(first["status"], "succeeded", first["warnings"])
+        # A dsh turn recorded its checkpoint before the candidate build wrote the receipt.
+        session = self.dsh_checkpoint(state=cold_state)
+        self.write_receipt("dsh-outcome-repair", {"harness": "manual", "client": "dsh", "session": session,
+                                                  "created_at": datetime.now(timezone.utc).isoformat()},
+                           summary="Synthetic dsh repair outcome.\n")
+        # Age the directory past the racy window so the released build stores its scan signature;
+        # otherwise a missing signature, not the format change, would explain the later rescan.
+        receipts_dir = self.vault / "receipts"
+        settled = time.time() - 10
+        os.utime(receipts_dir, (settled, settled))
+        # The state the rollback left behind: the released build indexed the file as manual.
+        cold = self.run_released_sync(old_scripts, cold_state, "dsh-outcome-repair")
+        self.assertEqual(cold["status"], "succeeded", cold["warnings"])
+        self.assertEqual([row["harness"] for row in cold["rows"]], ["manual"])
+        with closing(sqlite3.connect(str(cold_state / "memory.sqlite3"))) as db:
+            stored = db.execute("SELECT value FROM metadata WHERE key='receipt_scan_signature'").fetchone()
+        self.assertIsNotNone(stored, "released build stored no scan signature; the rescan below would pass trivially")
+        # This build returns, scans the same receipts again and reads the client from the source.
+        engine = self.sync_module.SyncEngine(self.vault, cold_state)
+        self.addCleanup(lambda: getattr(engine.store, "close", lambda: None)())
+        engine.sync()
+        with engine.store._connect() as db:
+            payload = db.execute("SELECT payload FROM receipts WHERE id=?",
+                                 ("dsh-outcome-repair",)).fetchone()[0]
+        self.assertEqual(json.loads(payload)["harness"], "dsh")
+        gaps = json.loads((cold_state / "receipt-gaps.json").read_text(encoding="utf-8"))
+        self.assertEqual(gaps["potential_missing_receipts"], 0)
+        self.assertEqual(gaps["checkpoints"], [])
+        self.assertEqual(gaps["receipt_coverage"]["covered"], 1)
+
+    def test_resubmitting_after_the_released_build_keeps_the_immutable_source(self):
+        old_scripts = self.old_release_scripts()
+        session = self.dsh_checkpoint()
+        self.engine.receipt("dsh-outcome-old", "Synthetic old-build outcome.",
+                            ["notes/dsh-work.md"], "dsh", session=session)
+        source = self.vault / receipt_source("dsh-outcome-old")
+        original = source.read_bytes()
+        # A rollback indexed the file as plain manual in its own state.
+        cold_state = self.root / "old-build-state"
+        cold = self.run_released_sync(old_scripts, cold_state, "dsh-outcome-old")
+        self.assertEqual([row["harness"] for row in cold["rows"]], ["manual"])
+        # This build resubmits the same logical receipt: the source stays as written and the
+        # stored row regains the client the released index dropped.
+        engine = self.sync_module.SyncEngine(self.vault, cold_state)
+        self.addCleanup(lambda: getattr(engine.store, "close", lambda: None)())
+        again = engine.receipt("dsh-outcome-old", "Synthetic old-build outcome.",
+                               ["notes/dsh-work.md"], "dsh", session=session)
+        self.assertEqual(again["status"], "succeeded")
+        self.assertEqual(source.read_bytes(), original)
+        with engine.store._connect() as db:
+            payload = db.execute("SELECT payload FROM receipts WHERE id=?",
+                                 ("dsh-outcome-old",)).fetchone()[0]
+        self.assertEqual(json.loads(payload)["harness"], "dsh")
+
+    def test_resubmitting_a_bare_client_name_keeps_the_immutable_source(self):
+        path = self.write_receipt("dsh-outcome-bare", {"harness": "dsh"})
+        original = path.read_bytes()
+        result = self.engine.receipt("dsh-outcome-bare", "Synthetic outcome.",
+                                     ["notes/dsh-work.md"], "dsh")
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(self.engine._receipt_event(receipt_source("dsh-outcome-bare"))["harness"], "dsh")
+
+    def test_no_harness_claims_a_plain_manual_receipt(self):
+        # First-writer attribution: a resubmission never renames a manual source, client or not.
+        for harness in ("claude", "dsh"):
+            with self.subTest(harness=harness):
+                event_id = "manual-outcome-" + harness
+                path = self.write_receipt(event_id, {"harness": "manual"})
+                original = path.read_bytes()
+                result = self.engine.receipt(event_id, "Synthetic outcome.", ["notes/dsh-work.md"], harness)
+                self.assertEqual(result["status"], "succeeded")
+                self.assertEqual(path.read_bytes(), original)
+                with self.engine.store._connect() as db:
+                    payload = db.execute("SELECT payload FROM receipts WHERE id=?", (event_id,)).fetchone()[0]
+                self.assertEqual(json.loads(payload)["harness"], "manual")
+
+    def test_a_changed_summary_is_still_a_conflict(self):
+        self.write_receipt("dsh-outcome-summary", {"harness": "manual", "client": "dsh"})
+        with self.assertRaises(self.sync_module.ReceiptConflict):
+            self.engine.receipt("dsh-outcome-summary", "Different outcome.",
+                                ["notes/dsh-work.md"], "dsh")
+
+    def test_every_client_harness_writes_manual_plus_client_and_reads_back(self):
+        v3 = load_script("beyin_v3")
+        clients = [name for name in v3.HARNESSES if name not in v3.RECEIPT_NATIVE_HARNESSES]
+        self.assertTrue(clients, "no harness outside the released validator's list")
+        for harness in clients:
+            with self.subTest(harness=harness):
+                written, client = v3.receipt_harness_fields(harness)
+                self.assertEqual((written, client), ("manual", harness))
+                self.assertEqual(v3.receipt_harness({"harness": written, "client": client}), harness)
+        for harness in v3.RECEIPT_NATIVE_HARNESSES:
+            with self.subTest(native=harness):
+                self.assertEqual(v3.receipt_harness_fields(harness), (harness, None))
+                self.assertEqual(v3.receipt_harness({"harness": harness}), harness)
+
+    def test_the_native_list_is_the_released_validator_and_choices_cover_every_harness(self):
+        v3 = load_script("beyin_v3")
+        available = subprocess.run(["git", "rev-parse", "--verify", "-q", RELEASED + "^{commit}"],
+                                   cwd=str(ROOT), capture_output=True, text=True)
+        if available.returncode != 0:
+            skip_or_fail(self, f"{RELEASED} cannot be read from this clone; the native list cannot be compared "
+                               "with the released validator")
+        released = assigned_constant("template/.claude/scripts/beyin_v3.py", "HARNESSES", rev=RELEASED)
+        self.assertEqual(tuple(v3.RECEIPT_NATIVE_HARNESSES), tuple(released))
+        expected = set(v3.HARNESSES)
+        cli = harness_choices(ROOT / "scripts/beyin_v3.py")
+        client_cli = [choices for choices in cli if "dsh" in choices]
+        self.assertEqual(len(client_cli), 2, f"context and receipt name every client: {cli}")
+        for choices in client_cli:
+            self.assertEqual(sorted(expected - set(choices)), [], choices)
+        hook = harness_choices(SCRIPTS / "beyin_v3_hook.py")
+        self.assertEqual(len(hook), 1, hook)
+        self.assertEqual(sorted(expected - set(hook[0])), [], hook[0])
 
 
 if __name__ == "__main__":

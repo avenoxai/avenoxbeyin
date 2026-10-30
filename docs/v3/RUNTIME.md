@@ -38,6 +38,17 @@ Both clients call `shared_context(store, harness, query, **kwargs)` or `store.co
 
 `optional_provider()` returns None by default without imports or calls. An enabled provider requires an explicitly supplied factory; integrations must call this intentionally. The local store never depends on the provider's existence or state.
 
+### Adding a harness
+
+A new client name must appear in every surface that enumerates clients; a missing one either rejects the name or silently drops the receipt attribution.
+
+- `HARNESSES` in `template/.claude/scripts/beyin_v3.py`.
+- `EDIT_OBSERVING_HARNESSES` in `beyin_v3_projections.py`, when the client reports file edits.
+- The `--harness` choices in `template/.claude/scripts/beyin_v3_hook.py`.
+- The `context` and `receipt` `--harness` choices in `scripts/beyin_v3.py` (two lists), and the doctor's `hook_done_summary(state, (...))` tuple in the same file. The `trace` and `bridge` `--harness` choices there are deliberately narrower (only clients with a chat trace or bridge); extend them only when the client gains that surface.
+- The client list in `template/.agents/skills/beyin/SKILL.md`.
+- Do **not** add it to `RECEIPT_NATIVE_HARNESSES`: that tuple is the name set a released validator accepts, not a policy list. A new client is written as `harness: manual` plus `client: <name>` so an older build can still read the receipt.
+
 ## Validation boundary
 
 The frozen semantic contract and an independent test lane own acceptance. The implementation does not read holdout scenarios or hardcode fixture IDs. Small synthetic lexical gates cannot establish broad language understanding. Real lifecycle delivery, user-facing approval, installer migration, compiler execution and multi-machine reconciliation remain outside this foundation. Existing compiler staging, output allowlists, source hashes and restricted model execution must remain intact if a later migration integrates this store.

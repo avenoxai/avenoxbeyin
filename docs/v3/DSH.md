@@ -116,6 +116,17 @@ otomatik temizlenmez: DSH adaptörünü içermeyen bir sürüme dönüldüğünd
 DSH silinmiş bir hook dosyasına işaret eder ve köprü hiç hook kaydetmez
 (fail-open). Aynı şey DSH'yi artık kullanmayacaksan da geçerlidir.
 
+## Makbuz geriye uyumu
+
+Eski bir sürümün makbuz doğrulayıcısı (v3.12.0) frontmatter'da yalnız kendi
+bildiği istemci adlarını kabul eder. Bu yüzden `dsh` makbuzu diske
+`harness: manual` + `client: dsh` olarak yazılır: eski kod `client` anahtarını
+yok sayar, sync `invalid harness` ile `degraded` dönmez ve makbuzu `manual`
+olarak indeksler. Bu sürüm aynı dosyayı okurken `client` bilinen bir istemciyi
+gösteriyorsa makbuzu yeniden `dsh` sayar; `dsh` checkpoint'i kendi makbuzuyla
+kapanır. Tanınmayan ya da metin olmayan bir `client` makbuzu `manual` bırakır,
+native bir harness `client` taşısa bile kendi adını korur.
+
 ## Doğrulama
 
 `beyin.py sync` çalıştır, DSH'yi yeniden başlat ve özel veri içermeyen bir
