@@ -76,7 +76,7 @@ def assigned_constant(path_or_text, name, rev=None):
         text = (path_or_text.read_text(encoding="utf-8") if isinstance(path_or_text, Path) else path_or_text)
     else:
         text = subprocess.run(["git", "show", f"{rev}:{path_or_text}"], cwd=str(ROOT),
-                              capture_output=True, text=True, check=True).stdout
+                              capture_output=True, check=True).stdout.decode("utf-8")
     for node in ast.parse(text).body:
         if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == name
                                                 for target in node.targets):
@@ -168,7 +168,7 @@ class DshIntegrationTest(unittest.TestCase):
             self.assertIn("beyin_v3_dsh.py", command)
             self.assertIn(str(self.vault), command)
             self.assertIn("--state", command)
-            self.assertIn("--event " + event, command)
+            self.assertRegex(command, r"--event'?\s+'?" + event + r"\b")
             self.assertNotIn("--harness", command)
         self.install()  # idempotent registration
         self.assertEqual(json.loads((self.vault / HOOK_FILE).read_text(encoding="utf-8"))["hooks"], hooks)
@@ -280,7 +280,8 @@ class DshIntegrationTest(unittest.TestCase):
         self.assertTrue(profile["sandbox"]["covers_state"])
         setup = report["manual_setup"]
         self.assertEqual(setup["block"], "")  # the entries exist; only the value is wrong
-        self.assertTrue(any(str(self.vault / HOOK_FILE) in note for note in setup["notes"]))
+        expected = (self.vault / HOOK_FILE).resolve().as_posix()  # the note's JSON path form
+        self.assertTrue(any(expected in note for note in setup["notes"]), setup["notes"])
 
     def test_doctor_flags_read_only_mode_and_a_missing_workspace_root(self):
         self.install()
@@ -389,7 +390,7 @@ class DshIntegrationTest(unittest.TestCase):
             self.assertIn("beyin_v3_dsh.py", command)
             self.assertIn(str(self.vault), command)
             self.assertIn("--vault", command)
-            self.assertIn("--event " + event, command)
+            self.assertRegex(command, r"--event'?\s+'?" + event + r"\b")
             self.assertNotIn("--harness", command)
 
     def test_install_never_writes_a_profile(self):
@@ -499,7 +500,7 @@ class DshReceiptCompatibilityTest(unittest.TestCase):
         path = self.vault / receipt_source(event_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("---\n" + json.dumps(metadata, ensure_ascii=False) + "\n---\n" + summary,
-                        encoding="utf-8")
+                        encoding="utf-8", newline="\n")
         return path
 
     def old_release_scripts(self):
@@ -511,15 +512,17 @@ class DshReceiptCompatibilityTest(unittest.TestCase):
                                "history); the released validator cannot be extracted, so the rollback path stays unproven")
         listing = subprocess.run(["git", "ls-tree", "-r", "--name-only", RELEASED,
                                   "--", "template/.claude/scripts/"],
-                                 cwd=str(ROOT), capture_output=True, text=True, check=True).stdout.split()
+                                 cwd=str(ROOT), capture_output=True, text=True, encoding="utf-8",
+                                 check=True).stdout.split()
         target = self.root / (RELEASED + "-scripts")
         target.mkdir()
         for entry in listing:
             if not entry.endswith(".py"):
                 continue
+            # Bytes as released: a text pipe would decode with the Windows ANSI code page.
             blob = subprocess.run(["git", "show", f"{RELEASED}:{entry}"], cwd=str(ROOT),
-                                  capture_output=True, text=True, check=True).stdout
-            (target / Path(entry).name).write_text(blob, encoding="utf-8")
+                                  capture_output=True, check=True).stdout
+            (target / Path(entry).name).write_bytes(blob)
         self.assertTrue((target / "beyin_v3_sync.py").is_file())
         return target
 

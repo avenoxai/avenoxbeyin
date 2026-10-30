@@ -38,7 +38,8 @@ RECEIPT_ID = "dsh-rollback-e2e"
 
 
 def git(*args, cwd=ROOT):
-    return subprocess.run(["git", *list(args)], cwd=str(cwd), text=True, capture_output=True, timeout=180)
+    return subprocess.run(["git", *list(args)], cwd=str(cwd), text=True, encoding="utf-8",
+                          errors="replace", capture_output=True, timeout=180)
 
 
 # Rollback hedefi: dsh'yi tanımayan son yayın. Sabittir; yeni yayın bunu değiştirmez.
