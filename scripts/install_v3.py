@@ -162,6 +162,7 @@ COMPONENT_PATHS = {
     "adapters/opencode": (".opencode/plugins/",),
     "adapters/omp": (".omp/hooks/",),
     "adapters/kiro": (".kiro/hooks/beyin-v3.json",),
+    "adapters/dsh": (".claude/dsh/",),
 }
 
 
@@ -172,7 +173,8 @@ def is_component_excluded(target, excluded):
             prefixes = tuple(f"{root}/skills/{skill}/" for root in SKILL_ROOTS)
         elif name == "adapters":
             prefixes = (COMPONENT_PATHS["adapters/hermes"] + COMPONENT_PATHS["adapters/opencode"] +
-                        COMPONENT_PATHS["adapters/omp"] + COMPONENT_PATHS["adapters/kiro"])
+                        COMPONENT_PATHS["adapters/omp"] + COMPONENT_PATHS["adapters/kiro"] +
+                        COMPONENT_PATHS["adapters/dsh"])
         else:
             prefixes = COMPONENT_PATHS.get(name, ())
         if prefixes and target.startswith(prefixes):
@@ -196,6 +198,17 @@ def atomic(path, data):
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def _dsh_module():
+    """Load the DSH adapter from this release, never from the vault being installed."""
+    path = ROOT / 'template/.claude/scripts/beyin_v3_dsh.py'
+    if not path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location('beyin_release_dsh', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def stock_legacy_runner(name, current, expected):
@@ -609,6 +622,12 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
         spec = importlib.util.spec_from_file_location("beyin_release_omp", omp)
         module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
         for name, content in module.plan_plugin(vault, state).items():
+            add(name, content)
+    dsh = _dsh_module()
+    if dsh is not None:
+        # DSH has no project-local hook file: the user points one profile's Claude-hook
+        # bridge at this vault-owned JSON (docs/v3/DSH.md); the installer writes the JSON.
+        for name, content in dsh.plan_plugin(vault, state, commands).items():
             add(name, content)
     add(".claude/scripts/beyin_v3_cli.py", (ROOT / "scripts/beyin_v3.py").read_bytes())
     hook = vault / ".claude/scripts/beyin_v3_hook.py"

@@ -41,6 +41,9 @@ jobs:
       BEYIN_V3_NO_SPAWN: '1'
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The lifecycle tests read the released tag and origin/main; a shallow clone has neither.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}

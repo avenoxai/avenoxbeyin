@@ -19,7 +19,7 @@ import zipfile
 OFFICIAL = 'https://api.github.com/repos/avenoxai/avenoxbeyin/releases/latest'
 MAX_PACKAGE = 32 * 1024 * 1024
 # Managed hook definitions whose change asks the client for a trust review (beyin_entry.TRUST_REVIEW).
-HOOK_FILES = ('.claude/settings.local.json', '.codex/hooks.json', '.agents/hooks.json', '.kiro/hooks/beyin-v3.json')
+HOOK_FILES = ('.claude/settings.local.json', '.codex/hooks.json', '.agents/hooks.json', '.kiro/hooks/beyin-v3.json', '.claude/dsh/beyin-v3-hooks.json')
 # The installer mirrors each starter skill into all client roots. Mirrors
 # install_v3.MANAGED_SKILL_PATHS.
 MANAGED_SKILL_PATHS = frozenset(root + '/skills/' + name + '/SKILL.md' for root in ('.agents', '.claude', '.kiro')
