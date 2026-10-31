@@ -503,10 +503,33 @@ def uninstall_bridge(harness, home=None):
     }
 
 
+class _ParserExit(SystemExit):
+    """Only this bridge parser may ask the embedding entry point to return a code."""
+
+
+class _BridgeParser(argparse.ArgumentParser):
+    def exit(self, status=0, message=None):
+        if message:
+            self._print_message(message, sys.stderr)
+        raise _ParserExit(status)
+
+
 def main(argv=None):
+    """Return argument-error/help codes to embedders; unrelated runtime exits propagate.
+
+    The script entry point still exits with this code, preserving argparse's CLI
+    status and stdout/stderr contract rather than treating invalid arguments as success.
+    """
+    try:
+        return _main(argv)
+    except _ParserExit as exc:
+        return exc.code
+
+
+def _main(argv=None):
     if hasattr(sys.stdin, 'reconfigure'):
         sys.stdin.reconfigure(encoding='utf-8-sig', errors='replace')
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = _BridgeParser(description=__doc__)
     parser.add_argument('--vault', type=Path, help='Path to vault root')
     parser.add_argument('--state', type=Path, help='Defaults to the installed vault runtime locator')
     parser.add_argument('--harness', choices=('claude', 'codex', 'antigravity'), required=True)
