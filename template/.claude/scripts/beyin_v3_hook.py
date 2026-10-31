@@ -54,6 +54,8 @@ NO_LEARNING_CHALLENGE_REMINDER = (
 )
 HARNESS_SYNTHETIC_PROMPT_PREFIXES = (
     "<task-notification>",
+    # Claude Desktop linked-session completion/status notifications (#566).
+    "<system-reminder>",
     "Another Claude session sent a message:",
     "<agent-message",
     "<local-command-caveat>",
