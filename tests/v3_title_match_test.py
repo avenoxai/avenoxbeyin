@@ -157,6 +157,52 @@ class TitleMatchSearchTest(unittest.TestCase):
         results = self.ids("Falcon projesi neydi")
         self.assertEqual(results[0], "falcon-note")
 
+    def test_unicode_dash_numbered_prefix_matches_ascii_candidates(self):
+        expected = beyin_v3._name_candidates({'source': 'notes/001-claude-mem.md'})
+        for dash in ('-', '\u2010', '\u2011', '\u2012', '\u2013', '\u2014', '\u2015', '\ufe63', '\uff0d'):
+            with self.subTest(dash=dash):
+                record = {'source': f'notes/001{dash}claude-mem.md'}
+                self.assertEqual(beyin_v3._name_candidates(record), expected)
+                self.assertEqual(beyin_v3._name_match_score(record, beyin_v3._tokens('claude-mem')), 2)
+
+    def test_dash_normalization_does_not_expand_prefix_or_name_matching(self):
+        for source in ('001.claude-mem.md', '001:claude-mem.md', '001\u2212claude-mem.md',
+                       'v001-claude-mem.md', 'unrelated\u2014claude-mem.md'):
+            with self.subTest(source=source):
+                self.assertEqual(beyin_v3._name_match_score({'source': source},
+                                 beyin_v3._tokens('claude-mem')), 0)
+        self.assertEqual(beyin_v3._name_candidates({'source': 'notes/001-claude-mem.md'}),
+                         ['001 claude mem', 'claude mem'])
+        self.assertEqual(beyin_v3._name_candidates({'source': 'notes/claude-mem.md'}), ['claude mem'])
+        self.assertEqual(beyin_v3._name_match_score({'source': '001\u2014claude-mem.md'},
+                         beyin_v3._tokens('claude')), 0)
+
+    def test_unicode_prefix_real_strict_retrieval_matches_ascii(self):
+        for dash in ('-', '\u2010', '\u2011', '\u2013', '\u2014'):
+            with self.subTest(dash=dash), tempfile.TemporaryDirectory(prefix='title-dash-') as td:
+                root = Path(td); vault = root / 'vault'; vault.mkdir()
+                store = beyin_v3.MemoryStore(root / 'state', vault)
+                try:
+                    for ident, source, text in (
+                        ('target', f'notes/001{dash}claude-mem.md',
+                         'Claude mem kurulumu için sentetik bakım kararı. ' + 'Başka açıklama. ' * 20),
+                        ('other', 'notes/index.md', 'Claude mem kurulumu. ' * 8),
+                    ):
+                        path = vault / source; path.parent.mkdir(exist_ok=True)
+                        path.write_text(text, encoding='utf-8')
+                        store.ingest(dict(id=ident, source=source, text=text, title='', kind='note',
+                                          status='active', visibility='internal',
+                                          updated_at='2026-10-01T00:00:00Z'))
+                    before = {p: p.read_bytes() for p in vault.rglob('*.md')}
+                    results = store.retrieve('claude-mem', strict=True)
+                    self.assertEqual([r['id'] for r in results['records']], ['target', 'other'])
+                    context = store.context_for('claude', 'claude-mem', strict=True, budget_chars=2000)
+                    self.assertEqual([r['id'] for r in context['records']], ['target', 'other'])
+                    self.assertEqual(context['records'][0]['source'], f'notes/001{dash}claude-mem.md')
+                    self.assertEqual(before, {p: p.read_bytes() for p in vault.rglob('*.md')})
+                finally:
+                    store.close()
+
     def test_more_specific_title_outranks_general_title(self):
         """More specific note title ('Atlas Projesi') ranks before shorter ('Atlas') for specific query."""
         self.ingest(

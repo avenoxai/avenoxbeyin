@@ -765,6 +765,11 @@ def _fold_query_roots(term_counts, terms, ignored):
                 counts[term] += counts.pop(root)
 
 
+# Conventional Unicode hyphens/dashes and compatibility forms of ASCII hyphen.
+# Keep this filename-only: mathematical minus and arbitrary punctuation are not prefixes.
+_NAME_SEPARATORS = str.maketrans({c: " " for c in "-_\u2010\u2011\u2012\u2013\u2014\u2015\ufe63\uff0d"})
+
+
 def _name_candidates(record):
     """Candidate names for title-salience matching (#354): title, stem, stripped stem, aliases."""
     candidates = []
@@ -773,7 +778,7 @@ def _name_candidates(record):
         candidates.append(title[:160])
     source = str(record.get("source", "")).strip()
     if source:
-        stem = Path(source).stem.replace("-", " ").replace("_", " ").strip()
+        stem = Path(source).stem.translate(_NAME_SEPARATORS).strip()
         if stem:
             candidates.append(stem[:160])
             stripped = re.sub(r"^[0-9]+[ \t\-_]+", "", stem).strip()
