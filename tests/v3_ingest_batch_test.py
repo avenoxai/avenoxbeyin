@@ -7,13 +7,17 @@ The CLI validates the whole list before the first write and names the failing
 index. A write-time error still reports which ids were already stored.
 Synthetic vault, temporary state, no network.
 """
+from contextlib import closing
+import importlib.util
 import json
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tests'))
@@ -68,7 +72,7 @@ class IngestBatchTest(unittest.TestCase):
         self.assertEqual(error['failed_index'], 1)
         self.assertEqual(error['written_ids'], [])
 
-    def test_write_time_failure_reports_ids_written_before_it(self):
+    def test_duplicate_id_conflict_is_rejected_before_writes(self):
         result = self.ingest([
             {'id': 'batch-dup', 'source': 'knowledge/kaynak.md', 'text': 'A'},
             {'id': 'batch-dup', 'source': 'knowledge/kaynak.md', 'text': 'B'},
@@ -78,6 +82,58 @@ class IngestBatchTest(unittest.TestCase):
         self.assertEqual(error['failed_index'], 1)
         self.assertEqual(error['written_ids'], [])
         self.assertEqual(self.stored_ids(), [])
+
+    def test_source_removed_after_preflight_reports_committed_prefix(self):
+        spec = importlib.util.spec_from_file_location('beyin_batch_cli_subject', self.cli)
+        cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli)
+        engine = cli.load_engine()
+        first_source = self.vault / 'knowledge/kaynak.md'
+        original_source = first_source.read_bytes()
+        second_source = self.vault / 'knowledge/second.md'
+        second_source.write_bytes(b'Synthetic second source.\n')
+        payload = [
+            {'id': 'batch-first', 'source': 'knowledge/kaynak.md', 'text': 'First'},
+            {'id': 'batch-second', 'source': 'knowledge/second.md', 'text': 'Second'},
+        ]
+        input_file = self.vault.parent / 'batch.json'
+        input_file.write_text(json.dumps(payload), encoding='utf-8')
+        original_input = input_file.read_bytes()
+        real_ingest, real_validate = engine.MemoryStore.ingest, engine.MemoryStore._validate
+        validated = []
+
+        def validate(store, record, **kwargs):
+            result = real_validate(store, record, **kwargs)
+            validated.append(record['id'])
+            return result
+
+        def ingest(store, record):
+            if record['id'] == 'batch-second':
+                # Both inputs passed preflight, then the first committed. A real
+                # filesystem change must still be rejected by ingest's own validation.
+                self.assertEqual(validated, ['batch-first', 'batch-second', 'batch-first'])
+                second_source.unlink()
+            return real_ingest(store, record)
+
+        with patch.dict(os.environ, self.env, clear=True), \
+                patch.object(cli, 'load_engine', return_value=engine), \
+                patch.object(engine.MemoryStore, '_validate', validate), \
+                patch.object(engine.MemoryStore, 'ingest', ingest):
+            error, code = cli.main(['--vault', str(self.vault), '--state', str(self.state),
+                                    '--json', 'ingest', '--file', str(input_file)], return_result=True)
+        self.assertEqual(code, 1)
+        self.assertEqual(error['error'], 'ValueError')
+        self.assertEqual(error['message'], 'source missing or outside vault')
+        self.assertEqual(error['failed_index'], 1)
+        self.assertEqual(error['written_ids'], ['batch-first'])
+        self.assertEqual(self.stored_ids(), ['batch-first'])
+        with closing(sqlite3.connect(self.state / 'memory.sqlite3')) as db:
+            self.assertEqual(list(db.execute('SELECT event_type,record_id FROM events ORDER BY sequence')),
+                             [('ingest', 'batch-first')])
+        self.assertEqual(first_source.read_bytes(), original_source)
+        self.assertEqual(input_file.read_bytes(), original_input)
+        self.assertFalse(second_source.exists())
+        self.assertEqual(list((self.state / 'journal').glob('*')), [])
 
     def test_existing_id_conflict_writes_nothing(self):
         first = self.ingest({'id': 'already', 'source': 'knowledge/kaynak.md', 'text': 'A'})
