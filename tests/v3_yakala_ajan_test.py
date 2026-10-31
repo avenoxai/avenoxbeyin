@@ -113,6 +113,10 @@ class AgentManualProcessRaceTest(unittest.TestCase):
         self.vault = Path(temporary.name) / 'Örnek Vault'
         self.state = Path(temporary.name) / 'state'
         self.vault.mkdir()
+        # Card locks use default_state even when a caller supplies a different state.
+        local_state = patch.object(yakala, 'default_state', return_value=self.state)
+        local_state.start()
+        self.addCleanup(local_state.stop)
         result = yakala.capture(self.vault, text='Original source text', why='Initial reason', state=self.state)
         self.card_id, self.card_path = result['id'], self.vault / result['path']
         self.raw_path = self.card_path.parent / '.ham' / (self.card_id + '.md')
