@@ -376,6 +376,69 @@ HOOK_FILES = (".claude/settings.local.json", ".codex/hooks.json", ".agents/hooks
               ".kiro/hooks/beyin-v3.json")
 
 
+# Fixed machine-local installation paths only, not all managed files/user scripts.
+MACHINE_LOCAL_FILES = tuple(sorted(set(HOOK_FILES + (
+    '.beyin-runtime.json', 'Beyni Guncelle.cmd', '.codex/config.toml', '.claude/hermes-plugin/__init__.py',
+    '.opencode/plugins/beyin-v3.js', '.omp/hooks/pre/beyin-v3.ts',
+    '.claude/scripts/compile.py', '.claude/scripts/flush.py',
+) + tuple('.claude/hooks/' + name + suffix
+          for name in ('session-start', 'session-end', 'pre-compact', 'prompt-counter')
+          for suffix in ('.sh', '.ps1')))))
+
+
+def tracked_machine_files(vault: Path) -> dict:
+    """Advisory only: query the local Git index, never source contents, remotes or Git writes.
+
+    Sparse checkouts/indexes are explicitly unavailable rather than expanded (which
+    could lazily fetch objects). Fixed literals exclude same-name directory children.
+    Each command has a two-second timeout; no raw Git stderr reaches the report.
+    """
+    report = {'status': 'ok', 'tracked': [], 'coverage': 'fixed_machine_local_installation_paths'}
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith('GIT_')}
+    env.update(GIT_OPTIONAL_LOCKS='0', GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+               GIT_TERMINAL_PROMPT='0', GIT_NO_LAZY_FETCH='1', GIT_ALLOW_PROTOCOL='', LC_ALL='C')
+    command = ['git', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-C', str(vault)]
+
+    def run(*args):
+        return subprocess.run(command + list(args), env=env, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2)
+
+    try:
+        inside = run('rev-parse', '--is-inside-work-tree')
+        if inside.returncode:
+            reason = ('not_git_repository' if b'not a git repository' in inside.stderr.lower() else 'git_error')
+            return dict(report, status='skipped' if reason == 'not_git_repository' else 'unavailable', reason=reason)
+        if inside.stdout.strip() != b'true':
+            return dict(report, status='skipped', reason='not_worktree')
+        # Checking both flags also covers an index awaiting sparse expansion after a
+        # configuration change. --bool produces only a bounded boolean, not config text.
+        for key in ('core.sparseCheckout', 'index.sparse'):
+            sparse = run('config', '--bool', '--get', key)
+            if sparse.returncode not in (0, 1):
+                return dict(report, status='unavailable', reason='git_config_error')
+            if sparse.returncode == 0 and sparse.stdout.strip() != b'false':
+                return dict(report, status='unavailable', reason='sparse_checkout_or_index')
+        pathspecs = [':(literal)' + name for name in MACHINE_LOCAL_FILES]
+        pathspecs += [':(exclude,glob)' + name + '/**' for name in MACHINE_LOCAL_FILES]
+        indexed = run('ls-files', '--cached', '--sparse', '-z', '--', *pathspecs)
+        if indexed.returncode:
+            return dict(report, status='unavailable', reason='git_index_error')
+        # Output has only fixed paths (at most three conflict stages per path).
+        limit = 3 * sum(len(name.encode('utf-8')) + 1 for name in MACHINE_LOCAL_FILES)
+        if len(indexed.stdout) > limit:
+            return dict(report, status='unavailable', reason='unexpected_index_output')
+        names = {name.decode('utf-8') for name in indexed.stdout.split(b'\0') if name}
+        if not names.issubset(MACHINE_LOCAL_FILES):
+            return dict(report, status='unavailable', reason='unexpected_index_output')
+        return dict(report, status='warning' if names else 'ok', tracked=sorted(names))
+    except FileNotFoundError:
+        return dict(report, status='skipped', reason='git_unavailable')
+    except subprocess.TimeoutExpired:
+        return dict(report, status='unavailable', reason='git_timeout')
+    except (OSError, UnicodeError, ValueError):
+        return dict(report, status='unavailable', reason='git_error')
+
+
 def _hook_arguments(command: str) -> list:
     """Arguments of one installed hook command: POSIX shell text or the Windows EncodedCommand."""
     import base64
@@ -1416,6 +1479,7 @@ def main(argv=None, return_result=False):
                 result['hook_paths'] = hook_paths(vault)
             except Exception as exc:
                 result['hook_paths'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            result['tracked_machine_files'] = tracked_machine_files(vault)
             # Information only; a split or container-bound state root never raises the status.
             try:
                 result['state_location'] = state_location(vault, state)
