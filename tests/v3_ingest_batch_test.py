@@ -9,6 +9,7 @@ Synthetic vault, temporary state, no network.
 """
 from contextlib import closing
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -84,6 +85,19 @@ class IngestBatchTest(unittest.TestCase):
         self.assertEqual(self.stored_ids(), [])
 
     def test_source_removed_after_preflight_reports_committed_prefix(self):
+        original_path = sys.path[:]
+        module_name = 'beyin_v3_shared_engine'
+        had_engine = module_name in sys.modules
+        original_engine = sys.modules.get(module_name)
+
+        def restore_imports():
+            sys.path[:] = original_path
+            if had_engine:
+                sys.modules[module_name] = original_engine
+            else:
+                sys.modules.pop(module_name, None)
+
+        self.addCleanup(restore_imports)
         spec = importlib.util.spec_from_file_location('beyin_batch_cli_subject', self.cli)
         cli = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cli)
@@ -116,6 +130,7 @@ class IngestBatchTest(unittest.TestCase):
             return real_ingest(store, record)
 
         with patch.dict(os.environ, self.env, clear=True), \
+                patch.object(sys, 'stdin', io.StringIO()), \
                 patch.object(cli, 'load_engine', return_value=engine), \
                 patch.object(engine.MemoryStore, '_validate', validate), \
                 patch.object(engine.MemoryStore, 'ingest', ingest):
