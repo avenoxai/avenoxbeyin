@@ -1,7 +1,9 @@
 """Opt-in local secret redaction for user-authored V3 write commands.
 
-Known patterns and custom literals are scanned in plain text (including code
-blocks), ignoring Unicode Cf format characters while redacting the original span.
+Known patterns and safe custom literals are scanned in raw and Cf-normalized
+text (including code blocks), redacting the union of original spans. This is not
+exhaustive for combined boundary/interior obfuscations: normalization can remove
+a boundary while the raw pattern sees only part of an interrupted token.
 Arbitrary base64 is not decoded: a zero-width character must not hide a secret,
 and stripping format characters must not turn a short or placeholder literal
 into a pattern that redacts ordinary text. The existing Basic auth check stays.
