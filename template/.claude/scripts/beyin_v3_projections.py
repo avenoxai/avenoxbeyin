@@ -90,7 +90,8 @@ def _hidden_ref_sources(db, refs):
     # All claimed paths and proven aliases are withheld, including in fresh state.
     try:
         row = db.execute('SELECT value FROM metadata WHERE key=?', (RECEIPT_VIEW_SOURCES_ROW,)).fetchone()
-        hidden.update(set(refs).intersection(json.loads(row[0]) if row else []))
+        claimed = {ref_key(source) for source in (json.loads(row[0]) if row else [])}
+        hidden.update(ref for ref in refs if ref_key(ref) in claimed)
     except sqlite3.OperationalError:  # receipts-only reader
         pass
     # Folded like the record lookup below: another spelling of an unreadable source is withheld too.
