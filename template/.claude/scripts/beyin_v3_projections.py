@@ -169,12 +169,29 @@ def latest_receipts(db, vault, sessions=None):
         instant = _receipt_instant(event.get('created_at'))
         if instant is not None:
             candidates.append((instant, event['event_id'], event))
-    for _, ident, event in sorted(candidates, key=lambda item: item[:2], reverse=True):
-        source = 'receipts/' + hashlib.sha256(ident.encode()).hexdigest() + '.md'
-        refs = [ref for ref in event.get('refs') or [] if isinstance(ref, str)] if isinstance(event.get('refs'), list) else []
-        if (not (vault / source).is_symlink() and _vault_file(vault, source) and
-                not _hidden_ref_sources(db, [source, *refs])):
-            yield source, event
+    candidates.sort(key=lambda item: item[:2], reverse=True)
+    position, batch_size = 0, 1
+    while position < len(candidates):
+        end = min(position + batch_size, len(candidates))
+        readable = []
+        for index in range(position, end):
+            _, ident, event = candidates[index]
+            source = 'receipts/' + hashlib.sha256(ident.encode()).hexdigest() + '.md'
+            refs = [ref for ref in event.get('refs') or [] if isinstance(ref, str)] if isinstance(event.get('refs'), list) else []
+            if not (vault / source).is_symlink() and _vault_file(vault, source):
+                readable.append((index, source, event, [source, *refs]))
+        hidden = _hidden_ref_sources(db, [ref for *_, refs in readable for ref in refs])
+        for index, source, event, refs in readable:
+            if not hidden.intersection(refs):
+                position, batch_size = index + 1, 1
+                yield source, event
+                # A caller may change privacy/index/source state while the generator
+                # is suspended. Never reuse this batch's decisions after a yield.
+                break
+        else:
+            # Keep the newest-public fast path small; amortize alias scans only
+            # after a withheld/missing candidate. No cache survives this invocation.
+            position, batch_size = end, 64
 
 
 def _bound_day(bound, zone):
