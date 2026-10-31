@@ -1241,7 +1241,7 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
     results = []
     for card in targets:
         expected = card['path'].read_bytes()
-        meta, body = _parse_card_text(expected.decode('utf-8').replace('\r\n', '\n'))
+        meta, body = _parse_card_text(expected.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n'))
         card = dict(card, meta=meta, body=body)
         raw_write = None
         if meta.get('durum') in AGENT_CARD_BUSY:
