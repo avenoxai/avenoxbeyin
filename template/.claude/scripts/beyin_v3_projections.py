@@ -79,6 +79,12 @@ def _hidden_ref_sources(db, refs):
     """
     refs = sorted(set(refs))
     from beyin_v3_hygiene import sensitive_source
+    from beyin_v3_index import dir_key
+
+    def ref_key(ref):
+        # Same fold as excluded directory names: NFC, Turkish i, not str.casefold() alone.
+        return '/'.join(dir_key(part) for part in ref.replace('\\', '/').split('/'))
+
     hidden = {ref for ref in refs if sensitive_source(ref)}
     # View provenance survives removal of its indexed privacy/trust metadata.
     # All claimed paths and proven aliases are withheld, including in fresh state.
@@ -88,11 +94,10 @@ def _hidden_ref_sources(db, refs):
     except sqlite3.OperationalError:  # receipts-only reader
         pass
     # Folded like the record lookup below: another spelling of an unreadable source is withheld too.
-    unreadable = {name.casefold() for name in _stored_names(db, UNREADABLE_SOURCES_ROW)}
-    hidden.update(ref for ref in refs if ref.casefold() in unreadable)
+    unreadable = {ref_key(name) for name in _stored_names(db, UNREADABLE_SOURCES_ROW)}
+    hidden.update(ref for ref in refs if ref_key(ref) in unreadable)
     excluded = _excluded_dir_keys(db)
     if excluded:
-        from beyin_v3_index import dir_key
         hidden.update(ref for ref in refs
                       if any(dir_key(part) in excluded for part in ref.replace('\\', '/').split('/')[:-1]))
     for start in range(0, len(refs), 500):
@@ -106,17 +111,17 @@ def _hidden_ref_sources(db, refs):
         # existing SQL path; only unresolved refs need the Unicode casefold lookup.
         aliases = defaultdict(set)
         for ref in set(chunk) - {source for source, _ in rows} - hidden:
-            aliases[ref.casefold()].add(ref)
+            aliases[ref_key(ref)].add(ref)
         if aliases:
             # Folded in Python, not with a registered SQL function: SQLite refuses to create
             # one while a caller still has a statement open on this connection.
             matched = [source for (source,) in db.execute('SELECT source FROM markdown_sources')
-                       if source.casefold() in aliases]
+                       if ref_key(source) in aliases]
             for begin in range(0, len(matched), 500):
                 part = matched[begin:begin + 500]
                 folded = db.execute('SELECT m.source, r.payload FROM markdown_sources m JOIN records r ON r.id = m.id '
                                     'WHERE m.source IN (' + ','.join('?' * len(part)) + ')', part).fetchall()
-                rows.extend((ref, payload) for source, payload in folded for ref in aliases[source.casefold()])
+                rows.extend((ref, payload) for source, payload in folded for ref in aliases[ref_key(source)])
         for source, payload in rows:
             record = json.loads(payload)
             if (record.get('visibility', 'internal') not in ('public', 'internal') or record.get('trust') == 'untrusted' or

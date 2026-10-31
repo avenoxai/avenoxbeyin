@@ -1,6 +1,7 @@
 """Receipt ref case aliases obey the existing privacy/trust gate, including old rows."""
 from datetime import date
 import hashlib
+import unicodedata
 import json
 from pathlib import Path
 import sqlite3
@@ -44,6 +45,26 @@ class ReceiptCaseAliasTest(unittest.TestCase):
                 self.db.execute('DELETE FROM markdown_sources')
                 self.record(source, **metadata)
                 self.assertEqual(_hidden_ref_sources(self.db, [source, alias]), {source, alias})
+
+    def test_nfd_and_turkish_letter_pairs_are_hidden(self):
+        pairs = (
+            ('nfc-nfd', 'knowledge/Özel.md', unicodedata.normalize('NFD', 'knowledge/Özel.md')),
+            ('İ-i', 'knowledge/İstanbul.md', 'knowledge/istanbul.md'),
+            ('I-ı', 'knowledge/Işık.md', 'knowledge/ışık.md'),
+            ('ı-i', 'knowledge/ısı.md', 'knowledge/isi.md'),
+        )
+        for name, source, alias in pairs:
+            with self.subTest(name=name):
+                self.db.execute('DELETE FROM records')
+                self.db.execute('DELETE FROM markdown_sources')
+                self.db.execute('DELETE FROM metadata')
+                self.record(source, visibility='private')
+                self.assertEqual(_hidden_ref_sources(self.db, [alias]), {alias})
+                self.db.execute('DELETE FROM records')
+                self.db.execute('DELETE FROM markdown_sources')
+                self.db.execute('INSERT INTO metadata VALUES (?,?)',
+                                ('index_unreadable_sources', json.dumps([source])))
+                self.assertEqual(_hidden_ref_sources(self.db, [alias]), {alias})
 
     def test_alias_lookup_works_while_a_caller_iterates_the_same_connection(self):
         # SQLite cannot register a function while a statement is open on the connection.
