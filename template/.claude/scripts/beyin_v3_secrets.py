@@ -110,7 +110,7 @@ def _restore_original(text, spans):
         parts.extend((text[end:start], value))
         end = stop
     parts.append(text[end:])
-    return ''.join(parts)
+    return ''.join(parts), len(merged)
 
 
 def _redact(text, patterns):
@@ -124,12 +124,18 @@ def _redact(text, patterns):
     positions = [index for index, character in enumerate(text)
                  if unicodedata.category(character) != 'Cf']
     normalized = ''.join(text[index] for index in positions)
-    spans, count = [], 0
+    spans = []
     for pattern in patterns:
-        normalized, positions, found, matches = _sub_normalized(pattern, normalized, positions)
+        normalized, positions, found, _ = _sub_normalized(pattern, normalized, positions)
         spans.extend(found)
-        count += matches
-    return _restore_original(text, spans), count
+    # Normalization can remove an existing regex boundary (x + Cf + sk-...).
+    # Preserve raw matches too; union their original spans before replacing so a
+    # raw partial match cannot prevent normalization from masking the whole key.
+    raw, raw_positions = text, range(len(text))
+    for pattern in patterns:
+        raw, raw_positions, found, _ = _sub_normalized(pattern, raw, raw_positions)
+        spans.extend(found)
+    return _restore_original(text, spans)
 
 
 def redact(text, state):
@@ -150,7 +156,8 @@ def redact(text, state):
     result = _BASIC_AUTH.sub(redact_basic, result)
     for literal in _custom_literals(state):
         normalized = _without_format(literal)
-        if len(normalized) >= 4 and '[REDACTED]' not in normalized:
+        if (len(normalized) >= 4 and '[REDACTED]' not in normalized
+                and normalized not in '[REDACTED]'):
             result, matches = _redact(result, (re.compile(re.escape(normalized)),))
         else:
             # Unsafe normalized values must retain only their original exact match.
