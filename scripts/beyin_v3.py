@@ -957,8 +957,8 @@ def parser(note_namespace=None, is_json=False):
                        help="Explicit range end, inclusive: YYYY-MM-DD covers that whole local day; without "
                             "--since there is no lower bound")
     recap.set_defaults(usage_error=recap.error)  # cross-flag checks in main() report with recap's own usage
-    triage = sub.add_parser("triage", help="Vault digestion report: inbox items, stale tasks, and weekly knowledge summary")
-    triage.add_argument("--stale-days", type=int, default=14, help="Days of inactivity before an open task is considered stale (default: 14)")
+    triage = sub.add_parser("triage", help="Vault digestion report: inbox items, stale tasks/threads, and weekly knowledge summary")
+    triage.add_argument("--stale-days", type=int, default=14, help="Age threshold for open tasks and Threads ISO date mentions (default: 14)")
     triage.add_argument("--digest-days", type=int, default=7, help="Days to look back for knowledge notes and outcomes (default: 7)")
     audit_parser = sub.add_parser("audit", help="Advisory memory auditor: detect near-duplicates, staleness, and contradictions")
     audit_parser.add_argument("target", nargs="?", default=None, help="Specific markdown note to audit against vault memory (optional)")
