@@ -5,6 +5,7 @@ Nothing is pruned by name unless the user lists it: "Vendor" or "External" is a 
 tree in one vault and a notes folder in another. Every active name, a file that is not applied
 and an indexed tree that looks vendored are visible in sync and doctor.
 """
+import hashlib
 import importlib.util
 import json
 import os
@@ -58,6 +59,7 @@ def load_file(name, path):
 
 
 index_settings = load_file('beyin_v3_index_subject', SCRIPTS / 'beyin_v3_index.py')
+WITHHELD_SUMMARY = load_file('beyin_v3_projections_subject', SCRIPTS / 'beyin_v3_projections.py').WITHHELD_SUMMARY
 
 
 class EngineFixture(unittest.TestCase):
@@ -577,7 +579,7 @@ from beyin_v3_projections import latest_receipts, recent_receipts
 db = sqlite3.connect((state / 'memory.sqlite3').resolve().as_uri() + '?mode=ro', uri=True)
 try:
     latest = next((event['summary'] for _, event in latest_receipts(db, vault)), None)
-    recap = {item['summary']: [item['refs'], item.get('refs_withheld')] for item in recent_receipts(db, vault=vault)['items']}
+    recap = {item['source']: [item['summary'], item['refs'], item.get('refs_withheld')] for item in recent_receipts(db, vault=vault)['items']}
 finally:
     db.close()
 print(json.dumps({'latest': latest, 'recap': recap}))
@@ -629,8 +631,25 @@ class ExcludedRefTest(unittest.TestCase):
         finally:
             db.close()
 
+    EVENTS = {'synthetic-general': GENERAL, 'synthetic-open': OPEN, 'synthetic-private': PRIVATE}
+
+    def by_summary(self, rows):
+        """Recap rows keyed by the summary each receipt was written with, via its source.
+
+        A receipt with a private ref shows a placeholder in place of its summary; any other shows it.
+        """
+        named = {'receipts/' + hashlib.sha256(ident.encode()).hexdigest() + '.md': summary
+                 for ident, summary in self.EVENTS.items()}
+        keyed = {}
+        for source, (summary, refs, withheld) in rows.items():
+            written = named[source]
+            self.assertEqual(summary, WITHHELD_SUMMARY if withheld and withheld['private'] else written)
+            keyed[written] = (refs, withheld)
+        return keyed
+
     def recap(self):
-        return {item['summary']: (item['refs'], item.get('refs_withheld')) for item in self.beyin('recap')['items']}
+        return self.by_summary({item['source']: (item['summary'], item['refs'], item.get('refs_withheld'))
+                                for item in self.beyin('recap')['items']})
 
     def unsynced(self):
         done = subprocess.run([sys.executable, '-c', RECEIPT_READER, str(self.vault), str(self.state)],
@@ -689,7 +708,7 @@ class ExcludedRefTest(unittest.TestCase):
         self.assertEqual(json.loads((self.state / 'index.json').read_bytes().decode('utf-8'))['excluded_dirs'], [])
         self.assertEqual(self.rows("SELECT source FROM markdown_sources WHERE source LIKE 'Çalışma/%'"), [])
         unsynced = self.unsynced()
-        self.assertEqual(unsynced['recap'][self.PRIVATE], [['notlar/genel.md'], withheld])
+        self.assertEqual(self.by_summary(unsynced['recap'])[self.PRIVATE], (['notlar/genel.md'], withheld))
         self.assertEqual(unsynced['latest'], self.GENERAL)
 
         # Included again: the records are back and decide for themselves.
