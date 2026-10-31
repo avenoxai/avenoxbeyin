@@ -76,8 +76,21 @@ class IngestBatchTest(unittest.TestCase):
         error = self.error_of(result)
         self.assertEqual(error['error'], 'RevisionConflict')
         self.assertEqual(error['failed_index'], 1)
-        self.assertEqual(error['written_ids'], ['batch-dup'])
-        self.assertEqual(self.stored_ids(), ['batch-dup'])
+        self.assertEqual(error['written_ids'], [])
+        self.assertEqual(self.stored_ids(), [])
+
+    def test_existing_id_conflict_writes_nothing(self):
+        first = self.ingest({'id': 'already', 'source': 'knowledge/kaynak.md', 'text': 'A'})
+        self.assertEqual(first.returncode, 0, first.stderr)
+        result = self.ingest([
+            {'id': 'batch-new', 'source': 'knowledge/kaynak.md', 'text': 'Y'},
+            {'id': 'already', 'source': 'knowledge/kaynak.md', 'text': 'B'},
+        ])
+        error = self.error_of(result)
+        self.assertEqual(error['error'], 'RevisionConflict')
+        self.assertEqual(error['failed_index'], 1)
+        self.assertEqual(error['written_ids'], [])
+        self.assertEqual(self.stored_ids(), ['already'])
 
     def test_single_record_ingest_is_unchanged(self):
         result = self.ingest({'id': 'solo', 'source': 'knowledge/kaynak.md', 'text': 'X'})

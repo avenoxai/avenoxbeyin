@@ -1701,17 +1701,35 @@ def main(argv=None, return_result=False):
                 # Each record commits in its own transaction, so a batch used to stop at the
                 # first bad item with the earlier ones already stored and nothing saying so.
                 # Validate the whole batch before the first write and keep the failing index.
+                validated = []
                 for index, record in enumerate(payload):
                     try:
-                        store._validate(record)
+                        validated.append(store._validate(record))
                     except Exception as exc:
                         exc.batch_ingest = {"failed_index": index, "written_ids": []}
                         raise
+                # A duplicate id in the list, or one already stored with a different payload,
+                # used to commit the earlier items before ingest raised. Refuse the batch first.
+                seen = {}
+                for index, record in enumerate(validated):
+                    previous = seen.get(record["id"])
+                    if previous is not None and engine._json(previous) != engine._json(record):
+                        exc = engine.RevisionConflict("existing id; use update_task with expected revision")
+                        exc.batch_ingest = {"failed_index": index, "written_ids": []}
+                        raise exc
+                    seen[record["id"]] = record
+                with store._connect() as db:
+                    for index, record in enumerate(validated):
+                        old = db.execute("SELECT payload FROM records WHERE id=?", (record["id"],)).fetchone()
+                        if old and old[0] != engine._json(record):
+                            exc = engine.RevisionConflict("existing id; use update_task with expected revision")
+                            exc.batch_ingest = {"failed_index": index, "written_ids": []}
+                            raise exc
                 result = []
                 for index, record in enumerate(payload):
                     try:
                         result.append(store.ingest(record))
-                    except Exception as exc:  # e.g. an id conflict seen only at write time
+                    except Exception as exc:
                         exc.batch_ingest = {"failed_index": index,
                                             "written_ids": [item["id"] for item in result]}
                         raise
