@@ -4,6 +4,7 @@ A script or data file has no visibility record. Treating every path under the
 directory as private hides receipts that do not describe a note. Real install,
 real SQLite rows, synthetic fixtures.
 """
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -67,11 +68,17 @@ class InstalledExcludedMarkdownTest(unittest.TestCase):
         self.beyin('receipt', '--event-id', 'synthetic-script', '--summary', self.SCRIPT, '--ref', 'araclar/arac.py')
         self.beyin('receipt', '--event-id', 'synthetic-tree-note', '--summary', self.NOTE, '--ref', 'araclar/not.md')
         self.beyin('sync')
-        items = {item['summary']: item for item in self.beyin('recap')['items']}
-        self.assertEqual(items[self.SCRIPT]['refs'], ['araclar/arac.py'])
-        self.assertIsNone(items[self.SCRIPT].get('refs_withheld'))
-        self.assertEqual(items[self.NOTE]['refs'], [])
-        self.assertEqual(items[self.NOTE]['refs_withheld'], {'private': 1, 'missing': 0})
+
+        def item_for(event_id):
+            # The receipt file name, not the summary: a private ref may replace the summary text.
+            source = 'receipts/' + hashlib.sha256(event_id.encode()).hexdigest() + '.md'
+            return next(item for item in self.beyin('recap')['items'] if item['source'] == source)
+
+        script, note = item_for('synthetic-script'), item_for('synthetic-tree-note')
+        self.assertEqual(script['refs'], ['araclar/arac.py'])
+        self.assertIsNone(script.get('refs_withheld'))
+        self.assertEqual(note['refs'], [])
+        self.assertEqual(note['refs_withheld'], {'private': 1, 'missing': 0})
 
 
 if __name__ == '__main__':
