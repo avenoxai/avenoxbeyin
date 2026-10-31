@@ -343,11 +343,49 @@ def _edits_knowledge(vault, payload):
     return False
 
 
+def _edits_only_outside_vault(vault, payload):
+    """Only suppress when every identified editor path is known to be outside.
+
+    Keep the historical reminder for pathless/unsupported events, malformed paths,
+    and relative paths without an absolute payload cwd. No file contents are read.
+    """
+    from beyin_v3_hygiene import edited_paths
+    tool_input = payload.get("tool_input")
+    if vault is None or not isinstance(tool_input, dict):
+        return False
+    cwd = payload.get("cwd")
+    has_cwd = isinstance(cwd, str) and bool(cwd.strip()) and Path(cwd).is_absolute()
+    for key in ("file_path", "path", "notebook_path"):
+        if key in tool_input:
+            value = tool_input[key]
+            if not isinstance(value, str) or not value.strip() or "\0" in value:
+                return False
+            if not has_cwd and not Path(value.strip()).is_absolute():
+                return False
+    if "command" in tool_input:
+        command = tool_input["command"]
+        if (not isinstance(command, str) or "*** Begin Patch" not in command
+                or "*** End Patch" not in command or not has_cwd or "\0" in command):
+            return False
+        headers = ("*** Add File: ", "*** Update File: ", "*** Move to: ", "*** Delete File: ")
+        for line in command.splitlines():
+            if line.startswith("***") and line not in ("*** Begin Patch", "*** End Patch", "*** End of File"):
+                if not line.startswith(headers) or not line.partition(": ")[2].strip():
+                    return False
+    try:
+        root = Path(vault).resolve()
+        paths = edited_paths(payload, limit=None, include_deleted=True)
+        return bool(paths) and all(not path.resolve().is_relative_to(root) for path in paths)
+    except (ValueError, OSError, RuntimeError):
+        return False
+
+
 def receipt_reminder(payload, state, harness, event, vault=None):
     """Track edits per session and return a one-time Stop block, or None.
 
     Installed PostToolUse hooks match Edit|Write|apply_patch|MultiEdit|NotebookEdit for Claude and
-    Codex, so that event marks the session as edited without reading transcripts.
+    Codex. Known vault-external edits do not mark the session; unknown/pathless
+    events retain the legacy reminder behavior without reading transcripts.
     Stop then looks for a receipt of this harness and session in the runtime store.
     If a receipt declared learnings but no note under knowledge/ was touched,
     Stop reminds once to distill into knowledge/concepts/.
@@ -374,6 +412,8 @@ def receipt_reminder(payload, state, harness, event, vault=None):
                 edited.unlink(missing_ok=True)
             return None
         if event == "PostToolUse":
+            if _edits_only_outside_vault(vault, payload):
+                return None
             if not edited.exists():
                 atomic(edited, {"at": time.time()})
             if vault is not None and _edits_knowledge(vault, payload):

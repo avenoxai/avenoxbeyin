@@ -355,11 +355,12 @@ def _shallow_newest(folder, cutoff=None):
     return newest
 
 
-def edited_paths(payload, limit=5):
+def edited_paths(payload, limit=5, include_deleted=False):
     """Vault candidates from one PostToolUse payload: Claude file_path/path, Codex apply_patch headers.
 
     Codex reports apply_patch as tool_input.command with the patch text; its file
     headers are relative to the session cwd. At most `limit` paths when bounded, in order.
+    Deleted paths are opt-in: they prove an edit, but not a surviving knowledge note.
     """
     tool_input = payload.get('tool_input')
     if not isinstance(tool_input, dict):
@@ -369,6 +370,8 @@ def edited_paths(payload, limit=5):
     command = tool_input.get('command')
     if isinstance(command, str) and '*** Begin Patch' in command:
         found += PATCH_PATHS.findall(command)
+        if include_deleted:
+            found += re.findall(r'(?m)^\*\*\* Delete File: (.+?)\s*$', command)
     cwd = payload.get('cwd')
     base = Path(cwd) if isinstance(cwd, str) and cwd.strip() and Path(cwd).is_absolute() else None
     paths = []
