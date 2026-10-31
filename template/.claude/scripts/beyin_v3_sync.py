@@ -771,7 +771,7 @@ class SyncEngine:
                 'truncated': len(due) > 20 or len(invalid) > 20}
 
     def supersedes_health(self):
-        """Report supersedes values that retire nothing: unresolved, ambiguous or the note itself."""
+        """Report supersedes values that retire nothing: unresolved, ambiguous, the note itself or a cycle."""
         with self.store._connect() as db:
             records = [json.loads(row[0]) for row in db.execute('SELECT payload FROM records ORDER BY id')]
         dead = resolve_supersedes(records)[1]
