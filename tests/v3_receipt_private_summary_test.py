@@ -77,5 +77,75 @@ class PrivateSummaryTest(unittest.TestCase):
         self.assertNotIn(self.LATER, json.dumps(self.beyin('recap'), ensure_ascii=False))
 
 
+class CurrentScanSummaryTest(unittest.TestCase):
+    def test_view_privacy_uses_current_unreadable_and_exclusion_snapshot(self):
+        from v3_sync_test import load_module
+        subject = load_module()
+        from beyin_v3_projections import recent_receipts
+        transitions = ('public-private', 'private-public', 'private-unreadable',
+                       'public-excluded', 'private-excluded', 'unreadable-public',
+                       'excluded-public')
+        for transition in transitions:
+            with self.subTest(transition=transition), tempfile.TemporaryDirectory(prefix='view-privacy-') as tmp:
+                root = Path(tmp)
+                vault, state = root / 'vault', root / 'state'
+                source = vault / 'vendor/note.md'
+                source.parent.mkdir(parents=True)
+                public = vault / 'notes/public.md'
+                public.parent.mkdir()
+                public.write_text('Synthetic public control.\n', encoding='utf-8')
+                initial, target = transition.split('-')
+
+                def note(visibility):
+                    source.write_text(subject.render({'id': 'note', 'visibility': visibility},
+                                                     'Synthetic source.'), encoding='utf-8')
+
+                def exclude(names):
+                    (state / 'index.json').write_text(
+                        json.dumps({'schema': 1, 'excluded_dirs': names}), encoding='utf-8')
+
+                def views():
+                    paths = [*(vault / 'daily/v3').glob('*.md'), vault / 'knowledge/v3/outcomes.md']
+                    self.assertGreater(len(paths), 1)
+                    return ''.join(path.read_text(encoding='utf-8') for path in paths)
+
+                broken = '---\nvisibility: private\ninvalid: [\n---\nSynthetic source.\n'
+                note('public' if initial == 'public' else 'private')
+                engine = subject.SyncEngine(vault, state)
+                engine.sync()
+                engine.receipt('private-transition', 'SYNTHETIC_TRANSITION_CANARY', ['vendor/note.md'], 'codex')
+                engine.receipt('public-control', 'SYNTHETIC_PUBLIC_CONTROL', ['notes/public.md'], 'codex')
+                engine.sync()
+                if initial == 'unreadable':
+                    source.write_text(broken, encoding='utf-8')
+                elif initial == 'excluded':
+                    exclude(['vendor'])
+                if initial in ('unreadable', 'excluded'):
+                    # Establish the old snapshot before testing a repair, independently
+                    # of whether an earlier visibility transition already works.
+                    engine.sync()
+                    engine.sync()
+                if target == 'unreadable':
+                    source.write_text(broken, encoding='utf-8')
+                elif target == 'excluded':
+                    exclude(['vendor'])
+                else:
+                    note(target)
+                    if initial == 'excluded':
+                        exclude([])
+                originals = {path: path.read_bytes() for path in
+                             (source, public, *(vault / 'receipts').glob('*.md'))}
+                result = engine.sync()  # Exactly one scan must apply this transition.
+                self.assertEqual(result['status'], 'degraded' if target == 'unreadable' else 'succeeded')
+                text = views()
+                with engine.store._connect() as db:
+                    recap = json.dumps(recent_receipts(db, vault=vault))
+                for output in (text, recap):
+                    self.assertIn('SYNTHETIC_PUBLIC_CONTROL', output)
+                    self.assertEqual('SYNTHETIC_TRANSITION_CANARY' in output, target == 'public')
+                for path, content in originals.items():
+                    self.assertEqual(path.read_bytes(), content)
+
+
 if __name__ == '__main__':
     unittest.main()
