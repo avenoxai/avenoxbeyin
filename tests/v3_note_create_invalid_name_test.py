@@ -116,6 +116,22 @@ class NoteCreateInvalidNameTest(unittest.TestCase):
                 self.assertEqual(edited['status'], 'written')
                 self.assertIn('güncellendi.', path.read_text(encoding='utf-8'))
 
+    def test_note_edit_of_a_missing_note_uses_the_create_name_gate(self):
+        source = 'notes/Yeni?.md'
+        done = self.command('note-edit', '--file', '-', payload={
+            'source': source, 'expected_sha256': None, 'content': 'Yeni not.\n'})
+        self.assertNotEqual(done.returncode, 0)
+        error = json.loads((done.stdout or done.stderr).decode('utf-8'))
+        self.assertEqual(error['error'], 'ValueError')
+        self.assertIn('use a vault-relative Markdown path', error['message'])
+        self.assertFalse((self.vault / source).exists())
+
+        turkish = 'notes/Yeni-çığ.md'
+        created = self.succeeded('note-edit', '--file', '-', payload={
+            'source': turkish, 'expected_sha256': None, 'content': 'Türkçe yeni not.\n'})
+        self.assertEqual(created['status'], 'written')
+        self.assertIn('Türkçe yeni not.', (self.vault / turkish).read_text(encoding='utf-8'))
+
     def test_valid_note_create_and_edit_still_work(self):
         source = 'knowledge/calibration.md'
         created = self.succeeded('note-create', payload={'source': source, 'text': 'Synthetic calibration note.',

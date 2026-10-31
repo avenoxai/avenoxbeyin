@@ -333,6 +333,8 @@ def _apply(engine, request, committed):
         if actual != expected:
             raise NoteConflict('source changed; note-read again and rebuild the targeted edits')
         if raw is None:
+            # A missing note is a create. Same name gate as note-create, before any write.
+            validate_source_name(source)
             if 'edits' in request or not isinstance(request.get('content'), str):
                 raise ValueError('new source requires content and expected_sha256:null')
             text = request['content']
