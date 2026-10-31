@@ -350,6 +350,89 @@ class PassageContextTest(Vault):
             self.assertNotIn(marker, records[0]['text'])
 
 
+class DedupeWiderTest(Vault):
+    """Narrow #530 regression: dedupe must retain packer's existing wider views."""
+
+    def setUp(self):
+        super().setUp()
+        import beyin_v3_dedupe
+        self.dedupe = beyin_v3_dedupe
+        self.dedupe.save_settings(self.store.state_dir, True)
+        for index in range(2):
+            name = 'Zirkon Takvimi Kredi %d' % index
+            filler = 'Satır satır kayıt tutulur, sütunlar sabit kalır. ' * 12
+            self.ingest('wide%d' % index,
+                        '# %s\n\n## Özet\n\nZirkon takvimi kredi özeti %d.\n\n## Kayıtlar\n\n%s\n\n'
+                        '## Amaç\n\nZirkon takvimi kredi planı: sınır %d.\n' % (name, index, filler, index),
+                        'notes/wide%d.md' % index, title=name)
+        self.context = self.strict('zirkon takvimi kredi planı', budget_chars=5000)
+        self.assertEqual(len(self.context['records']), 2)
+        self.assertEqual(set(self.context.wider), {'wide0', 'wide1'})
+        self.old, self.new = self.context['records']
+        self.dedupe.record_delivered(self.store.state_dir, 'claude', 'wider-session', [self.old])
+        self.assertTrue(self.dedupe._session_file(self.store.state_dir, 'claude', 'wider-session').is_file())
+
+    def filtered(self, context=None):
+        return self.dedupe.drop_delivered(self.store.state_dir, 'claude', 'wider-session',
+                                         self.context if context is None else context)
+
+    def test_real_passage_dedupe_render_retains_second_passage_within_budget(self):
+        kept, duplicates = self.filtered()
+        self.assertEqual([r['id'] for r in duplicates], [self.old['id']])
+        prefix = 'Receipt session=synthetic\n'
+        wire, delivered = runtime.render_context(kept, 5000, prefix=prefix)
+        shown = json.loads(wire[len(prefix):])
+        self.assertEqual([r['id'] for r in shown['records']], [self.new['id']])
+        self.assertIn('[…]', shown['records'][0]['text'])
+        self.assertEqual(shown['records'][0]['text'], self.context.wider[self.new['id']]['text'])
+        self.assertEqual(delivered['records'][0]['text'], shown['records'][0]['text'])
+        self.assertEqual(set(kept.wider), {self.new['id']})
+        self.assertIsNot(kept.wider, self.context.wider)
+        serialized = json.loads(json.dumps(kept))
+        self.assertNotIn('wider', serialized)
+        self.assertNotIn('sources', serialized)
+        self.assertEqual([r['id'] for r in kept.sources], [self.new['id']])
+        self.assertNotIn(self.old['source'], wire)
+        self.assertNotIn('wider', shown)
+        self.assertNotIn('sources', shown)
+        self.assertNotIn('source_sha256', wire)
+        for budget in (5000, 1800, 900, 100, 0):
+            with self.subTest(budget=budget):
+                text, projection = runtime.render_context(kept, budget, prefix=prefix)
+                self.assertLessEqual(len(text), budget)
+                self.assertNotIn(self.old['source'], text)
+                self.assertTrue(all(r['id'] == self.new['id'] for r in projection['records']))
+                if text:
+                    json.loads(text[len(prefix):])
+
+    def test_repeated_and_all_filtered_do_not_retain_removed_wider_records(self):
+        kept, _ = self.filtered()
+        self.assertEqual(set(kept.wider), {self.new['id']})
+        repeated, duplicates = self.filtered(kept)
+        self.assertIs(repeated, kept)
+        self.assertEqual(duplicates, [])
+        self.assertEqual(set(repeated.wider), {self.new['id']})
+        self.dedupe.record_delivered(self.store.state_dir, 'claude', 'wider-session', [self.new])
+        empty, duplicates = self.filtered()
+        self.assertEqual(len(duplicates), 2)
+        self.assertEqual(empty.wider, {})
+        self.assertEqual(empty.sources, ())
+        wire, delivered = runtime.render_context(empty, 5000)
+        self.assertEqual(delivered['records'], [])
+        self.assertNotIn('notes/wide', wire)
+        # Cloning/filtering cannot mutate the caller's process-local metadata.
+        self.assertEqual(set(self.context.wider), {'wide0', 'wide1'})
+
+    def test_plain_dict_compatibility_without_process_local_metadata(self):
+        ordinary = dict(self.context)
+        kept, duplicates = self.filtered(ordinary)
+        self.assertIs(type(kept), dict)
+        self.assertEqual([r['id'] for r in kept['records']], [self.new['id']])
+        self.assertEqual([r['id'] for r in duplicates], [self.old['id']])
+        self.assertFalse(hasattr(kept, 'wider'))
+        self.assertEqual(len(ordinary['records']), 2)
+
+
 class ConfigAndCacheTest(Vault):
     def test_configured_floor_and_exclusions(self):
         self.ingest('arch', 'Zirkon kovası yedekleme arşiv kaydı.', '📦 900-Archive/eski.md')
