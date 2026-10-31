@@ -81,11 +81,24 @@ class NoteCreateInvalidNameTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.refused('tasks/' + name, message, command='task-create')
 
+    def test_reserved_punctuation_controls_and_extended_device_names_are_rejected(self):
+        for name in ('a<b.md', 'a>b.md', 'a"b.md', 'a|b.md', 'a?b.md', 'a*b.md', 'no\x01te.md'):
+            with self.subTest(name=name):
+                self.refused('knowledge/' + name, 'use a vault-relative Markdown path')
+        for name in ('CONIN$.md', 'CONOUT$.md', 'COM\u00b9.md', 'LPT\u00b2.md', 'con .md'):
+            with self.subTest(name=name):
+                self.refused('knowledge/' + name, 'device paths are not sources')
+
     def test_valid_note_create_and_edit_still_work(self):
         source = 'knowledge/calibration.md'
         created = self.succeeded('note-create', payload={'source': source, 'text': 'Synthetic calibration note.',
                                                         'metadata': {'id': 'synthetic-valid'}})
         self.assertEqual(created['status'], 'succeeded')
+        turkish = self.succeeded('note-create', payload={
+            'source': 'knowledge/İş-çığ.md', 'text': 'Türkçe ad kalır.',
+            'metadata': {'id': 'synthetic-turkish'}})
+        self.assertEqual(turkish['status'], 'succeeded')
+        self.assertTrue((self.vault / 'knowledge/İş-çığ.md').is_file())
         path = self.vault / source
         raw = path.read_bytes()
         edited = self.succeeded('note-edit', '--file', '-', payload={
