@@ -6,6 +6,7 @@ record, so without a stored trace the gate would read "no record" as "not privat
 receipt's summary to recap, the SessionStart hook and the global bridge. Real install, real
 database rows.
 """
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -25,7 +26,7 @@ from beyin_v3_projections import latest_receipts, recent_receipts
 db = sqlite3.connect((state / 'memory.sqlite3').resolve().as_uri() + '?mode=ro', uri=True)
 try:
     latest = next((event['summary'] for _, event in latest_receipts(db, vault)), None)
-    recap = {item['summary']: [item['refs'], item.get('refs_withheld')] for item in recent_receipts(db, vault=vault)['items']}
+    recap = {item['source']: [item['summary'], item['refs'], item.get('refs_withheld')] for item in recent_receipts(db, vault=vault)['items']}
 finally:
     db.close()
 print(json.dumps({'latest': latest, 'recap': recap}))
@@ -92,7 +93,11 @@ class UnreadablePrivateRefTest(unittest.TestCase):
     def assert_withheld(self, reason):
         reader = self.unsynced()
         self.assertEqual(reader['latest'], self.GENERAL, reason)
-        self.assertEqual(reader['recap'][self.PRIVATE], [[], {'private': 1, 'missing': 0}], reason)
+        source = 'receipts/' + hashlib.sha256(b'synthetic-private').hexdigest() + '.md'
+        summary, refs, withheld = reader['recap'][source]
+        self.assertEqual(summary, '[summary withheld: the receipt refers to a private or untrusted source]', reason)
+        self.assertNotIn(self.PRIVATE, json.dumps(reader), reason)
+        self.assertEqual([refs, withheld], [[], {'private': 1, 'missing': 0}], reason)
         opening = self.session_start()
         self.assertNotIn(self.PRIVATE, opening, reason)
         self.assertNotIn('gizli.md', opening, reason)
