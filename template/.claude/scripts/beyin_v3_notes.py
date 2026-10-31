@@ -45,17 +45,31 @@ def _unlinked(path):
 
 
 def validate_source_name(source):
-    """Reject nonportable source names before filesystem access or journaling."""
+    """Reject nonportable names before note-create or task-create journals them.
+
+    Read and edit do not use this. An existing note whose name is legal on macOS
+    or Linux, such as knowledge/Neden?.md, stays readable.
+    """
+    _source_name(source, creating=True)
+
+
+def _source_name(source, *, creating):
+    """creating adds the Windows-only checks. Read and edit keep main's set."""
     if (not isinstance(source, str) or not source or '\\' in source or ':' in source or
-            any(ord(character) < 32 or ord(character) == 127 or character in '<>"|?*' for character in source)):
+            (creating and any(ord(character) < 32 or ord(character) == 127 or character in '<>"|?*'
+                              for character in source))):
         raise ValueError('use a vault-relative Markdown path with / separators')
     parts = source.split('/')
     if any(not part or part in ('.', '..') or part.startswith('.') or
            part.endswith((' ', '.')) for part in parts):
         raise ValueError('only visible vault-relative sources are supported')
-    # Windows trims trailing dots/spaces and treats these names, including CONIN$/CONOUT$
-    # and superscript digits (COM¹), as device paths.
-    if any(_windows_device(part) for part in parts):
+    if creating:
+        # Windows trims trailing dots/spaces and treats these names, including CONIN$/CONOUT$
+        # and superscript digits (COM¹), as device paths.
+        if any(_windows_device(part) for part in parts):
+            raise ValueError('device paths are not sources')
+    elif any(re.fullmatch(r'(?i)(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?', part)
+             for part in parts):
         raise ValueError('device paths are not sources')
 
 
@@ -67,9 +81,10 @@ def _windows_device(part):
         r'lpt[1-9\u00b9\u00b2\u00b3\u2070\u2074-\u2079])(?:\..*)?',
         candidate) is not None
 
+
 def _checked_source(engine, source):
     from beyin_v3_sync import EXCLUDED_DIRS, EXCLUDED_FILES
-    validate_source_name(source)
+    _source_name(source, creating=False)
     parts = source.split('/')
     folded = [part.casefold() for part in parts]
     if Path(source).suffix.lower() != '.md':

@@ -89,6 +89,33 @@ class NoteCreateInvalidNameTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.refused('knowledge/' + name, 'device paths are not sources')
 
+    def test_existing_notes_with_portable_punctuation_still_read_and_edit(self):
+        # These names are legal on macOS and Linux and sync already indexes them.
+        # Create refuses them; read and edit of a file that is already there must not.
+        bodies = {
+            'knowledge/Neden?.md': 'Neden sorusu duruyor.\n',
+            'knowledge/A|B.md': 'Boru adı duruyor.\n',
+            'knowledge/"Alıntı".md': 'Tırnaklı ad duruyor.\n',
+        }
+        for relative, body in bodies.items():
+            path = self.vault / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(body.encode('utf-8'))
+        for relative, body in bodies.items():
+            with self.subTest(source=relative, action='read'):
+                read = self.succeeded('note-read', relative)
+                self.assertEqual(read['source'], relative)
+                self.assertIn(body.splitlines()[0], read['content'])
+            with self.subTest(source=relative, action='edit'):
+                path = self.vault / relative
+                raw = path.read_bytes()
+                edited = self.succeeded('note-edit', '--file', '-', payload={
+                    'source': relative,
+                    'expected_sha256': hashlib.sha256(raw).hexdigest(),
+                    'edits': [{'old': body.splitlines()[0], 'new': body.splitlines()[0] + ' güncellendi.'}]})
+                self.assertEqual(edited['status'], 'written')
+                self.assertIn('güncellendi.', path.read_text(encoding='utf-8'))
+
     def test_valid_note_create_and_edit_still_work(self):
         source = 'knowledge/calibration.md'
         created = self.succeeded('note-create', payload={'source': source, 'text': 'Synthetic calibration note.',
