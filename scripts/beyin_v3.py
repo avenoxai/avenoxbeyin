@@ -1695,7 +1695,26 @@ def main(argv=None, return_result=False):
             )
         elif args.command == "ingest":
             payload = read_json(args.file)
-            result = [store.ingest(record) for record in payload] if isinstance(payload, list) else store.ingest(payload)
+            if not isinstance(payload, list):
+                result = store.ingest(payload)
+            else:
+                # Each record commits in its own transaction, so a batch used to stop at the
+                # first bad item with the earlier ones already stored and nothing saying so.
+                # Validate the whole batch before the first write and keep the failing index.
+                for index, record in enumerate(payload):
+                    try:
+                        store._validate(record)
+                    except Exception as exc:
+                        exc.batch_ingest = {"failed_index": index, "written_ids": []}
+                        raise
+                result = []
+                for index, record in enumerate(payload):
+                    try:
+                        result.append(store.ingest(record))
+                    except Exception as exc:  # e.g. an id conflict seen only at write time
+                        exc.batch_ingest = {"failed_index": index,
+                                            "written_ids": [item["id"] for item in result]}
+                        raise
         elif args.command == "note-read":
             result = sync.note_read(args.source)
         elif args.command == "note-edit":
@@ -1831,6 +1850,11 @@ def main(argv=None, return_result=False):
     except Exception as exc:
         # No traceback or raw input dump: callers retain their local source files.
         error = {"error": type(exc).__name__, "message": str(exc)}
+        # A record that raised after validating a batch still reports which index failed and
+        # what was already written; the error name and message keep their existing shape.
+        batch = getattr(exc, "batch_ingest", None)
+        if isinstance(batch, dict):
+            error.update(batch)
         code = 1
         if isinstance(exc, ArgumentParsingError):
             error["error"] = "SystemExit"
