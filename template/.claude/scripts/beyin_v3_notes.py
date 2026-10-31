@@ -44,8 +44,8 @@ def _unlinked(path):
         raise ValueError('symlink or junction path rejected')
 
 
-def _checked_source(engine, source):
-    from beyin_v3_sync import EXCLUDED_DIRS, EXCLUDED_FILES
+def validate_source_name(source):
+    """Reject nonportable source names before filesystem access or journaling."""
     if not isinstance(source, str) or not source or '\\' in source or ':' in source:
         raise ValueError('use a vault-relative Markdown path with / separators')
     parts = source.split('/')
@@ -56,6 +56,12 @@ def _checked_source(engine, source):
     if any(re.fullmatch(r'(?i)(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?', part)
            for part in parts):
         raise ValueError('device paths are not sources')
+
+
+def _checked_source(engine, source):
+    from beyin_v3_sync import EXCLUDED_DIRS, EXCLUDED_FILES
+    validate_source_name(source)
+    parts = source.split('/')
     folded = [part.casefold() for part in parts]
     if Path(source).suffix.lower() != '.md':
         raise ValueError('only Markdown sources are supported')
