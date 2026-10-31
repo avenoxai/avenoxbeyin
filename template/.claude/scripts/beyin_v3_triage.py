@@ -327,10 +327,19 @@ def _scan_allowed(path, vault, excluded):
             return False
         if not _is_safe_file(path):
             return False
-        values = _scan_front_values(path, ('visibility', 'trust', 'trusted'))
+        values = _scan_front_values(path, ('visibility', 'trust', 'trusted', 'status', 'kind'))
         if values is None:
             return False
-        return values.get('visibility') != 'private' and values.get('trust') != 'untrusted' and values.get('trusted') != 'false'
+        # Missing visibility keeps the internal default. Anything else must be public or internal:
+        # secret, restricted, private, and a list such as ["private"] are invalid to sync and stay out.
+        visibility = values.get('visibility')
+        if visibility not in (None, 'public', 'internal'):
+            return False
+        if values.get('trust') == 'untrusted' or values.get('trusted') == 'false':
+            return False
+        if values.get('status') == 'untrusted' or values.get('kind') == 'untrusted':
+            return False
+        return True
     except (ValueError, OSError):
         return False
 

@@ -75,6 +75,26 @@ class PrivateMetadataTriageTest(unittest.TestCase):
         self.assertNotIn('deep-private', json.dumps(digest))
         self.assertNotIn('H03-DEEP-PRIVATE-BODY', json.dumps(digest))
 
+    def test_invalid_visibility_and_untrusted_status_or_kind_stay_out_of_digest(self):
+        knowledge = self.vault / 'knowledge'
+        notes = {
+            'secret.md': '---\nvisibility: secret\n---\n# H03-SECRET\n',
+            'restricted.md': '---\n{"visibility": "restricted", "updated_at": "2026-10-25"}\n---\n# H03-RESTRICTED\n',
+            'list-private.md': '---\n{"visibility": ["private"], "updated_at": "2026-10-25"}\n---\n# H03-LIST-PRIVATE\n',
+            'status-untrusted.md': '---\n{"status": "untrusted", "updated_at": "2026-10-25"}\n---\n# H03-STATUS-UNTRUSTED\n',
+            'kind-untrusted.md': '---\n{"kind": "untrusted", "updated_at": "2026-10-25"}\n---\n# H03-KIND-UNTRUSTED\n',
+            'default-visible.md': '---\n{"title": "H03-DEFAULT", "updated_at": "2026-10-25"}\n---\nDefault body.\n',
+        }
+        for name, body in notes.items():
+            (knowledge / name).write_bytes(body.encode('utf-8'))
+        raw = self.triage('--json')
+        paths = [item['path'] for item in json.loads(raw)['digest']['items']]
+        self.assertIn('knowledge/public.md', paths)
+        self.assertIn('knowledge/default-visible.md', paths)
+        for marker in ('secret.md', 'restricted.md', 'list-private.md', 'status-untrusted.md', 'kind-untrusted.md',
+                       'H03-SECRET', 'H03-RESTRICTED', 'H03-LIST-PRIVATE', 'H03-STATUS-UNTRUSTED', 'H03-KIND-UNTRUSTED'):
+            with self.subTest(marker=marker):
+                self.assertNotIn(marker, raw)
+        for name in notes:
+            (knowledge / name).unlink()
 
-if __name__ == '__main__':
-    unittest.main()
