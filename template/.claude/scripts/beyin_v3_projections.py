@@ -72,9 +72,9 @@ def _hidden_ref_sources(db, refs):
     visibility/trust gate, every path under a directory the last sync kept out of the index, and
     every source the last sync could not read or parse.
 
-    A path under an excluded directory has no record, so nothing says whether it is private.
-    Excluding a directory must not turn a withheld ref into a shown one, so such a path is
-    withheld like a private one, whatever the file says. An unreadable source is the same:
+    A Markdown path under an excluded directory has no record, so nothing says whether it is
+    private. Excluding a directory must not turn a withheld note ref into a shown one. A script
+    or data file has no visibility of its own, so its path stays visible. An unreadable source is the same:
     breaking a private note's metadata must not open the receipts that describe it.
     """
     refs = sorted(set(refs))
@@ -91,8 +91,11 @@ def _hidden_ref_sources(db, refs):
     excluded = _excluded_dir_keys(db)
     if excluded:
         from beyin_v3_index import dir_key
+        # Only a Markdown source can carry visibility; a script or data file under an excluded
+        # tree has no record anywhere, so its path says nothing private.
         hidden.update(ref for ref in refs
-                      if any(dir_key(part) in excluded for part in ref.replace('\\', '/').split('/')[:-1]))
+                      if ref.casefold().endswith('.md') and
+                      any(dir_key(part) in excluded for part in ref.replace('\\', '/').split('/')[:-1]))
     for start in range(0, len(refs), 500):
         chunk = refs[start:start + 500]
         try:
