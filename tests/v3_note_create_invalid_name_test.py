@@ -1,6 +1,7 @@
 """Portable note-create and task-create names must be rejected before durable journal writes."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -89,6 +90,7 @@ class NoteCreateInvalidNameTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.refused('knowledge/' + name, 'device paths are not sources')
 
+    @unittest.skipIf(os.name == 'nt', 'These names cannot be created on Windows.')
     def test_existing_notes_with_portable_punctuation_still_read_and_edit(self):
         # These names are legal on macOS and Linux and sync already indexes them.
         # Create refuses them; read and edit of a file that is already there must not.
