@@ -294,28 +294,34 @@ def _scan_front_values(path, keys):
     from beyin_v3_sync import parse
     limit = 1024 * 1024
     with path.open(encoding='utf-8', errors='replace') as handle:
-        first = handle.readline(limit + 1)
-        if first.lstrip('\ufeff').strip() != '---':
-            return {}
-        if len(first) > limit:
-            return None
-        lines = [first]
-        size = len(first)
+        lines, size = [], 0
         while size <= limit:
-            line = handle.readline(limit - size + 1)
-            if not line:
-                return None
-            lines.append(line)
-            size += len(line)
-            if size > limit:
-                return None
-            if line.strip() == '---':
-                try:
-                    metadata, _ = parse(''.join(lines))
-                except (TypeError, ValueError, RecursionError):
+            chunk = handle.readline(limit - size + 1)
+            if not chunk:
+                return None if lines else {}
+            # readline recognizes physical CR/LF lines; sync.parse uses splitlines,
+            # which also recognizes NEL, Unicode separators and ASCII line controls.
+            # Keep the same logical boundaries without reading an unbounded body.
+            for line in chunk.splitlines(keepends=True):
+                if not lines:
+                    if line.lstrip('\ufeff').strip() != '---':
+                        return {}
+                    lines.append(line)
+                    size += len(line)
+                    if size > limit:
+                        return None
+                    continue
+                lines.append(line)
+                size += len(line)
+                if size > limit:
                     return None
-                return {key: fold(str(metadata[key])).strip() for key in keys
-                        if key in metadata and metadata[key] is not None}
+                if line.strip() == '---':
+                    try:
+                        metadata, _ = parse(''.join(lines))
+                    except (TypeError, ValueError, RecursionError):
+                        return None
+                    return {key: fold(str(metadata[key])).strip() for key in keys
+                            if key in metadata and metadata[key] is not None}
     return None
 
 

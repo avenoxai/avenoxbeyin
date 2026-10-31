@@ -75,6 +75,49 @@ class PrivateMetadataTriageTest(unittest.TestCase):
         self.assertNotIn('deep-private', json.dumps(digest))
         self.assertNotIn('H03-DEEP-PRIVATE-BODY', json.dumps(digest))
 
+    def test_header_limit_is_fail_closed_without_hiding_plain_body(self):
+        knowledge = self.vault / 'knowledge'
+        limit = 1024 * 1024
+        notes = {
+            'bound-private.md': '---\n' + json.dumps({'pad': 'x' * (limit - 100), 'visibility': 'private'}) + '\n---\n# PRIVATE_BOUND_CANARY',
+            'bound-over-public.md': '---\n' + json.dumps({'pad': 'x' * limit, 'visibility': 'public'}) + '\n---\n# OVER_BOUND_CANARY',
+            'bound-public.md': '---\nvisibility: public\n---\n# PUBLIC_BOUND_CONTROL\n' + 'x' * (limit + 100),
+            'bound-plain.md': '# PLAIN_BOUND_CONTROL\n' + 'x' * (limit + 100),
+        }
+        try:
+            for name, text in notes.items():
+                (knowledge / name).write_bytes(text.encode('utf-8'))
+            before = {name: (knowledge / name).read_bytes() for name in notes}
+            raw = self.triage('--json')
+            self.assertNotIn('bound-private.md', raw)
+            self.assertNotIn('bound-over-public.md', raw)
+            self.assertIn('PUBLIC_BOUND_CONTROL', raw)
+            self.assertIn('PLAIN_BOUND_CONTROL', raw)
+            self.assertEqual(before, {name: (knowledge / name).read_bytes() for name in notes})
+        finally:
+            for name in notes:
+                (knowledge / name).unlink()
+
+    def test_unicode_line_boundaries_keep_private_headers_out(self):
+        knowledge = self.vault / 'knowledge'
+        created = []
+        try:
+            for index, separator in enumerate(('\n', '\r', '\r\n', '\x85', '\u2028', '\u2029', '\v', '\f', '\x1c', '\x1d', '\x1e')):
+                path = knowledge / ('boundary-private-' + str(index) + '.md')
+                path.write_bytes(separator.join(('---', 'visibility: private', '---',
+                                                 '# PRIVATE_BOUNDARY_CANARY')).encode('utf-8'))
+                created.append(path)
+            before = {path: path.read_bytes() for path in created}
+            for output in ('--json', '--human'):
+                raw = self.triage(output)
+                self.assertNotIn('boundary-private-', raw)
+                self.assertNotIn('PRIVATE_BOUNDARY_CANARY', raw)
+                self.assertIn('H03-PUBLIC', raw)
+            self.assertEqual(before, {path: path.read_bytes() for path in created})
+        finally:
+            for path in created:
+                path.unlink()
+
     def test_invalid_visibility_and_untrusted_status_or_kind_stay_out_of_digest(self):
         knowledge = self.vault / 'knowledge'
         notes = {
