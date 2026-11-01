@@ -8,6 +8,21 @@ eşitliyorsan bu belge hangi dosyaların eşitleneceğini ve iki makinenin aynı
 Her makine Beyin'i kendisi kurar ve günceller. Runtime (SQLite veritabanı) vault dışında,
 makineye özeldir ve eşitlenmez; her makine onu vault'taki Markdown'dan kendisi kurar.
 
+## Doctor: Git'te izlenen makine dosyaları
+
+`python3 beyin.py doctor` (ve `--human` görünümü) `tracked_machine_files` alanında
+sabit bir kurulum yolu listesinin Git indeksinde izlenip izlenmediğini salt okunur
+bildirir: runtime pini, `Beyni Guncelle.cmd`, bilinen hook/adaptör dosyaları, Codex
+ayarı ve emekli runner yolları. Bu, bütün yönetilen dosyaların veya kullanıcı betiklerinin taraması
+değildir; denetlenen kurulum dosyalarının içeriği okunmaz, Git takibi veya ayarlar
+değiştirilmez.
+Git yoksa/depo değilse `skipped`; erişim, zaman aşımı, desteklenmeyen Git veya
+sparse checkout/index durumunda `unavailable` raporlanır, temiz sonuç sayılmaz.
+Kontrol ağ erişimi yapmaz. Uyarı bilgi amaçlıdır; doctor genel durumunu veya
+zamanlanmış kontrolün hata politikasını değiştirmez. Geçişte her makinenin kendi
+yedeğini koruyun; bu belge bir otomatik untrack veya başka makinenin dosyalarını
+kopyalama talimatı değildir.
+
 ## Ne eşitlenir
 
 | Yol | Git'e girer mi | Neden |
