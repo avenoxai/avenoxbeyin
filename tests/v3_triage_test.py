@@ -52,6 +52,120 @@ class TriageTest(unittest.TestCase):
         t = self.now - (days * 86400)
         os.utime(path, (t, t))
 
+    def thread_source(self, text, directory='Personal Echo', marker=False):
+        target = self.vault / directory
+        target.mkdir(parents=True, exist_ok=True)
+        (target / 'Core.md').write_text('# Synthetic identity\n', encoding='utf-8')
+        source = target / 'Threads.md'
+        source.write_text(text, encoding='utf-8')
+        if marker:
+            (self.state / 'companion-bootstrap.json').write_text(json.dumps({'directory': directory}), encoding='utf-8')
+        return source
+
+    def test_thread_dates_are_latest_valid_iso_mentions_never_mtime(self):
+        source = self.thread_source('# Threads\n## Active Threads\n'
+            '### Old topic (2026-09-01)\nUpdated 2026-09-27. Invalid 2026-99-01.\n'
+            '### Fresh 2026-10-11\n##   \nOld reference 2020-01-01.\n'
+            '### Undated\n28 Ekim; invalid 2026-02-30 and 12026-10-01.\n'
+            '### Future 2027-01-01\n'
+            '## Closed Threads\n### Closed 2020-01-01\n')
+        before = source.read_bytes()
+        self.set_age(source, 1000)
+        report = triage_module.scan_stale_threads(self.vault, self.now, stale_days=14, state=self.state)
+        self.assertEqual((report['open_count'], report['stale_count'], report['undated_count']), (4, 1, 1))
+        self.assertEqual(report['stale_threads'][0]['last_date'], '2026-09-27')
+        self.assertEqual(report['stale_threads'][0]['title'], 'Old topic (2026-09-01)')
+        self.assertIsNone(report['undated_threads'][0]['age_days'])
+        self.assertIsNone(report['undated_threads'][0]['last_date'])
+        self.set_age(source, 0)
+        self.assertEqual(report, triage_module.scan_stale_threads(self.vault, self.now, state=self.state))
+        self.assertEqual(source.read_bytes(), before)
+        self.assertEqual(triage_module.scan_stale_threads(self.vault, self.now, stale_days=16, state=self.state)['stale_count'], 0)
+
+    def test_thread_parser_ignores_fences_and_closed_sections(self):
+        self.thread_source('# Threads\n## Açık konular\n### Real 2026-09-01\n'
+            '```md\n### Fake 2026-10-12\n## Closed Threads\n```\n'
+            '~~~~text\n### Fake too 2026-10-12\n~~~\n2026-10-12\n~~~~\n'
+            '## Kapalı konular\n### Private history 2020-01-01\n'
+            '## ActiveAgain\n### Not an active section 2020-01-01\n'
+            '## Aktif konular\n### Second\n```inline```\nUpdated 2026-09-02\n')
+        report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+        self.assertEqual(report['open_count'], 2)
+        self.assertEqual([r['last_date'] for r in report['stale_threads']], ['2026-09-01', '2026-09-02'])
+
+    def test_thread_scan_respects_configured_identity_and_privacy(self):
+        source = self.thread_source('# Threads\n### Configured 2026-09-01\n', 'Custom Memory', marker=True)
+        self.thread_source('# Threads\n### Other 2026-09-01\n')
+        report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+        self.assertEqual(report['stale_threads'][0]['path'], 'Custom Memory/Threads.md')
+        for front in ('visibility: private', 'trust: untrusted', 'trusted: false'):
+            source.write_text('---\n' + front + '\n---\n# Threads\n### SECRET 2020-01-01\n', encoding='utf-8')
+            self.assertEqual(triage_module.scan_stale_threads(self.vault, self.now, state=self.state)['open_count'], 0)
+            for padding in ('', 'description: ' + 'x' * 5000 + '\n'):
+                source.write_text('\ufeff---\n' + padding + front + '\n---\n# Threads\n### SECRET 2020-01-01\n', encoding='utf-8')
+                private_report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+                self.assertEqual(private_report['status'], 'unavailable')
+                self.assertNotIn('SECRET', json.dumps(private_report))
+        source.write_text('# Threads\n### SECRET 2020-01-01\n', encoding='utf-8')
+        (self.state / 'index.json').write_text(json.dumps({'schema': 1, 'excluded_dirs': ['Custom Memory']}), encoding='utf-8')
+        self.assertEqual(triage_module.scan_stale_threads(self.vault, self.now, state=self.state)['open_count'], 0)
+
+    def test_thread_scan_rejects_unsafe_markers_ambiguity_and_symlinks(self):
+        outside = Path(self.tmp.name) / 'outside'
+        outside.mkdir()
+        (outside / 'Threads.md').write_text('# Threads\n### SECRET 2020-01-01\n', encoding='utf-8')
+        marker = self.state / 'companion-bootstrap.json'
+        for value in ('../outside', str(outside), 'C:/outside', '', ['outside']):
+            marker.write_text(json.dumps({'directory': value}), encoding='utf-8')
+            report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+            self.assertEqual(report['open_count'], 0)
+            self.assertEqual(report['status'], 'unavailable')
+        marker.unlink()
+        source = self.thread_source('# Threads\n### First 2020-01-01\n')
+        self.thread_source('# Threads\n### Second 2020-01-01\n', 'Other Echo')
+        report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+        self.assertEqual(report['status'], 'unavailable')
+        self.assertEqual(report['reason'], 'ambiguous_directory')
+        try:
+            (self.vault / 'linked').symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest('symlinks unavailable: ' + str(exc))
+        marker.write_text(json.dumps({'directory': 'linked'}), encoding='utf-8')
+        self.assertEqual(triage_module.scan_stale_threads(self.vault, self.now, state=self.state)['open_count'], 0)
+        source.unlink()
+        source.symlink_to(outside / 'Threads.md')
+        marker.write_text(json.dumps({'directory': 'Personal Echo'}), encoding='utf-8')
+        self.assertEqual(triage_module.scan_stale_threads(self.vault, self.now, state=self.state)['open_count'], 0)
+
+    def test_installed_triage_cli_reports_threads_without_source_writes(self):
+        vault = Path(self.tmp.name) / 'installed'
+        state = Path(self.tmp.name) / 'installed-state'
+        home = Path(self.tmp.name) / 'isolated-home'
+        home.mkdir()
+        folder = vault / 'Personal Echo'
+        folder.mkdir(parents=True)
+        (folder / 'Core.md').write_text('# Identity\n', encoding='utf-8')
+        source = folder / 'Threads.md'
+        source.write_text('# Threads\n## Active Threads\n### Stale 2000-01-01\n### Undated\n', encoding='utf-8')
+        env = inherited_env(HOME=str(home), USERPROFILE=str(home), APPDATA=str(home / 'appdata'),
+                            LOCALAPPDATA=str(home / 'local'), PYTHONDONTWRITEBYTECODE='1')
+        installed = subprocess.run([sys.executable, str(ROOT / 'scripts/install_v3.py'), '--vault', str(vault),
+                                    '--state', str(state)], env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        before = {p.relative_to(vault): p.read_bytes() for p in vault.rglob('*') if p.is_file()}
+        command = [sys.executable, str(vault / 'beyin.py'), 'triage', '--stale-days', '7']
+        result = subprocess.run(command, cwd=vault, env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['schema'], 1)
+        self.assertEqual(report['threads']['stale_days_threshold'], 7)
+        self.assertEqual(report['threads']['stale_count'], 1)
+        human = subprocess.run(command + ['--human'], cwd=vault, env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(human.returncode, 0, human.stderr)
+        self.assertIn('[Acik Konular / Threads]', human.stdout)
+        self.assertIn('Undated', human.stdout)
+        self.assertEqual(before, {p.relative_to(vault): p.read_bytes() for p in vault.rglob('*') if p.is_file()})
+
     def test_yakala_recommendation_requires_skill_file(self):
         inbox = self.vault / 'inbox'
         inbox.mkdir()

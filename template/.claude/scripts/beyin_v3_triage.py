@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import sys
 import time
@@ -436,6 +436,118 @@ def scan_stale_tasks(vault: Path, now: float, stale_days: int = 14, state: Path 
     }
 
 
+def _threads_source(vault, state):
+    """Choose the configured identity or the same unambiguous bootstrap discovery."""
+    from beyin_v3_companion import directory
+    marker = Path(state) / 'companion-bootstrap.json' if state is not None else None
+    try:
+        if marker is not None and (marker.exists() or marker.is_symlink()):
+            if marker.is_symlink():
+                return None, 'invalid_directory_marker'
+            data = json.loads(marker.read_text(encoding='utf-8'))
+            name = data.get('directory') if isinstance(data, dict) else None
+            if (not isinstance(name, str) or not name.strip() or name != name.strip()
+                    or '\\' in name or '\0' in name or PureWindowsPath(name).drive
+                    or Path(name).is_absolute() or any(p in ('.', '..', '') for p in name.split('/'))):
+                return None, 'invalid_directory_marker'
+            target = vault / name
+        else:
+            target = directory(vault)
+            if target is None:
+                return None, 'ambiguous_directory'
+        source = target / 'Threads.md'
+        current = vault
+        for part in source.relative_to(vault).parts:
+            current = current / part
+            if current.is_symlink():
+                return None, 'unsafe_source'
+        if not source.resolve().is_relative_to(vault):
+            return None, 'unsafe_source'
+        return source, None
+    except (OSError, ValueError, RuntimeError):
+        return None, 'unavailable_source'
+
+
+def _thread_topics(text):
+    """Yield ### topics in active containers, excluding fenced examples/history."""
+    from beyin_v3_compact import FENCE, _frontmatter_end
+    lines = text.splitlines()
+    active, fence, title, body = True, None, None, []
+    for line in lines[_frontmatter_end(lines):]:
+        if fence:
+            if re.fullmatch(r' {0,3}' + re.escape(fence[0]) + '{' + str(len(fence)) + r',}[ \t]*', line):
+                fence = None
+            continue
+        opened = FENCE.match(line)
+        if opened and not (opened[1][0] == '`' and '`' in line[opened.end():]):
+            fence = opened[1]
+            continue
+        heading = re.match(r'^(#{1,6})[ \t]+(\S.*?)[ \t]*$', line)
+        if heading and len(heading[1]) <= 3:
+            if title is not None:
+                yield title, '\n'.join(body)
+            title, body = None, []
+            level, label = len(heading[1]), heading[2]
+            if level < 3:
+                word = fold(label).split()[0]
+                active = (word in ('active', 'aktif', 'acik', 'open') if level == 2
+                          else not (word == 'closed' or word.startswith(('kapan', 'kapali'))))
+            elif active:
+                title, body = label, [label]
+        elif title is not None:
+            body.append(line)
+    if title is not None:
+        yield title, '\n'.join(body)
+
+
+def scan_stale_threads(vault: Path, now: float, stale_days: int = 14, state: Path | None = None) -> dict:
+    """Read-only freshness hints from newest valid ISO mentions, not verified updates.
+
+    Dates inside fences are ignored. No mtime fallback or status inference; a future
+    mention has age zero, and an undated topic remains age None.
+    """
+    vault = Path(vault).resolve()
+    report = {'status': 'ok', 'open_count': 0, 'stale_count': 0, 'undated_count': 0,
+              'stale_days_threshold': stale_days, 'date_basis': 'latest_iso_mention',
+              'stale_threads': [], 'undated_threads': []}
+    source, reason = _threads_source(vault, state)
+    if reason:
+        return dict(report, status='unavailable', reason=reason)
+    try:
+        if not source.exists():
+            return dict(report, status='absent')
+        if not _scan_allowed(source, vault, _scan_keys(vault, state)):
+            return dict(report, status='unavailable', reason='excluded_or_unreadable_source')
+        text = source.read_text(encoding='utf-8', errors='replace').lstrip('\ufeff')
+        # The fast scanner reads 4096 chars. Recheck the full normalized header so
+        # BOM-prefixed or long privacy metadata cannot leak topic titles/dates.
+        values = _front_values(text, ('visibility', 'trust', 'trusted'))
+        if values.get('visibility') == 'private' or values.get('trust') == 'untrusted' or values.get('trusted') == 'false':
+            return dict(report, status='unavailable', reason='excluded_or_unreadable_source')
+    except (OSError, ValueError):
+        return dict(report, status='unavailable', reason='unreadable_source')
+    for title, body in _thread_topics(text):
+        dates = []
+        for match in re.finditer(r'(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)', body):
+            value = match[0]
+            timestamp = _parse_timestamp(value)
+            if timestamp is not None:
+                dates.append((value, timestamp))
+        latest, stamp = max(dates) if dates else (None, None)
+        age = max(0.0, (now - stamp) / 86400.0) if stamp is not None else None
+        row = {'path': source.relative_to(vault).as_posix(), 'title': title,
+               'last_date': latest, 'age_days': round(age, 1) if age is not None else None}
+        report['open_count'] += 1
+        if age is None:
+            report['undated_threads'].append(row)
+        elif age >= stale_days:
+            report['stale_threads'].append(row)
+    report['stale_threads'].sort(key=lambda row: row['age_days'], reverse=True)
+    report['stale_count'] = len(report['stale_threads'])
+    report['undated_count'] = len(report['undated_threads'])
+    return report
+
+
 def scan_knowledge_digest(vault: Path, now: float, digest_days: int = 7, state: Path | None = None) -> dict:
     vault = Path(vault).resolve()
     excluded = _scan_keys(vault, state)
@@ -644,7 +756,7 @@ def scan_companion(vault: Path, state: Path | None = None, now: float | None = N
     return info
 
 
-def generate_recommendations(inbox: dict, tasks: dict, digest: dict, companion: dict, vault: Path | None = None, has_yakala: bool | None = None) -> list[str]:
+def generate_recommendations(inbox: dict, tasks: dict, digest: dict, companion: dict, vault: Path | None = None, has_yakala: bool | None = None, threads: dict | None = None) -> list[str]:
     recs = []
     if inbox.get('count', 0) > 0:
         yakala_ready = has_yakala if has_yakala is not None else inbox.get('has_yakala', False)
@@ -670,6 +782,8 @@ def generate_recommendations(inbox: dict, tasks: dict, digest: dict, companion: 
         recs.append(
             f"{tasks['undated_count']} gorevde frontmatter tarih bilgisi (updated_at/created_at) eksik. Senkron guvenligi icin tarih ekleyin."
         )
+    if threads and threads.get('stale_count', 0):
+        recs.append(f"{threads['stale_count']} acik konunun son ISO tarih anmasi eski; gercek durumu kaynagindan dogrulayin.")
     if companion.get('active_threads', 0) > 4:
         recs.append(
             f"Threads.md icinde {companion['active_threads']} aktif konu var. Tamamlananlari 'beyin.py companion-compact' ile arsivleyin."
@@ -704,7 +818,8 @@ def triage(
     tasks_report = scan_stale_tasks(vault, now_ts, stale_days=stale_days, state=state)
     digest_report = scan_knowledge_digest(vault, now_ts, digest_days=digest_days, state=state)
     companion_report = scan_companion(vault, state, now=now_ts)
-    recs = generate_recommendations(inbox_report_res, tasks_report, digest_report, companion_report, vault=vault)
+    threads_report = scan_stale_threads(vault, now_ts, stale_days=stale_days, state=state)
+    recs = generate_recommendations(inbox_report_res, tasks_report, digest_report, companion_report, vault=vault, threads=threads_report)
 
     return {
         'schema': 1,
@@ -714,6 +829,7 @@ def triage(
         'tasks': tasks_report,
         'digest': digest_report,
         'companion': companion_report,
+        'threads': threads_report,
         'recommendations': recs,
     }
 
@@ -761,6 +877,24 @@ def format_human(report: dict) -> str:
     if undated_count > 0:
         lines.append(f"  (Not: {undated_count} gorevde frontmatter tarih alani yok; mtime yerine tarihsiz sayildi)")
     lines.append('')
+
+    if 'threads' in report:
+        threads = report['threads']
+        lines.append('[Acik Konular / Threads]')
+        lines.append(f"  Acik: {threads.get('open_count', 0)}, Hareketsiz: {threads.get('stale_count', 0)}, "
+                     f"Tarihsiz: {threads.get('undated_count', 0)}")
+        lines.append('  En yeni ISO tarih anmasi kullanilir; durumun dogrulandigi anlamina gelmez. mtime kullanilmaz.')
+        if threads.get('status') == 'unavailable':
+            lines.append('  Taranamadi: ' + _strip_terminal_controls(threads.get('reason', 'unavailable')))
+        for key in ('stale_threads', 'undated_threads'):
+            for item in threads.get(key, [])[:5]:
+                title = _strip_terminal_controls(item.get('title', ''))
+                path = _strip_terminal_controls(item.get('path', ''))
+                age = f"{item['last_date']}, {item['age_days']} gun once" if item.get('last_date') else 'tarihsiz'
+                lines.append(f"  - {path}: {title} ({age})")
+            if len(threads.get(key, [])) > 5:
+                lines.append(f"  ... ve {len(threads[key]) - 5} konu daha")
+        lines.append('')
 
     digest = report.get('digest', {})
     digest_days = digest.get('digest_days', 7)
