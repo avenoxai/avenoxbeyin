@@ -1,4 +1,6 @@
 """Global boundary adapters exercised in isolated homes, never user hook settings."""
+import contextlib
+import io
 import hashlib
 import json
 import os
@@ -10,7 +12,7 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from v3_package_helpers import inherited_env, install
+from v3_package_helpers import inherited_env, install, snapshot
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
@@ -53,6 +55,66 @@ class BridgeTest(unittest.TestCase):
 
     def queued(self):
         return [json.loads(p.read_text(encoding='utf-8')) for p in (self.state / 'hook-queue').glob('*.json')]
+
+    def test_parser_returns_codes_to_embedders_and_preserves_real_cli_output(self):
+        script = SCRIPTS / 'beyin_v3_bridge.py'
+        cases = [
+            ([], 2),
+            (['--harness', 'codex', '--unknown-option'], 2),
+            (['--harness', 'invalid-client'], 2),
+            (['--harness', 'codex', '--context-chars', 'not-an-int'], 2),
+            (['--harness', 'codex', '--event', 'invalid-event'], 2),
+            (['--harness', 'codex'], 2),  # --vault required inside runtime try
+            (['--harness', 'codex', '--vault', str(self.vault), '--install'], 2),
+            (['--harness', 'codex', '--print-config', '--install'], 2),
+            (['--harness', 'codex', '--install', '--uninstall'], 2),
+            (['--help'], 0),
+        ]
+        before = snapshot(self.root)
+        for arguments, expected in cases:
+            with self.subTest(arguments=arguments):
+                process = subprocess.run([sys.executable, str(script), *arguments], env=self.env,
+                                         capture_output=True, text=True, encoding='utf-8', timeout=20)
+                self.assertEqual(process.returncode, expected, process.stderr)
+                self.assertEqual(snapshot(self.root), before)
+                out, err = io.StringIO(), io.StringIO()
+                with patch.object(sys, 'argv', [str(script)]), patch.object(sys, 'stdin', io.StringIO()), \
+                        contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                        patch.object(bridge, 'install_bridge') as install_mock, \
+                        patch.object(bridge, 'uninstall_bridge') as uninstall_mock, patch.object(hook, 'main') as hook_mock:
+                    result = bridge.main(arguments)
+                self.assertEqual(result, expected)
+                self.assertEqual(out.getvalue(), process.stdout)
+                self.assertEqual(err.getvalue(), process.stderr)
+                install_mock.assert_not_called()
+                uninstall_mock.assert_not_called()
+                hook_mock.assert_not_called()
+                self.assertEqual(snapshot(self.root), before)
+                if expected == 2:
+                    self.assertIn('usage:', err.getvalue())
+                    self.assertEqual(out.getvalue(), '')
+                else:
+                    self.assertIn('usage:', out.getvalue())
+                    self.assertEqual(err.getvalue(), '')
+
+    def test_default_argv_help_returns_without_exiting_host(self):
+        with patch.object(sys, 'argv', ['beyin_v3_bridge.py', '--help']), \
+                patch.object(sys, 'stdin', io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(bridge.main(), 0)
+
+    def test_runtime_system_exit_is_not_swallowed_by_parser_boundary(self):
+        with patch.object(sys, 'stdin', io.StringIO()), \
+                patch.object(bridge, 'uninstall_bridge', side_effect=SystemExit(19)):
+            with self.assertRaises(SystemExit) as caught:
+                bridge.main(['--harness', 'codex', '--uninstall'])
+        self.assertEqual(caught.exception.code, 19)
+
+    def test_runtime_exception_keeps_existing_management_error_contract(self):
+        err = io.StringIO()
+        with patch.object(sys, 'stdin', io.StringIO()), contextlib.redirect_stderr(err), \
+                patch.object(bridge, 'uninstall_bridge', side_effect=ValueError('synthetic failure')):
+            self.assertEqual(bridge.main(['--harness', 'codex', '--uninstall']), 1)
+        self.assertIn('Bridge error: synthetic failure', err.getvalue())
 
     def test_external_boundary_context_and_project_metadata_for_both_clients(self):
         for harness in ('claude', 'codex'):
