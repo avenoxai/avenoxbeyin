@@ -444,7 +444,8 @@ def read_project_scopes(vault_root):
     if not path.exists():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        # Match the project-scope helper and doctor, including UTF-8 BOM files.
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (ValueError, OSError) as exc:
         raise ValueError("invalid project scopes file; expected JSON") from exc
     if not isinstance(data, dict) or set(data) - {"folders", "shared_unscoped"}:
