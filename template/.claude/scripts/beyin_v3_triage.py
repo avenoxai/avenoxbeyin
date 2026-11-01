@@ -285,6 +285,46 @@ def _scan_keys(vault, state):
     return exclusions(state, vault)[0]
 
 
+def _scan_front_values(path, keys):
+    """Frontmatter values, or None when the header cannot be read closed.
+
+    A private note whose header is a BOM, longer than the old 4 KiB peek, unterminated, or not
+    parseable must not be treated as public. None means fail closed.
+    """
+    from beyin_v3_sync import parse
+    limit = 1024 * 1024
+    with path.open(encoding='utf-8', errors='replace') as handle:
+        lines, size = [], 0
+        while size <= limit:
+            chunk = handle.readline(limit - size + 1)
+            if not chunk:
+                return None if lines else {}
+            # readline recognizes physical CR/LF lines; sync.parse uses splitlines,
+            # which also recognizes NEL, Unicode separators and ASCII line controls.
+            # Keep the same logical boundaries without reading an unbounded body.
+            for line in chunk.splitlines(keepends=True):
+                if not lines:
+                    if line.lstrip('\ufeff').strip() != '---':
+                        return {}
+                    lines.append(line)
+                    size += len(line)
+                    if size > limit:
+                        return None
+                    continue
+                lines.append(line)
+                size += len(line)
+                if size > limit:
+                    return None
+                if line.strip() == '---':
+                    try:
+                        metadata, _ = parse(''.join(lines))
+                    except (TypeError, ValueError, RecursionError):
+                        return None
+                    return {key: fold(str(metadata[key])).strip() for key in keys
+                            if key in metadata and metadata[key] is not None}
+    return None
+
+
 def _scan_allowed(path, vault, excluded):
     from beyin_v3_index import dir_key
     try:
@@ -293,9 +333,19 @@ def _scan_allowed(path, vault, excluded):
             return False
         if not _is_safe_file(path):
             return False
-        with path.open(encoding='utf-8', errors='replace') as handle:
-            values = _front_values(handle.read(4096), ('visibility', 'trust', 'trusted'))
-        return values.get('visibility') != 'private' and values.get('trust') != 'untrusted' and values.get('trusted') != 'false'
+        values = _scan_front_values(path, ('visibility', 'trust', 'trusted', 'status', 'kind'))
+        if values is None:
+            return False
+        # Missing visibility keeps the internal default. Anything else must be public or internal:
+        # secret, restricted, private, and a list such as ["private"] are invalid to sync and stay out.
+        visibility = values.get('visibility')
+        if visibility not in (None, 'public', 'internal'):
+            return False
+        if values.get('trust') == 'untrusted' or values.get('trusted') == 'false':
+            return False
+        if values.get('status') == 'untrusted' or values.get('kind') == 'untrusted':
+            return False
+        return True
     except (ValueError, OSError):
         return False
 

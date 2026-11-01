@@ -25,6 +25,29 @@ from tests.v3_package_helpers import inherited_env
 
 
 class TriageTest(unittest.TestCase):
+    def test_frontmatter_reader_never_consumes_unbounded_body(self):
+        import io
+        from unittest.mock import Mock
+        limit = 1024 * 1024
+        for separator in ('\n', '\x85', '\u2028', '\u2029', '\v'):
+            for visibility in ('private', 'public', 'internal'):
+                with self.subTest(separator=separator, visibility=visibility):
+                    reads = []
+                    class BoundedReader(io.StringIO):
+                        def readline(self, size=-1):
+                            self_check.assertGreater(size, 0)
+                            self_check.assertLessEqual(size, limit + 1)
+                            value = super().readline(size)
+                            reads.append(len(value))
+                            return value
+                    self_check = self
+                    text = separator.join(('---', 'visibility: ' + visibility, '---', '')) + 'x' * (2 * limit)
+                    path = Mock()
+                    path.open.return_value = BoundedReader(text)
+                    self.assertEqual(triage_module._scan_front_values(path, ('visibility',)),
+                                     {'visibility': visibility})
+                    self.assertLessEqual(sum(reads), limit + 1)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='v3-triage-')
         self.addCleanup(self.tmp.cleanup)
