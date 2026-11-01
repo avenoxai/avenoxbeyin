@@ -79,34 +79,56 @@ def _hidden_ref_sources(db, refs):
     """
     refs = sorted(set(refs))
     from beyin_v3_hygiene import sensitive_source
+    from beyin_v3_index import dir_key
+
+    def ref_key(ref):
+        # Same fold as excluded directory names: NFC, Turkish i, not str.casefold() alone.
+        return '/'.join(dir_key(part) for part in ref.replace('\\', '/').split('/'))
+
     hidden = {ref for ref in refs if sensitive_source(ref)}
     # View provenance survives removal of its indexed privacy/trust metadata.
     # All claimed paths and proven aliases are withheld, including in fresh state.
     try:
         row = db.execute('SELECT value FROM metadata WHERE key=?', (RECEIPT_VIEW_SOURCES_ROW,)).fetchone()
-        hidden.update(set(refs).intersection(json.loads(row[0]) if row else []))
+        claimed = {ref_key(source) for source in (json.loads(row[0]) if row else [])}
+        hidden.update(ref for ref in refs if ref_key(ref) in claimed)
     except sqlite3.OperationalError:  # receipts-only reader
         pass
-    hidden.update(set(refs).intersection(_stored_names(db, UNREADABLE_SOURCES_ROW)))
+    # Folded like the record lookup below: another spelling of an unreadable source is withheld too.
+    unreadable = {ref_key(name) for name in _stored_names(db, UNREADABLE_SOURCES_ROW)}
+    hidden.update(ref for ref in refs if ref_key(ref) in unreadable)
     excluded = _excluded_dir_keys(db)
     if excluded:
-        from beyin_v3_index import dir_key
         hidden.update(ref for ref in refs
                       if any(dir_key(part) in excluded for part in ref.replace('\\', '/').split('/')[:-1]))
     for start in range(0, len(refs), 500):
         chunk = refs[start:start + 500]
         try:
-            rows = db.execute('SELECT r.payload FROM markdown_sources m JOIN records r ON r.id = m.id WHERE m.source IN (' +
+            rows = db.execute('SELECT m.source, r.payload FROM markdown_sources m JOIN records r ON r.id = m.id WHERE m.source IN (' +
                               ','.join('?' * len(chunk)) + ')', chunk).fetchall()
         except sqlite3.OperationalError:  # a bare receipts-only database has no source index
             return hidden
-        for (payload,) in rows:
+        # Old receipts may spell the same file differently. Keep exact matches on the
+        # existing SQL path; only unresolved refs need the Unicode casefold lookup.
+        aliases = defaultdict(set)
+        for ref in set(chunk) - {source for source, _ in rows} - hidden:
+            aliases[ref_key(ref)].add(ref)
+        if aliases:
+            # Folded in Python, not with a registered SQL function: SQLite refuses to create
+            # one while a caller still has a statement open on this connection.
+            matched = [source for (source,) in db.execute('SELECT source FROM markdown_sources')
+                       if ref_key(source) in aliases]
+            for begin in range(0, len(matched), 500):
+                part = matched[begin:begin + 500]
+                folded = db.execute('SELECT m.source, r.payload FROM markdown_sources m JOIN records r ON r.id = m.id '
+                                    'WHERE m.source IN (' + ','.join('?' * len(part)) + ')', part).fetchall()
+                rows.extend((ref, payload) for source, payload in folded for ref in aliases[ref_key(source)])
+        for source, payload in rows:
             record = json.loads(payload)
             if (record.get('visibility', 'internal') not in ('public', 'internal') or record.get('trust') == 'untrusted' or
                     record.get('trusted') is False or record.get('status') == 'untrusted' or record.get('kind') == 'untrusted'):
-                hidden.add(record.get('source'))
+                hidden.add(source)
     return hidden
-
 
 def _vault_file(vault, relative):
     try:
@@ -147,12 +169,29 @@ def latest_receipts(db, vault, sessions=None):
         instant = _receipt_instant(event.get('created_at'))
         if instant is not None:
             candidates.append((instant, event['event_id'], event))
-    for _, ident, event in sorted(candidates, key=lambda item: item[:2], reverse=True):
-        source = 'receipts/' + hashlib.sha256(ident.encode()).hexdigest() + '.md'
-        refs = [ref for ref in event.get('refs') or [] if isinstance(ref, str)] if isinstance(event.get('refs'), list) else []
-        if (not (vault / source).is_symlink() and _vault_file(vault, source) and
-                not _hidden_ref_sources(db, [source, *refs])):
-            yield source, event
+    candidates.sort(key=lambda item: item[:2], reverse=True)
+    position, batch_size = 0, 1
+    while position < len(candidates):
+        end = min(position + batch_size, len(candidates))
+        readable = []
+        for index in range(position, end):
+            _, ident, event = candidates[index]
+            source = 'receipts/' + hashlib.sha256(ident.encode()).hexdigest() + '.md'
+            refs = [ref for ref in event.get('refs') or [] if isinstance(ref, str)] if isinstance(event.get('refs'), list) else []
+            if not (vault / source).is_symlink() and _vault_file(vault, source):
+                readable.append((index, source, event, [source, *refs]))
+        hidden = _hidden_ref_sources(db, [ref for *_, refs in readable for ref in refs])
+        for index, source, event, refs in readable:
+            if not hidden.intersection(refs):
+                position, batch_size = index + 1, 1
+                yield source, event
+                # A caller may change privacy/index/source state while the generator
+                # is suspended. Never reuse this batch's decisions after a yield.
+                break
+        else:
+            # Keep the newest-public fast path small; amortize alias scans only
+            # after a withheld/missing candidate. No cache survives this invocation.
+            position, batch_size = end, 64
 
 
 def _bound_day(bound, zone):
