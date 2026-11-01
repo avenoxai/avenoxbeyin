@@ -6,6 +6,7 @@ import sys
 import unicodedata
 
 NAMES = ('Core.md', 'Soul.md', 'Kurallar.md', 'Last-Session.md', 'Threads.md', 'Journal.md')
+IDENTITY = {'Core.md', 'Soul.md'}
 FLOORS = {'Kurallar.md': .4, 'Last-Session.md': .15, 'Threads.md': .12, 'Core.md': .08}
 # Hygiene limits in characters for the two handoff files that are meant to be rewritten,
 # not appended to (#96). Rules, identity and the Journal accumulate by design and are only
@@ -698,8 +699,12 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
                                      text_transform=lambda name, text: excerpt(name, text, project=rules_project))
     records = snapshot['records']
     notice = ''
-    if snapshot['missing_sources']:
-        notice += 'Missing/unavailable companion sources: ' + ', '.join(snapshot['missing_sources']) + '.\n'
+    missing = snapshot['missing_sources']
+    if IDENTITY & {Path(r['source']).name for r in records}:
+        # Core.md and Soul.md are alternatives: setup creates Core.md, a V2 vault keeps Soul.md.
+        missing = [name for name in missing if name not in IDENTITY]
+    if missing:
+        notice += 'Missing/unavailable companion sources: ' + ', '.join(missing) + '.\n'
     if snapshot['stale_excluded']:
         notice += 'Changed companion sources excluded; read current files.\n'
     sections = [(f'\n[{r["source"]}]\n', r['text'], Path(r['source']).name)
