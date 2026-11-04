@@ -4,6 +4,20 @@ OpenCode has no hook JSON. It loads project plugins from `.opencode/plugins/*.js
 
 The plugin derives the vault from its own location and the runtime directory from `.beyin-runtime.json`. Only the interpreter is pinned at install time; `BEYIN_PYTHON` overrides it. Every event runs `beyin_v3_hook.py --harness opencode` with a 6 second bound (20 seconds on Windows). A missing interpreter, timeout, non-zero exit or invalid output returns no context and never fails the OpenCode turn. A vault without a valid runtime file registers no hooks.
 
+The plugin labels the project from the session directory (`session.directory` in 2.x, the factory's `directory` in 1.x, `ctx.directory` as the last fallback) and sends it as the hook payload's `cwd`. It must not fall back to the process directory: the OpenCode service is usually started once and then serves sessions from several folders, so the process directory would attribute every session to the same project.
+
+## Outside the vault (optional global bridge)
+
+OpenCode also loads plugins from `~/.config/opencode/plugins/` (`$XDG_CONFIG_HOME/opencode/plugins`) in every directory it serves. After a vault install, the [global bridge](GLOBAL-BRIDGE.md) can add the managed `beyin-v3-bridge.js` there:
+
+```sh
+python3 "/tam/yol/Beynim/beyin.py" bridge --harness opencode --project-root "/tam/yol/Projelerim" --install
+```
+
+The bridge plugin forwards only `SessionStart`, `Stop`, `PreCompact` and `SessionEnd` to `beyin_v3_bridge.py`, stays silent inside a vault and outside the chosen project roots, and injects the same scoped startup text as the Claude, Codex and Antigravity bridges. `--uninstall` removes only the managed file; a user-owned file at that path is never replaced or deleted. `--print-config` prints the plugin path and generated content without writing.
+
+The vault plugin and the global bridge plugin can be loaded at the same time. The bridge answers `{}` for a vault-owned directory, so a vault session queues its events once, through the local plugin.
+
 ## Supported versions
 
 One plugin file serves both plugin APIs. OpenCode 2.x reads the default export `{ id: "beyin-v3", setup }`; OpenCode 1.x from 1.3.4 on reads `server` from the same default export, which is the `BeyinV3` factory that is also exported by name. Releases before 1.3.4 call every export as a function and report a load error for the default object; update OpenCode instead of editing the managed plugin, because `beyin.py update` stops on a changed managed file.

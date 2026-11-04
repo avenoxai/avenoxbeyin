@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PureWindowsPath
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,68 @@ sys.path.insert(0, str(SCRIPTS))
 import beyin_v3_bridge as bridge
 import beyin_v3_hook as hook
 from beyin_v3_sync import SyncEngine
+
+# Drives the generated global plugin the way OpenCode 2.x does: setup(ctx), prompt,
+# request-time context, then the event stream. Prints one JSON line.
+OPENCODE_DRIVER = r"""
+import { pathToFileURL } from "node:url"
+const [plugin, project, elsewhere] = process.argv.slice(1)
+const sessions = { "bridge-1": project, "bridge-out": elsewhere, "bridge-sub": project }
+const hooks = {}
+const register = (domain) => async (name, callback) => {
+  hooks[`${domain}.${name}`] = callback
+  return { dispose: async () => {} }
+}
+const pending = []
+let notify = null
+let idle = null
+let aborted = false
+function subscribe({ signal } = {}) {
+  signal?.addEventListener("abort", () => { aborted = true; notify?.() })
+  return (async function* () {
+    while (!aborted) {
+      if (pending.length) { yield pending.shift(); continue }
+      idle?.()
+      await new Promise((resolve) => { notify = resolve })
+      notify = null
+    }
+    idle?.()
+  })()
+}
+const emit = (type, sessionID) => new Promise((resolve) => {
+  idle = resolve
+  pending.push({ id: `evt-${pending.length}`, type, data: { sessionID } })
+  notify?.()
+})
+const ctx = {
+  session: { hook: register("session"),
+    get: async ({ sessionID }) => ({ id: sessionID, parentID: sessionID === "bridge-sub" ? "bridge-1" : undefined,
+                                    directory: sessions[sessionID] }) },
+  event: { subscribe },
+  directory: elsewhere,
+}
+const mod = await import(pathToFileURL(plugin).href)
+const definition = mod.default
+const cleanup = await definition.setup(ctx)
+const prompt = (sessionID) => hooks["session.prompt"]({ sessionID, messageID: "msg", prompt: { text: "hi", files: [] }, delivery: "steer" })
+const system = async (sessionID) => {
+  const event = { sessionID, agent: "build", model: {}, system: [{ type: "text", text: "base" }], messages: [], options: {}, tools: {} }
+  await hooks["session.context"](event)
+  return event.system.slice(1)
+}
+const result = { id: definition?.id, keys: Object.keys(hooks).sort() }
+await prompt("bridge-1")
+result.allowed = await system("bridge-1")
+await emit("session.execution.succeeded", "bridge-1")
+await prompt("bridge-out")
+result.blocked = await system("bridge-out")
+await prompt("bridge-sub")
+result.child = await system("bridge-sub")
+await emit("session.deleted", "bridge-1")
+await cleanup()
+console.log(JSON.stringify(result))
+process.exit(0)
+"""
 
 
 class BridgeTest(unittest.TestCase):
@@ -722,6 +785,72 @@ class BridgeTest(unittest.TestCase):
         ag_data = json.loads(res_ag.stdout)
         self.assertIn('beyin-v3-bridge', ag_data)
         self.assertIn('PreInvocation', ag_data['beyin-v3-bridge'])
+
+
+    def test_bridge_install_and_uninstall_opencode_global_plugin(self):
+        target = bridge.global_opencode_plugin_path(home=self.home)
+        self.assertEqual(target, self.home / '.config/opencode/plugins/beyin-v3-bridge.js')
+        self.assertFalse(target.exists())
+
+        res = bridge.install_bridge(self.vault, self.state, 'opencode', [self.project], home=self.home)
+        self.assertEqual(res['status'], 'installed')
+        self.assertEqual(res['hook_file'], str(target))
+        text = target.read_text(encoding='utf-8')
+        self.assertIn(bridge.OPENCODE_MARKER, text)
+        self.assertIn(str(self.vault), text)
+        self.assertIn(str(self.project), text)
+        self.assertIn(str(self.state), text)
+
+        # Idempotent install: same bytes, no extra backup.
+        bridge.install_bridge(self.vault, self.state, 'opencode', [self.project], home=self.home)
+        self.assertFalse(target.with_name(target.name + '.bak').exists())
+
+        # Reinstall after an edit backs the file up and rewrites the managed plugin.
+        target.write_text(text + '\n// local edit\n', encoding='utf-8')
+        bridge.install_bridge(self.vault, self.state, 'opencode', [self.project], home=self.home)
+        self.assertTrue(target.with_name(target.name + '.bak').is_file())
+        self.assertNotIn('// local edit', target.read_text(encoding='utf-8'))
+
+        # A user file at the managed path is never replaced or deleted.
+        target.unlink()
+        target.write_text('export default {}\n', encoding='utf-8')
+        with self.assertRaises(ValueError):
+            bridge.install_bridge(self.vault, self.state, 'opencode', [self.project], home=self.home)
+        self.assertEqual(target.read_text(encoding='utf-8'), 'export default {}\n')
+        self.assertEqual(bridge.uninstall_bridge('opencode', home=self.home)['removed_count'], 0)
+        self.assertTrue(target.is_file())
+
+        # A managed plugin is removed by uninstall.
+        target.unlink()
+        bridge.install_bridge(self.vault, self.state, 'opencode', [self.project], home=self.home)
+        self.assertEqual(bridge.uninstall_bridge('opencode', home=self.home)['removed_count'], 1)
+        self.assertFalse(target.exists())
+
+    @unittest.skipUnless(shutil.which('node'), 'node is required to execute the OpenCode plugin')
+    def test_opencode_bridge_plugin_injects_only_for_allowed_projects(self):
+        target = bridge.global_opencode_plugin_path(home=self.home)
+        bridge.install_bridge(self.vault, self.state, 'opencode', [self.root / 'Projects'], home=self.home)
+        elsewhere = self.root / 'Elsewhere'
+        elsewhere.mkdir()
+        result = subprocess.run([shutil.which('node'), '--input-type=module', '-e', OPENCODE_DRIVER,
+                                 str(target), str(self.project), str(elsewhere)],
+                                capture_output=True, text=True, encoding='utf-8', env=self.env,
+                                cwd=self.root, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual(data['id'], 'beyin-v3-bridge')
+        self.assertEqual(data['keys'], ['session.compaction', 'session.context', 'session.prompt'])
+        self.assertIn('Optional Beyin bridge', data['allowed'][0]['text'])
+        self.assertIn('--harness opencode', data['allowed'][0]['text'])
+        self.assertEqual(data['blocked'], [], 'Sessions outside the project roots get no bridge context')
+        self.assertEqual(data['child'], [], 'Sub-agent sessions get no bridge context')
+
+        hook.drain_queue(self.vault, self.state)
+        done = [json.loads(p.read_text(encoding='utf-8')) for p in (self.state / 'hook-done').glob('*.json')]
+        self.assertEqual({e['harness'] for e in done}, {'opencode'})
+        self.assertEqual({e['project'] for e in done}, {self.project.name},
+                         'The session directory names the project, not the service directory')
+        self.assertEqual(sorted(e['event'] for e in done), ['SessionEnd', 'SessionStart', 'Stop'])
 
 
 if __name__ == '__main__':
