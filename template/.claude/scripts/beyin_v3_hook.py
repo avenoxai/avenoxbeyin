@@ -407,7 +407,8 @@ def receipt_reminder(payload, state, harness, event, vault=None):
         if done.exists() and kdone.exists():
             return None
         if event == "UserPromptSubmit":
-            if "[kaydetme]" in prompt_text(payload):
+            # Quoted worker output is data, not the user's instruction to opt out.
+            if not is_synthetic_prompt(payload) and "[kaydetme]" in prompt_text(payload):
                 folder.mkdir(parents=True, exist_ok=True)
                 done.touch()
                 kdone.touch()
