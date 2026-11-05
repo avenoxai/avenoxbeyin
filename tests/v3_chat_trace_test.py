@@ -202,7 +202,9 @@ class TraceTest(unittest.TestCase):
         result = engine.store.context_for('claude', 'zirkon robot kamerası', strict=True)
         self.assertEqual(len(result['records']), 1)
         self.assertIn('sabit ray', result['records'][0]['text'])
-        self.assertNotIn('Kobalt deneyi', result['records'][0]['text'])
+        # The selected primary passage is query-specific. A small complete
+        # monthly source may also be delivered from spare room (#530).
+        self.assertNotIn('Kobalt deneyi', result.sources[0]['text'])
         self.assertFalse(remote_allowed(result['records'][0]))
         self.assertFalse((self.vault / '.beyin-preferences.json').exists())
 

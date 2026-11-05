@@ -820,6 +820,7 @@ def main():
                             pass  # an advisor failure must never cost the local context
                 dedupe_enabled = (state / 'context-dedupe.json').is_file() or os.environ.get('BEYIN_V3_CONTEXT_DEDUPE') == '1'
                 duplicates = []
+                topic_evidence = getattr(context, 'evidence', {})
                 suffix = receipt
                 if dedupe_enabled and context.get("records"):
                     try:
@@ -854,8 +855,14 @@ def main():
                         pass
                 try:
                     # Records held back as already delivered this session still anchor the topic (#363).
+                    if duplicates:
+                        from beyin_v3 import PackedContext
+                        anchored = PackedContext(delivered, records=list(delivered.get('records', [])) + duplicates)
+                        anchored.evidence = dict(topic_evidence, **getattr(delivered, 'evidence', {}))
+                    else:
+                        anchored = delivered
                     remember(store, args.harness, topic_session, query,
-                             dict(delivered, records=list(delivered.get("records", [])) + duplicates) if duplicates else delivered,
+                             anchored,
                              inherited=inherited)
                 except (ValueError, OSError):
                     pass

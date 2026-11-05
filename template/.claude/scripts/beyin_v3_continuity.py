@@ -11,11 +11,12 @@ from pathlib import Path
 import tempfile
 import time
 
-from beyin_v3 import HARNESSES, STOPWORDS, _allowed_statuses, _status_allowed, _tokens, pack_context
+from beyin_v3 import HARNESSES, STOPWORDS, CONTEXT_MARKER, _tokens, pack_context
 
 TTL_SECONDS = 1200
 MAX_SESSIONS = 128
 MAX_REFS = 3
+MAX_RANGES = 8
 # Token composition rather than a list of complete prompts/prefixes. Novel content
 # words veto inheritance; false negatives are safer than carrying a wrong project.
 ACTIONS = _tokens('yap et incele araştır kurcala takıl dene test anlat raporla göster uygula '
@@ -48,7 +49,7 @@ def _read(path, now):
         if path is None or path.stat().st_size > 16000:
             return None
         value = json.loads(path.read_text(encoding='utf-8'))
-        if (not isinstance(value, dict) or value.get('version') != 1 or
+        if (not isinstance(value, dict) or value.get('version') != 2 or
                 type(value.get('at')) not in (int, float) or not 0 <= now - value['at'] < TTL_SECONDS or
                 (value.get('project') is not None and not isinstance(value['project'], str)) or
                 not isinstance(value.get('refs'), list) or not 1 <= len(value['refs']) <= MAX_REFS):
@@ -72,9 +73,8 @@ def _current(store, saved):
     ids = {ref.get('id') for ref in saved['refs']}
     eligible, _ = store._eligible('internal', saved['project'], records=[r for r in indexed if r['id'] in ids])
     superseded = store._superseded_ids(indexed)
-    allowed_statuses = _allowed_statuses(None)
-    eligible = [record for record in eligible if record['id'] not in superseded
-                and _status_allowed(record, allowed_statuses)]
+    from beyin_v3_passage import pool, settings
+    eligible = pool(store, eligible, exclude=settings(store.state_dir)['exclude'], superseded=superseded)
     by_id = {r['id']: r for r in eligible if not r.get('text_truncated')}
     records = []
     for ref in saved['refs']:
@@ -85,6 +85,29 @@ def _current(store, saved):
             return []  # Never silently combine a changed source with an old topic.
         records.append(record)
     return records
+
+
+def _restore(record, ref):
+    """Reconstruct source ranges only after _current verified hash/revision and policy."""
+    from beyin_v3_evidence import reference, render_spans
+    from beyin_v3_passage import split_blocks, _partial
+    ranges = ref.get('ranges')
+    if not isinstance(ranges, list) or not 1 <= len(ranges) <= MAX_RANGES:
+        return None
+    spans, blocks, previous = [], split_blocks(record['text']), -1
+    for item in ranges:
+        if (not isinstance(item, list) or len(item) != 2 or
+                any(type(offset) is not int for offset in item)):
+            return None
+        start, end = item
+        if not 0 <= start < end <= len(record['text']) or start < previous:
+            return None
+        head = next((head for head, left, right in blocks if left <= start < right), '')
+        spans.append((head, start, end))
+        previous = end
+    text, _ = render_spans(record, spans)
+    excerpt = dict(record, text=text, text_truncated=_partial(record, [(record, h, s, e, '') for h, s, e in spans]))
+    return excerpt, reference(record, spans, 'continuity')
 
 
 def resolve(store, harness, session, query, local, *, budget_chars, project=None, now=None):
@@ -106,16 +129,29 @@ def resolve(store, harness, session, query, local, *, budget_chars, project=None
         return local, False
     if not records:
         return local, False
-    vocabulary = set().union(*(_tokens(r.get('title', '') + ' ' + r['text']) for r in records))
+    selected, evidence = [], {}
+    for record, ref in zip(records, saved['refs']):
+        restored = _restore(record, ref)
+        if restored is None:
+            return local, False
+        excerpt, proof = restored
+        selected.append(excerpt)
+        evidence[record['id']] = proof
+    # A source may cover several subjects. Only the delivered ranges establish
+    # the active topic; words from an unseen section must not replace a current
+    # query's local evidence with the previous passage.
+    vocabulary = set().union(*(_tokens(r.get('title', '') + ' ' + r['text']) for r in selected))
     familiar = vocabulary | ACTIONS | DEICTIC | GENERIC
-    # A command with a deictic, or an action referring only to the active subject.
     if terms - familiar:
         return local, False
-    return dict(pack_context(records, MAX_REFS, budget_chars), continuity='local_source_refs'), True
+    context = pack_context(selected, MAX_REFS, budget_chars)
+    context['continuity'] = 'local_source_refs'
+    context.evidence = {r['id']: evidence[r['id']] for r in context['records']}
+    return context, True
 
 
 def remember(store, harness, session, query, delivered, *, inherited=False, now=None):
-    """Persist only IDs/revisions/hashes for delivered sources. Fail closed on ambiguity."""
+    """Persist hash-bound delivered ranges, never source text or a raw prompt."""
     path = _path(store, harness, session)
     if path is None:
         return
@@ -132,9 +168,30 @@ def remember(store, harness, session, query, delivered, *, inherited=False, now=
     if not (terms - ACTIONS - DEICTIC - GENERIC):
         return
     now = time.time() if now is None else now
-    value = dict(version=1, at=now, project=next(iter(projects)), refs=[
-        {k: r[k] for k in ('id', 'revision', 'source_sha256')}
-        for r in records[:MAX_REFS] if all(k in r for k in ('id', 'revision', 'source_sha256'))])
+    from beyin_v3_evidence import delivered_ranges
+    refs, indexed = [], None
+    for record in records[:MAX_REFS]:
+        if not all(k in record for k in ('id', 'revision', 'source_sha256')):
+            continue
+        ref = getattr(delivered, 'evidence', {}).get(record['id'])
+        ranges = delivered_ranges(ref, record) if ref else []
+        if ref is None:
+            # Note-level fallback/older callers still get exact prefix ranges. A
+            # passage without a reference is never guessed back to the note head.
+            if indexed is None:
+                indexed = {r['id']: r for r in store._records()}
+            original = indexed.get(record['id'])
+            text = record['text']
+            if record.get('text_truncated') and text.endswith(CONTEXT_MARKER):
+                text = text[:-len(CONTEXT_MARKER)]
+            if (text and original and all(original.get(k) == record[k] for k in ('revision', 'source_sha256'))
+                    and original['text'].startswith(text)):
+                ranges = [[0, len(text)]]
+        if not ranges or len(ranges) > MAX_RANGES:
+            path.unlink(missing_ok=True)
+            return  # Never silently replace one member of an ambiguous topic.
+        refs.append(dict({k: record[k] for k in ('id', 'revision', 'source_sha256')}, ranges=ranges))
+    value = dict(version=2, at=now, project=next(iter(projects)), refs=refs)
     if not value['refs']:
         return
     temporary = None

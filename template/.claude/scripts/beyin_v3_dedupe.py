@@ -187,6 +187,12 @@ def drop_delivered(state, harness, session, context, now=None):
     if len(sources) == len(records):
         held = {id(r) for r in duplicates}
         kept.sources = tuple(s for s, r in zip(sources, records) if id(r) not in held)
+    ids = {r['id'] for r in novel}
+    if hasattr(context, 'wider'):
+        kept.wider = {key: r for key, r in context.wider.items() if key in ids}
+        kept.extensions = {key: r for key, r in getattr(context, 'extensions', {}).items() if key in ids}
+    if hasattr(context, 'evidence'):
+        kept.evidence = {key: ref for key, ref in context.evidence.items() if key in ids}
     return kept, duplicates
 
 

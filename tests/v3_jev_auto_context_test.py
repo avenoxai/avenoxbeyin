@@ -322,6 +322,28 @@ class HookWiringTest(unittest.TestCase):
                 failed = self.run_hook(vault, state, QUERY)
             self.assertIn('yearly plan', failed['hookSpecificOutput']['additionalContext'])
 
+    def test_hook_continuation_keeps_the_delivered_tail_without_an_advisor_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault, state = Path(tmp) / 'vault', Path(tmp) / 'state'
+            (vault / 'notes').mkdir(parents=True)
+            marker = 'Quartz rollback uses the amber switch.'
+            (vault / 'notes/guide.md').write_text('---\nid: guide\n---\n# Overview\n\n' +
+                'Unrelated background. ' * 120 + '\n\n## Recovery\n\n' + marker, encoding='utf-8')
+            from beyin_v3_sync import SyncEngine
+            SyncEngine(vault.resolve(), state.resolve()).sync()
+            client.set_mode(state.resolve(), 'on', enable=['auto_context'])
+            def transport(url, body, key, timeout):
+                return {'answers': {q: {'type': 'noul', 'noul': .99} for q in body['questions']}}
+            with patch.object(client, '_transport', transport):
+                first = self.run_hook(vault, state, 'explain quartz rollback switch')
+            self.assertIn(marker, first['hookSpecificOutput']['additionalContext'])
+            with patch.object(advisor, 'auto_context', side_effect=AssertionError('continuation called advisor')) as remote:
+                follow = self.run_hook(vault, state, 'bunu detaylandır')
+            remote.assert_not_called()
+            self.assertIn(marker, follow['hookSpecificOutput']['additionalContext'])
+            self.assertEqual('Unrelated background.' in first['hookSpecificOutput']['additionalContext'],
+                             'Unrelated background.' in follow['hookSpecificOutput']['additionalContext'])
+
 
 if __name__ == '__main__':
     unittest.main()

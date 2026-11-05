@@ -33,7 +33,7 @@ python beyin.py jev shadow --disable answer
 
 Kapalı bir özelliğin amacı çağrılırsa istemci anahtar okumadan ve ağa çıkmadan `off` modu ile `feature_disabled` teşhisi döndürür.
 
-`auto_context` açıkken `status` çıktısında `automatic_model_calls: true` olur; komut buna, her turda istemin ve en fazla 8 aday `internal`/`public` notun başlığı ile ilk 600 karakterinin sağlayıcıya gittiğini söyleyen bir `notice` ekler. `private` notlar gönderilmez. Mod `off` değilken anahtar yoksa `warning` eklenir ve çağrılar yerel sonuca düşer.
+`auto_context` açıkken `status` çıktısında `automatic_model_calls: true` olur; komut buna, her turda istemin ve en fazla 8 aday `internal`/`public` notun başlığı ile sorguya göre seçilen en fazla 600 karakterlik pasaj görünümünün sağlayıcıya gittiğini söyleyen bir `notice` ekler. Bu metin notun herhangi bir bölümünden gelebilir. `private` notlar gönderilmez. Mod `off` değilken anahtar yoksa `warning` eklenir ve çağrılar yerel sonuca düşer.
 
 ### Acil kapatma
 
@@ -285,7 +285,7 @@ Sonuç `on` kipinde şöyle uygulanır: konu kapısı 0,25 altındaysa hiçbir n
 
 Yerel sonuca geri dönülen durumlar: 12 karakterden kısa mesaj, yerel sır örüntüsü eşleşmesi, eksik anahtar, zaman aşımı, 429, bozuk yanıt, çağrı sırasında değişen kaynak, kill switch. Hook en fazla 2 saniye bekler ve kendi 5 saniyelik sınırına yaklaşmışsa hiç çağırmaz. `jev.json` yoksa Jev modülü içe aktarılmaz.
 
-Bedeli açıkça: her mesajda mesaj metni ve aday notların başlığı ile ilk 600 karakteri sağlayıcıya gider. İstanbul'dan tek atımlık çağrı ortanca 1,3 saniye, yüzde onu 2 saniyenin üstünde sürdü (sunucu ABD batı kıyısında); bu gecikme her eşleşen mesaja eklenir. İstek başına yaklaşık 600-1.500 girdi token'ı harcanır.
+Bedeli açıkça: her mesajda mesaj metni ve aday notların başlığı ile sorguya göre seçilen en fazla 600 karakterlik pasaj görünümü sağlayıcıya gider. Strict aramanın iki pasajı varsa ikisine de yer ayrılır; uzun pasajlarda sorguyla eşleşen pencere seçilir. Gevşek adayın da ilgili bölümü yerelde seçilir. Kurtarılırsa son zarf en fazla 3.300 karakterlik açılışa öncelik verir. Notun tamamını, açılışla birincil eşleşen pasajı veya açılışla bu pasajın sorguya göre seçilen en fazla 600 karakterlik penceresini taşıyan görünümlerden kalan bütçeye tam sığan ilkini kullanır (`pack_widened`). Hiçbiri sığmazsa açılış kalır. Bu yerel teslim tercihi Jev kartını büyütmez. Bölüm başlığı ve aralıklar arasındaki `[…]` işareti bu 600 karaktere dahildir. Kart şeması, aday sayısı, istemin 2.000 karakterlik sınırı, metadata alanları ve son gönderimden önceki sır taraması değişmez. `private` / `remote_allowed` kontrolleri her zamanki gibi uygulanır. İstanbul'dan daha önce ölçülen tek atımlık çağrı ortanca 1,3 saniye, yüzde onu 2 saniyenin üstündeydi (sunucu ABD batı kıyısında); yeni pasaj görünümü için canlı gecikme ve eşik davranışı ayrıca ölçülmelidir.
 
 Ölçüm (2026-09-20, canlı Jev, 12 sentetik Türkçe/İngilizce not, 26 mesaj, tek koşu): ilgili notu bulma 13/17'den 15/17'ye çıktı, alakasız not enjeksiyonu 2'den 1'e indi, strict'in bulduğu hiçbir ilgili not kaybedilmedi, bir çağrı zaman aşımına uğrayıp yerel sonuca döndü. Bir yanlış ekleme oldu ("bu fonksiyonu test için refactor et" mesajına test stratejisi notu). Bu sentetik bir ölçümdür ve Jev aynı isteğe her seferinde biraz farklı puan verir; gerçek kasada isabet daha düşük çıkabilir. Kendi notlarınızda önce `shadow` ile birkaç gün sayaçlara bakın, sonra `on` yapın.
 
