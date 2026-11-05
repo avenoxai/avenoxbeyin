@@ -83,6 +83,14 @@ Kaynak yazıldıktan sonra `python3 beyin.py sync` çalıştır. Görev değişi
 
 İşin bitişi önceden tanımlanmalıysa yeni görev metadata'sına `"completion_contract":"strict"` ve gözlenebilir `"completion_criterion":"..."` ekle. Bu görev `done` yapılırken `changes` içinde vault içindeki mevcut kaynak yollarından oluşan `"evidence_refs":["notes/sonuc.md"]` ver; eksik veya olmayan kaynak yazma işlemini durdurur. Ölçütü `done` güncellemesinde değiştiremezsin; değişmesi gerekiyorsa bunu önce ayrı bir güncellemeyle yap ve kullanıcıya söyle. Görevin kendi dosyası kanıt ref'i olamaz. Kanıt kaynağı kaybolursa görevi `done` dışı bir duruma alırken aynı güncellemede `"evidence_refs":[]` gönder; yeni kaynak eklemeden yeniden `done` yapma. `cancelled` için kanıt zorunlu değildir. Eski görevler opt-in yapmadan çalışır. `doctor` tamamlanmış eski görevleri bilgi olarak, bozuk strict sözleşmeleri dikkat gerektiren bulgu olarak listeler. Kanıt yolu bulunması işin bağımsız doğrulandığı anlamına gelmez.
 
+### Örnek · Çalışma alanının ana sayfasını güncelleme
+
+Kullanıcının amacına ve mevcut notlarına göre bir düzen öner. “İki kayıt da ana sayfanın yanında dursun” derse seçtiği klasörde mevcut notları kullan, yalnız eksikleri oluştur.
+
+“Yanıt geldi, cuma tekrar bakacağım” dendiğinde proje içinde benzer kayıtları bul ve esas metinlerini oku. Örneğin gelen belgede B-17 yazıyorsa bu numarayı taşıyan kayda yanıtı, cuma günkü adımı ve özgün belgenin bağlantısını ekle. Kasa dışındaki dosyayı yerinde bırak ve mutlak yolundan bir Markdown bağlantısı üret (ör. `[Yanıt](file:///Belgeler/B-17%20yanit.pdf)`). Kanıt iki kaydı ayırmıyorsa yazmadan önce tek ayırıcı soru sor.
+
+Esas kaydı geri oku. Ardından ana sayfanın son sürümünü oku ve `note-edit` ile yalnız `[[B-17]]` bağlantısının yanındaki eski durumu güncelle. Aynı satırdaki kullanıcı ekini ve diğer satırları koru. Ana sayfayı geri okuyup durumun kayıtla uyuştuğunu doğrula. İki yazım arasında kesinti olursa her ikisini yeniden oku ve yalnız eksik değişikliği uygula.
+
 ## Kişi notları
 
 Kullanıcının hayatındaki insanlar (iş arkadaşı, hoca, müşteri, aile) dağınık notlarda değil, kişi başına bir notta yaşar: `notes/kisiler/<ad-soyad>.md`, `kind: person`. Kullanıcının mevcut bir kişi klasörü varsa onu kullan; yeni düzen dayatma. Konuşmada bir kişi hakkında kalıcı bilgi geçtiğinde (rol, kurum, kullanıcıyla ilişkisi, temas, söz verilen sonraki adım) önce `python3 beyin.py context "Ad Soyad"` ile mevcut notu ara; varsa onu güncelle, yoksa `note-create` ile aç:
