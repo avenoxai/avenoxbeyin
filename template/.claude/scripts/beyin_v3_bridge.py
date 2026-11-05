@@ -527,8 +527,6 @@ def main(argv=None):
 
 
 def _main(argv=None):
-    if hasattr(sys.stdin, 'reconfigure'):
-        sys.stdin.reconfigure(encoding='utf-8-sig', errors='replace')
     parser = _BridgeParser(description=__doc__)
     parser.add_argument('--vault', type=Path, help='Path to vault root')
     parser.add_argument('--state', type=Path, help='Defaults to the installed vault runtime locator')
@@ -602,6 +600,10 @@ def _main(argv=None):
                               'timeout': 3 if event == 'SessionEnd' else 5}]}] for event in events}}, indent=2))
             return 0
         # A payload cut at the read limit is not JSON: the handler below answers '{}'.
+        # Parser/help and management calls do not consume the embedding host's input.
+        # Reconfigure only the hook stream, immediately before reading its payload.
+        if hasattr(sys.stdin, 'reconfigure'):
+            sys.stdin.reconfigure(encoding='utf-8-sig', errors='replace')
         payload = json.loads(sys.stdin.read(1_000_000).lstrip('\ufeff').strip() or '{}')
         if not isinstance(payload, dict):
             raise ValueError('Invalid hook payload')

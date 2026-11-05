@@ -97,6 +97,26 @@ class BridgeTest(unittest.TestCase):
                     self.assertIn('usage:', out.getvalue())
                     self.assertEqual(err.getvalue(), '')
 
+    def test_parser_only_calls_leave_host_stdin_untouched(self):
+        cases = [(['--help'], 0), (['--harness', 'invalid-client'], 2),
+                 (['--harness', 'codex'], 2),
+                 (['--harness', 'codex', '--vault', str(self.vault), '--install'], 2),
+                 (['--harness', 'codex', '--install', '--uninstall'], 2)]
+        for already_read in (False, True):
+            for arguments, expected in cases:
+                with self.subTest(already_read=already_read, arguments=arguments):
+                    with io.TextIOWrapper(io.BytesIO(b'host input\n'), encoding='ascii') as stream:
+                        if already_read:
+                            self.assertEqual(stream.read(1), 'h')
+                        position = stream.tell()
+                        with patch.object(sys, 'stdin', stream), \
+                                contextlib.redirect_stdout(io.StringIO()), \
+                                contextlib.redirect_stderr(io.StringIO()):
+                            self.assertEqual(bridge.main(arguments), expected)
+                        self.assertEqual(stream.encoding, 'ascii')
+                        self.assertEqual(stream.tell(), position)
+                        self.assertEqual(stream.read(), 'ost input\n' if already_read else 'host input\n')
+
     def test_default_argv_help_returns_without_exiting_host(self):
         with patch.object(sys, 'argv', ['beyin_v3_bridge.py', '--help']), \
                 patch.object(sys, 'stdin', io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
