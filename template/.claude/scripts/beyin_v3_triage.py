@@ -539,7 +539,8 @@ def _thread_topics(text):
             title, body = None, []
             level, label = len(heading[1]), heading[2]
             if level < 3:
-                word = fold(label).split()[0]
+                words = fold(label).split()
+                word = words[0] if words else ''
                 active = (word in ('active', 'aktif', 'acik', 'open') if level == 2
                           else not (word == 'closed' or word.startswith(('kapan', 'kapali'))))
             elif active:
