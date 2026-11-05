@@ -22,7 +22,38 @@ import urllib.parse
 
 
 # Every supported client. "manual" is accepted for receipts only.
-HARNESSES = ("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro")
+HARNESSES = ("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro", "dsh")
+
+# Harnesses a receipt validator released before this one accepts in frontmatter: v3.12.0's
+# HARNESSES. A receipt is read back by whichever build the vault runs, and a rollback lands on
+# code that rejects an unknown name (`invalid harness`), so a client outside this list writes
+# `harness: manual` plus `client: <name>`. An older validator ignores the unknown client key;
+# this build still attributes the receipt to the client. A listed harness never borrows a name.
+# DO NOT ADD A NEW HARNESS TO THIS LIST. It records the released validator's name set, not a
+# policy; a new client belongs in HARNESSES and is written as manual plus client.
+RECEIPT_NATIVE_HARNESSES = ("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro")
+
+
+def receipt_harness_fields(harness):
+    """Frontmatter (harness, client) for a logical harness; client is None when its name is enough."""
+    if harness in RECEIPT_NATIVE_HARNESSES or harness == "manual":
+        return harness, None
+    return "manual", harness
+
+
+def receipt_harness(metadata):
+    """Logical harness of a receipt: manual plus a known, non-native client names the newer client.
+
+    An unusable client (unknown name, not a string) leaves the receipt manual exactly as an
+    older build would read it, and a native harness keeps its own name even beside a client.
+    """
+    harness = metadata.get("harness", "manual")
+    client = metadata.get("client")
+    if (harness == "manual" and isinstance(client, str) and client in HARNESSES
+            and client not in RECEIPT_NATIVE_HARNESSES):
+        return client
+    return harness
+
 
 # rejected_at grammar: a date, optionally with an RFC 3339-style time.
 REJECTED_AT = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ](?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})?)?", re.ASCII)

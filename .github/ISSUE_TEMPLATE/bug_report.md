@@ -18,7 +18,7 @@ assignees: ''
 - Beyin sürümü veya commit:
 - İşletim sistemi:
 - Python sürümü:
-- İstemci (Claude Code, Codex, Hermes, Kiro, CLI veya diğer):
+- İstemci (Claude Code, Codex, Hermes, Kiro, DeepSeek Harness, CLI veya diğer):
 
 ## Yeniden üretim
 

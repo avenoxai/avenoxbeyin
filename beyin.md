@@ -146,7 +146,10 @@ import eden `CLAUDE.md`'ye bolum ikinci kez eklenmez; import etmeyen `CLAUDE.md`
 bolum eklenir. Kullaniciya verdigin ozette neyin eklendigini yaz.
 Kiro destegi iceren bir paket kullaniyorsan `.kiro/hooks/beyin-v3.json` ve
 `.kiro/skills/beyin/SKILL.md` dosyalarini da kontrol et; eski paketlerde bu
-dosyalar bulunmayabilir.
+dosyalar bulunmayabilir. DSH kullaniyorsan `.claude/dsh/beyin-v3-hooks.json`
+dosyasini kontrol et ve profil yamasini `beyin.py doctor --json` ciktisindaki
+`dsh.manual_setup.block` ile elle tamamla; DSH'yi yeniden baslatmadan profil
+degisikligi etkin olmaz.
 
 Kurulum vault kokune yalniz ilgili platformun guncelleme kisayolunu birakir: macOS'ta
 `Beyni Güncelle.command`, Windows'ta `Beyni Guncelle.cmd`, Linux'ta `Beyni Güncelle.sh`
@@ -164,6 +167,11 @@ kullaniciya aittir; adimlar
 `https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/HERMES.md` icindedir.
 Kiro IDE 1.x veya CLI V3 kullaniliyorsa vault'u ac, Agent Hooks panelinde veya
 CLI `/hooks` ekraninda Beyin tanimlarini incele ve yeni oturum baslat.
+DSH kullaniliyorsa `beyin.py doctor --json` ciktisindaki `dsh.manual_setup`
+blogunu `~/.dsh/profiles/<profil>/cordis.patch.yml` dosyasina elle ekle, DSH'yi
+yeniden baslat ve yeni oturum ac. Profilde zaten bir sandbox-policy ya da
+hooks-claude-code girdisi varsa ikincisini ekleme; var olan girdinin
+`configPath` ve `workspaceRoot` degerlerini duzelt. Kurucu `~/.dsh` altina yazmaz.
 Ardindan yeni bir istemci oturumu acilmasini iste. Codex Desktop otomatik hook baglami
 gorunmezse bu bir kurulum basarisi iddiasi degildir; kurulu `beyin.py context` ve `sync`
 komutlariyla dogrudan tazeleme kullanilabilir.

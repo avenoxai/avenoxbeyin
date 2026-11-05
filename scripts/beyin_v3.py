@@ -373,7 +373,7 @@ def jev_advice(result):
 
 
 HOOK_FILES = (".claude/settings.local.json", ".codex/hooks.json", ".agents/hooks.json",
-              ".kiro/hooks/beyin-v3.json")
+              ".kiro/hooks/beyin-v3.json", ".claude/dsh/beyin-v3-hooks.json")
 
 
 def _hook_arguments(command: str) -> list:
@@ -432,7 +432,8 @@ def hook_paths(vault: Path) -> dict:
                             handlers.append((event, handler["command"]))
         for event, command in handlers:
             arguments = _hook_arguments(command)
-            expected = "/beyin_v3_kiro.py" if name == ".kiro/hooks/beyin-v3.json" else "/beyin_v3_hook.py"
+            expected = ("/beyin_v3_kiro.py" if name == ".kiro/hooks/beyin-v3.json" else
+                        "/beyin_v3_dsh.py" if name == ".claude/dsh/beyin-v3-hooks.json" else "/beyin_v3_hook.py")
             script = next((a for a in arguments if a.replace("\\", "/").endswith(expected)), None)
             if script is None:
                 continue
@@ -541,6 +542,11 @@ def hook_reconcile(vault: Path, state: Path, force: bool = False) -> dict:
         _local_hook_file(vault, kiro_script)
         if not kiro_script.is_file():
             raise RuntimeError(f"Kiro hook adapter not found at {kiro_script}. Reinstall or repair the vault first.")
+    dsh_script = vault / ".claude/scripts/beyin_v3_dsh.py"
+    if (vault / ".claude/dsh/beyin-v3-hooks.json").is_file():
+        _local_hook_file(vault, dsh_script)
+        if not dsh_script.is_file():
+            raise RuntimeError(f"DSH hook adapter not found at {dsh_script}. Reinstall or repair the vault first.")
 
     for name in HOOK_FILES:
         _local_hook_file(vault, vault / name)
@@ -684,6 +690,36 @@ def hook_reconcile(vault: Path, state: Path, force: bool = False) -> dict:
                                     handler["command"] = target_cmd
                                     handler["timeout"] = timeout
                                     file_reconciled += 1
+        elif name == ".claude/dsh/beyin-v3-hooks.json":
+            hooks_map = data.get("hooks", {})
+            if isinstance(hooks_map, dict):
+                for event, groups in hooks_map.items():
+                    if not isinstance(groups, list):
+                        continue
+                    posix, windows = _hook_commands([sys.executable, dsh_script, "--vault", vault, "--state", state,
+                                                     "--event", event])
+                    all_new_commands.extend([posix, windows])
+                    target_cmd = windows if os.name == "nt" else posix
+                    timeout = 25 if os.name == "nt" else 10
+                    for group in groups:
+                        if not isinstance(group, dict):
+                            continue
+                        for handler in group.get("hooks", []):
+                            if not isinstance(handler, dict):
+                                continue
+                            old_cmd = handler.get("command", "")
+                            if not isinstance(old_cmd, str):
+                                continue
+                            args = _hook_arguments(old_cmd)
+                            if not any(a.replace("\\", "/").endswith("/beyin_v3_dsh.py") for a in args):
+                                continue
+                            if old_cmd != target_cmd or force:
+                                changes.append({"event": event, "old_command": old_cmd, "new_command": target_cmd,
+                                                "old_summary": " ".join(args[:2]),
+                                                "new_summary": f"{sys.executable} {dsh_script}"})
+                                handler["command"] = target_cmd
+                                handler["timeout"] = timeout
+                                file_reconciled += 1
         else:
             harness = "claude" if "claude" in name else "codex"
             hooks_map = data.get("hooks", {})
@@ -1038,7 +1074,7 @@ def parser(note_namespace=None, is_json=False):
     context = sub.add_parser("context", help="Retrieve source-backed shared context")
     context.add_argument("query", nargs="?", help="Query; alternatively use --file")
     context.add_argument("--file", help="JSON retrieval arguments, or - for stdin")
-    context.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro"), default="codex")
+    context.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro", "dsh"), default="codex")
     context.add_argument("--project")
     context.add_argument("--audience", choices=("internal", "public"), default="internal")
     context.add_argument("--status", action="append", dest="statuses")
@@ -1065,7 +1101,7 @@ def parser(note_namespace=None, is_json=False):
     answer.add_argument("--project", required=True)
     receipt = sub.add_parser("receipt", help="Submit an idempotent source-linked receipt")
     receipt.add_argument("--file", help="JSON input path, or - for stdin (default without receipt flags)")
-    receipt.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro"), default="codex")
+    receipt.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro", "dsh"), default="codex")
     receipt.add_argument("--event-id", help="Required receipt event identifier in flag mode")
     receipt.add_argument("--summary", help="Receipt summary text, preserving literal newlines")
     receipt.add_argument("--summary-file", type=Path, metavar="PATH", help="Read the receipt summary from a UTF-8 file")
@@ -1399,7 +1435,7 @@ def main(argv=None, return_result=False):
         elif args.command == "doctor":
             _ensure_scripts_path()
             from beyin_v3_hook_done import summary as hook_done_summary
-            done = hook_done_summary(state, ('codex', 'claude', 'antigravity', 'hermes', 'opencode', 'omp', 'kiro'))
+            done = hook_done_summary(state, ('codex', 'claude', 'antigravity', 'hermes', 'opencode', 'omp', 'kiro', 'dsh'))
             result = {"pending_events": len(list((state / "hook-queue").glob("*.json"))),
                       **done}
             for filename in ("hook-health.json", "hook-error.json", "receipt-gaps.json"):
@@ -1610,6 +1646,11 @@ def main(argv=None, return_result=False):
                             result['omp_global_hook'] = {'path': str(global_copy), 'stale': False}
             except Exception as exc:  # a stale-copy report must never hide the rest of doctor
                 result['omp_global_hook'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            try:  # information only: DSH's hook config and the profile patch that unblocks its hooks
+                import beyin_v3_dsh as dsh
+                result['dsh'] = dsh.doctor(vault, state)
+            except Exception as exc:  # never hides the rest of doctor
+                result['dsh'] = {'status': 'unavailable', 'error': type(exc).__name__}
         elif args.command == "scheduled-check":
             _ensure_scripts_path()
             import beyin_v3_scheduled as scheduled

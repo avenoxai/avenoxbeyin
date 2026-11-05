@@ -50,6 +50,7 @@ Beyni Guncelle.cmd
 .kiro/skills/beyin/
 .kiro/skills/beyin-doktor/
 .kiro/skills/beyin-guncelle/
+.claude/dsh/beyin-v3-hooks.json
 .opencode/plugins/beyin-v3.js
 .omp/hooks/pre/beyin-v3.ts
 # companion-compact süreçler arası kilidi; kalıcıdır ama kullanıcı verisi değildir

@@ -21,7 +21,8 @@ if _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
 from beyin_v3 import (HARNESSES, MAX_RECEIPT_LINKS, REJECTED_AT, RETIRED_STATUSES, MemoryStore, ReceiptConflict, RevisionConflict, _json,
-                      _path_redirected, _plain_link, _rejected_inference, _status_word, rejected_dependents, resolve_supersedes)
+                      _path_redirected, _plain_link, _rejected_inference, _status_word, receipt_harness,
+                      receipt_harness_fields, rejected_dependents, resolve_supersedes)
 from beyin_v3_index import applied_keys, dir_key, exclusions as index_exclusions, prune as prune_excluded
 from beyin_v3_hygiene import sensitive_excluded, sensitive_source
 from beyin_v3_projections import (is_receipt_view_source, is_receipt_view_conflict, project_receipts,
@@ -364,6 +365,14 @@ def numbered_copy_of(name, siblings):
 # server, a VM shared folder) and runs behind this one.
 SIGNATURE_SCHEMA = 'source-signatures/2'
 RACY_WINDOW_NS = 2_000_000_000
+# Bumped when receipt frontmatter is read differently, e.g. a harness stored as manual plus a
+# client. The receipts/ directory stat alone cannot notice another build indexing the same
+# directory; a different format makes its stored signature mismatch, so the scan runs again.
+RECEIPT_SCAN_FORMAT = 2
+
+
+def _receipt_scan_signature(stat):
+    return f'{RECEIPT_SCAN_FORMAT}:{stat.st_dev}:{stat.st_ino}:{stat.st_mtime_ns}'
 
 
 def _stat_signature(st):
@@ -939,13 +948,15 @@ class SyncEngine:
         if _has_conflict_markers(text):
             raise ValueError('unresolved git conflict markers; resolve the merge before sync')
         metadata, body = parse(text)
-        event_id, harness, refs = metadata.get('event_id'), metadata.get('harness', 'manual'), metadata.get('refs')
+        event_id, refs = metadata.get('event_id'), metadata.get('refs')
+        # A client this build knows but a released validator does not is stored as manual+client.
+        harness = receipt_harness(metadata)
         if metadata.get('kind') != 'receipt' or not isinstance(event_id, str) or not event_id.strip():
             raise ValueError('missing kind receipt or event_id')
         if path.name != _hash(event_id) + '.md':
             raise ValueError('filename does not match event_id hash')
         if harness not in HARNESSES + ('manual',):
-            raise ValueError(f'invalid harness: {harness}')
+            raise ValueError(f'invalid harness: {metadata.get("harness")}')
         # Refs were validated when the receipt was written; a later rename must not block recovery.
         if not isinstance(refs, list) or not refs or any(
                 not isinstance(ref, str) or not ref or Path(ref).is_absolute() or '..' in Path(ref).parts for ref in refs):
@@ -972,7 +983,7 @@ class SyncEngine:
             event['session'] = session
         return event
 
-    def _scan_receipts(self, db):
+    def _scan_receipts(self, db, full=False):
         """Re-index receipt sources missing from local state, e.g. after a state reset or on a new device."""
         try:
             receipts_dir = self._path('receipts')
@@ -980,9 +991,10 @@ class SyncEngine:
                 return [], []
             # Every new source, local or synced from another device, is a new directory entry and
             # changes this signature; a fresh state has none stored. Warm syncs stop at one stat.
+            # The code format is part of it, so another build's clean scan is not taken on trust.
             stat = receipts_dir.stat()
-            signature = f'{stat.st_dev}:{stat.st_ino}:{stat.st_mtime_ns}'
-            if db.execute("SELECT 1 FROM metadata WHERE key='receipt_scan_signature' AND value=?", (signature,)).fetchone():
+            signature = _receipt_scan_signature(stat)
+            if not full and db.execute("SELECT 1 FROM metadata WHERE key='receipt_scan_signature' AND value=?", (signature,)).fetchone():
                 return [], []
             names = sorted(os.listdir(receipts_dir))
         except (ValueError, OSError) as exc:
@@ -1008,6 +1020,12 @@ class SyncEngine:
                     if (old['summary'], old['refs'], old.get('links')) != (event['summary'], event['refs'], event.get('links')):
                         conflicts.append({'source': rel, 'kind': 'receipt_divergence',
                                           'reason': 'receipt source differs from indexed receipt; event_id reused on another device'})
+                    elif old.get('harness') == 'manual' and event['harness'] != 'manual':
+                        # A build that did not know this client read the file as plain manual.
+                        # The source still names its client, so restore the attribution rather
+                        # than leave its checkpoint unmatched. Same event, same refs, same links.
+                        old['harness'] = event['harness']
+                        db.execute('UPDATE receipts SET payload=? WHERE id=?', (_json(old), event['event_id']))
                     continue
                 db.execute('INSERT OR IGNORE INTO receipts VALUES (?,?)', (event['event_id'], _json(event)))
             except (ValueError, OSError, UnicodeError) as exc:
@@ -1043,7 +1061,7 @@ class SyncEngine:
                     pass
             db.execute("INSERT OR REPLACE INTO metadata VALUES ('last_sync_time', ?)", (str(now_sec),))
             completed, recovery_conflicts = self._recover(db, note_locks)
-            receipt_warnings, receipt_conflicts = self._scan_receipts(db)
+            receipt_warnings, receipt_conflicts = self._scan_receipts(db, full=full)
             # The layout file is shared through git and can arrive malformed (for
             # example with merge markers). Indexing, receipts and hooks keep working;
             # receipt views stay exactly as they are until the file is valid again.
@@ -1440,6 +1458,7 @@ class SyncEngine:
         refs = [self.store._source(ref) for ref in refs]
         links = self._links(links)
         source = 'receipts/' + _hash(event_id) + '.md'
+        path = self._path(source)
         event = {'event_id': event_id, 'summary': summary, 'refs': refs, 'harness': harness, 'created_at': datetime.now(timezone.utc).isoformat()}
         if links:
             event['links'] = links
@@ -1447,10 +1466,11 @@ class SyncEngine:
             if not isinstance(session, str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', session):
                 raise ValueError('invalid receipt session')
             event['session'] = session
+        expected = None
         with self.store._connect() as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT payload FROM receipts WHERE id=?', (event_id,)).fetchone()
-            if not row and self._path(source).exists():
+            if not row and path.exists():
                 # Local state was reset: adopt the on-disk receipt instead of reporting a false conflict.
                 try:
                     old = self._receipt_event(source)
@@ -1463,25 +1483,48 @@ class SyncEngine:
                 if old['summary'] != summary or old['refs'] != refs or old.get('links', []) != links:
                     raise ReceiptConflict('event id collision')
                 event = old
-            receipt_metadata = {'kind': 'receipt', 'event_id': event_id, 'harness': event['harness'], 'refs': refs, 'visibility': 'internal'}
-            if links:
-                receipt_metadata['links'] = links
-            if event.get('created_at'):
-                receipt_metadata['created_at'] = event['created_at']
-            if event.get('session'):
-                receipt_metadata['session'] = event['session']
-            content = render(receipt_metadata, summary + '\n')
-            path = self._path(source)
             if path.exists():
-                # Byte comparison: universal-newline text would call a '\r' summary a manual change.
-                if path.read_bytes() != content.encode('utf-8'):
+                # A receipt source is immutable, and another build may have named its harness
+                # differently: manual plus client, or a bare client name from an earlier build.
+                original = path.read_bytes()
+                try:
+                    disk = self._receipt_event(source)
+                except (ValueError, OSError, UnicodeError) as exc:
+                    raise ReceiptConflict('receipt source manually changed') from exc
+                if (disk['event_id'], disk['summary'], disk['refs'], disk.get('links', []),
+                        disk.get('session'), disk.get('created_at')) != (
+                        event_id, summary, refs, links, event.get('session'), event.get('created_at')):
                     raise ReceiptConflict('receipt source manually changed')
+                # Attribution comes from the source, never from the caller: an older build that
+                # indexed manual plus client as manual gets the client back, and a plain manual
+                # receipt stays manual whoever resubmits it (first-writer attribution).
+                if event['harness'] == 'manual' and disk['harness'] != 'manual':
+                    event = dict(event, harness=disk['harness'])
+                elif disk['harness'] != event['harness']:
+                    raise ReceiptConflict('receipt source manually changed')
+                if json.loads(row[0]) != event:
+                    db.execute('UPDATE receipts SET payload=? WHERE id=?', (_json(event), event_id))
+                expected = original
             else:
+                # The frontmatter name is what a released build reads; the event keeps the client.
+                written_harness, client = receipt_harness_fields(event['harness'])
+                receipt_metadata = {'kind': 'receipt', 'event_id': event_id, 'harness': written_harness,
+                                    'refs': refs, 'visibility': 'internal'}
+                if client:
+                    receipt_metadata['client'] = client
+                if links:
+                    receipt_metadata['links'] = links
+                if event.get('created_at'):
+                    receipt_metadata['created_at'] = event['created_at']
+                if event.get('session'):
+                    receipt_metadata['session'] = event['session']
+                content = render(receipt_metadata, summary + '\n')
                 self._intent(source, None, content, 'receipt', event)
+                expected = content.encode('utf-8')
         result = self.sync()
         if self._write_blockers(result, source):
             raise ReceiptConflict('receipt projection conflict')
-        if self._path(source, existing=True).read_bytes() != content.encode('utf-8'):
+        if self._path(source, existing=True).read_bytes() != expected:
             raise ReceiptConflict('receipt source changed before readback')
         self.store.submit_receipt(event_id, summary, refs, event['harness'], links=links)
         self._record_redactions(redacted)
