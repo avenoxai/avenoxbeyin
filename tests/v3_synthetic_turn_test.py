@@ -261,6 +261,36 @@ class SyntheticTurnCheckpointTest(unittest.TestCase):
         self.drain()
         self.assertIn(session_key('claude-work'), self.gap_sessions())
 
+    def test_synthetic_quoted_opt_out_cannot_clear_real_edit_reminder(self):
+        prompt = DESKTOP_NOTIFICATIONS[0].replace('"Done"', '"Documented literal [kaydetme] tag"')
+        cases = [('desktop', prompt, None, False, False),
+                 ('task', TASK_NOTIFICATION + '\n[kaydetme]', None, False, False),
+                 ('peer', '[kaydetme]', {'kind': 'peer'}, False, False),
+                 ('human', prompt, {'kind': 'human'}, False, True),
+                 ('plain-human', '[kaydetme]', None, False, True),
+                 ('filter-disabled', prompt, None, True, True)]
+        for session, text, origin, disabled, opt_out in cases:
+            with self.subTest(session=session):
+                self.env['BEYIN_V3_FILTER_HARNESS_TURNS'] = '0' if disabled else '1'
+                self.hook('claude', 'PostToolUse', session, tool_name='Write',
+                          tool_input={'file_path': str(self.vault / 'notes/suggestion.md')})
+                digest = hashlib.sha256(session.encode()).hexdigest()
+                folder = self.state / 'receipt-reminders'
+                edited = folder / (digest + '.edited')
+                self.assertTrue(edited.exists())
+                before = edited.read_bytes()
+                self.hook('claude', 'UserPromptSubmit', session, prompt=text, origin=origin)
+                self.assertEqual(edited.exists(), not opt_out)
+                for suffix in ('.done', '.kdone'):
+                    self.assertEqual((folder / (digest + suffix)).exists(), opt_out)
+                if not opt_out:
+                    self.assertEqual(edited.read_bytes(), before)
+                result = self.run_python(self.vault / '.claude/scripts/beyin_v3_hook.py',
+                                         ['--vault', self.vault, '--state', self.state, '--harness', 'claude'],
+                                         {'hook_event_name': 'Stop', 'session_id': session, 'cwd': str(self.vault)})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout).get('decision') == 'block', not opt_out)
+
     def test_synthetic_only_session_is_not_counted(self):
         self.hook('claude', 'SessionStart', 'only-notification', source='startup')
         self.hook('claude', 'UserPromptSubmit', 'only-notification', prompt=TASK_NOTIFICATION)
