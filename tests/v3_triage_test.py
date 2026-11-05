@@ -93,6 +93,16 @@ class TriageTest(unittest.TestCase):
         self.assertEqual(report['open_count'], 2)
         self.assertEqual([r['last_date'] for r in report['stale_threads']], ['2026-09-01', '2026-09-02'])
 
+    def test_thread_heading_empty_after_folding_does_not_abort_scan(self):
+        self.thread_source('# Threads\n## Active Threads\n### Before 2020-01-01\n'
+                           '## \u0307 \u0307\n### Unknown section 2020-01-01\n'
+                           '## Active Threads\n### After 2020-01-01\n')
+        report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+        self.assertEqual(report['status'], 'ok')
+        self.assertEqual(report['open_count'], 2)
+        self.assertEqual([row['title'] for row in report['stale_threads']],
+                         ['Before 2020-01-01', 'After 2020-01-01'])
+
     def test_thread_scan_respects_configured_identity_and_privacy(self):
         source = self.thread_source('# Threads\n### Configured 2026-09-01\n', 'Custom Memory', marker=True)
         self.thread_source('# Threads\n### Other 2026-09-01\n')
