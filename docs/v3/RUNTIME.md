@@ -88,6 +88,16 @@ bağlamı, lifecycle kayıtları ve yeni receipt yazımı devam eder; gerçek ka
 `context` ve `recap` JSON çıktıları ilgili tanıyı `source_sync.warnings` altında
 bildirir. `history` JSON liste biçimini korur ve uyarıyı stderr'e yazar.
 
+Yalnız CRLF/CR/LF farkı elle düzenleme sayılmaz. Yeni receipt özetleri LF kullanır;
+eski kaynak dosyalar ve indeks özetleri yeniden yazılmaz. Görünüm, güncel deterministik
+çıktıyla satır sonları dışında aynıysa güncellenebilir. Eski karma satır sonlu görünüm
+gecikmişse, içerdiği receipt bağlantıları yalnız yeniden üretilecek alt kümeyi seçer:
+yeniden üretilen **ham baytların** hash'i kayıtlı eski hash'e eşit olmalı, mevcut metin
+de yalnız satır sonlarında farklı olmalıdır. Bağlantı veya başlık tek başına yazma
+izni vermez. Saat dilimi, eski üretici biçimi veya eksik geçmiş nedeniyle bu kanıt
+kurulamıyorsa görünüm korunur; aşağıdaki açık kurtarma komutunu kullanın. Aynı kontrol
+eski günlük düzenine ait takip edilen görünümün kaldırılmasında da geçerlidir.
+
 Takip edilen veya mevcut receipt'lerin üreteceği görünüm, başlığı silinse bile kaynak
 not olarak dizine eklenmez. Aynı dosyanın sabit bağlantıları da dışlanır. Önceden
 yanlışlıkla dizine alınmış görünüm kayıtları ve bu kayıtlara ait geçmiş olayları
