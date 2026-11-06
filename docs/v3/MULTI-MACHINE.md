@@ -324,3 +324,11 @@ Presence eşitlemesi varsayılan olarak kapalıdır. Her cihazda `preferences --
 ile açılır. Yerel `<state>/parallel-presence-device.json` dosyası rastgele bir cihaz kimliği
 tutar; iki cihaz aynı kullanıcı ve state yolunu kullansa da diğerinin açık kaydını silmez.
 Bu kimlik dosyasını vault ile eşitleme. `doctor` kimlik veya presence dosyası oluşturmaz.
+
+## Proposed local offline mutation queue
+
+The `mutation-queue` branch provides a local state queue; it does not implement device transport, authorization or automatic cross-device synchronization. Queue writes, replay and pruning share a cooperative local-state lock. Busy callers may receive a retryable writer conflict after the lock timeout. Invalid queue JSON is reported and left in place, rather than silently discarded.
+
+A `note_update` requires the exact full SHA-256 of the source and uses the normal note writer. Omitted metadata retains the current note metadata, including visibility and project. The enabled secret filter applies to both updates and conflict copies. Each conflict gets an exclusively created unique file; the original remains intact. `doctor` and queue listing do not create a device identity or mark a session edited.
+
+This queue is not an exactly-once distributed transaction: an interrupted `task_update` may require review if the source revision advanced before the queue status was persisted. Transport, acknowledgement, device identity trust and crash recovery across independent task/queue transactions remain explicit design work under #205.
