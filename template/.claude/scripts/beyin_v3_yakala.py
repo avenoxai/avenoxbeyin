@@ -1087,15 +1087,144 @@ def via_youtube(url, found, allow_audio=True, info=None):
     return None, None, 'YouTube icerigi alinamadi: npx (Node), yt-dlp ya da whisper bulunamadi veya video erisilemez.'
 
 
-def via_stdlib(url):
-    """No helper installed: plain HTTP fetch and a rough HTML-to-text."""
-    from html.parser import HTMLParser
+def _fetch_html(url, complete=False):
+    """One bounded, guarded HTML request, shared by the check and the fallback."""
     from urllib.request import HTTPRedirectHandler, Request
 
     class PublicRedirects(HTTPRedirectHandler):
         def redirect_request(self, request, fp, code, msg, headers, new_url):
             _safe_network_url(new_url)
             return super().redirect_request(request, fp, code, msg, headers, new_url)
+
+    _safe_network_url(url)
+    try:
+        request = Request(url, headers={'User-Agent': 'Mozilla/5.0 (beyin-yakala)'})
+        with _public_opener(PublicRedirects()).open(request, timeout=30) as response:
+            if 'html' not in response.headers.get('Content-Type', 'text/html'):
+                return None
+            raw = response.read(5_000_000 + int(complete))
+            if len(raw) > 5_000_000:
+                return None  # never compare headings from a truncated response
+            return raw.decode(response.headers.get_content_charset() or 'utf-8', 'replace')
+    except Exception:
+        return None
+
+
+def _heading_check(html, markdown):
+    """Conservative evidence of dropped sections, not a proof of complete extraction.
+
+    Only an unambiguous main/article region is compared. Heading text may appear anywhere
+    in Markdown (including setext headings or prose), so formatting changes do not warn.
+    An empty result means unknown; only matching every eligible heading clears a warning.
+    """
+    from html import unescape
+    from html.parser import HTMLParser
+
+    def normalized(text):
+        return ' '.join(re.findall(r'[^\W_]+', unicodedata.normalize('NFKC', unescape(text)).casefold()))
+
+    class Headings(HTMLParser):
+        skip = {'script', 'style', 'nav', 'footer', 'header', 'noscript', 'svg', 'form', 'aside', 'template',
+                'textarea', 'xmp', 'iframe', 'title', 'plaintext'}
+        void = {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'}
+
+        def __init__(self):
+            super().__init__()
+            self.stack, self.regions, self.count, self.invalid = [], [], 0, False
+
+        def handle_starttag(self, tag, attrs):
+            if tag == 'br':
+                self.handle_data(' ')
+            if self.invalid or tag in self.void:
+                return
+            if len(self.stack) >= 256:
+                self.invalid = True
+                return
+            attrs = dict(attrs)
+            role = (attrs.get('role') or '').lower()
+            style = attrs.get('style') or ''
+            hidden = ((self.stack and self.stack[-1]['hidden']) or tag in self.skip or
+                      'hidden' in attrs or 'inert' in attrs or (attrs.get('aria-hidden') or '').lower() == 'true' or
+                      role in ('navigation', 'complementary', 'contentinfo', 'banner', 'dialog') or
+                      bool({'sidebar', 'toc', 'table-of-contents', 'related-posts', 'comments'} &
+                           set((attrs.get('class') or '').lower().split())) or
+                      bool(re.search(r'(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\s*(?:!important\s*)?(?:;|$)',
+                                     style, re.I)))
+            region = None
+            if not hidden and (tag in ('main', 'article') or role in ('main', 'article')):
+                region = []
+                parents = [node['region'] for node in self.stack if node['region'] is not None]
+                self.regions.append((tag if tag in ('main', 'article') else role, region, parents))
+            heading = [] if not hidden and tag in ('h2', 'h3') else None
+            self.stack.append({'tag': tag, 'hidden': hidden, 'region': region, 'heading': heading})
+
+        def handle_startendtag(self, tag, attrs):
+            self.handle_starttag(tag, attrs)
+            if tag not in self.void:
+                self.handle_endtag(tag)
+
+        def handle_endtag(self, tag):
+            if self.invalid:
+                return
+            for i in range(len(self.stack) - 1, -1, -1):
+                if self.stack[i]['tag'] == tag:
+                    for node in self.stack[i:]:
+                        if node['heading'] is not None:
+                            self.count += 1
+                            if self.count > 2048:
+                                self.invalid = True
+                                return
+                            title = normalized(''.join(node['heading']))
+                            if len(title) >= 12 and len(title.split()) >= 2:
+                                for ancestor in self.stack[:i]:
+                                    if ancestor['region'] is not None:
+                                        ancestor['region'].append(title)
+                    del self.stack[i:]
+                    break
+
+        def handle_data(self, data):
+            if self.invalid or not self.stack or self.stack[-1]['hidden']:
+                return
+            for node in reversed(self.stack):
+                if node['heading'] is not None:
+                    node['heading'].append(data)
+                    break
+
+    parser = Headings()
+    parser.feed(html)
+    parser.close()
+    articles = [region for region in parser.regions if region[0] == 'article']
+    mains = [region for region in parser.regions if region[0] == 'main']
+    if parser.invalid or parser.stack or len(articles) > 1 or len(mains) > 1:
+        return {}
+    if articles and mains and not (any(parent is mains[0][1] for parent in articles[0][2]) or
+                                   any(parent is articles[0][1] for parent in mains[0][2])):
+        return {}  # disjoint main/article regions are competing candidates, not a nested article
+    headings = set(articles[0][1] if articles else mains[0][1] if mains else [])
+    if not 6 <= len(headings) <= 512:
+        return {}
+    # Preserve code before stripping markup: backtick text can itself contain <T> or [a](b).
+    markup = (r'(`+)(.*?)\1'
+              r'|!?\[([^\]\n]+)\]\([^\n)]*\)'
+              r'|!?\[([^\]\n]+)\]\[[^\]\n]*\]'
+              r'|<((?:[a-z][a-z0-9+.-]{1,31}:)[^<>\s]+|[^<>\s@]+@[^<>\s@]+)>'
+              r'|<[^>]*>')
+    visible = re.sub(markup, lambda match: next((part for part in match.groups()[1:] if part is not None), ''),
+                     markdown, flags=re.S | re.I)
+    text = ' ' + normalized(visible) + ' '
+    missing = sum(' ' + heading + ' ' not in text for heading in headings)
+    if not missing:
+        return {'uyari': None}
+    if len(headings) - missing >= 3 and missing >= 3 and missing * 4 >= len(headings):
+        return {'uyari': ('Metin eksik olabilir: kaynak HTML ana icerigindeki %d farkli h2/h3 basliginin '
+                          '%d tanesi cikarilan metinde bulunamadi. Ders cikarmadan once kaynak sayfayi kontrol et.' %
+                          (len(headings), missing))}
+    return {}
+
+
+def via_stdlib(url):
+    """No helper installed: plain HTTP fetch and a rough HTML-to-text."""
+    from html.parser import HTMLParser
 
     class Text(HTMLParser):
         skip = {'script', 'style', 'nav', 'footer', 'header', 'noscript', 'svg', 'form', 'aside'}
@@ -1124,14 +1253,8 @@ def via_stdlib(url):
             elif not self.depth:
                 self.parts.append(data)
 
-    _safe_network_url(url)
-    try:
-        request = Request(url, headers={'User-Agent': 'Mozilla/5.0 (beyin-yakala)'})
-        with _public_opener(PublicRedirects()).open(request, timeout=30) as response:
-            if 'html' not in response.headers.get('Content-Type', 'text/html'):
-                return None
-            html = response.read(5_000_000).decode(response.headers.get_content_charset() or 'utf-8', 'replace')
-    except Exception:
+    html = _fetch_html(url)
+    if html is None:
         return None
     parser = Text()
     parser.feed(html)
@@ -1222,7 +1345,16 @@ def extract(vault, card, found, allow_audio=True, info=None):
         _safe_network_url(url)  # before npx/yt-dlp can make the first request
         text = via_defuddle(url, found, info)
         if text:
-            return text, 'defuddle', None
+            check = {}
+            try:
+                html = _fetch_html(url, complete=True)
+                if html is not None:
+                    check = _heading_check(html, text)
+            except (OSError, ValueError):
+                pass  # a failed optional check must not discard an extracted page
+            if info is not None:
+                info.update(check)
+            return text, 'defuddle', check.get('uyari')
         text = via_stdlib(url)
         if text:
             return text, 'http', None
@@ -1284,13 +1416,15 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
                                             'Tam metin ham dosyaya tasindi: `' + raw.relative_to(vault).as_posix() + '`')
                 meta.update(durum='cikarildi', yontem=method, ham=raw.relative_to(vault).as_posix())
                 meta.pop('hata', None)
-                for key in ('dil', 'altyazi', 'uyari'):  # only the video path reports these; a rerun replaces its own
+                for key in ('dil', 'altyazi', 'uyari'):  # only explicit evidence replaces an earlier warning
                     if key in info:
                         meta.pop(key, None)
                         if info[key]:
                             meta[key] = info[key]
                 entry.update(durum='cikarildi', yontem=method, ham=meta['ham'], karakter=len(text))
                 entry.update({key: info[key] for key in ('dil', 'altyazi') if info.get(key)})
+                if meta.get('uyari') and not note:
+                    note = meta['uyari']  # an unavailable check does not silently hide an earlier warning
             elif method == 'ajan-okusun':
                 meta.update(durum='cikarildi', yontem=method)
                 entry.update(durum='cikarildi', yontem=method)
