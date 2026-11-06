@@ -212,21 +212,28 @@ class ReceiptNewlineIdentityTest(unittest.TestCase):
         if stale:
             save_daily_layout(self.vault, 'flat')
         engine = SyncEngine(self.vault, self.state)
+        # The engine canonicalizes its root; temp paths may still use /var
+        # aliases on macOS or short directory names on Windows.
+        target = path.resolve()
         read_bytes = Path.read_bytes
         reads = []
+        injected = []
 
         def raced(candidate):
             raw = read_bytes(candidate)
-            if candidate == path:
+            if candidate.resolve() == target:
                 reads.append(raw)
                 if len(reads) == 1:
                     candidate.write_bytes(raw + b'Concurrent human edit\n')
+                    injected.append(candidate)
             return raw
 
         with engine.store._connect() as db:
             desired = _receipt_view_contents(engine, db)
             with patch.object(Path, 'read_bytes', raced):
                 issues = project_receipts(engine, db, desired=desired)
+        self.assertEqual(len(injected), 1, 'the concurrent edit must actually be injected once')
+        self.assertGreaterEqual(len(reads), 2, 'projection must reread the target before changing it')
         self.assertEqual(path.read_bytes(), before + b'Concurrent human edit\n')
         self.assertTrue(any(item['reason'] == 'receipt view changed during projection' for item in issues), issues)
 
@@ -234,6 +241,18 @@ class ReceiptNewlineIdentityTest(unittest.TestCase):
         self.assert_racing_view_preserved(stale=False)
 
     def test_newline_retirement_rechecks_raw_bytes_before_unlink(self):
+        self.assert_racing_view_preserved(stale=True)
+
+    def test_newline_repair_race_with_aliased_vault_path(self):
+        # Exercise a spelling resolve() changes on every OS, without needing
+        # symlink privileges (macOS /var and Windows short temp paths do too).
+        self.vault = self.vault / '..' / self.vault.name
+        self.assertNotEqual(self.vault, self.vault.resolve())
+        self.assert_racing_view_preserved(stale=False)
+
+    def test_newline_retirement_race_with_aliased_vault_path(self):
+        self.vault = self.vault / '..' / self.vault.name
+        self.assertNotEqual(self.vault, self.vault.resolve())
         self.assert_racing_view_preserved(stale=True)
 
     def test_flat_views_recover_newline_only_changes(self):
