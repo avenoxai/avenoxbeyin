@@ -916,16 +916,23 @@ def hook_reconcile(vault: Path, state: Path, force: bool = False) -> dict:
 
 
 def read_json(filename: str):
-    if filename == "-":
-        if hasattr(sys.stdin, "reconfigure"):
-            try:
-                sys.stdin.reconfigure(encoding="utf-8-sig")
-            except Exception:
-                pass
-        raw = sys.stdin.read()
-        return json.loads(raw.lstrip("\ufeff").strip() or "{}")
-    with Path(filename).open(encoding="utf-8-sig") as stream:
-        return json.load(stream)
+    try:
+        if filename == "-":
+            if hasattr(sys.stdin, "reconfigure"):
+                try:
+                    sys.stdin.reconfigure(encoding="utf-8-sig")
+                except Exception:
+                    pass
+            raw = sys.stdin.read()
+            return json.loads(raw.lstrip("\ufeff").strip() or "{}")
+        with Path(filename).open(encoding="utf-8-sig") as stream:
+            return json.load(stream)
+    except UnicodeDecodeError as exc:
+        # Strict, never replaced; name CESU-8 and lone surrogates instead of a codec error (#543).
+        _ensure_scripts_path()
+        from beyin_v3_notes import Utf8InputError, utf8_problem
+        raise Utf8InputError("JSON input is not valid UTF-8: " + utf8_problem(exc.object, exc.start)
+                             + "; nothing was written, send standard UTF-8 (lone surrogates and CESU-8 are rejected)") from exc
 
 
 def load_skills():
