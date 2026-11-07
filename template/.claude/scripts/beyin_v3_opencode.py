@@ -49,6 +49,13 @@ function runHook(state, payload) {
   })
 }
 
+// The session's own folder: 2.x keeps it under location (checked on 2.0.18 and 2.2.6),
+// 1.x on the session itself. Never the process directory of the service.
+function directoryOf(value) {
+  const directory = value?.location?.directory ?? value?.directory
+  return typeof directory === "string" && directory ? directory : undefined
+}
+
 // One session tracker behind both plugin APIs, so 1.x and 2.x queue identical events.
 function lifecycle(state, infoOf) {
   const sessions = new Map()
@@ -117,8 +124,11 @@ export const BeyinV3 = async ({ client, directory } = {}) => {
   const state = runtimeState()
   if (!state) return {}
   const core = lifecycle(state, async (id) => {
-    const session = (await client?.session?.get?.({ path: { id } }))?.data
-    return { child: session?.parentID, cwd: typeof session?.directory === "string" ? session.directory : directory }
+    let session
+    try {
+      session = (await client?.session?.get?.({ path: { id } }))?.data
+    } catch {}
+    return { child: session?.parentID, cwd: directoryOf(session) ?? directoryOf({ directory }) }
   })
 
   return {
@@ -157,8 +167,7 @@ async function setup(ctx) {
     try {
       session = await ctx?.session?.get?.({ sessionID: id })
     } catch {}
-    return { child: session?.parentID,
-      cwd: typeof session?.directory === "string" ? session.directory : ctx?.directory }
+    return { child: session?.parentID, cwd: directoryOf(session) ?? directoryOf(ctx) }
   })
   const hook = async (register) => {
     try {

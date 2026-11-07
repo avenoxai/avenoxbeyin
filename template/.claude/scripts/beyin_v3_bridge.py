@@ -424,6 +424,13 @@ function runBridge(payload) {
   })
 }
 
+// The session's own folder: 2.x keeps it under location (checked on 2.0.18 and 2.2.6),
+// 1.x on the session itself.
+function directoryOf(value) {
+  const directory = value?.location?.directory ?? value?.directory
+  return typeof directory === "string" && directory ? directory : undefined
+}
+
 // Only the four lifecycle boundaries the bridge forwards; the project comes from the
 // session directory, never from the directory the OpenCode service was started in.
 function lifecycle(infoOf) {
@@ -481,8 +488,11 @@ function lifecycle(infoOf) {
 // OpenCode 1.x: a factory returning named hooks.
 export const BeyinV3 = async ({ client, directory } = {}) => {
   const core = lifecycle(async (id) => {
-    const session = (await client?.session?.get?.({ path: { id } }))?.data
-    return { child: session?.parentID, cwd: typeof session?.directory === "string" ? session.directory : directory }
+    let session
+    try {
+      session = (await client?.session?.get?.({ path: { id } }))?.data
+    } catch {}
+    return { child: session?.parentID, cwd: directoryOf(session) ?? directoryOf({ directory }) }
   })
   return {
     "chat.message": async (input) => {
@@ -512,8 +522,7 @@ async function setup(ctx) {
     try {
       session = await ctx?.session?.get?.({ sessionID: id })
     } catch {}
-    return { child: session?.parentID,
-      cwd: typeof session?.directory === "string" ? session.directory : ctx?.directory }
+    return { child: session?.parentID, cwd: directoryOf(session) ?? directoryOf(ctx) }
   })
   const hook = async (register) => {
     try {

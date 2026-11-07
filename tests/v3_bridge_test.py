@@ -54,12 +54,13 @@ const emit = (type, sessionID) => new Promise((resolve) => {
   pending.push({ id: `evt-${pending.length}`, type, data: { sessionID } })
   notify?.()
 })
+// OpenCode 2.0.18 and 2.2.6 keep the folder under location, on the session and on ctx.
 const ctx = {
   session: { hook: register("session"),
-    get: async ({ sessionID }) => ({ id: sessionID, parentID: sessionID === "bridge-sub" ? "bridge-1" : undefined,
-                                    directory: sessions[sessionID] }) },
+    get: async ({ sessionID }) => ({ id: sessionID, projectID: "global", parentID: sessionID === "bridge-sub" ? "bridge-1" : undefined,
+                                    location: { directory: sessions[sessionID] } }) },
   event: { subscribe },
-  directory: elsewhere,
+  location: { directory: elsewhere, workspaceID: undefined, project: { id: "global", directory: elsewhere } },
 }
 const mod = await import(pathToFileURL(plugin).href)
 const definition = mod.default

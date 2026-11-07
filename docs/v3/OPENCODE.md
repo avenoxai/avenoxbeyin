@@ -4,7 +4,7 @@ OpenCode has no hook JSON. It loads project plugins from `.opencode/plugins/*.js
 
 The plugin derives the vault from its own location and the runtime directory from `.beyin-runtime.json`. Only the interpreter is pinned at install time; `BEYIN_PYTHON` overrides it. Every event runs `beyin_v3_hook.py --harness opencode` with a 6 second bound (20 seconds on Windows). A missing interpreter, timeout, non-zero exit or invalid output returns no context and never fails the OpenCode turn. A vault without a valid runtime file registers no hooks.
 
-The plugin labels the project from the session directory (`session.directory` in 2.x, the factory's `directory` in 1.x, `ctx.directory` as the last fallback) and sends it as the hook payload's `cwd`. It must not fall back to the process directory: the OpenCode service is usually started once and then serves sessions from several folders, so the process directory would attribute every session to the same project.
+The plugin labels the project from the session directory and sends it as the hook payload's `cwd`: `session.location.directory` from `ctx.session.get` in 2.x (2.0.18 and 2.2.6 have no top-level `session.directory`), `session.directory` from `client.session.get` in 1.x. When the session cannot be read it uses the folder the plugin instance was loaded for, `ctx.location.directory` in 2.x or the factory's `directory` in 1.x. It must not fall back to the process directory: the 2.x background service runs in the home directory and serves sessions from several folders, so the process directory would attribute every session to the same project.
 
 ## Outside the vault (optional global bridge)
 

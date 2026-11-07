@@ -84,11 +84,14 @@ const emit = (type, sessionID) => new Promise((resolve) => {
   pending.push({ id: `evt-${pending.length}`, type, data: { sessionID } })
   notify?.()
 })
+// OpenCode 2.0.18 and 2.2.6 keep the folder under location, on the session and on ctx;
+// neither has a top-level directory, and the service runs in its own directory.
 const ctx = {
-  session: { hook: register("session"), get: async ({ sessionID }) => ({ id: sessionID, parentID: parentOf[sessionID], directory }) },
+  session: { hook: register("session"),
+    get: async ({ sessionID }) => ({ id: sessionID, projectID: "global", parentID: parentOf[sessionID], location: { directory } }) },
   tool: { hook: register("tool") },
   event: { subscribe },
-  directory,
+  location: { directory, workspaceID: undefined, project: { id: "global", directory } },
 }
 const mod = await import(pathToFileURL(plugin).href)
 const definition = mod.default
