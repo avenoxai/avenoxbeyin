@@ -495,19 +495,31 @@ deneme döngüsünde indirilmez ve `.ham/` dosyasına eklenmez. Defuddle başar�
 yedeği yine tek kaynak alımı kullanır. Video, dosya, seçili metin ve Web Clipper yollarında bu ek
 kaynak alımı yoktur; Web Clipper metni ayrıca doğrulanmış sayılmaz.
 
-Kontrol bir sezgiseldir: tek bir `article` veya `main` alanında en az 6 farklı, anlamlı h2/h3
-başlığı aranır. Gezinme, yan panel ve açıkça gizlenmiş içerik ayıklanır; aynı başlık tekrarları,
-büyük/küçük harf, HTML entity ve olağan Markdown biçim farkları sayılmaz. En az 3 başlık
-metinde bulunuyor, en az 3 başlık ve toplamın en az %25'i bulunamıyorsa kartın `uyari`
-alanına **"Metin eksik olabilir"** yazılır; aynı uyarı `isle` sonucunda `not` olarak görünür.
-Metin korunur ve durum `cikarildi` kalır. Ajan ders çıkarmadan önce kaynak sayfayı kontrol etmelidir.
+Kontrol bir sezgiseldir ve tek bir `article` veya `main` alanına bakar. Gezinme, yan panel ve
+açıkça gizlenmiş içerik ayıklanır; aynı başlık tekrarları, büyük/küçük harf, HTML entity ve olağan
+Markdown biçim farkları sayılmaz. İki kanıt aranır:
 
-Başlık kontrolü metnin tam olduğunu kanıtlamaz. Başlıkları korunmuş eksik paragrafları,
+- **Başlıklar:** alanda en az 6 farklı, anlamlı h2/h3 başlığı olmalıdır. En az 3 başlık metinde
+  bulunuyor, en az 3 başlık ve toplamın en az %25'i bulunamıyorsa uyarı yazılır. Defuddle'ın
+  `id`/`class` kelime kuralları (`error-` gibi) bir bölümü bütünüyle sildiğinde böyle görünür.
+- **`empty:hidden` blokları:** Tailwind'in `empty:hidden` sınıfı öğeyi yalnız içi boşken gizler,
+  ama Defuddle `:hidden` ile biten her sınıfı gizli sayıp siler (not kutuları bu yüzden kaybolur).
+  Alanda bu sınıfı taşıyan, en az 5 kelimelik bir paragraf veya liste maddesi metinde yoksa ve en
+  az 3 başlık metinde bulunuyorsa uyarı yazılır. Defuddle'ın kendi kuralına uyulur: `md:block`
+  gibi bir gösterme sınıfı da taşıyan öğe sayılmaz; `md:hidden` gibi ekran boyutuna bağlı
+  sınıflar çoğu zaman bir kopyayı gizlediği için kanıt sayılmaz.
+
+Uyarı kartın `uyari` alanına **"Metin eksik olabilir"** diye yazılır; aynı uyarı `isle` sonucunda
+`not` olarak görünür. Metin korunur ve durum `cikarildi` kalır. Ajan ders çıkarmadan önce kaynak
+sayfayı kontrol etmelidir.
+
+Bu kontrol metnin tam olduğunu kanıtlamaz. Başlıkları korunmuş eksik paragrafları,
 içindekiler tablosunda kalan başlıkları veya CSS ile gizlenen her öğeyi tespit edemez.
 Birden çok ana içerik alanı, yetersiz başlık/örtüşme, başarısız istek veya boyut sınırı varsa
 yeni bir eksiklik iddiası üretilmez. Önceki uyarı kontrol yapılamadığında korunur; yeni kaynak
-yanıtındaki bütün uygun başlıklar metinde bulunduğunda kaldırılır. Daha önce işlenmiş kartlar
-kendiliğinden değişmez; yeniden kontrol için `python3 beyin.py yakala isle <id>` kullanılır.
+yanıtındaki bütün uygun başlıklar metinde bulunduğunda ve kayıp `empty:hidden` bloğu olmadığında
+kaldırılır. Daha önce işlenmiş kartlar kendiliğinden değişmez; yeniden kontrol için
+`python3 beyin.py yakala isle <id>` kullanılır.
 
 ### Videoda transkriptin dili
 

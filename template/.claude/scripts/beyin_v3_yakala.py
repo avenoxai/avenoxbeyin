@@ -1137,12 +1137,15 @@ def _fetch_html(url, complete=False, budget=None):
         return None
 
 
-def _heading_check(html, markdown):
-    """Conservative evidence of dropped sections, not a proof of complete extraction.
+def _completeness_check(html, markdown):
+    """Conservative evidence of dropped content, not a proof of complete extraction.
 
-    Only an unambiguous main/article region is compared. Heading text may appear anywhere
-    in Markdown (including setext headings or prose), so formatting changes do not warn.
-    An empty result means unknown; only matching every eligible heading clears a warning.
+    Only an unambiguous main/article region is compared. Two signals, both seen with the
+    pinned Defuddle (#600): h2/h3 sections removed by its id/class word rules, and blocks with
+    the Tailwind class `empty:hidden`, which are visible whenever they have content but are
+    removed as hidden. Text may appear anywhere in Markdown (including setext headings or
+    prose), so formatting changes do not warn. An empty result means unknown; only matching
+    every eligible heading with no lost block clears a warning.
     """
     from html import unescape
     from html.parser import HTMLParser
@@ -1150,19 +1153,37 @@ def _heading_check(html, markdown):
     def normalized(text):
         return ' '.join(re.findall(r'[^\W_]+', unicodedata.normalize('NFKC', unescape(text)).casefold()))
 
-    class Headings(HTMLParser):
+    class Source(HTMLParser):
         skip = {'script', 'style', 'nav', 'footer', 'header', 'noscript', 'svg', 'form', 'aside', 'template',
                 'textarea', 'xmp', 'iframe', 'title', 'plaintext'}
         void = {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'}
+        block = {'address', 'article', 'blockquote', 'dd', 'details', 'div', 'dl', 'dt', 'figcaption', 'figure', 'h1',
+                 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'li', 'main', 'ol', 'p', 'pre', 'section', 'summary', 'table',
+                 'td', 'th', 'tr', 'ul'}
 
         def __init__(self):
             super().__init__()
-            self.stack, self.regions, self.count, self.invalid = [], [], 0, False
+            self.stack, self.regions, self.count, self.invalid, self.run, self.runs = [], [], 0, False, [], 0
+
+        def flush(self):
+            """One block of `empty:hidden` text; lists and paragraphs are separate blocks in Markdown too."""
+            if not self.run:
+                return
+            text, self.run = normalized(''.join(self.run)), []
+            if len(text) >= 24 and len(text.split()) >= 5 and self.runs < 512:
+                self.runs += 1
+                for node in self.stack:
+                    if node['region'] is not None:
+                        node['region']['dropped'].append(text)
 
         def handle_starttag(self, tag, attrs):
             if tag == 'br':
                 self.handle_data(' ')
-            if self.invalid or tag in self.void:
+            if self.invalid:
+                return
+            if tag in self.block:
+                self.flush()
+            if tag in self.void:
                 return
             if len(self.stack) >= 256:
                 self.invalid = True
@@ -1177,13 +1198,19 @@ def _heading_check(html, markdown):
                            set((attrs.get('class') or '').lower().split())) or
                       bool(re.search(r'(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\s*(?:!important\s*)?(?:;|$)',
                                      style, re.I)))
+            # Defuddle's class rule, case-sensitive like it: a responsive show class keeps the element.
+            tokens = (attrs.get('class') or '').split()
+            dropped = bool(self.stack and self.stack[-1]['dropped']) or (
+                any(token in ('empty:hidden', 'empty:invisible') for token in tokens) and not any(
+                    re.match(r'(?:sm|md|lg|xl|2xl|min-\[|max-\[):(?:block|flex|grid|inline|table|contents)', token)
+                    for token in tokens))
             region = None
             if not hidden and (tag in ('main', 'article') or role in ('main', 'article')):
-                region = []
+                region = {'headings': [], 'dropped': []}
                 parents = [node['region'] for node in self.stack if node['region'] is not None]
                 self.regions.append((tag if tag in ('main', 'article') else role, region, parents))
             heading = [] if not hidden and tag in ('h2', 'h3') else None
-            self.stack.append({'tag': tag, 'hidden': hidden, 'region': region, 'heading': heading})
+            self.stack.append({'tag': tag, 'hidden': hidden, 'region': region, 'heading': heading, 'dropped': dropped})
 
         def handle_startendtag(self, tag, attrs):
             self.handle_starttag(tag, attrs)
@@ -1195,6 +1222,8 @@ def _heading_check(html, markdown):
                 return
             for i in range(len(self.stack) - 1, -1, -1):
                 if self.stack[i]['tag'] == tag:
+                    if tag in self.block or self.stack[i]['dropped'] and not (i and self.stack[i - 1]['dropped']):
+                        self.flush()
                     for node in self.stack[i:]:
                         if node['heading'] is not None:
                             self.count += 1
@@ -1205,19 +1234,21 @@ def _heading_check(html, markdown):
                             if len(title) >= 12 and len(title.split()) >= 2:
                                 for ancestor in self.stack[:i]:
                                     if ancestor['region'] is not None:
-                                        ancestor['region'].append(title)
+                                        ancestor['region']['headings'].append(title)
                     del self.stack[i:]
                     break
 
         def handle_data(self, data):
             if self.invalid or not self.stack or self.stack[-1]['hidden']:
                 return
+            if self.stack[-1]['dropped']:
+                self.run.append(data)
             for node in reversed(self.stack):
                 if node['heading'] is not None:
                     node['heading'].append(data)
                     break
 
-    parser = Headings()
+    parser = Source()
     parser.feed(html)
     parser.close()
     articles = [region for region in parser.regions if region[0] == 'article']
@@ -1227,8 +1258,9 @@ def _heading_check(html, markdown):
     if articles and mains and not (any(parent is mains[0][1] for parent in articles[0][2]) or
                                    any(parent is articles[0][1] for parent in mains[0][2])):
         return {}  # disjoint main/article regions are competing candidates, not a nested article
-    headings = set(articles[0][1] if articles else mains[0][1] if mains else [])
-    if not 6 <= len(headings) <= 512 or len(markdown) > 5_000_000:
+    region = (articles or mains or [(None, {'headings': [], 'dropped': []})])[0][1]
+    headings, blocks = set(region['headings']), set(region['dropped'])
+    if len(headings) > 512 or len(headings) < 6 and not blocks or len(markdown) > 5_000_000:
         return {}
     # Preserve code before stripping markup: backtick text can itself contain <T> or [a](b).
     # Every repetition is bounded or stops at the next opener, so page text cannot make this quadratic.
@@ -1241,12 +1273,18 @@ def _heading_check(html, markdown):
                      markdown, flags=re.S | re.I)
     text = ' ' + normalized(visible) + ' '
     missing = sum(' ' + heading + ' ' not in text for heading in headings)
-    if not missing:
+    lost = sum(' ' + block + ' ' not in text for block in blocks)
+    found = len(headings) - missing  # same-page evidence: the extraction shares the region's headings
+    notes = []
+    if len(headings) >= 6 and found >= 3 and missing >= 3 and missing * 4 >= len(headings):
+        notes.append('kaynak HTML ana icerigindeki %d farkli h2/h3 basliginin %d tanesi cikarilan metinde bulunamadi' %
+                     (len(headings), missing))
+    if lost and found >= 3:
+        notes.append('ana icerikte dolu oldugunda gorunen (empty:hidden) %d metin blogu cikarilan metinde bulunamadi' % lost)
+    if notes:
+        return {'uyari': 'Metin eksik olabilir: ' + '; '.join(notes) + '. Ders cikarmadan once kaynak sayfayi kontrol et.'}
+    if len(headings) >= 6 and not missing and not lost:
         return {'uyari': None}
-    if len(headings) - missing >= 3 and missing >= 3 and missing * 4 >= len(headings):
-        return {'uyari': ('Metin eksik olabilir: kaynak HTML ana icerigindeki %d farkli h2/h3 basliginin '
-                          '%d tanesi cikarilan metinde bulunamadi. Ders cikarmadan once kaynak sayfayi kontrol et.' %
-                          (len(headings), missing))}
     return {}
 
 
@@ -1379,7 +1417,7 @@ def extract(vault, card, found, allow_audio=True, info=None):
                 # needs its own guarded request. Bounded in time and size; any failure means unknown.
                 html = _fetch_html(url, complete=True, budget=CHECK_BUDGET)
                 if html is not None:
-                    check = _heading_check(html, text)
+                    check = _completeness_check(html, text)
             except Exception:  # DNS refusal, parser edge cases: an optional check never discards a page
                 check = {}
             if info is not None:

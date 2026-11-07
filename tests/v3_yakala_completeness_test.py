@@ -171,26 +171,26 @@ class CompletenessTest(unittest.TestCase):
     def test_generic_types_inside_code_are_not_mistaken_for_html_tags(self):
         titles = HEADINGS[:3] + ['Using List&lt;T&gt; safely', 'Using Map&lt;K,V&gt; safely', 'Using Set&lt;T&gt; safely']
         md = extracted(HEADINGS[:3] + ['Using `List<T>` safely', 'Using ``Map<K,V>`` safely', 'Using `Set<T>` safely'])
-        self.assertEqual(y._heading_check(source(titles), md), {'uyari': None})
+        self.assertEqual(y._completeness_check(source(titles), md), {'uyari': None})
         titles = HEADINGS[:3] + [f'Literal [option]({n}) syntax' for n in range(3)]
         md = extracted(HEADINGS[:3] + [f'Literal `[option]({n})` syntax' for n in range(3)])
-        self.assertEqual(y._heading_check(source(titles), md), {'uyari': None})
+        self.assertEqual(y._completeness_check(source(titles), md), {'uyari': None})
 
     def test_autolink_text_is_not_mistaken_for_html_tags(self):
         links = ['https://example.com/one', 'https://example.com/two', 'person@example.com']
         titles = HEADINGS[:3] + ['Documentation for ' + link for link in links]
         md = extracted(HEADINGS[:3] + ['Documentation for <' + link + '>' for link in links])
-        self.assertEqual(y._heading_check(source(titles), md), {'uyari': None})
+        self.assertEqual(y._completeness_check(source(titles), md), {'uyari': None})
 
     def test_line_breaks_and_raw_text_do_not_create_false_missing_headings(self):
         titles = HEADINGS[:3] + [f'How does<br>topic {n} work?' for n in range(3)]
         md = extracted(HEADINGS[:3] + [f'How does topic {n} work?' for n in range(3)])
-        self.assertEqual(y._heading_check(source(titles), md), {'uyari': None})
+        self.assertEqual(y._completeness_check(source(titles), md), {'uyari': None})
         for tag in ('textarea', 'xmp', 'iframe', 'title'):
             html = source(HEADINGS[:3]).replace('</main>', f'<{tag}>' +
                                                 source(HEADINGS[3:6], 'div') + f'</{tag}></main>')
             with self.subTest(tag=tag):
-                self.assertEqual(y._heading_check(html, extracted(HEADINGS[:3])), {})
+                self.assertEqual(y._completeness_check(html, extracted(HEADINGS[:3])), {})
 
     def test_article_inside_main_wins_over_outer_headings(self):
         html = '<main><h2>Other page-level material to ignore</h2>' + source(tag='article') + '</main>'
@@ -203,13 +203,13 @@ class CompletenessTest(unittest.TestCase):
         article = source(HEADINGS[:6], 'article')
         for html in (main + article, article + main):
             with self.subTest(prefix=html[:20]):
-                self.assertEqual(y._heading_check(html, extracted(HEADINGS[:3])), {})
+                self.assertEqual(y._completeness_check(html, extracted(HEADINGS[:3])), {})
 
     def test_threshold_requires_both_count_and_fraction_and_matching_context(self):
         titles = [f'How does synthetic topic {number} work?' for number in range(13)]
         for total, retained, warns in ((12, 9, True), (13, 10, False), (6, 3, True), (6, 2, False)):
             with self.subTest(total=total, retained=retained):
-                check = y._heading_check(source(titles[:total]), extracted(titles[:retained]))
+                check = y._completeness_check(source(titles[:total]), extracted(titles[:retained]))
                 self.assertEqual(bool(check.get('uyari')), warns)
 
     def test_structure_and_heading_budgets_are_unknown_not_complete(self):
@@ -217,7 +217,7 @@ class CompletenessTest(unittest.TestCase):
                      source([f'Synthetic heading number {n}' for n in range(513)]),
                      source(HEADINGS * 205), '<main><h3>Unclosed source heading'):
             with self.subTest(prefix=html[:50]):
-                self.assertEqual(y._heading_check(html, extracted()), {})
+                self.assertEqual(y._completeness_check(html, extracted()), {})
 
     def test_revalidation_failure_preserves_extraction_and_never_opens_socket(self):
         card = y.find_card(self.vault, self.saved['id'])
@@ -232,7 +232,7 @@ class CompletenessTest(unittest.TestCase):
         # html.parser raises AssertionError (3.11 before 3.11.14) or NotImplementedError on some
         # malformed declarations; such pages must still be captured, just without new evidence.
         for error in (AssertionError('unknown status keyword'), NotImplementedError('error()'), RecursionError()):
-            with self.subTest(error=type(error).__name__), patch.object(y, '_heading_check', side_effect=error):
+            with self.subTest(error=type(error).__name__), patch.object(y, '_completeness_check', side_effect=error):
                 entry, meta, raw, _ = self.run_capture(source(), extracted(HEADINGS[:6]))
                 self.assertEqual((entry['durum'], entry['yontem']), ('cikarildi', 'defuddle'))
                 self.assertNotIn('uyari', meta)
@@ -244,10 +244,10 @@ class CompletenessTest(unittest.TestCase):
         for md in ('[' * size, '`' * 2_000 + 'a' * size, '[a](' * (size // 4), '<' * size, '<a@' * (size // 3)):
             with self.subTest(md=md[:8]):
                 started = time.monotonic()
-                self.assertEqual(y._heading_check(source(), extracted(HEADINGS[:6]) + '\n\n' + md)['uyari'][:20],
+                self.assertEqual(y._completeness_check(source(), extracted(HEADINGS[:6]) + '\n\n' + md)['uyari'][:20],
                                  'Metin eksik olabilir')
                 self.assertLess(time.monotonic() - started, 2)
-        self.assertEqual(y._heading_check(source(), 'x' * 5_000_001), {})  # larger than any source it came from
+        self.assertEqual(y._completeness_check(source(), 'x' * 5_000_001), {})  # larger than any source it came from
 
     def test_slow_source_cannot_hold_isle_past_the_check_budget(self):
         import socket
@@ -301,6 +301,74 @@ class CompletenessTest(unittest.TestCase):
             self.assertLess(time.monotonic() - started, 2.5)
             self.assertNotIn('uyari', info)  # an unfinished read is unknown, not evidence either way
             self.assertIn(HEADINGS[-1], y.via_stdlib(card['meta']['url']))  # the fallback keeps its own limits
+
+    # Second report on #600: Defuddle 0.19.4 removes every class token ending in ":hidden", so a
+    # Tailwind note box with "empty:hidden" (visible whenever it has content) vanishes even though
+    # all headings survive and the heading comparison alone would clear the warning.
+    NOTES = ['Keep each question atomic: one decision per question in the evaluator.',
+             'If the provider refuses any question the run fails and writes no scores.',
+             'Pin a version such as jev-1.13.0 when an evaluation threshold should stay stable.']
+
+    def with_notes(self, headings=HEADINGS, notes=NOTES, cls='text-secondary prose empty:hidden', tag='div'):
+        html = source(headings)
+        for note in notes:
+            html = html.replace('</p></section>', f'</p><{tag} class="{cls}"><p>{note}</p></{tag}></section>', 1)
+        return html
+
+    def test_lost_empty_hidden_notes_warn_even_when_every_heading_survives(self):
+        card = y.find_card(self.vault, self.saved['id'])
+        y.write_card(card['path'], dict(card['meta'], uyari='Previous section warning'), card['body'])
+        entry, meta, raw, _ = self.run_capture(self.with_notes(), extracted())
+        self.assertEqual((entry['durum'], entry['yontem']), ('cikarildi', 'defuddle'))
+        self.assertIn('empty:hidden', meta['uyari'])
+        self.assertIn(' 3 metin blogu', meta['uyari'])
+        self.assertNotIn('h2/h3', meta['uyari'])
+        self.assertEqual(entry['not'], meta['uyari'])
+        self.assertIn(extracted(), raw)
+        self.assertNotIn(self.NOTES[0], raw)
+        # Defuddle's own retry can keep hidden elements: then the notes are present and the warning clears.
+        md = extracted() + '\n\n' + '\n\n'.join('> **Note:** ' + note.replace('jev-1.13.0', '`jev-1.13.0`')
+                                               for note in self.NOTES)
+        entry, meta, _, _ = self.run_capture(self.with_notes(), md)
+        self.assertNotIn('uyari', meta)
+        self.assertNotIn('not', entry)
+
+    def test_both_signals_are_reported_together(self):
+        check = y._completeness_check(self.with_notes(), extracted(HEADINGS[:6]))
+        self.assertIn('10 farkli h2/h3 basliginin 4 tanesi', check['uyari'])
+        self.assertIn('(empty:hidden) 3 metin blogu', check['uyari'])
+        self.assertEqual(check['uyari'].count('Metin eksik olabilir'), 1)
+
+    def test_notes_alone_need_same_page_evidence_and_follow_defuddles_class_rule(self):
+        few = HEADINGS[:4]
+        self.assertIn('empty:hidden', y._completeness_check(self.with_notes(few), extracted(few))['uyari'])
+        self.assertEqual(y._completeness_check(self.with_notes(few), extracted(few[:2])), {})  # other page?
+        self.assertEqual(y._completeness_check(self.with_notes(few), extracted(['Unrelated heading elsewhere'])), {})
+        for cls, tag in (('empty:hidden md:block', 'div'),  # a responsive show class: Defuddle keeps it
+                         ('[&:empty]:hidden', 'div'),  # arbitrary variant: Defuddle keeps it
+                         ('md:hidden', 'div'),  # viewport copies are often duplicates: not claimed
+                         ('Empty:Hidden', 'div'),  # Defuddle compares class tokens case-sensitively
+                         ('empty:hidden', 'aside'), ('empty:hidden', 'nav')):  # boilerplate is not compared
+            with self.subTest(cls=cls, tag=tag):
+                self.assertEqual(y._completeness_check(self.with_notes(cls=cls, tag=tag), extracted()),
+                                 {'uyari': None})
+        short = ['Copy', 'Was this page useful?', 'Edit on GitHub']  # fewer than five words
+        self.assertEqual(y._completeness_check(self.with_notes(notes=short), extracted()), {'uyari': None})
+        outside = source().replace('</main>', '</main><div class="empty:hidden"><p>' + self.NOTES[0] + '</p></div>')
+        self.assertEqual(y._completeness_check(outside, extracted()), {'uyari': None})
+
+    def test_note_blocks_compare_per_paragraph_and_list_item(self):
+        items = ''.join(f'<li>{note}</li>' for note in self.NOTES)
+        html = source().replace('</main>', f'<div class="empty:hidden"><p>Before you start, read these rules '
+                                f'carefully.</p><ol>{items}</ol></div></main>')
+        md = extracted() + '\n\nBefore you start, read these rules carefully.\n\n' + '\n'.join(
+            f'{n}. {note}' for n, note in enumerate(self.NOTES, 1))
+        self.assertEqual(y._completeness_check(html, md), {'uyari': None})  # list numbers do not split a match
+        self.assertIn('(empty:hidden) 4 metin blogu', y._completeness_check(html, extracted())['uyari'])
+        nested = source().replace('</main>', '<div class="empty:hidden"><p>Keep each <code>question</code> '
+                                  'atomic, with <a href="/x">one decision</a> per question.</p></div></main>')
+        md = extracted() + '\n\nKeep each `question` atomic, with [one decision](/x) per question.'
+        self.assertEqual(y._completeness_check(nested, md), {'uyari': None})
 
     def test_info_is_optional_but_warning_is_still_returned(self):
         card = y.find_card(self.vault, self.saved['id'])
