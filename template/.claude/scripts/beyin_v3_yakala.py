@@ -924,14 +924,18 @@ def _capture(vault, url=None, text=None, files=(), why='', app=None, title=None,
                 addition = '\n\n## Yeniden yakalandi (' + stamp.strftime('%Y-%m-%d %H:%M') + ')\n' + (why or '_(not yok)_')
                 if text:
                     addition += '\n\n' + _quote(text)
-                stored = _stored_list(card['meta'].get('ek_urller')) + _stored_list(card['meta'].get('ek_urller_yerel'))
-                before = _extra_urls(url, stored, stored=True)
-                merged, merged_local = _extra_urls(url, stored + extra_urls + local_urls, stored=True)
-                if (merged, merged_local) != before:  # an unchanged list keeps the card's own text
+                kept = (_stored_list(card['meta'].get('ek_urller')), _stored_list(card['meta'].get('ek_urller_yerel')))
+                merged, merged_local = _extra_urls(url, kept[0] + kept[1] + extra_urls + local_urls, stored=True)
+                # An unchanged list keeps the card's own text. A hand-edited one is sorted again: a local
+                # value moves out of `ek_urller`, which an older release would hand on as a normal link.
+                if (merged, merged_local) != kept:
                     for key, values, name, links in (
                             ('ek_urller', merged, 'Ek bağlantılar', '\n'.join('- ' + item for item in merged)),
                             ('ek_urller_yerel', merged_local, LOCAL_LINKS, _local_links(merged_local))):
-                        if not values:
+                        if not values:  # a hand-edited list that held only local or broken values
+                            if key in card['meta']:
+                                card['meta'].pop(key)
+                                body = re.sub(r'^## ' + name + r'\s*$.*?(?=^## |\Z)', '', body, count=1, flags=re.M | re.S).rstrip()
                             continue
                         card['meta'][key] = values
                         if _section(body, name):

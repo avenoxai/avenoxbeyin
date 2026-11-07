@@ -92,6 +92,27 @@ class LocalExtraLinkTest(unittest.TestCase):
             entry = yakala.process(self.vault, [first['id']])['kartlar'][0]
         self.assertNotIn('ek_urller', entry)  # a mapping is no list of addresses: nothing is handed on
 
+    def test_a_hand_edited_local_value_leaves_the_public_list(self):
+        """A local address typed into `ek_urller` by hand moves to `ek_urller_yerel` on the next capture:
+        3.12.0 (after a rollback) hands every `ek_urller` value to the agent as a link to open."""
+        for extra in ([], ['http://10.0.0.1/x']):
+            with self.subTest(extra=extra):
+                vault = Path(tempfile.mkdtemp(prefix='elle-', dir=self.vault.parent))
+                first = yakala.capture(vault, url='https://example.com/makale', extra_urls=['https://example.org/a'])
+                path = vault / first['path']
+                meta, body = yakala.read_card(path)
+                meta['ek_urller'] = ['http://127.0.0.1/elle']
+                yakala.write_card(path, meta, body.replace('https://example.org/a', 'http://127.0.0.1/elle'))
+                yakala.capture(vault, url='https://example.com/makale', why='ikinci', extra_urls=extra)
+                card = yakala.find_card(vault, first['id'])
+                self.assertNotIn('ek_urller', card['meta'])
+                self.assertEqual(card['meta']['ek_urller_yerel'], ['http://127.0.0.1/elle'] + extra)
+                self.assertEqual(card['meta']['visibility'], 'private')
+                self.assertNotIn('## Ek bağlantılar', card['body'])
+                self.assertEqual(card['body'].count('## ' + yakala.LOCAL_LINKS), 1)
+                self.assertIn('## Neden', card['body'])
+                self.assertIn('ikinci', card['body'])
+
     def test_an_edited_url_field_does_not_stop_the_queue(self):
         broken = yakala.capture(self.vault, url='https://example.com/bozuk', extra_urls=['http://10.0.0.9/x'])
         note = yakala.capture(self.vault, text='Bağımsız not')
