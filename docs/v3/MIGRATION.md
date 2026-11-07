@@ -216,6 +216,13 @@ A new semantic knowledge note can be created from UTF-8 JSON:
 
 `note-create` only creates new `notes/` or `knowledge/` Markdown files and refuses
 an existing destination. It does not invent facts or overwrite existing prose.
+`note-create`, `task-create` and a creating `note-edit` also refuse, before writing
+anything, a name that would not move between Windows, macOS and Linux: Windows
+device names (`CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9`, also with an
+extension), `<>:"|?*` or control characters, a backslash, a folder or file name
+ending in a dot or space, a name over 255 UTF-8 bytes, a source over 512 UTF-8
+bytes, and another Unicode form (NFC/NFD) of a folder or file that already exists.
+Existing files keep their names; reading and editing them is unchanged.
 Use normal deliberate source editing for subsequent revisions. Private source
 metadata continues to control retrieval; `visibility: private` is excluded from
 internal/public context. Migration is not permission to expose Companion data.

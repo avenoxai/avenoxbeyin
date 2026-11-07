@@ -33,6 +33,7 @@ from beyin_v3_projections import (is_receipt_view_source, is_receipt_view_confli
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
 from beyin_v3_notes import (NoteConflict, locked as note_locked,
+                            validate_source_name, refuse_unicode_alias,
                             read as note_read_source, apply as note_apply_edits,
                             decode_utf8, require_utf8_text, require_utf8_values)
 
@@ -1384,6 +1385,7 @@ class SyncEngine:
         require_utf8_values(evidence_refs, 'evidence_refs')
         if text.lstrip().startswith('---'):
             raise ValueError('text must be body only; put frontmatter fields in metadata')
+        validate_source_name(source)
         if not source.startswith(('notes/', 'knowledge/')) or not source.endswith('.md'):
             raise ValueError('new semantic notes belong under notes/ or knowledge/')
         self._refuse_excluded(source)
@@ -1433,6 +1435,7 @@ class SyncEngine:
         # clients use different state roots. Acquire it before the DB transaction.
         with note_locked(self) as folder:
             self._refuse_excluded(source)
+            refuse_unicode_alias(self.root, source)
             path = self._path(source)
             idempotency_file = None
             journal = {'status': 'succeeded', 'source': source, 'sha256': _hash(intended)}
@@ -1475,6 +1478,7 @@ class SyncEngine:
     def task_create(self, source, text, metadata):
         if not isinstance(source, str) or not source.startswith('tasks/') or not source.endswith('.md'):
             raise ValueError('task-create source must be a tasks/ Markdown path')
+        validate_source_name(source)
         if not isinstance(text, str) or not text.strip() or not isinstance(metadata, dict):
             raise ValueError('task body and metadata required')
         if text.lstrip().startswith('---'):
@@ -1517,6 +1521,7 @@ class SyncEngine:
         intended = render(metadata, text+'\n')
         with self.store._connect() as db:
             db.execute('BEGIN IMMEDIATE')
+            refuse_unicode_alias(self.root, source)
             if path.exists() or db.execute('SELECT 1 FROM records WHERE id=?', (metadata['id'],)).fetchone():
                 raise ValueError('task source or id exists; use task-update')
             self._intent(source, None, intended, 'task')
