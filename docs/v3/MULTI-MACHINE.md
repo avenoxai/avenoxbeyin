@@ -437,3 +437,68 @@ Presence eşitlemesi varsayılan olarak kapalıdır. Her cihazda `preferences --
 ile açılır. Yerel `<state>/parallel-presence-device.json` dosyası rastgele bir cihaz kimliği
 tutar; iki cihaz aynı kullanıcı ve state yolunu kullansa da diğerinin açık kaydını silmez.
 Bu kimlik dosyasını vault ile eşitleme. `doctor` kimlik veya presence dosyası oluşturmaz.
+
+## Çevrimdışı mutasyon kuyruğu (isteğe bağlı, yalnız bu makine)
+
+`mutation-queue` komutu bu makinenin state klasöründe yerel bir kuyruk tutar. Cihazlar arası
+taşıma, cihaz yetkilendirmesi, onay protokolü ya da otomatik eşitleme yapmaz; bunlar
+[#205](https://github.com/avenoxai/avenoxbeyin/issues/205) altında açık tasarım işidir.
+
+**Varsayılan olarak kapalıdır.** Her makinede ayrı açılır:
+
+```
+python3 beyin.py mutation-queue --enable     # kapatmak için --disable; kuyruktaki kayıtlar korunur
+python3 beyin.py mutation-queue              # durum: enabled, bekleyen/çakışan/başarısız sayıları
+```
+
+Anahtar `<state>/mutation-queue-settings.json` dosyasındadır, `.beyin-preferences.json`'a alan
+eklenmez: eski sürümler bilinmeyen tercih alanını reddettiği için rollback güvenli kalır. Bozuk
+bir anahtar dosyası kapalı sayılır ve üzerine yazılmaz. Kuyruk kapalıyken `--enqueue` ve
+`--replay` hata verir ve hiçbir kuyruk, kimlik ya da kilit dosyası açılmaz; `doctor` yalnız
+`mutation_queue: {"enabled": false}` gösterir.
+
+Komutlar:
+
+- `--enqueue --file x.json`: `{"action", "source", "payload", "mutation_id"?}`. Eylemler
+  `note_create`, `note_update`, `task_create`, `task_update`, `receipt`. Yük kuyruğa girmeden
+  doğrulanır (`note_update` için tam SHA-256 `expected_hash`, `task_update` için tam sayı
+  `expected_revision`). İsteğe bağlı `mutation_id` aynı mutasyonun yeniden gönderilmesini
+  tek kayda indirir; aynı kimlik farklı bir mutasyonla gelirse reddedilir.
+- `--list [--status pending|applied|conflict|failed|dismissed]`, `--replay`, `--clear-applied`
+  (uygulanan ve kapatılan kayıtları siler), `--retry <id>` (incelenmiş `conflict`/`failed`
+  kaydı yeniden `pending` yapar), `--dismiss <id>`.
+
+Kuyruk `<state>/mutation-queue.jsonl`, kimlik `<state>/device.json` dosyasındadır. State her
+zaman vault dışında olduğu için ikisi de vault ile eşitlenmez. Kimlik rastgele 32 haneli onaltılık
+bir değerdir (uuid4); kullanıcı adı, makine adı ya da yol içermez, hiçbir vault dosyasına
+yazılmaz ve `doctor` çıktısında gösterilmez. Presence kimliği varsa ilk kullanımda benimsenip
+`device.json`'a sabitlenir. Kuyruk yazımı, replay ve temizlik state içindeki ortak yerel kilidi
+paylaşır; kilit süresi dolarsa bekleyen çağrı yeniden denenebilir bir `writer busy` hatası alır.
+Kuyruk dosyası atomik olarak yeniden yazılır; Windows'ta kısa bir paylaşım ihlali diğer state
+yazımlarındaki gibi kısa süre yeniden denenir. Bozuk kuyruk satırı bildirilir ve dosya olduğu
+gibi bırakılır.
+
+Replay kuralları:
+
+- `note_update` normal not yazıcısını kullanır; kaynağın tam SHA-256'sı tutmazsa orijinal
+  değişmez ve özel olarak oluşturulan benzersiz bir `.sync-conflict-*.md` kopyası açılır
+  (`sync` bunu uyarı olarak gösterir, indekslemez). Verilmeyen metadata korunur
+  (`visibility`, `project` dahil). Açık sır süzgeci hem güncellemeye hem kopyaya uygulanır.
+- `note_create` ve `task_create` aynı içerik zaten diskteyse yeniden yazmaz, uygulanmış sayar.
+  `receipt` aynı `event_id` için motorun kendi idempotens kuralına uyar.
+- `task_update` çakışmasında kopya açılmaz; kayıt `conflict` olarak incelemeye kalır.
+
+**Kesinti ve uzlaştırma.** Her mutasyonun sonucu, sıradakine geçmeden kuyruğa yazılır. Süreç
+bir mutasyonu uyguladıktan sonra ama bu onayı yazmadan ölürse kayıt `pending` kalır. Sonraki
+`--replay` yeniden yazmadan önce hedefin bu mutasyonu zaten taşıyıp taşımadığına bakar:
+
+- `task_update`: revizyon çakışmasında önce `sync` çalışır (motorun yazma günlüğünde yarım kalan
+  kaynak yazımı tamamlanır), sonra görevin revizyonu `expected_revision`'dan büyükse ve istenen
+  her alan aynı değerdeyse kayıt `applied` ve `reconciled: true` olur. Revizyon ikinci kez
+  artmaz.
+- `note_update`: mevcut not bu güncellemenin üreteceği içerikle bayt bayt aynıysa kayıt
+  `applied` ve `reconciled: true` olur; çakışma kopyası açılmaz.
+
+Hedef mutasyonu taşımıyorsa (örneğin başka bir yazıcı görevi farklı bir değerle güncellediyse)
+kayıt `conflict` kalır ve inceleme gerekir. Bu, dağıtık ve tam bir kez çalışan bir işlem
+değildir; aynı değişikliği bağımsız olarak yapan başka bir yazıcı da uygulanmış sayılır.

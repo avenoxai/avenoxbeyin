@@ -1186,6 +1186,18 @@ def parser(note_namespace=None, is_json=False):
     note_edit.add_argument("--evidence-ref", action="append", dest="evidence_refs", help="Existing vault source path backing the edit; repeatable")
     task = sub.add_parser("task-create", help="Create and verify an explicit new task")
     task.add_argument("--file", default="-", help="JSON {source: tasks/name.md, text, metadata: {id,status,owner}}")
+    mutation_queue = sub.add_parser("mutation-queue", help="Opt-in local offline mutation queue (off by default; machine-local state)")
+    queue_action = mutation_queue.add_mutually_exclusive_group()
+    queue_action.add_argument("--enable", action="store_true", help="Turn the queue on for this machine")
+    queue_action.add_argument("--disable", action="store_true", help="Turn the queue off; queued records are kept")
+    queue_action.add_argument("--enqueue", action="store_true", help="Enqueue mutation from --file")
+    queue_action.add_argument("--list", action="store_true", help="List queued mutations")
+    queue_action.add_argument("--replay", action="store_true", help="Replay pending mutations against vault")
+    queue_action.add_argument("--clear-applied", action="store_true", help="Clear applied and dismissed mutations from queue")
+    queue_action.add_argument("--retry", metavar="MUTATION_ID", help="Set a reviewed conflict or failed mutation back to pending")
+    queue_action.add_argument("--dismiss", metavar="MUTATION_ID", help="Dismiss a reviewed conflict or failed mutation")
+    mutation_queue.add_argument("--status", choices=["pending", "applied", "conflict", "failed", "dismissed"], help="Filter status for --list")
+    mutation_queue.add_argument("--file", default="-", help="JSON {action, source, payload, mutation_id?} for --enqueue, or - for stdin")
     context = sub.add_parser("context", help="Retrieve source-backed shared context")
     context.add_argument("query", nargs="?", help="Query; alternatively use --file")
     context.add_argument("--file", help="JSON retrieval arguments, or - for stdin")
@@ -1361,7 +1373,7 @@ def main(argv=None, return_result=False):
         if read_only_context and args.jev:
             raise ValueError("context --no-sync cannot be combined with --jev")
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
-        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace") else None
+        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue") else None
         store = engine.MemoryStore(state, vault, read_only=read_only_context) if engine else None
         sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
         if args.command == "bridge":
@@ -1785,6 +1797,12 @@ def main(argv=None, return_result=False):
                 result['project_scopes'] = projects.check_project_scopes(vault)
             except Exception as exc:
                 result['project_scopes'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            try:
+                _ensure_scripts_path()
+                import beyin_v3_mutation as mutation
+                result['mutation_queue'] = mutation.doctor(state)
+            except Exception as exc:
+                result['mutation_queue'] = {'status': 'unavailable', 'error': type(exc).__name__}
             result['status'] = ('needs_attention' if health.get('sync', {}).get('status') in ('conflict', 'degraded') or result['hook_paths'].get('status') == 'stale' or result['skill_conflicts'] or result.get('instruction_conflicts') or result['hook-error.json'] or result['task_completion']['strict_issue_count'] or result['task_completion'].get('error') or result['validity']['ignored_rejection_count'] or result['validity'].get('error') or result.get('project_scopes', {}).get('status') in ('error', 'warning') else 'pending' if result['pending_events'] else 'observed_metadata' if result['acknowledged_events'] else 'never_seen')
             # Information only: a leftover global OMP hook copy predates the vault-owned plan
             # (OMP.md says the installer never updates or removes it). After an engine update the
@@ -1993,6 +2011,30 @@ def main(argv=None, return_result=False):
         elif args.command == "task-create":
             payload = read_json(args.file)
             result = sync.task_create(payload['source'], payload['text'], payload['metadata'])
+        elif args.command == "mutation-queue":
+            _ensure_scripts_path()
+            import beyin_v3_mutation as mutation
+            if args.status is not None and not args.list:
+                raise ValueError("--status filters --list")
+            if args.enable or args.disable:
+                result = mutation.set_enabled(state, args.enable)
+            elif args.enqueue:
+                payload = read_json(args.file)
+                if not isinstance(payload, dict):
+                    raise ValueError("enqueue file must be a JSON object {action, source, payload}")
+                result = mutation.enqueue_mutation(state, payload.get('action'), payload.get('source'), payload.get('payload'),
+                                                   vault=vault, mutation_id=payload.get('mutation_id'))
+            elif args.replay:
+                # The engine is built only after the switch and queue checks, so an off queue opens nothing.
+                result = mutation.replay_mutations(vault, state)
+            elif args.clear_applied:
+                result = mutation.clear_applied(state)
+            elif args.retry or args.dismiss:
+                result = mutation.resolve(state, args.retry or args.dismiss, retry=bool(args.retry))
+            elif args.list:
+                result = mutation.list_mutations(state, status=args.status)
+            else:
+                result = mutation.status(state)
         elif args.command == "context":
             params = {"query": args.query, "project": args.project, "audience": args.audience,
                       "statuses": args.statuses, "limit": args.limit, "budget_chars": args.budget_chars}
@@ -2106,7 +2148,8 @@ def main(argv=None, return_result=False):
         else:
             payload = read_json(args.file)
             result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])
-        if (args.command in SOURCE_WRITE_COMMANDS
+        if ((args.command in SOURCE_WRITE_COMMANDS or
+             (args.command == "mutation-queue" and args.replay and result.get("applied", 0) > 0))
                 and (args.command != "note-edit" or result.get('status') == 'written')
                 and (os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID"))):
             mark_session_edit(state, vault, result.get("source"))

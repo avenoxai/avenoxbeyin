@@ -372,6 +372,19 @@ def human_result(result, command, installed_version=None):
         else:
             lines.append('VACUUM tamamlanamadi: ' + ascii_text(result.get('vacuum')))
         return '\n'.join(lines + ['Vault dosyalarina dokunulmadi.'])
+    if command == 'mutation-queue':
+        if isinstance(result.get('enabled'), bool):
+            return ('Cevrimdisi mutasyon kuyrugu: ' + ('acik' if result['enabled'] else 'kapali (acmak icin: beyin.py mutation-queue --enable)') +
+                    '; ' + str(result.get('pending_count', 0)) + ' bekleyen, ' + str(result.get('conflict_count', 0)) +
+                    ' cakisma, ' + str(result.get('failed_count', 0)) + ' basarisiz.')
+        if 'replayed' in result:
+            return ('Kuyruk yeniden oynatildi: ' + str(result.get('applied', 0)) + ' uygulandi, ' +
+                    str(result.get('conflicts', 0)) + ' cakisma, ' + str(result.get('failed', 0)) + ' basarisiz.')
+        if 'pruned' in result:
+            return 'Kuyruktan ' + str(result['pruned']) + ' kayit temizlendi; ' + str(result.get('remaining', 0)) + ' kayit kaldi.'
+        if result.get('mutation_id'):
+            return ('Kuyruk kaydi ' + plain_text(result['mutation_id']) + ': ' + plain_text(result.get('status', '')) +
+                    (' (zaten kuyrukta)' if result.get('duplicate') else '') + '.')
     if command == 'doctor':
         labels = {'never_seen': 'Henuz gercek istemci oturumu gozlenmedi.',
                   'observed_metadata': 'Oturum olaylari gozleniyor.',
@@ -529,6 +542,14 @@ def human_result(result, command, installed_version=None):
             lines.append('Oturum ici tekrar onleme: acik (' + str(dedupe.get('sessions', 0)) + ' oturum defteri)')
         elif dedupe.get('valid') is False:
             lines.append('context-dedupe.json gecersiz; oturum ici tekrar onleme kapali sayiliyor.')
+        queue = result.get('mutation_queue') or {}
+        if queue.get('valid') is False:
+            lines.append('mutation-queue-settings.json gecersiz; cevrimdisi kuyruk kapali sayiliyor.')
+        if queue.get('enabled') or queue.get('queue_exists'):
+            lines.append('Cevrimdisi mutasyon kuyrugu: ' + ('acik' if queue.get('enabled') else 'kapali') +
+                         (' (kuyruk dosyasi okunamadi)' if queue.get('status') == 'invalid' else
+                          ' (' + str(queue.get('pending_count', 0)) + ' bekleyen, ' + str(queue.get('conflict_count', 0)) +
+                          ' cakisma, ' + str(queue.get('failed_count', 0)) + ' basarisiz)'))
         index_scope = result.get('index_exclusions') or {}
         lines += index_exclusion_lines(index_scope)
         hint = index_scope.get('vendored_hint') or {}
