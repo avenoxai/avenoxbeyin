@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -37,7 +38,9 @@ class RetentionTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='compact-retention-')
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        # Resolved: macOS temp paths sit behind /var -> /private/var, and the archive
+        # reader rejects any path that resolves outside the vault it is given.
+        self.root = Path(self.tmp.name).resolve()
         self.vault = self.root / 'vault'
         self.state = self.root / 'state'
         self.state.mkdir()
@@ -145,8 +148,8 @@ c.compact(Path(sys.argv[2]), Path(sys.argv[3]), now=datetime(2026,10,26,tzinfo=t
             self.run_compact()
         before = self.archive('Last-Session').read_bytes()
         original_history = compact._archive_history
-        def change(*args):
-            result = original_history(*args)
+        def change(*args, **kwargs):
+            result = original_history(*args, **kwargs)
             live.write_bytes(live.read_bytes() + b'EXTERNAL_EDIT\n')
             return result
         with patch.object(compact, '_archive_history', change):
@@ -293,7 +296,7 @@ c.compact(Path(sys.argv[2]), Path(sys.argv[3]), now=datetime(2026,10,26,tzinfo=t
         self.assertEqual(self.archive().read_bytes(), legacy)
         self.assertEqual(set(self.history()[1].values()), {changed})
 
-    def test_move_retry_is_not_limited_by_snapshot_cache_window_or_budget(self):
+    def interrupted_move(self):
         live = self.write('Last-Session.md', movable_handoff())
         original = compact._write
 
@@ -304,29 +307,85 @@ c.compact(Path(sys.argv[2]), Path(sys.argv[3]), now=datetime(2026,10,26,tzinfo=t
 
         with patch.object(compact, '_write', fail), self.assertRaises(OSError):
             self.run_compact()
-        stored = self.archive('Last-Session').read_bytes()
-        with patch.object(compact, 'BACKUP_LOOKBACK_BYTES', 1):
-            self.assertEqual(self.run_compact(datetime(2028, 1, 1, tzinfo=timezone.utc))['status'], 'compacted')
+        return live, self.archive('Last-Session').read_bytes()
+
+    def opened_during(self, now):
+        opened, real = [], Path.open
+
+        def spy(path, *args, **kwargs):
+            opened.append(path.name)
+            return real(path, *args, **kwargs)
+
+        with patch.object(Path, 'open', spy):
+            result = self.run_compact(now)
+        return result, opened
+
+    def test_move_retry_lookup_stays_in_the_bounded_window(self):
+        # 29 Oct review: a normal move read every monthly archive under the shared
+        # write lock. A retry inside #460's window is still recognised...
+        live, stored = self.interrupted_move()
+        result, opened = self.opened_during(datetime(2027, 10, 1, tzinfo=timezone.utc))
+        self.assertEqual(result['status'], 'compacted')
+        self.assertIn('Last-Session-2026-10.md', opened)
         self.assertEqual(self.archive('Last-Session').read_bytes(), stored)
-        self.assertFalse(self.archive('Last-Session', '2028-01').exists())
+        self.assertFalse(self.archive('Last-Session', '2027-10').exists())
         self.assertIn(b'Last-Session-2026-10.md', live.read_bytes())
 
-    def test_delta_with_missing_base_falls_back_to_complete_backup(self):
+    def test_move_retry_outside_window_or_budget_is_a_second_copy_not_a_scan(self):
+        # ...and one outside it is never read: it costs one more archived copy, no text.
+        for now, budget in ((datetime(2028, 1, 1, tzinfo=timezone.utc), compact.BACKUP_LOOKBACK_BYTES),
+                            (datetime(2026, 11, 1, tzinfo=timezone.utc), 1)):
+            with self.subTest(now=now.date(), budget=budget):
+                live, stored = self.interrupted_move()
+                month = now.strftime('%Y-%m')
+                with patch.object(compact, 'BACKUP_LOOKBACK_BYTES', budget):
+                    result, opened = self.opened_during(now)
+                self.assertEqual(result['status'], 'compacted')
+                self.assertNotIn('Last-Session-2026-10.md', opened)
+                self.assertEqual(self.archive('Last-Session').read_bytes(), stored)
+                moved = self.archive('Last-Session', month).read_bytes()
+                self.assertEqual(moved.count(b'OLD_PAYLOAD_UNIQUE'), 1)
+                self.assertIn(f'Last-Session-{month}.md'.encode(), live.read_bytes())
+                self.assertNotIn(b'OLD_PAYLOAD_UNIQUE', live.read_bytes())
+                self.assertIn(b'NEW_PAYLOAD_UNIQUE', live.read_bytes())
+
+    def test_year_2000_archive_is_not_read_during_a_normal_move(self):
+        self.archive('Last-Session', '2000-01').parent.mkdir()
+        old = movable_handoff()
+        self.archive('Last-Session', '2000-01').write_bytes(
+            compact._record('move', '850-Companion/Last-Session.md', 'synthetic', old, '\n').encode())
+        self.archive('Threads', '2000-01').write_bytes(b'# synthetic 2000 archive\n')
+        self.write('Last-Session.md', old)
+        result, opened = self.opened_during(NOW)
+        self.assertEqual(result['status'], 'compacted')
+        self.assertFalse([name for name in opened if '2000-01' in name])
+
+    def test_delta_with_damaged_base_falls_back_to_complete_backup(self):
         text = oversized_threads()
         self.write('Threads.md', text)
         self.run_compact()
         version = text + 'New synthetic update\n'
         self.write('Threads.md', version)
-        self.assertEqual(self.run_compact(NEXT)['files']['Threads.md']['backup_format'], 'delta')
+        self.assertEqual(self.run_compact()['files']['Threads.md']['backup_format'], 'delta')
         # Simulate external base damage, without changing the dependent delta.
         damaged = self.archive().read_bytes().replace(b'Sentetik', b'BROKENXX', 1)
         self.archive().write_bytes(damaged)
-        delta = self.archive(month='2026-11').read_bytes()
         self.assertNotIn(version, self.history()[1].values())
-        self.assertEqual(self.run_compact(NEXT)['files']['Threads.md']['backup_format'], 'full')
-        self.assertTrue(self.archive(month='2026-11').read_bytes().startswith(delta))
-        self.assertEqual(self.archive().read_bytes(), damaged)
+        self.assertEqual(self.run_compact()['files']['Threads.md']['backup_format'], 'full')
+        self.assertTrue(self.archive().read_bytes().startswith(damaged))
         self.assertIn(version, self.history()[1].values())
+
+    def test_first_backup_of_each_month_is_complete_and_restores_alone(self):
+        text = oversized_threads()
+        versions = [text, text + 'Ekim değişikliği\n', text + 'Kasım değişikliği\n', text + 'Kasım ikinci satır\n']
+        formats = []
+        for now, version in zip([NOW, NOW, NEXT, NEXT], versions):
+            self.write('Threads.md', version)
+            formats.append(self.run_compact(now)['files']['Threads.md']['backup_format'])
+        self.assertEqual(formats, ['full', 'delta', 'full', 'delta'])
+        # An unreadable October does not affect what November restores.
+        self.archive().write_bytes(b'\xff')
+        self.assertEqual(set(self.history()[1].values()), set(versions[2:]))
 
     def test_bad_delta_ranges_hash_and_metadata_never_suppress_backup(self):
         text = oversized_threads()
@@ -346,17 +405,68 @@ c.compact(Path(sys.argv[2]), Path(sys.argv[3]), now=datetime(2026,10,26,tzinfo=t
             self.assertTrue(self.archive().read_bytes().startswith(prefix))
             self.assertIn(version, self.history()[1].values())
 
-    def test_delta_dependency_resolves_independently_of_month_order(self):
+    def test_delta_never_resolves_against_another_month(self):
         text = oversized_threads()
         version = text + 'New synthetic update\n'
         source = '850-Companion/Threads.md'
         self.archive().parent.mkdir()
         base = compact._record('full', source, compact._hash(text), text, '\n')
-        kind, delta = compact._backup_record(version, source, {compact._hash(text): text}, '\n')
+        kind, delta = compact._backup_record(version, source, base, '\n')
         self.assertEqual(kind, 'delta')
         self.archive().write_bytes(delta.encode('utf-8'))
         self.archive(month='2026-11').write_bytes(base.encode('utf-8'))
+        self.assertEqual(set(self.history()[1].values()), {text})
+        self.write('Threads.md', version)
+        report = self.run_compact(NEXT)['files']['Threads.md']
+        self.assertEqual((report['backup'], report['backup_format']), ('written', 'delta'))
         self.assertEqual(set(self.history()[1].values()), {text, version})
+        self.assertEqual(self.archive().read_bytes(), delta.encode('utf-8'))
+
+    def test_issue_596_small_edits_in_one_month_store_one_full_copy(self):
+        # #596: 16 compact runs, one new line before each, used to append 16 full copies.
+        base = ('# Threads\n\n## Active Threads\n### Thread: SABİT_KONU\n' + 'Sentetik sabit açıklama. ' * 250 + '\n\n'
+                '### Thread: DEĞİŞEN_KONU\n' + 'Sentetik başka açıklama. ' * 150 + '\n')
+        versions, version = [], base
+        for run in range(16):
+            self.write('Threads.md', version)
+            versions.append(version)
+            report = self.run_compact()['files']['Threads.md']
+            self.assertEqual((report['status'], report['backup']), ('needs_rewrite', 'written'))
+            self.assertEqual(self.run_compact()['files']['Threads.md']['backup'], 'exists')
+            version += f'- Oturum {run}: sentetik ek satır, Şifre yok.\n'
+        archived = self.archive().read_text(encoding='utf-8')
+        self.assertEqual(archived.count('### Thread: SABİT_KONU'), 1)
+        self.assertLess(len(archived), 3 * len(base))  # main: 16 complete copies
+        self.assertEqual(set(self.history()[1].values()), set(versions))
+
+    def test_legacy_backup_after_a_record_is_still_recognised(self):
+        # A rolled-back release appends plain backups after records; the next update must see them.
+        text = oversized_threads()
+        self.write('Threads.md', text)
+        self.run_compact()
+        changed = text + 'Eski sürümün eklediği satır\n'
+        legacy = ('\n## 2026-10-26 13:00 UTC, Threads.md, ' + compact.BACKUP.format(len(changed)) + '\n\n' + changed)
+        with self.archive().open('ab') as archive:
+            archive.write(legacy.encode('utf-8'))
+        before = self.archive().read_bytes()
+        self.write('Threads.md', changed)
+        self.assertEqual(self.run_compact()['files']['Threads.md']['backup'], 'exists')
+        self.assertEqual(self.archive().read_bytes(), before)
+
+    def test_large_file_delta_does_not_hold_the_lock_for_a_quadratic_diff(self):
+        lines = []
+        for number in range(20000):
+            lines.append('\n' if number % 3 == 0 else '- **Durum:** açık\n' if number % 7 == 0 else f'Satır {number} sentetik.\n')
+        base = ''.join(lines)
+        changed = lines[:]
+        for position in (5000, 10000, 15000):
+            changed.insert(position, f'Yeni satır {position}\n')
+        started = time.monotonic()
+        parts = compact._delta_parts(base, ''.join(changed))
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(compact._apply_delta(base, parts), ''.join(changed))
+        over = base + 'x\n' * compact.DELTA_MAX_LINES
+        self.assertIsNone(compact._delta_parts('', over))
 
     def test_unreadable_old_archive_is_cache_miss_not_a_compaction_failure(self):
         text = oversized_threads()

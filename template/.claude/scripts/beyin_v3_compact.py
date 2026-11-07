@@ -65,44 +65,124 @@ DECISION = re.compile(r'[ \t]*(?:[-*+][ \t]+)?\*\*(?:Karar(?:[ \t]+\d+)?(?:[ \t]
 DECISION_KEY = re.compile(r'<!-- beyin-decision: ([0-9a-f]{64}) -->')
 
 ARCHIVE_RECORD = re.compile(r'<!-- beyin-compact-v1: (\{[^\n]+\}) -->\r?\n')
+RECORD_END = '<!-- /beyin-compact-v1 -->'
+DELTA_BACKUP = '{} karakter fark yedeği (needs_rewrite)'
+# A line diff runs under the shared note-writer lock. Beyond this many changed lines a
+# complete copy is written instead; it is larger but never slow and never lossy (#596).
+DELTA_MAX_LINES = 20000
+_UNREAD = object()
 
 
 def _hash(text):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
+def _source(target, name, vault):
+    return unicodedata.normalize('NFC', (target / name).relative_to(vault).as_posix())
+
+
 def _record(kind, source, identity, payload, newline):
     """Self-contained commit: metadata and payload share the archive's atomic write."""
     metadata = dict(kind=kind, source=source, id=identity, chars=len(payload), sha256=_hash(payload))
     return ('<!-- beyin-compact-v1: ' + json.dumps(metadata, ensure_ascii=False) + ' -->' + newline
-            + payload + newline + '<!-- /beyin-compact-v1 -->' + newline)
+            + payload + newline + RECORD_END + newline)
 
 
-def _archive_history(target, name, vault, now=None, backup=None, locations=None):
-    """Read verified commits across months; no state sidecar can get ahead of the archive.
+def _apply_delta(base, parts):
+    """Rebuild a version from ordered [start, end] slices of `base` and literal strings."""
+    out = []
+    for part in parts:
+        if isinstance(part, str):
+            out.append(part)
+        elif (isinstance(part, list) and len(part) == 2 and all(type(i) is int for i in part)
+              and 0 <= part[0] <= part[1] <= len(base)):
+            out.append(base[part[0]:part[1]])
+        else:
+            raise ValueError('invalid archive slice')
+    return ''.join(out)
 
-    Full snapshots remain verbatim. Deltas contain ordered [start, end] character
-    slices of a verified base or literal strings. Reconstruct and hash-check every
-    version before using it as a base or treating it as already backed up.
-    With now, scan the current month and #460's bounded previous-month window.
-    Unavailable old archives are cache misses. Recovery (now=None) reads all months.
-    Legacy full backups can cover an unchanged file, but never become delta bases:
-    the recovery reader must be able to verify every base independently.
+
+def _records(content, source):
+    """Verified records of ONE monthly archive for `source`: (moves, versions, latest_full, gaps).
+
+    A record counts only when its length, closing line and SHA-256 all check out; a
+    marker inside a verified payload is text, not a record. A delta resolves only
+    against a full record of the same file, so every monthly archive restores on its
+    own and a damaged or missing base is a cache miss, never a backup. `gaps` are the
+    stretches of text between verified records, where a legacy (pre-record) backup may sit.
     """
-    moves, snapshots, pending = {}, {}, []
-    source = (target / name).relative_to(vault).as_posix()
-    locations = locations if locations is not None else {}
+    moves, fulls, deltas, spans = {}, {}, [], []
+    latest_full, end = None, 0
+    for match in ARCHIVE_RECORD.finditer(content):
+        if match.start() < end:
+            continue  # Do not interpret markers embedded in a committed payload.
+        try:
+            meta = json.loads(match[1])
+            size = meta['chars']
+            if type(size) is not int or size < 0:
+                continue
+            stop = match.end() + size
+            payload = content[match.end():stop]
+            closing = next((newline + RECORD_END for newline in ('\n', '\r\n')
+                            if content.startswith(newline + RECORD_END, stop)), None)
+            if closing is None or _hash(payload) != meta['sha256']:
+                continue
+            end = stop + len(closing)
+            spans.append((match.start(), end))
+            if not isinstance(meta['source'], str) or unicodedata.normalize('NFC', meta['source']) != source:
+                continue
+            if meta['kind'] == 'move':
+                moves.setdefault(meta['id'], payload)
+            elif meta['kind'] == 'full' and meta['id'] == meta['sha256']:
+                fulls[meta['id']] = payload
+                latest_full = meta['id']
+            elif meta['kind'] == 'delta':
+                deltas.append((meta['id'], payload))
+        except (KeyError, TypeError, ValueError, RecursionError):
+            continue  # Incomplete/edited records never authorize removing live text.
+    versions = dict(fulls)
+    for identity, payload in deltas:
+        try:
+            delta = json.loads(payload)
+            restored = _apply_delta(fulls[delta['base']], delta['parts'])
+            if _hash(restored) == identity:
+                versions.setdefault(identity, restored)
+        except (KeyError, TypeError, ValueError, RecursionError):
+            continue  # A missing, damaged or other-month base cannot authorize deduplication.
+    outside, cursor = [], 0
+    for start, stop in spans:
+        outside.append(content[cursor:start])
+        cursor = stop
+    outside.append(content[cursor:])
+    return moves, versions, latest_full, outside
+
+
+def _archive_files(target, name, vault, now=None, current=_UNREAD):
+    """(path, text) of the monthly archives a lookup may read, nearest month first.
+
+    Compaction holds the shared note-writer lock, so with `now` this is the current
+    month (the file the run appends to; pass its text as `current` when already read)
+    plus at most BACKUP_LOOKBACK_MONTHS earlier months within BACKUP_LOOKBACK_BYTES,
+    the bound #460 set. Anything outside is a cache miss: the run writes one more
+    copy and never loses text. now=None reads every month; only the offline,
+    read-only recovery tool uses that.
+    """
     archives = target / ARCHIVE_DIRECTORY
+    stem = Path(name).stem
     if now is None:
-        candidates = sorted(archives.glob(Path(name).stem + '-????-??.md'))
+        paths = sorted(archives.glob(stem + '-????-??.md'), reverse=True)
     else:
         month_number = now.year * 12 + now.month - 1
-        candidates = []
+        paths = []
         for offset in range(BACKUP_LOOKBACK_MONTHS + 1):
             year, month = divmod(month_number - offset, 12)
-            candidates.append(archives / f'{Path(name).stem}-{year:04d}-{month + 1:02d}.md')
-    remaining, contents = BACKUP_LOOKBACK_BYTES, {}
-    for index, path in enumerate(candidates):
+            paths.append(archives / f'{stem}-{year:04d}-{month + 1:02d}.md')
+    remaining, found = BACKUP_LOOKBACK_BYTES, []
+    for index, path in enumerate(paths):
+        if now is not None and index == 0 and current is not _UNREAD:
+            if current is not None:
+                found.append((path, current))
+            continue
         try:
             _inside(path, vault)
             if not path.is_file():
@@ -117,96 +197,83 @@ def _archive_history(target, name, vault, now=None, backup=None, locations=None)
                 remaining -= len(raw)
                 if remaining < 0:
                     break
-            contents[path] = raw.decode('utf-8')
+            found.append((path, raw.decode('utf-8')))
         except (OSError, UnicodeError, ValueError):
             continue
-    for path, content in sorted(contents.items()):
+    return found
+
+
+def _archive_history(target, name, vault, now=None, backup=None, locations=None, current=_UNREAD):
+    """Verified moves and restorable versions in the archives `_archive_files` allows.
+
+    Returns (moves, versions): a move id maps to (payload, archive path), a SHA-256 to
+    its exact text. `locations` receives the nearest archive holding each version and
+    a legacy full backup equal to `backup`. Legacy backups count as copies, never as
+    delta bases. No state sidecar can get ahead of the archive.
+    """
+    source = _source(target, name, vault)
+    locations = {} if locations is None else locations
+    marker = BACKUP.format(len(backup)) if backup is not None else None
+    moves, versions = {}, {}
+    for path, content in _archive_files(target, name, vault, now, current):
         relative = path.relative_to(vault).as_posix()
-        if backup is not None:
-            marker = BACKUP.format(len(backup))
-            first_record = ARCHIVE_RECORD.search(content)
-            legacy = content[:first_record.start()] if first_record else content
-            if any(marker + nl + nl + backup in legacy for nl in ('\n', '\r\n')):
-                locations[_hash(backup)] = relative
-        end = 0
-        for match in ARCHIVE_RECORD.finditer(content):
-            if match.start() < end:
-                continue  # Do not interpret markers embedded in a committed payload.
-            try:
-                meta = json.loads(match[1])
-                size = meta['chars']
-                if type(size) is not int or size < 0:
-                    continue
-                payload = content[match.end():match.end() + size]
-                if not content.startswith(('\n<!-- /beyin-compact-v1 -->', '\r\n<!-- /beyin-compact-v1 -->'), match.end() + size):
-                    continue
-                if _hash(payload) != meta['sha256']:
-                    continue
-                end = match.end() + size
-                if meta['source'] != source:
-                    continue
-                if meta['kind'] == 'move':
-                    moves[meta['id']] = (payload, path.relative_to(vault).as_posix())
-                    continue
-                if meta['kind'] == 'delta':
-                    pending.append((meta['id'], json.loads(payload), relative))
-                elif meta['kind'] == 'full' and _hash(payload) == meta['id']:
-                    snapshots[meta['id']] = payload
-                    locations[meta['id']] = relative
-            except (KeyError, TypeError, ValueError):
-                continue  # Incomplete/edited records never authorize removing live text.
-    # Clock rollback or a later append to an older monthly file can put a delta
-    # before its base in filename order. Resolve dependencies rather than dates.
-    while pending:
-        waiting = []
-        for identity, delta, relative in pending:
-            try:
-                if delta['base'] not in snapshots:
-                    waiting.append((identity, delta, relative))
-                else:
-                    base = snapshots[delta['base']]
-                    parts = []
-                    for part in delta['parts']:
-                        if isinstance(part, str):
-                            parts.append(part)
-                        elif (isinstance(part, list) and len(part) == 2
-                              and all(type(i) is int for i in part)
-                              and 0 <= part[0] <= part[1] <= len(base)):
-                            parts.append(base[part[0]:part[1]])
-                        else:
-                            raise ValueError('invalid archive slice')
-                    restored = ''.join(parts)
-                    if _hash(restored) == identity:
-                        snapshots[identity] = restored
-                        locations[identity] = relative
-            except (KeyError, TypeError, ValueError):
-                continue
-        if len(waiting) == len(pending):
-            break  # Missing/corrupt bases and cycles cannot authorize deduplication.
-        pending = waiting
-    return moves, snapshots
+        found_moves, found_versions, _, gaps = _records(content, source)
+        for identity, payload in found_moves.items():
+            moves.setdefault(identity, (payload, relative))
+        for identity, text in found_versions.items():
+            versions.setdefault(identity, text)
+            locations.setdefault(identity, relative)
+        # Bind a legacy payload to its backup heading; the same text in moved
+        # history, inside a record or next to a bare marker is not a snapshot.
+        if marker is not None and any(marker + nl + nl + backup in gap for gap in gaps for nl in ('\n', '\r\n')):
+            locations.setdefault(_hash(backup), relative)
+    return moves, versions
 
 
-def _backup_record(backup, source, snapshots, newline):
+def _delta_parts(base, backup):
+    """Line-level [start, end] slices of `base` and literal strings that rebuild `backup`, or None."""
+    old, new = base.splitlines(keepends=True), backup.splitlines(keepends=True)
+    offsets = [0]
+    for line in old:
+        offsets.append(offsets[-1] + len(line))
+    head, shortest = 0, min(len(old), len(new))
+    while head < shortest and old[head] == new[head]:
+        head += 1
+    tail = 0
+    while tail < shortest - head and old[-1 - tail] == new[-1 - tail]:
+        tail += 1
+    old_mid, new_mid = old[head:len(old) - tail], new[head:len(new) - tail]
+    if len(old_mid) + len(new_mid) > DELTA_MAX_LINES:
+        return None
+    parts = [[0, offsets[head]]] if head else []
+    # Default autojunk keeps the matcher near-linear when blank or repeated lines are
+    # common; it can only make a delta larger, and the result is verified below.
+    for tag, a, b, c, d in difflib.SequenceMatcher(None, old_mid, new_mid).get_opcodes():
+        if tag == 'equal':
+            parts.append([offsets[head + a], offsets[head + b]])
+        elif tag in ('replace', 'insert'):
+            parts.append(''.join(new_mid[c:d]))
+    if tail:
+        parts.append([offsets[len(old) - tail], len(base)])
+    return parts if _apply_delta(base, parts) == backup else None
+
+
+def _backup_record(backup, source, current, newline):
+    """('full' or 'delta', record) for a needs_rewrite backup (#168, #596).
+
+    The first backup of a month is complete. A later one in the same monthly file is a
+    delta against that file's latest complete record of the same source, and only when
+    it is at most half the text's size; otherwise it is complete again and becomes the
+    next base. A delta never depends on another month or on another delta.
+    """
     identity = _hash(backup)
-    if snapshots.get(identity) == backup:
-        return None, None
-    if snapshots:
-        base_id = next(reversed(snapshots))
-        base = snapshots[base_id]
-        old, new = base.splitlines(keepends=True), backup.splitlines(keepends=True)
-        offsets = [0]
-        for line in old:
-            offsets.append(offsets[-1] + len(line))
-        parts = []
-        for tag, a, b, c, d in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
-            if tag == 'equal':
-                parts.append([offsets[a], offsets[b]])
-            elif tag in ('replace', 'insert'):
-                parts.append(''.join(new[c:d]))
-        delta = json.dumps(dict(base=base_id, parts=parts), ensure_ascii=False)
-        if len(delta) < len(backup):
-            return 'delta', _record('delta', source, identity, delta, newline)
+    if current is not None:
+        _, versions, base_id, _ = _records(current, source)
+        parts = _delta_parts(versions[base_id], backup) if base_id is not None else None
+        if parts is not None:
+            delta = json.dumps(dict(base=base_id, parts=parts), ensure_ascii=False)
+            if 2 * len(delta) <= len(backup):
+                return 'delta', _record('delta', source, identity, delta, newline)
     return 'full', _record('full', source, identity, backup, newline)
 
 
@@ -519,10 +586,10 @@ def _inside(path, vault):
 
 
 def _previous_backup(target, vault, name, now, backup, locations=None):
-    """Locate an exact snapshot from the single verified archive scan (#460).
+    """Locate an exact snapshot from the single bounded, verified archive scan (#460).
 
     Legacy full backups are reusable cache entries, not bases for new delta records.
-    Missing, unsafe, corrupt or over-budget history always falls back to a full copy.
+    Missing, unsafe, corrupt or out-of-window history always falls back to a new copy.
     """
     if locations is None:
         locations = {}
@@ -689,13 +756,13 @@ def _compact_files(vault, target, configured, dry_run=False, now=None):
             continue
         newline = result['newline'] if result else '\r\n' if '\r\n' in text else '\n'
         heading = '## ' + now.strftime('%Y-%m-%d %H:%M UTC') + ', ' + name + ', '
-        source = path.relative_to(vault).as_posix()
+        source = _source(target, name, vault)
         locations = {}
         try:
-            # #460 bounds cache lookup for a file with nothing left to move.
-            # Move retries must also find older commits, even beyond that window.
-            history_now = now if result is None else None
-            moves, snapshots = _archive_history(target, name, vault, history_now, backup, locations)
+            # One bounded scan under the shared write lock: this month's archive, already
+            # read above, plus #460's 12-month/8 MiB window, for move retries as well as
+            # snapshots. A commit outside it costs one more copy, never any text.
+            moves, _ = _archive_history(target, name, vault, now, backup, locations, current=existing)
         except (ValueError, UnicodeError, OSError) as exc:
             files[name] = dict(report, status='needs_attention', reason=str(exc) + '; nothing moved')
             continue
@@ -726,8 +793,8 @@ def _compact_files(vault, target, configured, dry_run=False, now=None):
                 if result is None:
                     report.update(archive=previous_backup)
             else:
-                kind, record = _backup_record(backup, source, snapshots, newline)
-                marker = BACKUP.format(len(backup)) if kind == 'full' else str(len(backup)) + ' karakter fark yedeği (needs_rewrite)'
+                kind, record = _backup_record(backup, source, existing, newline)
+                marker = (BACKUP if kind == 'full' else DELTA_BACKUP).format(len(backup))
                 added.append(newline + heading + marker + newline + newline + record)
                 report.update(backup='written', backup_format=kind, backup_archive=archive.relative_to(vault).as_posix())
         if added:
