@@ -64,6 +64,21 @@ class WorkspaceBuilderTest(unittest.TestCase):
             self.assertEqual(code, 0, answer)
             self.assertEqual('Zeta Bank' in json.dumps(answer, ensure_ascii=False), visible, reader)
 
+    def test_provision_uses_the_vaults_own_project_folder(self):
+        # The official template keeps projects under '🏰 300-Projects'; a parallel projects/
+        # tree would split one project across two folders.
+        parent = self.vault / '🏰 300-Projects'
+        (parent / 'eski').mkdir(parents=True)
+        projects.manage(self.vault, 'add', folder='🏰 300-Projects/eski', project='eski')
+        result = workspaces.provision_workspace(self.vault, 'alpha', name='Alfa')
+        self.assertFalse((self.vault / 'projects').exists())
+        self.assertTrue((parent / 'alpha/Kurallar.md').is_file())
+        self.assertIn('[[🏰 300-Projects/alpha/Kurallar|', (parent / 'alpha/MOC.md').read_text(encoding='utf-8'))
+        self.assertEqual(result['workspace']['rules_file'], '🏰 300-Projects/alpha/Kurallar.md')
+        self.assertIn('🏰 300-Projects/alpha', result['workspace']['sources'])
+        legacy = workspaces.inspect_workspace(self.vault, 'eski')
+        self.assertEqual(legacy['rules_file'], '🏰 300-Projects/eski/Kurallar.md')
+
     def test_provision_rolls_back_when_kept_rules_belong_to_another_project(self):
         rules = self.vault / 'projects/alpha/Kurallar.md'
         rules.parent.mkdir(parents=True)

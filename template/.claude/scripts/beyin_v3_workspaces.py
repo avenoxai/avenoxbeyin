@@ -221,13 +221,32 @@ def _unbind(vault_root, workspace_id, sources):
     return removed
 
 
-def _legacy_entry(project):
+def _project_parent(vault_root):
+    """The vault's own project folder ('🏰 300-Projects' in the official template), else projects.
+
+    Rule discovery already looks there; a second top-level projects/ tree would split one
+    project across two folders.
+    """
+    from beyin_v3_projects import candidate_project_folders
+    try:
+        with os.scandir(vault_root) as entries:
+            folders = {_scope_key(entry.name): entry.name for entry in entries
+                       if entry.is_dir(follow_symlinks=False)}
+    except OSError:
+        return "projects"
+    for name in candidate_project_folders(vault_root):
+        if _scope_key(name) in folders:
+            return folders[_scope_key(name)]
+    return "projects"
+
+
+def _legacy_entry(project, parent="projects"):
     return {
         "id": project,
         "name": project,
         "kind": "general",
         "lifecycle": "active",
-        "rules_file": f"projects/{project}/Kurallar.md",
+        "rules_file": f"{parent}/{project}/Kurallar.md",
         "note_roots": [f"notes/{project}"],
         "memory_policy": "selective",
     }
@@ -253,16 +272,19 @@ def read_workspaces(vault_root):
     folders = _folders(_read_scopes(vault_root))
     result = {workspace_id: _view(workspace_id, entry, folders, True)
               for workspace_id, entry in registry["workspaces"].items()}
+    parent = None
     for project in folders.values():
         if project not in result:
-            result[project] = _view(project, _legacy_entry(project), folders, False)
+            parent = parent or _project_parent(vault_root)
+            result[project] = _view(project, _legacy_entry(project, parent), folders, False)
     return result
 
 
 def _workspace_view(vault_root, workspace_id):
     view = read_workspaces(vault_root).get(workspace_id)
     # A legacy project whose last folder was just disconnected has no record left.
-    return view if view is not None else _view(workspace_id, _legacy_entry(workspace_id), {}, False)
+    return view if view is not None else _view(workspace_id, _legacy_entry(workspace_id, _project_parent(vault_root)),
+                                                {}, False)
 
 
 def list_workspaces(vault_root, include_archived=False, kind=None):
@@ -331,7 +353,8 @@ def create_workspace(vault_root, workspace_id, name=None, kind="general", source
         "name": (name.strip() if isinstance(name, str) and name.strip() else workspace_id),
         "kind": kind,
         "lifecycle": "active",
-        "rules_file": (rules_file if isinstance(rules_file, str) and rules_file.strip() else f"projects/{workspace_id}/Kurallar.md"),
+        "rules_file": (rules_file if isinstance(rules_file, str) and rules_file.strip()
+                       else f"{_project_parent(vault_root)}/{workspace_id}/Kurallar.md"),
         "note_roots": (list(note_roots) if isinstance(note_roots, list) else [f"notes/{workspace_id}"]),
         "memory_policy": "selective",
         "created_at": now,
@@ -389,7 +412,7 @@ def _set_lifecycle(vault_root, workspace_id, lifecycle):
         if workspace_id not in folders.values():
             raise ValueError(f"workspace not found: {workspace_id}")
         # A legacy project gets a registry record the first time its metadata changes.
-        entry = _legacy_entry(workspace_id)
+        entry = _legacy_entry(workspace_id, _project_parent(vault_root))
         entry["created_at"] = now
     entry["lifecycle"] = lifecycle
     entry["updated_at"] = now
@@ -426,7 +449,7 @@ def _plan(vault_root, workspace_id, kind="general", name=None, description=None,
     desc = description.strip() if isinstance(description, str) and description.strip() else f"{display_name} çalışma alanı"
 
     # Default folders
-    default_project_dir = f"projects/{workspace_id}"
+    default_project_dir = f"{_project_parent(vault_root)}/{workspace_id}"
     default_note_dir = f"notes/{workspace_id}"
 
     source_list = []
@@ -471,7 +494,7 @@ def _plan(vault_root, workspace_id, kind="general", name=None, description=None,
 {desc}
 
 ## Belgeler ve Notlar
-- [[projects/{workspace_id}/Kurallar|Çalışma Alanı Kuralları]]
+- [[{default_project_dir}/Kurallar|Çalışma Alanı Kuralları]]
 
 {MOC_START_MARKER}
 {MOC_END_MARKER}

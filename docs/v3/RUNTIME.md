@@ -97,7 +97,8 @@ veya symlink yapılandırma üzerine yazılmaz; önce dosyayı onar.
   gizler.
 - `workspace provision <id>` ilk dosyadan önce `provision.status: pending` kaydını yazar, sonra
   klasörleri ve şablonları oluşturur (var olan dosya korunur), klasörleri bağlar ve doğrular.
-  `--source` verilse de kural ve MOC şablonlarının bulunduğu proje klasörü ve not kökü de bu
+  Proje klasörü vault'un kendi proje klasörünün altındadır (şablonda `🏰 300-Projects/<id>`,
+  yoksa `projects/<id>`). `--source` verilse de kural ve MOC şablonlarının bulunduğu proje klasörü ve not kökü de bu
   çalışma alanına bağlanır (`plan` çıktısındaki `bindings`); doğrulama, şablon dosyalarının
   retrieval kapsamında bu çalışma alanına düştüğünü de denetler.
   Hata olursa yalnız bu denemenin kendi değişiklikleri geri alınır: oluşturduğu ve değişmemiş
