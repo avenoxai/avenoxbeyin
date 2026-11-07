@@ -78,6 +78,45 @@ başka projelere ortak not gibi açılmaması için kapsam sınırı olarak koru
 dosyasını düzenler. `prune` yalnız artık bulunamayan klasör girdilerini çıkarır. Bozuk
 veya symlink yapılandırma üzerine yazılmaz; önce dosyayı onar.
 
+## Çalışma alanları, bağlantı denetimi ve MOC
+
+`workspace`, `lint` ve `moc` yalnız açıkça çağrıldığında çalışır; SessionStart, `sync` ve
+`doctor` bunları çalıştırmaz. `workspace list`, `workspace inspect`, `workspace plan`,
+`workspace provision --dry-run` ve `lint` salt okunurdur ve state oluşturmaz.
+
+- Çalışma alanı üstverisi (ad, tür, yaşam döngüsü, kural dosyası, not kökleri, provision
+  durumu) vault kökündeki `.beyin-workspaces.json` dosyasındadır. Klasör bağlantıları
+  `.beyin-projects.json` içindeki `folders` haritasında kalır ve o dosyanın biçimi değişmez.
+  Eski sürüm kapsam dosyasını aynen okur ve kayıt dosyasını yok sayar; `rollback` sonrasında
+  proje kapsamları çalışmaya devam eder. Bir çalışma alanının kaynakları her okumada `folders`
+  haritasından türetilir: `project-scope add/remove` ile yapılan değişiklik hemen görünür.
+  Kaydı olmayan projeler `registered: false` ile listelenir. Daha yeni bir şema sürümüyle
+  yazılmış veya bozuk kayıt dosyası değiştirilmez.
+- `workspace disconnect` yalnız hala o çalışma alanını gösteren bağlantıyı kaldırır; diskteki
+  klasöre ve notlara dokunmaz. `archive` kapsamı değiştirmez, çalışma alanını yalnız listeden
+  gizler.
+- `workspace provision <id>` ilk dosyadan önce `provision.status: pending` kaydını yazar, sonra
+  klasörleri ve şablonları oluşturur (var olan dosya korunur), klasörleri bağlar ve doğrular.
+  Hata olursa yalnız bu denemenin kendi değişiklikleri geri alınır: oluşturduğu ve değişmemiş
+  dosyalar, boş kalan klasörler, hala bu çalışma alanını gösteren bağlantılar ve kendi kaydı.
+  Arada yapılmış başka değişiklikler korunur. Bir şey geri alınamazsa hata çıktısındaki
+  `reconciliation` nesnesi neyin kaldığını söyler ve kayıt `provision.status: failed` olarak
+  kalır; aynı `workspace provision <id>` komutu kaydı kaldığı yerden tamamlar.
+- `lint [--folder <klasör>]` kırık wikilink, eksik başlık veya ek, yetim ve gelen bağlantısı
+  olmayan notları raporlar. Kısmi yol (`[[klasör/not]]`) ve ekler Obsidian gibi ad ve yol
+  sonuyla çözülür; kod blokları ve satır içi kod sayılmaz. Hassas, arşiv, `visibility: private`
+  ve kurulum klasörlerindeki notlar taranmaz; böyle bir nota giden bağlantı da kırık görünür.
+- `moc [--folder knowledge] [--file MOC.md]` yalnız hedef klasördeki düz bir `.md` dosyasına
+  yazar. Dosya yoksa oluşturur. Varsa yalnız tek bir `<!-- beyin-moc:start -->` ve
+  `<!-- beyin-moc:end -->` çifti taşıdığında ve yalnız bu iki işaretin arasını yeniden üretir;
+  işaretsiz dosyaya dokunmaz. Dizinin görüneceği yere işaret çiftini elle ekle. Değişiklik
+  yoksa dosyaya yazılmaz. Obsidian Beyin kilidini kullanmadığı için dosya, yeni metin hazır
+  olduktan sonra yeniden adlandırmadan hemen önce (içerik özeti, mtime, boyut, inode) tekrar
+  karşılaştırılır; değiştiyse hiçbir şey yazılmaz ve komut yeniden çalıştırılmayı ister.
+  macOS ve Linux'ta eski dosya yeniden adlandırma boyunca açık tutulur, bu arada yerinde
+  kaydedilen bir düzenleme fark edilip geri konur. Kalan sınır: bir editör dosyayı tam bu
+  mikro saniyelik aralıkta yeni bir dosyayla değiştirirse işletim sistemi bunu kilitleyemez.
+
 ## Receipt görünümü çakışması ve kurtarma
 
 `daily/v3/YYYY-MM-DD.md` ve `knowledge/v3/outcomes.md` değişmez receipt kaynaklarından
