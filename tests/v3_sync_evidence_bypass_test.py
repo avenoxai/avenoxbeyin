@@ -37,7 +37,7 @@ class TestSyncEvidenceBypass(unittest.TestCase):
         evidence.write_text(' ' * (1024 * 1024 - 3) + 'T-10', encoding='utf-8')
         issue = self.engine._completion_issue({'id': 'T-1', 'status': 'done',
             'completion_contract': 'strict', 'completion_criterion': 'result',
-            'evidence_refs': ['bounded.md']}, 'task.md')
+            'evidence_refs': ['bounded.md']}, 'task.md', linked=set())
         self.assertIn('matching task identifier', issue)
 
     def test_update_rejects_identifier_followed_by_partial_utf8_at_scan_limit(self):
@@ -64,7 +64,7 @@ class TestSyncEvidenceBypass(unittest.TestCase):
         evidence.write_text('ş' * (512 * 1024) + ' T-1', encoding='utf-8')
         issue = self.engine._completion_issue({'id': 'T-1', 'status': 'done',
             'completion_contract': 'strict', 'completion_criterion': 'result',
-            'evidence_refs': ['bounded.md']}, 'task.md')
+            'evidence_refs': ['bounded.md']}, 'task.md', linked=set())
         self.assertIn('matching task identifier', issue)
 
     def test_update_rejects_another_task_identifier_substring(self):
@@ -174,7 +174,7 @@ class TestSyncEvidenceBypass(unittest.TestCase):
         }
         evidence = self.root / 'no_id.txt'
         evidence.write_text('evidence without id', encoding='utf-8')
-        issue = self.engine._completion_issue(metadata, 'task.md')
+        issue = self.engine._completion_issue(metadata, 'task.md', linked=set())
         self.assertIn("must contain the matching task identifier", issue)
 
     def test_spoofed_evidence_ref_with_task_id(self):
@@ -188,7 +188,7 @@ class TestSyncEvidenceBypass(unittest.TestCase):
         }
         evidence = self.root / 'with_id.txt'
         evidence.write_text('evidence with id T-7 inside', encoding='utf-8')
-        issue = self.engine._completion_issue(metadata, 'task.md')
+        issue = self.engine._completion_issue(metadata, 'task.md', linked=set())
         self.assertIsNone(issue)
 
     def test_spoofed_evidence_ref_binary_file(self):
@@ -202,7 +202,7 @@ class TestSyncEvidenceBypass(unittest.TestCase):
         }
         evidence = self.root / 'binary.bin'
         evidence.write_bytes(b'\x00\xff\x00\xff')
-        issue = self.engine._completion_issue(metadata, 'task.md')
+        issue = self.engine._completion_issue(metadata, 'task.md', linked=set())
         self.assertIn("must contain the matching task identifier", issue)
 
     def test_missing_evidence_ref(self):
@@ -231,8 +231,8 @@ class TestSyncEvidenceBypass(unittest.TestCase):
         
         # Test future mtime manipulation
         import time
-        os.utime(evidence, (evidence.stat().st_atime, time.time() + 3600))
-        issue = self.engine._completion_issue(metadata, 'task.md')
+        os.utime(evidence, (evidence.stat().st_atime, time.time() + 30 * 24 * 3600))
+        issue = self.engine._completion_issue(metadata, 'task.md', linked=set())
         self.assertIn("invalid future modification time", issue)
 
 
