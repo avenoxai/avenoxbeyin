@@ -336,6 +336,55 @@ class ShellEditReminderTest(unittest.TestCase):
         self.assertEqual([item['session'] for item in gaps['checkpoints']], [digest('quiet-cli')])
         self.assertFalse(gaps['checkpoints'][0].get('no_observed_edit'))
 
+    def test_bridge_and_pi_keep_their_own_windows_alongside_cli_flags(self):
+        # Integration of #212 with the global bridge (#500, PR #505) and Pi (PR #385).
+        import beyin_v3_hook as hook
+        import beyin_v3_shell_edits
+        project = self.root / 'Projects' / 'Örnek'
+        project.mkdir(parents=True)
+        cli = 'python3 ' + str(self.vault / 'beyin.py')
+
+        def stop(session, **extra):
+            payload = {'hook_event_name': 'Stop', 'session_id': session, 'cwd': str(project),
+                       'transcript_path': str(self.logs / 'bridge.jsonl')}
+            return hook.receipt_reminder(payload, self.state, 'claude', 'Stop', vault=self.vault, **extra)
+
+        # The bridge keeps its editor-only window: an external session's transcript is never read.
+        with patch.object(beyin_v3_shell_edits, 'shell_edit', return_value=None) as scan:
+            self.assertIsNone(stop(json.dumps([str(project), 'quiet']), bridge_cli=cli))
+            scan.assert_not_called()
+            self.assertIsNone(stop('quiet'))  # the vault hook still scans its own transcript
+            self.assertEqual(scan.call_count, 1)
+        # A Claude CLI write from the project folder uses the bridge's session namespace; the
+        # bridge Stop consumes its flag, queues the observed edit and reminds once.
+        env = dict(self.env, CLAUDE_CODE_SESSION_ID='ext')
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
+                                 '--state', str(self.state), 'note-create', '--file', '-'],
+                                input=json.dumps({'source': 'notes/dis.md', 'text': '# Dış proje\n'}),
+                                text=True, encoding='utf-8', capture_output=True, cwd=project, env=env, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        namespaced = json.dumps([str(project.resolve()), 'ext'])
+        folder = self.state / 'receipt-reminders'
+        flag = folder / (hashlib.sha256(namespaced.encode('utf-8')).hexdigest() + '.cli')
+        self.assertTrue(flag.exists())
+        self.assertFalse((folder / (hashlib.sha256(b'ext').hexdigest() + '.cli')).exists())
+        blocked = stop(namespaced, bridge_cli=cli)
+        self.assertEqual(blocked['decision'], 'block')
+        self.assertIn(cli, blocked['reason'])
+        self.assertFalse(flag.exists())
+        queued = [json.loads(path.read_text(encoding='utf-8')) for path in (self.state / 'hook-queue').glob('*.json')]
+        self.assertEqual([(event['event'], event['observed'], event['session']) for event in queued
+                          if event.get('observed')], [('PostToolUse', 'cli', digest(namespaced))])
+        # Pi opens its window from PI_SESSION_ID but leaves no Claude-only flag nobody would consume.
+        env = dict(self.env, PI_SESSION_ID='pi-cli')
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
+                                 '--state', str(self.state), 'note-create', '--file', '-'],
+                                input=json.dumps({'source': 'notes/pi.md', 'text': '# Pi\n'}),
+                                text=True, encoding='utf-8', capture_output=True, cwd=self.vault, env=env, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.marker('pi-cli').exists())
+        self.assertFalse((folder / (hashlib.sha256(b'pi-cli').hexdigest() + '.cli')).exists())
+
     def test_doctor_names_missing_sessions_without_observed_edits(self):
         sys.path.insert(0, str(ROOT / 'scripts'))
         self.addCleanup(lambda: sys.path.remove(str(ROOT / 'scripts')))
