@@ -210,10 +210,17 @@ class StateRetentionTest(unittest.TestCase):
         for revision in range(1, 13):
             self.store.update_task('big', revision, {'status': 'açık-' + str(revision)})
         size = self.store.database.stat().st_size
-        result = retention.maintain(self.store, now=T0)
-        self.assertEqual(result['events_removed'], 3)
-        self.assertGreater(result['pages_freed'], 0)
-        self.assertLess(self.store.database.stat().st_size, size)
+        with patch.object(retention, 'INCREMENTAL_VACUUM_PAGES', 40), self.db() as db:
+            page_size = db.execute('PRAGMA page_size').fetchone()[0]
+            result = retention.maintain(self.store, now=T0)
+            free = db.execute('PRAGMA freelist_count').fetchone()[0]
+        self.assertEqual((result['events_removed'], result['pages_freed']), (3, 40))
+        # Every counted page really left the file (3.11 freed one page per PRAGMA statement).
+        self.assertEqual(self.store.database.stat().st_size, size - 40 * page_size)
+        self.assertGreater(free, 0)
+        self.assertEqual(retention.maintain(self.store, now=T0 + DAY + 1)['pages_freed'], min(free, 1024))
+        with self.db() as db:
+            self.assertEqual(db.execute('PRAGMA freelist_count').fetchone()[0], max(0, free - 1024))
 
     def legacy_store(self):
         """An index created before #585: auto_vacuum none, as 3.12.0 leaves it."""

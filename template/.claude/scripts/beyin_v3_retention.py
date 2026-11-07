@@ -142,14 +142,17 @@ def prunable_events(db, now):
     return count, size
 
 
-def _incremental_vacuum(db, pages=INCREMENTAL_VACUUM_PAGES):
-    """Return up to `pages` free pages to the file system when the file allows it."""
+def _incremental_vacuum(db):
+    """Return up to INCREMENTAL_VACUUM_PAGES free pages to the file system when the file allows it."""
     if db.execute('PRAGMA auto_vacuum').fetchone()[0] != 2:
         return 0
     free = db.execute('PRAGMA freelist_count').fetchone()[0]
-    count = min(int(free), int(pages))
-    if count > 0:
-        db.execute('PRAGMA incremental_vacuum(%d)' % count).fetchall()
+    count = min(int(free), INCREMENTAL_VACUUM_PAGES)
+    # Python 3.11 steps a row-less PRAGMA once, and one step frees one page, so
+    # incremental_vacuum(N) freed a single page there; 3.14 runs it to completion.
+    # One page per statement frees exactly `count` on both.
+    for _ in range(count):
+        db.execute('PRAGMA incremental_vacuum(1)')
     return count
 
 
