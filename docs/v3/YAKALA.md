@@ -348,6 +348,12 @@ ve isteğe bağlı `ek_urller` listesinde tutulur; `isle` ana URL'yi işler. Ayn
 olarak gösterilmez. Yalnız bir bağlantıyı kaydetmek için diğerlerinin işaretini kaldır.
 Pano metni, dosya veya mail adresi eklenen mevcut URL kartı da `private` olur.
 Mail adresi ana kaynak yerine `ek_urller` içinde seçilmiş olsa da bütün kart özel kalır.
+Ek bağlantılardan biri yerel veya özel ağ adresiyse (`127.0.0.1`, `192.168.x.x`, `intranet`,
+`nas.local`) yakalama iptal olmaz: adres ayrı bir `ek_urller_yerel` listesine ve
+`## Yerel ağ bağlantıları` bölümüne yalnız kayıt olarak yazılır, kart `private` olur. `isle` bu
+adresleri açmaz. Ana `url` yine yalnız herkese açık adres olabilir; seçenek, `file://`, kullanıcı
+bilgisi veya kodlanmış IP yazımı içeren ek bağlantı reddedilir. Elle düzenlenmiş ya da eşitlenmiş
+bir karttaki bozuk `ek_urller` değeri o sayfanın yeni yakalamasını engellemez.
 Aynı popup'ın kayıt kimliği tekrar oynatılsa bile ikinci
 commit yapılmaz.
 
@@ -481,6 +487,11 @@ Ham metin kart klasörünün içinde `.ham/` altında durur. Nokta ile başlayan
 aramaya ve Obsidian'a karışmaz. `.ham/` ve yakalanan dosyaların durduğu `dosyalar/`, içlerine yazılan
 `.gitignore` ile kart klasörü hangisi olursa olsun depoya da girmez.
 
+Dosya kartı yalnız kendi klasörünün `dosyalar/` alt klasöründeki, yakalanırken oraya kopyalanmış
+dosyaları okur. Kartın `## Dosyalar` bölümü elle ya da eşitlenen bir cihazdan değiştirilse de vault'un
+geri kalanı (kasa türü klasörler, `.obsidian/`, başka notlar) `.ham/` içine kopyalanmaz; `dosyalar/`
+başka bir yere bağlantı (symlink, junction) ise hiçbir dosya okunmaz.
+
 ### Videoda transkriptin dili
 
 Otomatik dublajlı bir videoda YouTube her dublaj için ayrı bir altyazı izi sunar. `isle`,
@@ -552,9 +563,33 @@ olarak çözümlenemezse kart hata notuyla kalır, sıradaki kartlar işlenmeye 
 Python HTTP yolu bağlanırken adı yeniden çözer, her cevabı aynı kapıdan geçirir ve soketi denetlenen
 IP adresine açar (TLS yine asıl sunucu adını doğrular). Denetimden sonra değişen bir DNS cevabı
 (rebinding) bu yolu yerel adrese yönlendiremez. Sistemde proxy ayarlıysa hedefi proxy çözer; bu bağlama
-proxy'nin kendisine uygulanmaz. Defuddle ve yt-dlp adı kendileri yeniden çözer ve kendi yönlendirmelerini
-izler; bu iki yardımcı için ağ çıkışı izolasyonu yoktur. yt-dlp yalnız YouTube adresiyle çalışır: kartın
-`kaynak_turu` alanı elle `youtube` yapılsa da başka bir site yt-dlp'ye verilmez, adres türüne göre işlenir.
+proxy'nin kendisine uygulanmaz.
+
+Defuddle ve yt-dlp her çalıştığında `isle` yalnız `127.0.0.1` üzerinde dinleyen kısa ömürlü bir
+koruma proxy'si açar ve onu yardımcının tek proxy'si yapar (`ALL_PROXY`). Yardımcının açtığı her
+bağlantı, yönlendirmelerin her adımı dahil, hedef adını bu proxy'ye söyler; proxy aynı kapıyla adresi
+denetler ve soketi denetlenen IP adresine açar. Herkese açık bir sayfanın yerel adrese yönlendirmesi
+ya da sonradan değişen DNS cevabı yardımcıyı yerel ağa ulaştıramaz; kart, sayfanın yerel veya özel
+bir ağ adresine yönlendirdiğini söyleyen bir notla hata olur. HTTPS bağlantısı proxy içinde uçtan uca
+şifreli kalır. `NO_PROXY` listesi yardımcıya geçmez.
+
+Ortamda (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`) ya da yt-dlp için işletim sisteminde bir proxy
+ayarlıysa (örneğin `127.0.0.1:7890` gibi yerel bir proxy istemcisi) koruma kapanmaz, o proxy'nin
+önünde durur: her hedef önce aynı kapıdan geçer, bağlantıyı ancak ondan sonra kullanıcının proxy'si
+taşır.
+Yerel veya özel adrese giden bir adım kullanıcının proxy'sine hiç sorulmaz. HTTP proxy'si, `socks5h`
+ve `socks4a` hedef adını alıp kendisi çözer (Python yolundaki gibi); `socks5` ve `socks4` denetlenen
+IP adresini alır. `NO_PROXY` listesindeki herkese açık bir ad doğrudan, denetlenen IP adresine
+bağlanır. Proxy girişi (`kullanici:parola@`) korunur. Koruma `https://` proxy'si (proxy'ye TLS ile
+bağlanma) gibi zincirleyemediği bir türde bağlantıyı açmaz; yardımcı o zaman sayfayı alamaz. npm
+yalnız kendi kayıt deposu için kullanıcının proxy ayarlarını ve `NO_PROXY` listesini
+`npm_config_https_proxy`, `npm_config_proxy` ve `npm_config_noproxy` üzerinden kullanmaya devam eder.
+
+Sınır: Defuddle'ın YouTube, Reddit, X, Bilibili ve C2 wiki okuyucuları o sitelerin sabit
+adreslerine kendi bağlantısını açar; bu istekler koruma proxy'sinden geçmez, ama hedefleri kart
+içeriğinin seçebildiği bir adres de değildir. yt-dlp yalnız YouTube adresiyle çalışır: kartın
+`kaynak_turu` alanı elle `youtube` yapılsa da başka bir site yt-dlp'ye verilmez, adres türüne göre
+işlenir.
 Ham kaynak metni güvenilmeyen veri olarak işaretlenir;
 metnin içindeki rol değişikliği, komut çalıştırma ve dosya silme istekleri talimat sayılmaz.
 
