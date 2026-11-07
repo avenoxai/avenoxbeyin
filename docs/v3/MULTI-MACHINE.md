@@ -341,17 +341,17 @@ macOS ve Linux'ta aynı komut `python3 scripts/install_v3.py --vault "/yeni/yol/
 Bayrak verilmezse ve indeks başka bir yola bağlıysa kurucu hiçbir dosyayı değiştirmeden durur,
 eski ve yeni yolu gösterip bayrağı önerir. Taşınan vault'ta `beyin.py update` de aynı hatayla
 durur; `doctor` ve `sync` ise `runtime belongs to another vault` hatasına bu adımı anlatan bir
-`hint` ekler. Bayrakla kurucu bağı yalnız şu koşullarda değiştirir:
+`hint` ekler. Bayrak verildiğinde kurucu şu kuralları uygular:
 
-- Kayıtlı eski yol artık yoktur ya da aynı klasörün başka bir adıdır (yalnız harf büyüklüğü
-  değişen ad, eski yolda bırakılmış bir bağlantı).
+- Kayıtlı eski yol artık yoksa ya da aynı klasörün başka bir adıysa (örneğin yalnız harf
+  büyüklüğü değişen ad ya da eski yolda bırakılmış bir bağlantı) bağ yeni yola çekilir.
 - Eski yolda hala bir klasör varsa ve onun `.beyin-runtime.json` dosyası bu state'i gösteriyorsa
   ya da okunamıyorsa kurucu reddeder: bu taşıma değil kopya olabilir ve iki vault aynı state'i
   paylaşırdı. Eski klasör artık kullanılmayan bir kalıntıysa onu kenara taşı ya da adını
   değiştir. İki kopyayı da tutacaksan yenisini state klasörünün bir **kopyasıyla** kur; eski
   vault kendi state'iyle çalışmaya devam eder.
-- Vault'taki `.beyin-runtime.json`, bu state'in kurulum kaydının yazdığı dosyayla aynıdır.
-  Başka bir vault'un state'i bu yolla bağlanamaz.
+- Vault'taki `.beyin-runtime.json`, bu state'in kurulum kaydının yazdığı dosyayla aynı
+  olmalıdır; değilse kurucu reddeder. Başka bir vault'un state'i bu yolla bağlanamaz.
 - Kayıtlı yol bu makinede mutlak bir yol değilse (başka işletim sisteminden gelen state) kurucu
   reddeder.
 
