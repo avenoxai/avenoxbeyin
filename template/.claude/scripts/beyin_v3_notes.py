@@ -144,6 +144,8 @@ def require_utf8_values(value, what):
 
 def _require_request_text(request):
     require_utf8_text(request.get('content'), 'content')
+    # Evidence paths are hashed into the retry identity and checked as vault paths (#443).
+    require_utf8_values(request.get('evidence_refs'), 'evidence_refs')
     edits = request.get('edits')
     if isinstance(edits, list):
         for index, edit in enumerate(edits):

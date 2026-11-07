@@ -605,6 +605,26 @@ with locked(engine):
         self.assertEqual(list(self.state.glob('markdown-journal/*')), [])
         self.assertEqual(self.engine.note_create('notes/a.md', 'Müşteri \U0001F600')['status'], 'succeeded')
 
+    def test_surrogate_evidence_refs_are_rejected_before_the_lock(self):
+        # Integration of #543 with the note evidence contract (#443): refs are paths hashed
+        # into the retry identity, so they get the same named, write-nothing rejection.
+        path = self.write()
+        request = self.request()
+        before = sorted(item.relative_to(self.vault) for item in self.vault.rglob('*'))
+        for refs, message in ((['notes/\udcff.md'], r'evidence_refs\[0\] .* \(undecodable input byte 0xFF\)'),
+                              (['Threads.md', 'n/\ud800.md'], r'evidence_refs\[1\] is not valid UTF-8: unpaired surrogate U\+D800')):
+            with self.subTest(refs=ascii(refs)):
+                with self.assertRaisesRegex(Utf8InputError, message):
+                    self.engine.note_edit(dict(request, evidence_refs=refs))
+                with self.assertRaisesRegex(Utf8InputError, message):
+                    self.engine.note_create('notes/new.md', 'body', evidence_refs=refs)
+                with self.assertRaisesRegex(Utf8InputError, message):
+                    self.engine.note_create('notes/new.md', 'body', {'evidence_refs': refs})
+        self.assertEqual(path.read_bytes(), b'alpha\nbeta\n')
+        # Nothing new in the vault: no lock folder, backup, idempotency record or note.
+        self.assertEqual(sorted(item.relative_to(self.vault) for item in self.vault.rglob('*')), before)
+        self.assertEqual(list(self.state.glob('markdown-journal/*')), [])
+
     def test_cli_rejects_cesu8_and_surrogates_from_args_stdin_and_files(self):
         cesu = b'\xed\xa0\xbd\xed\xb8\x80'
         raw_json = b'{"source": "new.md", "expected_sha256": null, "content": "x ' + cesu + b'"}'

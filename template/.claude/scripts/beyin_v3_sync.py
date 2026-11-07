@@ -1381,6 +1381,7 @@ class SyncEngine:
         require_utf8_text(source, 'source')
         require_utf8_text(text, 'text')
         require_utf8_values(metadata, 'metadata')
+        require_utf8_values(evidence_refs, 'evidence_refs')
         if text.lstrip().startswith('---'):
             raise ValueError('text must be body only; put frontmatter fields in metadata')
         if not source.startswith(('notes/', 'knowledge/')) or not source.endswith('.md'):
