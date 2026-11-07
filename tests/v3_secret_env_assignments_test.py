@@ -173,6 +173,31 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
         for database in self.state.rglob('*.sqlite3*'):
             self.assertNotIn(VALUE.encode(), database.read_bytes(), database.name)
 
+    def test_installed_note_create_masks_maintainer_forms_and_keeps_tokenizer_code(self):
+        env = isolated_env(self.root / 'home')
+        installed = install(self.vault, self.state, env)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        cli = self.vault / 'beyin.py'
+        enabled = run_python(cli, ['preferences', '--secret-filter', 'on'], self.vault, env)
+        self.assertEqual(enabled.returncode, 0, enabled.stderr)
+        code = 'tokenizer.pad_token = tokenizer.eos_token'
+        body = '\n'.join((f'setx TYPESAFE_API_KEY "{VALUE}"', f'os.environ["OPENAI_API_KEY"] = "{VALUE}"',
+                          f'KİŞİSEL_API_KEY={VALUE}', f'AWS_SECRET_ACCESS_KEY={VALUE}', code))
+        created = run_python(cli, ['note-create', '--json'], self.vault, env,
+                             {'source': 'notes/env-forms.md', 'text': body})
+        self.assertEqual(created.returncode, 0, created.stderr)
+        result = json.loads(created.stdout)
+        self.assertEqual(result['redacted'], 4)
+        stored = (self.vault / result['source']).read_text(encoding='utf-8')
+        self.assertNotIn(VALUE, stored)
+        self.assertIn('os.environ[[REDACTED]', stored)
+        self.assertIn('KİŞİ[REDACTED]', stored)
+        self.assertIn(code, stored)
+        synced = run_python(cli, ['sync'], self.vault, env)
+        self.assertEqual(synced.returncode, 0, synced.stderr)
+        for database in self.state.rglob('*.sqlite3*'):
+            self.assertNotIn(VALUE.encode(), database.read_bytes(), database.name)
+
     def test_auto_context_blocks_prefixed_assignments_before_transport(self):
         # The public control must actually reach the injected transport. No real
         # HTTP call is possible, even while reproducing the pre-fix leak.
