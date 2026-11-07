@@ -296,10 +296,9 @@ def state_location(vault: Path, state: Path, windows=None) -> dict:
 def receipt_line_endings(vault: Path) -> dict:
     """Report whether git can rewrite receipt line endings in this vault (#205).
 
-    Receipts are compared byte for byte. With core.autocrlf=true (the Git for Windows
-    default) a pulled receipt is checked out as CRLF unless the vault stops that for
-    receipts/ with `-text` or `eol=lf`; the index then reads a different summary and the
-    same receipt resubmitted from the other machine fails as an event id collision.
+    With core.autocrlf=true (the Git for Windows default), a pulled receipt can
+    be checked out as CRLF. Current receipt identity tolerates newline-only changes;
+    pinning receipts/ still avoids byte churn and keeps older clients compatible.
     Read-only, information only; a vault that is not a git work tree reports not_applicable.
     """
     def git(*args):
@@ -318,8 +317,8 @@ def receipt_line_endings(vault: Path) -> dict:
             return {"status": "ok", "autocrlf": "true", "receipts_attributes": found}
         return {"status": "warning", "autocrlf": "true", "receipts_attributes": found,
                 "warning": "line_endings: core.autocrlf=true and receipts/ is not pinned, so a receipt synced "
-                           "from another machine can be checked out as CRLF, which changes its bytes and makes "
-                           "the same receipt fail as an event id collision. Add 'receipts/** -text' to the "
+                           "from another machine can be checked out as CRLF. Current receipt identity accepts "
+                           "newline-only changes; older clients may report collisions. Add 'receipts/** -text' to the "
                            "vault's .gitattributes and check the receipts out again; see https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/MULTI-MACHINE.md."}
     except Exception as exc:  # no git, a hung git or a broken config must never hide the rest of doctor
         return {"status": "unavailable", "error": type(exc).__name__}
@@ -2095,8 +2094,8 @@ def main(argv=None, return_result=False):
             if receipt_flags:
                 summary = args.summary
                 if args.summary_file is not None:
-                    # Preserve CRLF as well as LF, matching the JSON input text. utf-8-sig drops
-                    # the BOM that Windows PowerShell 5.1 writes with -Encoding UTF8.
+                    # Read the same text as JSON mode; the receipt engine normalizes line endings.
+                    # utf-8-sig drops the BOM from Windows PowerShell 5.1 -Encoding UTF8.
                     with args.summary_file.open(encoding="utf-8-sig", newline="") as stream:
                         summary = stream.read()
                 payload = {"event_id": args.event_id, "summary": summary, "refs": args.ref}
