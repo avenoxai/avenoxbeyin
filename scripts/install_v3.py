@@ -162,6 +162,7 @@ COMPONENT_PATHS = {
     "adapters/opencode": (".opencode/plugins/",),
     "adapters/omp": (".omp/hooks/",),
     "adapters/kiro": (".kiro/hooks/beyin-v3.json",),
+    # Not an excludable name of its own (see beyin_v3_exclusions); reached only through "adapters".
     "adapters/pi": (".pi/extensions/beyin-v3.ts",),
 }
 

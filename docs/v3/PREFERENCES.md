@@ -382,7 +382,9 @@ Kullanıcı gereksinim duymadığı başlangıç skill'lerini, adaptörleri, ba�
 - `python3 beyin.py preferences --include-component skills/beyin-doktor`
 
 Hariç tutulabilen bileşenler:
-`agents_block`, `adapters`, `adapters/hermes`, `adapters/omp`, `adapters/opencode`, `harnesses/antigravity`, `launchers`, `skills`, `skills/beyin`, `skills/beyin-doktor`, `skills/beyin-guncelle`.
+`agents_block`, `adapters`, `adapters/hermes`, `adapters/kiro`, `adapters/omp`, `adapters/opencode`, `harnesses/antigravity`, `launchers`, `skills`, `skills/beyin`, `skills/beyin-doktor`, `skills/beyin-guncelle`.
+
+`adapters` grubu Pi extension'ını (`.pi/extensions/beyin-v3.ts`) da kapsar. Pi için ayrı bir ad yoktur: `.beyin-exclusions.json` kasayla birlikte taşınır ve 3.12.0 ve öncesi bilinmeyen bir adı gördüğünde güncellemeyi durdurur.
 
 Hariç tutma tercihleri vault kökünde bağımsız `.beyin-exclusions.json` dosyasında saklanır (`.beyin-preferences.json` dosyasını değiştirmez; böylece eski sürümlere rollback 3.4.0 uyumlu kalır). Tercih kaydedildiğinde bir sonraki kurulum veya güncellemede uygulanır (`update` veya `install`). Değiştirilmemiş hariç tutulan dosyalar temizlenir, kullanıcının değiştirdiği dosyalar ise çakışma vermeden korunur. `doctor` çıktısı hem uygulanan hariç tutmaları hem de bekleyen değişiklikleri gösterir.
 

@@ -230,19 +230,24 @@ class PiHarnessTest(unittest.TestCase):
         self.assertIn(hashlib.sha256(b'pi-1').hexdigest()[:24], reminder['reason'])
 
     def test_exclusions_reinclude_and_customized_extension(self):
-        for excluded in ('adapters/pi', 'adapters'):
-            result = self.cli('preferences', '--exclude-component', excluded)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            result = install(self.vault, self.state, self.env)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertFalse(self.plugin.exists())
-            self.assertEqual(self.cli('preferences', '--include-component', excluded).returncode, 0)
-            self.assertEqual(install(self.vault, self.state, self.env).returncode, 0)
-            self.assertTrue(self.plugin.exists())
+        # Released 3.12.0 reads the same vault-local .beyin-exclusions.json and stops its update on
+        # an unknown name, so Pi has no exclusion name of its own; the adapters group covers it (#385).
+        rejected = self.cli('preferences', '--exclude-component', 'adapters/pi')
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn('Unknown or core component adapters/pi', rejected.stderr)
+        self.assertFalse((self.vault / '.beyin-exclusions.json').exists())
+        result = self.cli('preferences', '--exclude-component', 'adapters')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = install(self.vault, self.state, self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.plugin.exists())
+        self.assertEqual(self.cli('preferences', '--include-component', 'adapters').returncode, 0)
+        self.assertEqual(install(self.vault, self.state, self.env).returncode, 0)
+        self.assertTrue(self.plugin.exists())
         custom = self.plugin.read_bytes() + b'// user change\n'
         self.plugin.write_bytes(custom)
         self.assertNotEqual(install(self.vault, self.state, self.env).returncode, 0)
-        self.assertEqual(self.cli('preferences', '--exclude-component', 'adapters/pi').returncode, 0)
+        self.assertEqual(self.cli('preferences', '--exclude-component', 'adapters').returncode, 0)
         self.assertEqual(install(self.vault, self.state, self.env).returncode, 0)
         self.assertEqual(self.plugin.read_bytes(), custom)
 
