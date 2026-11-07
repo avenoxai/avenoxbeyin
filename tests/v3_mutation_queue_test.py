@@ -587,6 +587,36 @@ class MutationQueueTest(unittest.TestCase):
         result = mutation.replay_mutations(self.vault, self.state, self.sync)
         self.assertEqual((result['applied'], result['conflicts']), (0, 1), result)
 
+    def test_crash_after_task_write_with_noncanonical_evidence_is_reconciled(self):
+        # task_create and update_task store evidence_refs canonically (notes/./e.md -> notes/e.md);
+        # the reconciliation after a crash before the queue acknowledgement must compare that form,
+        # or the write becomes a false conflict (and, for a create, a task conflict copy).
+        from unittest.mock import patch
+        from beyin_v3_sync import parse
+        (self.vault / 'notes').mkdir()
+        for name in ('e', 'f'):
+            (self.vault / f'notes/{name}.md').write_text('evidence\n', encoding='utf-8')
+        path = self.vault / 'tasks/evidence.md'
+        for action, payload, stored in (
+                ('task_create', {'text': 'Evidence task', 'metadata': {
+                    'id': 'evidence-task', 'owner': 'test', 'status': 'active', 'evidence_refs': ['notes/./e.md']}},
+                 ['notes/e.md']),
+                ('task_update', {'id': 'evidence-task', 'expected_revision': 1,
+                                 'changes': {'evidence_refs': ['notes/./e.md', 'notes//f.md']}},
+                 ['notes/e.md', 'notes/f.md'])):
+            with self.subTest(action=action):
+                mutation.enqueue_mutation(self.state, action, 'tasks/evidence.md', payload)
+                with patch.object(mutation, '_save_all_mutations', side_effect=Crash):
+                    with self.assertRaises(Crash):
+                        mutation.replay_mutations(self.vault, self.state, self.sync)
+                self.assertEqual(parse(path.read_text(encoding='utf-8'))[0]['evidence_refs'], stored)
+                written = path.read_bytes()
+                result = mutation.replay_mutations(self.vault, self.state, self.sync)
+                self.assertEqual((result['applied'], result['conflicts'], result['failed']), (1, 0, 0), result)
+                self.assertEqual(mutation.list_mutations(self.state)[-1]['status'], 'applied')
+                self.assertEqual(path.read_bytes(), written)
+        self.assertFalse(list((self.vault / 'tasks').glob('*.sync-conflict-*.md')))
+
     def test_each_mutation_is_acknowledged_before_the_next_one(self):
         from unittest.mock import patch
         for name in ('first', 'second'):

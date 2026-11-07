@@ -400,6 +400,17 @@ def _updated_note(engine, raw, payload):
     return render(meta, text.rstrip('\n') + '\n')
 
 
+def _stored_task_fields(engine, fields):
+    """Task fields as task_create and update_task store them, or None if they refuse them."""
+    fields, _ = engine._protect_metadata(dict(fields or {}))
+    fields = dict(fields)
+    try:
+        engine._canonical_refs(fields)  # evidence_refs as vault-relative POSIX paths
+    except ValueError:
+        return None
+    return fields
+
+
 def _task_reflects(engine, payload):
     """True when the task already carries this update: an interrupted replay applied it
     (or another writer made the same change) before the queue acknowledgement."""
@@ -410,8 +421,8 @@ def _task_reflects(engine, payload):
     if not row:
         return False
     record = json.loads(row[0])
-    changes, _ = engine._protect_metadata(dict(payload.get('changes') or {}))
-    return (record.get('kind') == 'task' and type(record.get('revision')) is int and
+    changes = _stored_task_fields(engine, payload.get('changes'))
+    return (changes is not None and record.get('kind') == 'task' and type(record.get('revision')) is int and
             record['revision'] > payload['expected_revision'] and
             all(record.get(key) == value for key, value in changes.items()))
 
@@ -524,9 +535,9 @@ def _replay_mutations(vault: str | Path, state: str | Path, sync_engine=None) ->
             elif action == "task_create":
                 if target_path.is_file():
                     stored_meta, stored_text = parse(target_path.read_bytes().decode('utf-8'))
-                    meta, _ = sync_engine._protect_metadata(payload.get('metadata') or {})
+                    meta = _stored_task_fields(sync_engine, payload.get('metadata'))
                     text, _ = sync_engine._protect(payload.get('text', ''))
-                    if (meta.get('id') and stored_meta.get('kind') == 'task' and
+                    if (meta is not None and meta.get('id') and stored_meta.get('kind') == 'task' and
                             stored_meta.get('revision') == 1 and
                             all(stored_meta.get(k) == v for k, v in meta.items()) and
                             stored_text == text + '\n'):
