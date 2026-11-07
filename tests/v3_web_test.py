@@ -308,6 +308,28 @@ class WebWriteTest(WebFixture):
             self.assertEqual(response.status, 400, bad)
         self.assertFalse(list((self.state / 'web').glob('istek-*')))  # request files never linger
 
+    def test_a_write_from_the_page_is_not_the_launching_agent_sessions_edit(self):
+        # Started from a Claude Code Bash tool, the server inherits that session's id (#212).
+        cookie, csrf = self.login()
+        with patch.dict(os.environ, {'CLAUDE_CODE_SESSION_ID': 'ajan-oturumu-1'}):
+            response, body = self.request('POST', '/api/gorev', self.write_headers(cookie, csrf),
+                                          {'baslik': 'Sayfadan görev', 'sorumlu': 'ben'})
+            self.assertEqual(response.status, 200, body)
+            self.assertEqual(os.environ.get('CLAUDE_CODE_SESSION_ID'), 'ajan-oturumu-1')
+        self.assertEqual(list((self.state / 'receipt-reminders').glob('*.edited')), [])
+        # The CLI itself still marks the session it runs for.
+        with patch.dict(os.environ, {'CLAUDE_CODE_SESSION_ID': 'ajan-oturumu-1'}):
+            self.assertEqual(CLI.main(['--vault', str(self.vault), '--state', str(self.state), 'task-create',
+                                       '--file', str(self.request_file())], return_result=True)[1], 0)
+        self.assertEqual(len(list((self.state / 'receipt-reminders').glob('*.edited'))), 1)
+
+    def request_file(self):
+        path = self.state / 'cli-istek.json'
+        path.write_text(json.dumps({'source': 'tasks/cli-gorev.md', 'text': 'CLI görevi.',
+                                    'metadata': {'id': 'cli-gorev', 'title': 'CLI görevi', 'status': 'inbox',
+                                                 'owner': 'ben'}}), encoding='utf-8')
+        return path
+
     def test_sync_and_compact_are_the_cli_commands(self):
         cookie, csrf = self.login()
         headers = self.write_headers(cookie, csrf)

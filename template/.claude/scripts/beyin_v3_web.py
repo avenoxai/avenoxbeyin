@@ -163,9 +163,20 @@ class Core:
         return self.version() != self.started_version
 
     def run(self, *arguments):
-        """One CLI command in this process, exactly as `beyin.py <command>` would run it."""
-        result, code = self.cli.main(['--vault', str(self.vault), '--state', str(self.state), *arguments],
-                                     return_result=True)
+        """One CLI command in this process, exactly as `beyin.py <command>` would run it.
+
+        A server started from a Claude Code Bash tool inherits CLAUDE_CODE_SESSION_ID, and the CLI
+        would mark a write from this page as that agent session's edit (the Stop receipt reminder,
+        #212). The page is a person's, not the session's, so the variable is out of view meanwhile;
+        the server is single-threaded, so no other command sees the gap.
+        """
+        session = os.environ.pop('CLAUDE_CODE_SESSION_ID', None)
+        try:
+            result, code = self.cli.main(['--vault', str(self.vault), '--state', str(self.state), *arguments],
+                                         return_result=True)
+        finally:
+            if session is not None:
+                os.environ['CLAUDE_CODE_SESSION_ID'] = session
         if code:
             error = result if isinstance(result, dict) else {}
             name, message = str(error.get('error') or ''), str(error.get('message') or 'işlem tamamlanamadı')
