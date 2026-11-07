@@ -913,6 +913,10 @@ class MemoryStore:
         self.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.state_dir.chmod(0o700)
         with self._connect() as db:
+            if not db.execute("PRAGMA page_count").fetchone()[0]:
+                # Only a new file can take this without a VACUUM: pages freed by event retention
+                # return to the file system in bounded steps (#585). Older releases read it unchanged.
+                db.execute("PRAGMA auto_vacuum=INCREMENTAL")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY, payload TEXT NOT NULL);

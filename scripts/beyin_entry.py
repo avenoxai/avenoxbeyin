@@ -162,6 +162,10 @@ def index_exclusion_lines(report, pruned=False):
     return lines
 
 
+def megabytes(value):
+    return '%.1f' % ((value or 0) / 1048576)
+
+
 def rewrite_note(entry):
     """#168: the rewrite instruction, said only once the full text is safe in the archive."""
     if entry.get('backup') in ('written', 'exists'):
@@ -353,6 +357,21 @@ def human_result(result, command, installed_version=None):
             lines.append('Sinir ayari okunamadi; hicbir sey tasinmadi.' if result.get('limits_file') == 'invalid'
                          else 'Birden fazla companion klasoru var; hicbir sey tasinmadi.')
         return '\n'.join(lines + ['Hicbir metin silinmedi; model cagrilmadi.'])
+    if command == 'state-compact':
+        if status == 'planned':
+            return ('Eski olay kaydi: ' + str(result.get('events_prunable', 0)) + ' (yaklasik ' +
+                    megabytes(result.get('event_bytes_prunable', 0)) + ' MB), eski gecici dosya: ' +
+                    str(result.get('stale_temp_files', 0)) + '. Hicbir sey degismedi.')
+        lines = ['Silinen eski olay kaydi: ' + str(result.get('events_removed', 0)) + ', eski gecici dosya: ' +
+                 str(result.get('temp_files_removed', 0)) + '.']
+        if result.get('vacuum') == 'done':
+            lines.append('Yerel indeks ' + megabytes(result.get('database_bytes_before', 0)) + ' MB -> ' +
+                         megabytes(result.get('database_bytes_after', 0)) + ' MB.')
+        elif result.get('vacuum') == 'busy':
+            lines.append('Indeks su an kullaniliyor; VACUUM yapilamadi. Acik oturumlar bitince tekrar dene.')
+        else:
+            lines.append('VACUUM tamamlanamadi: ' + ascii_text(result.get('vacuum')))
+        return '\n'.join(lines + ['Vault dosyalarina dokunulmadi.'])
     if command == 'doctor':
         labels = {'never_seen': 'Henuz gercek istemci oturumu gozlenmedi.',
                   'observed_metadata': 'Oturum olaylari gozleniyor.',
@@ -421,6 +440,11 @@ def human_result(result, command, installed_version=None):
             lines.append('Hafiza hijyeni: ' + name + ' ' + str(entry['chars']) + ' karakter (sinir ' + str(entry['limit']) +
                          '). Ajanina "' + ('py -3' if sys.platform == 'win32' else 'python3') +
                          ' beyin.py companion-compact" calistirmasini soyle; eski kayitlar arsive tasinir, metin silinmez.')
+        storage = result.get('state_storage') or {}
+        if storage.get('compact_suggested'):
+            lines.append('Yerel indeks (bilgi): ' + megabytes(storage['database_bytes']) + ' MB, bunun ' +
+                         megabytes(storage['free_bytes']) + ' MB bos sayfa. Diske geri vermek icin: ' +
+                         ('py -3' if sys.platform == 'win32' else 'python3') + ' beyin.py state-compact')
         rules_opening = result.get('companion_rules_opening') or {}
         if rules_opening.get('status') == 'clipped':
             lines.append('Kurallar.md acilista kirpiliyor (bilgi): kural metni ' + str(rules_opening['chars']) +

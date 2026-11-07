@@ -1078,6 +1078,9 @@ def parser(note_namespace=None, is_json=False):
                           help="Reset Hermes platform overrides to defaults")
     compact = sub.add_parser("companion-compact", help="Move older Last-Session/Threads entries verbatim into a private archive; deletes nothing")
     compact.add_argument("--dry-run", action="store_true", help="Report what would move without writing")
+    state_compact = sub.add_parser("state-compact", help="Drop event snapshots past retention and stale temp files "
+                                   "from local state, then VACUUM the index; never touches the vault")
+    state_compact.add_argument("--dry-run", action="store_true", help="Report what would be removed without writing")
     trace = sub.add_parser("chat-trace", help="Opt-in short conversation checkpoints; never saves transcripts")
     trace.add_argument("action", choices=("status", "on", "off", "write"))
     trace.add_argument("--harness", choices=("claude", "codex"))
@@ -1640,6 +1643,12 @@ def main(argv=None, return_result=False):
             except Exception as exc:  # never hides the rest of doctor
                 result['index_exclusions'] = {'status': 'unavailable', 'error': type(exc).__name__}
             result['receipt_line_endings'] = receipt_line_endings(vault)  # information only: the status below is untouched
+            try:  # information only (#585): index size, free pages, leftover temp files; reads only
+                _ensure_scripts_path()
+                import beyin_v3_retention as retention
+                result['state_storage'] = retention.storage_report(state)
+            except Exception as exc:
+                result['state_storage'] = {'status': 'unavailable', 'error': type(exc).__name__}
             try:
                 _ensure_scripts_path()
                 import beyin_v3_projects as projects
@@ -1699,6 +1708,10 @@ def main(argv=None, return_result=False):
             if any(entry['status'] == 'compacted' for entry in result['files'].values()):
                 # Index the shorter sources and the private archive before anyone reads them.
                 result['sync'] = {'status': load_sync()(vault, state).sync().get('status')}
+        elif args.command == "state-compact":
+            _ensure_scripts_path()
+            import beyin_v3_retention as retention
+            result = retention.compact(store, dry_run=args.dry_run)
         elif args.command == "chat-trace":
             _ensure_scripts_path()
             import beyin_v3_chat_trace as chat_trace
