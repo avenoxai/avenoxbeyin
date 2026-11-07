@@ -27,6 +27,7 @@ from beyin_v3_hygiene import sensitive_excluded, sensitive_source
 from beyin_v3_projections import (is_receipt_view_source, is_receipt_view_conflict, project_receipts,
                                   quarantine_receipt_view_history, archived_receipt_view_aliases,
                                   _receipt_view_contents, receipt_view_rows,
+                                  _record_excluded_dirs, _record_unreadable_sources,
                                   RECEIPT_VIEW_SOURCES_ROW)
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
@@ -771,7 +772,7 @@ class SyncEngine:
                 'truncated': len(due) > 20 or len(invalid) > 20}
 
     def supersedes_health(self):
-        """Report supersedes values that retire nothing: unresolved, ambiguous or the note itself."""
+        """Report supersedes values that retire nothing: unresolved, ambiguous, the note itself or a cycle."""
         with self.store._connect() as db:
             records = [json.loads(row[0]) for row in db.execute('SELECT payload FROM records ORDER BY id')]
         dead = resolve_supersedes(records)[1]
@@ -1148,6 +1149,15 @@ class SyncEngine:
             db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',
                        (RECEIPT_VIEW_SOURCES_ROW, _json(sorted(self.receipt_view_sources))))
             recovered_views = [] if recover_views else None
+            # The scan can remove a formerly private record. Record its current
+            # exclusion/unreadable evidence before rendering from the new index.
+            _record_excluded_dirs(self, db)
+            _record_unreadable_sources(self, db)
+            if not layout_issue:
+                # Render again from the records this scan indexed, for the same paths: whether a
+                # summary refers to a private source is decided by this sync, not the previous one.
+                rendered = _receipt_view_contents(self, db)
+                desired_views = {path: rendered.get(path, content) for path, content in desired_views.items()}
             view_issues = project_receipts(self, db, warnings, recover_views=recover_views,
                                           recovered=recovered_views, desired=desired_views,
                                           allow_view_writes=provenance_durable and not layout_issue)
