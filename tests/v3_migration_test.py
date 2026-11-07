@@ -138,6 +138,7 @@ class MigrationTest(unittest.TestCase):
 
         def stop():
             nonlocal stopped
+            # Cleanup runs again after the explicit stop; do not reuse the reaped writer's PGID.
             if stopped:
                 return
             try:
