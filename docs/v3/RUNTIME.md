@@ -94,9 +94,12 @@ eski kaynak dosyalar ve indeks özetleri yeniden yazılmaz. Görünüm, güncel 
 gecikmişse, içerdiği receipt bağlantıları yalnız yeniden üretilecek alt kümeyi seçer:
 yeniden üretilen **ham baytların** hash'i kayıtlı eski hash'e eşit olmalı, mevcut metin
 de yalnız satır sonlarında farklı olmalıdır. Bağlantı veya başlık tek başına yazma
-izni vermez. Saat dilimi, eski üretici biçimi veya eksik geçmiş nedeniyle bu kanıt
-kurulamıyorsa görünüm korunur; aşağıdaki açık kurtarma komutunu kullanın. Aynı kontrol
-eski günlük düzenine ait takip edilen görünümün kaldırılmasında da geçerlidir.
+izni vermez. 3.10-3.12 sürümlerinin yazdığı görünüm o sürümlerin biçimiyle (hash adlı
+bağlantı, gizlenmemiş özet) yalnız karşılaştırma için yeniden üretilir; kanıt tutarsa
+güncel biçimle değiştirilir. Saat dilimi, başka bir üretici biçimi veya eksik geçmiş
+nedeniyle bu kanıt kurulamıyorsa görünüm korunur; aşağıdaki açık kurtarma komutunu
+kullanın. Aynı kontrol eski günlük düzenine ait takip edilen görünümün kaldırılmasında
+da geçerlidir.
 
 Takip edilen veya mevcut receipt'lerin üreteceği görünüm, başlığı silinse bile kaynak
 not olarak dizine eklenmez. Aynı dosyanın sabit bağlantıları da dışlanır. Önceden
