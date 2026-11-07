@@ -728,9 +728,9 @@ def main(argv=None):
             import beyin_v3_yakala as yakala
             return yakala.main((['--json'] if force_json else []) + argv[1:], vault=vault, state=state)
         if argv and argv[0] == 'web':
-            # Optional web portal: local-first dashboard & companion interface.
+            # Optional local web view; only this explicit command ever starts it.
             import beyin_v3_web as web
-            return web.main((['--json'] if force_json else []) + argv[1:], vault=vault, state=state)
+            return web.main((['--json'] if force_json else []) + argv[1:], vault=vault, state=state, cli=cli)
         if argv and argv[0] in ('update', 'rollback', 'recover'):
             import argparse
             import beyin_v3_update as updater
