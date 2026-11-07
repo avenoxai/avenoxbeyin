@@ -358,6 +358,19 @@ class WebAssetTest(unittest.TestCase):
         for text in ("'İptal'", "'Engellendi'", "'Bekliyor'", 'Görev oluşturuldu'):
             self.assertIn(text, ui.APP_JS)
         self.assertNotRegex(page + ui.APP_JS, '[–—â]')
+        # Every status `beyin.py doctor` and `beyin.py sync` report has a Turkish label.
+        doctor = re.search(r'const DOKTOR = \{(.*?)\};', ui.APP_JS, re.S).group(1)
+        self.assertEqual(sorted(re.findall(r'(\w+): \[', doctor)),
+                         ['needs_attention', 'never_seen', 'observed_metadata', 'pending'])
+        self.assertIn("observed_metadata: ['Sağlıklı', 'iyi']", doctor)
+        sync = re.search(r'const ESITLEME = \{(.*?)\};', ui.APP_JS, re.S).group(1)
+        self.assertEqual(sorted(re.findall(r'(\w+): ', sync)), ['conflict', 'degraded', 'succeeded'])
+
+    def test_hidden_elements_stay_hidden_whatever_their_display_rule(self):
+        # The new-task form is hidden in read-only mode, and `form.form` sets its own display.
+        self.assertIn('form.form { display: grid;', ui.APP_CSS)
+        self.assertIn("$('yeni-gorev').hidden = SALT_OKUNUR;", ui.APP_JS)
+        self.assertIn('[hidden] { display: none !important; }', ui.APP_CSS)
 
 
 class WebLifecycleTest(unittest.TestCase):

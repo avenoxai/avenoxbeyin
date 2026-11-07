@@ -43,7 +43,7 @@ main { padding: 20px 24px; min-width: 0; }
 h1 { font-size: 20px; margin: 0 0 4px; }
 h2 { font-size: 15px; margin: 0 0 10px; color: var(--limon); }
 .aciklama { color: var(--soluk); margin: 0 0 16px; }
-.gorunum[hidden] { display: none; }
+[hidden] { display: none !important; }
 .izgara { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .kart { background: var(--panel); border: 1px solid var(--cizgi); border-radius: 6px; padding: 12px 14px; }
 .kart .etiket { color: var(--soluk); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
@@ -96,8 +96,10 @@ APP_JS = r"""
   const SALT_OKUNUR = meta('beyin-salt-okunur') === '1';
   const DURUM = { inbox: 'Gelen', active: 'Aktif', waiting: 'Bekliyor', blocked: 'Engellendi', done: 'Bitti', cancelled: 'İptal' };
   const TUR = { task: 'görev', note: 'not', receipt: 'receipt', inference: 'çıkarım', preference: 'tercih' };
-  const DOKTOR = { ok: ['Sağlıklı', 'iyi'], never_seen: ['Hook henüz çalışmadı', 'uyari'], degraded: ['Dikkat gerekiyor', 'uyari'],
-    failed: ['Hata', 'kotu'], invalid: ['Geçersiz', 'kotu'] };
+  // The statuses `beyin.py doctor` reports, and those of `beyin.py sync`.
+  const DOKTOR = { observed_metadata: ['Sağlıklı', 'iyi'], pending: ['İşlenmemiş hook olayı var', 'uyari'],
+    never_seen: ['Hook henüz çalışmadı', 'uyari'], needs_attention: ['Dikkat gerekiyor', 'kotu'] };
+  const ESITLEME = { succeeded: 'tamamlandı', degraded: 'uyarılarla tamamlandı', conflict: 'çakışma var' };
   const HAFIZA = { within_limit: 'Sınır içinde', limit_off: 'Sınır kapalı', planned: 'Taşınacak', needs_rewrite: 'Elle kısaltılmalı',
     needs_attention: 'Dikkat', compacted: 'Taşındı', ok: 'Sağlıklı', dry_run: 'Önizleme', conflict: 'Başka bir işlem sürüyor' };
   if (!CSRF) { return; }
@@ -341,7 +343,8 @@ APP_JS = r"""
     const dugme = $('esitle'); dugme.disabled = true;
     try {
       const sonuc = await api('/api/esitle', {});
-      bildir('Eşitleme: ' + sonuc.durum + ' (' + (sonuc.dizinlenen ?? 0) + ' kaynak, ' + sonuc.cakisma + ' çakışma)');
+      bildir('Eşitleme ' + (ESITLEME[sonuc.durum] || sonuc.durum) + ' (' + (sonuc.dizinlenen ?? 0) + ' kaynak, ' +
+        sonuc.cakisma + ' çakışma)', sonuc.durum === 'conflict');
       goster();
     } catch (error) { bildir('Eşitlenemedi: ' + error.message, true); }
     dugme.disabled = SALT_OKUNUR;
