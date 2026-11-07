@@ -500,6 +500,14 @@ def human_result(result, command, installed_version=None):
             lines.append('Oturum ici tekrar onleme: acik (' + str(dedupe.get('sessions', 0)) + ' oturum defteri)')
         elif dedupe.get('valid') is False:
             lines.append('context-dedupe.json gecersiz; oturum ici tekrar onleme kapali sayiliyor.')
+        queue = result.get('mutation_queue') or {}
+        if queue.get('valid') is False:
+            lines.append('mutation-queue-settings.json gecersiz; cevrimdisi kuyruk kapali sayiliyor.')
+        if queue.get('enabled') or queue.get('queue_exists'):
+            lines.append('Cevrimdisi mutasyon kuyrugu: ' + ('acik' if queue.get('enabled') else 'kapali') +
+                         (' (kuyruk dosyasi okunamadi)' if queue.get('status') == 'invalid' else
+                          ' (' + str(queue.get('pending_count', 0)) + ' bekleyen, ' + str(queue.get('conflict_count', 0)) +
+                          ' cakisma, ' + str(queue.get('failed_count', 0)) + ' basarisiz)'))
         index_scope = result.get('index_exclusions') or {}
         lines += index_exclusion_lines(index_scope)
         hint = index_scope.get('vendored_hint') or {}
