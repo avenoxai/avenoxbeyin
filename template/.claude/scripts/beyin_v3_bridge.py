@@ -546,6 +546,8 @@ def _main(argv=None):
     # Antigravity's Stop contract expects a decision; "stop" lets the agent finish as usual.
     quiet = '{"decision":"stop"}' if args.harness == 'antigravity' and args.native_event == 'Stop' else '{}'
     try:
+        if args.harness == 'pi' and (args.print_config or args.install or args.uninstall):
+            raise ValueError('Pi uses the installed extension with --beyin-project-root, not hook JSON')
         if args.uninstall:
             result = uninstall_bridge(args.harness)
             print(json.dumps(result, indent=2, ensure_ascii=False))
@@ -582,8 +584,6 @@ def _main(argv=None):
             return 0
 
         if args.print_config:
-            if args.harness == 'pi':
-                raise ValueError('Pi uses the installed extension with --beyin-project-root, not hook JSON')
             command = [sys.executable, str(Path(__file__).resolve()), '--vault', str(vault),
                        '--state', str(state), '--harness', args.harness, '--context-chars', str(args.context_chars)]
             for root in roots:

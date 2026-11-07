@@ -191,6 +191,21 @@ class PiHarnessTest(unittest.TestCase):
         self.assertEqual(len({e['session'] for e in events}), 1)
         self.assertEqual(len({e['project_id'] for e in events}), 1)
 
+    def test_bridge_management_modes_reject_pi_without_touching_global_settings(self):
+        project = self.base / 'Projects'
+        project.mkdir()
+        home = Path(self.env['HOME'])
+        before = sorted(p.relative_to(home).as_posix() for p in home.rglob('*'))
+        for mode in ('--print-config', '--install', '--uninstall'):
+            with self.subTest(mode=mode):
+                result = subprocess.run([sys.executable, str(self.vault / '.claude/scripts/beyin_v3_bridge.py'),
+                                         '--vault', str(self.vault), '--state', str(self.state), '--harness', 'pi',
+                                         '--project-root', str(project), mode],
+                                        capture_output=True, text=True, encoding='utf-8', env=self.env, timeout=30)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn('Pi uses the installed extension with --beyin-project-root', result.stderr)
+        self.assertEqual(sorted(p.relative_to(home).as_posix() for p in home.rglob('*')), before)
+
     def test_receipt_context_and_doctor_accept_pi(self):
         receipt = self.cli('receipt', '--harness', 'pi', '--event-id', 'pi-receipt', '--session', 'real-checkpoint',
                            '--summary', 'Pi contract checked.\nÖğrenilen: yok', '--ref', 'notes/klima.md')
