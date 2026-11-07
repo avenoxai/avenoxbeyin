@@ -1,4 +1,6 @@
 """Opt-in folder project scopes (.beyin-projects.json) for explicit-project gates."""
+from contextlib import redirect_stderr
+import io
 import json
 import os
 import subprocess
@@ -124,9 +126,12 @@ class ProjectScopesTest(unittest.TestCase):
         self.assertEqual(self.ids('arsiv'), [])
         self.scopes({'folders': {GAME: 'oyun', 'projeler/oyun kanalları/': 'oyun'}})
         self.assertEqual(self.ids('oyun'), ['game'])
+        # A folder assigned to two projects is skipped and closed to both (#419).
         self.scopes({'folders': {GAME: 'oyun', 'projeler/oyun kanalları': 'arsiv'}})
-        with self.assertRaisesRegex(ValueError, 'assigned twice'):
-            self.store._eligible('internal', 'oyun')
+        with redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(self.ids('oyun'), [])
+            self.assertEqual(self.ids('arsiv'), [])
+        self.assertIn('assigned twice', err.getvalue())
 
     def test_no_project_path_ignores_the_file_even_when_invalid(self):
         self.vault_notes()
@@ -179,30 +184,176 @@ class ProjectScopesTest(unittest.TestCase):
         self.assertEqual(before, sorted(path.relative_to(self.vault).as_posix() for path in self.vault.rglob('*')))
 
     def test_invalid_files_fail_closed_for_explicit_projects(self):
+        # A malformed file says nothing reliable about any folder: every explicit project stops.
         self.vault_notes()
         for bad in ('{broken', '[]', {'folders': [], 'shared_unscoped': False},
-                    {'folders': {GAME: 'oyun'}, 'shared_unscoped': 'yes'},
-                    {'folders': {GAME: ''}}, {'folders': {GAME: 3}},
-                    {'folders': {'../Disari': 'oyun'}}, {'folders': {'/mutlak': 'oyun'}},
-                    {'folders': {'C:/Users': 'oyun'}}, {'folders': {'': 'oyun'}},
-                    {'folders': {'Projeler/./Oyun': 'oyun'}}, {'extra': True},
-                    {'folders': {GAME: 'oyun', GAME + '/': 'arsiv'}}):
+                    {'folders': {GAME: 'oyun'}, 'shared_unscoped': 'yes'}, {'extra': True}):
             with self.subTest(bad=bad):
                 self.scopes(bad)
                 with self.assertRaises(ValueError):
                     self.store._eligible('internal', 'oyun')
 
-    def test_invalid_folder_error_names_the_entry(self):
-        # #419: one bad entry still fails the explicit project closed, but the
-        # message must say which entry, for both copies of the reader.
+    def test_invalid_entries_are_skipped_without_widening_any_scope(self):
+        # #419/#496: one bad entry no longer stops every explicit project. It is skipped
+        # with a warning, shared_unscoped stays off, and a folder it may name is closed.
+        self.vault_notes()
+        valid = {GAME: 'oyun', ARCHIVE: 'arsiv'}
+        for extra in ({'../Disari': 'oyun'}, {'/mutlak': 'oyun'}, {'C:/Users': 'oyun'}, {'': 'oyun'},
+                      {'Projeler/./Oyun': 'oyun'}, {'../../Disari/Arşiv': 'diger'},
+                      {'\\\\sunucu\\paylasim': 'diger'}):
+            with self.subTest(extra=extra):
+                self.scopes({'folders': dict(valid, **extra), 'shared_unscoped': True})
+                with redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(self.ids('oyun'), ['game', 'tagged'])
+                    self.assertEqual(self.ids('arsiv'), ['archive'])
+                    self.assertEqual(self.ids('diger'), [])
+                self.assertIn('skipped project scope entry ' + repr(next(iter(extra))), err.getvalue())
+                self.assertIn('shared_unscoped stays off', err.getvalue())
+        # Without a skipped entry the same file shares the unscoped rules note again.
+        self.scopes({'folders': valid, 'shared_unscoped': True})
+        self.assertEqual(self.ids('oyun'), ['game', 'rules', 'tagged'])
+        # An empty or non-string project on a real folder closes that folder to everyone.
+        for bad in ({GAME: ''}, {GAME: 3}, {GAME: 'oyun', GAME + '/': 'arsiv'}):
+            with self.subTest(bad=bad):
+                self.scopes({'folders': dict({ARCHIVE: 'arsiv'}, **bad), 'shared_unscoped': True})
+                with redirect_stderr(io.StringIO()):
+                    self.assertEqual(self.ids('oyun'), ['tagged'])
+                    self.assertEqual(self.ids('arsiv'), ['archive'])
+                    self.assertEqual(self.ids('baska'), [])
+
+    def test_skipped_nested_entry_never_falls_back_to_the_parent_project(self):
+        # The folder a skipped entry may name stays closed even under a valid parent mapping:
+        # otherwise a typo would hand a nested project's notes to its parent's project.
+        self.vault_notes()
+        inside = str(self.vault / GAME)
+        for spelling in ('Projeler/./Oyun Kanalları', inside, inside.replace('/', '\\'),
+                         '../' + self.vault.name + '/' + GAME, unicodedata.normalize('NFD', GAME) + '/../Oyun Kanalları/.'):
+            with self.subTest(spelling=spelling):
+                self.scopes({'folders': {'Projeler': 'genel', spelling: 'oyun'}, 'shared_unscoped': True})
+                with redirect_stderr(io.StringIO()):
+                    self.assertEqual(self.ids('genel'), ['archive'])
+                    self.assertEqual(self.ids('oyun'), ['tagged'])
+        # Control: the valid spelling of the same nested folder still selects it.
+        self.scopes({'folders': {'Projeler': 'genel', GAME: 'oyun'}, 'shared_unscoped': True})
+        self.assertEqual(self.ids('genel'), ['archive', 'rules'])
+        self.assertEqual(self.ids('oyun'), ['game', 'rules', 'tagged'])
+
+    def test_invalid_folder_warning_names_the_entry_in_both_readers(self):
+        # #419: the warning says which entry was skipped; both copies of the reader agree.
         import beyin_v3_projects as projects
         self.vault_notes()
+        cases = ({'../Disari': 'oyun', GAME: 'oyun', 'Projeler': 'genel', 'Projeler/./Arşiv': 'arsiv'},
+                 {GAME: 'oyun', 'projeler/oyun kanalları/': 'arsiv', ARCHIVE: ''},
+                 {'': 'oyun', '/mutlak': 'x', str(self.vault / ARCHIVE): 'arsiv'})
+        for data in cases:
+            with self.subTest(data=data):
+                self.scopes({'folders': data, 'shared_unscoped': True})
+                with redirect_stderr(io.StringIO()) as runtime_err:
+                    actual = runtime.read_project_scopes(self.vault)
+                with redirect_stderr(io.StringIO()) as helper_err:
+                    helper = projects.read_project_scopes(self.vault)
+                self.assertEqual(runtime_err.getvalue(), helper_err.getvalue())
+                self.assertEqual({k: actual[k] for k in ('folders', 'shared_unscoped', 'blocked')},
+                                 {k: helper[k] for k in ('folders', 'shared_unscoped', 'blocked')})
+                self.assertFalse(actual['shared_unscoped'])
+                self.assertTrue(actual['blocked'])
         self.scopes({'folders': {'../Disari': 'oyun', GAME: 'oyun'}})
-        for read in (lambda: self.store._eligible('internal', 'oyun'),
-                     lambda: projects.read_project_scopes(self.vault)):
-            with self.subTest(read=read):
-                with self.assertRaisesRegex(ValueError, r"vault-relative: '\.\./Disari' in \.beyin-projects\.json"):
-                    read()
+        with redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(self.ids('oyun'), ['game', 'tagged'])
+        self.assertIn("skipped project scope entry '../Disari' in .beyin-projects.json: "
+                      "project scope folder must be vault-relative", err.getvalue())
+        long_entry = '../' + 'x' * 500
+        self.scopes({'folders': {long_entry: 'oyun', GAME: 'oyun'}})
+        with redirect_stderr(io.StringIO()) as err:
+            self.ids('oyun')
+        self.assertLess(len(err.getvalue()), 400)
+
+    def test_cli_explicit_project_skips_bad_entries_without_widening(self):
+        # Real CLI process with BOM files: one bad entry used to fail every --project call.
+        import beyin_v3_projects as projects
+        self.vault_notes()
+        path = self.vault / runtime.PROJECT_SCOPES_FILE
+        for bad in ({'../escape': 'other'}, {'/absolute': 'other'}, {'Projeler/./Other': 'other'}):
+            with self.subTest(bad=bad):
+                data = {'folders': dict({GAME: 'oyun', ARCHIVE: 'arsiv'}, **bad), 'shared_unscoped': True}
+                original = ('\ufeff' + json.dumps(data, ensure_ascii=False)).encode('utf-8')
+                path.write_bytes(original)
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
+                     '--state', str(self.store.state_dir), 'context', 'Kaynak notu',
+                     '--project', 'oyun', '--no-sync'], env=inherited_env(),
+                    capture_output=True, text=True, encoding='utf-8', timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
+                self.assertIn('skipped project scope entry ' + repr(next(iter(bad))), result.stderr)
+                records = json.loads(result.stdout)['records']
+                self.assertTrue(records)
+                # Neither the other project nor the unscoped rules note joins the scope.
+                self.assertTrue({record['id'] for record in records} <= {'game', 'tagged'})
+                self.assertEqual(path.read_bytes(), original)
+                report = projects.check_project_scopes(self.vault)
+                self.assertEqual(report['status'], 'error')
+                self.assertFalse(report['shared_unscoped_effective'])
+
+    def test_hook_opening_with_explicit_project_survives_a_bad_entry(self):
+        # Real hook process: a bad entry used to replace the opening with a sync failure
+        # notice, drop per-turn context and record a hook error for doctor (#419).
+        from beyin_v3_sync import SyncEngine
+        companion = self.vault / '\U0001f52e 850-Companion'
+        companion.mkdir()
+        (companion / 'Core.md').write_text('# Core\nCORE_SCOPE_CANARY kimlik notu.\n', encoding='utf-8')
+        (self.vault / GAME).mkdir(parents=True)
+        (self.vault / GAME / 'Takvim.md').write_text('Oyun yayın takvimi PLAN_SCOPE_CANARY hazırlığı.\n',
+                                                    encoding='utf-8')
+        (self.vault / ARCHIVE).mkdir(parents=True)
+        (self.vault / ARCHIVE / 'Takvim.md').write_text('Arşiv yayın takvimi ARCHIVE_SCOPE_CANARY hazırlığı.\n',
+                                                       encoding='utf-8')
+        self.scopes({'folders': {GAME: 'oyun', ARCHIVE: 'arsiv', '../Disari': 'disari'}, 'shared_unscoped': True})
+        state = Path(self.tmp.name) / 'hook-state'
+        home = Path(self.tmp.name) / 'home'
+        home.mkdir()
+        SyncEngine(self.vault, state).sync()
+        env = inherited_env(HOME=str(home), USERPROFILE=str(home), BEYIN_UPDATES_OFF='1',
+                            BEYIN_V3_NO_SPAWN='1', PYTHONIOENCODING='utf-8')
+        contexts = {}
+        for event, prompt in (('SessionStart', ''), ('UserPromptSubmit', 'oyun yayın takvimi hazırlığı')):
+            payload = {'hook_event_name': event, 'session_id': 'scope-session', 'cwd': str(self.vault),
+                       'project': 'oyun', 'prompt': prompt}
+            result = subprocess.run(
+                [sys.executable, str(ROOT / 'template/.claude/scripts/beyin_v3_hook.py'), '--vault', str(self.vault),
+                 '--state', str(state), '--harness', 'codex'], input=json.dumps(payload), env=env,
+                capture_output=True, text=True, encoding='utf-8', timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            contexts[event] = json.loads(result.stdout).get('hookSpecificOutput', {}).get('additionalContext', '')
+            self.assertNotIn('source sync failed', contexts[event])
+        self.assertIn('CORE_SCOPE_CANARY', contexts['SessionStart'])
+        self.assertIn('PLAN_SCOPE_CANARY', contexts['UserPromptSubmit'])
+        self.assertNotIn('ARCHIVE_SCOPE_CANARY', contexts['UserPromptSubmit'])
+        self.assertFalse((state / 'hook-error.json').exists())
+
+    def test_skipped_entries_keep_project_resolution_and_sibling_repositories(self):
+        # #496: a sibling repository resolves through its project or mapped folder name,
+        # never through a '..' path, and one bad entry no longer drops every mapping.
+        import beyin_v3_projects as projects
+        for folder in ('Musteri/Kod', 'Musteri/Gizli', 'Musteri/Diger'):
+            (self.vault / folder).mkdir(parents=True)
+        sibling = Path(self.tmp.name) / 'alfa-repo' / 'src'
+        sibling.mkdir(parents=True)
+        self.scopes({'folders': {'Musteri/Kod': 'alfa-repo', '../alfa-repo': 'alfa-repo',
+                                 'Musteri': 'genel', 'Musteri/./Gizli': 'gizli'}})
+        with redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(projects.resolve_active_project(self.vault, sibling), 'alfa-repo')
+            self.assertEqual(projects.resolve_active_project(self.vault, self.vault / 'Musteri/Kod'), 'alfa-repo')
+            self.assertEqual(projects.resolve_active_project(self.vault, self.vault / 'Musteri/Diger'), 'genel')
+            # The folder named by the skipped entry never takes its parent's project.
+            self.assertIsNone(projects.resolve_active_project(self.vault, self.vault / 'Musteri/Gizli'))
+            self.assertEqual(projects.resolve_project_from_query(self.vault, 'alfa-repo testleri'), 'alfa-repo')
+        self.assertIn("skipped project scope entry '../alfa-repo'", err.getvalue())
+        # An unrelated sibling stays unscoped: '..' is never followed.
+        other = Path(self.tmp.name) / 'baska-repo'
+        other.mkdir()
+        with redirect_stderr(io.StringIO()):
+            self.assertIsNone(projects.resolve_active_project(self.vault, other))
 
     def test_visibility_and_freshness_gates_still_apply_inside_a_scope(self):
         self.note('secret', GAME + '/Gizli.md', visibility='private')
@@ -383,9 +534,7 @@ class ProjectScopesTest(unittest.TestCase):
         path = self.vault / runtime.PROJECT_SCOPES_FILE
         cases = ('{broken', '[]', {'folders': []},
                  {'folders': {GAME: 'oyun'}, 'shared_unscoped': 'yes'},
-                 {'folders': {GAME: 'oyun', '../escape': 'other'}, 'shared_unscoped': True},
-                 {'folders': {GAME: 'oyun', '/absolute': 'other'}},
-                 {'folders': {GAME: 'oyun', 'Projeler/./Other': 'other'}})
+                 {'folders': {GAME: 'oyun'}, 'workspaces': {}})
         for bad in cases:
             with self.subTest(bad=bad):
                 original = ('\ufeff' + (bad if isinstance(bad, str) else json.dumps(bad))).encode('utf-8')

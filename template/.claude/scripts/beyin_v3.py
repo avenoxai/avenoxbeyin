@@ -488,6 +488,54 @@ def _scope_folder_exists(vault_root, folder):
     return True
 
 
+def _scope_entry_label(value):
+    """A bounded, quoted spelling of one configured entry for warnings."""
+    text = value if isinstance(value, str) else repr(value)
+    return repr(text[:120] + ("..." if len(text) > 120 else ""))
+
+
+def _skipped_scope_targets(vault_root, value):
+    """Scope keys of the vault folders a skipped entry may have meant; empty outside the vault.
+
+    "" stands for the whole vault. A key only ever blocks records for every project (#419)
+    and never grants a scope, so a generous guess cannot widen anything.
+    """
+    if not isinstance(value, str):
+        return set()
+    raw = unicodedata.normalize("NFC", value.replace("\\", "/")).strip()
+    root = Path(vault_root)
+    joined = raw if raw.startswith("/") or re.match(r"[A-Za-z]:", raw) else str(root).replace("\\", "/") + "/" + raw
+    targets = [joined]
+    # Follow links read-only, such as /var -> /private/var; never a network or drive-relative path.
+    if re.match(r"/(?!/)|[A-Za-z]:/", joined):
+        try:
+            targets.append(os.path.realpath(joined))
+        except (OSError, RuntimeError, ValueError):
+            pass
+    bases = [root]
+    try:
+        bases.append(root.resolve())
+    except (OSError, RuntimeError, ValueError):
+        pass
+    keys = set()
+    for base in bases:
+        base = posixpath.normpath(_scope_key(str(base))).rstrip("/")
+        for target in targets:
+            target = posixpath.normpath(_scope_key(target))
+            if target == base:
+                keys.add("")
+            elif target.startswith(base + "/"):
+                keys.add(target[len(base) + 1:])
+    return keys
+
+
+def _scope_warning(message):
+    try:
+        print("Warning: " + message, file=sys.stderr)
+    except Exception:
+        pass
+
+
 def read_project_scopes(vault_root):
     """None when the vault has no scope file: every gate keeps its exact-field behavior.
 
@@ -495,6 +543,10 @@ def read_project_scopes(vault_root):
     field wins. shared_unscoped lets a project query also see records no folder or field
     assigns to any project. Another project's records never enter a project's scope.
     Missing folders are skipped with a warning so unrelated projects remain fully functional (#317).
+    An invalid entry (escaping or absolute path, empty project, a folder assigned twice) is
+    skipped with a warning instead of failing every explicit project (#419): the folder it
+    may name is blocked for every project, and shared_unscoped stays off until it is fixed.
+    A malformed file still fails closed.
     """
     path = Path(vault_root) / PROJECT_SCOPES_FILE
     if path.is_symlink():
@@ -513,36 +565,64 @@ def read_project_scopes(vault_root):
     if not isinstance(folders, dict) or not isinstance(shared, bool):
         raise ValueError("folders must be an object and shared_unscoped a boolean")
     mapped = {}
-    for folder, project in folders.items():
-        if not isinstance(project, str) or not project.strip():
-            raise ValueError("project scope names must be non-empty strings")
+    blocked = set()
+    skipped = 0
+    for raw, project in folders.items():
         try:
-            folder = _scope_path(folder)
+            folder = _scope_path(raw)
         except ValueError as exc:
-            # Still fail closed, but name the entry so the user can find it (#419).
-            raise ValueError(f"{exc}: {folder!r} in {PROJECT_SCOPES_FILE}") from None
+            skipped += 1
+            _scope_warning(f"skipped project scope entry {_scope_entry_label(raw)} in {PROJECT_SCOPES_FILE}: {exc}")
+            blocked.update(_skipped_scope_targets(vault_root, raw))
+            continue
+        key = _scope_key(folder)
+        if not isinstance(project, str) or not project.strip():
+            skipped += 1
+            _scope_warning(f"skipped project scope entry {_scope_entry_label(raw)} in {PROJECT_SCOPES_FILE}: "
+                           "project scope names must be non-empty strings")
+            blocked.add(key)
+            continue
         if not _scope_folder_exists(vault_root, folder):
             print(f"Warning: project scope folder not found in the vault: {folder}", file=sys.stderr)
             # Keep the boundary for stale indexed rows used by explicit --no-sync.
             # Dropping it would expose the other project's notes as shared_unscoped.
-        key = _scope_key(folder)
         if mapped.get(key, project) != project:
-            raise ValueError("project scope folder is assigned twice: " + folder)
+            skipped += 1
+            _scope_warning(f"skipped project scope entry {_scope_entry_label(raw)} in {PROJECT_SCOPES_FILE}: "
+                           "project scope folder is assigned twice")
+            blocked.add(key)
         mapped[key] = project
+    for key in blocked:
+        mapped.pop(key, None)
+    if skipped and shared:
+        _scope_warning(f"shared_unscoped stays off until the skipped {PROJECT_SCOPES_FILE} entries are fixed")
     # Longest folder first, so a nested folder can belong to a different project.
-    return {"folders": sorted(mapped.items(), key=lambda item: -len(item[0])), "shared_unscoped": shared}
+    return {"folders": sorted(mapped.items(), key=lambda item: -len(item[0])),
+            "shared_unscoped": shared and not skipped,
+            "blocked": sorted(blocked, key=len, reverse=True)}
+
+
+# record_scope result for a folder named only by a skipped scope entry: equal to no project
+# and never None, so it can neither join a project nor the shared scope.
+BLOCKED_SCOPE = object()
 
 
 def record_scope(record, scopes):
-    """The project a record belongs to under the scope file, or None when unscoped."""
+    """The project a record belongs to under the scope file, or None when unscoped.
+
+    A record under a folder blocked by a skipped entry gets BLOCKED_SCOPE unless a longer,
+    valid folder claims it: a skipped nested entry never falls back to its parent's project.
+    """
     project = record.get("project")
     if isinstance(project, str) and project.strip():
         return project
     source = _scope_key(str(record.get("source", "")))
+    blocked = max((len(key) for key in scopes.get("blocked", ())
+                   if key == "" or source.startswith(key + "/")), default=-1)
     for folder, name in scopes["folders"]:
         if source.startswith(folder + "/"):
-            return name
-    return None
+            return name if len(folder) > blocked else BLOCKED_SCOPE
+    return BLOCKED_SCOPE if blocked >= 0 else None
 
 
 # Turkish is agglutinative, so exact token intersection loses "fark" against "farki" and

@@ -73,9 +73,15 @@ All other paths belong to the user. In particular, `.brain/` and `custom/` direc
 projelerin sorguları devam eder. Eksik klasör eşlemesi eski `--no-sync` indeks satırlarının
 başka projelere ortak not gibi açılmaması için kapsam sınırı olarak korunur.
 
+Kasa dışına çıkan, mutlak ya da `.` içeren yol, boş proje adı veya iki projeye atanmış klasör
+gibi tek bir hatalı girdi artık bütün açık proje çağrılarını durdurmaz: girdi stderr uyarısıyla
+atlanır, işaret edebileceği kasa klasörü hiçbir projeye açılmaz ve girdi düzeltilene kadar
+`shared_unscoped` kapalı sayılır. Bozuk JSON veya bilinmeyen anahtar gibi dosya düzeyindeki
+hatalar açık proje çağrısını durdurmaya devam eder. Okuma dosyayı değiştirmez.
+
 `project-scope list` yalnız okur. `project-scope add --folder "Projeler/Deneme" --project deneme`,
 `project-scope remove --folder "Projeler/Deneme"` ve `project-scope prune` açıkça kapsam
-dosyasını düzenler. `prune` yalnız artık bulunamayan klasör girdilerini çıkarır. Bozuk
+dosyasını düzenler. `prune` artık bulunamayan klasör girdilerini ve geçersiz yolları çıkarır. Bozuk
 veya symlink yapılandırma üzerine yazılmaz; önce dosyayı onar.
 
 ## Receipt görünümü çakışması ve kurtarma
