@@ -333,6 +333,16 @@ class AutoContextTest(unittest.TestCase):
         # An index built for another project scope is not reused.
         self.assertEqual(passage.loose_ranking(self.store, query, project='other'), [])
 
+    def test_a_pending_index_leaves_the_word_order_alone(self):
+        query = self.long_note_vault()
+        self.local(query)
+        self.assertEqual(passage.loose_ranking(self.store, query)[0], 'handbook')
+        # A later turn whose cold build runs out of time falls back to the note-level path;
+        # the earlier pass's index must not rank its loose pool.
+        with patch.object(passage, 'build', side_effect=passage.IndexPending('pending')):
+            self.local(query)
+        self.assertEqual(passage.loose_ranking(self.store, query), [])
+
     def test_strict_exclude_applied_to_loose_candidates(self):
         (self.state / 'retrieval.json').write_text(json.dumps({'strict_exclude': ['archive/']}), encoding='utf-8')
         # Loose candidate in archive/ folder
