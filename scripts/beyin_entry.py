@@ -539,9 +539,10 @@ def human_result(result, command, installed_version=None):
             lines.append('Git kurulum dosyasi kontrolu (bilgi): ' + plain_text(tracked.get('status')) +
                          ' (' + plain_text(tracked.get('reason', 'unknown')) + ').')
         scopes = result.get('project_scopes') or {}
-        if scopes.get('status') == 'error':
-            lines.append('Proje kapsamlari (.beyin-projects.json) gecersiz: ' + str(scopes.get('error', 'hata')))
-        elif scopes.get('status') == 'warning':
+        if scopes.get('status') == 'error' and scopes.get('error'):
+            lines.append('Proje kapsamlari (.beyin-projects.json) gecersiz: ' + plain_text(scopes['error']))
+        elif scopes.get('status') in ('error', 'warning'):
+            # Entry-level problems: name each entry instead of a bare "hata" (#419).
             details = []
             if scopes.get('missing_folders'):
                 details.append('kasada bulunamayan klasorler: ' + ', '.join(plain_text(f) for f in scopes['missing_folders']))
@@ -549,6 +550,9 @@ def human_result(result, command, installed_version=None):
                 details.append('birden fazla projeye atanan klasorler: ' + ', '.join(plain_text(f) for f in scopes['duplicate_folders']))
             if scopes.get('invalid_entries'):
                 details.append('gecersiz girdiler: ' + ', '.join(plain_text(f) for f in scopes['invalid_entries']))
+            if scopes.get('duplicate_folders') or scopes.get('invalid_entries'):
+                details.append('bu girdiler atlaniyor, adlandirdiklari kasa klasorleri hicbir projeye acilmiyor' +
+                               (' ve shared_unscoped duzeltilene kadar kapali' if scopes.get('shared_unscoped') else ''))
             lines.append('Proje kapsamlari (.beyin-projects.json) dikkat gerektiriyor: ' + '; '.join(details) +
                          '. Duzenlemek veya temizlemek icin: ' + ('py -3' if sys.platform == 'win32' else 'python3') +
                          ' beyin.py project-scope prune')
@@ -590,6 +594,8 @@ def human_result(result, command, installed_version=None):
         if action == 'list':
             if result.get('status') == 'absent':
                 return 'Proje kapsamlari (.beyin-projects.json) bulunamadi.'
+            if result.get('error'):
+                return 'Proje kapsamlari (.beyin-projects.json) gecersiz: ' + plain_text(result['error'])
             lines = ['Proje kapsamlari (.beyin-projects.json):']
             folders = result.get('folders', {})
             missing = set(result.get('missing_folders', []))
@@ -599,7 +605,14 @@ def human_result(result, command, installed_version=None):
             for f in result.get('missing_folders', []):
                 if f not in folders:
                     lines.append('  ' + plain_text(f) + ' (kasada bulunamadi)')
-            lines.append('  shared_unscoped: ' + ('acik' if result.get('shared_unscoped') else 'kapali'))
+            # Skipped entries (#419): named here, closed to every project until fixed.
+            for entry in result.get('invalid_entries', []) + result.get('duplicate_folders', []):
+                lines.append('  ' + plain_text(entry) + ' (atlandi)')
+            shared = result.get('shared_unscoped')
+            if shared and result.get('shared_unscoped_effective') is False:
+                lines.append('  shared_unscoped: kapali (atlanan girdiler duzeltilene kadar)')
+            else:
+                lines.append('  shared_unscoped: ' + ('acik' if shared else 'kapali'))
             return '\n'.join(lines)
         elif action == 'add':
             return 'Klasor proje kapsamina eklendi: ' + plain_text(result.get('folder', '')) + ' -> ' + plain_text(result.get('project', ''))

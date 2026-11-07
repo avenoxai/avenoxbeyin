@@ -355,6 +355,38 @@ class ProjectScopesTest(unittest.TestCase):
         with redirect_stderr(io.StringIO()):
             self.assertIsNone(projects.resolve_active_project(self.vault, other))
 
+    def test_project_scope_list_and_doctor_name_skipped_entries(self):
+        import importlib.util
+        import beyin_v3_projects as projects
+        (self.vault / 'Projeler/Alpha').mkdir(parents=True)
+        self.scopes({'folders': {'Projeler/Alpha': 'alpha', '../Dışarı': 'disari', 'Projeler/Alpha/': 'beta'},
+                     'shared_unscoped': True})
+        report = projects.manage(self.vault, 'list')
+        self.assertEqual(report['invalid_entries'], ['../Dışarı: project scope folder must be vault-relative'])
+        self.assertEqual(report['duplicate_folders'], ['Projeler/Alpha (assigned to alpha and beta)'])
+        self.assertEqual(report['folders'], {})
+        self.assertEqual(report['blocked_folders'], ['projeler/alpha'])
+        self.assertTrue(report['shared_unscoped'])
+        self.assertFalse(report['shared_unscoped_effective'])
+        spec = importlib.util.spec_from_file_location('beyin_entry_scopes', ROOT / 'scripts' / 'beyin_entry.py')
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        listed = entry.human_result(report, 'project-scope', '3.12.0')
+        self.assertIn('../Dışarı: project scope folder must be vault-relative (atlandi)', listed)
+        self.assertIn('shared_unscoped: kapali (atlanan girdiler duzeltilene kadar)', listed)
+        doctor = entry.human_result({'status': 'needs_attention', 'project_scopes': report}, 'doctor', '3.12.0')
+        line = next(line for line in doctor.splitlines() if line.startswith('Proje kapsamlari'))
+        self.assertNotIn('gecersiz: hata', line)
+        self.assertIn('../Dışarı', line)
+        self.assertIn('Projeler/Alpha (assigned to alpha and beta)', line)
+        self.assertIn('shared_unscoped duzeltilene kadar kapali', line)
+        malformed = entry.human_result({'status': 'needs_attention', 'project_scopes': {
+            'status': 'error', 'error': 'invalid JSON: JSONDecodeError'}}, 'doctor', '3.12.0')
+        self.assertIn('Proje kapsamlari (.beyin-projects.json) gecersiz: invalid JSON: JSONDecodeError', malformed)
+        # Adding a scope still refuses to rewrite a file with a bad entry, and names it.
+        with self.assertRaisesRegex(ValueError, r"'\.\./Dışarı' in \.beyin-projects\.json; fix it or run project-scope prune"):
+            projects.manage(self.vault, 'add', folder='Projeler/Alpha', project='alpha')
+
     def test_visibility_and_freshness_gates_still_apply_inside_a_scope(self):
         self.note('secret', GAME + '/Gizli.md', visibility='private')
         stale = self.note('stale', GAME + '/Eski.md')
