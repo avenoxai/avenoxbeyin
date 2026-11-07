@@ -527,7 +527,9 @@ def main(argv=None):
 
 
 def _main(argv=None):
-    parser = _BridgeParser(description=__doc__)
+    # Python 3.14 would name an embedding "python -m host" in usage; keep the script name
+    # every earlier version printed (basename of argv[0]), for the CLI and embedders alike.
+    parser = _BridgeParser(prog=os.path.basename(sys.argv[0]) if sys.argv else None, description=__doc__)
     parser.add_argument('--vault', type=Path, help='Path to vault root')
     parser.add_argument('--state', type=Path, help='Defaults to the installed vault runtime locator')
     parser.add_argument('--harness', choices=('claude', 'codex', 'antigravity'), required=True)
