@@ -463,7 +463,11 @@ Komutlar:
   `note_create`, `note_update`, `task_create`, `task_update`, `receipt`. Yük kuyruğa girmeden
   doğrulanır (`note_update` için tam SHA-256 `expected_hash`, `task_update` için tam sayı
   `expected_revision`). İsteğe bağlı `mutation_id` aynı mutasyonun yeniden gönderilmesini
-  tek kayda indirir; aynı kimlik farklı bir mutasyonla gelirse reddedilir.
+  tek kayda indirir; aynı kimlik farklı bir mutasyonla gelirse reddedilir. Normal yazımlar gibi
+  state'in vault bağını denetler: başka bir vault'a bağlı state `runtime belongs to another vault`
+  ile reddedilir, bağsız state bu vault'a bağlanır. Kayıt bu bağın özetini taşır (yolu değil);
+  `--replay` başka bir vault'a bağlı kaydı hiçbir şey yazmadan `failed` yapar. Bu alan
+  eklenmeden önce kuyruğa girmiş kayıtlar eskisi gibi state'in kendi vault'una uygulanır.
 - `--list [--status pending|applied|conflict|failed|dismissed]`, `--replay`, `--clear-applied`
   (uygulanan ve kapatılan kayıtları siler), `--retry <id>` (incelenmiş `conflict`/`failed`
   kaydı yeniden `pending` yapar), `--dismiss <id>`.
