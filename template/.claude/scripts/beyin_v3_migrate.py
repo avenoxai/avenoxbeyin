@@ -240,7 +240,15 @@ def migration_guard(vault_root, state_dir):
         # Runners the user kept at install time stay theirs on every later update.
         manifest = state/'v3-install.json'
         if manifest.exists():
-            kept = json.loads(manifest.read_text(encoding='utf-8')).get('kept_legacy', [])
+            try:
+                manifest_data = json.loads(manifest.read_text(encoding='utf-8'))
+            except (OSError, ValueError) as exc:
+                raise RuntimeError('invalid v3-install.json; reconcile the install manifest before migration') from exc
+            if not isinstance(manifest_data, dict):
+                raise RuntimeError('invalid v3-install.json; expected an object')
+            kept = manifest_data.get('kept_legacy', [])
+            if not isinstance(kept, list) or any(not isinstance(name, str) for name in kept):
+                raise RuntimeError('invalid v3-install.json kept_legacy; expected a list of runner paths')
             if kept:
                 plan['kept_legacy'] = sorted(kept)
         yield plan

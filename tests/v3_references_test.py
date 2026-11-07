@@ -88,6 +88,41 @@ class ReferencesTest(unittest.TestCase):
         self.assertEqual(sorted(self.dead()), [('.agents/skills/ornek/SKILL.md', 1, 'Kopyada Kırık'),
                                                ('AGENTS.md', 1, 'u' * 200)])
 
+    def test_absolute_links_are_read_as_paths(self):
+        """An editor or an agent can paste a full path; that names one place instead of a vault link."""
+        live = self.vault / 'knowledge/concepts/Var Olan Not.md'
+        missing = self.vault / 'knowledge/concepts/Silinmiş.md'
+        outside = self.vault.parent / 'outside note.md'
+        outside.write_bytes('# dışarıda\n'.encode('utf-8'))
+        self.write('AGENTS.md', '\n'.join([
+            '[not](<%s>)' % live.as_posix(),
+            '[yok](<%s>)' % missing.as_posix(),
+            '[dış](<%s>)' % outside.as_posix(),
+            '[[%s]] [[C:\\ornek\\Beyin\\notlar\\not]] [[C:/ornek/Beyin/notlar/not]]' % live.as_posix(),
+            '[[\\\\sunucu\\paylasim\\Beyin\\not]] [w](C:\\ornek\\Beyin\\not.md) [w](C:/ornek/Beyin/not.md)',
+            '']))
+        self.assertEqual(self.dead(), [('AGENTS.md', 2, missing.as_posix())])
+
+    def test_a_leading_slash_target_outside_the_vault_that_does_not_exist_is_still_dead(self):
+        """A leading slash is also a vault-root link, so a target found nowhere stays dead.
+
+        This is the documented limit: only the leading-slash spelling reaches here, and a path that
+        names a file on another machine is reported rather than skipped."""
+        missing = self.vault.parent / 'olmayan' / 'not.md'
+        self.assertFalse(missing.exists())
+        # A Windows native path starts with a drive, which has different semantics.
+        # Exercise the documented leading-slash form on every host.
+        target = '/' + missing.relative_to(missing.anchor).as_posix()
+        self.assertTrue(target.startswith('/'))
+        self.write('AGENTS.md', '[not](<%s>)\n' % target)
+        self.assertEqual(self.dead(), [('AGENTS.md', 1, target)])
+
+    def test_a_relative_link_that_resolves_to_nothing_is_still_dead(self):
+        """Absolute paths are skipped only where they leave the vault; the vault check still works."""
+        self.write('AGENTS.md', '[rehber](docs/yok.md)\n[[knowledge/concepts/Taşınmış Not]]\n')
+        self.assertEqual(self.dead(), [('AGENTS.md', 1, 'docs/yok.md'),
+                                       ('AGENTS.md', 2, 'knowledge/concepts/Taşınmış Not')])
+
     def test_hidden_folders_do_not_satisfy_a_bare_wikilink(self):
         self.write('.obsidian/Gizli.md', '# gizli\n')
         self.write('AGENTS.md', '[[Gizli]]\n')

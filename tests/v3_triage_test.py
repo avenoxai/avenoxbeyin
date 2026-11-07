@@ -25,6 +25,29 @@ from tests.v3_package_helpers import inherited_env
 
 
 class TriageTest(unittest.TestCase):
+    def test_frontmatter_reader_never_consumes_unbounded_body(self):
+        import io
+        from unittest.mock import Mock
+        limit = 1024 * 1024
+        for separator in ('\n', '\x85', '\u2028', '\u2029', '\v'):
+            for visibility in ('private', 'public', 'internal'):
+                with self.subTest(separator=separator, visibility=visibility):
+                    reads = []
+                    class BoundedReader(io.StringIO):
+                        def readline(self, size=-1):
+                            self_check.assertGreater(size, 0)
+                            self_check.assertLessEqual(size, limit + 1)
+                            value = super().readline(size)
+                            reads.append(len(value))
+                            return value
+                    self_check = self
+                    text = separator.join(('---', 'visibility: ' + visibility, '---', '')) + 'x' * (2 * limit)
+                    path = Mock()
+                    path.open.return_value = BoundedReader(text)
+                    self.assertEqual(triage_module._scan_front_values(path, ('visibility',)),
+                                     {'visibility': visibility})
+                    self.assertLessEqual(sum(reads), limit + 1)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='v3-triage-')
         self.addCleanup(self.tmp.cleanup)
@@ -51,6 +74,145 @@ class TriageTest(unittest.TestCase):
     def set_age(self, path: Path, days: float):
         t = self.now - (days * 86400)
         os.utime(path, (t, t))
+
+    def thread_source(self, text, directory='Personal Echo', marker=False):
+        target = self.vault / directory
+        target.mkdir(parents=True, exist_ok=True)
+        (target / 'Core.md').write_text('# Synthetic identity\n', encoding='utf-8')
+        source = target / 'Threads.md'
+        source.write_text(text, encoding='utf-8')
+        if marker:
+            (self.state / 'companion-bootstrap.json').write_text(json.dumps({'directory': directory}), encoding='utf-8')
+        return source
+
+    def test_thread_dates_are_latest_valid_iso_mentions_never_mtime(self):
+        source = self.thread_source('# Threads\n## Active Threads\n'
+            '### Old topic (2026-09-01)\nUpdated 2026-09-27. Invalid 2026-99-01.\n'
+            '### Fresh 2026-10-11\n##   \nOld reference 2020-01-01.\n'
+            '### Undated\n28 Ekim; invalid 2026-02-30 and 12026-10-01.\n'
+            '### Future 2027-01-01\n'
+            '## Closed Threads\n### Closed 2020-01-01\n')
+        before = source.read_bytes()
+        self.set_age(source, 1000)
+        report = triage_module.scan_stale_threads(self.vault, self.now, stale_days=14, state=self.state)
+        self.assertEqual((report['open_count'], report['stale_count'], report['undated_count']), (4, 1, 1))
+        self.assertEqual(report['stale_threads'][0]['last_date'], '2026-09-27')
+        self.assertEqual(report['stale_threads'][0]['title'], 'Old topic (2026-09-01)')
+        self.assertIsNone(report['undated_threads'][0]['age_days'])
+        self.assertIsNone(report['undated_threads'][0]['last_date'])
+        self.set_age(source, 0)
+        self.assertEqual(report, triage_module.scan_stale_threads(self.vault, self.now, state=self.state))
+        self.assertEqual(source.read_bytes(), before)
+        self.assertEqual(triage_module.scan_stale_threads(self.vault, self.now, stale_days=16, state=self.state)['stale_count'], 0)
+
+    def test_thread_parser_ignores_fences_and_closed_sections(self):
+        self.thread_source('# Threads\n## Açık konular\n### Real 2026-09-01\n'
+            '```md\n### Fake 2026-10-12\n## Closed Threads\n```\n'
+            '~~~~text\n### Fake too 2026-10-12\n~~~\n2026-10-12\n~~~~\n'
+            '## Kapalı konular\n### Private history 2020-01-01\n'
+            '## ActiveAgain\n### Not an active section 2020-01-01\n'
+            '## Aktif konular\n### Second\n```inline```\nUpdated 2026-09-02\n')
+        report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+        self.assertEqual(report['open_count'], 2)
+        self.assertEqual([r['last_date'] for r in report['stale_threads']], ['2026-09-01', '2026-09-02'])
+
+    def test_thread_heading_empty_after_folding_does_not_abort_scan(self):
+        self.thread_source('# Threads\n## Active Threads\n### Before 2020-01-01\n'
+                           '## \u0307 \u0307\n### Unknown section 2020-01-01\n'
+                           '## Active Threads\n### After 2020-01-01\n')
+        report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+        self.assertEqual(report['status'], 'ok')
+        self.assertEqual(report['open_count'], 2)
+        self.assertEqual([row['title'] for row in report['stale_threads']],
+                         ['Before 2020-01-01', 'After 2020-01-01'])
+
+    def test_thread_scan_respects_configured_identity_and_privacy(self):
+        source = self.thread_source('# Threads\n### Configured 2026-09-01\n', 'Custom Memory', marker=True)
+        self.thread_source('# Threads\n### Other 2026-09-01\n')
+        report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+        self.assertEqual(report['stale_threads'][0]['path'], 'Custom Memory/Threads.md')
+        for front in ('visibility: private', 'trust: untrusted', 'trusted: false'):
+            source.write_text('---\n' + front + '\n---\n# Threads\n### SECRET 2020-01-01\n', encoding='utf-8')
+            self.assertEqual(triage_module.scan_stale_threads(self.vault, self.now, state=self.state)['open_count'], 0)
+            for padding in ('', 'description: ' + 'x' * 5000 + '\n'):
+                source.write_text('\ufeff---\n' + padding + front + '\n---\n# Threads\n### SECRET 2020-01-01\n', encoding='utf-8')
+                private_report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+                self.assertEqual(private_report['status'], 'unavailable')
+                self.assertNotIn('SECRET', json.dumps(private_report))
+        source.write_text('# Threads\n### SECRET 2020-01-01\n', encoding='utf-8')
+        (self.state / 'index.json').write_text(json.dumps({'schema': 1, 'excluded_dirs': ['Custom Memory']}), encoding='utf-8')
+        self.assertEqual(triage_module.scan_stale_threads(self.vault, self.now, state=self.state)['open_count'], 0)
+
+    def test_thread_scan_rejects_unsafe_markers_ambiguity_and_symlinks(self):
+        outside = Path(self.tmp.name) / 'outside'
+        outside.mkdir()
+        (outside / 'Threads.md').write_text('# Threads\n### SECRET 2020-01-01\n', encoding='utf-8')
+        marker = self.state / 'companion-bootstrap.json'
+        for value in ('../outside', str(outside), 'C:/outside', '', ['outside']):
+            marker.write_text(json.dumps({'directory': value}), encoding='utf-8')
+            report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+            self.assertEqual(report['open_count'], 0)
+            self.assertEqual(report['status'], 'unavailable')
+        marker.unlink()
+        source = self.thread_source('# Threads\n### First 2020-01-01\n')
+        self.thread_source('# Threads\n### Second 2020-01-01\n', 'Other Echo')
+        report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+        self.assertEqual(report['status'], 'unavailable')
+        self.assertEqual(report['reason'], 'ambiguous_directory')
+        try:
+            (self.vault / 'linked').symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest('symlinks unavailable: ' + str(exc))
+        marker.write_text(json.dumps({'directory': 'linked'}), encoding='utf-8')
+        self.assertEqual(triage_module.scan_stale_threads(self.vault, self.now, state=self.state)['open_count'], 0)
+        source.unlink()
+        source.symlink_to(outside / 'Threads.md')
+        marker.write_text(json.dumps({'directory': 'Personal Echo'}), encoding='utf-8')
+        self.assertEqual(triage_module.scan_stale_threads(self.vault, self.now, state=self.state)['open_count'], 0)
+
+    def test_installed_triage_cli_reports_threads_without_source_writes(self):
+        vault = Path(self.tmp.name) / 'installed'
+        state = Path(self.tmp.name) / 'installed-state'
+        home = Path(self.tmp.name) / 'isolated-home'
+        home.mkdir()
+        folder = vault / 'Personal Echo'
+        folder.mkdir(parents=True)
+        (folder / 'Core.md').write_text('# Identity\n', encoding='utf-8')
+        source = folder / 'Threads.md'
+        source.write_text('# Threads\n## Active Threads\n### Stale 2000-01-01\n### Undated\n', encoding='utf-8')
+        env = inherited_env(HOME=str(home), USERPROFILE=str(home), APPDATA=str(home / 'appdata'),
+                            LOCALAPPDATA=str(home / 'local'), PYTHONDONTWRITEBYTECODE='1')
+        installed = subprocess.run([sys.executable, str(ROOT / 'scripts/install_v3.py'), '--vault', str(vault),
+                                    '--state', str(state)], env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        before = {p.relative_to(vault): p.read_bytes() for p in vault.rglob('*') if p.is_file()}
+        command = [sys.executable, str(vault / 'beyin.py'), 'triage', '--stale-days', '7']
+        result = subprocess.run(command, cwd=vault, env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['schema'], 1)
+        self.assertEqual(report['threads']['stale_days_threshold'], 7)
+        self.assertEqual(report['threads']['stale_count'], 1)
+        human = subprocess.run(command + ['--human'], cwd=vault, env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(human.returncode, 0, human.stderr)
+        self.assertIn('[Acik Konular / Threads]', human.stdout)
+        self.assertIn('Undated', human.stdout)
+        self.assertEqual(before, {p.relative_to(vault): p.read_bytes() for p in vault.rglob('*') if p.is_file()})
+
+    def test_yakala_recommendation_requires_skill_file(self):
+        inbox = self.vault / 'inbox'
+        inbox.mkdir()
+        (inbox / 'pending.md').write_text('# Pending\n', encoding='utf-8')
+        skill = self.vault / '.agents/skills/beyin-yakala'
+        skill.mkdir(parents=True)
+        report = triage_module.scan_inbox(self.vault, self.now, self.state)
+        self.assertFalse(report['has_yakala'])
+        recs = triage_module.generate_recommendations({'count': 1}, {}, {'digest_days': 7}, {}, vault=self.vault)
+        self.assertNotIn('beyin-yakala', ' '.join(recs))
+        (skill / 'SKILL.md').write_text('# Yakala\n', encoding='utf-8')
+        self.assertTrue(triage_module.scan_inbox(self.vault, self.now, self.state)['has_yakala'])
+        recs = triage_module.generate_recommendations({'count': 1}, {}, {'digest_days': 7}, {}, vault=self.vault)
+        self.assertIn('beyin-yakala', ' '.join(recs))
 
     def test_nested_sensitive_private_and_excluded_notes_are_not_reported(self):
         for folder in ('tasks', 'knowledge'):
@@ -265,6 +427,79 @@ class TriageTest(unittest.TestCase):
         result = subprocess.run(cmd, cwd=str(self.vault), env=env, capture_output=True, text=True, encoding='utf-8', errors='replace')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("=== Ikinci Beyin Sindirim ve Durum Raporu (Triage) ===", result.stdout)
+
+
+    def test_inbox_index_file_not_counted_as_pending_capture(self):
+        """Inbox index note ('type: index' / Inbox.md) must not be counted as a pending capture note (#469)."""
+        inbox = self.vault / '📥 000-Inbox'
+        inbox.mkdir(parents=True, exist_ok=True)
+        # Entrance index note
+        index_note = inbox / 'Inbox.md'
+        index_note.write_text('---\ntype: index\ncreated: 2026-09-01\n---\n# Gelen Kutusu Giris\n', encoding='utf-8')
+        self.set_age(index_note, 30)
+
+        # Empty Dump directory or valid captures
+        report = triage_module.scan_inbox(self.vault, self.now, state=self.state)
+        self.assertEqual(report['count'], 0)
+
+        # When an actual capture note is present
+        dump = inbox / 'Dump'
+        dump.mkdir(exist_ok=True)
+        capture = dump / 'kaynak.md'
+        capture.write_text('---\ncreated: 2026-10-10\n---\nKaynak\n', encoding='utf-8')
+        self.set_age(capture, 2)
+
+        report2 = triage_module.scan_inbox(self.vault, self.now, state=self.state)
+        self.assertEqual(report2['count'], 1)
+
+    def test_triage_recommendations_skill_presence_branching(self):
+        """When beyin-yakala is not installed, recommendation suggests note-create (#469)."""
+        # 1. Without yakala installed
+        recs_no_yakala = triage_module.generate_recommendations(
+            inbox={'count': 2, 'has_yakala': False}, tasks={}, digest={'count': 1, 'digest_days': 7}, companion={}
+        )
+        self.assertIn("note-create", recs_no_yakala[0])
+        self.assertNotIn("'beyin-yakala'", recs_no_yakala[0])
+
+        # 2. With yakala installed
+        recs_yakala = triage_module.generate_recommendations(
+            inbox={'count': 2, 'has_yakala': True}, tasks={}, digest={'count': 1, 'digest_days': 7}, companion={}
+        )
+        self.assertIn("beyin-yakala", recs_yakala[0])
+
+    def test_knowledge_digest_prioritizes_created_date_over_fresh_mtime(self):
+        """Knowledge digest prioritizes frontmatter created date over rewritten mtime (#469)."""
+        knowledge = self.vault / 'knowledge'
+        knowledge.mkdir(parents=True, exist_ok=True)
+
+        # Old note with created 100 days ago, but refreshed mtime (e.g. bulk ID addition or folder move)
+        old_note = knowledge / 'eski-bilgi.md'
+        old_note.write_text('---\ntitle: Eski Bilgi\ncreated: 2026-07-01\nupdated: 2026-10-11\n---\n# Eski\n', encoding='utf-8')
+        self.set_age(old_note, 1)  # mtime is 1 day ago
+
+        # Truly new note created 2 days ago
+        new_note = knowledge / 'yeni-bilgi.md'
+        new_note.write_text('---\ntitle: Yeni Bilgi\ncreated: 2026-10-10\n---\n# Yeni\n', encoding='utf-8')
+        self.set_age(new_note, 2)
+
+        # Undated note with fresh mtime
+        undated_note = knowledge / 'tarihsiz.md'
+        undated_note.write_text('# Tarihsiz\nNot\n', encoding='utf-8')
+        self.set_age(undated_note, 2)
+
+        digest = triage_module.scan_knowledge_digest(self.vault, self.now, digest_days=7)
+        # Old note with created 2026-07-01 must NOT be in 7-day digest!
+        paths = [item['path'] for item in digest['items']]
+        self.assertNotIn('knowledge/eski-bilgi.md', paths)
+        self.assertIn('knowledge/yeni-bilgi.md', paths)
+        self.assertIn('knowledge/tarihsiz.md', paths)
+        self.assertEqual(digest['mtime_count'], 1)
+        report = triage_module.triage(self.vault, now=self.now)
+        human = triage_module.format_human(report)
+        self.assertIn('Tarih onceligi: created, yoksa updated, yoksa mtime', human)
+        self.assertNotIn('Uretilen/guncellenen', human)
+        self.assertFalse(any('uretildi/guncellendi' in item for item in report['recommendations']))
+
 
 
 if __name__ == '__main__':

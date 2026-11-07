@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from collections import Counter
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 import functools
+import difflib
 import hashlib
 import json
 import math
@@ -15,6 +16,7 @@ import re
 import sqlite3
 import stat
 import sys
+import tempfile
 import unicodedata
 import urllib.parse
 
@@ -196,6 +198,36 @@ def _allowed_statuses(statuses):
     return {_status_word({"status": value}) for value in statuses}
 
 
+CLOSED_TASK_STATUSES = frozenset((
+    "done", "cancelled", "canceled", "kapandi", "completed",
+    "tamamlandi", "iptal", "closed", "bitti", "cozuldu", "resolved"
+))
+
+
+def _is_task(record):
+    return record.get("kind") == "task" or str(record.get("source", "")).startswith("tasks/")
+
+
+def _is_closed_task(record):
+    return _is_task(record) and _status_word(record) in CLOSED_TASK_STATUSES
+
+
+def is_due_task(record, today=None):
+    if not _is_task(record):
+        return False
+    if _status_word(record) not in ("active", "waiting", "inbox"):
+        return False
+    raw_due = record.get("due_at")
+    if not raw_due:
+        return False
+    try:
+        due = date.fromisoformat(str(raw_due)[:10]).isoformat()
+    except (ValueError, TypeError):
+        return False
+    target_today = str(today)[:10] if today else date.today().isoformat()
+    return due <= target_today
+
+
 def _supersedes_key(value):
     """Normalize a human-readable supersedes reference without substring matching."""
     if not isinstance(value, str):
@@ -213,13 +245,61 @@ def _trusted_record(record):
             and not _rejected_inference(record))
 
 
+def _cyclic_supersedes(edges):
+    """Resolved supersedes edges that lie on a cycle, in O(V+E) via iterative Kosaraju.
+
+    An edge is cyclic when its ends share a strongly connected component: applying it would
+    retire every member of the loop. The walk is iterative so a long chain cannot raise
+    RecursionError and fail open.
+    """
+    reverse = {}
+    for source, targets in edges.items():
+        reverse.setdefault(source, [])
+        for target in targets:
+            reverse.setdefault(target, []).append(source)
+
+    seen, order = set(), []
+    for root in reverse:
+        if root in seen:
+            continue
+        seen.add(root)
+        stack = [(root, iter(edges.get(root, ())))]
+        while stack:
+            node, targets = stack[-1]
+            target = next(targets, None)
+            if target is None:
+                order.append(node)
+                stack.pop()
+            elif target not in seen:
+                seen.add(target)
+                stack.append((target, iter(edges.get(target, ()))))
+
+    components = {}
+    for root in reversed(order):
+        if root in components:
+            continue
+        component = len(components)
+        components[root] = component
+        stack = [root]
+        while stack:
+            for target in reverse[stack.pop()]:
+                if target not in components:
+                    components[target] = component
+                    stack.append(target)
+
+    return {(source, target) for source, targets in edges.items() for target in targets
+            if components[source] == components[target]}
+
+
 def resolve_supersedes(records):
     """Resolve trusted supersedes references to record ids and report links that do nothing.
 
     A value is an explicit id, else a vault path (with or without .md) or [[link]] by its whole
     value, else its last segment when exactly one note has that file name. Never a substring.
     A reference that resolves to the note itself retires nothing and is reported (#206).
-    Untrusted notes neither retire nor are counted as targets.
+    Untrusted notes neither retire nor are counted as targets. An edge on a supersedes cycle
+    (A->B->...->A) retires nothing either: applying it would silently retire every member, so
+    it is reported with the other dead references instead.
     """
     trusted = [record for record in records if isinstance(record, dict) and _trusted_record(record)]
     by_id = {record.get("id"): record for record in trusted if isinstance(record.get("id"), str)}
@@ -232,6 +312,8 @@ def resolve_supersedes(records):
         by_path.setdefault(path_key.casefold(), []).append(record)
         by_name.setdefault(path_key.rsplit("/", 1)[-1].casefold(), []).append(record)
     retired, dead = set(), []
+    resolved = []  # (record, raw, target) edges, applied after the cycle check
+    edges = {}
     for record in trusted:
         values = record.get("supersedes", [])
         if isinstance(values, str):
@@ -257,7 +339,15 @@ def resolve_supersedes(records):
             if target is None:
                 dead.append({"id": record.get("id"), "source": record.get("source", ""), "value": raw, "reason": reason})
             else:
-                retired.add(target["id"])
+                resolved.append((record, raw, target))
+                edges.setdefault(record.get("id"), set()).add(target["id"])
+    cyclic = _cyclic_supersedes(edges)
+    for record, raw, target in resolved:
+        if (record.get("id"), target["id"]) in cyclic:
+            dead.append({"id": record.get("id"), "source": record.get("source", ""), "value": raw,
+                         "reason": "supersedes reference is part of a cycle"})
+        else:
+            retired.add(target["id"])
     return retired, dead
 
 
@@ -412,7 +502,8 @@ def read_project_scopes(vault_root):
     if not path.exists():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        # Match the project-scope helper and doctor, including UTF-8 BOM files.
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (ValueError, OSError) as exc:
         raise ValueError("invalid project scopes file; expected JSON") from exc
     if not isinstance(data, dict) or set(data) - {"folders", "shared_unscoped"}:
@@ -425,7 +516,11 @@ def read_project_scopes(vault_root):
     for folder, project in folders.items():
         if not isinstance(project, str) or not project.strip():
             raise ValueError("project scope names must be non-empty strings")
-        folder = _scope_path(folder)
+        try:
+            folder = _scope_path(folder)
+        except ValueError as exc:
+            # Still fail closed, but name the entry so the user can find it (#419).
+            raise ValueError(f"{exc}: {folder!r} in {PROJECT_SCOPES_FILE}") from None
         if not _scope_folder_exists(vault_root, folder):
             print(f"Warning: project scope folder not found in the vault: {folder}", file=sys.stderr)
             # Keep the boundary for stale indexed rows used by explicit --no-sync.
@@ -571,6 +666,32 @@ def _stem(word):
     return word
 
 
+# A possessive on a three-letter root stays on the word: _stem keeps four letters, so "boyum"
+# (my height) keeps its own stem while the note says "Boy: 180". Only a query word tries the
+# root (_query_roots); note-side stems never change, so dur/durum and yay/yayin stay apart.
+# -m after a vowel stays out: _stem leaves it on verbal nouns too (yedeklemenin -> yedeklem).
+_SHORT_ROOT_SUFFIXES = (
+    ("im", "consonant"), ("um", "consonant"), ("in", "consonant"), ("un", "consonant"),
+    ("i", "consonant"), ("u", "consonant"),
+)
+
+
+@functools.lru_cache(maxsize=16384)
+def _short_root(stem):
+    """The three-letter root one possessive shorter than stem, or None; _stem peels longer ones."""
+    for suffix, gate in _SHORT_ROOT_SUFFIXES:
+        root = stem[:-len(suffix)]
+        if not stem.endswith(suffix) or len(root) != 3 or not _attaches(root, gate):
+            continue
+        # Folding keeps rounding: i follows a, e, i (a ı e i) and u follows o, u (o ö u ü).
+        last = next((c for c in reversed(root) if c in _VOWELS), "")
+        if last not in ("aei" if suffix[0] == "i" else "ou"):
+            continue
+        # Softening as in _stem (kabim, cebim). A short g stays: dag, sag and yag end in a real g.
+        return root[:-1] + "p" if root[-1] == "b" and root[-2] in _VOWELS else root
+    return None
+
+
 def _token_counts(text):
     """Stem -> occurrence count; the keys are exactly _tokens(text)."""
     text = unicodedata.normalize("NFKD", str(text).casefold())
@@ -580,6 +701,73 @@ def _token_counts(text):
 
 def _tokens(text):
     return set(_token_counts(text))
+
+
+@functools.lru_cache(maxsize=1)
+def _counts_version():
+    # Counts also depend on stemming, folding and Python's Unicode tables. Hash the
+    # implementation rather than relying on a probe to exercise every changed rule.
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest() + ':' + unicodedata.unidata_version
+
+
+class _CountCache:
+    """Disposable whole-note counts, never eligibility or query-dependent scores."""
+    MAX_BYTES = 64 * 1024 * 1024
+
+    def __init__(self, state_dir):
+        self.path = Path(state_dir) / 'token-counts.json'
+        self.entries, self.used, self.changed = {}, {}, False
+        try:
+            self.version = _counts_version()
+            if not self.path.is_symlink() and self.path.stat().st_size <= self.MAX_BYTES:
+                blob = json.loads(self.path.read_text(encoding='utf-8'))
+                if (isinstance(blob, dict) and blob.get('version') == self.version
+                        and isinstance(blob.get('records'), dict)):
+                    self.entries = blob['records']
+        except (OSError, ValueError, RecursionError):
+            self.version = None  # unavailable implementation or cache: compute normally
+
+    def counts(self, text):
+        key = hashlib.sha256(text.encode('utf-8', 'surrogatepass')).hexdigest()
+        entry = self.entries.get(key)
+        if (not isinstance(entry, dict) or not all(
+                isinstance(word, str) and type(count) is int and count > 0
+                for word, count in entry.items())):
+            entry = dict(_token_counts(text))
+            self.changed = True
+        self.used[key] = entry
+        # Stopword removal and short-root folding mutate the caller's copy.
+        return Counter(entry)
+
+    def save(self):
+        if not self.changed:
+            return
+        temporary = None
+        try:
+            version = self.version or _counts_version()
+            # Keep other scopes and both filename-salience variants within a bound.
+            entries = dict(self.entries) if len(self.entries) <= 2 * len(self.used) + 256 else {}
+            entries.update(self.used)
+            # Preserve Counter's first-seen key order as well as its values: strict
+            # ranking constructs sets from these keys before summing floating weights.
+            data = json.dumps(dict(version=version, records=entries), ensure_ascii=False, separators=(',', ':'))
+            if len(data.encode('utf-8')) > self.MAX_BYTES or self.path.is_symlink():
+                return
+            with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=self.path.parent,
+                                             prefix='.token-counts-', suffix='.tmp', delete=False) as handle:
+                temporary = handle.name
+                os.chmod(temporary, 0o600)
+                handle.write(data)
+            os.replace(temporary, self.path)
+            temporary = None
+        except (OSError, ValueError):
+            pass  # a missing, unwritable or concurrently replaced cache is only slower
+        finally:
+            if temporary:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
 
 
 # Stopwords are matched against stems, so Turkish content words had to leave the list:
@@ -598,6 +786,49 @@ def _strict_terms(terms):
     return {t for t in terms if len(t) >= 2 and not (t.isdigit() and len(t) < 3)}
 
 
+# bu and su are stopwords; their oblique stem (bunu, sunun, bunlar -> bun) is not a topic either.
+_PRONOUN_ROOTS = frozenset(("bun", "sun"))
+
+# Nouns made from a verb with -Im/-Um look like a possessive on the verb (durum, dur + um).
+# Note frequency cannot tell them apart: a vault may say dur or ver in more notes than durum
+# or verim, so these never fall back to the verb.
+_WHOLE_WORDS = _tokens("durum kurum verim yazım yapım seçim bölüm sürüm doğum yorum konum tutum biçim "
+                       "bilim geçim kesim satım giyim dikim dönüm çözüm basım takım tanım çekim döküm "
+                       "dolum yayım ölçüm")
+
+
+def _query_roots(terms, frequency, ignored=frozenset()):
+    """Query term -> the shorter root (_short_root) it also matches.
+
+    A root joins only where more notes use it than the inflected word: boyum is rare beside
+    boy. A noun of its own (_WHOLE_WORDS) keeps matching itself only, however common its verb.
+    frequency(stem) is the number of notes that use the stem. A term still counts once, and a
+    root serves one term only: "boyum boyun" must not pass the two-word gate on one "Boy".
+    """
+    alternatives = {}
+    for term in sorted(terms):
+        root = None if term in _WHOLE_WORDS else _short_root(term)
+        if (root and root not in terms and root not in ignored and root not in _PRONOUN_ROOTS
+                and root not in alternatives.values() and frequency(root) > frequency(term)):
+            alternatives[term] = root
+    return alternatives
+
+
+def _fold_query_roots(term_counts, terms, ignored):
+    """Count each note's _query_roots occurrences under the query term, in place."""
+    term_counts = list(term_counts)
+    alternatives = _query_roots(terms, lambda token: sum(1 for counts in term_counts if token in counts), ignored)
+    for counts in term_counts:
+        for term, root in alternatives.items():
+            if root in counts:
+                counts[term] += counts.pop(root)
+
+
+# Conventional Unicode hyphens/dashes and compatibility forms of ASCII hyphen.
+# Keep this filename-only: mathematical minus and arbitrary punctuation are not prefixes.
+_NAME_SEPARATORS = str.maketrans({c: " " for c in "-_\u2010\u2011\u2012\u2013\u2014\u2015\ufe63\uff0d"})
+
+
 def _name_candidates(record):
     """Candidate names for title-salience matching (#354): title, stem, stripped stem, aliases."""
     candidates = []
@@ -606,7 +837,7 @@ def _name_candidates(record):
         candidates.append(title[:160])
     source = str(record.get("source", "")).strip()
     if source:
-        stem = Path(source).stem.replace("-", " ").replace("_", " ").strip()
+        stem = Path(source).stem.translate(_NAME_SEPARATORS).strip()
         if stem:
             candidates.append(stem[:160])
             stripped = re.sub(r"^[0-9]+[ \t\-_]+", "", stem).strip()
@@ -942,11 +1173,12 @@ class MemoryStore:
             db.execute("INSERT OR IGNORE INTO receipts VALUES (?,?)", (event_id, payload))
         return dict(event, id=event_id, status="succeeded")
 
-    def retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, strict=False, explicit=False):
+    def retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, strict=False, today=None, explicit=False):
         # explicit=True is the `beyin.py context` command: see the unscoped explicit rules below.
-        return self._retrieve(query, project, audience, statuses, limit, budget_chars, strict=strict, explicit=explicit)
+        return self._retrieve(query, project, audience, statuses, limit, budget_chars, strict=strict, today=today,
+                              explicit=explicit)
 
-    def candidates(self, query, project=None, audience="internal", statuses=None, limit=32, strict=False):
+    def candidates(self, query, project=None, audience="internal", statuses=None, limit=32, strict=False, today=None):
         """Bounded eligible candidates before any final context packing.
 
         Callers must build separately bounded provider cards and pack final output.
@@ -955,12 +1187,32 @@ class MemoryStore:
         if type(limit) is not int or not 0 <= limit <= 128:
             raise ValueError("candidate limit must be 0..128")
         return self._retrieve(query, project, audience, statuses, limit, 0,
-                              strict=strict, candidate_only=True)
+                              strict=strict, candidate_only=True, today=today)
 
-    def snapshot_context(self, audience="internal", budget_chars=6000, limit=5, project=None):
+    def snapshot_context(self, audience="internal", budget_chars=6000, limit=5, project=None, today=None):
         """Explicit bounded current-state snapshot; normal empty queries abstain."""
-        return self._retrieve("", project=project, audience=audience, statuses=("active", "waiting"),
-                              limit=limit, budget_chars=budget_chars, snapshot=True)
+        return self._retrieve("", project=project, audience=audience, statuses=("active", "waiting", "inbox"),
+                              limit=limit, budget_chars=budget_chars, snapshot=True, today=today)
+
+    def due_tasks_context(self, audience="internal", budget_chars=1500, limit=5, project=None, today=None):
+        """Bounded due task snapshot when ambient snapshot is skipped."""
+        if audience not in ("public", "internal", "private"):
+            raise ValueError("invalid audience")
+        today_iso = str(today)[:10] if today else date.today().isoformat()
+        with self._connect() as db:
+            rows = db.execute("SELECT payload FROM records WHERE payload LIKE '%\"due_at\"%' ORDER BY id")
+            records = [json.loads(row[0]) for row in rows]
+        records = [record for record in records if is_due_task(record, today_iso)]
+        # Most openings have no due task: do not decode the whole index on that path.
+        # When tasks exist, supersession must still see every trusted record, including
+        # non-task and private replacements that the delivery audience cannot see.
+        if not records:
+            return pack_context([], limit, budget_chars)
+        superseded = self._superseded_ids()
+        eligible, stale_count = self._eligible(audience=audience, project=project, records=records)
+        due_records = [r for r in eligible if r["id"] not in superseded]
+        due_records.sort(key=lambda r: (str(r.get("due_at", ""))[:10], r.get("id", "")))
+        return pack_context(due_records, limit, budget_chars, stale_count)
 
     def source_snapshot(self, source_names, audience="internal", budget_chars=3000, source_directory=None, text_transform=None):
         """Return a bounded, source-verified continuity set in requested order."""
@@ -1120,15 +1372,22 @@ class MemoryStore:
     def _name_match_score(record, terms):
         return _name_match_score(record, terms)
 
-    def _strict_rank(self, ranked, terms, vocabularies, name_scores=None):
+    is_due_task = staticmethod(is_due_task)
+
+    def _strict_rank(self, ranked, terms, vocabularies, name_scores=None, today=None, allowed_statuses=None):
         """Keep meaningful matches without making one-word queries impossible."""
         min_shared = min(self.STRICT_MIN_SHARED, len(terms))
         min_weight = self.STRICT_SINGLE_TERM_MIN_WEIGHT if len(terms) == 1 else self.STRICT_MIN_WEIGHT
+        today_iso = str(today)[:10] if today else date.today().isoformat()
         weighted = []
         for weight, shared_count, record in self._lexical_weights(ranked, terms, vocabularies):
             if shared_count >= min_shared and weight >= min_weight:
                 if name_scores and record["id"] in name_scores:
                     weight += self.NAME_MATCH_STRICT_WEIGHT * name_scores[record["id"]]
+                if is_due_task(record, today_iso):
+                    weight += self.DUE_STRICT_BONUS
+                elif allowed_statuses is None and _is_closed_task(record):
+                    weight -= self.CLOSED_TASK_PENALTY
                 weighted.append((weight, record))
         return self._by_weight(weighted)
 
@@ -1136,8 +1395,11 @@ class MemoryStore:
     BM25_B = 0.75
     NAME_MATCH_WEIGHT = 20.0
     NAME_MATCH_STRICT_WEIGHT = 10.0
+    DUE_BONUS = 50.0
+    DUE_STRICT_BONUS = 25.0
+    CLOSED_TASK_PENALTY = 50.0
 
-    def _weighted_rank(self, ranked, terms, term_counts, name_scores=None):
+    def _weighted_rank(self, ranked, terms, term_counts, name_scores=None, today=None, allowed_statuses=None):
         """Order without dropping anything: Okapi BM25 over stem counts, no thresholds.
 
         A raw shared-term count favours whichever note has the largest vocabulary, so one long
@@ -1149,6 +1411,7 @@ class MemoryStore:
         lengths = {rid: sum(counts.values()) for rid, counts in term_counts.items()}
         average = sum(lengths.values()) / total if total else 0
         frequency = {term: sum(1 for counts in term_counts.values() if term in counts) for term in terms}
+        today_iso = str(today)[:10] if today else date.today().isoformat()
         weighted = []
         for _, record in ranked:
             counts = term_counts[record["id"]]
@@ -1158,6 +1421,10 @@ class MemoryStore:
                          for term in terms if counts.get(term))
             if name_scores and record["id"] in name_scores:
                 weight += self.NAME_MATCH_WEIGHT * name_scores[record["id"]]
+            if is_due_task(record, today_iso):
+                weight += self.DUE_BONUS
+            elif allowed_statuses is None and _is_closed_task(record):
+                weight -= self.CLOSED_TASK_PENALTY
             weighted.append((weight, record))
         return self._by_weight(weighted)
 
@@ -1288,7 +1555,7 @@ class MemoryStore:
         """Ids retired by any trusted record, not only by the ones this reader may see (#201)."""
         return resolve_supersedes(self._records() if records is None else records)[0]
 
-    def _retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, snapshot=False, strict=False, candidate_only=False, explicit=False):
+    def _retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, snapshot=False, strict=False, candidate_only=False, today=None, explicit=False):
         if audience not in ("public", "internal", "private"):
             raise ValueError("invalid audience")
         if not isinstance(query, str) or type(limit) is not int or limit < 0 or type(budget_chars) is not int or budget_chars < 0:
@@ -1322,6 +1589,8 @@ class MemoryStore:
         vocabularies = {}
         term_counts = {}
         name_scores = {}
+        scanned = []
+        count_cache = _CountCache(self.state_dir) if terms else None
         for record in eligible:
             if record["id"] in superseded:
                 continue
@@ -1338,21 +1607,53 @@ class MemoryStore:
             # Unrelated/generic stems must not widen candidates or dilute BM25 lengths.
             source_stem = (Path(record.get("source", "")).stem.replace("-", " ").replace("_", " ")
                            if name_score else "")
-            counts = _token_counts(record["text"] + " " + _json(record["facts"]) + " " + str(record.get("title", "")) + " " + alias_text + " " + source_stem)
+            # Without a query term no count can score or reorder a record (snapshots, scoped
+            # listings, the advisor's eligibility pass), so the note text is not tokenised.
+            counts = (count_cache.counts(record["text"] + " " + _json(record["facts"]) + " " + str(record.get("title", "")) + " " + alias_text + " " + source_stem)
+                      if terms else Counter())
             for stopword in STOPWORDS & counts.keys():
                 del counts[stopword]
-            vocabulary = set(counts)
-            vocabularies[record["id"]] = vocabulary
             term_counts[record["id"]] = counts
             if name_score:
                 name_scores[record["id"]] = name_score
+            scanned.append(record)
+        # Root use is counted over every scanned note, so the counts are final only after the scan.
+        _fold_query_roots(term_counts.values(), terms, STOPWORDS | project_tokens)
+        for record in scanned:
+            vocabulary = set(term_counts[record["id"]])
+            vocabularies[record["id"]] = vocabulary
             score = len(terms & vocabulary)
-            if score or name_score or scoped_listing or snapshot:
+            if score or record["id"] in name_scores or scoped_listing or snapshot:
                 ranked.append((score, record))
+        if count_cache is not None and not self.read_only:
+            count_cache.save()
+        # Typo tolerance: a query word that appears in no record ("zmaan", "anketii") also
+        # searches its closest vocabulary words, so misspelled prompts still reach the note.
+        # Strict mode stays exact so automatic injection never widens on a guess.
+        missing = {term for term in terms if len(term) >= 4 and not term.isdigit()}
+        if missing and not strict:
+            known = set().union(*vocabularies.values()) if vocabularies else set()
+            fixes = set()
+            for term in missing - known:
+                # Only swapped, missing or extra letters count as typos; a substituted letter makes
+                # another word (kural/kurul), so the letter counts may differ by at most one.
+                letters = Counter(term)
+                fixes.update(word for word in difflib.get_close_matches(term, known, n=3, cutoff=0.75)
+                             if sum(((letters - Counter(word)) + (Counter(word) - letters)).values()) <= 1)
+            fixes -= terms
+            if fixes:
+                terms = terms | fixes
+                seen = {record["id"] for _, record in ranked}
+                ranked = [(len(terms & vocabularies[record["id"]]), record) for _, record in ranked]
+                ranked += [(len(terms & vocabularies[record["id"]]), record) for record in eligible
+                           if record["id"] in vocabularies and record["id"] not in seen
+                           and terms & vocabularies[record["id"]]]
         if strict and not snapshot:
-            ranked = self._strict_rank(ranked, terms, vocabularies, name_scores=name_scores)
+            ranked = self._strict_rank(ranked, terms, vocabularies, name_scores=name_scores,
+                                       today=today, allowed_statuses=allowed_statuses)
         else:
-            ranked = self._weighted_rank(ranked, terms, term_counts, name_scores=name_scores)
+            ranked = self._weighted_rank(ranked, terms, term_counts, name_scores=name_scores,
+                                         today=today, allowed_statuses=allowed_statuses)
             if explicit and project is None and not snapshot and terms:
                 ranked = self._unscoped_rank(ranked, terms, vocabularies, eligible, name_scores)
         if candidate_only:
@@ -1416,9 +1717,11 @@ class PackedContext(dict):
 
     The attribute is never serialized (json sees a plain dict), so render_context can
     re-pack for the hook envelope from the originals instead of clipping a clip, and a
-    source dropped there returns its share to the better sources.
+    source dropped there returns its share to the better sources. `wider` holds the wider
+    version of a record (see pack_widened) that a later pack may use if its budget has room.
     """
     sources = ()
+    wider = {}
 
 
 def _clip_to(record, citation, room):
@@ -1509,6 +1812,33 @@ def pack_context(records, limit=5, budget_chars=8000, stale_count=0):
     return packed
 
 
+def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0):
+    """pack_context, then each wholly delivered record may take its wider version (id -> record)
+    from the room every record left over, in rank order.
+
+    A wider version (a second passage of the same note) never cuts another record short: it is
+    used whole or not at all, and only once each record's own text fits. The result's sources
+    stay the narrow originals and .wider is kept, so every later pack (the advisor's, the final
+    envelope's) decides again at its own budget.
+    """
+    packed = pack_context(records, limit, budget_chars, stale_count)
+    widened, spare, chosen = False, budget_chars - packed["used_chars"], list(records)
+    whole = {r["id"] for r, s in zip(packed["records"], packed.sources) if r["text"] == s["text"]}
+    for position, record in enumerate(records):
+        broader = wider.get(record["id"])
+        if broader is None or record["id"] not in whole:
+            continue
+        extra = len(_json(broader)) - len(_json(record))
+        if extra <= spare:
+            chosen[position], spare, widened = broader, spare - extra, True
+    if widened:
+        packed = pack_context(chosen, limit, budget_chars, stale_count)
+    by_id = {r["id"]: r for r in records}
+    packed.sources = tuple(by_id[s["id"]] for s in packed.sources)
+    packed.wider = dict(wider)
+    return packed
+
+
 def shared_context(store, harness, query, **kwargs):
     """All supported harnesses call the same source-backed retrieval function."""
     if harness not in HARNESSES:
@@ -1533,11 +1863,27 @@ def optional_provider(enabled=False, factory=None):
     return factory()
 
 
+# Index bookkeeping the reader does not need: source hashes and revisions verify freshness,
+# created/modified are file dates beside updated_at, and the rest are defaults. Each costs every
+# delivered record its share of the budget, so the envelope leaves them out and the note text
+# keeps that room. A reader that needs a revision (task-update) reads it with `beyin.py context`.
+_BOOKKEEPING = ("source_sha256", "revision", "created", "modified", "visibility", "supersedes")
+_DEFAULTS = {"kind": "note", "facts": {}, "project": None}
+
+
+def _delivery_view(record):
+    """The part of a record the reader is shown; identity, citation and text stay whole."""
+    return {k: v for k, v in record.items()
+            if k not in _BOOKKEEPING and not (k in _DEFAULTS and v == _DEFAULTS[k])}
+
+
 def render_context(context, budget_chars, prefix="", suffix=""):
     """Serialize a complete context within the delivery budget; never slice JSON.
 
     Return the delivered projection as well so continuity cannot remember an omitted
     source. Auxiliary receipt text yields to complete source identities and citations.
+    The envelope carries _delivery_view records; the projection keeps the full records
+    (clipped like the envelope), since continuity and dedupe identify sources by revision.
     """
     if type(budget_chars) is not int or budget_chars < 0:
         raise ValueError("invalid budget")
@@ -1545,12 +1891,16 @@ def render_context(context, budget_chars, prefix="", suffix=""):
     sources = getattr(context, "sources", ())
     if len(sources) == len(records) and all(s["id"] == r["id"] for s, r in zip(sources, records)):
         records = list(sources)  # re-clip the envelope from the originals, not from a clip
+    full = {r["id"]: r for r in records}
+    wider = getattr(context, "wider", {})
+    records = [_delivery_view(r) for r in records]
+    wider_views = {key: _delivery_view(record) for key, record in wider.items()}
     extra = {k: v for k, v in context.items() if k not in
              {"records", "citations", "used_chars", "budget_chars", "omitted_count", "truncated", "abstained", "stale_count"}}
     available = max(0, budget_chars - len(prefix))
     payload_budget = available
     while True:
-        packed = pack_context(records, len(records), payload_budget, context.get("stale_count", 0))
+        packed = pack_widened(records, wider_views, len(records), payload_budget, context.get("stale_count", 0))
         packed["omitted_count"] += context.get("omitted_count", 0)
         packed["truncated"] = packed["truncated"] or bool(context.get("truncated"))
         packed.update(extra)
@@ -1558,7 +1908,12 @@ def render_context(context, budget_chars, prefix="", suffix=""):
         overflow = len(text) - available
         if overflow <= 0:
             tail = suffix if len(prefix) + len(text) + len(suffix) <= budget_chars else ""
-            return prefix + text + tail, packed
+            delivered = PackedContext(packed, records=[
+                dict(full[r["id"]], **{k: r[k] for k in ("text", "text_truncated") if k in r})
+                for r in packed["records"]])
+            delivered.sources = tuple(full[s["id"]] for s in packed.sources)  # a re-render keeps identities
+            delivered.wider = dict(wider)
+            return prefix + text + tail, delivered
         if payload_budget == 0:
             # A nonsensically small budget cannot carry even an empty envelope.
             return "", dict(packed, records=[], citations=[], abstained=True, used_chars=0)
