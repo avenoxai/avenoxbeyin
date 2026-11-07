@@ -506,7 +506,7 @@ def vault_rebind(vault, state, manifest, allowed):
     if not allowed:
         raise ValueError("State is bound to another vault path: " + bound + " (this install: " + str(vault) +
                          "). If this vault was moved or renamed here, rerun with --rebind-state; "
-                         "see docs/v3/MULTI-MACHINE.md")
+                         "see https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/MULTI-MACHINE.md")
     if not old.is_absolute():
         raise ValueError("Rebind refused: the recorded vault path " + bound + " is not an absolute path on this "
                          "machine; this state was not created here")
@@ -517,7 +517,7 @@ def vault_rebind(vault, state, manifest, allowed):
             raise ValueError("Rebind refused: " + bound + " still exists or cannot be checked, and it may be "
                              "another copy of this vault using the same state. If it is a leftover, move or "
                              "rename it and rerun; to keep both, install this copy with a copy of the state "
-                             "folder. See docs/v3/MULTI-MACHINE.md")
+                             "folder. See https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/MULTI-MACHINE.md")
     item = manifest.get("files", {}).get(".beyin-runtime.json")
     baseline = (base64.b64decode(item["installed_content"])
                 if isinstance(item, dict) and item.get("installed_content") else None)
@@ -963,8 +963,8 @@ Use Markdown source files as truth; run `python3 beyin.py sync` in the vault roo
         if rebind is not None:
             plan["rebind"] = {"from": rebind, "to": str(vault)}
         return plan
-    # Every conflict check above has passed. The recorded folder is gone (or is this one), so
-    # the old binding serves nobody, and a rerun after a failure below finds it already moved.
+    # Every conflict check above has passed. vault_rebind proved the old binding serves no other
+    # vault, so a rerun after a failure below finds it already moved and needs no flag.
     rebound = None
     if rebind is not None:
         rebound = {"from": rebind, "to": str(vault), "backup": str(rebind_index(state, rebind, vault))}

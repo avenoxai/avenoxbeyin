@@ -333,7 +333,7 @@ ERROR_HINTS = {
     "runtime belongs to another vault": (
         "Bu state baska bir vault yoluna bagli. Vault tasindiysa ya da adi degistiyse paketteki kurucuyu "
         "yeni vault yolu, ayni --state ve --rebind-state ile calistir; eski yol hala duruyorsa kurucu reddeder. "
-        "Ayrinti: docs/v3/MULTI-MACHINE.md"),
+        "Ayrinti: https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/MULTI-MACHINE.md"),
 }
 
 
