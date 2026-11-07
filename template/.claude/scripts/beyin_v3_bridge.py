@@ -527,7 +527,10 @@ def main(argv=None):
 
 
 def _main(argv=None):
-    parser = _BridgeParser(description=__doc__)
+    # Python 3.14 argparse names `python -m <module>` as prog when __main__ came from -m;
+    # pin the pre-3.14 script-name behaviour so embedders and the CLI print the same usage.
+    parser = _BridgeParser(prog=os.path.basename(sys.argv[0]) if sys.argv and sys.argv[0] else 'beyin_v3_bridge.py',
+                           description=__doc__)
     parser.add_argument('--vault', type=Path, help='Path to vault root')
     parser.add_argument('--state', type=Path, help='Defaults to the installed vault runtime locator')
     parser.add_argument('--harness', choices=('claude', 'codex', 'antigravity'), required=True)
