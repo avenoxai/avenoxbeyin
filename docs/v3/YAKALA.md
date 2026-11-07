@@ -492,6 +492,46 @@ dosyaları okur. Kartın `## Dosyalar` bölümü elle ya da eşitlenen bir cihaz
 geri kalanı (kasa türü klasörler, `.obsidian/`, başka notlar) `.ham/` içine kopyalanmaz; `dosyalar/`
 başka bir yere bağlantı (symlink, junction) ise hiçbir dosya okunmaz.
 
+### Web sayfasında eksik bölüm uyarısı
+
+Defuddle metin döndürdükten sonra `isle`, aynı kaynak URL'sine **bir ek kaynak alımı** yaparak
+ana içerikteki h2/h3 başlıklarını çıkarılan metinle karşılaştırır. Defuddle komutu sayfayı kendisi
+indirir ve HTML'i geri vermez; bu yüzden kontrol kendi isteğini yapar. Yönlendirmeler ek HTTP
+istekleri gerektirebilir. Bu kontrol mevcut HTTP
+korumalarını kullanır: DNS ve yönlendirmelerde özel/yerel adresler reddedilir. Bağlantı ve her
+okuma için zaman aşımı 15 saniyedir; yönlendirmeler dahil isteğin tamamı en fazla 30 saniye sürer,
+süre dolarsa kontrol yapılmamış sayılır. Karşılaştırma için HTML en fazla 5 MB olabilir. Kontrolde
+oluşan herhangi bir hata (ağ, ayrıştırma) metni düşürmez; kart yine `cikarildi` olur. Kaynak HTML tekrar
+deneme döngüsünde indirilmez ve `.ham/` dosyasına eklenmez. Defuddle başarısızsa düz HTTP
+yedeği yine tek kaynak alımı kullanır. Video, dosya, seçili metin ve Web Clipper yollarında bu ek
+kaynak alımı yoktur; Web Clipper metni ayrıca doğrulanmış sayılmaz.
+
+Kontrol bir sezgiseldir ve tek bir `article` veya `main` alanına bakar. Gezinme, yan panel ve
+açıkça gizlenmiş içerik ayıklanır; aynı başlık tekrarları, büyük/küçük harf, HTML entity ve olağan
+Markdown biçim farkları sayılmaz. İki kanıt aranır:
+
+- **Başlıklar:** alanda en az 6 farklı, anlamlı h2/h3 başlığı olmalıdır. En az 3 başlık metinde
+  bulunuyor, en az 3 başlık ve toplamın en az %25'i bulunamıyorsa uyarı yazılır. Defuddle'ın
+  `id`/`class` kelime kuralları (`error-` gibi) bir bölümü bütünüyle sildiğinde böyle görünür.
+- **`empty:hidden` blokları:** Tailwind'in `empty:hidden` sınıfı öğeyi yalnız içi boşken gizler,
+  ama Defuddle `:hidden` ile biten her sınıfı gizli sayıp siler (not kutuları bu yüzden kaybolur).
+  Alanda bu sınıfı taşıyan, en az 5 kelimelik bir paragraf veya liste maddesi metinde yoksa ve en
+  az 3 başlık metinde bulunuyorsa uyarı yazılır. Defuddle'ın kendi kuralına uyulur: `md:block`
+  gibi bir gösterme sınıfı da taşıyan öğe sayılmaz; `md:hidden` gibi ekran boyutuna bağlı
+  sınıflar çoğu zaman bir kopyayı gizlediği için kanıt sayılmaz.
+
+Uyarı kartın `uyari` alanına **"Metin eksik olabilir"** diye yazılır; aynı uyarı `isle` sonucunda
+`not` olarak görünür. Metin korunur ve durum `cikarildi` kalır. Ajan ders çıkarmadan önce kaynak
+sayfayı kontrol etmelidir.
+
+Bu kontrol metnin tam olduğunu kanıtlamaz. Başlıkları korunmuş eksik paragrafları,
+içindekiler tablosunda kalan başlıkları veya CSS ile gizlenen her öğeyi tespit edemez.
+Birden çok ana içerik alanı, yetersiz başlık/örtüşme, başarısız istek veya boyut sınırı varsa
+yeni bir eksiklik iddiası üretilmez. Önceki uyarı kontrol yapılamadığında korunur; yeni kaynak
+yanıtındaki bütün uygun başlıklar metinde bulunduğunda ve kayıp `empty:hidden` bloğu olmadığında
+kaldırılır. Daha önce işlenmiş kartlar kendiliğinden değişmez; yeniden kontrol için
+`python3 beyin.py yakala isle <id>` kullanılır.
+
 ### Videoda transkriptin dili
 
 Otomatik dublajlı bir videoda YouTube her dublaj için ayrı bir altyazı izi sunar. `isle`,
