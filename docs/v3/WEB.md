@@ -14,9 +14,11 @@ python3 beyin.py web durum
 python3 beyin.py web durdur
 ```
 
-Windows'ta `py -3 beyin.py web ac`. Varsayılan port 7373-7393 arasındaki ilk boş porttur;
-`--port` ile seçilebilir. Sunucu 30 dakika kullanılmazsa kendiliğinden kapanır, `Ctrl+C` ya da
-`beyin.py web durdur` da kapatır.
+Windows'ta `py -3 beyin.py web ac`. Varsayılan port 7373-7393 arasındaki ilk boş porttur; hepsi
+doluysa işletim sisteminin verdiği boş bir port kullanılır. `--port` ile seçilebilir. Sunucu 30
+dakika kullanılmazsa kendiliğinden kapanır, `Ctrl+C` ya da `beyin.py web durdur` da kapatır.
+Beyin güncellenir ya da geri alınırsa çalışan sunucu bir sonraki istekte bunu fark eder, isteği
+reddeder ve kapanır; yeni sürümle `beyin.py web ac` ile yeniden açılır.
 
 ## Ne gösterir, ne yazar
 
@@ -47,11 +49,21 @@ yalnız dizindeki bir kaydın kimliğiyle açılır.
 - Sunucu yalnız `127.0.0.1` üzerinde dinler. Her istekte `Host` başlığı bu dinleyiciyi
   (`127.0.0.1:<port>` ya da `localhost:<port>`) göstermeli; `Origin` ve `Sec-Fetch-Site` varsa
   aynı kaynağı göstermeli. Başka bir site, DNS rebinding ile de olsa yanıt alamaz.
-- Her açılışta yeni bir belirteç üretilir. Tarayıcı bu belirteçle bir kez gelir; sunucu ayrı bir
-  `HttpOnly; SameSite=Strict` oturum çerezi verir ve belirteci adres çubuğundan hemen kaldırır.
-  Belirteç yalnız state klasöründeki `web/running.json` dosyasında (izin 0600) tutulur.
-- Her yazma isteği oturum çerezi, aynı kaynaktan `Origin`, `application/json` gövdesi ve o oturumun
-  CSRF belirtecini taşımalıdır. CORS başlığı hiç gönderilmez.
+- Her açılışta yeni bir belirteç üretilir ve sunucu kapanana kadar geçerlidir. Belirteç,
+  terminale yazdırılan adreste (`--json` çıktısında `adres` alanında) ve state klasöründeki
+  `web/running.json` dosyasında bulunur; bu dosyanın izni macOS ve Linux'ta 0600'dür, Windows bu
+  izni uygulamaz. Tarayıcı bu adresle bir kez gelir; sunucu ayrı bir `HttpOnly; SameSite=Strict`
+  oturum çerezi verir ve belirteci adres çubuğundan hemen kaldırır. Belirteçli adres tarayıcı
+  geçmişinde (ve geçmiş eşitleniyorsa diğer cihazlarda) kalabilir; sunucu kapanınca işe yaramaz.
+- Sayfadan gelen her yazma isteği oturum çerezi, aynı kaynaktan `Origin`, `application/json`
+  gövdesi ve o oturumun CSRF belirtecini taşımalıdır. Tek istisna `beyin.py web durdur`: belirteci
+  `Authorization` başlığında gönderir, `Origin` taşımaz ve yalnız sunucuyu kapatır. CORS başlığı
+  hiç gönderilmez.
+- Çerezler porta göre ayrılmaz: tarayıcı oturum çerezini `127.0.0.1` üzerindeki başka portlara da
+  gönderir. Başka bir sayfadan gelen istek `Origin` ve `Sec-Fetch-Site` denetimine takılır; ancak
+  aynı bilgisayarda başka bir porttan yayın yapan bir yerel sunucu (bir geliştirme sunucusu ya da
+  `127.0.0.1`'e açılmış bir konteyner) bu çerezi alıp oturumu kullanabilir. Böyle sunucular
+  çalışırken `--read-only` kullan ve işin bitince `beyin.py web durdur` ile kapat.
 - Sayfa, stil ve betik `beyin_v3_web_ui.py` içinden gelir; CDN, web fontu ya da uzak görsel yoktur.
   İçerik güvenlik politikası yalnız aynı kaynaktaki bu dosyalara izin verir; vault metni sayfaya
   her zaman düz metin olarak yazılır.
