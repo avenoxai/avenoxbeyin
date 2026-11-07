@@ -8,6 +8,8 @@ V3'te Markdown kaynak, SQLite yerel indeks, Codex/Claude Code/Antigravity, [Herm
 
 Geliştiriciler için: [kaynak ve dağıtım sınırları envanteri](MODULE-BOUNDARIES.md).
 
+Üçüncü taraf [topluluk araçları](../COMMUNITY-TOOLS.md): proje tarafından desteklenmez ve denetlenmez.
+
 ## Kullanıcı paketi
 
 Kurucu ortak motoru, `beyin`, `beyin-doktor`, `beyin-guncelle` skill'lerini, kurulu `beyin.py` girişini ve işletim sistemine uygun güncelleme kısayolunu dağıtır. Paket ZIP olarak açılıp kullanılabilir; Git gerekmez. Kurulu vault kaynak repo klasöründen bağımsız çalışır.
