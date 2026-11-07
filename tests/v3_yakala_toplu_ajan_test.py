@@ -847,6 +847,21 @@ class BatchStatusAndCliTest(BatchFiles):
         self.assertIn('tum isler bitti: hayir', text)
         self.assertIn('[sirada]', text)
 
+    def test_human_preview_lists_every_skipped_card_with_its_reason(self):
+        self.configure()
+        _, card = self.card(why='Bu kaynagi incele.')
+        inbox = card['path'].parent
+        (inbox / 'buyuk-not.md').write_text('# Uzun\n' + 'x' * (300 * 1024), encoding='utf-8')
+        (inbox / 'yerel-sayfa.md').write_text('---\ntur: yakala\ndurum: bekliyor\nurl: http://127.0.0.1:8080/panel\n'
+                                              '---\n# Yerel panel\n\n## Neden\n\nIncele\n', encoding='utf-8')
+        preview = self.bulk(request=None, use_why=True)
+        self.assertEqual({row['id'] for row in preview['atlanan']}, {'buyuk-not', 'yerel-sayfa'})
+        text = yakala.human(preview, 'ajan-toplu')
+        self.assertIn('[bekliyor] ' + card['id'], text)
+        for row in preview['atlanan']:
+            self.assertIn('[atlandi] ' + row['id'], text)
+            self.assertIn(row['neden'], text)
+
 
 if __name__ == '__main__':
     unittest.main()

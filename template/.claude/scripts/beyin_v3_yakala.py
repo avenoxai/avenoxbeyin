@@ -12228,6 +12228,10 @@ def _agent_batch_human(result):
             lines.append('  Istek: ' + json.dumps(row['istek'], ensure_ascii=False))
             if row['hata']:
                 lines.append('  ' + row['hata'])
+        for row in result.get('atlanan') or ():
+            # Left out of this selection, with the reason: the user consents to what is sent.
+            lines.append('[atlandi] ' + row['id'])
+            lines.append('  ' + row['neden'])
         if not result['gonderilebilir'] and result['secilen']:
             lines.append('Bu secim gonderime hazir degil; ayar, istek ve kuyruk kapasitesini kontrol et.')
         if result['kayit_sorunlari']:
