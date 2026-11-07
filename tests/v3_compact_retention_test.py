@@ -331,23 +331,26 @@ c.compact(Path(sys.argv[2]), Path(sys.argv[3]), now=datetime(2026,10,26,tzinfo=t
         self.assertFalse(self.archive('Last-Session', '2027-10').exists())
         self.assertIn(b'Last-Session-2026-10.md', live.read_bytes())
 
-    def test_move_retry_outside_window_or_budget_is_a_second_copy_not_a_scan(self):
+    def assert_second_copy_without_reading_old_month(self, now, budget=None):
         # ...and one outside it is never read: it costs one more archived copy, no text.
-        for now, budget in ((datetime(2028, 1, 1, tzinfo=timezone.utc), compact.BACKUP_LOOKBACK_BYTES),
-                            (datetime(2026, 11, 1, tzinfo=timezone.utc), 1)):
-            with self.subTest(now=now.date(), budget=budget):
-                live, stored = self.interrupted_move()
-                month = now.strftime('%Y-%m')
-                with patch.object(compact, 'BACKUP_LOOKBACK_BYTES', budget):
-                    result, opened = self.opened_during(now)
-                self.assertEqual(result['status'], 'compacted')
-                self.assertNotIn('Last-Session-2026-10.md', opened)
-                self.assertEqual(self.archive('Last-Session').read_bytes(), stored)
-                moved = self.archive('Last-Session', month).read_bytes()
-                self.assertEqual(moved.count(b'OLD_PAYLOAD_UNIQUE'), 1)
-                self.assertIn(f'Last-Session-{month}.md'.encode(), live.read_bytes())
-                self.assertNotIn(b'OLD_PAYLOAD_UNIQUE', live.read_bytes())
-                self.assertIn(b'NEW_PAYLOAD_UNIQUE', live.read_bytes())
+        live, stored = self.interrupted_move()
+        month = now.strftime('%Y-%m')
+        with patch.object(compact, 'BACKUP_LOOKBACK_BYTES', budget or compact.BACKUP_LOOKBACK_BYTES):
+            result, opened = self.opened_during(now)
+        self.assertEqual(result['status'], 'compacted')
+        self.assertNotIn('Last-Session-2026-10.md', opened)
+        self.assertEqual(self.archive('Last-Session').read_bytes(), stored)
+        moved = self.archive('Last-Session', month).read_bytes()
+        self.assertEqual(moved.count(b'OLD_PAYLOAD_UNIQUE'), 1)
+        self.assertIn(f'Last-Session-{month}.md'.encode(), live.read_bytes())
+        self.assertNotIn(b'OLD_PAYLOAD_UNIQUE', live.read_bytes())
+        self.assertIn(b'NEW_PAYLOAD_UNIQUE', live.read_bytes())
+
+    def test_move_retry_outside_the_month_window_is_a_second_copy_not_a_scan(self):
+        self.assert_second_copy_without_reading_old_month(datetime(2028, 1, 1, tzinfo=timezone.utc))
+
+    def test_move_retry_over_the_byte_budget_is_a_second_copy_not_a_scan(self):
+        self.assert_second_copy_without_reading_old_month(datetime(2026, 11, 1, tzinfo=timezone.utc), budget=1)
 
     def test_year_2000_archive_is_not_read_during_a_normal_move(self):
         self.archive('Last-Session', '2000-01').parent.mkdir()
