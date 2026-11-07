@@ -2,11 +2,12 @@
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import re
 import time
 
 import beyin_v3_jev_client as client
 from beyin_v3_secrets import redact
-from beyin_v3 import pack_context
+from beyin_v3 import PackedContext, pack_context, pack_widened
 
 
 def _strings(value):
@@ -193,6 +194,85 @@ def limits(mode):
     return client.thresholds(mode.get('provider'), mode.get('model'))
 
 
+def _unclipped(context):
+    """The strict records as retrieved, before packing clipped them to the budget.
+
+    The advisor's pool is packed again below; packing a clip a second time would lose the text
+    the first pass cut, so a source keeps its whole excerpt until the final pack.
+    """
+    records = context.get('records') or []
+    sources = getattr(context, 'sources', ())
+    if len(sources) == len(records) and all(s['id'] == r['id'] for s, r in zip(sources, records)):
+        return list(sources)
+    return records
+
+
+def card_excerpt(record, query='', project=None):
+    """Best-matching heading-aware passage excerpt for a Jev candidate card (#507).
+
+    If the candidate already carries a strict passage excerpt (text_truncated=True)
+    or is shorter than AUTO_EXCERPT, its opening slice is already authoritative.
+    For longer loose/ambient notes, locate the Markdown block with highest lexical
+    overlap with query terms, preserving the section heading path for Jev.
+    """
+    text = record.get('text', '')
+    if not text or len(text) <= AUTO_EXCERPT or record.get('text_truncated'):
+        return text[:AUTO_EXCERPT]
+
+    if not query or not isinstance(query, str):
+        return text[:AUTO_EXCERPT]
+
+    try:
+        from beyin_v3 import _tokens, STOPWORDS, _strict_terms, _query_roots
+        from beyin_v3_passage import split_blocks
+        ignored = STOPWORDS | _tokens(project or '')
+        terms = _strict_terms(_tokens(query) - ignored)
+        if not terms:
+            return text[:AUTO_EXCERPT]
+
+        # Admission already selected this candidate. Use the shared conservative
+        # query-root rules only to locate its matching excerpt, never to admit notes.
+        vocabulary = _tokens(text)
+        roots = _query_roots(terms, lambda token: int(token in vocabulary), ignored)
+
+        def overlap(value):
+            tokens = _tokens(value)
+            return sum(term in tokens or roots.get(term) in tokens for term in terms)
+
+        blocks = split_blocks(text, target=AUTO_EXCERPT // 2, overlap=AUTO_EXCERPT // 6)
+        if not blocks:
+            return text[:AUTO_EXCERPT]
+
+        best_score = 0
+        best_block = None
+        for head, start, end in blocks:
+            # Score only the bounded window that will actually reach the advisor.
+            # Reserve up to a third for headings; long paragraphs are split above.
+            head_limit = AUTO_EXCERPT // 3 - 2
+            if len(head) > head_limit:
+                # A long parent heading must not hide the matching subsection.
+                # Keep matched words whole and score what is actually sent.
+                windows = [head[:head_limit]]
+                for match in re.finditer(r'\S+', head):
+                    if overlap(match.group()):
+                        heading_start = max(0, match.end() - head_limit)
+                        windows.append(head[heading_start:heading_start + head_limit])
+                head = max(windows, key=overlap)
+            body = text[start:end]
+            passage = (head + '\n\n' + body if head else body)[:AUTO_EXCERPT]
+            score = overlap(passage)
+            if score > best_score:
+                best_score = score
+                best_block = passage
+
+        if best_block is not None and best_score > 0:
+            return best_block
+    except Exception:
+        pass
+
+    return text[:AUTO_EXCERPT]
+
+
 def auto_context(store, harness, query, context, *, budget_chars, timeout_cap=2.0, transport=None, project=None):
     """Per-turn hook path: strict local matches plus a loose lexical pool, judged in one call.
 
@@ -206,14 +286,14 @@ def auto_context(store, harness, query, context, *, budget_chars, timeout_cap=2.
     if (not mode['valid'] or mode['mode'] == 'off' or 'auto_context' not in mode['features']
             or not isinstance(query, str) or len(query.strip()) < AUTO_MIN_CHARS):
         return context
-    strict = context.get('records') or []
+    strict = _unclipped(context)
     if any(r.get('visibility') == 'private' for r in strict):
         return context
     eligible = _eligible(store, project)
     valid_strict = [eligible[r['id']] for r in strict if r['id'] in eligible]
     if _signature(strict) != _signature(valid_strict):
         context = store.context_for(harness, query, project=project, strict=True, budget_chars=budget_chars)
-        strict = context['records']
+        strict = _unclipped(context)
     known = {r['id'] for r in strict}
     try:
         from beyin_v3_passage import settings as passage_settings, _path_key
@@ -246,7 +326,7 @@ def auto_context(store, harness, query, context, *, budget_chars, timeout_cap=2.
     if not keys:
         return context
     before = _signature(records)
-    cards = [dict(id=k, title=str(r.get('title', ''))[:160], excerpt=r['text'][:AUTO_EXCERPT],
+    cards = [dict(id=k, title=str(r.get('title', ''))[:160], excerpt=card_excerpt(r, query, project),
                   project=str(r.get('project') or ''), status=str(r.get('status') or ''),
                   updated_at=str(r.get('updated_at') or '')) for k, r in keys.items()]
     sent_strict = sum(1 for r in keys.values() if r['id'] in known)
@@ -289,10 +369,11 @@ def auto_context(store, harness, query, context, *, budget_chars, timeout_cap=2.
     ranked_remote = sorted([r for r in keep if remote_allowed(r)],
                            key=lambda r: (-by_record.get(r['id'], 0), r['id']))
     ranked_local = [r for r in keep if not remote_allowed(r) and r['id'] in known]
-    packed = pack_context(_interleave([ranked_remote, ranked_local]), AUTO_LIMIT, budget_chars)
+    packed = pack_widened(_interleave([ranked_remote, ranked_local]), getattr(context, 'wider', {}), AUTO_LIMIT, budget_chars)
     selected_ids = {r['id'] for r in packed['records']}
     # Report delivered membership changes, not pre-budget model intentions.
-    result = dict(context, **packed)
+    result = PackedContext(context, **packed)
+    result.sources, result.wider = packed.sources, packed.wider  # the final envelope repacks from these
     result['jev'] = dict(dropped=len(known - selected_ids), added=len(selected_ids - known))
     return result
 

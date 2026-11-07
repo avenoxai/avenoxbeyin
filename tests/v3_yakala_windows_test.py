@@ -214,6 +214,35 @@ class WarmWindowTest(unittest.TestCase):
         child.stdin.close()
         self.assertEqual(child.wait(15), 0)
 
+    def test_warm_window_with_instance_exits_cleanly_on_stop(self):
+        vault = Path(tempfile.mkdtemp(prefix='v3-yakala-hazir-inst-'))
+        self.addCleanup(shutil.rmtree, vault, True)
+        instance = 'b' * 32
+        child = subprocess.Popen([sys.executable, str(MODULE), 'pencere', '--vault', str(vault),
+                                  '--hazir', '--instance', instance],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 env=inherited_env())
+
+        def stop_child():
+            for stream in (child.stdin, child.stdout, child.stderr):
+                if stream and not stream.closed:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+            if child.poll() is None:
+                child.kill()
+            child.wait(15)
+        self.addCleanup(stop_child)
+        ready_line = child.stdout.readline()
+        self.assertIn(b'"type":"READY"', ready_line)
+        # Broker sends STOP when window is dismissed or replaced
+        child.stdin.write(json.dumps(yakala._protocol_message('STOP', instance)).encode('ascii') + b'\n')
+        child.stdin.flush()
+        self.assertEqual(child.wait(10), 0)
+        stderr_output = child.stderr.read()
+        self.assertNotIn(b'_enter_buffered_busy', stderr_output)
+
 
 class LegacyListenerWindowTest(unittest.TestCase):
     """After an update the running listener is still the old state copy until `yakala kur`, but it
@@ -447,11 +476,12 @@ class WindowsCaptureModelTest(unittest.TestCase):
         user.GetForegroundWindow.return_value = 42
         user.SetWindowsHookExW.return_value = 100
         user.CallNextHookEx.return_value = 0
+        user.GetAsyncKeyState.return_value = 0
         kernel.GetModuleHandleW.return_value = 1
         with patch.object(ctypes, 'WinDLL', side_effect=lambda name, **_kw: user if name == 'user32' else kernel):
             stop = yakala._win_escape_guard(root, 99, 42, dismiss)
             callback = user.SetWindowsHookExW.call_args.args[1]
-            key = ctypes.c_uint32(0x1B)
+            key = (ctypes.c_uint32 * 6)(0x1B, 0, 0, 0, 0, 0)  # KBDLLHOOKSTRUCT, including flags
             callback(0, 0x100, ctypes.addressof(key))
             root.after.call_args.args[1]()
             stop()

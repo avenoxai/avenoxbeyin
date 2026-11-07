@@ -43,6 +43,15 @@ def wait_for(check, seconds=3):
 
 
 class WindowsPolicyTest(unittest.TestCase):
+    def test_screenshot_only_does_not_consume_copied_files(self):
+        sources = y.windows_sources({'url': 'https://example.org/', 'dosyalar': ['copied.txt'],
+                                     'dosyalar_pano': True}, '', True, shot={'path': 'window.png'})
+        for source in sources:
+            source['on'] = source['key'] == 'w'
+        self.assertFalse(any(source['clipboard'] for source in sources if source['on']))
+        self.assertTrue(next(source for source in sources if source['key'] == '1')['clipboard'])
+        self.assertEqual(y._source_arguments(sources)['files'], ['window.png'])
+
     def test_hovered_link_is_the_default_and_the_page_stays_selectable(self):
         context = {'url': 'https://www.youtube.com/', 'baslik': 'YouTube',
                    'url_imlec': 'https://www.youtube.com/watch?v=RgvsbigEylQ', 'baslik_imlec': 'Fragman'}
@@ -51,6 +60,8 @@ class WindowsPolicyTest(unittest.TestCase):
         self.assertEqual((chosen['url'], chosen['title']), ('https://www.youtube.com/watch?v=RgvsbigEylQ', 'Fragman'))
         page = next(source for source in sources if source['key'] == 's')
         y._source_toggle(sources, page)
+        self.assertEqual(y._source_arguments(sources)['extra_urls'], ['https://www.youtube.com/'])
+        y._source_toggle(sources, sources[0])
         self.assertEqual(y._source_arguments(sources)['url'], 'https://www.youtube.com/')
 
     def test_copied_page_link_marks_the_page_source_and_the_hovered_link_stays_default(self):
@@ -70,9 +81,9 @@ class WindowsPolicyTest(unittest.TestCase):
                 patch.object(y, 'clipboard_fresh', return_value=False), \
                 patch.object(y, 'clipboard_image', return_value=None), \
                 patch.object(y, 'windows_enrich', return_value={'url_imlec': 'https://example.org/hover'}), \
-                patch.object(y, 'window_image') as image:
+                patch.object(y, 'window_image', return_value=shot) as image:
             y._collect_windows({}, '/unused', '/unused')
-        image.assert_not_called()
+        image.assert_called_once_with({'url_imlec': 'https://example.org/hover'}, cancel=None)
 
     def test_a_window_switch_drops_the_hovered_link_too(self):
         context = {'hwnd': 42, 'uygulama': 'chrome', 'pencere': 'Old - Google Chrome', 'imlec': [10, 20]}
@@ -146,7 +157,7 @@ class WindowsPolicyTest(unittest.TestCase):
         selected = [s for s in sources if s['on']]
         self.assertEqual([(s['key'], s['clipboard']) for s in selected], [('s', False)])
         y._source_toggle(sources, next(s for s in sources if s['key'] == 'p'))
-        self.assertEqual([(s['key'], s['clipboard']) for s in sources if s['on']], [('p', True)])
+        self.assertEqual([(s['key'], s['clipboard']) for s in sources if s['on']], [('s', False), ('p', True)])
         without_link = y.windows_sources({}, 'https://example.org/copy', True)
         self.assertEqual([s['key'] for s in without_link if s['on']], ['p'])  # no browser link: fresh clipboard leads
 
@@ -177,15 +188,17 @@ class WindowsPolicyTest(unittest.TestCase):
             got = y._collect_windows({'pano_sira': 11}, '/unused', '/unused')
         self.assertFalse(any(s['on'] for s in got['sources']))
 
-    def test_verified_page_avoids_unneeded_screenshot_and_its_delay(self):
+    def test_verified_page_also_offers_an_unselected_screenshot(self):
+        shot = dict(path='window.png', width=2, height=2)
         with patch.object(y, '_windows_clipboard', return_value={}), \
                 patch.object(y, 'clipboard_fresh', return_value=False), \
                 patch.object(y, 'clipboard_image', return_value=None), \
                 patch.object(y, 'windows_enrich', return_value={'url': 'https://example.org/page'}), \
-                patch.object(y, 'window_image') as image:
+                patch.object(y, 'window_image', return_value=shot) as image:
             result = y._collect_windows({}, '/unused', '/unused')
-        image.assert_not_called()
-        self.assertIsNone(result['shot'])
+        image.assert_called_once_with({'url': 'https://example.org/page'}, cancel=None)
+        self.assertIs(result['shot'], shot)
+        self.assertFalse(next(s for s in result['sources'] if s['key'] == 'w')['on'])
         self.assertEqual(y._source_arguments(result['sources'])['url'], 'https://example.org/page')
 
     def test_url_read_after_a_foreground_switch_is_discarded(self):
@@ -205,6 +218,36 @@ class WindowsPolicyTest(unittest.TestCase):
                 y._collect_windows({}, '/unused', '/unused')
         self.assertIn(((image,), {}), [(c.args, c.kwargs) for c in done.call_args_list])
 
+    def test_windows_collect_clipboard_files_leads_without_browser_link(self):
+        with patch.object(y, '_windows_clipboard', return_value={'dosyalar': ['C:/test/sample.pdf'], 'sequence': 12}), \
+                patch.object(y, 'clipboard_fresh', return_value=True), \
+                patch.object(y, 'clipboard_image', return_value=None), \
+                patch.object(y, 'windows_enrich', side_effect=lambda ctx, cancel=None: ctx), \
+                patch.object(y, 'window_image', return_value=None):
+            result = y._collect_windows({'pano_sira': 12}, '/unused', '/unused')
+        self.assertEqual(result['context'].get('dosyalar'), ['C:/test/sample.pdf'])
+        self.assertTrue(result['context'].get('dosyalar_pano'))
+        file_source = next(s for s in result['sources'] if s['kind'] == 'file')
+        self.assertTrue(file_source['on'])
+        self.assertTrue(file_source['clipboard'])
+        self.assertEqual(y._source_arguments(result['sources'])['files'], ['C:/test/sample.pdf'])
+
+    def test_windows_collect_clipboard_files_unselected_when_browser_page_leads(self):
+        with patch.object(y, '_windows_clipboard', return_value={'dosyalar': ['C:/test/sample.pdf'], 'sequence': 12}), \
+                patch.object(y, 'clipboard_fresh', return_value=True), \
+                patch.object(y, 'clipboard_image', return_value=None), \
+                patch.object(y, 'windows_enrich', return_value={'url': 'https://example.org/page'}), \
+                patch.object(y, 'window_image', return_value=None):
+            result = y._collect_windows({'pano_sira': 12}, '/unused', '/unused')
+        self.assertEqual(result['context'].get('dosyalar'), ['C:/test/sample.pdf'])
+        page_source = next(s for s in result['sources'] if s['kind'] == 'url')
+        file_source = next(s for s in result['sources'] if s['kind'] == 'file')
+        self.assertTrue(page_source['on'])
+        self.assertFalse(file_source['on'])
+        self.assertTrue(file_source['clipboard'])
+        self.assertEqual(y._source_arguments(result['sources'])['url'], 'https://example.org/page')
+        self.assertEqual(y._source_arguments(result['sources'])['files'], [])
+
 
 class CommitAndFilesTest(unittest.TestCase):
     def setUp(self):
@@ -216,6 +259,15 @@ class CommitAndFilesTest(unittest.TestCase):
         self.system = patch.object(y, 'os', windows_os())
         self.system.start()
         self.addCleanup(self.system.stop)
+
+    def test_extra_urls_survive_the_commit_lock_and_a_replay_is_still_idempotent(self):
+        saved = y.capture(self.vault, url='https://example.org/page', extra_urls=['https://example.org/quote'],
+                          state=self.state, capture_id='a' * 32)
+        replay = y.capture(self.vault, url='https://example.org/page', extra_urls=['https://example.org/other'],
+                           state=self.state, capture_id='a' * 32)
+        self.assertEqual(replay['status'], 'ayni_yakalama')
+        self.assertEqual(y.find_card(self.vault, saved['id'], self.state)['meta']['ek_urller'],
+                         ['https://example.org/quote'])
 
     def test_same_id_after_a_success_never_appends_or_copies_twice(self):
         file = self.vault / 'source.txt'

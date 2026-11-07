@@ -25,6 +25,15 @@ class SecretFilterTest(unittest.TestCase):
         self.engine = SyncEngine(self.vault, self.state)
         self.token = 'sk-' + ('SyntheticOnly' * 3)
 
+    def test_basic_auth_valid_short_credentials_and_plain_prose(self):
+        for token in ('YTpi', 'Og==', 'dXNlcjpwYXNz'):
+            with self.subTest(token=token):
+                self.assertEqual(redact('Authorization: Basic ' + token, self.state),
+                                 ('Authorization: [REDACTED]', 1))
+        for text in ('Use basic configuration defaults', 'basic authentication',
+                     'Basic YWJjZA==', 'Basic not_base64!'):
+            self.assertEqual(redact(text, self.state), (text, 0))
+
     def test_default_off_preserves_text(self):
         result = self.engine.note_create('notes/default.md', 'Demo '+self.token)
         self.assertEqual(result['secrets_redacted'], 0)
