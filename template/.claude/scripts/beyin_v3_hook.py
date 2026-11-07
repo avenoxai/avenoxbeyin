@@ -382,12 +382,39 @@ def _edits_only_outside_vault(vault, payload):
         return False
 
 
+def _shell_edit(payload, vault, state, harness):
+    """A Bash edit of this turn as {'at', 'knowledge'}, or None; Claude Code transcripts only.
+
+    Codex PostToolUse and Stop inputs carry no comparable verified record of shell calls, so
+    Codex keeps the editor-only window.
+    """
+    if harness != "claude" or vault is None:
+        return None
+    from beyin_v3_shell_edits import shell_edit
+    return shell_edit(payload, vault, state)
+
+
+def _queue_shell_edit(vault, state, payload, harness):
+    """Queue the shell edit like an editor PostToolUse, so receipt coverage counts this turn as
+    edited and a later question turn does not reopen it (#212). Metadata only, marked as such."""
+    try:
+        event_id = payload.get("event_id")
+        enqueue_event(vault, state, dict(payload, hook_event_name="PostToolUse",
+                                         event_id=str(event_id) + ":shell-edit" if event_id else None),
+                      harness, observed="shell")
+    except Exception:
+        pass  # coverage bookkeeping never costs the reminder
+
+
 def receipt_reminder(payload, state, harness, event, vault=None):
     """Track edits per session and return a one-time Stop block, or None.
 
     Installed PostToolUse hooks match Edit|Write|apply_patch|MultiEdit|NotebookEdit for Claude and
     Codex. Known vault-external edits do not mark the session; unknown/pathless
     events retain the legacy reminder behavior without reading transcripts.
+    Without such an edit, a Claude Stop reads the bounded tail of its own transcript once:
+    a vault Markdown file named by a shell command of this turn and modified after that
+    command opens the same window (#212, beyin_v3_shell_edits).
     Stop then looks for a receipt of this harness and session in the runtime store.
     If a receipt declared learnings but no note under knowledge/ was touched,
     Stop reminds once to distill into knowledge/concepts/.
@@ -424,8 +451,14 @@ def receipt_reminder(payload, state, harness, event, vault=None):
                 if marker.get("knowledge") is not True:
                     atomic(edited, dict(marker, knowledge=True))
             return None
-        if payload.get("stop_hook_active") is True or not edited.exists():
+        if payload.get("stop_hook_active") is True:
             return None
+        if not edited.exists():
+            shell = _shell_edit(payload, vault, state, harness)
+            if shell is None:
+                return None
+            atomic(edited, {"at": shell["at"], "knowledge": True} if shell["knowledge"] else {"at": shell["at"]})
+            _queue_shell_edit(vault, state, payload, harness)
         marker = json.loads(edited.read_text(encoding="utf-8"))
         since = float(marker["at"])
         session = digest[:24]  # the queued checkpoint's session value
@@ -465,7 +498,7 @@ def receipt_reminder(payload, state, harness, event, vault=None):
         return None  # fail open: never block Stop on a bookkeeping error
 
 
-def enqueue_event(vault, state, payload, harness):
+def enqueue_event(vault, state, payload, harness, observed=None):
     state = Path(state)
     metadata = {"event": payload.get("hook_event_name"), "harness": harness,
                 "session": hashlib.sha256(str(payload.get("session_id", "unknown")).encode()).hexdigest()[:24]}
@@ -476,6 +509,9 @@ def enqueue_event(vault, state, payload, harness):
         metadata.update(project)
     if payload.get('no_memory') is True:
         metadata['no_memory'] = True
+    if observed:
+        # Recorded by the hook itself, not delivered by the client (the Stop-time shell edit).
+        metadata['observed'] = observed
     if payload.get('hook_event_name') in ('UserPromptSubmit', 'SessionStart') and is_synthetic_prompt(payload):
         # No person typed this turn (#373): the event stays observable, but it opens no receipt checkpoint.
         metadata['synthetic'] = True

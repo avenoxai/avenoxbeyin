@@ -214,7 +214,14 @@ that edited a file (a PostToolUse event from the installed edit matchers); a lat
 question or "thanks" turn without edits does not reopen the session, but a receipt
 from an earlier turn cannot cover a later turn that edited again. Without an
 observed edit the latest UserPromptSubmit or SessionStart boundary applies.
-Edits made through a shell command are not observed as edits. Antigravity only
+A Claude Code Stop without an editor edit in that turn also counts a shell edit
+(#212): a vault Markdown file that a Bash or PowerShell command of the turn names
+and that changed after the command was issued. The Stop reads only the bounded
+tail of that session's own transcript and stats the named files; it keeps a
+timestamp, never command text, and queues the edit as `PostToolUse` metadata
+marked `observed: shell`. A path in a variable, a script that computes its
+paths, a rename or a deletion is still not observed, and Codex shell commands
+are not read. Antigravity only
 provides the initial invocation boundary in this adapter, so its result is
 explicitly session-limited rather than proof of per-turn completeness. Missing
 prompt events are reported as a terminal-only limitation. Explicit `no_memory`
