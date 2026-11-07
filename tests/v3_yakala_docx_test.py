@@ -208,6 +208,22 @@ class DocxContentTest(unittest.TestCase):
         self.assertEqual(result['state'], 'ready')
         self.assertEqual(result['text'], 'Şifre, Müşteri, Arşiv, İstanbul\n\nGün')
 
+    def test_table_rows_keep_columns_aligned_across_empty_cells(self):
+        def cell(*paragraphs):
+            return '<w:tc>' + ''.join('<w:p><w:r><w:t>' + text + '</w:t></w:r></w:p>'
+                                      for text in paragraphs) + '</w:tc>'
+        empty = '<w:tc><w:p/></w:tc>'
+        result = extract_docx(document(
+            '<w:p><w:r><w:t>Önce</w:t></w:r></w:p><w:tbl>'
+            '<w:tr>' + cell('Ad') + cell('Şehir') + cell('Rol') + '</w:tr>'
+            '<w:tr>' + cell('Ayşe') + empty + cell('Müdür', 'Arşiv') + '</w:tr>'
+            '<w:tr>' + empty + empty + empty + '</w:tr>'
+            '<w:tr>' + cell('Çağrı') + cell('İzmir') + cell('Satış') + '</w:tr>'
+            '</w:tbl><w:p><w:r><w:t>Sonra</w:t></w:r></w:p>'))
+        self.assertEqual(result['state'], 'ready')
+        self.assertEqual(result['text'], 'Önce\n\nAd | Şehir | Rol\nAyşe |  | Müdür / Arşiv\n'
+                                         'Çağrı | İzmir | Satış\n\nSonra')
+
 
 class CopiedCliDocxTest(unittest.TestCase):
     """The hotkey listener runs a copy of the Yakala file alone from the state folder (#501)."""

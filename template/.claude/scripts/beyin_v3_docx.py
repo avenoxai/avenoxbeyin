@@ -129,12 +129,18 @@ def extract_docx(raw):
                 if block.tag == W + 'p':
                     lines = [paragraph(block)]
                 elif block.tag == W + 'tbl':
-                    lines = []
+                    # One line per row; an empty cell keeps its column so values stay aligned.
+                    rows = []
                     for row in block.findall(W + 'tr'):
+                        cells = []
                         for cell in row.findall(W + 'tc'):
                             if cell.find('.//' + W + 'tbl') is not None:
                                 issues.add('nested_table')
-                            lines.append('\n'.join(paragraph(p) for p in cell.findall(W + 'p')))
+                            texts = (' '.join(paragraph(p).split()) for p in cell.findall(W + 'p'))
+                            cells.append(' / '.join(text for text in texts if text))
+                        if any(cells):
+                            rows.append(' | '.join(cells))
+                    lines = ['\n'.join(rows)]
                 else:
                     issues.add('unsupported_body_block')
                     continue
