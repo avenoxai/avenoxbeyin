@@ -89,7 +89,8 @@ python3 beyin.py project-scope add --folder "Projeler/Deneme" --project deneme -
 ```
 
 Windows'ta `python3` yerine `py -3` kullan. Kapatmak için `off` ver; bayrağı
-vermezsen mevcut değer korunur, yeni dosyada varsayılan `false` olur. `on`, hiçbir
+vermezsen mevcut değer korunur, yeni dosyada varsayılan `false` olur. `add` çıktısı
+kaydedilen `shared_unscoped` değerini de gösterir. `on`, hiçbir
 projeye atanmamış uygun notları dış proje köprüsü dahil tüm açık proje sorgularına
 dahil eder; başka projeye ait veya `private` notları açmaz. Yalnız mevcut değeri
 görmek için bayraksız `project-scope list` kullan.
