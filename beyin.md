@@ -164,6 +164,10 @@ kullaniciya aittir; adimlar
 `https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/HERMES.md` icindedir.
 Kiro IDE 1.x veya CLI V3 kullaniliyorsa vault'u ac, Agent Hooks panelinde veya
 CLI `/hooks` ekraninda Beyin tanimlarini incele ve yeni oturum baslat.
+Pi kullaniliyorsa vault klasorunde Pi'yi ac, `.pi/extensions/beyin-v3.ts` dosyasini
+kullaniciya gosterip Pi'nin proje guveni sorusunu kullaniciya biraktir ve yeni oturum
+baslat; `~/.pi/agent/trust.json` dosyasina elle yazma. Vault disindaki projelerde Pi
+yalniz acik `--beyin-project-root` kapsamiyla baglanir (`docs/v3/PI.md`).
 Ardindan yeni bir istemci oturumu acilmasini iste. Codex Desktop otomatik hook baglami
 gorunmezse bu bir kurulum basarisi iddiasi degildir; kurulu `beyin.py context` ve `sync`
 komutlariyla dogrudan tazeleme kullanilabilir.

@@ -35,10 +35,11 @@ common boundary in Pi is not a Pi-specific capacity reduction.
 
 The table is an acceptance contract, not a blanket claim of verified live delivery.
 Offline contract results, actual Pi loader/runner results, native-platform CI and
-cold-client model tests must be reported separately. The generated-extension CI
-job runs on Linux, macOS and Windows; defining that matrix is not evidence that
-remote runs have passed. Do not call the integration fully verified or released
-while the native/live gates remain open.
+cold-client model tests must be reported separately. The existing V3 CI job runs
+`tests/v3_pi_test.py` and `tests/v3_pi_receipt_compat_test.py`; the cases that import
+the generated extension need Bun and skip without it, and the actual Pi loader case
+needs `PI_TEST_PACKAGE`. There is no dedicated Bun/Pi CI job. Do not call the
+integration fully verified or released while the native/live gates remain open.
 
 ## Vault-local use
 
@@ -56,17 +57,21 @@ Pi reads the existing `AGENTS.md` companion instructions.
 The installer owns the extension, including its original bytes and checksum in
 `v3-install.json`. Reinstall/update refuses unreviewed custom edits. Rollback and
 uninstall restore/remove it through the existing transaction system.
-`--exclude-component adapters/pi` (or `preferences --exclude-component adapters/pi`,
-followed by install/update) excludes this adapter; `adapters` excludes it with the
-other optional adapters. User-owned `.pi/settings.json` is never rewritten.
+`--exclude-component adapters` (or `preferences --exclude-component adapters`,
+followed by install/update) excludes this extension together with the other optional
+adapters. There is deliberately no `adapters/pi` name: `.beyin-exclusions.json` lives
+in the vault, and 3.12.0 or an older device sharing the vault would reject an unknown
+name and stop its update. Pi itself loads the extension only after project trust.
+User-owned `.pi/settings.json` is never rewritten.
 
-Releases up to 3.11.0 do not know Pi. Before a rollback or uninstall to such a
+Releases up to 3.12.0 do not know Pi. Before a rollback or uninstall to such a
 release, remove the extension path from personal Pi settings and `pi -e` aliases
-(a removed file makes Pi reject `--beyin-project-root` and exit) and re-include
-`adapters/pi` if you excluded it (the older installer rejects the unknown name).
-Receipts written with `--harness pi` stay on disk and in the receipt views, but the
-older `sync` reports them as `invalid harness: pi` (`degraded`, doctor
-`needs_attention`) until the next update.
+(a removed file makes Pi reject `--beyin-project-root` and exit). Pi receipts need no
+step: their source is written as `harness: manual` plus `client: pi`, a field older
+releases ignore, so the older `sync` reads them as manual receipts and stays healthy.
+The runtime index keeps `pi`; after the next update the receipt still closes the Pi
+checkpoint. A source that names `harness: pi` directly (unreleased builds of this
+adapter) is still read by this version but not by 3.12.0.
 
 The extension pins the vault and Python interpreter at install time. `BEYIN_PYTHON`
 can override the interpreter. State is read from `.beyin-runtime.json` and must be
@@ -98,7 +103,9 @@ writes also open the matching receipt reminder window. Shell tools that do not
 expose the session ID cannot provide this automatic association.
 
 The agent submits `receipt --harness pi --session SESSION ...`, using the receipt
-session from injected context (the shared runtime's hash, not a guessed ID).
+session from injected context (the shared runtime's hash, not a guessed ID). Without
+`--session`, a receipt with `--harness pi` takes the same hash from `PI_SESSION_ID`,
+also when Pi runs inside a Claude Code shell that exported its own session.
 Lifecycle queues retain metadata only, never prompt/transcript/tool-result text.
 Retrieval is the same as for the other clients, including private/untrusted gates.
 Delivered context becomes part of the normal Pi conversation; this does not redact
@@ -149,17 +156,19 @@ and does not track external editor results or force receipt reminders. Explicit
 same-project block. This is intentionally not identical to vault-local injection.
 Pi does not consume hook JSON: bridge `--print-config --harness pi` is unsupported.
 
-## Validation
+## Validation boundary
 
 `tests/v3_pi_test.py` installs synthetic vaults and checks CLI/context/receipt/doctor,
 shared reminder behavior, exclusions/custom edits, package update/rollback and
-uninstall. With Bun installed it also imports the generated extension, drives real
+uninstall. With Bun installed it also imports the generated extension, drives
 Pi-shaped event payloads, verifies the once-only continuation, fail-open transport,
-path aliases, opt-out and external project boundaries. Bun is a test runner, not a
-runtime dependency (Pi loads the extension itself).
+path aliases, opt-out, two vaults in one process and external project boundaries.
+`tests/v3_pi_receipt_compat_test.py` pins the receipt form that released 3.12.0
+accepts. Bun is a test runner, not a runtime dependency (Pi loads the extension
+itself).
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'v3_pi_test.py'
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'v3_pi*test.py'
 ```
 
 An optional offline host check uses an already installed Pi package, without loading
@@ -170,72 +179,24 @@ PI_TEST_PACKAGE=/absolute/path/to/node_modules/@earendil-works/pi-coding-agent \
   PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'v3_pi_test.py'
 ```
 
-On 2026-10-17 the expanded Pi suite passed 20/20 on Linux, including the actual
-Pi 1.3.0 loader/`ExtensionRunner`, profile/bridge/no-memory comparisons, an unrelated
-second-user installation, bounded reminder continuation, editor-notice delivery and
-preserved structured output. The shared hygiene suite passed 35/35.
+Live checks so far, each in temporary synthetic vaults with an isolated home:
 
-An earlier V3 run hit an environment error: missing `libtk8.6.so` in the
-unrelated Yakala font test; the same error was reproduced from the unchanged
-`5328094` tree. After the operator installed Tcl/Tk 8.6, the targeted test passed
-and the complete unfiltered V3 run succeeded: 1645 tests, 1615 passed and 30
-platform/optional skips, with no explicit exclusions. These are local offline
-results, not a native Windows/macOS or live paid-model claim. The frozen retrieval
-evaluator passed all 16 development/holdout cases. A candidate
-ZIP built from this branch also passed the release verifier against a locally built
-`5328094` baseline (clean install, upgrade, rollback, interrupted recovery and user
-note preservation). Those ZIP version labels were test-only, not a published release.
+- Linux, Pi 1.3.0 RPC with a real model (2026-10-17): cold source-backed answer,
+  private sentinel absent, real `write`/`edit`, hygiene notice in the tool result,
+  one reminder continuation and a model-written Pi receipt, real compaction,
+  shutdown, no-memory, out-of-scope and scoped bridge runs, shell `note-create`
+  without an editor event. The first run found the `canContinue` bug fixed above.
+  [Sanitized evidence](evidence/pi-live-linux.json).
+- macOS, Pi 1.3.0 TUI and `-p` with a local OpenAI-compatible test server: trust
+  prompt and saved decision, context delivery, reminder, receipt, `/compact`,
+  shutdown, OMP isolation, two vaults in one process (personal settings or `-e`
+  plus a trusted vault in cwd) without the duplicate-flag exit.
+- Real 3.12.0 install, update to a package from this tree, a Pi run whose model
+  wrote the receipt through Pi's shell tool, `rollback`: 3.12.0 `sync`, `doctor`
+  and a SessionStart hook stay healthy; the next update keeps the Pi attribution.
 
-### Live Linux acceptance, 2026-10-17
-
-A fresh Pi 1.3.0 RPC process using `openai/gpt-6.1-sol` passed the complete
-vault-local lifecycle in an independently installed synthetic vault:
-
-- A random source-backed canary was answered without tool calls; a private sentinel
-  was absent from injected context. Neither expected value was included in the prompt.
-- Real `write` and `edit` calls changed only a synthetic note. The opt-in large-note
-  warning reached the tool results without replacing the original editor output.
-- Stop added exactly one persisted reminder and continued the model. The model's
-  shell call submitted a receipt with `harness=pi`, the actual hashed session, and
-  the edited source ref. It was not fabricated by the test controller.
-- RPC `compact` generated a real model summary and persisted a compaction entry.
-  A later prompt returned the canary/source without tools or a duplicate receipt.
-- Normal stdin closure delivered SessionEnd. All six lifecycle event types were
-  acknowledged: 12 events, no pending events, no hook error. A pre-existing
-  synthetic note retained its SHA256.
-- Separate live `--beyin-no-memory` and outside-scope/no-root runs injected no
-  context and left the acknowledgement count unchanged. An explicitly scoped
-  external project received only its startup CLI/project/session bootstrap and
-  added three boundary acknowledgements, not companion or per-turn retrieval.
-- A second independently installed synthetic vault exercised shell `note-create`
-  without an editor event. The real Pi shell session opened the edit window;
-  receipt and learning reminders each continued the model once. The model submitted
-  exactly one Pi receipt, wrote a source-linked knowledge note, and settled. Seven
-  events were acknowledged, with no pending events or hook error.
-
-The first live edit run exposed a real bug: checking the pre-reminder
-`context.canContinue` suppressed reminders after normal assistant replies. Two
-regression checks failed before the fix and passed after it; the successful live
-run used a fresh installation of the corrected planner.
-[Sanitized evidence and tested source hashes](evidence/pi-live-linux.json).
-
-To repeat, install into a disposable synthetic vault/state, index a random internal
-canary plus a private sentinel, enable the optional word-cap warning, and lower
-`compaction.keepRecentTokens` in that fixture's `.pi/settings.json` (512 was used).
-Review and approve only the generated synthetic resources; no trust hashes or
-personal settings are modified. Launch with `--mode rpc --no-extensions -e
-/path/to/synthetic-vault/.pi/extensions/beyin-v3.ts --no-skills --no-context-files
---tools read,write,edit,bash --session-dir /private/test-sessions`. Send prompts and
-wait for `agent_settled`, not merely `agent_end`. Use RPC `get_entries` to verify
-the reminder, then `compact`, then a no-tools follow-up prompt. Close stdin for
-shutdown and inspect `doctor` plus the actual receipt source. For positional
-prompts after extension boolean flags, separate them with `--`.
-
-This establishes local Linux CLI/RPC delivery with an explicitly loaded extension,
-not interactive TUI auto-discovery/trust UI or native Windows/macOS behavior.
-It does not redeploy the corrected adapter into existing operator installations.
-Handler/runner tests remain the evidence for synthetic failures and the broader
-profile/distribution matrix. No remote CI or published-release claim is made.
+This does not establish native Windows behavior or interactive TUI discovery on
+Linux/Windows.
 
 API references: [Pi extensions](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md),
 [configuration](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/configuration.md),
