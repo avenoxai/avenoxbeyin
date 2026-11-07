@@ -25,6 +25,8 @@ from unittest import mock
 from unittest.mock import Mock, patch
 import uuid
 
+from v3_package_helpers import inherited_env
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
@@ -574,7 +576,8 @@ y._agent_run_job = run
 sys.exit(y._agent_worker(vault, state))
 '''
         command = [sys.executable, '-c', script, str(SCRIPTS), str(self.vault), str(self.state), str(trace), str(active)]
-        workers = [subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(2)]
+        workers = [subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=inherited_env())
+                   for _ in range(2)]
         try:
             for worker in workers:
                 output, error = worker.communicate(timeout=15)
@@ -1099,7 +1102,7 @@ class AgentWindowViewTest(AgentFiles):
         command = [sys.executable, '-c',
                    'import json,sys; print(json.dumps(sys.argv[1:], ensure_ascii=True))', *values]
         result = subprocess.run(yakala._agent_windows_argv(command), capture_output=True,
-                                text=True, check=True, timeout=15, shell=False)
+                                text=True, check=True, timeout=15, shell=False, env=inherited_env())
         self.assertEqual(json.loads(result.stdout), values)
 
     def run_window(self, poll, manifest, client='claude', session=None, session_error=None):

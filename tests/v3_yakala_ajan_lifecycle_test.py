@@ -16,6 +16,7 @@ import types
 import unittest
 from unittest.mock import Mock, patch
 
+from v3_package_helpers import inherited_env
 import v3_yakala_ajan_test as fixtures
 
 yakala = fixtures.yakala
@@ -344,7 +345,8 @@ time.sleep(60)
 '''
         worker = subprocess.Popen([sys.executable, '-c', worker_code, str(fixtures.SCRIPTS),
                                    json.dumps(command), str(guardian)], stdin=subprocess.DEVNULL,
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, close_fds=True)
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, close_fds=True,
+                                  env=inherited_env())
 
         def close_worker():
             if worker.poll() is None:

@@ -18,6 +18,7 @@ import unittest
 import uuid
 from unittest.mock import Mock, patch
 
+from v3_package_helpers import inherited_env
 import v3_yakala_ajan_test as fixtures
 
 y = fixtures.yakala
@@ -146,7 +147,8 @@ for _ in range(y._AGENT_NETWORK_CALLS):
 print(ok)
 '''
         args = [sys.executable, '-c', script, str(fixtures.SCRIPTS), str(self.job_folder), str(self.vault), str(self.state)]
-        children = [subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(2)]
+        children = [subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=inherited_env())
+                    for _ in range(2)]
         for child in children:
             self.addCleanup(lambda process=child: process.kill() if process.poll() is None else None)
         counts = []
@@ -155,7 +157,7 @@ print(ok)
             self.assertEqual(child.returncode, 0, error.decode('utf-8', 'replace'))
             counts.append(int(output))
         self.assertEqual(sum(counts), y._AGENT_NETWORK_CALLS)
-        later = subprocess.run(args, capture_output=True, timeout=20)
+        later = subprocess.run(args, capture_output=True, timeout=20, env=inherited_env())
         self.assertEqual(later.returncode, 0, later.stderr.decode('utf-8', 'replace'))
         self.assertEqual(int(later.stdout), 0)
 
@@ -235,7 +237,7 @@ with y._AgentFileLock(Path(sys.argv[2])):
             msvcrt.locking(holder.fileno(), msvcrt.LK_NBLCK, 1)
             try:
                 child = subprocess.Popen([sys.executable, '-c', script, str(fixtures.SCRIPTS), str(path), str(waited)],
-                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=inherited_env())
 
                 def cleanup():
                     if child.poll() is None:

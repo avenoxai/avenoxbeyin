@@ -18,6 +18,8 @@ import unittest
 from unittest.mock import Mock, patch
 import uuid
 
+from v3_package_helpers import inherited_env
+
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'template/.claude/scripts'
 sys.path.insert(0, str(SCRIPTS))
@@ -207,7 +209,7 @@ else:
 '''
         processes = [subprocess.Popen([sys.executable, '-c', program, str(SCRIPTS), str(target), value],
                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                      text=True) for value in ('A', 'B')]
+                                      text=True, env=inherited_env()) for value in ('A', 'B')]
         try:
             for process in processes:
                 self.assertEqual(process.stdout.readline().strip(), 'ready')
@@ -554,7 +556,8 @@ print('captured', flush=True)
             with yakala._WindowsCommitLock(self.vault):
                 process = subprocess.Popen([sys.executable, '-c', program, str(SCRIPTS), str(self.vault),
                                             str(self.local_state), str(self.base / 'another-selected-state')],
-                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                           env=inherited_env())
                 self.assertEqual(process.stdout.readline().strip(), 'ready')
                 with self.assertRaises(subprocess.TimeoutExpired):
                     process.communicate(timeout=0.3)

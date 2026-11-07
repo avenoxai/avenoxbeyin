@@ -21,6 +21,7 @@ import unittest
 from unittest import mock
 import wave
 
+from v3_package_helpers import inherited_env
 from v3_yakala_ajan_test import AgentFiles, yakala
 
 
@@ -565,7 +566,8 @@ class MusicMediaBoundaryTest(MusicFiles):
             argv = [shutil.which('ffmpeg'), '-v', 'error', '-nostdin', '-i', str(source), '-c:a', 'aac']
             if fast:
                 argv += ['-movflags', '+faststart']
-            subprocess.run([*argv, str(target)], check=True, stdin=subprocess.DEVNULL, capture_output=True, timeout=5)
+            subprocess.run([*argv, str(target)], check=True, stdin=subprocess.DEVNULL, capture_output=True, timeout=5,
+                           env=inherited_env())
             media = target.read_bytes()
             self.assertEqual(media.index(b'moov') < media.index(b'mdat'), fast)
             samples.append(yakala._agent_music_sample(self.vault, self.state, job, media, time.monotonic() + 5))
