@@ -506,8 +506,9 @@ def _skipped_scope_targets(vault_root, value):
     root = Path(vault_root)
     joined = raw if raw.startswith("/") or re.match(r"[A-Za-z]:", raw) else str(root).replace("\\", "/") + "/" + raw
     targets = [joined]
-    # Follow links read-only, such as /var -> /private/var; never a network or drive-relative path.
-    if re.match(r"/(?!/)|[A-Za-z]:/", joined):
+    # Follow links read-only, such as /var -> /private/var. Only an absolute path of this OS:
+    # never a network share, nor a drive or root-relative path resolved against the process cwd.
+    if os.path.isabs(joined) and not joined.startswith("//"):
         try:
             targets.append(os.path.realpath(joined))
         except (OSError, RuntimeError, ValueError):
