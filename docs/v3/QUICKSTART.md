@@ -20,8 +20,11 @@ The vault must exist. State is stored outside it, in a per-vault directory under
 `~/Library/Application Support/beyin-v3` on macOS, `$XDG_STATE_HOME/beyin-v3`
 (or `~/.local/state/beyin-v3`) on Linux, and `%LOCALAPPDATA%/beyin-v3` on Windows.
 Moving a vault changes the default state key. The database is bound to its
-original vault root, so rebuild fresh local state from Markdown after moving;
-do not reuse the old database with `--state`. Do not put state in a synced
+original vault root and refuses any other path. For an installed vault that was
+moved, rerun the installer with the old `--state` and `--rebind-state`; it moves
+the binding only when the old path is gone and backs the database up first (see
+[MULTI-MACHINE.md](MULTI-MACHINE.md#vaultu-başka-klasöre-ya-da-hesaba-taşımak)).
+Otherwise rebuild fresh local state from Markdown. Do not put state in a synced
 vault. `--state /absolute/local/state` overrides the default and is rejected if
 it resolves inside the vault. Moving the state directory of an unchanged vault is
 a different, supported operation: copy it, leave any `update-journal.json`

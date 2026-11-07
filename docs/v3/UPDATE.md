@@ -89,8 +89,9 @@ varsayılanı bırakıp state'i başka bir yere almak gerekir:
 
 Taşıma desteklenen bir işlemdir: `install_v3.py --state` yeni yolu sabitler. Veritabanı
 **vault kök yoluna** bağlıdır, state yoluna değil; bu yüzden aynı vault için state'i taşımak
-veritabanını geçersizleştirmez. Vault'u taşımak ayrı bir konudur ve orada yerel state
-Markdown'dan yeniden kurulur; ayrıntı için [QUICKSTART](QUICKSTART.md).
+veritabanını geçersizleştirmez. Vault'u taşımak ayrı bir konudur: kurucu eski state ve
+`--rebind-state` ile bağı yeni yola açıkça çeker (taşınan vault'ta `beyin.py update` bu adım
+yapılana kadar durur); ayrıntı için [MULTI-MACHINE](MULTI-MACHINE.md#vaultu-başka-klasöre-ya-da-hesaba-taşımak).
 
 ### Adımlar
 
