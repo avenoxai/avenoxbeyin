@@ -94,7 +94,7 @@ APP_JS = r"""
   const meta = function (name) { const node = document.querySelector('meta[name="' + name + '"]'); return node ? node.content : ''; };
   const CSRF = meta('beyin-csrf');
   const SALT_OKUNUR = meta('beyin-salt-okunur') === '1';
-  const DURUM = { inbox: 'Gelen', active: 'Aktif', waiting: 'Bekliyor', blocked: 'Engelli', done: 'Bitti', cancelled: 'İptal' };
+  const DURUM = { inbox: 'Gelen', active: 'Aktif', waiting: 'Bekliyor', blocked: 'Engellendi', done: 'Bitti', cancelled: 'İptal' };
   const TUR = { task: 'görev', note: 'not', receipt: 'receipt', inference: 'çıkarım', preference: 'tercih' };
   const DOKTOR = { ok: ['Sağlıklı', 'iyi'], never_seen: ['Hook henüz çalışmadı', 'uyari'], degraded: ['Dikkat gerekiyor', 'uyari'],
     failed: ['Hata', 'kotu'], invalid: ['Geçersiz', 'kotu'] };
@@ -173,7 +173,7 @@ APP_JS = r"""
       const sayim = {};
       sonuclar[1].value.gorevler.forEach(function (g) { sayim[g.durum] = (sayim[g.durum] || 0) + 1; });
       const acik = (sayim.inbox || 0) + (sayim.active || 0) + (sayim.waiting || 0) + (sayim.blocked || 0);
-      alan.append(kart('Açık görev', String(acik), el('span', { class: 'rozet', text: (sayim.active || 0) + ' aktif · ' + (sayim.blocked || 0) + ' engelli' })));
+      alan.append(kart('Açık görev', String(acik), el('span', { class: 'rozet', text: (sayim.active || 0) + ' aktif · ' + (sayim.blocked || 0) + ' engellenmiş' })));
     }
     const liste = bosalt($('kokpit-makbuzlar'));
     if (sonuclar[2].status === 'fulfilled') {

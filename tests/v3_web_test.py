@@ -353,7 +353,7 @@ class WebAssetTest(unittest.TestCase):
         page = ui.index_page('x', False)
         for text in ('Görevler', 'Hafıza', 'Eşitle', 'Sunucuyu kapat', 'Başlık', 'Açıklama', 'Sıkıştır', 'Önizleme'):
             self.assertIn(text, page)
-        for text in ("'İptal'", "'Engelli'", "'Bekliyor'", 'Görev oluşturuldu'):
+        for text in ("'İptal'", "'Engellendi'", "'Bekliyor'", 'Görev oluşturuldu'):
             self.assertIn(text, ui.APP_JS)
         self.assertNotRegex(page + ui.APP_JS, '[–—â]')
 
