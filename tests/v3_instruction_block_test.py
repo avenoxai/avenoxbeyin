@@ -32,7 +32,8 @@ RULES = '# Kurallarım\nUSER_RULE_SENTINEL: yalnız AGENTS.md içinde yaşar.\n'
 CLAUDE = '# Claude kuralları\nBu dosya kendi talimatlarını taşır.\n'
 IMPORT = b'@AGENTS.md\n'
 STARTER_TEXTS = ('template/.agents/skills/beyin/SKILL.md', 'template/.agents/skills/beyin-doktor/SKILL.md',
-                 'template/.agents/skills/beyin-guncelle/SKILL.md', 'template/CLAUDE.md')
+                 'template/.agents/skills/beyin-guncelle/SKILL.md', 'template/.agents/skills/beyin-kontrol/SKILL.md',
+                 'template/CLAUDE.md')
 
 
 def hard_wrapped_lines(text):
