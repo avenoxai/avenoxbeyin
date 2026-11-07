@@ -383,7 +383,12 @@ def human_result(result, command, installed_version=None):
             d7_text = ''
             if d7.get('total', 0) > 0 and d7.get('ratio') is not None:
                 d7_text = ', son 7 gun: %' + str(int(round(d7['ratio'] * 100)))
-            lines.append('Makbuz kapsami: %' + str(pct) + ' (' + str(cov['covered']) + '/' + str(cov['total']) + ' oturum' + d7_text + ')')
+            # A question-only session needs no receipt; name how many of the missing ones saw no edit (#212).
+            unobserved = cov.get('missing_no_observed_edit')
+            unobserved_text = ('; ' + str(unobserved) + ' eksik oturumda duzenleme gozlenmedi'
+                               if isinstance(unobserved, int) and unobserved > 0 else '')
+            lines.append('Makbuz kapsami: %' + str(pct) + ' (' + str(cov['covered']) + '/' + str(cov['total']) + ' oturum' + d7_text + ')'
+                         + unobserved_text)
         kf = result.get('knowledge_freshness')
         if isinstance(kf, dict) and kf.get('status') == 'unavailable':
             lines.append('Son bilgi damitmasi: olculemedi (' + str(kf.get('error') or 'hata') + ')')

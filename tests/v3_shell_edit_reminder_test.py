@@ -265,6 +265,18 @@ class ShellEditReminderTest(unittest.TestCase):
         shell = [event for event in events if event.get('observed') == 'shell']
         self.assertEqual([(event['event'], event['session']) for event in shell], [('PostToolUse', digest('covered'))])
 
+    def test_doctor_names_missing_sessions_without_observed_edits(self):
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        self.addCleanup(lambda: sys.path.remove(str(ROOT / 'scripts')))
+        import beyin_entry
+        coverage = {'ratio': 0.25, 'covered': 1, 'total': 4, 'missing': 3, 'missing_no_observed_edit': 2,
+                    'last_7d': {'ratio': 0.25, 'total': 4}}
+        text = beyin_entry.human_result({'status': 'ok', 'receipt_coverage': coverage}, 'doctor')
+        self.assertIn('Makbuz kapsami: %25 (1/4 oturum, son 7 gun: %25); 2 eksik oturumda duzenleme gozlenmedi', text)
+        text = beyin_entry.human_result({'status': 'ok', 'receipt_coverage': dict(coverage, missing_no_observed_edit=0)}, 'doctor')
+        self.assertIn('Makbuz kapsami: %25 (1/4 oturum, son 7 gun: %25)\n', text + '\n')
+        self.assertNotIn('gozlenmedi', text)
+
 
 class ShellEditUnitTest(unittest.TestCase):
     def setUp(self):
