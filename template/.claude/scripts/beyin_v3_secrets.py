@@ -25,11 +25,15 @@ import sqlite3
 # end: API_KEY_COUNT and tokenizer settings are not credential assignments.
 _SECRET_NAME = (r"(?a:(?:[a-z_][a-z0-9_]*_|_)?)"
                 r"(?:api[_ -]?key|access[_ -]?token|token|secret|password|passwd)")
+# The name boundary is ASCII like the prefix. Unicode IGNORECASE lets [a-z] match
+# the Turkish İ and ı, which hid the whole value of KİŞİSEL_API_KEY=... while
+# MÜŞTERI_API_KEY=... was masked.
+_NAME_START = r"(?a:(?<![a-z0-9_]))"
 
 
 BUILTIN_PATTERNS = (
     re.compile(r"(?i)(?<=[?&])" + _SECRET_NAME + r"=[^&\s]{8,}"),
-    re.compile(r"""(?i)(?<![a-zA-Z0-9_])(?:\\{0,8}["\']?""" + _SECRET_NAME +
+    re.compile(r"""(?i)""" + _NAME_START + r"""(?:\\{0,8}["\']?""" + _SECRET_NAME +
                r"""\\{0,8}["\']?)\s*[:=]\s*(?:\\{0,8}["\']\S{8,}\\{0,8}["\']|[^"\'\s,;][^\s,;]{7,})"""),
     re.compile(r"(?<=://)[^/\s?#:]*:[^/\s?#]*(?=@[^/\s?#@]+)"),
     re.compile(r"\bgh(?:p|o|u|s|r)_[A-Za-z0-9]{20,255}\b"),

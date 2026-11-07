@@ -65,6 +65,20 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(redact(name + '=' + VALUE, self.state), ('[REDACTED]', 1))
 
+    def test_turkish_letters_in_a_prefix_never_hide_the_value(self):
+        # Unicode IGNORECASE lets [a-z] match İ and ı. A name boundary that did so
+        # left the whole value of these names visible while MÜŞTERI_API_KEY masked.
+        for name in ('KİŞİSEL_API_KEY', 'GİZLİ_TOKEN', 'ŞİFRE_PASSWORD', 'MÜŞTERİ_SECRET',
+                     'MÜŞTERI_API_KEY', 'çalışma_alanı_token', 'ÖZEL_PASSWD'):
+            for text in (f'{name}={VALUE}', f'export {name}="{VALUE}"', f'"{name}": "{VALUE}"'):
+                with self.subTest(text=text):
+                    filtered, count = redact(text, self.state)
+                    self.assertEqual(count, 1)
+                    self.assertNotIn(VALUE, filtered)
+                    self.assertTrue(filtered.endswith('[REDACTED]'), filtered)
+                    kept = filtered[:-len('[REDACTED]')]
+                    self.assertTrue(text.startswith(kept), filtered)
+
     def test_prefixed_query_assignment_preserves_other_parameters(self):
         for name in NAMES:
             text = f'https://example.com/?{name}={VALUE}&format=markdown'
