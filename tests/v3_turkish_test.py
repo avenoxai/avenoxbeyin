@@ -42,6 +42,8 @@ NEGATIVES = (
     # #430 these imperative stems stay distinct: a command in a prompt is not a topic.
     ('göster', 'göstermek'), ('çalıştır', 'çalıştırıyor'), ('değiştir', 'değiştirir'),
     ('çalış', 'çalışıyor'), ('göster', 'gösterdi'), ('çalıştır', 'çalışır'),
+    # #430 review: so does the infinitive, how a prompt asks for an action ("değiştirmek gerekiyor").
+    ('çalıştı', 'çalışmak'), ('gönderdi', 'göndermek'), ('değiştirdi', 'değiştirmek'),
     # #430 a negation keeps its own stem (the audit pairs the two), and so does the noun.
     ('çalışıyor', 'çalışmıyor'), ('çalışıyor', 'çalışma'),
     # #430 the suffix that reaches a short vowel-loss form decides: devrim, karne and Emre stay.
@@ -60,8 +62,8 @@ VERB_GROUPS = (
 # Issue #430: active verbs on other consonants fold onto the past tense stem ("çalıştı").
 ACTIVE_VERB_GROUPS = (
     ('çalışır', 'çalıştı', 'çalışıyor', 'çalışıyorlar', 'çalışıyordu', 'çalışmalı',
-     'çalışmasın', 'çalışacak', 'çalışacağı', 'çalışmış', 'çalışmak', 'çalışmaktan', 'ÇALIŞIYOR'),
-    ('gönderir', 'gönderdi', 'gönderiyor', 'göndermeli', 'gönderecek', 'göndermek'),
+     'çalışmasın', 'çalışacak', 'çalışacağı', 'çalışmış', 'ÇALIŞIYOR'),
+    ('gönderir', 'gönderdi', 'gönderiyor', 'göndermeli', 'gönderecek'),
     ('değişir', 'değişti', 'değişiyor', 'değişmeli', 'değişecek'),
     ('anlatır', 'anlattı', 'anlatıyor', 'anlatmalı'),
     ('kaydediyor', 'kaydetti', 'kaydetmeli', 'kaydedecek'),
@@ -411,6 +413,17 @@ class TurkishActiveVerbIssueTest(VaultTestCase):
             with self.subTest(passages=passages):
                 self.assertEqual(self.context('şu testleri çalıştır ve sonucu göster'), [])
                 self.assertEqual(self.context('çalış'), [])
+
+    def test_infinitive_request_stays_silent(self):
+        # #430 review: a request in the infinitive must not meet a past tense in a note.
+        self.ingest('derleme', 'Derleme betiği kodu yeniden çalıştırdı; testler geçti.', 'knowledge/derleme.md')
+        self.ingest('rapor', 'Rapor sonucu dün akşam ekibe gönderdi.', 'knowledge/rapor.md')
+        for passages in (True, False):
+            self.store.STRICT_PASSAGES = passages
+            with self.subTest(passages=passages):
+                self.assertEqual(self.context('kodu çalıştırmak için ne lazım'), [])
+                self.assertEqual(self.context('sonucu göndermek gerekir mi'), [])
+                self.assertEqual(self.context('derleme betiği kodu çalıştırdı mı'), ['derleme'])
 
 
 class TurkishHyphenGateTest(VaultTestCase):

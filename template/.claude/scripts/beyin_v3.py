@@ -566,16 +566,17 @@ _SUFFIXES = (
     ("masin", 4, "ln"), ("mesin", 4, "ln"), ("mali", 5, "ln"), ("meli", 5, "ln"),
     ("iyordu", 4, "ln"), ("uyordu", 4, "ln"), ("iyor", 4, "ln"), ("uyor", 4, "ln"),
     ("acak", 4, "ln"), ("ecek", 4, "ln"), ("acag", 4, "ln"), ("eceg", 4, "ln"),
-    # Other consonant stems (#430): calisiyor, calisir, calismali, calisacak, calismis and
-    # calismak reach the past tense stem "calist", which "calisti" already peels to. The
-    # bare stem stays apart, so an imperative prompt (goster, calistir) still matches no
-    # conjugation of its verb in a note. m stays out: calismiyor is the negation, and the
-    # audit pairs it against calisiyor. The aorist needs a vowel before one consonant
-    # other than d: calistir (causative) and kalitedir (copula) are not calis+ir or kalited+ir.
+    # Other consonant stems (#430): calisiyor, calisir, calismali, calisacak and calismis
+    # reach the past tense stem "calist", which "calisti" already peels to. The bare stem
+    # and the infinitive stay apart: they are how a prompt asks for an action (goster,
+    # calistirmak gerekiyor), so such a prompt still matches no conjugation of its verb in
+    # a note. m stays out: calismiyor is the negation, and the audit pairs it against
+    # calisiyor. The aorist needs a vowel before one consonant other than d: calistir
+    # (causative) and kalitedir (copula) are not calis+ir or kalited+ir.
     ("iyordu", 4, "verb"), ("uyordu", 4, "verb"), ("iyor", 4, "verb"), ("uyor", 4, "verb"),
     ("masin", 4, "verb"), ("mesin", 4, "verb"), ("mali", 5, "verb"), ("meli", 5, "verb"),
     ("acak", 4, "verb"), ("ecek", 4, "verb"), ("acag", 4, "verb"), ("eceg", 4, "verb"),
-    ("mak", 4, "verb"), ("mek", 4, "verb"), ("mis", 4, "verb"), ("mus", 4, "verb"),
+    ("mis", 4, "verb"), ("mus", 4, "verb"),
     ("ir", 5, "aorist"), ("ur", 5, "aorist"),
     ("imiz", 4, "consonant"), ("umuz", 4, "consonant"), ("iniz", 4, "consonant"), ("unuz", 4, "consonant"),
     ("nden", 5, "vowel"), ("ndan", 5, "vowel"),
