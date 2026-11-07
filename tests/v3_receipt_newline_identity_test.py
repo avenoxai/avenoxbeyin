@@ -338,7 +338,7 @@ class ReceiptNewlineIdentityTest(unittest.TestCase):
             self.assertEqual(view.read_bytes(), raw)
 
     def test_released_engine_view_drops_private_summary_on_recovery(self):
-        (self.vault / 'notes/gizli.md').write_text('---\nvisibility: private\n---\nGizli.\n', encoding='utf-8')
+        (self.vault / 'notes/gizli.md').write_bytes(b'---\nvisibility: private\n---\nGizli.\n')
         self.cli('sync')
         self.seed_released('notes/gizli.md')
         for view in self.views():
