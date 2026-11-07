@@ -292,12 +292,14 @@ class AgentPosixGuardianTest(unittest.TestCase):
 
     def test_independent_deadline_stops_cli_and_grandchild(self):
         command, ids = self.child_command()
-        owned = yakala._AgentPosixProcess(command, deadline_ns=time.monotonic_ns() + 1200000000,
+        # Long enough for two interpreters to start on a loaded CI runner and write their PIDs
+        # before the deadline; a 1.2 s budget failed at load average ~150.
+        owned = yakala._AgentPosixProcess(command, deadline_ns=time.monotonic_ns() + 5000000000,
                                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                           stderr=subprocess.DEVNULL, close_fds=True)
         self.addCleanup(owned.close)
-        self.wait_for(ids.is_file)
-        owned.process.wait(timeout=5)
+        self.wait_for(ids.is_file, timeout=10)
+        owned.process.wait(timeout=10)
         with self.assertRaises(TimeoutError):
             owned.result_code()
         self.assert_children_stopped(ids)
