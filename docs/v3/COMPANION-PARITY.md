@@ -83,6 +83,20 @@ Kısa görünüm de sığmadığında bütün başlıklar korunur; alan dosyadak
 `[Thread overview clipped; read source]` işaretiyle biter. Yüzlerce konuda her başlığa bir iki
 karakter düşüp anlamsız parçalar oluşmaz.
 
+İstemcinin kendi talimat dosyası bir companion dosyasını zaten tam yüklüyorsa açılış onu
+ikinci, kırpılmış bir kopya olarak tekrar etmez ([#610](https://github.com/avenoxai/avenoxbeyin/issues/610)).
+Bugün yalnız Claude Code için tanımlıdır: oturum kasa kökünde ya da kasa içindeki bir klasörde
+başladıysa, çalışma klasöründen kasa köküne kadar her klasördeki `CLAUDE.md`, `.claude/CLAUDE.md`
+ve `CLAUDE.local.md` ile bunların `@yol` içe aktarmaları (içe aktaran dosyaya göre göreli, en
+çok dört adım; kod aralığı, kod bloğu ve yorum içindekiler sayılmaz; boşluk `\ ` ile yazılır,
+tırnaklı yol içe aktarılmaz) okunur. Çalışma klasörünün dışına çıkan içe aktarma Claude Code'da
+kullanıcı onayı beklediği için sayılmaz; kasa dışında başlayan oturum, Codex ve öbür istemciler
+bütün kaynakları almaya devam eder. Eşleşen bölümün etiketi kalır, gövdesi
+`[Loaded in full by CLAUDE.md @import; not repeated here]` işaretçisine iner ve açılan alan
+konulara ve devir kartlarına gider. Yalnız kasa içindeki dosyalar okunur, hiçbir şey yazılmaz;
+doğrulanamayan bir yol tekrar edilir, düşürülmez. `doctor` içindeki `companion_rules_opening`
+içe aktarılan `Kurallar.md` için `imported: true` döner ve kırpma bildirmez.
+
 Claude/Codex açılışında yeniden üretim, istemcinin UTF-16/UTF-8 ölçüsüne sığana kadar
 küçülen bütçeyle tekrarlanır. Hook'un ayrı bildirimleri de karakter bütçesinden düşülür;
 sondaki güvenlik kesmesinin companion kaynaklarını kaybetmesine güvenilmez.
