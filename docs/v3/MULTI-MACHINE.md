@@ -326,11 +326,52 @@ yolu (`hook_script_missing`, `other_vault`, `python_missing`) verir ([#204](http
 
 Çözüm, kurucuyu bu makinede yeni vault yoluyla yeniden çalıştırmaktır. Eski state klasörünü
 (ya da kopyasını) `--state` ile ver; kurulum kaydı oradadır ve kurucu yolları taşıyan bütün
-dosyaları yeniden üretir:
+dosyaları yeniden üretir. State'teki indeks (`memory.sqlite3`) de kurulduğu vault yoluna
+bağlıdır ve başka bir yoldaki vault'a açılmaz. Vault taşındıysa bu bağı `--rebind-state`
+açıkça yeni yola çeker ([#593](https://github.com/avenoxai/avenoxbeyin/issues/593)):
 
 ```text
-py -3 scripts/install_v3.py --vault "C:\Users\<yeni>\Beynim" --state "<eski state klasörünün kopyası>"
+py -3 scripts/install_v3.py --vault "C:\Users\<yeni>\Beynim" --state "<eski state klasörü ya da kopyası>" --rebind-state
 ```
+
+macOS ve Linux'ta aynı komut `python3 scripts/install_v3.py --vault "/yeni/yol/Beynim" --state
+"<eski state klasörü>" --rebind-state` biçimindedir. Eski state yolu vault'taki
+`.beyin-runtime.json` dosyasının `state` alanındadır.
+
+Bayrak verilmezse ve indeks başka bir yola bağlıysa kurucu hiçbir dosyayı değiştirmeden durur,
+eski ve yeni yolu gösterip bayrağı önerir. Taşınan vault'ta `beyin.py update` de aynı hatayla
+durur; `doctor` ve `sync` ise `runtime belongs to another vault` hatasına bu adımı anlatan bir
+`hint` ekler. Bayrakla kurucu bağı yalnız şu koşullarda değiştirir:
+
+- Kayıtlı eski yol artık yoktur ya da aynı klasörün başka bir adıdır (yalnız harf büyüklüğü
+  değişen ad, eski yolda bırakılmış bir bağlantı).
+- Eski yolda hala bir klasör varsa ve onun `.beyin-runtime.json` dosyası bu state'i gösteriyorsa
+  ya da okunamıyorsa kurucu reddeder: bu taşıma değil kopya olabilir ve iki vault aynı state'i
+  paylaşırdı. Eski klasör artık kullanılmayan bir kalıntıysa onu kenara taşı ya da adını
+  değiştir. İki kopyayı da tutacaksan yenisini state klasörünün bir **kopyasıyla** kur; eski
+  vault kendi state'iyle çalışmaya devam eder.
+- Vault'taki `.beyin-runtime.json`, bu state'in kurulum kaydının yazdığı dosyayla aynıdır.
+  Başka bir vault'un state'i bu yolla bağlanamaz.
+- Kayıtlı yol bu makinede mutlak bir yol değilse (başka işletim sisteminden gelen state) kurucu
+  reddeder.
+
+Eski yolun yok görünmesi taşımayı tek başına kanıtlamaz: çıkarılmış bir disk ya da o an bağlı
+olmayan bir ağ klasörü de yok görünür. Bayrağı yalnız vault'u gerçekten taşıdıysan ver. Yanlış
+bir bağlamada bile iki vault'un kaydı karışmaz: indeks tek bir yola bağlı kalır ve öbür vault'un
+komutları `runtime belongs to another vault` ile durur.
+
+Kurucu bağı değiştirmeden önce bütün çakışma kontrollerini bitirir, indeksin tam kopyasını
+state klasörüne `memory-before-rebind.sqlite3` adıyla yazar (sonraki kopyalar `.1`, `.2`
+ekiyle, eskisi silinmez) ve bağı tek bir SQLite transaction içinde değiştirir. Kayıtlar, olay
+geçmişi ve `hook_done` kaydı korunur; sonuç `rebound` alanında (`from`, `to`, `backup`) görünür.
+`--plan --rebind-state` aynı kontrolleri yapar, değişecek bağı `rebind` alanında gösterir ve
+hiçbir şey yazmaz. `doctor` ve `sync` sağlıklıysa yedek kopyayı kendin silebilirsin; hassas
+not metni taşıyabileceği için eşitleme ve Git dışında kalmalıdır.
+
+`beyin.py rollback` bu kurulumun dosya değişikliklerini geri alır, indeks bağını geri almaz:
+bağ vault'un bulunduğu yeri gösterir. Geri alınan hook dosyaları yine eski yolu gösterir
+(`doctor`: `hook_paths: stale`); geri dönülen sürümün kurucusunu aynı `--state` ile yeni yolda
+yeniden çalıştır. Bağ zaten bu yolu gösterdiği için bayrak gerekmez.
 
 Eski state yoksa kurucu kayıtsız bulduğu kurulum dosyalarını (`.beyin-runtime.json` gibi)
 `Unmanaged file conflict` ile korur ve durur. Hook dosyaları başka makineden git'le geldiyse

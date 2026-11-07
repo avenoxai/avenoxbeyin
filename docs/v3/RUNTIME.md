@@ -4,6 +4,8 @@ This module is an opt-in foundation, not a replacement installer or lifecycle mi
 
 `template/.claude/scripts/beyin_v3.py` exposes `MemoryStore(state_dir, vault_root)`. SQLite records and receipts persist in `state_dir/memory.sqlite3`; the runtime directory is private to the local account. Each operation owns and closes its connection. Write operations use `BEGIN IMMEDIATE` transactions; this is local process coordination, not distributed cloud synchronization.
 
+The database records the resolved vault root it was created for (`metadata.vault_root`) and refuses any other root with `runtime belongs to another vault`, so two vaults never share one index. Nothing rebinds it implicitly. For a moved vault, `install_v3.py --state <state> --rebind-state` moves the binding after verifying that the recorded folder is gone or is the same folder, or provably uses another state root, and that the vault carries this state's installation pin; it copies the database to `memory-before-rebind.sqlite3` first. See [MULTI-MACHINE.md](MULTI-MACHINE.md#vaultu-başka-klasöre-ya-da-hesaba-taşımak).
+
 ## Hook acknowledgement retention
 
 Every processed hook event is first acknowledged as a private `state/hook-done/<sha256>.json` marker. These recent markers prevent duplicate work without needing to read the database when the same event is immediately replayed.
