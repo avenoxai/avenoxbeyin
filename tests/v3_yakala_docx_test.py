@@ -1,15 +1,20 @@
 """Captured DOCX text is usable without an optional parser package."""
 
 import io
+import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
 
+from v3_package_helpers import inherited_env
+
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
+SCRIPTS = ROOT / 'template/.claude/scripts'
+sys.path.insert(0, str(SCRIPTS))
 import beyin_v3_yakala as yakala
 from beyin_v3_docx import extract_docx
 
@@ -133,6 +138,58 @@ class YakalaDocxTest(unittest.TestCase):
         compressed_size = int.from_bytes(raw[local + 18:local + 22], 'little')
         raw[data_offset + compressed_size // 2] ^= 0xff
         self.assertEqual(extract_docx(bytes(raw))['state'], 'failed')
+
+
+class CopiedCliDocxTest(unittest.TestCase):
+    """The hotkey listener runs a copy of the Yakala file alone from the state folder (#501)."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='yakala-docx-copy-')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.vault, self.state = self.root / 'vault', self.root / 'state'
+        self.home, self.cwd = self.root / 'home', self.root / 'neutral'
+        for folder in (self.vault, self.state / 'yakala', self.home, self.cwd):
+            folder.mkdir(parents=True)
+        (self.vault / '.beyin-runtime.json').write_text(
+            json.dumps({'state': str(self.state)}), encoding='utf-8')
+        self.runner = self.state / 'yakala/beyin_v3_yakala.py'
+        self.runner.write_bytes((SCRIPTS / 'beyin_v3_yakala.py').read_bytes())
+        self.source = self.cwd / 'müşteri-raporu.docx'
+        self.source.write_bytes(document('<w:p><w:r><w:t>Şifre değil, Müşteri özeti</w:t></w:r></w:p>'))
+        self.env = inherited_env(HOME=str(self.home), USERPROFILE=str(self.home),
+                                 XDG_STATE_HOME=str(self.root / 'xdg'),
+                                 LOCALAPPDATA=str(self.home / 'local'), APPDATA=str(self.home / 'roaming'),
+                                 PATH='', BEYIN_UPDATES_OFF='1', BEYIN_V3_NO_SPAWN='1')
+        self.env.pop('PYTHONPATH', None)
+        self.env.pop('PYTHONHOME', None)
+
+    def command(self, *args):
+        # -I -S: neither the script folder nor PYTHONPATH can supply a sibling module.
+        result = subprocess.run([sys.executable, '-I', '-S', str(self.runner), '--vault', str(self.vault),
+                                 '--json', *args], cwd=self.cwd, env=self.env, capture_output=True,
+                                text=True, encoding='utf-8', timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def capture_and_process(self):
+        captured = self.command('ekle', str(self.source))
+        processed = self.command('isle', captured['id'], '--ses-yok')
+        return processed['kartlar'][0]
+
+    def test_copy_without_reader_keeps_agent_fallback(self):
+        row = self.capture_and_process()
+        self.assertEqual((row['durum'], row['yontem']), ('cikarildi', 'ajan-okusun'), row)
+        self.assertIn('müşteri-raporu.docx: docx_reader_missing', row['not'])
+        self.assertNotIn('ModuleNotFoundError', row['not'])
+
+    def test_adjacent_reader_loads_without_script_folder_on_path(self):
+        (self.runner.parent / 'beyin_v3_docx.py').write_bytes((SCRIPTS / 'beyin_v3_docx.py').read_bytes())
+        row = self.capture_and_process()
+        self.assertEqual((row['durum'], row['yontem']), ('cikarildi', 'dosya'), row)
+        stored = (self.vault / row['ham']).read_text(encoding='utf-8')
+        self.assertIn('Şifre değil, Müşteri özeti', stored)
+        self.assertIn('visibility: private', stored)
 
 
 if __name__ == '__main__':

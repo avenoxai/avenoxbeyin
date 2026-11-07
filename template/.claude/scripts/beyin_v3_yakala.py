@@ -1178,6 +1178,27 @@ def _safe_vault_file(vault_root, link):
     return path
 
 
+def _docx_reader():
+    """The stdlib DOCX reader ships beside this file; None when this file runs alone.
+
+    The hotkey listener runs a copy of this file alone from the state folder (#501), and
+    `python -I` leaves the script folder off sys.path. A missing reader is the agent fallback.
+    """
+    try:
+        import beyin_v3_docx
+        return beyin_v3_docx
+    except ImportError:
+        pass
+    source = Path(__file__).resolve().with_name('beyin_v3_docx.py')
+    if not source.is_file():
+        return None
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('beyin_v3_docx', source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def extract(vault, card, found, allow_audio=True, info=None):
     """Return (text, method, note). Prefer what is already captured, then the cheapest fetch."""
     meta, body = card['meta'], card['body']
@@ -1215,9 +1236,12 @@ def extract(vault, card, found, allow_audio=True, info=None):
                 except (OSError, subprocess.TimeoutExpired):
                     pass
             elif path.suffix.lower() == '.docx':
-                from beyin_v3_docx import MAX_SOURCE, extract_docx
+                reader = _docx_reader()
+                if reader is None:
+                    document_issues.append(path.name + ': docx_reader_missing')
+                    continue
                 with path.open('rb') as source:
-                    result = extract_docx(source.read(MAX_SOURCE + 1))
+                    result = reader.extract_docx(source.read(reader.MAX_SOURCE + 1))
                 if result['text']:
                     parts.append('## ' + path.name + '\n\n' + result['text'])
                 if result['state'] != 'ready':
