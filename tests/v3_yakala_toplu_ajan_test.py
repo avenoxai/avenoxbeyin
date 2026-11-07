@@ -186,6 +186,22 @@ class BatchPreviewTest(BatchFiles):
         submitted = self.submit(request=None, use_why=True)
         self.assertEqual([member['card_id'] for member in self.members(submitted)], [card['id']])
 
+    def test_clipper_card_with_a_local_address_is_skipped_not_fatal(self):
+        self.configure()
+        _, card = self.card(why='Bu kaynagi incele.')
+        local = card['path'].parent / 'yerel-sayfa.md'
+        local.write_text('---\ntur: yakala\ndurum: bekliyor\nurl: http://127.0.0.1:8080/panel\n---\n'
+                         '# Yerel panel\n\n## Neden\n\nIncele\n', encoding='utf-8')
+        before = local.read_bytes()
+        result = self.bulk(request=None, use_why=True)
+        self.assertEqual([row['id'] for row in result['kartlar']], [card['id']])
+        self.assertIn('yerel-sayfa', {row['id'] for row in result['atlanan']})
+        filtered = self.bulk(domains=['example.com'])
+        self.assertEqual((filtered['secilen'], filtered['atlanan']), (0, []))
+        submitted = self.submit(request=None, use_why=True)
+        self.assertEqual([member['card_id'] for member in self.members(submitted)], [card['id']])
+        self.assertEqual(local.read_bytes(), before)
+
     def test_linked_card_is_refused_before_reading_its_target(self):
         _, card = self.card()
         outside = Path(self.tmp.name) / 'outside.md'

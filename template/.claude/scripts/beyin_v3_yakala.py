@@ -11955,11 +11955,18 @@ def _agent_batch_plan(vault, state, ids=(), request=None, use_why=False, kinds=(
         if kinds and meta.get('kaynak_turu') not in kinds:
             continue
         source = meta.get('url') or ''
-        if not isinstance(source, str):
-            raise ValueError('Kartin URL alani gecersiz: ' + card['id'])
-        if source:
-            _safe_source_url(source)
-        host = (urlparse(source).hostname or '').lower().rstrip('.').removeprefix('www.').removeprefix('m.')
+        try:
+            if not isinstance(source, str):
+                raise ValueError('Kartin URL alani gecersiz.')
+            if source:
+                _safe_source_url(source)
+            host = (urlparse(source).hostname or '').lower().rstrip('.').removeprefix('www.').removeprefix('m.')
+        except ValueError as exc:
+            # A Web Clipper card may hold a local or malformed address. The worker would refuse
+            # it anyway; one such card must not make every other card unpreviewable.
+            if not normalized_domains:
+                excluded.append({'id': card['id'], 'neden': 'Kaynak adresi ajan icin izinli degil: ' + str(exc)[:160]})
+            continue
         if normalized_domains and host not in normalized_domains:
             continue
         if card['id'] in active:

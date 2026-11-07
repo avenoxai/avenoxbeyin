@@ -1145,7 +1145,9 @@ adaydir. Alt klasorler, arsivler ve baska vault'lar taranmaz. `ajanda`,
 `onay-bekliyor`, `islendi`, `cikarildi` ve `hata` kartlari toplu gonderime alinmaz.
 Kullanici kart durumunu elle `bekliyor` yapsa bile mevcut aktif is sahipligi
 ikinci bir is olusturulmasini engeller. Tekli `ajan-gonder` da ayni kuyruk kilidini
-kullanir; `KART_ID` ve `KART_ID.md` ayni kart olarak denetlenir.
+kullanir; `KART_ID` ve `KART_ID.md` ayni kart olarak denetlenir. Yerel/ozel ag adresi
+veya gecersiz URL tasiyan bir kart (ornegin Web Clipper ile kaydedilmis yerel bir sayfa)
+secilmez; onizlemenin `atlanan` listesinde gerekcesiyle gorunur ve diger kartlari engellemez.
 
 | Secenek | Davranis |
 |---|---|
