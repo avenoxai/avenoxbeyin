@@ -1407,8 +1407,8 @@ class MemoryStore:
         hub note can win every query; a presence-only idf weight still cannot tell a note that
         is about a term from one that mentions it once. Records with no shared term (scoped
         listings, snapshots) weigh 0 and keep their previous updated_at order. factors scales
-        the BM25 part of a record's weight only (dominant-project demotion); name, due and
-        closed-task adjustments keep their size, so a negative weight is never raised.
+        the BM25 part of a record's weight only (opt-in dominant-project demotion); name, due
+        and closed-task adjustments keep their size, so a negative weight is never raised.
         """
         total = len(term_counts)
         lengths = {rid: sum(counts.values()) for rid, counts in term_counts.items()}
@@ -1434,30 +1434,41 @@ class MemoryStore:
         return self._by_weight(weighted)
 
     # Unscoped explicit lookups (`beyin.py context` without --project, which passes
-    # explicit=True; not strict, not a snapshot) get two extra rules. Scoped (--project)
+    # explicit=True; not strict, not a snapshot) can opt into two extra rules in the runtime
+    # retrieval.json (docs/v3/PREFERENCES.md). Both are off by default; scoped (--project)
     # queries, the strict hook path, companion retrieval, the advisor pools and plain
-    # retrieve()/candidates() calls are unchanged.
-    # Admission: a multiword query needs EXPLICIT_MIN_SHARED shared query words, the same
-    # gate as the strict hook path, so a question that shares one common word with some note
-    # ("password", "recipe") abstains instead of returning that note. A full name match or a
-    # word naming the record's own project still admits it alone; one-word queries keep
-    # their single shared word, and a typo fix counts for the word it fixes.
-    # Dominant project: when one project owns more than DOMINANT_PROJECT_SHARE of the
-    # eligible records (in an index of at least DOMINANT_PROJECT_MIN_RECORDS), the BM25 part
-    # of its records' weights is multiplied by DOMINANT_PROJECT_WEIGHT, so a large course or
-    # archive project cannot fill every unscoped top-5 by volume alone. Nothing is removed.
-    # The demotion is skipped when a query word names that project (its id, or the name of
-    # a folder mapped to it in .beyin-projects.json).
-    # Calibration (real vault, 698 notes, one project 83 %): weights 0.5 / 0.35 / 0.25 / 0.15
-    # gave English top-1 15 / 15 / 16 / 16 of 20 (13-14 without demotion); 0.25 is the
-    # mildest setting at the plateau. The admission rule took out-of-scope probes 0/4 -> 4/4.
-    EXPLICIT_MIN_SHARED = 2
+    # retrieve()/candidates() calls never use them.
+    # Admission ("unscoped_min_shared": 2): a multiword query needs two shared query words,
+    # the same gate as the strict hook path, so a question that shares one common word with
+    # some note ("password", "recipe") abstains instead of returning that note. A full name
+    # match or a word naming the record's own project still admits it alone; one-word
+    # queries keep their single shared word, and a typo fix counts for the word it fixes.
+    # Dominant project ("unscoped_dominant_weight": 0 < w < 1): when one project owns more
+    # than DOMINANT_PROJECT_SHARE of the eligible records (in an index of at least
+    # DOMINANT_PROJECT_MIN_RECORDS), the BM25 part of its records' weights is multiplied by
+    # w, so a large course or archive project cannot fill every unscoped top-5 by volume
+    # alone. Nothing is removed. The demotion is skipped when a query word names that
+    # project (its id, or the name of a folder mapped to it in .beyin-projects.json).
+    # Why opt-in (#532): on one 698-note vault whose course project held 83 % of the notes,
+    # w = 0.25 raised English top-1 from 14 to 16 of 20 but lowered top-3 from 18 to 17, and
+    # admission cost one later-read note its top-5 place (8 -> 7). On the repository's
+    # frozen fixtures queried through this path, demotion lowers recall whenever the answers
+    # live inside the dominant project, at every w from 0.25 to 0.9, and admission drops one
+    # expected decision note while it cuts everyday/agent-command noise from 12 and 13 to
+    # 5 and 4 of 15.
     DOMINANT_PROJECT_SHARE = 0.5
     DOMINANT_PROJECT_MIN_RECORDS = 20
-    DOMINANT_PROJECT_WEIGHT = 0.25
 
     def _unscoped_settings(self):
-        return self.EXPLICIT_MIN_SHARED, self.DOMINANT_PROJECT_WEIGHT
+        """(min_shared, dominant_weight) from the runtime retrieval.json; (1, 1.0) is off."""
+        try:
+            if _MODULE_DIR not in sys.path:
+                sys.path.insert(0, _MODULE_DIR)
+            from beyin_v3_passage import unscoped_settings
+        except ImportError:
+            return 1, 1.0
+        value = unscoped_settings(self.state_dir)
+        return value["min_shared"], value["dominant_weight"]
 
     def _record_projects(self, records):
         """Project of every record (scope file folders included) and the words naming each project."""
@@ -1477,7 +1488,7 @@ class MemoryStore:
 
     def _unscoped_rules(self, ranked, terms, typo_fixes, vocabularies, eligible, name_scores,
                         min_shared, dominant_weight):
-        """Admission and dominant-project factors for unscoped explicit lookups (see above).
+        """Opt-in admission and dominant-project factors for unscoped explicit lookups (see above).
 
         terms are the query's own words; typo_fixes maps a misspelled word to the vocabulary
         words searched for it, which count once, for that word. Returns (ranked, factors).
