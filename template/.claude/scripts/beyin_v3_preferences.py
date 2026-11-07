@@ -38,9 +38,20 @@ def preferences_path(vault):
     return path
 
 
+def _load(path):
+    """A settings file that does not parse names itself (#587); the exception type is kept."""
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except json.JSONDecodeError as exc:
+        raise json.JSONDecodeError(path.name + ' is not valid JSON: ' + exc.msg, exc.doc, exc.pos) from None
+    except UnicodeDecodeError as exc:
+        raise UnicodeDecodeError(exc.encoding, exc.object, exc.start, exc.end,
+                                 exc.reason + ' (' + path.name + ' is not UTF-8)') from None
+
+
 def read(vault):
     path = preferences_path(vault)
-    return validate(json.loads(path.read_text(encoding='utf-8')) if path.exists() else {})
+    return validate(_load(path) if path.exists() else {})
 
 
 def _daily_layout_path(vault):
@@ -56,7 +67,7 @@ def read_daily_layout(vault):
     path = _daily_layout_path(vault)
     if not path.exists():
         return 'v3'
-    value = json.loads(path.read_text(encoding='utf-8'))
+    value = _load(path)
     if (not isinstance(value, dict) or set(value) != {'schema', 'daily_layout'} or
             type(value['schema']) is not int or value['schema'] != 1 or
             value['daily_layout'] not in ('flat', 'v3')):

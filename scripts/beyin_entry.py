@@ -695,7 +695,10 @@ def main(argv=None):
         config_path = vault / '.beyin-runtime.json'
         if not config_path.is_file():
             raise ValueError('Kurulum ayari eksik; resmi V3 installer ile bu vault kurulumunu tamamlayin.')
-        config = json.loads(config_path.read_text(encoding='utf-8'))
+        try:
+            config = json.loads(config_path.read_text(encoding='utf-8'))
+        except ValueError as exc:  # JSONDecodeError or UnicodeDecodeError: name the file (#587)
+            raise ValueError('Kurulum ayari okunamadi: .beyin-runtime.json gecerli JSON degil (' + str(exc) + ').') from None
         directory = vault / '.claude/scripts'
         sys.path.insert(0, str(directory))
         cli = None
