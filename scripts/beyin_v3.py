@@ -1146,7 +1146,7 @@ def parser(note_namespace=None, is_json=False):
     pscope.add_argument("--folder", help="Vault-relative folder path")
     pscope.add_argument("--project", help="Project identifier for the folder")
     pscope.add_argument("--shared-unscoped", choices=["on", "off"],
-                        help="Toggle whether unassigned notes are visible in project scope")
+                        help="add only: toggle whether unassigned notes are visible in project scope")
     ingest_server = sub.add_parser("ingest-server", help="Local-first HTTP ingest server for mobile captures")
     ingest_server.add_argument("--host", default="127.0.0.1", help="Host interface to bind (default 127.0.0.1)")
     ingest_server.add_argument("--port", type=int, default=8484, help="Port to listen on (default 8484)")
