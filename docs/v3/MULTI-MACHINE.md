@@ -242,7 +242,10 @@ python3 beyin.py note-edit --file istek.json
 ```
 
 Windows'ta `python3` yerine `py -3` kullan. `note-read` JSON olarak `source`,
-`sha256`, `content` verir; dosya yoksa son iki alan `null` olur. `source`, mevcut
+`exists`, `sha256`, `content` verir; dosya yoksa `exists: false` olur, son iki alan
+`null` olur ve çıkış 0'dır, böylece not `note-edit` ile oluşturulabilir. Dosyanın
+var olması gerekiyorsa `--must-exist` ekle: eksik dosya `error` (`FileNotFoundError`)
+ve çıkış 1 verir. `source`, mevcut
 dosya ve üst klasörlerin diskteki gerçek yazımıdır; büyük/küçük harf veya Windows
 kısa ad takma adıyla istek verilmişse girişten farklı olabilir. Sonraki istekte
 bu dönen yolu kullan. Kanonik yol için yönetilen, gizli ve hariç tutulan kaynak
@@ -263,7 +266,8 @@ metin sessizce değiştirilmez. Önceden yazılmış sırrı silen düzenleme ka
 `written` veya `unchanged` çıkış 0, `conflict` çıkış 2, `error` çıkış 1.
 Eksik kaynak argümanı, eksik `--file` değeri ve bilinmeyen seçenek gibi komut
 kullanım hataları `usage_error` ve çıkış 64 verir; `note-read` / `note-edit`
-için bunlar da stdout'ta JSON'dur. `--help` olağan yardım metnini gösterir.
+için bunlar da stdout'ta JSON'dur. Hata nesnesi UTF-8 yazılır; Türkçe karakterler
+`\u` kaçışı yerine olduğu gibi görünür. `--help` olağan yardım metnini gösterir.
 Çakışmada yeniden oku ve diğer ajanın metnini koruyarak hedefli düzenlemeyi yeniden
 kur. Sadece hash'i yenileyip eski metni yeniden yazma; doğrudan dosya yazımıyla
 korumayı atlama. Atomik değiştirme tamamlandıktan sonraki dosya denetimi, dizin

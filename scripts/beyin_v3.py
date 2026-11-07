@@ -1101,6 +1101,8 @@ def parser(note_namespace=None, is_json=False):
     note.add_argument("--file", default="-", help="JSON {source, text, metadata}")
     note_read = sub.add_parser("note-read", help="Read a human Markdown source and its byte SHA-256")
     note_read.add_argument("source")
+    note_read.add_argument("--must-exist", action="store_true",
+                           help="Report a missing source as an error (exit 1) instead of exists: false")
     note_edit = sub.add_parser("note-edit", help="Edit a human Markdown source with an expected SHA-256")
     note_edit.add_argument("--file", default="-", help="JSON {source, expected_sha256, edits} or new content; - for stdin")
     task = sub.add_parser("task-create", help="Create and verify an explicit new task")
@@ -1178,6 +1180,52 @@ def parser(note_namespace=None, is_json=False):
     return root
 
 
+def utf8_output():
+    """Write this process's own output as UTF-8 (#594). A piped or redirected Windows console
+    otherwise uses the ANSI code page (cp1254, cp1252): a Turkish character then fails on
+    stdout or turns into an escape on stderr. An embedded call (return_result) never calls this:
+    it prints nothing and the caller's streams stay as they are."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8")
+            except (OSError, ValueError):
+                pass  # the stream keeps its encoding; print_error still writes valid JSON
+
+
+def readable_json(value):
+    """JSON with real characters (#587). Characters a terminal acts on, hides or reorders (control
+    characters such as DEL and the C1 range, bidi and other format controls, line separators) and
+    lone surrogates stay escaped, as ensure_ascii wrote them."""
+    import unicodedata
+    return "".join(json.dumps(ch)[1:-1] if unicodedata.category(ch) in ("Cc", "Cf", "Cs", "Zl", "Zp") else ch
+                   for ch in json.dumps(value, ensure_ascii=False))
+
+
+def writes_utf8(stream):
+    import codecs
+    try:
+        return codecs.lookup(getattr(stream, "encoding", None) or "ascii").name == "utf-8"
+    except LookupError:
+        return False
+
+
+def print_error(error, stream, embedded=False):
+    """An error object a person may read: real characters in UTF-8 (#587), not \\u escapes.
+    Stays valid JSON either way; a stream that cannot take UTF-8 gets the escaped form.
+    embedded: a call with return_result leaves the caller's streams as they are, so it writes
+    real characters only to a stream that already writes UTF-8."""
+    if not embedded:
+        utf8_output()
+    elif not writes_utf8(stream):
+        print(json.dumps(error, ensure_ascii=True), file=stream)
+        return
+    try:
+        print(readable_json(error), file=stream)
+    except UnicodeEncodeError:
+        print(json.dumps(error, ensure_ascii=True), file=stream)
+
+
 def main(argv=None, return_result=False):
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8-sig")
@@ -1190,9 +1238,7 @@ def main(argv=None, return_result=False):
             getattr(args, name) is not None for name in ("event_id", "summary", "summary_file", "ref", "link", "session"))
         if receipt_flags:
             if not return_result:
-                for stream in (sys.stdout, sys.stderr):
-                    if hasattr(stream, "reconfigure"):
-                        stream.reconfigure(encoding="utf-8")
+                utf8_output()
             if args.file is not None:
                 argument_parser.error("--file cannot be combined with receipt flags")
             if args.event_id is None:
@@ -1213,13 +1259,13 @@ def main(argv=None, return_result=False):
         error = {"error": "SystemExit", "message": str(exc)}
         if return_result:
             return error, 2
-        print(json.dumps(error, ensure_ascii=True), file=sys.stderr)
+        print_error(error, sys.stderr)
         return 2
     except NoteUsageError as exc:
         result = {'status': 'usage_error', 'error': type(exc).__name__, 'message': str(exc)}
         if return_result:
             return result, 64
-        print(json.dumps(result, ensure_ascii=True))
+        print_error(result, sys.stdout)
         return 64
     try:
         vault = args.vault.expanduser().resolve()
@@ -1807,6 +1853,9 @@ def main(argv=None, return_result=False):
                         raise
         elif args.command == "note-read":
             result = sync.note_read(args.source)
+            if args.must_exist and not result['exists']:
+                # The documented note error: status error, exit 1. Exit 2 stays "conflict".
+                raise FileNotFoundError('note not found: ' + result['source'])
         elif args.command == "note-edit":
             result = sync.note_edit(read_json(args.file))
         elif args.command == "note-create":
@@ -1901,11 +1950,12 @@ def main(argv=None, return_result=False):
                 raise RuntimeError('History blocked: source sync conflict. Run sync with the same vault/state to inspect and reconcile source issues, then retry history.')
             result = sync.store.history(args.record_id)
             if refreshed.get('status') == 'degraded':
-                # The public stdout contract remains a JSON list.
+                # The public stdout contract remains a JSON list. Warning sources are vault
+                # paths a person reads, so they keep their real characters (#587).
                 warnings = refreshed.get('warnings', [])
-                print(json.dumps({'source_sync': {'status': 'degraded', 'warnings': warnings[:20],
-                                                  'warning_count': len(warnings), 'truncated': len(warnings) > 20}},
-                                 ensure_ascii=True), file=sys.stderr)
+                print_error({'source_sync': {'status': 'degraded', 'warnings': warnings[:20],
+                                             'warning_count': len(warnings), 'truncated': len(warnings) > 20}},
+                            sys.stderr, embedded=return_result)
         elif args.command == "learn":
             _ensure_scripts_path()
             from beyin_v3_learning import stage_candidate, list_candidates, resolve_candidates
@@ -1959,8 +2009,7 @@ def main(argv=None, return_result=False):
             error["hint"] = ERROR_HINTS[str(exc)]
         if return_result:
             return error, code
-        print(json.dumps(error, ensure_ascii=True),
-              file=sys.stdout if args.command in NOTE_JSON_COMMANDS else sys.stderr)
+        print_error(error, sys.stdout if args.command in NOTE_JSON_COMMANDS else sys.stderr)
         return code
 
 

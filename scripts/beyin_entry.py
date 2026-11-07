@@ -665,6 +665,24 @@ def trust_review_line(files):
             '; '.join(TRUST_REVIEW[name] for name in changed) + '. Ardindan yeni oturum ac.')
 
 
+def print_error(error):
+    """--json error on stderr with real characters as UTF-8 (#587), like the CLI's print_error.
+    Kept here because a broken .beyin-runtime.json fails before the CLI module is loaded."""
+    if hasattr(sys.stderr, 'reconfigure'):
+        try:
+            sys.stderr.reconfigure(encoding='utf-8')
+        except (OSError, ValueError):
+            pass
+    # Control characters (DEL, C1), bidi and other format controls, line separators and lone
+    # surrogates stay escaped.
+    text = ''.join(json.dumps(ch)[1:-1] if unicodedata.category(ch) in ('Cc', 'Cf', 'Cs', 'Zl', 'Zp') else ch
+                   for ch in json.dumps(error, ensure_ascii=False))
+    try:
+        print(text, file=sys.stderr)
+    except UnicodeEncodeError:
+        print(json.dumps(error, ensure_ascii=True), file=sys.stderr)
+
+
 def load_cli(directory):
     """The installed CLI module, loaded from its file like every other entry-point command."""
     spec = importlib.util.spec_from_file_location('beyin_installed_cli', directory / 'beyin_v3_cli.py')
@@ -695,7 +713,10 @@ def main(argv=None):
         config_path = vault / '.beyin-runtime.json'
         if not config_path.is_file():
             raise ValueError('Kurulum ayari eksik; resmi V3 installer ile bu vault kurulumunu tamamlayin.')
-        config = json.loads(config_path.read_text(encoding='utf-8'))
+        try:
+            config = json.loads(config_path.read_text(encoding='utf-8'))
+        except ValueError as exc:  # JSONDecodeError or UnicodeDecodeError: name the file (#587)
+            raise ValueError('Kurulum ayari okunamadi: .beyin-runtime.json gecerli JSON degil (' + str(exc) + ').') from None
         directory = vault / '.claude/scripts'
         sys.path.insert(0, str(directory))
         cli = None
@@ -733,8 +754,7 @@ def main(argv=None):
             class _UpdateArgumentParser(argparse.ArgumentParser):
                 def error(self, message):
                     if force_json:
-                        error = {'error': 'SystemExit', 'message': message}
-                        print(json.dumps(error, ensure_ascii=True), file=sys.stderr)
+                        print_error({'error': 'SystemExit', 'message': message})
                         self.exit(2)
                     super().error(message)
 
@@ -789,7 +809,10 @@ def main(argv=None):
         return code
     except Exception as exc:
         error = {'error': type(exc).__name__, 'message': str(exc)}
-        print(human_result(error, command, installed_version) if human else json.dumps(error, ensure_ascii=True), file=sys.stderr)
+        if human:
+            print(human_result(error, command, installed_version), file=sys.stderr)
+        else:
+            print_error(error)
         return 1
 
 

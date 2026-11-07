@@ -378,8 +378,10 @@ def read(engine, source):
         text = decode_utf8(raw) if raw is not None else None
         if text is not None:
             _human(text)
-    return {'source': source, 'sha256': _hash(raw) if raw is not None else None,
-            'content': text}
+    # A missing note reads as nulls so the caller can create it; `exists` says so
+    # without a null check (#587).
+    return {'source': source, 'exists': raw is not None,
+            'sha256': _hash(raw) if raw is not None else None, 'content': text}
 
 
 def apply(engine, request):
