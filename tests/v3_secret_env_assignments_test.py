@@ -95,6 +95,20 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(redact(f'{name}={VALUE}', self.state), ('[REDACTED]', 1))
 
+    def test_secret_and_private_key_names_redact(self):
+        for name in ('AWS_SECRET_ACCESS_KEY', 'SECRET_KEY', 'DJANGO_SECRET_KEY', 'secretKey',
+                     'aws_secret_access_key', 'PRIVATE_KEY', 'WALLET_PRIVATE_KEY'):
+            for text in (f'{name}={VALUE}', f'export {name}="{VALUE}"', f'"{name}": "{VALUE}"'):
+                with self.subTest(text=text):
+                    self.assertEqual(redact(text, self.state)[1], 1)
+                    self.assertNotIn(VALUE, redact(text, self.state)[0])
+        self.assertEqual(redact(f'https://example.com/?secret_key={VALUE}&format=md', self.state),
+                         ('https://example.com/?[REDACTED]&format=md', 1))
+        for text in (f'PUBLIC_KEY={VALUE}', 'SSH_PRIVATE_KEY_PATH=/home/user/.ssh/id_ed25519',
+                     f'SECRET_KEY_ID={VALUE}', f'FOREIGN_KEY={VALUE}', 'SECRET_KEY=short'):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text, self.state), (text, 0))
+
     def test_prefixed_query_assignment_preserves_other_parameters(self):
         for name in NAMES:
             text = f'https://example.com/?{name}={VALUE}&format=markdown'

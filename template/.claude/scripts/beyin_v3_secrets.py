@@ -26,9 +26,12 @@ import sqlite3
 # Hugging Face special token attributes are model vocabulary, not credentials:
 # tokenizer.pad_token = tokenizer.eos_token must not mask a note or block Jev.
 # Only the exact attribute names are skipped; SPLUNK_TOKEN still masks.
+# SECRET_KEY, AWS_SECRET_ACCESS_KEY and PRIVATE_KEY are among the most common
+# .env credentials; PUBLIC_KEY and *_KEY_PATH names stay unmasked.
 _SECRET_NAME = (r"(?!(?:pad|eos|bos|unk|sep|cls|mask)_token(?a:(?![a-z0-9_])))"
                 r"(?a:(?:[a-z_][a-z0-9_]*_|_)?)"
-                r"(?:api[_ -]?key|access[_ -]?token|token|secret|password|passwd)")
+                r"(?:api[_ -]?key|access[_ -]?token|token|secret(?:[_ -]?access)?[_ -]?key"
+                r"|private[_ -]?key|secret|password|passwd)")
 # The name boundary is ASCII like the prefix. Unicode IGNORECASE lets [a-z] match
 # the Turkish İ and ı, which hid the whole value of KİŞİSEL_API_KEY=... while
 # MÜŞTERI_API_KEY=... was masked.
