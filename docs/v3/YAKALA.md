@@ -868,6 +868,44 @@ durumda mevcut download araciyla yapilir. Her reel'in muziginin bulunacagi
 veya indirilecegi garantisi verilmez; yanlis muzik veya HTML dosyasi basari
 sayilmaz. Normal `isle` araclari ajan profiline kendiliginden acilmaz.
 
+### İstemci, platform ve izin matrisi
+
+Bu tablo kodun her çalıştırmada uyguladığı sınırı gösterir. `extra_args` yalnız `--model` ve
+Claude için `--effort` ekleyebilir; aşağıdaki bayraklar ayarla kaldırılamaz.
+
+| İstemci ve görünüm | Platform | Araç ve izin sınırı (kod) | Yerel dosya sistemi | Web |
+|---|---|---|---|---|
+| Claude, `gizli` | Windows, macOS, Linux | `-p`, `--permission-mode dontAsk`, `--permission-prompts none`, `--allowedTools mcp__yakala__*`, `--strict-mcp-config`, `--no-chrome`, `--max-turns 24`, `--max-budget-usd` | `--tools ""`: yerleşik dosya ve kabuk aracı yok; okuma/yazma yalnız Yakala köprüsünden | `kisitli`: yok; `acik`: yalnız `WebSearch` |
+| Claude, `pencere` | Yalnız Windows | Aynı araç seti, `dontAsk` ve strict MCP; `--permission-prompts`, tur ve bütçe sınırı yok; konsol kullanıcınındır (`!` komutları açık) | Aynı | Aynı |
+| Codex, `gizli` | Linux, macOS | `exec`, `-a never`, `--strict-config`, `agents.enabled=false`, 14 özellik kapalı, kullanıcı MCP sunucuları iş için kapalı, `--ignore-rules` | Rastgele adlı `":root"="deny"` izin profili | `kisitli`: `web_search="disabled"`; `acik`: `live` |
+| Codex, `gizli` | Windows | Aynı | `-s read-only`: yazma yok, `apply_patch` içerik tahmini kapalı değil | Aynı |
+| Codex, `pencere` | Yalnız Windows | Aynı özellik kapıları, etkileşimli TUI; `--ignore-rules` yok | `-s read-only` | Aynı |
+
+Bütün kombinasyonlarda ajan varsayılan kapalıdır. Açmak (`kur --ajan`, `ajan claude|codex`)
+ve her iş (`Ctrl+Enter`, `ajan-gonder`, önizlemeden sonra `ajan-toplu --gonder --plan`) kullanıcının
+açık eylemidir; ayar `.beyin-preferences.json` içinde değil, `<state>/yakala/ajan/config.json`
+içindedir. Ses işleme ve AudD yüklemesi yalnız `ajan-gonder` üzerinde iş başına iki ayrı bayrakla
+verilir; `Ctrl+Enter` ve toplu gönderim bu izinleri vermez.
+
+Canlı model ile yapılan ölçümler (birim testleri dışında):
+
+| Kombinasyon | Kim, ne zaman, sürüm | Ölçülen | Kayıtlı ölçümde olmayan |
+|---|---|---|---|
+| Claude `gizli`, Windows 11 | Katkı sahibi, 17-19.10.2026, Claude Code 2.1.296 | Gerçek vault işi `completed`: sonuç notu, receipt `succeeded`, kart `islendi` | Müzik araçları, toplu gönderim, aylık ajan günlüğü |
+| Claude `pencere`, Windows 11 | Katkı sahibi, 17-19.10.2026, Claude Code 2.1.296 | `completed`; pencere açık kaldı, kapatılan pencere `onay-bekliyor` oldu | Aynı |
+| Claude `gizli`, macOS | Bakımcı, 18.10.2026, Claude Code 2.1.302 | Araç listesi altı Yakala aracı (açık ağda ek olarak `WebSearch`); URL'ye eklenen not metni reddedildi | Tam iş zinciri (receipt, günlük), müzik araçları |
+| Claude, Linux | Ölçülmedi | Yalnız birim testleri | Hepsi |
+| Codex `gizli` ve `pencere`, Windows 11 | Katkı sahibi, 18-19.10.2026, Codex 0.155.1 | İki görünümde `completed`; pencere oturum kimliği rollout meta verisinden bulundu | `apply_patch` tahmin kanalı kapatılmadı; aylık ajan günlüğü |
+| Codex `gizli`, Linux | Katkı sahibi, 19.10.2026, resmî Codex 0.155.1, 0.160.0 ve 0.163.0, sahte Responses API | Zorlanan `apply_patch` yazmaları aynı içeriksiz hatayla reddedildi; MCP teslimi ve hook çalıştı | Gerçek model hizmeti |
+| Codex `gizli`, macOS | Bakımcı, 18.10.2026, Codex 0.160.0 (önceki dal) | `kisitli` kipte web arama aracı görünmedi | Root-deny izin profilinin native sonucu |
+| Müzik (`music_info`, `music_identify`) | Ölçülmedi | Sahte ağ ve yerel ffmpeg ile birim testleri | Gerçek AudD, platform ve DPAPI çağrısı |
+| Toplu kuyruk | Katkı sahibi, Windows 11 | Yalnız önizleme | Gerçek `--gonder`, iptal yarışı |
+
+07.11.2026 bakım turunda canlı model, AudD veya platform çağrısı yapılmadı; değişiklikler macOS
+üzerinde Python 3.11 ve 3.14 birim testleri ve 3.12.0 paketinden güncelleme/geri alma provasıyla
+denetlendi. Kayıtlı ölçümü olmayan bir kombinasyonu ilk kullanımda aşağıdaki Windows kabul testi
+adımlarıyla doğrula.
+
 ### Bildirim, kesilme ve kaldırma
 
 Windows'ta özellik açılırken Başlat menüsüne `Beyin Yakala Ajan.lnk` ve
