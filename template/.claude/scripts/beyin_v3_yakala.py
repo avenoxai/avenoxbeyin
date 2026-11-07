@@ -1201,6 +1201,7 @@ def extract(vault, card, found, allow_audio=True, info=None):
         return _section(body, 'Secim') or body, 'metin', None
     if kind == 'dosya':
         parts = []
+        document_issues = []
         vault_root = Path(vault).resolve()
         for link in re.findall(r'\[\[([^\]]+)\]\]', _section(body, 'Dosyalar')):
             path = _safe_vault_file(vault_root, link)
@@ -1213,8 +1214,18 @@ def extract(vault, card, found, allow_audio=True, info=None):
                         parts.append('## ' + path.name + '\n\n' + out)
                 except (OSError, subprocess.TimeoutExpired):
                     pass
+            elif path.suffix.lower() == '.docx':
+                from beyin_v3_docx import MAX_SOURCE, extract_docx
+                with path.open('rb') as source:
+                    result = extract_docx(source.read(MAX_SOURCE + 1))
+                if result['text']:
+                    parts.append('## ' + path.name + '\n\n' + result['text'])
+                if result['state'] != 'ready':
+                    document_issues.append(path.name + ': ' + ', '.join(result['issues']))
         if parts:
-            return '\n\n'.join(parts), 'dosya', None
+            return '\n\n'.join(parts), 'dosya', '; '.join(document_issues) or None
+        if document_issues:
+            return None, 'ajan-okusun', '; '.join(document_issues) + '; dosyayi ajan dogrudan incelesin.'
         return None, 'ajan-okusun', 'Dosyayi ajan dogrudan okusun (gorsel, PDF ya da ikili dosya).'
     if url:
         _safe_network_url(url)  # before npx/yt-dlp can make the first request
