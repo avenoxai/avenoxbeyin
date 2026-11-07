@@ -23,7 +23,11 @@ import sqlite3
 # Match whole assignment names, including ASCII environment prefixes such as
 # TYPESAFE_ or DB_. Keep the outer boundary and require the secret name at the
 # end: API_KEY_COUNT and tokenizer settings are not credential assignments.
-_SECRET_NAME = (r"(?a:(?:[a-z_][a-z0-9_]*_|_)?)"
+# Hugging Face special token attributes are model vocabulary, not credentials:
+# tokenizer.pad_token = tokenizer.eos_token must not mask a note or block Jev.
+# Only the exact attribute names are skipped; SPLUNK_TOKEN still masks.
+_SECRET_NAME = (r"(?!(?:pad|eos|bos|unk|sep|cls|mask)_token(?a:(?![a-z0-9_])))"
+                r"(?a:(?:[a-z_][a-z0-9_]*_|_)?)"
                 r"(?:api[_ -]?key|access[_ -]?token|token|secret|password|passwd)")
 # The name boundary is ASCII like the prefix. Unicode IGNORECASE lets [a-z] match
 # the Turkish İ and ı, which hid the whole value of KİŞİSEL_API_KEY=... while

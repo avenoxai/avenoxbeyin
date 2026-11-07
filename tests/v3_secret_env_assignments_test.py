@@ -79,6 +79,22 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
                     kept = filtered[:-len('[REDACTED]')]
                     self.assertTrue(text.startswith(kept), filtered)
 
+    def test_tokenizer_special_token_attributes_are_not_credentials(self):
+        # Prefix support must not turn common model code into a secret: a masked
+        # note loses the snippet and _safe skips Jev for every query that finds it.
+        store = runtime.MemoryStore(self.state, self.vault)
+        for text in ('tokenizer.pad_token = tokenizer.eos_token',
+                     'tokenizer.bos_token = "<|begin_of_text|>"',
+                     "tokenizer.add_special_tokens({'mask_token': '<mask_token>'})",
+                     '{"sep_token": "<|separator|>", "cls_token": "<|classify|>"}',
+                     'cls_token=tokenizer.cls_token', 'self.unk_token = tokenizer.unk_token'):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text, self.state), (text, 0))
+                advisor._safe(store, {'excerpt': text})
+        for name in ('SPLUNK_TOKEN', 'PAD_TOKEN_SECRET', 'MY_EOS_TOKEN_PASSWORD'):
+            with self.subTest(name=name):
+                self.assertEqual(redact(f'{name}={VALUE}', self.state), ('[REDACTED]', 1))
+
     def test_prefixed_query_assignment_preserves_other_parameters(self):
         for name in NAMES:
             text = f'https://example.com/?{name}={VALUE}&format=markdown'
