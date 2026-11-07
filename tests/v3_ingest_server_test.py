@@ -1,5 +1,6 @@
 """Unit tests for mobile / external ingest server (Issue #288 Item 4)."""
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -355,8 +356,10 @@ class IngestServerTest(unittest.TestCase):
 
     def test_allow_reuse_address_is_enabled(self):
         server = ingest_server.create_server(self.vault, port=0)
-        self.assertTrue(server.allow_reuse_address)
-        server.server_close()
+        try:
+            self.assertEqual(server.allow_reuse_address, os.name not in ("nt", "cygwin"))
+        finally:
+            server.server_close()
 
     def test_daemon_survives_bad_request_unicode(self):
         import socket
@@ -434,6 +437,18 @@ class IngestServerTest(unittest.TestCase):
                             b'Content-Length: ' + str(len(payload)).encode() + b'\r\n\r\n' + payload)
         self.assertIn(b'201', response.split(b'\r\n')[0])
         self.assertEqual(len(list(self.vault.rglob('*.md'))), 1)
+
+    def test_windows_port_binding_collision_fails(self):
+        server1 = ingest_server.create_server(self.vault, host="127.0.0.1", port=0)
+        port = server1.server_address[1]
+        try:
+            self.assertEqual(server1.allow_reuse_address, os.name not in ("nt", "cygwin"))
+            if os.name in ("nt", "cygwin"):
+                with self.assertRaises(OSError):
+                    server2 = ingest_server.create_server(self.vault, host="127.0.0.1", port=port)
+                    server2.server_close()
+        finally:
+            server1.server_close()
 
 
 if __name__ == '__main__':

@@ -17,6 +17,9 @@ EXCLUDED_DIRS_ROW = 'index_excluded_dirs'
 # metadata row: the sources the last sync could not read or parse, as a JSON list.
 UNREADABLE_SOURCES_ROW = 'index_unreadable_sources'
 RECEIPT_VIEW_SOURCES_ROW = 'receipt_view_sources'
+# Shown in place of a summary whose receipt refers to a private or untrusted source: removing the
+# ref alone does not anonymize the summary, which usually describes that source.
+WITHHELD_SUMMARY = '[summary withheld: the receipt refers to a private or untrusted source]'
 RECEIPT_VIEW_RECEIPT_SUFFIX = '.md.view-provenance.json'
 
 
@@ -90,7 +93,8 @@ def _hidden_ref_sources(db, refs):
     # All claimed paths and proven aliases are withheld, including in fresh state.
     try:
         row = db.execute('SELECT value FROM metadata WHERE key=?', (RECEIPT_VIEW_SOURCES_ROW,)).fetchone()
-        hidden.update(set(refs).intersection(json.loads(row[0]) if row else []))
+        claimed = {ref_key(source) for source in (json.loads(row[0]) if row else [])}
+        hidden.update(ref for ref in refs if ref_key(ref) in claimed)
     except sqlite3.OperationalError:  # receipts-only reader
         pass
     # Folded like the record lookup below: another spelling of an unreadable source is withheld too.
@@ -171,12 +175,29 @@ def latest_receipts(db, vault, sessions=None):
         instant = _receipt_instant(event.get('created_at'))
         if instant is not None:
             candidates.append((instant, event['event_id'], event))
-    for _, ident, event in sorted(candidates, key=lambda item: item[:2], reverse=True):
-        source = 'receipts/' + hashlib.sha256(ident.encode()).hexdigest() + '.md'
-        refs = [ref for ref in event.get('refs') or [] if isinstance(ref, str)] if isinstance(event.get('refs'), list) else []
-        if (not (vault / source).is_symlink() and _vault_file(vault, source) and
-                not _hidden_ref_sources(db, [source, *refs])):
-            yield source, event
+    candidates.sort(key=lambda item: item[:2], reverse=True)
+    position, batch_size = 0, 1
+    while position < len(candidates):
+        end = min(position + batch_size, len(candidates))
+        readable = []
+        for index in range(position, end):
+            _, ident, event = candidates[index]
+            source = 'receipts/' + hashlib.sha256(ident.encode()).hexdigest() + '.md'
+            refs = [ref for ref in event.get('refs') or [] if isinstance(ref, str)] if isinstance(event.get('refs'), list) else []
+            if not (vault / source).is_symlink() and _vault_file(vault, source):
+                readable.append((index, source, event, [source, *refs]))
+        hidden = _hidden_ref_sources(db, [ref for *_, refs in readable for ref in refs])
+        for index, source, event, refs in readable:
+            if not hidden.intersection(refs):
+                position, batch_size = index + 1, 1
+                yield source, event
+                # A caller may change privacy/index/source state while the generator
+                # is suspended. Never reuse this batch's decisions after a yield.
+                break
+        else:
+            # Keep the newest-public fast path small; amortize alias scans only
+            # after a withheld/missing candidate. No cache survives this invocation.
+            position, batch_size = end, 64
 
 
 def _bound_day(bound, zone):
@@ -275,7 +296,10 @@ def recent_receipts(db, days=7, limit=20, today=None, vault=None, since=None, un
                 missing += 1
             else:
                 kept.append(ref)
-        item = {'created_at': stamp.isoformat(), 'summary': event['summary'], 'source': source, 'refs': kept}
+        item = {'created_at': stamp.isoformat(), 'summary': WITHHELD_SUMMARY if private else event['summary'],
+                'source': source, 'refs': kept}
+        if private:
+            item['summary_withheld'] = True
         if isinstance(event.get('links'), list) and event['links']:
             item['links'] = [link for link in event['links'] if isinstance(link, str)]
         if day is not None:
@@ -764,6 +788,11 @@ def _receipt_link(source, event_id):
     return f'[[{source}|{alias}]]' if alias else f'[[{source}]]'
 
 
+def _event_refs(event):
+    refs = event.get('refs')
+    return [ref for ref in refs if isinstance(ref, str)] if isinstance(refs, list) else []
+
+
 def _receipt_view_contents(engine, db, warnings=None, *, include_human_daily=False):
     """Render receipts without side effects; include_human_daily is for comparison only."""
     _hash, _, render = engine.projection_helpers()
@@ -775,8 +804,9 @@ def _receipt_view_contents(engine, db, warnings=None, *, include_human_daily=Fal
     historical = set(previous.get('historical_receipts', []))
     zone = _local_zone()
     grouped = defaultdict(list)
-    for row in db.execute('SELECT payload FROM receipts ORDER BY id'):
-        event = json.loads(row[0])
+    events = [json.loads(row[0]) for row in db.execute('SELECT payload FROM receipts ORDER BY id')]
+    hidden = _hidden_ref_sources(db, [ref for event in events for ref in _event_refs(event)])
+    for event in events:
         source = 'receipts/' + _hash(event['event_id']) + '.md'
         if source in historical or not event.get('created_at'):
             continue
@@ -786,7 +816,8 @@ def _receipt_view_contents(engine, db, warnings=None, *, include_human_daily=Fal
             if warnings is not None:
                 warnings.append({'source': source, 'reason': 'unreadable receipt created_at; omitted from daily/v3'})
             continue
-        grouped[day].append((_receipt_instant(event['created_at']), event['created_at'], source, event['summary'],
+        summary = WITHHELD_SUMMARY if hidden.intersection(_event_refs(event)) else event['summary']
+        grouped[day].append((_receipt_instant(event['created_at']), event['created_at'], source, summary,
                              event['event_id']))
     desired = {}
     outcomes = []
