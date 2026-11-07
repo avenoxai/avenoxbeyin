@@ -7932,7 +7932,7 @@ def _agent_extra_source_urls(values, primary=''):
     return result
 
 
-def _agent_load_job(vault, state, job_id):
+def _agent_load_job(vault, state, job_id, check_card=True):
     path = _agent_job_dir(vault, state, job_id) / 'job.json'
     _agent_no_links(path)
     if path.stat().st_size > 128 * 1024:
@@ -7968,7 +7968,8 @@ def _agent_load_job(vault, state, job_id):
         _agent_uuid(job['session_id'])
     if job['client'] == 'claude' and not job.get('session_id'):
         raise ValueError('Claude ajan is kaydinda oturum kimligi eksik.')
-    _agent_card_path(vault, job)
+    if check_card:
+        _agent_card_path(vault, job)
     return job
 
 
@@ -11859,7 +11860,12 @@ def _agent_batch_jobs(vault, state):
             try:
                 _agent_no_links(entry)
                 if entry.is_dir():
-                    jobs.append(_agent_load_job(vault, state, entry.name))
+                    job = _agent_load_job(vault, state, entry.name, check_card=False)
+                    # A finished job whose card was later renamed, moved or deleted holds no
+                    # queue slot and owns no card. Active or unreconciled jobs still need theirs.
+                    if job['state'] in AGENT_ACTIVE or job.get('card_reconcile'):
+                        _agent_card_path(vault, job)
+                    jobs.append(job)
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 errors.append({'kayit': entry.name, 'hata': type(exc).__name__})
     return sorted(jobs, key=lambda job: (job['created_ns'], job['id'])), errors

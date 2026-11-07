@@ -216,6 +216,31 @@ class BatchPreviewTest(BatchFiles):
         self.assertEqual(outside.read_text(encoding='utf-8'), 'PRIVATE OUTSIDE')
         self.assertFalse(self.state.exists())
 
+    def test_finished_job_whose_card_was_removed_does_not_block_sending(self):
+        # Renaming or deleting a processed card in Obsidian is normal; the finished job's
+        # record must not make queue capacity unknown forever.
+        self.configure()
+        _, old_job, old_card = self.queued()
+        yakala._agent_end(self.vault, self.state, old_job, 'completed', 'Tamamlandi.')
+        old_card['path'].unlink()
+        _, card = self.card(text='Yeni kaynak', why='Bu kaynagi incele.')
+        preview = self.bulk(request=None, use_why=True)
+        self.assertEqual(preview['kayit_sorunlari'], [])
+        self.assertTrue(preview['gonderilebilir'])
+        submitted = self.submit(request=None, use_why=True)
+        self.assertEqual([member['card_id'] for member in self.members(submitted)], [card['id']])
+
+    def test_active_job_whose_card_was_removed_still_blocks_sending(self):
+        self.configure()
+        _, _, old_card = self.queued()
+        old_card['path'].unlink()
+        self.card(text='Yeni kaynak', why='Bu kaynagi incele.')
+        preview = self.bulk(request=None, use_why=True)
+        self.assertEqual(len(preview['kayit_sorunlari']), 1)
+        self.assertFalse(preview['gonderilebilir'])
+        with self.assertRaisesRegex(ValueError, 'kapasitesi dogrulanamadi'):
+            self.submit(request=None, use_why=True)
+
 
 class BatchSelectedSourceTest(BatchFiles):
     primary = 'https://example.org/primary'
