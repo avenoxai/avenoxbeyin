@@ -40,6 +40,10 @@ INLINE_CODE_PATTERN = re.compile(r"`[^`\r\n]*`")
 
 ARCHIVE_DIR_NAMES = ("arsiv", "archive", "archives")
 
+# A MOC lists a note only when every reader of the MOC may also read that note.
+VISIBILITY_RANK = {"public": 0, "internal": 1, "private": 2}
+MAX_MOC_TITLE_CHARS = 120
+
 
 def _norm_key(text):
     """Normalize string for cross-platform case-insensitive comparison."""
@@ -124,18 +128,25 @@ def _withheld_path(relative):
                                              for part in Path(relative).parts[:-1])
 
 
-def _eligible_note(vault_root, path):
+def _note_metadata(vault_root, path):
+    """Frontmatter of a note lint and moc may read; None when the note is withheld."""
     from beyin_v3_sync import parse
     try:
         relative = path.relative_to(vault_root).as_posix()
         if path.is_symlink() or not path.resolve().is_relative_to(vault_root.resolve()):
-            return False
+            return None
         if _withheld_path(relative):
-            return False
+            return None
         metadata, _ = parse(path.read_text(encoding='utf-8-sig'))
-        return metadata.get('visibility') != 'private' and metadata.get('status') != 'archived'
     except (OSError, ValueError, UnicodeError):
-        return False
+        return None
+    if metadata.get('visibility') == 'private' or metadata.get('status') == 'archived':
+        return None
+    return metadata
+
+
+def _eligible_note(vault_root, path):
+    return _note_metadata(vault_root, path) is not None
 
 
 def build_vault_index(vault_root, target_folder=None):
@@ -411,7 +422,42 @@ class MocConflict(ValueError):
 def _link_title(title, fallback):
     # "]]", "[[" or "|" inside a title would end or split the generated wikilink.
     cleaned = " ".join(re.sub(r"[\[\]|]", " ", title).split())
+    if len(cleaned) > MAX_MOC_TITLE_CHARS:
+        cleaned = cleaned[:MAX_MOC_TITLE_CHARS].rstrip() + "…"
     return cleaned or fallback
+
+
+def _moc_reader(metadata, relative, scopes):
+    """(scope, visibility rank) of the MOC exactly as retrieval will gate it.
+
+    retrieval delivers a record to an explicit --project only inside its scope
+    (beyin_v3.record_scope) and to an audience only by its visibility.
+    """
+    from beyin_v3 import record_scope
+    project = metadata.get("project")
+    if project is not None and not isinstance(project, str):
+        raise ValueError(f"{relative} has a non-text project field; it was left unchanged")
+    # An unknown visibility lists only public notes; sync refuses to index such a file anyway.
+    rank = VISIBILITY_RANK.get(metadata.get("visibility", "internal"), VISIBILITY_RANK["public"])
+    return record_scope({"project": project, "source": relative}, scopes), rank
+
+
+def _moc_skip_reason(metadata, relative, scopes, moc_scope, moc_rank):
+    """Why a note's title must stay out of this MOC, or None when every MOC reader may read it."""
+    from beyin_v3 import _rejected_inference, record_scope
+    if (metadata.get("trust") == "untrusted" or metadata.get("trusted") is False
+            or metadata.get("status") == "untrusted" or metadata.get("kind") == "untrusted"
+            or _rejected_inference(metadata)):
+        return "untrusted"  # the same records retrieval never delivers
+    project = metadata.get("project")
+    if project is not None and not isinstance(project, str):
+        return "other_scope"
+    # A nested folder can belong to another project; its titles never enter this MOC.
+    if record_scope({"project": project, "source": relative}, scopes) != moc_scope:
+        return "other_scope"
+    if VISIBILITY_RANK.get(metadata.get("visibility", "internal"), len(VISIBILITY_RANK)) > moc_rank:
+        return "narrower_visibility"
+    return None
 
 
 def _plain_folder_parts(vault_root, folder_path):
@@ -529,8 +575,36 @@ def _generate_moc(vault_root, target_folder="knowledge", moc_filename="MOC.md"):
         raise ValueError("MOC output must remain inside the vault")
     moc_rel = moc_path.relative_to(vault_root).as_posix()
 
+    # One snapshot: the MOC's own scope and visibility, the marker check and the final
+    # replace all use exactly these bytes.
+    from beyin_v3 import read_project_scopes
+    from beyin_v3_sync import parse
+    scopes = read_project_scopes(vault_root) or {"folders": [], "shared_unscoped": False}
+    snapshot = _snapshot(moc_path)
+    moc_metadata = {}
+    if snapshot is not None:
+        original, identity = snapshot
+        bom = codecs.BOM_UTF8 if original.startswith(codecs.BOM_UTF8) else b""
+        try:
+            existing_text = original[len(bom):].decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError(f"{moc_rel} is not UTF-8 text; it was left unchanged") from None
+        start = existing_text.find(MOC_START_MARKER)
+        end = existing_text.find(MOC_END_MARKER)
+        if (existing_text.count(MOC_START_MARKER) != 1 or existing_text.count(MOC_END_MARKER) != 1
+                or end < start):
+            raise ValueError(f"{moc_rel} has no single {MOC_START_MARKER} ... {MOC_END_MARKER} pair; "
+                             "only that generated block is ever rewritten. Add the pair where the index "
+                             "should go, or choose another --file")
+        try:
+            moc_metadata, _ = parse(existing_text)
+        except ValueError:
+            raise ValueError(f"{moc_rel} frontmatter could not be read; it was left unchanged") from None
+    moc_scope, moc_rank = _moc_reader(moc_metadata, moc_rel, scopes)
+
     # Collect notes in folder (excluding moc itself)
     notes_by_category = defaultdict(list)
+    skipped = {"other_scope": 0, "narrower_visibility": 0, "untrusted": 0}
     for root, dirs, files in os.walk(folder_path):
         dirs[:] = [d for d in dirs if not d.startswith(".") and d.casefold() not in EXCLUDED_DIR_NAMES]
         for f in files:
@@ -539,10 +613,15 @@ def _generate_moc(vault_root, target_folder="knowledge", moc_filename="MOC.md"):
             f_path = Path(root) / f
             if f_path == moc_path or f_path.resolve() == moc_path.resolve():
                 continue
-            if not _eligible_note(vault_root, f_path):
+            metadata = _note_metadata(vault_root, f_path)
+            if metadata is None:
                 continue
 
             rel_to_vault = f_path.relative_to(vault_root).as_posix()
+            reason = _moc_skip_reason(metadata, rel_to_vault, scopes, moc_scope, moc_rank)
+            if reason is not None:
+                skipped[reason] += 1
+                continue
             rel_to_folder = f_path.relative_to(folder_path).as_posix()
             title = _link_title(extract_note_title(f_path), f_path.stem)
 
@@ -577,21 +656,7 @@ def _generate_moc(vault_root, target_folder="knowledge", moc_filename="MOC.md"):
     generated_lines.append(f"{MOC_END_MARKER}")
     generated_block = "\n".join(generated_lines).strip()
 
-    snapshot = _snapshot(moc_path)
     if snapshot is not None:
-        original, identity = snapshot
-        bom = codecs.BOM_UTF8 if original.startswith(codecs.BOM_UTF8) else b""
-        try:
-            existing_text = original[len(bom):].decode("utf-8")
-        except UnicodeDecodeError:
-            raise ValueError(f"{moc_rel} is not UTF-8 text; it was left unchanged") from None
-        start = existing_text.find(MOC_START_MARKER)
-        end = existing_text.find(MOC_END_MARKER)
-        if (existing_text.count(MOC_START_MARKER) != 1 or existing_text.count(MOC_END_MARKER) != 1
-                or end < start):
-            raise ValueError(f"{moc_rel} has no single {MOC_START_MARKER} ... {MOC_END_MARKER} pair; "
-                             "only that generated block is ever rewritten. Add the pair where the index "
-                             "should go, or choose another --file")
         newline = "\r\n" if "\r\n" in existing_text else "\n"
         new_text = (existing_text[:start] + generated_block.replace("\n", newline)
                     + existing_text[end + len(MOC_END_MARKER):])
@@ -625,6 +690,10 @@ Bu not, `{target_folder}` altındaki notların navigasyon ve içerik haritasıd�
         "file": moc_rel,
         "indexed_notes_count": total_notes,
         "categories_count": len(notes_by_category),
+        # Notes this MOC's readers may not read: another project's scope, a narrower
+        # visibility than the MOC's own, or untrusted ingested text.
+        "moc_scope": moc_scope,
+        "skipped": skipped,
     }
 
 

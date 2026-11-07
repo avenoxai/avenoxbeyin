@@ -109,7 +109,13 @@ veya symlink yapılandırma üzerine yazılmaz; önce dosyayı onar.
 - `moc [--folder knowledge] [--file MOC.md]` yalnız hedef klasördeki düz bir `.md` dosyasına
   yazar. Dosya yoksa oluşturur. Varsa yalnız tek bir `<!-- beyin-moc:start -->` ve
   `<!-- beyin-moc:end -->` çifti taşıdığında ve yalnız bu iki işaretin arasını yeniden üretir;
-  işaretsiz dosyaya dokunmaz. Dizinin görüneceği yere işaret çiftini elle ekle. Değişiklik
+  işaretsiz dosyaya dokunmaz. Dizinin görüneceği yere işaret çiftini elle ekle. MOC yalnız
+  kendi okuyucularının da görebildiği notları listeler: notun proje kapsamı (`project` alanı
+  veya `.beyin-projects.json` klasörü) MOC dosyasının kapsamıyla aynı olmalı, görünürlüğü
+  MOC'unkinden dar olmamalı (`visibility: public` bir MOC yalnız public notları listeler) ve
+  `trust: untrusted` ya da reddedilmiş çıkarım olmamalı. İç içe kapsamda her proje klasörü için
+  ayrı `moc --folder <klasör>` çalıştır; atlanan notlar çıktıdaki `skipped` sayılarında görünür.
+  Kapsam dosyası değişince `moc` yeniden çalıştırılmalı. Değişiklik
   yoksa dosyaya yazılmaz. Obsidian Beyin kilidini kullanmadığı için dosya, yeni metin hazır
   olduktan sonra yeniden adlandırmadan hemen önce (içerik özeti, mtime, boyut, inode) tekrar
   karşılaştırılır; değiştiyse hiçbir şey yazılmaz ve komut yeniden çalıştırılmayı ister.

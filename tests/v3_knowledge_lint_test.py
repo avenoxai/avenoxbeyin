@@ -165,6 +165,77 @@ class KnowledgeLintTest(unittest.TestCase):
         self.assertIn('Public', result)
         self.assertNotIn('Canary', result)
 
+    def _write_notes(self, vault, notes):
+        for source, text in notes.items():
+            path = vault / source
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding='utf-8')
+
+    def test_moc_never_copies_another_projects_titles_into_a_scoped_context(self):
+        # Nested scopes: a MOC over knowledge/ must not carry knowledge/acme titles into a file
+        # that another project's explicit context query receives (with and without shared_unscoped).
+        notes = {'knowledge/acme/teklif.md': '---\ntitle: Acme birleşme teklifi 42 milyon\n---\nAcme birleşme teklifi gizli.\n',
+                 'knowledge/beta/plan.md': '# Beta plan\nBeta birleşme teklifi planı.\n',
+                 'knowledge/genel/g.md': '# Genel birleşme teklifi rehberi\nGenel birleşme teklifi notu.\n'}
+        cases = (({'knowledge/acme': 'acme', 'knowledge/beta': 'beta'}, True, 'beta', 2,
+                  ['knowledge/genel/g.md']),
+                 ({'knowledge': 'general', 'knowledge/acme': 'acme'}, False, 'general', 1,
+                  ['knowledge/beta/plan.md', 'knowledge/genel/g.md']))
+        for index, (folders, shared, reader, other, listed) in enumerate(cases):
+            with self.subTest(shared=shared):
+                vault, state = Path(self.tmp.name) / f'scoped{index}', Path(self.tmp.name) / f'state{index}'
+                vault.mkdir()
+                state.mkdir()
+                self._write_notes(vault, notes)
+                (vault / runtime.PROJECT_SCOPES_FILE).write_text(
+                    json.dumps({'folders': folders, 'shared_unscoped': shared}), encoding='utf-8')
+                result = linter.generate_moc(vault)
+                text = (vault / 'knowledge/MOC.md').read_text(encoding='utf-8')
+                self.assertNotIn('Acme', text)
+                self.assertEqual(sorted(link['file_target'] for link in linter.extract_wikilinks(text)), listed)
+                self.assertEqual((result['status'], result['skipped']['other_scope']), ('created', other))
+                # The acme MOC lists acme's own note and belongs to acme's scope only.
+                linter.generate_moc(vault, 'knowledge/acme')
+                self.assertIn('Acme birleşme teklifi 42 milyon',
+                              (vault / 'knowledge/acme/MOC.md').read_text(encoding='utf-8'))
+                answer, code = cli.main(['--vault', str(vault), '--state', str(state), 'context',
+                                         '--project', reader, 'Acme birleşme teklifi'], return_result=True)
+                self.assertEqual(code, 0, answer)
+                self.assertTrue(answer['records'])
+                self.assertNotIn('Acme birleşme', json.dumps(answer, ensure_ascii=False))
+
+    def test_moc_follows_project_fields_visibility_and_trust(self):
+        long_title = 'Uzun başlık ' * 40
+        self._write_notes(self.vault, {
+            'knowledge/a.md': '---\nproject: acme\n---\n# AcmeCanary\n',
+            'knowledge/b.md': '# Ortak not\n',
+            'knowledge/c.md': '---\nvisibility: public\n---\n# Açık not\n',
+            'knowledge/d.md': '---\ntrust: untrusted\n---\n# UntrustedCanary\n',
+            'knowledge/e.md': '---\nkind: preference\nstatus: rejected\n---\n# RejectedCanary\n',
+            'knowledge/f.md': f'# {long_title}\n'})
+        # No scope file: a project field alone decides, exactly as retrieval does.
+        result = linter.generate_moc(self.vault)
+        text = (self.vault / 'knowledge/MOC.md').read_text(encoding='utf-8')
+        self.assertIn('Ortak not', text)
+        self.assertIn('Açık not', text)
+        self.assertNotIn('Canary', text)
+        self.assertEqual(result['skipped'], {'other_scope': 1, 'narrower_visibility': 0, 'untrusted': 2})
+        self.assertTrue(all(len(link['display']) <= linter.MAX_MOC_TITLE_CHARS + 1
+                            for link in linter.extract_wikilinks(text)))
+        start, end = linter.MOC_START_MARKER, linter.MOC_END_MARKER
+        # A public MOC lists only public notes; an acme MOC lists only acme's notes.
+        (self.vault / 'knowledge/Herkese.md').write_text(f'---\nvisibility: public\n---\n{start}\n{end}\n', encoding='utf-8')
+        linter.generate_moc(self.vault, 'knowledge', 'Herkese.md')
+        text = (self.vault / 'knowledge/Herkese.md').read_text(encoding='utf-8')
+        self.assertIn('Açık not', text)
+        self.assertNotIn('Ortak not', text)
+        (self.vault / 'knowledge/Acme.md').write_text(f'---\nproject: acme\n---\n{start}\n{end}\n', encoding='utf-8')
+        result = linter.generate_moc(self.vault, 'knowledge', 'Acme.md')
+        text = (self.vault / 'knowledge/Acme.md').read_text(encoding='utf-8')
+        self.assertEqual(result['moc_scope'], 'acme')
+        self.assertIn('AcmeCanary', text)
+        self.assertNotIn('Ortak not', text)
+
     def test_relative_links_and_missing_qualified_paths(self):
         for source in ['a/note.md', 'b/note.md', 'b/sub/source.md']:
             path = self.vault / source
