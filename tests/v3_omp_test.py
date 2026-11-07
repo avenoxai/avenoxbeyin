@@ -60,7 +60,7 @@ const handlers = {}
 const pi = { on: (name, fn) => { handlers[name] = fn } }
 const mod = await import(pathToFileURL(process.env.PLUGIN_PATH).href)
 mod.default(pi)
-const calls = { top: 0, sub: 0 }
+const calls = { top: 0, sub: 0, workerSuppressed: process.env.BEYIN_V3_NO_SPAWN }
 const make = (id, key, entries) => ({ cwd: process.env.OMP_CWD,
   sessionManager: { getSessionId: () => id, getEntries: () => { calls[key] += 1; return entries } } })
 const top = make("omp-top", "top", [{ type: "message" }])
@@ -117,8 +117,10 @@ class OMPHarnessTest(unittest.TestCase):
                               input=json.dumps(payload), capture_output=True, text=True, encoding='utf-8')
 
     def drive(self, cwd=None):
+        # Pass fixture isolation explicitly: inherited_env drops a flag whose value
+        # matches the suite's original environment, even after setUp set it again.
         env = inherited_env(PLUGIN_PATH=str(self.hook_file), OMP_CWD=str(cwd or self.vault),
-                   OMP_OUTSIDE=str(Path(self.temp.name) / 'elsewhere'))
+                   OMP_OUTSIDE=str(Path(self.temp.name) / 'elsewhere'), BEYIN_V3_NO_SPAWN='1')
         result = subprocess.run([BUN, 'run', str(self.driver)], env=env,
                                 capture_output=True, text=True, encoding='utf-8', cwd=self.vault)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -262,6 +264,7 @@ class OMPHarnessTest(unittest.TestCase):
         # down session, top-level or sub-agent, leaves no entry behind in a long-lived process.
         self.driver.write_text(SHUTDOWN_DRIVER, encoding='utf-8')
         result = self.drive()
+        self.assertEqual(result.get('workerSuppressed'), '1', 'the real child must retain fixture worker isolation')
         self.assertEqual(result['top'], 2, 'top-level session decided again after its shutdown')
         self.assertEqual(result['sub'], 2, 'sub-agent session decided again after its shutdown')
 

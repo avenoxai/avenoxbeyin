@@ -43,6 +43,9 @@ from beyin_v3 import (
 from beyin_v3_sync import _hash, parse as _parse_note
 
 
+_WORD_RE = re.compile(r'\w+', re.UNICODE)
+
+
 # Status antonym pairs for contradiction detection (Turkish & English)
 STATUS_ANTIPAIRS = [
     # Dogrulanmis / Dogrulanmamis (Verification state)
@@ -153,7 +156,7 @@ def _candidate(path: Path, rel_path: str, meta: dict, body: str) -> dict:
         'status': str(meta.get('status', '')).lower().strip(),
         'created_ts': created_ts,
         'updated_ts': updated_ts,
-        'words_count': len(re.findall(r'\w+', body)),
+        'words_count': sum(1 for _ in _WORD_RE.finditer(body)),
         'supersedes': [str(s).strip() for s in supersedes if s],
     }
 
@@ -227,10 +230,33 @@ def scan_audit_candidates(vault: Path, state: Path | None = None) -> list[dict]:
     return candidates
 
 
-def _detect_status_conflict(older: dict, newer: dict) -> dict | None:
+def _detect_status_conflict(older: dict, newer: dict, allow_body: bool = True) -> dict | None:
     """Detect status or outcome contradiction between an older note and a newer note."""
-    older_tokens = older['tokens'] | _tokens(older.get('status', ''))
-    newer_tokens = newer['tokens'] | _tokens(newer.get('status', ''))
+    older_status_tokens = _tokens(older.get('status', ''))
+    newer_status_tokens = _tokens(newer.get('status', ''))
+
+    # Check explicit frontmatter status first (authoritative declaration)
+    for positive, negative in _STATUS_STEMS:
+        old_pos, old_neg = older_status_tokens & positive.keys(), older_status_tokens & negative.keys()
+        new_pos, new_neg = newer_status_tokens & positive.keys(), newer_status_tokens & negative.keys()
+        if old_pos and new_neg and not old_neg and not new_pos:
+            return {
+                'older_term': positive[min(old_pos)],
+                'newer_term': negative[min(new_neg)],
+                'direction': 'positive_to_negative',
+            }
+        if old_neg and new_pos and not old_pos and not new_neg:
+            return {
+                'older_term': negative[min(old_neg)],
+                'newer_term': positive[min(new_pos)],
+                'direction': 'negative_to_positive',
+            }
+
+    if not allow_body:
+        return None
+
+    older_tokens = older['tokens'] | older_status_tokens
+    newer_tokens = newer['tokens'] | newer_status_tokens
 
     for positive, negative in _STATUS_STEMS:
         old_pos, old_neg = older_tokens & positive.keys(), older_tokens & negative.keys()
@@ -266,6 +292,7 @@ def _evaluate_pair(a: dict, b: dict, threshold: float, min_shared: int) -> dict 
         return None
 
     min_vocab = min(len(tokens_a), len(tokens_b))
+    max_vocab = max(len(tokens_a), len(tokens_b))
     if min_vocab == 0:
         return None
 
@@ -275,6 +302,11 @@ def _evaluate_pair(a: dict, b: dict, threshold: float, min_shared: int) -> dict 
 
     union_count = len(tokens_a | tokens_b)
     jaccard = (shared_count / union_count) if union_count else 0.0
+    vocab_ratio = max_vocab / min_vocab
+
+    # An asymmetric pair (e.g. giant note containing words of a tiny note)
+    # is neither a true near duplicate nor a valid context for body-level status conflict (#466).
+    symmetric_pair = vocab_ratio <= 3.0 and jaccard >= 0.20
 
     # Determine temporal order
     time_a = a.get('updated_ts') or a.get('created_ts') or 0.0
@@ -297,7 +329,7 @@ def _evaluate_pair(a: dict, b: dict, threshold: float, min_shared: int) -> dict 
 
     # A path tie-break keeps output stable but cannot establish a change over time.
     chronology_known = time_a > 0 and time_b > 0 and time_a != time_b
-    conflict = _detect_status_conflict(older, newer) if chronology_known else None
+    conflict = _detect_status_conflict(older, newer, allow_body=symmetric_pair) if chronology_known else None
     novel_newer = sorted(newer['tokens'] - older['tokens'])
     novel_sample = novel_newer[:6]
 
@@ -312,7 +344,7 @@ def _evaluate_pair(a: dict, b: dict, threshold: float, min_shared: int) -> dict 
             f"olarak degismis gorunuyor. Eski kaydi tarihsel (supersedes veya status: archived) olarak "
             f"isaretlemeyi ya da guncel durumu tek kaynakta toplamayi degerlendir."
         )
-    elif overlap >= 0.80:
+    elif overlap >= 0.80 and jaccard >= 0.30 and vocab_ratio <= 3.0:
         finding_type = 'near_duplicate'
         severity = 'warning' if overlap >= 0.85 else 'info'
         pct = int(round(overlap * 100))
@@ -320,7 +352,7 @@ def _evaluate_pair(a: dict, b: dict, threshold: float, min_shared: int) -> dict 
             f"Iki kayit buyuk olcude ortusuyor (%{pct}). Ayri not acmak yerine '{older['path']}' "
             f"kaydini guncellemek veya yeni bulgulari mevcut nota eklemek baglam yukunu azaltabilir."
         )
-    else:
+    elif jaccard >= 0.20 and vocab_ratio <= 4.0:
         finding_type = 'substantial_overlap'
         severity = 'info'
         pct = int(round(overlap * 100))
@@ -330,6 +362,8 @@ def _evaluate_pair(a: dict, b: dict, threshold: float, min_shared: int) -> dict 
             f"iceriyor; bagimsiz bir dogrulama veya ayri bir deneme amaci tasimiyorsa iki notu birbirine "
             f"baglamayi ([[link]]) veya tek kaynakta birlestirmeyi degerlendir."
         )
+    else:
+        return None
 
     finding = {
         'type': finding_type,

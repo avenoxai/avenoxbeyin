@@ -530,6 +530,14 @@ def human_result(result, command, installed_version=None):
         if paths.get('status') == 'stale':
             lines.append('Hook yollari baska bir kuruluma isaret ediyor (' + str(len(paths.get('stale', []))) + ' eski yol). ' +
                          'Guncellemek icin: ' + ('py -3' if sys.platform == 'win32' else 'python3') + ' beyin.py hook-reconcile')
+        tracked = result.get('tracked_machine_files') or {}
+        if tracked.get('status') == 'warning':
+            lines.append('Git makineye ozel kurulum dosyalarini izliyor (bilgi): ' +
+                         ', '.join(plain_text(name) for name in tracked.get('tracked', [])) +
+                         '. Her makinenin kendi yedegini koruyarak docs/v3/MULTI-MACHINE.md rehberini incele; otomatik degisiklik yapilmadi.')
+        elif tracked.get('status') in ('unavailable', 'skipped'):
+            lines.append('Git kurulum dosyasi kontrolu (bilgi): ' + plain_text(tracked.get('status')) +
+                         ' (' + plain_text(tracked.get('reason', 'unknown')) + ').')
         scopes = result.get('project_scopes') or {}
         if scopes.get('status') == 'error':
             lines.append('Proje kapsamlari (.beyin-projects.json) gecersiz: ' + str(scopes.get('error', 'hata')))
@@ -722,7 +730,15 @@ def main(argv=None):
         if argv and argv[0] in ('update', 'rollback', 'recover'):
             import argparse
             import beyin_v3_update as updater
-            parser = argparse.ArgumentParser()
+            class _UpdateArgumentParser(argparse.ArgumentParser):
+                def error(self, message):
+                    if force_json:
+                        error = {'error': 'SystemExit', 'message': message}
+                        print(json.dumps(error, ensure_ascii=True), file=sys.stderr)
+                        self.exit(2)
+                    super().error(message)
+
+            parser = _UpdateArgumentParser()
             parser.add_argument('command', choices=('update', 'rollback', 'recover'))
             parser.add_argument('--check', action='store_true')
             parser.add_argument('--package', type=Path)
@@ -745,7 +761,7 @@ def main(argv=None):
             print(human_result(result, command, installed_version) if human else json.dumps(result, ensure_ascii=True, indent=2))
             return 0
         cli = cli or load_cli(directory)
-        cli_args = ['--vault', str(vault), '--state', str(state)] + (argv or ['doctor'])
+        cli_args = ['--vault', str(vault), '--state', str(state)] + (['--json'] if force_json else []) + (argv or ['doctor'])
         if not human:
             return cli.main(cli_args)
         if hasattr(cli, 'main') and 'return_result' in getattr(getattr(cli, 'main'), '__code__', {}).co_varnames:

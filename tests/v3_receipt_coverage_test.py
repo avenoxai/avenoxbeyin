@@ -11,6 +11,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from v3_package_helpers import inherited_env
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -144,7 +145,7 @@ class ReceiptCoverageTest(unittest.TestCase):
         """Review Point 6: doctor must report potential_missing_receipts=None when receipt-gaps.json does not exist."""
         cmd = [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
                '--state', str(self.state), 'doctor']
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=True, env=inherited_env())
         doc = json.loads(proc.stdout)
         self.assertIsNone(doc.get('potential_missing_receipts'))
         self.assertIsNone(doc.get('receipt_coverage'))
@@ -176,7 +177,7 @@ class ReceiptCoverageTest(unittest.TestCase):
 
         cmd = [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
                '--state', str(self.state), 'doctor']
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=True, env=inherited_env())
         doc = json.loads(proc.stdout)
 
         self.assertEqual(doc.get('potential_missing_receipts'), 1)
@@ -232,7 +233,7 @@ class ReceiptCoverageTest(unittest.TestCase):
         self.assertEqual((gaps['receipt_coverage']['covered'], gaps['receipt_coverage']['total']), (1, 2))
         cmd = [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
                '--state', str(self.state), 'doctor']
-        doc = json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True).stdout)
+        doc = json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True, env=inherited_env()).stdout)
         self.assertEqual(doc['potential_missing_receipts'], 1)
         self.assertEqual((doc['receipt_coverage']['covered'], doc['receipt_coverage']['missing']), (1, 1))
 
@@ -357,7 +358,7 @@ class ReceiptCoverageTest(unittest.TestCase):
             self.assertEqual(values, {'claude': 100, 'codex': 0})
 
     def test_coverage_reports_no_observed_edit(self):
-        """Doctor coverage reports sessions without observed edits (#212)."""
+        """Doctor coverage reports sessions without observed edits (#212, #462)."""
         engine = SyncEngine(self.vault, self.state)
         now = time.time()
         # Session 1: edit session
@@ -375,7 +376,87 @@ class ReceiptCoverageTest(unittest.TestCase):
             cov = receipt_coverage(db, now=now, state=self.state)
             self.assertEqual(cov['total'], 2)
             self.assertEqual(cov['no_observed_edit'], 1)
+            self.assertEqual(cov['missing_no_observed_edit'], 1)
             self.assertEqual(cov['last_7d']['no_observed_edit'], 1)
+            self.assertEqual(cov['last_7d']['missing_no_observed_edit'], 1)
+
+    def test_opening_warning_and_gaps_report_no_observed_edit_separately(self):
+        """Checkpoints without observed edits are tagged in gaps and reported separately in opening warning (#462)."""
+        engine = SyncEngine(self.vault, self.state)
+        now = time.time()
+        # 1. Edit session without receipt (Claude)
+        self._enqueue('SessionStart', 'sess_edit_only', at=now - 60)
+        self._enqueue('UserPromptSubmit', 'sess_edit_only', at=now - 55)
+        self._enqueue('PostToolUse', 'sess_edit_only', at=now - 50)
+        self._enqueue('Stop', 'sess_edit_only', at=now - 45)
+
+        # 2. Read-only session without receipt (Claude: no PostToolUse)
+        self._enqueue('SessionStart', 'sess_read_only', at=now - 40)
+        self._enqueue('UserPromptSubmit', 'sess_read_only', at=now - 35)
+        self._enqueue('Stop', 'sess_read_only', at=now - 30)
+
+        # 3. Harness without edit observation (Antigravity: scope limitation preserved)
+        self._enqueue('SessionStart', 'sess_ag', at=now - 25, harness='antigravity')
+        self._enqueue('UserPromptSubmit', 'sess_ag', at=now - 23, harness='antigravity')
+        self._enqueue('Stop', 'sess_ag', at=now - 20, harness='antigravity')
+
+        hook.drain_queue(self.vault, self.state)
+
+        # Check receipt-gaps.json
+        gaps_path = self.state / 'receipt-gaps.json'
+        self.assertTrue(gaps_path.exists())
+        gaps_data = json.loads(gaps_path.read_text(encoding='utf-8'))
+        self.assertEqual(gaps_data['potential_missing_receipts'], 3)
+        self.assertEqual(gaps_data['no_observed_edit'], 1)
+
+        # Checkpoints in gaps: read-only has no_observed_edit=True
+        gap_items = {g['session']: g for g in gaps_data['checkpoints']}
+        self.assertTrue(gap_items['sess_read_only'].get('no_observed_edit'))
+        self.assertNotIn('no_observed_edit', gap_items['sess_edit_only'])
+        self.assertNotIn('no_observed_edit', gap_items['sess_ag'])
+
+        # Check hook-health.json
+        health_data = json.loads((self.state / 'hook-health.json').read_text(encoding='utf-8'))
+        sync_result = health_data.get('sync', {})
+        self.assertEqual(sync_result.get('recent_missing_receipts'), 3)
+        self.assertEqual(sync_result.get('recent_no_observed_edit'), 1)
+
+        # Verify hook warning output
+        hook_path = ROOT / 'template/.claude/scripts/beyin_v3_hook.py'
+        cmd = [sys.executable, str(hook_path), '--vault', str(self.vault),
+               '--state', str(self.state), '--harness', 'claude']
+        payload = {'hook_event_name': 'SessionStart', 'session_id': 'sess_check_warning'}
+        # This assertion reads the gaps drained above, not worker scheduling. A detached
+        # worker can outlive the hook and race TemporaryDirectory cleanup on slower CI.
+        proc = subprocess.run(cmd, input=json.dumps(payload), capture_output=True, text=True, check=True,
+                              env=inherited_env(BEYIN_V3_NO_SPAWN='1'))
+        out = json.loads(proc.stdout)
+        context = out.get('hookSpecificOutput', {}).get('additionalContext', '')
+        self.assertIn('Prior checkpoints may lack structured receipts (3 in the last 7 days (1 without observed edits))', context)
+
+    def test_coverage_counts_sessions_without_prompt_separately(self):
+        """Bridge sessions see no UserPromptSubmit: kept out of the ratio, but counted."""
+        engine = SyncEngine(self.vault, self.state)
+        now = time.time()
+        self._enqueue('SessionStart', 'sess_vault', at=now - 50)
+        self._enqueue('UserPromptSubmit', 'sess_vault', at=now - 40)
+        self._enqueue('Stop', 'sess_vault', at=now - 30)
+        # The global bridge installs SessionStart, Stop, PreCompact and SessionEnd only.
+        for session in ('sess_bridge_receipt', 'sess_bridge_quiet'):
+            self._enqueue('SessionStart', session, at=now - 45)
+            self._enqueue('Stop', session, at=now - 20)
+        hook.drain_queue(self.vault, self.state)
+        with engine.store._connect() as db:
+            receipt = {'event_id': 'bridge-receipt', 'harness': 'claude', 'session': 'sess_bridge_receipt',
+                       'summary': 'Done work.', 'refs': ['notes/task.md'],
+                       'created_at': datetime.fromtimestamp(now - 10, timezone.utc).isoformat()}
+            db.execute("INSERT INTO receipts VALUES (?,?)", ('bridge-receipt', json.dumps(receipt)))
+            cov = receipt_coverage(db, now=now, state=self.state)
+        self.assertEqual((cov['total'], cov['covered'], cov['missing']), (1, 0, 1))
+        self.assertEqual(cov['without_prompt'], 2)
+        self.assertEqual(cov['without_prompt_with_receipt'], 1)
+        self.assertEqual(cov['last_7d']['without_prompt'], 2)
+        self.assertEqual(cov['last_30d']['without_prompt_with_receipt'], 1)
 
     def test_mark_session_edit_records_session_marker(self):
         """mark_session_edit creates a receipt reminder marker for the active Claude session (#212)."""
