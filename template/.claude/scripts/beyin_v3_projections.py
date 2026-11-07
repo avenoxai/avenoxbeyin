@@ -792,8 +792,13 @@ def _event_refs(event):
     return [ref for ref in refs if isinstance(ref, str)] if isinstance(refs, list) else []
 
 
-def _receipt_view_contents(engine, db, warnings=None, *, include_human_daily=False, receipt_sources=None):
-    """Render receipts without side effects; include_human_daily is for comparison only."""
+def _receipt_view_contents(engine, db, warnings=None, *, include_human_daily=False, receipt_sources=None,
+                           released_format=False):
+    """Render receipts without side effects; include_human_daily is for comparison only.
+
+    released_format reproduces the bytes V3.10-V3.12 wrote (hash-named links, no
+    withheld summaries). It only proves ownership of an older view; never write it.
+    """
     _hash, _, render = engine.projection_helpers()
     from beyin_v3_preferences import read_daily_layout
     layout = read_daily_layout(engine.root)
@@ -804,11 +809,11 @@ def _receipt_view_contents(engine, db, warnings=None, *, include_human_daily=Fal
     zone = _local_zone()
     grouped = defaultdict(list)
     events = [json.loads(row[0]) for row in db.execute('SELECT payload FROM receipts ORDER BY id')]
-    hidden = _hidden_ref_sources(db, [ref for event in events for ref in _event_refs(event)])
+    if receipt_sources is not None:
+        events = [event for event in events if 'receipts/' + _hash(event['event_id']) + '.md' in receipt_sources]
+    hidden = set() if released_format else _hidden_ref_sources(db, [ref for event in events for ref in _event_refs(event)])
     for event in events:
         source = 'receipts/' + _hash(event['event_id']) + '.md'
-        if receipt_sources is not None and source not in receipt_sources:
-            continue
         if source in historical or not event.get('created_at'):
             continue
         day = receipt_day(event['created_at'], zone)
@@ -825,7 +830,7 @@ def _receipt_view_contents(engine, db, warnings=None, *, include_human_daily=Fal
     for day, items in sorted(grouped.items()):
         entries = []
         for _, at, source, summary, event_id in sorted(items):
-            link = _receipt_link(source, event_id)
+            link = f'[[{source}]]' if released_format else _receipt_link(source, event_id)
             entries.append(f'## {at}\n\n{summary}\n\nSource: {link}\n')
             outcomes.append(f'- {day}: {summary}\n  Source: {link}\n')
         relative = f'daily/{day}.md' if layout == 'flat' else f'daily/v3/{day}.md'
@@ -992,7 +997,9 @@ def _receipt_view_matches(engine, db, relative, raw, tracked, _hash):
 
     Links only select a candidate. Neither links nor generated metadata grant
     ownership: its complete deterministic bytes must still match the saved hash.
-    Missing receipts, changed timezone/rendering or unknown history fail closed.
+    A view saved by a released engine (V3.10-V3.12) is rebuilt in that format,
+    then replaced with the current one. Missing receipts, changed timezone or
+    another rendering, and unknown history fail closed.
     """
     if not tracked:
         return False
@@ -1003,14 +1010,20 @@ def _receipt_view_matches(engine, db, relative, raw, tracked, _hash):
         rb'\[\[(receipts/[0-9a-f]{64}\.md)(?:\||\]\])', raw)}
     if not sources:
         return False
-    candidates = _receipt_view_contents(engine, db, include_human_daily=True, receipt_sources=sources)
-    candidate = candidates.get(relative)
-    if candidate is None and relative.startswith('daily/'):
+    alternate = None
+    if relative.startswith('daily/'):
         alternate = ('daily/' + relative[len('daily/v3/'):] if relative.startswith('daily/v3/')
                      else 'daily/v3/' + relative[len('daily/'):])
-        candidate = candidates.get(alternate)
-    return (candidate is not None and _hash(candidate) == tracked and
-            normalized == _receipt_lf(candidate.encode('utf-8')))
+    for released_format in (False, True):
+        candidates = _receipt_view_contents(engine, db, include_human_daily=True, receipt_sources=sources,
+                                            released_format=released_format)
+        candidate = candidates.get(relative)
+        if candidate is None and alternate is not None:
+            candidate = candidates.get(alternate)
+        if (candidate is not None and _hash(candidate) == tracked and
+                normalized == _receipt_lf(candidate.encode('utf-8'))):
+            return True
+    return False
 
 
 def project_receipts(engine, db, warnings=None, recover_views=False, recovered=None, desired=None,

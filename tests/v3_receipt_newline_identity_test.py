@@ -265,6 +265,70 @@ class ReceiptNewlineIdentityTest(unittest.TestCase):
             self.assertIn(b'Flat result', view.read_bytes())
         self.assert_clean(self.cli('sync', '--full'))
 
+    WITHHELD = b'[summary withheld: the receipt refers to a private or untrusted source]'
+
+    def seed_released(self, ref='notes/a.md'):
+        """Recreate a V3.12.0 view: hash-named links, an unwithheld CRLF summary, LF wrapper."""
+        legacy = b'First line\r\nSecond line'
+        first = self.cli('receipt', '--harness', 'claude', payload={
+            'event_id': 'r1', 'summary': 'First line\nSecond line', 'refs': [ref]})
+        source = self.vault / first['source']
+        link = first['source'].encode()
+        source.write_bytes(source.read_bytes().replace(b'First line\nSecond line', legacy))
+        with closing(sqlite3.connect(self.state / 'memory.sqlite3')) as db:
+            old = self.saved()
+            old['summary'] = legacy.decode()
+            db.execute('UPDATE receipts SET payload=? WHERE id=?', (json.dumps(old), 'r1'))
+            for path in self.views():
+                raw = path.read_bytes().replace(b'[[' + link + b'|r1]]', b'[[' + link + b']]')
+                raw = raw.replace(self.WITHHELD, legacy).replace(b'First line\nSecond line', legacy)
+                self.assertNotIn(b'|r1]]', raw)
+                self.assertIn(b'[[' + link + b']]', raw)
+                self.assertIn(legacy, raw)
+                path.write_bytes(raw)
+                relative = path.relative_to(self.vault).as_posix()
+                table = 'receipt_flat_views' if relative.startswith('daily/') and not relative.startswith('daily/v3/') else 'receipt_views'
+                db.execute(f'UPDATE {table} SET hash=? WHERE path=?', (hashlib.sha256(raw).hexdigest(), relative))
+            db.commit()
+
+    def test_released_engine_view_recovers_after_newline_drift(self):
+        # A view stuck under V3.12.0 is proven in that release's format, then rewritten.
+        self.seed_released()
+        for view in self.views():
+            view.write_bytes(view.read_bytes().replace(b'\r\n', b'\n'))
+        second = self.receipt('r2', 'New recorded result')
+        self.assertNotIn('source_sync', second)
+        for view in self.views():
+            raw = view.read_bytes()
+            self.assertIn(b'New recorded result', raw)
+            self.assertIn(b'|r1]]', raw)
+        self.assert_clean(self.cli('sync', '--full'))
+
+    def test_released_engine_view_with_real_edit_stays_preserved(self):
+        self.seed_released()
+        before = {}
+        for view in self.views():
+            raw = view.read_bytes().replace(b'\r\n', b'\n').replace(b'Second line', b'Edited line')
+            view.write_bytes(raw)
+            before[view] = raw
+        second = self.receipt('r2', 'New recorded result')
+        self.assertEqual(len(second['source_sync']['warnings']), 2)
+        for view, raw in before.items():
+            self.assertEqual(view.read_bytes(), raw)
+
+    def test_released_engine_view_drops_private_summary_on_recovery(self):
+        (self.vault / 'notes/gizli.md').write_text('---\nvisibility: private\n---\nGizli.\n', encoding='utf-8')
+        self.cli('sync')
+        self.seed_released('notes/gizli.md')
+        for view in self.views():
+            view.write_bytes(view.read_bytes().replace(b'\r\n', b'\n'))
+        self.receipt('r2', 'New recorded result')
+        for view in self.views():
+            raw = view.read_bytes()
+            self.assertIn(b'New recorded result', raw)
+            self.assertIn(self.WITHHELD, raw)
+            self.assertNotIn(b'Second line', raw)
+
 
 if __name__ == '__main__':
     unittest.main()
