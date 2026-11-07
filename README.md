@@ -75,7 +75,7 @@ Bunlar `.agents/skills` altında bulunur; Claude ve Kiro kendi proje skill kopya
 
 Notu yaz, ajana ne istediğini söyle. Kaynaklar oturum açılışı ve konuşmanın uygun noktalarında yeniden indekslenir. İstemciler kapalıyken sürekli tarayan bir servis yoktur. Önemli iş sonuçları kısa, kaynak bağlantılı kayıtlarla tutulur; tüm sohbetin kendiliğinden doğru bilgiye dönüştüğü iddia edilmez.
 
-Beyin sohbet metnini saklamaz. Claude Code yerel sohbet kayıtlarını (`~/.claude/projects/`) varsayılan olarak 30 gün sonra siler; kalıcı olmasını istediğin karar ve bilgiyi nota yazdır. Süreyi uzatmak için `~/.claude/settings.json` içine örneğin `"cleanupPeriodDays": 365` ekle ([Claude Code belgesi](https://code.claude.com/docs/en/claude-directory#cleaned-up-automatically)).
+Beyin sohbet metnini saklamaz. Claude Code yerel sohbet kayıtlarını (`~/.claude/projects/`) varsayılan olarak 30 gün sonra siler; kalıcı olmasını istediğin karar ve bilgiyi nota yazdır. Süreyi uzatmak için `~/.claude/settings.json` içine örneğin `"cleanupPeriodDays": 365` ekle ([Claude Code belgesi](https://code.claude.com/docs/en/claude-directory#cleaned-up-automatically)). Silinmeden önce iz yazılmamış eski oturumlardan kısa özet çıkarmak için isteğe bağlı, varsayılanı deneme olan `python3 beyin.py chat-trace backfill` komutu var: [docs/v3/CHAT-TRACE.md](docs/v3/CHAT-TRACE.md).
 
 Son günlerde ne yapıldığını görmek için vault klasöründe `python3 beyin.py recap --days 7`
 çalıştır. Son yedi UTC gününün kaynak bağlantılı iş sonuçlarını en yeniden eskiye listeler;

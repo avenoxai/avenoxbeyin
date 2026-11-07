@@ -1137,12 +1137,20 @@ def parser(note_namespace=None, is_json=False):
                                    "from local state, then VACUUM the index; never touches the vault")
     state_compact.add_argument("--dry-run", action="store_true", help="Report what would be removed without writing")
     trace = sub.add_parser("chat-trace", help="Opt-in short conversation checkpoints; never saves transcripts")
-    trace.add_argument("action", choices=("status", "on", "off", "write"))
+    trace.add_argument("action", choices=("status", "on", "off", "write", "backfill"))
     trace.add_argument("--harness", choices=("claude", "codex"))
     trace.add_argument("--session", help="The 24-character Receipt session value shown by the hook")
     trace_text = trace.add_mutually_exclusive_group()
     trace_text.add_argument("--text", help="Explicit short summary; dated paragraph must fit 450 characters")
     trace_text.add_argument("--file", help="UTF-8 summary file, or - for stdin")
+    trace.add_argument("--show", action="store_true",
+                       help="backfill: print one session's bounded, secret-filtered digest; stores nothing")
+    trace.add_argument("--page", type=int, help="backfill --show: digest page (default 1)")
+    trace.add_argument("--skip", action="store_true",
+                       help="backfill: remember that this session has nothing worth keeping")
+    trace.add_argument("--projects-dir", type=Path,
+                       help="backfill: one explicitly chosen Claude Code project folder instead of this vault's")
+    trace.add_argument("--limit", type=int, help="backfill dry run: pending sessions to list (1-200, default 20)")
     skill = sub.add_parser("skill-import", help="Import one explicitly chosen skill directory")
     skill.add_argument("--source", type=Path, required=True)
     skill.add_argument("--name")
@@ -1821,17 +1829,54 @@ def main(argv=None, return_result=False):
         elif args.command == "chat-trace":
             _ensure_scripts_path()
             import beyin_v3_chat_trace as chat_trace
-            if args.action == 'write':
+
+            def trace_text():
+                if args.file is None:
+                    return args.text
+                if args.file == '-':
+                    return sys.stdin.read(4097)
+                with Path(args.file).open(encoding='utf-8') as handle:
+                    return handle.read(4097)
+
+            backfill_only = (args.show or args.skip or args.page is not None
+                             or args.projects_dir is not None or args.limit is not None)
+            if args.action == 'backfill':
+                # Explicit, opt-in import of older Claude Code sessions (#599); the default is a dry run.
+                import beyin_v3_chat_backfill as backfill
+                summary = args.text is not None or args.file is not None
+                if args.harness not in (None, 'claude'):
+                    raise ValueError('backfill reads Claude Code transcripts only')
+                if args.show + args.skip + summary > 1:
+                    raise ValueError('use only one of --show, --skip or --text/--file')
+                if (args.show or args.skip or summary) != bool(args.session):
+                    raise ValueError('--show, --skip and --text/--file each need --session, and --session needs one of them')
+                if args.page is not None and not args.show:
+                    raise ValueError('--page is only valid with --show')
+                if args.limit is not None and args.session:
+                    raise ValueError('--limit is only valid for the dry run')
+                if args.show:
+                    result = backfill.show(vault, state, args.session, args.projects_dir,
+                                           1 if args.page is None else args.page)
+                    if return_result:
+                        return result, 0
+                    # A digest is read by people and agents; keep Turkish text readable.
+                    if hasattr(sys.stdout, "reconfigure"):
+                        sys.stdout.reconfigure(encoding="utf-8")
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                    return 0
+                if args.skip:
+                    result = backfill.skip(vault, state, args.session, args.projects_dir)
+                elif summary:
+                    result = backfill.write(vault, state, args.session, trace_text(), args.projects_dir)
+                else:
+                    result = backfill.plan(vault, state, args.projects_dir,
+                                           backfill.LIST_DEFAULT if args.limit is None else args.limit)
+            elif backfill_only:
+                raise ValueError('--show, --skip, --page, --projects-dir and --limit are only valid with chat-trace backfill')
+            elif args.action == 'write':
                 if not args.harness or not args.session or (args.text is None and args.file is None):
                     raise ValueError('write requires --harness, --session and --text or --file')
-                text = args.text
-                if args.file is not None:
-                    if args.file == '-':
-                        text = sys.stdin.read(4097)
-                    else:
-                        with Path(args.file).open(encoding='utf-8') as handle:
-                            text = handle.read(4097)
-                result = chat_trace.write(vault, state, args.harness, args.session, text)
+                result = chat_trace.write(vault, state, args.harness, args.session, trace_text())
             elif args.harness or args.session or args.text is not None or args.file is not None:
                 raise ValueError('summary arguments are only valid with chat-trace write')
             else:

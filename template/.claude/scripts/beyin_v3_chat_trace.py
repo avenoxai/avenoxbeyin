@@ -2,10 +2,11 @@
 
 This prototype never reads transcript message bodies or infers what a conversation meant. The
 switch and counters stay in state; only an explicit write creates a searchable
-source. Unknown turn origins are deliberately silent.
+source. Unknown turn origins are deliberately silent. Older Claude Code transcripts are read only
+by the separate, explicitly invoked backfill (beyin_v3_chat_backfill), never from a hook.
 """
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 import hashlib
 import json
 import os
@@ -198,13 +199,20 @@ def hint(state, harness, payload):
     return ''
 
 
-def write(vault, state, harness, session, text):
-    """Append only the explicitly supplied summary through the existing source writer."""
+def write(vault, state, harness, session, text, *, day=None):
+    """Append only the explicitly supplied summary through the existing source writer.
+
+    `day` is set only by the explicit backfill (#599): a past session's own first day, so its
+    trace lands in that month instead of the day the summary was written.
+    """
     if not settings(state)['enabled']:
         raise ValueError('chat trace is off; explicitly enable it before writing')
     if not isinstance(text, str) or len(text) > 4096 or not text.strip():
         raise ValueError('supply a short nonempty summary, never a transcript')
-    today = datetime.now().astimezone().date().isoformat()
+    current = datetime.now().astimezone().date()
+    if day is not None and (type(day) is not date or not date(2000, 1, 1) <= day <= current):
+        raise ValueError('a trace can be dated only to a past session day')
+    today = (day or current).isoformat()
     paragraph = today + ': ' + ' '.join(text.split())
     if len(paragraph) > MAX_PARAGRAPH:
         raise ValueError('dated trace paragraph exceeds 450 characters; shorten it explicitly')
