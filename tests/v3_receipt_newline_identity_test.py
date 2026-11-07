@@ -2,6 +2,7 @@
 from contextlib import closing
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -69,6 +70,131 @@ class ReceiptNewlineIdentityTest(unittest.TestCase):
         self.assertEqual(report.get('conflicts', []), [], report)
         self.assertEqual(report.get('warnings', []), [], report)
 
+    def view_snapshot(self):
+        return {path: (path.read_bytes(), path.stat().st_mtime_ns, path.stat().st_ino)
+                for path in self.views()}
+
+    def assert_legacy_lf_migration(self, flat=False):
+        if flat:
+            self.cli('preferences', '--daily-layout', 'flat')
+        source = self.seed_legacy()
+        source_bytes = source.read_bytes()
+        with closing(sqlite3.connect(self.state / 'memory.sqlite3')) as db:
+            payload = db.execute('SELECT payload FROM receipts WHERE id=?', ('r1',)).fetchone()[0]
+        expected = {path: path.read_bytes().replace(b'\r\n', b'\n') for path in self.views()}
+        self.assert_clean(self.cli('sync', '--full'))
+        for path, raw in expected.items():
+            self.assertEqual(path.read_bytes(), raw)
+        with closing(sqlite3.connect(self.state / 'memory.sqlite3')) as db:
+            for path in self.views():
+                relative = path.relative_to(self.vault).as_posix()
+                table = 'receipt_flat_views' if flat and relative.startswith('daily/') else 'receipt_views'
+                tracked = db.execute(f'SELECT hash FROM {table} WHERE path=?', (relative,)).fetchone()[0]
+                self.assertEqual(tracked, hashlib.sha256(path.read_bytes()).hexdigest())
+        for save in (False, True, True):
+            if save:
+                for path in self.views():
+                    path.write_bytes(path.read_bytes().replace(b'\r\n', b'\n'))
+            before = self.view_snapshot()
+            self.assert_clean(self.cli('sync', '--full'))
+            self.assertEqual(self.view_snapshot(), before, 'LF saves must not cause another replacement')
+        self.receipt(harness='codex')
+        self.assertEqual(self.view_snapshot(), before)
+        self.assertEqual(source.read_bytes(), source_bytes)
+        with closing(sqlite3.connect(self.state / 'memory.sqlite3')) as db:
+            self.assertEqual(db.execute('SELECT payload FROM receipts WHERE id=?', ('r1',)).fetchone()[0], payload)
+
+    def test_legacy_views_migrate_to_lf_once_and_lf_saves_are_stable(self):
+        self.assert_legacy_lf_migration()
+
+    def test_flat_legacy_views_migrate_to_lf_once_and_lf_saves_are_stable(self):
+        self.assert_legacy_lf_migration(flat=True)
+
+    def assert_fresh_state_retires_legacy_daily(self, normalized, edited=False, unproved_crlf=False):
+        from v3_sync_test import load_module
+        subject = load_module()
+        from beyin_v3_preferences import save_daily_layout
+        source = self.seed_legacy()
+        source_bytes = source.read_bytes()
+        daily = self.views()[0]
+        if normalized:
+            for path in self.views():
+                path.write_bytes(path.read_bytes().replace(b'\r\n', b'\n'))
+        if unproved_crlf:
+            daily.write_bytes(daily.read_bytes().replace(b'\n', b'\r\n'))
+        if edited:
+            daily.write_bytes(daily.read_bytes() + b'Human annotation\n')
+        before = daily.read_bytes()
+        save_daily_layout(self.vault, 'flat')
+        engine = subject.SyncEngine(self.vault, self.root / 'fresh-state')
+        report = engine.sync(full=True)
+        if edited or unproved_crlf:
+            self.assertEqual(report['status'], 'degraded', report)
+            self.assertEqual(daily.read_bytes(), before)
+            self.assertTrue(any(w['source'] == daily.relative_to(self.vault).as_posix()
+                                and w.get('kind') == 'receipt_view' for w in report['warnings']), report)
+        else:
+            self.assert_clean(report)
+            self.assertFalse(daily.exists())
+            self.assertNotIn(b'\r', (self.vault / 'daily' / daily.name).read_bytes())
+        self.assertEqual(source.read_bytes(), source_bytes)
+        with engine.store._connect() as db:
+            self.assertEqual(json.loads(db.execute('SELECT payload FROM receipts WHERE id=?', ('r1',)).fetchone()[0])['summary'],
+                             'First line\r\nSecond line')
+
+    def test_fresh_state_retires_exact_raw_legacy_daily(self):
+        self.assert_fresh_state_retires_legacy_daily(normalized=False)
+
+    def test_fresh_state_retires_exact_lf_legacy_daily(self):
+        self.assert_fresh_state_retires_legacy_daily(normalized=True)
+
+    def test_fresh_state_preserves_edited_lf_stale_daily(self):
+        self.assert_fresh_state_retires_legacy_daily(normalized=True, edited=True)
+
+    def test_stale_adoption_requires_exact_observed_hash_not_normalized_bytes(self):
+        self.assert_fresh_state_retires_legacy_daily(normalized=True, unproved_crlf=True)
+
+    def test_legacy_lf_migration_keeps_hardlink_alias_excluded(self):
+        self.seed_legacy()
+        view = self.vault / 'knowledge/v3/outcomes.md'
+        alias = self.vault / 'notes/view-alias.md'
+        try:
+            os.link(view, alias)
+        except OSError as exc:
+            self.skipTest('Hard links unavailable: ' + str(exc))
+        original = alias.read_bytes()
+        self.assert_clean(self.cli('sync', '--full'))
+        self.assertNotIn(b'\r', view.read_bytes())
+        self.assertEqual(alias.read_bytes(), original)
+        self.assertFalse(alias.samefile(view))
+        self.assert_clean(self.cli('sync', '--full'))
+        with closing(sqlite3.connect(self.state / 'memory.sqlite3')) as db:
+            self.assertNotIn('notes/view-alias.md', [row[0] for row in db.execute('SELECT source FROM markdown_sources')])
+
+    def test_legacy_lf_migration_keeps_current_privacy_filter(self):
+        source = self.seed_legacy()
+        before, indexed = source.read_bytes(), self.saved()
+        self.assert_clean(self.cli('sync', '--full'))
+        (self.vault / 'notes/a.md').write_text('---\nvisibility: private\n---\nSynthetic private source\n', encoding='utf-8')
+        self.assert_clean(self.cli('sync', '--full'))
+        for path in self.views():
+            self.assertNotIn(b'First line', path.read_bytes())
+            self.assertIn(b'[summary withheld:', path.read_bytes())
+            self.assertNotIn(b'\r', path.read_bytes())
+        self.assertEqual(source.read_bytes(), before)
+        self.assertEqual(self.saved(), indexed)
+
+    def test_changed_privacy_cannot_prove_drifted_legacy_view(self):
+        self.seed_legacy()
+        for path in self.views():
+            path.write_bytes(path.read_bytes().replace(b'\r\n', b'\n'))
+        before = self.view_snapshot()
+        (self.vault / 'notes/a.md').write_text('---\nvisibility: private\n---\nSynthetic private source\n', encoding='utf-8')
+        report = self.cli('sync', '--full')
+        self.assertEqual(report['status'], 'degraded', report)
+        self.assertEqual(self.view_snapshot(), before)
+        self.assertEqual(len([w for w in report['warnings'] if w.get('kind') == 'receipt_view']), 2)
+
     def test_new_summary_file_and_json_replays_use_lf(self):
         summary = 'İlk satır\r\nİkinci satır\rSon satır\n'
         path = self.root / 'summary.txt'
@@ -96,6 +222,7 @@ class ReceiptNewlineIdentityTest(unittest.TestCase):
         self.assertNotIn('source_sync', second)
         for view in self.views():
             self.assertIn(b'New recorded result', view.read_bytes())
+            self.assertNotIn(b'\r', view.read_bytes())
         self.assert_clean(self.cli('sync', '--full'))
 
     def test_legacy_sources_and_views_normalize_without_divergence(self):
@@ -200,15 +327,19 @@ class ReceiptNewlineIdentityTest(unittest.TestCase):
         for view, raw in before.items():
             self.assertEqual(view.read_bytes(), raw)
 
-    def assert_racing_view_preserved(self, stale):
+    def assert_racing_view_preserved(self, stale, newline_only=False):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'template/.claude/scripts'))
         from beyin_v3_sync import SyncEngine
         from beyin_v3_projections import _receipt_view_contents, project_receipts
         from beyin_v3_preferences import save_daily_layout
         self.seed_legacy()
         path = self.views()[0] if stale else self.vault / 'knowledge/v3/outcomes.md'
-        before = path.read_bytes().replace(b'\r\n', b'\n')
+        before = path.read_bytes()
+        if not newline_only:
+            before = before.replace(b'\r\n', b'\n')
         path.write_bytes(before)
+        inode = path.stat().st_ino
+        concurrent = before.replace(b'\r\n', b'\n') if newline_only else before + b'Concurrent human edit\n'
         if stale:
             save_daily_layout(self.vault, 'flat')
         engine = SyncEngine(self.vault, self.state)
@@ -224,17 +355,31 @@ class ReceiptNewlineIdentityTest(unittest.TestCase):
             if candidate.resolve() == target:
                 reads.append(raw)
                 if len(reads) == 1:
-                    candidate.write_bytes(raw + b'Concurrent human edit\n')
+                    candidate.write_bytes(concurrent)
                     injected.append(candidate)
             return raw
 
         with engine.store._connect() as db:
+            if not stale and not newline_only:
+                # An indexed new receipt requires a real replacement, even when
+                # the old view already uses the canonical LF output spelling.
+                event = self.saved()
+                event.update(event_id='pending', summary='Pending result')
+                db.execute('INSERT INTO receipts VALUES (?,?)', ('pending', json.dumps(event)))
             desired = _receipt_view_contents(engine, db)
+            if not stale and not newline_only:
+                self.assertIn('Pending result', desired[target.relative_to(engine.root).as_posix()])
             with patch.object(Path, 'read_bytes', raced):
                 issues = project_receipts(engine, db, desired=desired)
+            if newline_only:
+                tracked = db.execute('SELECT hash FROM receipt_views WHERE path=?',
+                                     ('knowledge/v3/outcomes.md',)).fetchone()[0]
+                self.assertEqual(tracked, hashlib.sha256(before).hexdigest())
         self.assertEqual(len(injected), 1, 'the concurrent edit must actually be injected once')
         self.assertGreaterEqual(len(reads), 2, 'projection must reread the target before changing it')
-        self.assertEqual(path.read_bytes(), before + b'Concurrent human edit\n')
+        self.assertEqual(path.read_bytes(), concurrent)
+        if newline_only:
+            self.assertEqual(path.stat().st_ino, inode, 'a concurrent LF save must not be replaced')
         self.assertTrue(any(item['reason'] == 'receipt view changed during projection' for item in issues), issues)
 
     def test_newline_repair_rechecks_raw_bytes_before_replacement(self):
@@ -242,6 +387,9 @@ class ReceiptNewlineIdentityTest(unittest.TestCase):
 
     def test_newline_retirement_rechecks_raw_bytes_before_unlink(self):
         self.assert_racing_view_preserved(stale=True)
+
+    def test_lf_migration_rechecks_even_concurrent_newline_only_save(self):
+        self.assert_racing_view_preserved(stale=False, newline_only=True)
 
     def test_newline_repair_race_with_aliased_vault_path(self):
         # Exercise a spelling resolve() changes on every OS, without needing
