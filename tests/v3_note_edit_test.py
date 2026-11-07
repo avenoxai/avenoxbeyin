@@ -59,7 +59,7 @@ class NoteEditTest(unittest.TestCase):
                               env=os.environ.copy())
 
     def test_missing_read_and_create_do_not_overwrite(self):
-        missing = {'source': 'project/Journal.md', 'sha256': None, 'content': None}
+        missing = {'source': 'project/Journal.md', 'exists': False, 'sha256': None, 'content': None}
         self.assertEqual(self.engine.note_read(missing['source']), missing)
         request = {'source': missing['source'], 'expected_sha256': None, 'content': '# Journal\r\n'}
         result = self.engine.note_edit(request)

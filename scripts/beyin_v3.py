@@ -1094,6 +1094,8 @@ def parser(note_namespace=None, is_json=False):
     note.add_argument("--file", default="-", help="JSON {source, text, metadata}")
     note_read = sub.add_parser("note-read", help="Read a human Markdown source and its byte SHA-256")
     note_read.add_argument("source")
+    note_read.add_argument("--must-exist", action="store_true",
+                           help="Report a missing source as an error (exit 1) instead of exists: false")
     note_edit = sub.add_parser("note-edit", help="Edit a human Markdown source with an expected SHA-256")
     note_edit.add_argument("--file", default="-", help="JSON {source, expected_sha256, edits} or new content; - for stdin")
     task = sub.add_parser("task-create", help="Create and verify an explicit new task")
@@ -1800,6 +1802,9 @@ def main(argv=None, return_result=False):
                         raise
         elif args.command == "note-read":
             result = sync.note_read(args.source)
+            if args.must_exist and not result['exists']:
+                # The documented note error: status error, exit 1. Exit 2 stays "conflict".
+                raise FileNotFoundError('note not found: ' + result['source'])
         elif args.command == "note-edit":
             result = sync.note_edit(read_json(args.file))
         elif args.command == "note-create":
