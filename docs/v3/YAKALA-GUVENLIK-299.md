@@ -37,3 +37,6 @@ ancak kartın URL'si aynı sözdizimi/IP kontrolünden geçer.
 DNS kontrolü ile yardımcının bağlantısı arasında DNS cevabı değişebilir (TOCTOU / rebinding).
 Harici Defuddle/yt-dlp süreçlerinin yönlendirmeleri de bu kontrolü atlayabilir.
 Bu kalan sınırlar için ayrı ağ izolasyonu gerekir.
+
+Dosya kartı yalnız kendi `dosyalar/` klasöründeki yakalanmış dosyaları okur; vault içindeki kasa
+türü klasörler, `.obsidian/` ve başka notlar `## Dosyalar` bağıyla `.ham/` içine kopyalanamaz.

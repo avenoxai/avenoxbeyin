@@ -157,7 +157,8 @@ class YakalaSecurityTest(unittest.TestCase):
             sys.path[:] = original_path
 
     def test_file_cards_reject_reserved_names_when_both_apis_are_removed(self):
-        valid = self.vault / 'valid.txt'
+        valid = yakala.inbox(self.vault) / yakala.FILES / 'valid.txt'  # a file card reads its own folder only
+        valid.parent.mkdir(parents=True)
         valid.write_text('VALID-FILE-CONTENT', encoding='utf-8')
         with ExitStack() as stack:
             stack.enter_context(patch.dict(os.path.__dict__))
@@ -172,7 +173,8 @@ class YakalaSecurityTest(unittest.TestCase):
                 card = {'meta': {'kaynak_turu': 'dosya'}, 'body': '## Dosyalar\n\n[[' + name + ']]'}
                 with self.subTest(name=name), self.assertRaises(ValueError):
                     yakala.extract(self.vault, card, self.no_tools)
-            card = {'meta': {'kaynak_turu': 'dosya'}, 'body': '## Dosyalar\n\n[[valid.txt]]'}
+            link = valid.relative_to(self.vault).as_posix()
+            card = {'meta': {'kaynak_turu': 'dosya'}, 'body': '## Dosyalar\n\n[[' + link + ']]'}
             self.assertIn('VALID-FILE-CONTENT', yakala.extract(self.vault, card, self.no_tools)[0])
 
     def test_file_cards_prefer_native_reserved_check_over_deprecated_pathlib(self):

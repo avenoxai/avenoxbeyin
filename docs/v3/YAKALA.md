@@ -487,6 +487,11 @@ Ham metin kart klasörünün içinde `.ham/` altında durur. Nokta ile başlayan
 aramaya ve Obsidian'a karışmaz. `.ham/` ve yakalanan dosyaların durduğu `dosyalar/`, içlerine yazılan
 `.gitignore` ile kart klasörü hangisi olursa olsun depoya da girmez.
 
+Dosya kartı yalnız kendi klasörünün `dosyalar/` alt klasöründeki, yakalanırken oraya kopyalanmış
+dosyaları okur. Kartın `## Dosyalar` bölümü elle ya da eşitlenen bir cihazdan değiştirilse de vault'un
+geri kalanı (kasa türü klasörler, `.obsidian/`, başka notlar) `.ham/` içine kopyalanmaz; `dosyalar/`
+başka bir yere bağlantı (symlink, junction) ise hiçbir dosya okunmaz.
+
 ### Videoda transkriptin dili
 
 Otomatik dublajlı bir videoda YouTube her dublaj için ayrı bir altyazı izi sunar. `isle`,

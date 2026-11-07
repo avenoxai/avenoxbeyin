@@ -1221,6 +1221,36 @@ def _safe_vault_file(vault_root, link):
     return path
 
 
+def _card_files(vault_root, card):
+    """The card's own attachment folder, resolved: capture() copies every attached file into
+    `<card folder>/dosyalar`. None when it is missing or is itself a link (symlink, junction)."""
+    folder = Path(card['path']).parent if card.get('path') else inbox(vault_root)
+    try:
+        files = (folder / FILES).resolve()
+        expected = folder.resolve() / FILES
+    except (OSError, RuntimeError):
+        return None
+    return files if files == expected and files.is_dir() else None
+
+
+def _fold_path(path):
+    return unicodedata.normalize('NFC', str(path)).casefold()
+
+
+def _card_file(vault_root, card, link):
+    """A `## Dosyalar` link of a file card names only a file captured into that card's `dosyalar/`.
+
+    Any other vault file stays out (#299): a hand-edited or synced card cannot have a kasa-class
+    folder or `.obsidian/` copied into `.ham/`. The spelling (Unicode form, case) of a synced link
+    does not decide it; the resolved location does.
+    """
+    path = _safe_vault_file(vault_root, link)  # syntax first: no resolve for UNC, drives or `..`
+    folder = _card_files(vault_root, card)
+    if folder is None or not _fold_path(path).startswith(_fold_path(folder).rstrip('\\/') + os.sep):
+        raise ValueError('Yakala dosya baglantisi kartin dosyalar klasorunde degil: ' + link)
+    return path
+
+
 def extract(vault, card, found, allow_audio=True, info=None):
     """Return (text, method, note). Prefer what is already captured, then the cheapest fetch."""
     meta, body = card['meta'], card['body']
@@ -1246,7 +1276,7 @@ def extract(vault, card, found, allow_audio=True, info=None):
         parts = []
         vault_root = Path(vault).resolve()
         for link in re.findall(r'\[\[([^\]]+)\]\]', _section(body, 'Dosyalar')):
-            path = _safe_vault_file(vault_root, link)
+            path = _card_file(vault_root, card, link)
             if path.suffix.lower() in ('.md', '.txt', '.csv', '.json', '.html', '.srt', '.vtt'):
                 parts.append('## ' + path.name + '\n\n' + path.read_text(encoding='utf-8', errors='replace'))
             elif path.suffix.lower() == '.pdf' and found['pdftotext']:
