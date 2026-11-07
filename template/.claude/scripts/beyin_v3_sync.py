@@ -21,7 +21,7 @@ _MODULE_DIR = str(Path(__file__).resolve().parent)
 if _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
-from beyin_v3 import (HARNESSES, MAX_RECEIPT_LINKS, REJECTED_AT, RETIRED_STATUSES, MemoryStore, ReceiptConflict, RevisionConflict, _json,
+from beyin_v3 import (HARNESSES, MAX_RECEIPT_LINKS, RECEIPT_CLIENT_NAME, RECEIPT_CLIENTS, REJECTED_AT, RETIRED_STATUSES, MemoryStore, ReceiptConflict, RevisionConflict, _json,
                       _path_redirected, _plain_link, _rejected_inference, _status_word, rejected_dependents, resolve_supersedes)
 from beyin_v3_index import applied_keys, dir_key, exclusions as index_exclusions, prune as prune_excluded
 from beyin_v3_hygiene import sensitive_excluded, sensitive_source
@@ -281,6 +281,23 @@ def parse(text):
 
 def render(metadata, body):
     return '---\n' + json.dumps(metadata, ensure_ascii=False, indent=2) + '\n---\n' + body
+
+
+def _receipt_harness(event):
+    """Receipt source fields naming the client; RECEIPT_CLIENTS persist as manual + client (#385).
+
+    Released 3.12.0 and older reject an unknown `harness` in a receipt source, so a receipt
+    written here would degrade their sync after a rollback or on another device that shares the
+    vault. They ignore `client`. The runtime index keeps the client name as the harness, so the
+    receipt still closes that client's checkpoint and Stop reminder.
+    """
+    harness = event['harness']
+    if harness in RECEIPT_CLIENTS:
+        return {'harness': 'manual', 'client': harness}
+    fields = {'harness': harness}
+    if isinstance(event.get('client'), str):
+        fields['client'] = event['client']
+    return fields
 
 
 EXCLUDED_FILES = {'agents.md', 'claude.md', 'gemini.md', 'skill.md', 'hooks.md', 'config.md', 'settings.md', 'instructions.md', 'codex.md', 'setup.md', 'install.md'}
@@ -1000,6 +1017,11 @@ class SyncEngine:
             raise ValueError('filename does not match event_id hash')
         if harness not in HARNESSES + ('manual',):
             raise ValueError(f'invalid harness: {harness}')
+        client = metadata.get('client')
+        if client is not None and (not isinstance(client, str) or not RECEIPT_CLIENT_NAME.fullmatch(client)):
+            raise ValueError('invalid receipt client')
+        if harness == 'manual' and client in RECEIPT_CLIENTS:
+            harness = client  # the backward-readable form _receipt_harness writes (#385)
         # Refs were validated when the receipt was written; a later rename must not block recovery.
         if not isinstance(refs, list) or not refs or any(
                 not isinstance(ref, str) or not ref or Path(ref).is_absolute() or '..' in Path(ref).parts for ref in refs):
@@ -1008,6 +1030,10 @@ class SyncEngine:
         if not summary.strip():
             raise ValueError('empty receipt summary')
         event = {'event_id': event_id, 'summary': summary, 'refs': [Path(ref).as_posix() for ref in refs], 'harness': harness}
+        if client is not None and client != harness:
+            # A client this version does not know (a newer writer) stays manual like on older
+            # versions; keeping the name lets an idempotent replay render the same bytes.
+            event['client'] = client
         links = metadata.get('links')
         if links is not None:
             if not isinstance(links, list) or not links:
@@ -1564,7 +1590,7 @@ class SyncEngine:
                 if old['summary'] != summary or old['refs'] != refs or old.get('links', []) != links:
                     raise ReceiptConflict('event id collision')
                 event = old
-            receipt_metadata = {'kind': 'receipt', 'event_id': event_id, 'harness': event['harness'], 'refs': refs, 'visibility': 'internal'}
+            receipt_metadata = {'kind': 'receipt', 'event_id': event_id, **_receipt_harness(event), 'refs': refs, 'visibility': 'internal'}
             if links:
                 receipt_metadata['links'] = links
             if event.get('created_at'):

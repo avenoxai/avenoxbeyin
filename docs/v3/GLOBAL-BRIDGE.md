@@ -46,6 +46,16 @@ köprü komutları çalışabilir, ancak yeni `bridge --install` / `--uninstall`
 bulunmaz. Global köprüyü de kaldırmak istiyorsanız rollback öncesinde
 `python3 beyin.py bridge --harness antigravity --uninstall` çalıştırın.
 
+Pi hook JSON kullanmaz. Aynı kapsamlı bridge için vault-owned extension'ı
+`pi -e /tam/yol/Beynim/.pi/extensions/beyin-v3.ts --beyin-project-root /tam/yol/Projelerim`
+ile yükleyin. Birden çok kök, olay seçimi ve context bütçesi de Pi flag'leriyle
+ayarlanabilir; [Pi belgesi](PI.md#explicit-bridge-from-another-project). Bu da
+aynı startup/metadata sınırını kullanır; aşağıdaki dış-proje kapsamı Pi için de
+geçerlidir. `--print-config --harness pi` kullanılmaz. Pi desteği olmayan bir
+sürüme (3.12.0 ve öncesi) `rollback` veya `uninstall` yapmadan önce bu `-e` yolunu
+kişisel Pi ayarından ve takma adlardan kaldırın; extension dosyası silinince Pi
+`--beyin-project-root` bayrağını tanımaz ve açılmaz.
+
 ### 2. Manuel İnceleme ve Yazdırma (`--print-config`)
 
 Dosyaları diske yazmadan yalnızca üretilecek JSON konfigürasyonunu görmek isterseniz `--print-config` kullanabilirsiniz:

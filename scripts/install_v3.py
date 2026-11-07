@@ -219,6 +219,8 @@ COMPONENT_PATHS = {
     "adapters/opencode": (".opencode/plugins/",),
     "adapters/omp": (".omp/hooks/",),
     "adapters/kiro": (".kiro/hooks/beyin-v3.json",),
+    # Not an excludable name of its own (see beyin_v3_exclusions); reached only through "adapters".
+    "adapters/pi": (".pi/extensions/beyin-v3.ts",),
 }
 
 
@@ -229,7 +231,8 @@ def is_component_excluded(target, excluded):
             prefixes = tuple(f"{root}/skills/{skill}/" for root in SKILL_ROOTS)
         elif name == "adapters":
             prefixes = (COMPONENT_PATHS["adapters/hermes"] + COMPONENT_PATHS["adapters/opencode"] +
-                        COMPONENT_PATHS["adapters/omp"] + COMPONENT_PATHS["adapters/kiro"])
+                        COMPONENT_PATHS["adapters/omp"] + COMPONENT_PATHS["adapters/kiro"] +
+                        COMPONENT_PATHS["adapters/pi"])
         else:
             prefixes = COMPONENT_PATHS.get(name, ())
         if prefixes and target.startswith(prefixes):
@@ -836,6 +839,13 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
     if omp.exists():
         # OMP loads <project>/.omp/hooks/pre/*.ts when the session cwd matches the vault.
         spec = importlib.util.spec_from_file_location("beyin_release_omp", omp)
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        for name, content in module.plan_plugin(vault, state).items():
+            add(name, content)
+    pi = ROOT / "template/.claude/scripts/beyin_v3_pi.py"
+    if pi.exists():
+        # Pi discovers vault-local extensions after project trust; no global settings are changed.
+        spec = importlib.util.spec_from_file_location("beyin_release_pi", pi)
         module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
         for name, content in module.plan_plugin(vault, state).items():
             add(name, content)

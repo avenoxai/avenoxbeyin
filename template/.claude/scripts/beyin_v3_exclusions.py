@@ -4,6 +4,10 @@ import os
 from pathlib import Path
 import tempfile
 
+# Never add a name here without a rollback plan: the vault-local .beyin-exclusions.json is read by
+# every installed version (rollback, another device on the same vault), and released 3.12.0 and
+# older reject an unknown name, so their update stops until the user edits the file. The Pi
+# extension is therefore excludable only through the existing `adapters` group (#385).
 EXCLUDABLE_COMPONENTS = (
     'agents_block', 'adapters', 'adapters/hermes', 'adapters/kiro', 'adapters/omp', 'adapters/opencode',
     'harnesses/antigravity', 'launchers', 'skills', 'skills/beyin',

@@ -559,7 +559,7 @@ def _main(argv=None):
                            description=__doc__)
     parser.add_argument('--vault', type=Path, help='Path to vault root')
     parser.add_argument('--state', type=Path, help='Defaults to the installed vault runtime locator')
-    parser.add_argument('--harness', choices=('claude', 'codex', 'antigravity'), required=True)
+    parser.add_argument('--harness', choices=('claude', 'codex', 'antigravity', 'pi'), required=True)
     parser.add_argument('--native-event', choices=tuple(ANTIGRAVITY), help='Antigravity hook event; set by --print-config')
     parser.add_argument('--project-root', type=Path, action='append', help='Project root directory')
     parser.add_argument('--context-chars', type=int, default=1500, help='Startup instructions only; 0 disables injection')
@@ -575,6 +575,8 @@ def _main(argv=None):
     # Antigravity's Stop contract expects a decision; "stop" lets the agent finish as usual.
     quiet = '{"decision":"stop"}' if args.harness == 'antigravity' and args.native_event == 'Stop' else '{}'
     try:
+        if args.harness == 'pi' and (args.print_config or args.install or args.uninstall):
+            raise ValueError('Pi uses the installed extension with --beyin-project-root, not hook JSON')
         if args.uninstall:
             result = uninstall_bridge(args.harness)
             print(json.dumps(result, indent=2, ensure_ascii=False))

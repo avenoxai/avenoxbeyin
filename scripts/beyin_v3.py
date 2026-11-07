@@ -36,18 +36,18 @@ class NoteUsageError(ValueError):
 
 
 def mark_session_edit(state: Path, vault: Path | None = None, source: str | None = None) -> None:
-    """Open the Stop reminder's edit window for the Claude Code session that ran this write (#212).
+    """Open the Stop edit window for a CLI write from Claude or Pi's shell tool (#212).
 
-    Bash is not a PostToolUse matcher, so a note or task written through `beyin.py` from the Bash
-    tool was invisible to the receipt reminder. Claude Code sets CLAUDE_CODE_SESSION_ID in Bash
-    subprocesses to the session_id its hooks receive. External project writes use the same
-    cwd/session namespace as the global bridge; successful distilled-note writes retain
-    knowledge evidence even though the note mtime precedes this marker. Other shells and
-    harnesses do not set it and nothing is guessed. Never costs the write itself.
-    Every write also leaves its time in a `.cli` flag: no PostToolUse event exists for it, so the
-    next Stop of that session queues it for receipt coverage as an observed edit.
+    Shell writes have no editor PostToolUse event. Both clients expose the real session ID to
+    shell subprocesses (CLAUDE_CODE_SESSION_ID, PI_SESSION_ID), as their hooks receive it; never
+    guess an ID in a plain shell. External project writes use the same cwd/session namespace as
+    the global bridge; successful distilled-note writes retain knowledge evidence even though the
+    note mtime precedes this marker. Bookkeeping cannot cost the write itself.
+    A Claude write also leaves its time in a `.cli` flag: no PostToolUse event exists for it, so the
+    next Claude Stop of that session queues it for receipt coverage as an observed edit.
     """
-    session = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    claude = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    session = claude or os.environ.get("PI_SESSION_ID")
     if not session or os.environ.get("BEYIN_V3_NO_RECEIPT_REMINDER") == "1":
         return
     try:
@@ -65,7 +65,9 @@ def mark_session_edit(state: Path, vault: Path | None = None, source: str | None
             temporary.write_text(json.dumps(value), encoding="utf-8")
             os.replace(temporary, path)
 
-        put(folder / (name + ".cli"), {"at": now})  # first: an unreadable window marker cannot drop it
+        if claude:
+            # First: an unreadable window marker cannot drop it. Only a Claude Stop consumes it.
+            put(folder / (name + ".cli"), {"at": now})
         edited = folder / (name + ".edited")
         previous = json.loads(edited.read_text(encoding="utf-8")) if edited.exists() else None
         # The window opened by the first edit stays, as for PostToolUse; only knowledge evidence is added.
@@ -84,6 +86,20 @@ def mark_session_edit(state: Path, vault: Path | None = None, source: str | None
             put(edited, marker)
     except Exception:
         pass  # reminder bookkeeping never costs the write that already succeeded
+
+
+def env_session(harness=None):
+    """Hashed session of the agent whose shell runs this command, as its hooks key it (#212).
+
+    Claude Code and Pi export their real session ID to shell subprocesses. A receipt names its
+    client, so `--harness pi` reads Pi's ID even when Pi itself runs inside a Claude Code shell
+    and inherits the outer CLAUDE_CODE_SESSION_ID. Nothing is guessed in a plain shell.
+    """
+    names = (("PI_SESSION_ID", "BEYIN_V3_SESSION_ID") if harness == "pi"
+             else ("CLAUDE_CODE_SESSION_ID", "BEYIN_V3_SESSION_ID", "PI_SESSION_ID") if harness is None
+             else ("CLAUDE_CODE_SESSION_ID", "BEYIN_V3_SESSION_ID"))
+    raw = next((os.environ[name] for name in names if os.environ.get(name)), None)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24] if raw else None
 
 
 def _is_absolute_cross_platform(raw: str) -> bool:
@@ -1173,7 +1189,7 @@ def parser(note_namespace=None, is_json=False):
     context = sub.add_parser("context", help="Retrieve source-backed shared context")
     context.add_argument("query", nargs="?", help="Query; alternatively use --file")
     context.add_argument("--file", help="JSON retrieval arguments, or - for stdin")
-    context.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro"), default="codex")
+    context.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro", "pi"), default="codex")
     context.add_argument("--project")
     context.add_argument("--audience", choices=("internal", "public"), default="internal")
     context.add_argument("--status", action="append", dest="statuses")
@@ -1200,7 +1216,7 @@ def parser(note_namespace=None, is_json=False):
     answer.add_argument("--project", required=True)
     receipt = sub.add_parser("receipt", help="Submit an idempotent source-linked receipt")
     receipt.add_argument("--file", help="JSON input path, or - for stdin (default without receipt flags)")
-    receipt.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro"), default="codex")
+    receipt.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro", "pi"), default="codex")
     receipt.add_argument("--event-id", help="Required receipt event identifier in flag mode")
     receipt.add_argument("--summary", help="Receipt summary text, preserving literal newlines")
     receipt.add_argument("--summary-file", type=Path, metavar="PATH", help="Read the receipt summary from a UTF-8 file")
@@ -1580,7 +1596,7 @@ def main(argv=None, return_result=False):
         elif args.command == "doctor":
             _ensure_scripts_path()
             from beyin_v3_hook_done import summary as hook_done_summary
-            done = hook_done_summary(state, ('codex', 'claude', 'antigravity', 'hermes', 'opencode', 'omp', 'kiro'))
+            done = hook_done_summary(state, ('codex', 'claude', 'antigravity', 'hermes', 'opencode', 'omp', 'kiro', 'pi'))
             result = {"pending_events": len(list((state / "hook-queue").glob("*.json"))),
                       **done}
             for filename in ("hook-health.json", "hook-error.json", "receipt-gaps.json"):
@@ -2044,14 +2060,14 @@ def main(argv=None, return_result=False):
                 payload = {"event_id": args.event_id, "summary": summary, "refs": args.ref}
                 if args.session is not None:
                     payload["session"] = args.session
-                elif os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID"):
-                    payload["session"] = hashlib.sha256((os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")).encode("utf-8")).hexdigest()[:24]
+                elif env_session(args.harness):
+                    payload["session"] = env_session(args.harness)
                 if args.link:
                     payload["links"] = args.link
             else:
                 payload = read_json(args.file if args.file is not None else "-")
-                if "session" not in payload and (os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")):
-                    payload["session"] = hashlib.sha256((os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")).encode("utf-8")).hexdigest()[:24]
+                if "session" not in payload and env_session(args.harness):
+                    payload["session"] = env_session(args.harness)
             result = sync.receipt(payload["event_id"], payload["summary"],
                                           payload["refs"], args.harness, session=payload.get('session'),
                                           links=payload.get('links'))
@@ -2072,9 +2088,7 @@ def main(argv=None, return_result=False):
         elif args.command == "learn":
             _ensure_scripts_path()
             from beyin_v3_learning import stage_candidate, list_candidates, resolve_candidates
-            env_session = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")
-            sess = args.session or (hashlib.sha256(env_session.encode("utf-8")).hexdigest()[:24]
-                                    if env_session else "cli")
+            sess = args.session or env_session() or "cli"
             if getattr(args, "all", False):
                 target_sess = None
             else:
@@ -2094,7 +2108,7 @@ def main(argv=None, return_result=False):
             result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])
         if (args.command in SOURCE_WRITE_COMMANDS
                 and (args.command != "note-edit" or result.get('status') == 'written')
-                and os.environ.get("CLAUDE_CODE_SESSION_ID")):
+                and (os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID"))):
             mark_session_edit(state, vault, result.get("source"))
         if return_result:
             return result, 0
