@@ -1263,7 +1263,7 @@ class BridgeTest(unittest.TestCase):
         data = json.loads(result.stdout.strip().splitlines()[-1])
         self.assertEqual(data['id'], 'beyin-v3-bridge')
         self.assertEqual(data['keys'], ['session.compaction', 'session.context', 'session.prompt'])
-        self.assertIn('Optional Beyin bridge', data['allowed'][0]['text'])
+        self.assertIn('Beyin bridge active.', data['allowed'][0]['text'])  # bootstrap text of #500 (PR #505)
         self.assertIn('--harness opencode', data['allowed'][0]['text'])
         self.assertEqual(data['blocked'], [], 'Sessions outside the project roots get no bridge context')
         self.assertEqual(data['child'], [], 'Sub-agent sessions get no bridge context')
