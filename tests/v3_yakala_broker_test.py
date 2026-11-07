@@ -336,5 +336,59 @@ class BrokerRecoveryTest(unittest.TestCase):
         self.assertEqual(len(self.owners), 1)
 
 
+class JsonPipeDirectTest(unittest.TestCase):
+    def test_real_pipe_eof_is_terminal(self):
+        import io
+        import os
+        fd, write = os.pipe()
+        reader = os.fdopen(fd, 'rb')
+        os.close(write)
+        pipe = y._JsonPipe(reader, io.BytesIO())
+        self.addCleanup(pipe.finish)
+        self.assertTrue(pipe.failed.wait(1))
+        pipe.read_thread.join(1)
+        self.assertFalse(pipe.read_thread.is_alive())
+
+    def test_only_transient_errors_are_retried_with_a_bound(self):
+        import errno
+        import io
+        for code, expected in ((errno.EAGAIN, 4), (errno.EINTR, 4), (errno.EIO, 1)):
+            with self.subTest(code=code):
+                class Reader(io.BytesIO):
+                    calls = 0
+                    def readline(self, limit):
+                        self.calls += 1
+                        raise OSError(code, 'read failed')
+                reader = Reader()
+                pipe = y._JsonPipe(reader, io.BytesIO())
+                try:
+                    self.assertTrue(pipe.failed.wait(1))
+                    self.assertEqual(reader.calls, expected)
+                finally:
+                    pipe.finish()
+
+    def test_transient_error_recovers_before_eof(self):
+        import errno
+        import io
+        class Reader(io.BytesIO):
+            calls = 0
+            def readline(self, limit):
+                self.calls += 1
+                if self.calls == 1:
+                    raise OSError(errno.EINTR, 'interrupted')
+                return super().readline(limit)
+        pipe = y._JsonPipe(Reader(b'{"type":"READY"}\n'), io.BytesIO())
+        self.addCleanup(pipe.finish)
+        self.assertTrue(pipe.failed.wait(1))
+        self.assertEqual(pipe.receive(), {'type': 'READY'})
+
+    def test_malformed_message_is_terminal(self):
+        import io
+        pipe = y._JsonPipe(io.BytesIO(b'invalid\n{"type":"READY"}\n'), io.BytesIO())
+        self.addCleanup(pipe.finish)
+        self.assertTrue(pipe.failed.wait(1))
+        self.assertIsNone(pipe.receive())
+
+
 if __name__ == '__main__':
     unittest.main()

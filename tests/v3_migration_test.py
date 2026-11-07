@@ -134,12 +134,18 @@ class MigrationTest(unittest.TestCase):
                                   cwd=self.root, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL, start_new_session=True)
 
+        stopped = False
+
         def stop():
+            nonlocal stopped
+            if stopped:
+                return
             try:
                 os.killpg(writer.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             writer.wait(timeout=60)
+            stopped = True
         self.addCleanup(stop)
         sentinels = []
         deadline = time.monotonic() + 120
@@ -154,7 +160,15 @@ class MigrationTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'legacy writer lock is active'):
             with self.m.migration_guard(self.root, self.state):
                 pass
+        from unittest import mock
+        # A failed first signal must remain visible and leave cleanup retryable.
+        with mock.patch.object(os, 'killpg', side_effect=PermissionError('synthetic denial')):
+            with self.assertRaisesRegex(PermissionError, 'synthetic denial'):
+                stop()
         stop()
+        # The reaped leader's PID may now belong to another process group.
+        with mock.patch.object(os, 'killpg', side_effect=AssertionError('signalled a reaped writer')):
+            stop()
         left = sentinel.read_bytes()
         self.assertEqual(json.loads(left)['status'], 'inflight')
         with self.m.migration_guard(self.root, self.state) as plan:
@@ -603,6 +617,25 @@ class MigrationTest(unittest.TestCase):
             self.assertFalse((self.state / 'v2-migration.json').exists())
         finally:
             shutil.copyfile = original_copyfile
+
+
+    def test_guard_plan_handles_invalid_install_manifest(self):
+        self.state.mkdir(parents=True, exist_ok=True)
+        runner = self.source(self.m.LEGACY_RUNNERS[0], 'user-owned runner\n')
+        manifest = self.state / 'v3-install.json'
+        for content in ('["not a dict"]', '{"kept_legacy": null}', '{"kept_legacy": 123}',
+                        '{"kept_legacy": ["runner", {}]}', '{broken', 'null'):
+            with self.subTest(content=content):
+                manifest.write_text(content, encoding='utf-8')
+                with self.assertRaisesRegex(RuntimeError, 'invalid v3-install.json'):
+                    with self.m.migration_guard(self.root, self.state):
+                        self.fail('invalid ownership must not yield a migration plan')
+                self.assertEqual(manifest.read_text(encoding='utf-8'), content)
+                self.assertEqual(runner.read_text(encoding='utf-8'), 'user-owned runner\n')
+                self.assertFalse((self.state / 'v2-migration.json').exists())
+        manifest.write_text(json.dumps({'kept_legacy': [self.m.LEGACY_RUNNERS[0]]}), encoding='utf-8')
+        with self.m.migration_guard(self.root, self.state) as plan:
+            self.assertEqual(plan['kept_legacy'], [self.m.LEGACY_RUNNERS[0]])
 
 
 if __name__ == '__main__':

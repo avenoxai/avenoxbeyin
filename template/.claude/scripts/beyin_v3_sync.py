@@ -28,6 +28,7 @@ from beyin_v3_hygiene import sensitive_excluded, sensitive_source
 from beyin_v3_projections import (is_receipt_view_source, is_receipt_view_conflict, project_receipts,
                                   quarantine_receipt_view_history, archived_receipt_view_aliases,
                                   _receipt_view_contents, receipt_view_rows,
+                                  _record_excluded_dirs, _record_unreadable_sources,
                                   RECEIPT_VIEW_SOURCES_ROW)
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
@@ -479,6 +480,9 @@ class SyncEngine:
     index_exclusions = None
     # Folded names that scan took out of the index; None until a scan has run on this engine.
     excluded_dir_keys = None
+    # Sources that scan could not read or parse, so it indexed no record and no visibility for
+    # them; None until a scan has run on this engine.
+    unreadable_sources = None
 
     def projection_helpers(self):
         return _hash, atomic, render
@@ -789,7 +793,7 @@ class SyncEngine:
                 'truncated': len(due) > 20 or len(invalid) > 20}
 
     def supersedes_health(self):
-        """Report supersedes values that retire nothing: unresolved, ambiguous or the note itself."""
+        """Report supersedes values that retire nothing: unresolved, ambiguous, the note itself or a cycle."""
         with self.store._connect() as db:
             records = [json.loads(row[0]) for row in db.execute('SELECT payload FROM records ORDER BY id')]
         dead = resolve_supersedes(records)[1]
@@ -800,6 +804,8 @@ class SyncEngine:
         and its value in the returned records is None: sync keeps that record as indexed."""
         records, warnings, conflicts = {}, [], []
         duplicate = set()
+        # Stored by project_receipts with this sync's record deletions, like excluded_dir_keys.
+        unreadable = self.unreadable_sources = set()
         # Provenance is independent of editable frontmatter. Prove paths before
         # taking their identities so aliases on case-insensitive volumes are also
         # excluded, without treating distinct case-sensitive files as the same note.
@@ -884,6 +890,7 @@ class SyncEngine:
                         cache.read(relative, st, record['id'])
                 except (ValueError, OSError, UnicodeError) as exc:
                     warnings.append({'source': relative, 'reason': str(exc)})
+                    unreadable.add(relative)
         for id in sorted(duplicate):
             records.pop(id, None)
             conflicts.append({'id': id, 'reason': 'duplicate source id; all copies quarantined'})
@@ -1163,6 +1170,15 @@ class SyncEngine:
             db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',
                        (RECEIPT_VIEW_SOURCES_ROW, _json(sorted(self.receipt_view_sources))))
             recovered_views = [] if recover_views else None
+            # The scan can remove a formerly private record. Record its current
+            # exclusion/unreadable evidence before rendering from the new index.
+            _record_excluded_dirs(self, db)
+            _record_unreadable_sources(self, db)
+            if not layout_issue:
+                # Render again from the records this scan indexed, for the same paths: whether a
+                # summary refers to a private source is decided by this sync, not the previous one.
+                rendered = _receipt_view_contents(self, db)
+                desired_views = {path: rendered.get(path, content) for path, content in desired_views.items()}
             view_issues = project_receipts(self, db, warnings, recover_views=recover_views,
                                           recovered=recovered_views, desired=desired_views,
                                           allow_view_writes=provenance_durable and not layout_issue)
@@ -1502,4 +1518,15 @@ class SyncEngine:
         self._record_redactions(redacted)
         receipt_res = {'id': event_id, 'event_id': event_id, 'status': 'succeeded', 'source': source,
                        'redacted': redacted, 'secrets_redacted': redacted}
+        # A replay must not consume candidates staged after the original receipt.
+        # An unrelated receipt is not evidence that every candidate was distilled.
+        if not row and event.get('session'):
+            try:
+                from beyin_v3_learning import resolve_candidates
+                resolved_count = resolve_candidates(self.state, session=event['session'],
+                                                    target_status="distilled", sources=refs)
+                if resolved_count:
+                    receipt_res['candidates_resolved'] = resolved_count
+            except Exception:
+                pass
         return self._write_diagnostics(receipt_res, result)

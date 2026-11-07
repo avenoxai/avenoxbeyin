@@ -391,6 +391,150 @@ with locked(engine):
         self.assertEqual((self.vault / 'Threads.md').read_bytes(), b'ALPHA\nBETA\n')
         self.assertEqual(len(list((self.vault / LOCAL_DIRECTORY / 'backups').glob('*.json'))), 2)
 
+    @unittest.skipIf(os.name == 'nt', 'POSIX permits unlinking an open lock file')
+    def test_replaced_lock_reopens_and_locks_current_inode(self):
+        import fcntl
+        lock = self.vault / LOCAL_DIRECTORY / 'writer.lock'
+        original = os.fstat
+        calls = []
+        def replace_first(fd):
+            info = original(fd)
+            calls.append(info.st_ino)
+            if len(calls) == 1:
+                lock.unlink()
+                lock.touch()
+            return info
+        with patch('os.fstat', side_effect=replace_first):
+            with locked(self.engine):
+                self.assertGreaterEqual(len(calls), 2)
+                self.assertNotEqual(calls[0], calls[-1])
+                with lock.open('a+b') as contender:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_repeated_stale_inode_respects_deadline(self):
+        from types import SimpleNamespace
+        original = os.fstat
+        def stale(fd):
+            info = original(fd)
+            return SimpleNamespace(st_dev=info.st_dev, st_ino=info.st_ino + 1)
+        with patch('os.fstat', side_effect=stale):
+            with self.assertRaises(NoteConflict):
+                with locked(self.engine, timeout=0.01):
+                    self.fail('stale lock must not enter critical section')
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX permits unlinking an open lock file')
+    def test_lock_replaced_by_symlink_is_rejected_on_retry(self):
+        lock = self.vault / LOCAL_DIRECTORY / 'writer.lock'
+        outside = self.vault.parent / 'outside.lock'
+        outside.write_bytes(b'preserve')
+        original = os.fstat
+        calls = []
+        def replace_first(fd):
+            info = original(fd)
+            calls.append(info.st_ino)
+            if len(calls) == 1:
+                lock.unlink()
+                lock.symlink_to(outside)
+            return info
+        with patch('os.fstat', side_effect=replace_first):
+            with self.assertRaises(ValueError):
+                with locked(self.engine):
+                    self.fail('symlink lock must be rejected')
+        self.assertEqual(outside.read_bytes(), b'preserve')
+
+    def test_writer_lock_toctou_staleness_retries_on_inode_mismatch(self):
+        orig_fstat = os.fstat
+        calls = []
+
+        def mock_fstat(fd):
+            real_st = orig_fstat(fd)
+            if not calls:
+                calls.append(True)
+                class MockStat:
+                    st_dev = real_st.st_dev
+                    st_ino = real_st.st_ino + 999999
+                return MockStat()
+            return real_st
+
+        with patch('os.fstat', side_effect=mock_fstat):
+            with locked(self.engine):
+                self.assertTrue((self.vault / LOCAL_DIRECTORY / 'writer.lock').exists())
+        self.assertEqual(len(calls), 1)
+
+    def test_note_read_and_edit_under_index_excluded_directory(self):
+        """note-read and note-edit allow reading and modifying notes in index-excluded directories (#468)."""
+        archive_dir = self.vault / '📦 900-Archive'
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        note = archive_dir / 'Arşiv.md'
+        note.write_text('# Arşiv\nEski proje durumu: aktif.\n', encoding='utf-8')
+
+        # Configure 📦 900-Archive as excluded in state/index.json
+        (self.state / 'index.json').write_text(
+            json.dumps({'schema': 1, 'excluded_dirs': ['📦 900-Archive']}),
+            encoding='utf-8'
+        )
+
+        # 1. note-read must succeed and return content and sha256
+        read_res = self.engine.note_read('📦 900-Archive/Arşiv.md')
+        self.assertEqual(read_res['source'], '📦 900-Archive/Arşiv.md')
+        self.assertIn('Eski proje durumu: aktif.', read_res['content'])
+
+        # 2. note-edit must succeed and update the note on disk safely
+        edit_req = {
+            'source': '📦 900-Archive/Arşiv.md',
+            'expected_sha256': read_res['sha256'],
+            'edits': [{'old': 'aktif', 'new': 'bırakıldı'}]
+        }
+        edit_res = self.engine.note_edit(edit_req)
+        self.assertEqual(edit_res['status'], 'written')
+        self.assertIn('bırakıldı', note.read_text(encoding='utf-8'))
+
+        # 3. Sensitive directories (🔐 Kasa) must still be strictly refused
+        kasa_dir = self.vault / '🔐 Kasa'
+        kasa_dir.mkdir(parents=True, exist_ok=True)
+        (kasa_dir / 'Gizli.md').write_text('# Gizli\n', encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'sensitive directory'):
+            self.engine.note_read('🔐 Kasa/Gizli.md')
+        with self.assertRaisesRegex(ValueError, 'sensitive directory'):
+            self.engine.note_edit({'source': '🔐 Kasa/Gizli.md', 'expected_sha256': None, 'content': '# X'})
+
+
+
+    def test_invalid_utf8_is_rejected_without_changing_source(self):
+        for raw in (b'\xed\xa0\xbd\xed\xb8\x8a\n', b'\xed\xa0\x80\n', b'\xff\n'):
+            with self.subTest(raw=raw):
+                path = self.vault / 'surrogate.md'
+                path.write_bytes(raw)
+                with self.assertRaises(UnicodeDecodeError):
+                    self.engine.note_read('surrogate.md')
+                request = {'source': 'surrogate.md', 'expected_sha256': hashlib.sha256(raw).hexdigest(),
+                           'edits': [{'old': '\n', 'new': ' appended\n'}]}
+                with self.assertRaises(UnicodeDecodeError):
+                    self.engine.note_edit(request)
+                self.assertEqual(path.read_bytes(), raw)
+                result = self.run_cli('note-read', None, 'surrogate.md')
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(json.loads(result.stdout)['status'], 'error')
+                self.assertNotIn('Traceback', result.stderr)
+                self.assertEqual(path.read_bytes(), raw)
+        self.assertFalse((self.vault / LOCAL_DIRECTORY / 'backups').exists())
+
+    def test_unpaired_surrogate_cannot_create_a_partial_note(self):
+        request = {'source': 'broken.md', 'expected_sha256': None,
+                   'content': 'new lone surrogate \ud800'}
+        with self.assertRaises(UnicodeEncodeError):
+            self.engine.note_edit(request)
+        self.assertFalse((self.vault / 'broken.md').exists())
+
+    def test_invalid_timeouts_are_rejected(self):
+        from beyin_v3_notes import locked
+        cases = [float('nan'), float('inf'), float('-inf'), True, -1, -5.0, '15', None]
+        for timeout in cases:
+            with self.subTest(timeout=timeout):
+                with self.assertRaises(ValueError):
+                    with locked(self.engine, timeout=timeout):
+                        pass
 
 if __name__ == '__main__':
     unittest.main()
