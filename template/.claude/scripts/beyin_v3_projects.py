@@ -259,6 +259,15 @@ def _save_project_scopes(vault_root, data):
 
 
 def manage(vault_root, action, folder=None, project=None, shared_unscoped=None):
+    if action == 'list':
+        return _manage(vault_root, action, folder, project, shared_unscoped)
+    from types import SimpleNamespace
+    from beyin_v3_notes import locked
+    with locked(SimpleNamespace(root=Path(vault_root).resolve())):
+        return _manage(vault_root, action, folder, project, shared_unscoped)
+
+
+def _manage(vault_root, action, folder=None, project=None, shared_unscoped=None):
     """CLI handler for beyin.py project-scope list|add|remove|prune."""
     if shared_unscoped is not None and action != "add":
         raise ValueError("--shared-unscoped is only supported with project-scope add; "

@@ -29,6 +29,7 @@ kopyalama talimatı değildir.
 |---|---|---|
 | Notlar ve companion dosyaları | evet | Markdown kaynak gerçektir. |
 | `.beyin-daily-layout.json` | evet | `preferences --daily-layout flat\|v3` vault'un ortak görünüm yolunu seçer. Aynı vault'a yazan makineler aynı tercihi ve bu seçeneği destekleyen motor sürümünü kullanmalıdır. |
+| `.beyin-workspaces.json` | evet | `workspace` komutlarının üstverisidir (ad, tür, yaşam döngüsü, provision durumu). Klasör bağlantıları `.beyin-projects.json` içinde kalır; ikisi birlikte eşitlenmelidir. |
 | `🔮 850-Companion/Arşiv/` | evet | `companion-compact` metni canlı dosyadan çıkarıp arşive taşır ve yerine tek bir işaret satırı bırakır. Arşiv tek makinede kalırsa öbür makine içi boş bir işaret görür. Arşivdeki `visibility: private` otomatik bağlama girmez demektir, git dışı demek değildir. |
 | `receipts/` | evet | Receipt dosyası yazıldıktan sonra değişmez ve adı `event_id` özetidir (`beyin_v3_sync.py` `receipt()`). Öbür makine yeni receipt'i bir sonraki `sync`'te kendi veritabanına alır (`_scan_receipts()`). |
 | `receipts/*.md.view-provenance.json` | evet | Bir receipt'in üretilmiş görünüme dayandığı için dışlandığını, immutable olay kimliğiyle kaydeder. State yeniden kurulunca eski receipt dışarıda kalır; aynı günlük yoluna dayanan yeni insan receipt'leri engellenmez. İçerik taşımaz; bu dosyalar silinmemelidir. |

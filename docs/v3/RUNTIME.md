@@ -119,6 +119,60 @@ projeye atanmamış uygun notları dış proje köprüsü dahil tüm açık proj
 dahil eder; başka projeye ait veya `private` notları açmaz. Yalnız mevcut değeri
 görmek için bayraksız `project-scope list` kullan.
 
+## Çalışma alanları, bağlantı denetimi ve MOC
+
+`workspace`, `lint` ve `moc` yalnız açıkça çağrıldığında çalışır; SessionStart, `sync` ve
+`doctor` bunları çalıştırmaz. `workspace list`, `workspace inspect`, `workspace plan`,
+`workspace provision --dry-run` ve `lint` salt okunurdur ve state oluşturmaz.
+
+- Çalışma alanı üstverisi (ad, tür, yaşam döngüsü, kural dosyası, not kökleri, provision
+  durumu) vault kökündeki `.beyin-workspaces.json` dosyasındadır. Klasör bağlantıları
+  `.beyin-projects.json` içindeki `folders` haritasında kalır ve o dosyanın biçimi değişmez.
+  Eski sürüm kapsam dosyasını aynen okur ve kayıt dosyasını yok sayar; `rollback` sonrasında
+  proje kapsamları çalışmaya devam eder. Bir çalışma alanının kaynakları her okumada `folders`
+  haritasından türetilir: `project-scope add/remove` ile yapılan değişiklik hemen görünür.
+  Kaydı olmayan projeler `registered: false` ile listelenir. Daha yeni bir şema sürümüyle
+  yazılmış veya bozuk kayıt dosyası değiştirilmez.
+- `workspace disconnect` yalnız hala o çalışma alanını gösteren bağlantıyı kaldırır; diskteki
+  klasöre ve notlara dokunmaz. `archive` kapsamı değiştirmez, çalışma alanını yalnız listeden
+  gizler.
+- `workspace provision <id>` ilk dosyadan önce `provision.status: pending` kaydını yazar, sonra
+  klasörleri ve şablonları oluşturur (var olan dosya korunur), klasörleri bağlar ve doğrular.
+  Proje klasörü vault'un kendi proje klasörünün altındadır (şablonda `🏰 300-Projects/<id>`,
+  yoksa `projects/<id>`). `--source` verilse de kural ve MOC şablonlarının bulunduğu bu klasör
+  ve not kökü de çalışma alanına bağlanır (`plan` çıktısındaki `bindings`); doğrulama, şablon
+  dosyalarının retrieval kapsamında bu çalışma alanına düştüğünü de denetler.
+  Hata olursa yalnız bu denemenin kendi değişiklikleri geri alınır: oluşturduğu ve değişmemiş
+  dosyalar, boş kalan klasörler, hala bu çalışma alanını gösteren bağlantılar ve kendi kaydı.
+  Arada yapılmış başka değişiklikler korunur. Bir şey geri alınamazsa hata çıktısındaki
+  `reconciliation` nesnesi neyin kaldığını söyler ve kayıt `provision.status: failed` olarak
+  kalır; aynı `workspace provision <id>` komutu kaydı kaldığı yerden tamamlar.
+- `lint [--folder <klasör>]` kırık wikilink, eksik başlık veya ek, yetim ve gelen bağlantısı
+  olmayan notları raporlar. Kısmi yol (`[[klasör/not]]`) ve ekler Obsidian gibi ad ve yol
+  sonuyla çözülür; kod blokları ve satır içi kod sayılmaz. Hassas, arşiv (`📦 900-Archive`,
+  `Arşiv` gibi), `visibility: private` ve kurulum klasörlerindeki notlar taranmaz; böyle bir nota
+  giden bağlantı da kırık görünür. Sayılar her zaman tam döner; listeler en fazla 100 kayıt
+  taşır, kalanı `truncated` alanında sayılır (tamamı için daha dar bir `--folder` kullan).
+- `moc [--folder knowledge] [--file MOC.md]` yalnız hedef klasördeki düz bir `.md` dosyasına
+  yazar. `CLAUDE.md`, `AGENTS.md`, `Kurallar.md` gibi talimat, companion veya kural dosyası
+  adları kabul edilmez. Dosya yoksa oluşturur. Varsa yalnız tek bir `<!-- beyin-moc:start -->` ve
+  `<!-- beyin-moc:end -->` çifti taşıdığında ve yalnız bu iki işaretin arasını yeniden üretir;
+  işaretsiz dosyaya dokunmaz. Dizinin görüneceği yere işaret çiftini elle ekle. MOC yalnız
+  kendi okuyucularının da görebildiği notları listeler: notun proje kapsamı (`project` alanı
+  veya `.beyin-projects.json` klasörü) MOC dosyasının kapsamıyla aynı olmalı, görünürlüğü
+  MOC'unkinden dar olmamalı (`visibility: public` bir MOC yalnız public notları listeler) ve
+  `trust: untrusted` ya da reddedilmiş çıkarım olmamalı. İç içe kapsamda her proje klasörü için
+  ayrı `moc --folder <klasör>` çalıştır; atlanan notlar çıktıdaki `skipped` sayılarında görünür.
+  Kapsam dosyası değişince `moc` yeniden çalıştırılmalı. Değişiklik yoksa dosyaya yazılmaz.
+  Obsidian Beyin kilidini kullanmadığı için dosya, yeni metin hazır
+  olduktan sonra yeniden adlandırmadan hemen önce (içerik özeti, mtime, boyut, inode) tekrar
+  karşılaştırılır; değiştiyse hiçbir şey yazılmaz ve komut yeniden çalıştırılmayı ister.
+  macOS ve Linux'ta eski dosya yeniden adlandırma boyunca açık tutulur, bu arada yerinde
+  kaydedilen bir düzenleme fark edilip geri konur; önce dosyayı boşaltıp sonra yazan editör
+  için geri koymadan önce dosyanın değişmesi durana kadar (en fazla 0,2 sn) beklenir. Kalan
+  sınır: bir editör dosyayı tam bu mikro saniyelik aralıkta yeni bir dosyayla değiştirirse
+  işletim sistemi bunu kilitleyemez.
+
 ## Receipt görünümü çakışması ve kurtarma
 
 `daily/v3/YYYY-MM-DD.md` ve `knowledge/v3/outcomes.md` değişmez receipt kaynaklarından
