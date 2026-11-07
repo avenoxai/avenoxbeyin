@@ -928,6 +928,21 @@ def read_json(filename: str):
         return json.load(stream)
 
 
+def note_request(filename, args):
+    """--idempotency-key/--evidence-ref fill the JSON request; a differing duplicate is refused."""
+    payload = read_json(filename)
+    if not isinstance(payload, dict):
+        raise ValueError(args.command + " payload must be a JSON object")
+    for field in ("idempotency_key", "evidence_refs"):
+        value = getattr(args, field, None)
+        if value is None:
+            continue
+        if payload.get(field, value) != value:
+            raise ValueError(field + " given in the request and on the command line with different values")
+        payload[field] = value
+    return payload
+
+
 def load_skills():
     _ensure_scripts_path()
     import beyin_v3_skills
@@ -1092,13 +1107,13 @@ def parser(note_namespace=None, is_json=False):
     ingest.add_argument("--file", default="-", help="JSON input path, or - for stdin")
     note = sub.add_parser("note-create", help="Create a semantic Markdown source without overwriting")
     note.add_argument("--file", default="-", help="JSON {source, text, metadata}")
-    note.add_argument("--idempotency-key", help="Optional idempotency key for safe retries")
+    note.add_argument("--idempotency-key", help="Optional retry key (1-128 of A-Z a-z 0-9 _ -), bound to this exact request")
     note.add_argument("--evidence-ref", action="append", dest="evidence_refs", help="Existing vault source path backing the note; repeatable")
     note_read = sub.add_parser("note-read", help="Read a human Markdown source and its byte SHA-256")
     note_read.add_argument("source")
     note_edit = sub.add_parser("note-edit", help="Edit a human Markdown source with an expected SHA-256")
     note_edit.add_argument("--file", default="-", help="JSON {source, expected_sha256, edits} or new content; - for stdin")
-    note_edit.add_argument("--idempotency-key", help="Optional idempotency key for safe retries")
+    note_edit.add_argument("--idempotency-key", help="Optional retry key (1-128 of A-Z a-z 0-9 _ -), bound to this exact request")
     note_edit.add_argument("--evidence-ref", action="append", dest="evidence_refs", help="Existing vault source path backing the edit; repeatable")
     task = sub.add_parser("task-create", help="Create and verify an explicit new task")
     task.add_argument("--file", default="-", help="JSON {source: tasks/name.md, text, metadata: {id,status,owner}}")
@@ -1805,22 +1820,12 @@ def main(argv=None, return_result=False):
         elif args.command == "note-read":
             result = sync.note_read(args.source)
         elif args.command == "note-edit":
-            payload = read_json(args.file)
-            if not isinstance(payload, dict):
-                raise ValueError("note-edit payload must be a JSON object")
-            if getattr(args, "idempotency_key", None) and "idempotency_key" not in payload:
-                payload["idempotency_key"] = args.idempotency_key
-            if getattr(args, "evidence_refs", None) and "evidence_refs" not in payload:
-                payload["evidence_refs"] = args.evidence_refs
-            result = sync.note_edit(payload)
+            result = sync.note_edit(note_request(args.file, args))
         elif args.command == "note-create":
-            payload = read_json(args.file)
-            if not isinstance(payload, dict):
-                raise ValueError("note-create payload must be a JSON object")
-            idemp = getattr(args, "idempotency_key", None) or payload.get("idempotency_key")
-            evidence = getattr(args, "evidence_refs", None) or payload.get("evidence_refs")
+            payload = note_request(args.file, args)
             result = sync.note_create(payload['source'], payload['text'], payload.get('metadata'),
-                                      idempotency_key=idemp, evidence_refs=evidence)
+                                      idempotency_key=payload.get('idempotency_key'),
+                                      evidence_refs=payload.get('evidence_refs'))
         elif args.command == "task-create":
             payload = read_json(args.file)
             result = sync.task_create(payload['source'], payload['text'], payload['metadata'])

@@ -284,6 +284,21 @@ class NotePolicyTest(NoteFixture):
         data2 = json.loads(proc2.stdout)
         self.assertTrue(data2.get('idempotent'))
 
+        # The same field on both sides must agree; a different key is refused before any write.
+        proc3 = subprocess.run(
+            cmd, input=json.dumps(dict(edit_payload, idempotency_key='other-key')), text=True,
+            capture_output=True, env=env
+        )
+        self.assertEqual(proc3.returncode, 1, proc3.stdout)
+        self.assertIn('different values', json.loads(proc3.stdout)['message'])
+        create = cmd[:4] + ['note-create', '--evidence-ref', 'notes/missing.md', '--file', '-']
+        proc4 = subprocess.run(
+            create, input=json.dumps(dict(source='notes/cli-created.md', text='body')), text=True,
+            capture_output=True, env=env
+        )
+        self.assertEqual(proc4.returncode, 1, proc4.stdout)
+        self.assertIn('existing vault source', proc4.stderr)
+        self.assertFalse((self.vault / 'notes/cli-created.md').exists())
 
 
 class NoteEvidenceContractTest(NoteFixture):
