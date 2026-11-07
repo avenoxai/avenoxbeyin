@@ -57,6 +57,37 @@ aktarılır. Güncellemeden önce hem state hem eski görünümün kanıtı zate
 geçmiş güvenle çıkarılamaz; eski state veya vault yedeği gerekir. İnsan günlüklerini
 yanlışlıkla gizlememek için yalnız dosya adından geçmiş sahiplik uydurulmaz.
 
+### Obsidian grafiği ve receipt dosyaları
+
+Her receipt `receipts/<event-id-sha256>.md` adıyla yazılır. Bu ad receipt'in kimliğidir:
+aynı gönderimin tekrarı, yarım kalan yazmanın kurtarılması, başka makineden gelen kopyanın
+eşleşmesi ve eski sürümler bu adla çalışır. Beyin bu yüzden receipt dosyalarını yeniden
+adlandırmaz; elle de yeniden adlandırma, adı eşleşmeyen dosya receipt olarak okunmaz.
+
+`daily/v3/` ve `knowledge/v3/outcomes.md` görünümleri receipt'e
+`[[receipts/<hash>.md|<event_id>]]` biçiminde bağlanır, okuma görünümünde hash yerine
+event id görünür. Özeti gizlenen receipt'te (özel, güvenilmeyen, okunamayan veya indeks
+dışı bırakılan kaynağa bağlı) event id de gösterilmez; bağlantı yalnız hash adıyla kalır,
+çünkü ajanın seçtiği id çoğu zaman özetle aynı işi anlatır. `recap` da event id göstermez.
+
+Obsidian grafiği düğümleri dosya adıyla etiketler; `aliases` veya `title` özelliği çekirdek
+grafikteki etiketi değiştirmez. Receipt düğümleri bu yüzden grafikte hash adıyla görünür ve
+her receipt'e bağlanan `outcomes` büyük bir merkez düğüm olur. Beyin `.obsidian/` ayarlarına
+dokunmaz; receipt'leri grafikten çıkarmak Obsidian'da kullanıcının seçimidir:
+
+- Yalnız grafikten gizlemek için Graph view ayarlarında (dişli simgesi) Filters > Search files
+  alanına `-path:"receipts/"` yaz. Üretilmiş görünümleri de gizlemek için
+  `-path:"receipts/" -path:"daily/v3/" -path:"knowledge/v3/"` kullan. `path:` yolun içinde
+  arar; adı `receipts` ile biten başka bir klasör de gizlenir. Arama ve dosya gezgini değişmez.
+- Grafikten ve aramadan birlikte çıkarmak için Settings > Files and links > Excluded files
+  listesine `receipts/` ekle (istersen `daily/v3/` ve `knowledge/v3/` de). Obsidian bu
+  kalıplara uyan dosyaları Graph view, Search ve unlinked mentions içinde göstermez, Quick
+  Switcher ve bağlantı önerilerinde geri plana alır.
+
+Bu ayarlar yalnız Obsidian'ı etkiler; `sync`, `recap`, `context` ve oturum açılış bağlamı
+aynı kalır. Flat düzende görünümler insan günlükleriyle aynı `daily/` klasöründedir;
+`daily/` klasörünü dışlarsan kendi günlüklerin de gizlenir.
+
 ## Hafıza dosyası sınırları
 
 `Last-Session.md` varsayılan olarak 3.000, `Threads.md` 8.000 karakterle sınırlıdır.

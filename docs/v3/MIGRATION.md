@@ -155,6 +155,20 @@ Both views link a receipt as `[[receipts/<hash>.md|<event_id>]]`, so the reading
 view shows the event id instead of the hash file name; `[`, `]`, `|`, `#` and `^`
 in an id become spaces and the alias stops at 80 characters. Views written
 before this change are regenerated on the next sync unless they were edited.
+A receipt whose summary is withheld because it cites a private, untrusted,
+unreadable or index-excluded source keeps the bare `[[receipts/<hash>.md]]`
+link: the agent-chosen event id usually names the same work, and `recap`
+shows no event id either.
+
+Obsidian's graph labels every node by its file name; `aliases` and `title` do
+not change core graph labels, so receipt nodes still show the hash. That file
+name is the receipt's identity (replay, recovery, multi-device matching and
+older engines rely on it), so receipts are never renamed, and Beyin never edits
+`.obsidian/` settings. To hide receipts in Obsidian, add `-path:"receipts/"` to
+the graph's Search files filter, or add `receipts/` (optionally `daily/v3/`
+and `knowledge/v3/`) under Settings > Files and links > Excluded files, which
+Obsidian hides from Graph view, Search and unlinked mentions. Details:
+[PREFERENCES.md](PREFERENCES.md#obsidian-grafiği-ve-receipt-dosyaları).
 
 These are explicitly generated indexes of agent-authored claims, not automatic
 knowledge distillation or external verification. Existing human daily and
