@@ -162,7 +162,15 @@ def save_platforms(state, attended=None, unattended=None, reset=False):
 def _runtime(vault):
     """Resolve the state directory from the vault's installer-written runtime file."""
     runtime = Path(vault) / ".beyin-runtime.json"
-    data = json.loads(runtime.read_text(encoding="utf-8"))
+    # A file that does not parse names itself (#587); the exception type, which register()
+    # logs, is kept.
+    try:
+        data = json.loads(runtime.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise json.JSONDecodeError(runtime.name + " is not valid JSON: " + exc.msg, exc.doc, exc.pos) from None
+    except UnicodeDecodeError as exc:
+        raise UnicodeDecodeError(exc.encoding, exc.object, exc.start, exc.end,
+                                 exc.reason + " (" + runtime.name + " is not UTF-8)") from None
     if not isinstance(data, dict) or not isinstance(data.get("state"), str) or not data["state"]:
         raise ValueError("runtime state missing")
     state = Path(data["state"]).expanduser()

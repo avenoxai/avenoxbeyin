@@ -4,7 +4,7 @@ error a person reads keeps its Turkish characters as UTF-8 instead of \\u escape
 The legacy code page cases set PYTHONIOENCODING, the same text layer a piped Windows console
 (cp1254, cp1252) gives Python; the JSON must stay valid UTF-8 there and must not crash.
 """
-from contextlib import closing
+from contextlib import closing, redirect_stderr, redirect_stdout
 import importlib.util
 import io
 import json
@@ -226,6 +226,52 @@ class SettingsFileErrorTest(unittest.TestCase):
             preferences.save(self.vault, {'auto_sync': False})
         # A malformed user file is reported, never overwritten.
         self.assertEqual((self.vault / '.beyin-preferences.json').read_bytes(), broken)
+
+
+class RuntimeReaderErrorTest(unittest.TestCase):
+    """The bridge and the Hermes plugin read .beyin-runtime.json themselves; a broken file is named."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix='v3-runtime-reader-')
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name).resolve()
+        self.vault, self.project = root / 'Beyin Kasası', root / 'Proje Örnek'
+        self.vault.mkdir()
+        self.project.mkdir()
+
+    def test_bridge_and_hermes_name_an_unparseable_runtime_file(self):
+        import beyin_v3_bridge as bridge
+        spec = importlib.util.spec_from_file_location('error_reporting_hermes',
+                                                      ROOT / 'template/.claude/scripts/beyin_v3_hermes.py')
+        hermes = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hermes)
+        args = ['--vault', str(self.vault), '--harness', 'codex', '--project-root', str(self.project)]
+        cases = ((b'{"state": }', json.JSONDecodeError,
+                  '.beyin-runtime.json is not valid JSON: Expecting value: line 1 column 11 (char 10)'),
+                 (b'{"state": "\xff"}', UnicodeDecodeError,
+                  "'utf-8' codec can't decode byte 0xff in position 11: invalid start byte"
+                  ' (.beyin-runtime.json is not UTF-8)'))
+        for raw, kind, expected in cases:
+            with self.subTest(raw=raw):
+                (self.vault / '.beyin-runtime.json').write_bytes(raw)
+                # Management call: the error is reported and names the file.
+                out, err = io.StringIO(), io.StringIO()
+                with patch.object(sys, 'stdin', io.StringIO()), redirect_stdout(out), redirect_stderr(err):
+                    self.assertEqual(bridge.main(args + ['--print-config']), 1)
+                self.assertEqual(out.getvalue(), '')
+                self.assertIn('Bridge error: ' + expected, err.getvalue())
+                # Hook call: still quiet, never blocks the host.
+                out, err = io.StringIO(), io.StringIO()
+                with patch.object(sys, 'stdin', io.StringIO('{}')), redirect_stdout(out), redirect_stderr(err):
+                    self.assertEqual(bridge.main(args), 0)
+                self.assertEqual((out.getvalue().strip(), err.getvalue()), ('{}', ''))
+                # Same exception type as before (Hermes' register() logs the class), file named.
+                with self.assertRaises(kind) as caught:
+                    hermes.make_hooks(self.vault)
+                self.assertEqual(str(caught.exception), expected)
+                with self.assertLogs(hermes.LOGGER, 'WARNING') as logged:
+                    hermes.register(object(), vault=str(self.vault))
+                self.assertIn('(' + kind.__name__ + ')', logged.output[0])
 
 
 class InstalledEntryErrorTest(unittest.TestCase):

@@ -561,7 +561,18 @@ def _main(argv=None):
         vault = args.vault.expanduser().resolve()
         if not vault.is_dir() or not 0 <= args.context_chars <= 4000:
             raise ValueError('Invalid vault or context budget')
-        state = args.state or Path(json.loads((vault / '.beyin-runtime.json').read_text(encoding='utf-8'))['state'])
+        if args.state:
+            state = args.state
+        else:
+            # A file that does not parse names itself (#587); the exception type is kept.
+            try:
+                runtime = json.loads((vault / '.beyin-runtime.json').read_text(encoding='utf-8'))
+            except json.JSONDecodeError as exc:
+                raise json.JSONDecodeError('.beyin-runtime.json is not valid JSON: ' + exc.msg, exc.doc, exc.pos) from None
+            except UnicodeDecodeError as exc:
+                raise UnicodeDecodeError(exc.encoding, exc.object, exc.start, exc.end,
+                                         exc.reason + ' (.beyin-runtime.json is not UTF-8)') from None
+            state = Path(runtime['state'])
         if not state.is_absolute():
             raise ValueError('Runtime state must be absolute')
         state = state.resolve()
