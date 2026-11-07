@@ -353,20 +353,23 @@ class PassageContextTest(Vault):
 
 
 class DedupeWiderTest(Vault):
-    """Narrow #530 regression: dedupe must retain packer's existing wider views."""
+    """#530 regression: dedupe must retain the packer's wider and extension views of kept records."""
+
+    REPEAT = 12  # the whole source fits the 5,000 budget, so spare room takes it (#530)
 
     def setUp(self):
         super().setUp()
         import beyin_v3_dedupe
         self.dedupe = beyin_v3_dedupe
         self.dedupe.save_settings(self.store.state_dir, True)
+        self.texts = {}
         for index in range(2):
             name = 'Zirkon Takvimi Kredi %d' % index
-            filler = 'Satır satır kayıt tutulur, sütunlar sabit kalır. ' * 12
-            self.ingest('wide%d' % index,
-                        '# %s\n\n## Özet\n\nZirkon takvimi kredi özeti %d.\n\n## Kayıtlar\n\n%s\n\n'
-                        '## Amaç\n\nZirkon takvimi kredi planı: sınır %d.\n' % (name, index, filler, index),
-                        'notes/wide%d.md' % index, title=name)
+            filler = 'Satır satır kayıt tutulur, sütunlar sabit kalır. ' * self.REPEAT
+            self.texts['wide%d' % index] = (
+                '# %s\n\n## Özet\n\nZirkon takvimi kredi özeti %d.\n\n## Kayıtlar\n\n%s\n\n'
+                '## Amaç\n\nZirkon takvimi kredi planı: sınır %d.\n' % (name, index, filler, index))
+            self.ingest('wide%d' % index, self.texts['wide%d' % index], 'notes/wide%d.md' % index, title=name)
         self.context = self.strict('zirkon takvimi kredi planı', budget_chars=5000)
         self.assertEqual(len(self.context['records']), 2)
         self.assertEqual(set(self.context.wider), {'wide0', 'wide1'})
@@ -378,6 +381,12 @@ class DedupeWiderTest(Vault):
         return self.dedupe.drop_delivered(self.store.state_dir, 'claude', 'wider-session',
                                          self.context if context is None else context)
 
+    def expected_view(self, kept):
+        # Spare room takes the kept record's whole source: both passages, unclipped.
+        whole = kept.extensions[self.new['id']][0]
+        self.assertEqual(whole['text'], self.texts[self.new['id']])
+        return whole['text']
+
     def test_real_passage_dedupe_render_retains_second_passage_within_budget(self):
         kept, duplicates = self.filtered()
         self.assertEqual([r['id'] for r in duplicates], [self.old['id']])
@@ -385,10 +394,15 @@ class DedupeWiderTest(Vault):
         wire, delivered = runtime.render_context(kept, 5000, prefix=prefix)
         shown = json.loads(wire[len(prefix):])
         self.assertEqual([r['id'] for r in shown['records']], [self.new['id']])
-        self.assertIn('[…]', shown['records'][0]['text'])
-        self.assertEqual(shown['records'][0]['text'], self.context.wider[self.new['id']]['text'])
+        self.assertEqual(shown['records'][0]['text'], self.expected_view(kept))
+        index = self.new['id'][-1]
+        for passage in ('kredi özeti %s.' % index, 'kredi planı: sınır %s.' % index):
+            self.assertIn(passage, shown['records'][0]['text'])
         self.assertEqual(delivered['records'][0]['text'], shown['records'][0]['text'])
         self.assertEqual(set(kept.wider), {self.new['id']})
+        self.assertEqual(set(kept.evidence), {self.new['id']})
+        self.assertLessEqual(set(kept.extensions), {self.new['id']})
+        self.assertEqual(set(delivered.evidence), {self.new['id']})
         self.assertIsNot(kept.wider, self.context.wider)
         serialized = json.loads(json.dumps(kept))
         self.assertNotIn('wider', serialized)
@@ -433,6 +447,18 @@ class DedupeWiderTest(Vault):
         self.assertEqual([r['id'] for r in duplicates], [self.old['id']])
         self.assertFalse(hasattr(kept, 'wider'))
         self.assertEqual(len(ordinary['records']), 2)
+
+
+class DedupeWiderOnlyTest(DedupeWiderTest):
+    """#574 as landed: without room for the whole source, the second passage survives dedupe."""
+
+    REPEAT = 120  # each source is longer than the whole 5,000 budget
+
+    def expected_view(self, kept):
+        self.assertEqual(kept.extensions, {})
+        text = self.context.wider[self.new['id']]['text']
+        self.assertIn('[…]', text)
+        return text
 
 
 class ConfigAndCacheTest(Vault):
