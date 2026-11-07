@@ -405,9 +405,9 @@ import { execFile } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 
-// A running OpenCode service keeps an imported plugin module until it restarts, so the
-// interpreter, bridge command and project roots live in a managed file read on every
-// event: a reinstall with other roots or an uninstall applies to the next event.
+// A running OpenCode service can keep serving the module it imported after this file is
+// rewritten (seen on 2.2.6), so the interpreter, bridge command and project roots live in
+// a managed file read on every event: other roots or an uninstall apply to the next event.
 const SETTINGS = fileURLToPath(new URL("../beyin-v3-bridge.json", import.meta.url))
 const TIMEOUT = process.platform === "win32" ? 20000 : 6000
 
