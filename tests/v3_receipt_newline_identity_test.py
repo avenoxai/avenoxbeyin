@@ -12,6 +12,11 @@ from unittest.mock import patch
 from v3_package_helpers import install, isolated_env, run_python
 
 
+def engine_json(value):
+    """Serialize a seeded index row the way the engine's _json does."""
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+
+
 class ReceiptNewlineIdentityTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix='v3-receipt-newlines-')
@@ -56,7 +61,7 @@ class ReceiptNewlineIdentityTest(unittest.TestCase):
         with closing(sqlite3.connect(self.state / 'memory.sqlite3')) as db:
             old = self.saved()
             old['summary'] = 'First line\r\nSecond line'
-            db.execute('UPDATE receipts SET payload=? WHERE id=?', (json.dumps(old), 'r1'))
+            db.execute('UPDATE receipts SET payload=? WHERE id=?', (engine_json(old), 'r1'))
             for path in self.views():
                 relative = path.relative_to(self.vault).as_posix()
                 table = 'receipt_flat_views' if relative.startswith('daily/') and not relative.startswith('daily/v3/') else 'receipt_views'
@@ -158,7 +163,7 @@ class ReceiptNewlineIdentityTest(unittest.TestCase):
         with closing(sqlite3.connect(self.state / 'memory.sqlite3')) as db:
             old = self.saved()
             old['summary'] = 'Trailing line\r'
-            db.execute('UPDATE receipts SET payload=? WHERE id=?', (json.dumps(old), 'r1'))
+            db.execute('UPDATE receipts SET payload=? WHERE id=?', (engine_json(old), 'r1'))
             db.commit()
         for spelling in (b'\r\n', b'\n'):
             source.write_bytes(source.read_bytes().replace(b'\r\n', spelling))
@@ -273,7 +278,7 @@ class ReceiptNewlineIdentityTest(unittest.TestCase):
         with closing(sqlite3.connect(self.state / 'memory.sqlite3')) as db:
             old = self.saved()
             old['summary'] = 'İlk satır\r\nİkinci satır\r'
-            db.execute('UPDATE receipts SET payload=? WHERE id=?', (json.dumps(old), 'r1'))
+            db.execute('UPDATE receipts SET payload=? WHERE id=?', (engine_json(old), 'r1'))
             db.commit()
         indexed, before = self.saved(), source.read_bytes()
         self.receipt(summary='İlk satır\nİkinci satır', harness='codex')
@@ -325,7 +330,7 @@ class ReceiptNewlineIdentityTest(unittest.TestCase):
         with closing(sqlite3.connect(self.state / 'memory.sqlite3')) as db:
             old = self.saved()
             old['summary'] = legacy.decode()
-            db.execute('UPDATE receipts SET payload=? WHERE id=?', (json.dumps(old), 'r1'))
+            db.execute('UPDATE receipts SET payload=? WHERE id=?', (engine_json(old), 'r1'))
             for path in self.views():
                 raw = path.read_bytes().replace(b'[[' + link + b'|r1]]', b'[[' + link + b']]')
                 raw = raw.replace(self.WITHHELD, legacy).replace(b'First line\nSecond line', legacy)
