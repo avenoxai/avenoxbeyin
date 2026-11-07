@@ -221,7 +221,9 @@ records). The Stop reads only the bounded tail of that session's own transcript
 and stats the named files; it keeps a timestamp, never command text, and queues
 the edit as `PostToolUse` metadata marked `observed: shell`. A path in a
 variable, a script that computes its paths, a background write, a rename or a
-deletion is still not observed, and Codex shell commands are not read.
+deletion is still not observed, and Codex shell commands are not read. Neither
+are commands of a Task subagent (its transcript is a separate file) or commands
+before an interrupt, compaction or slash-command record in the same turn.
 A `note-create`, `note-edit`, `task-create` or `task-update` run through the
 Claude Code Bash tool names its session through `CLAUDE_CODE_SESSION_ID`: it
 opens the reminder window itself and leaves a small flag that the next Stop of
