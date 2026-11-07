@@ -369,7 +369,7 @@ def search(index, terms, limit=5, floor=FLOOR, min_shared=MIN_SHARED, ignored=ST
     # A term may also match a shorter root; shared then holds the root, so its own idf weighs it.
     roots = [(" " + term + " ", root, " " + root + " ") for term, root in
              sorted(_query_roots(terms, lambda token: index.source_df.get(token, 0), ignored).items())]
-    best = {}
+    best, names = {}, {}
     for passage in index.passages:
         tokens = passage[4]
         shared = [term for term, probe in probes if probe in tokens]
@@ -378,11 +378,15 @@ def search(index, terms, limit=5, floor=FLOOR, min_shared=MIN_SHARED, ignored=ST
             continue
         size = tokens.count(" ") - 1
         coverage = min(1.0, len(shared) / wanted)
-        if _weight(shared, index.block_df, passages_total, size) * coverage < floor:
+        # A weight is never negative, so a floor at or below zero admits without computing it.
+        if floor > 0 and _weight(shared, index.block_df, passages_total, size) * coverage < floor:
             continue
         rank = _weight(shared, index.source_df, sources_total, size) * coverage
         record = passage[0]
-        name_score = _name_match_score(record, terms)
+        # The name score depends on the record and the query only: once per record, not per passage.
+        name_score = names.get(record["id"])
+        if name_score is None:
+            name_score = names[record["id"]] = _name_match_score(record, terms)
         if name_score > 0:
             rank += 10.0 * name_score
         if rank_adjustments:
