@@ -206,6 +206,16 @@ class KnowledgeLintTest(unittest.TestCase):
         self.assertIn('notlar/Sürüm v1.md', result['orphans'])
         self.assertIn('diagram.md', result['orphans'])
 
+    def test_lint_folder_must_exist_inside_the_vault(self):
+        (self.vault / 'knowledge').mkdir()
+        for folder in ('knowlege', '..', '../elsewhere'):
+            with self.subTest(folder=folder):
+                with self.assertRaisesRegex(ValueError, 'not found'):
+                    linter.lint_vault(self.vault, folder)
+        self.assertEqual(linter.lint_vault(self.vault, 'knowledge/')['scanned_files_count'], 0)
+        (self.vault / 'knowledge/a.md').write_text('# A', encoding='utf-8')
+        self.assertEqual(linter.lint_vault(self.vault, 'knowledge/../knowledge')['scanned_files_count'], 1)
+
     def test_links_and_headings_inside_code_are_ignored(self):
         (self.vault / 'script.md').write_text('# Kurulum\n```bash\n# Install\nif [[ -f x ]]; then echo; fi\n```\n',
                                               encoding='utf-8')

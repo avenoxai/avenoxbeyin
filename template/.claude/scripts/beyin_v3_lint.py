@@ -272,6 +272,13 @@ def resolve_wikilink(vault_root, link_target, source_file=None, vault_index=None
 def lint_vault(vault_root, folder=None):
     """Lint markdown notes in vault for broken wikilinks, orphans, and link graph health."""
     vault_root = Path(vault_root)
+    if folder:
+        # A mistyped folder must not read as a clean "0 files scanned" result.
+        folder_path = (vault_root / folder.strip().strip("/")).resolve()
+        if not folder_path.is_relative_to(vault_root.resolve()) or not folder_path.is_dir():
+            raise ValueError(f"lint folder not found in vault: {folder}")
+        folder = folder_path.relative_to(vault_root.resolve()).as_posix()
+        folder = None if folder == "." else folder
     vault_index = build_vault_index(vault_root)
     all_files = list(vault_index["by_rel"].values())
 
