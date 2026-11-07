@@ -66,7 +66,7 @@ class ArchiveReuseTest(unittest.TestCase):
         self.assertEqual(len(changed), len(BODY))
         self.live.write_bytes(changed.encode('utf-8'))
         self.assertEqual(self.compact(NOVEMBER)['backup'], 'written')
-        self.assertIn(changed.encode('utf-8'), self.november.read_bytes())
+        self.assertIn(changed, compact_module._archive_history(self.target, 'Threads.md', self.vault)[1].values())
         self.assertEqual(self.october.read_bytes(), original)
         stored = self.november.read_bytes()
         self.assertEqual(self.compact(NOVEMBER)['backup'], 'exists')
@@ -104,7 +104,8 @@ class ArchiveReuseTest(unittest.TestCase):
         self.assertFalse(self.november.exists())
         retry = self.compact(NOVEMBER)
         self.assertEqual(retry['backup'], 'written')
-        self.assertIn(edited, self.november.read_bytes())
+        self.assertIn(edited.decode('utf-8'),
+                      compact_module._archive_history(self.target, 'Threads.md', self.vault)[1].values())
 
     def test_missing_corrupt_or_changed_prior_archive_never_suppresses_a_backup(self):
         self.compact()
