@@ -672,11 +672,15 @@ class YakalaSecurityTest(unittest.TestCase):
         self.assertEqual(empty, [])
 
     def test_extra_urls_keep_public_only_validation(self):
-        for value in ('http://127.0.0.1/internal-ref', 'file:///secret',
-                      'https://user:pass@example.com/', '-option'):
+        for value in ('file:///secret', 'https://user:pass@example.com/', '-option', 'http://0x7f.1/'):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 yakala.capture(self.vault, url='https://example.com', extra_urls=[value])
         self.assertEqual(yakala.cards(self.vault), [])
+        # #486: a local address is kept as a reference only; the card turns private and is never fetched.
+        new = yakala.capture(self.vault, url='https://example.com', extra_urls=['http://127.0.0.1/internal-ref'])
+        meta = yakala.find_card(self.vault, new['id'])['meta']
+        self.assertEqual((meta.get('ek_urller'), meta['ek_urller_yerel'], meta['visibility']),
+                         (None, ['http://127.0.0.1/internal-ref'], 'private'))
 
 if __name__ == '__main__':
     unittest.main()

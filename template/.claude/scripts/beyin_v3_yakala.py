@@ -41,10 +41,15 @@ NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 BELOW_NORMAL = getattr(subprocess, 'BELOW_NORMAL_PRIORITY_CLASS', 0)
 
 
+class _LocalAddress(ValueError):
+    """A well-formed HTTP(S) URL whose host is a local or private network address (#486)."""
+
+
 def _safe_source_url(url):
     """Accept a public HTTP(S) URL, never a helper option or a local file address.
 
-    Pure syntax/IP-literal validation: capture() intentionally does no network I/O.
+    Pure syntax/IP-literal validation: capture() intentionally does no network I/O. A clean URL
+    that only names a local or private host raises _LocalAddress, still a ValueError.
     """
     if not isinstance(url, str) or not url or any(c.isspace() or ord(c) < 32 or c == '\\' for c in url):
         raise ValueError('Yakala URL gecersiz: bosluk veya kontrol karakteri var.')
@@ -61,9 +66,6 @@ def _safe_source_url(url):
     if not host.isascii() or '%' in host or host.endswith('..'):
         raise ValueError('Yakala URL sunucu adi gecersiz.')
     host = host.lower().removesuffix('.')
-    if not host or ('.' not in host and ':' not in host) or host in ('localhost', 'localhost.localdomain') or host.endswith(
-            ('.localhost', '.local', '.lan', '.internal', '.home.arpa')):
-        raise ValueError('Yakala yerel ag ve localhost adreslerini islemez.')
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
@@ -72,9 +74,12 @@ def _safe_source_url(url):
         if re.fullmatch(r'(?:[0-9]+|0x[0-9a-f]*)', labels[-1], re.I) or any(
                 not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in labels):
             raise ValueError('Yakala URL sunucu adi gecersiz.')
+        if '.' not in host or host in ('localhost', 'localhost.localdomain') or host.endswith(
+                ('.localhost', '.local', '.lan', '.internal', '.home.arpa')):
+            raise _LocalAddress('Yakala yerel ag ve localhost adreslerini islemez.')
     else:
         if not address.is_global or address.is_multicast:
-            raise ValueError('Yakala ozel veya yerel IP adreslerini islemez.')
+            raise _LocalAddress('Yakala ozel veya yerel IP adreslerini islemez.')
     return url
 
 
@@ -531,7 +536,7 @@ def _capture(vault, url=None, text=None, files=(), why='', app=None, title=None,
             pass  # a local or malformed link stays what it was: copied text, never fetched
     if url:
         _safe_source_url(url)  # Capturing stays offline.
-    extra_urls = _extra_urls(url, extra_urls)
+    extra_urls, local_urls = _extra_urls(url, extra_urls)
     why = (why or '').strip()
     files = [Path(f).expanduser() for f in files]
     if not (url or text or files):
@@ -547,18 +552,24 @@ def _capture(vault, url=None, text=None, files=(), why='', app=None, title=None,
                 addition = '\n\n## Yeniden yakalandi (' + stamp.strftime('%Y-%m-%d %H:%M') + ')\n' + (why or '_(not yok)_')
                 if text:
                     addition += '\n\n' + _quote(text)
-                merged = _extra_urls(url, (card['meta'].get('ek_urller') or []) + extra_urls)
-                if merged:
-                    card['meta']['ek_urller'] = merged
-                    links = '\n'.join('- ' + item for item in merged)
-                    if _section(body, 'Ek bağlantılar'):
-                        body = _without_section(body, 'Ek bağlantılar', links)
-                    else:
-                        addition += '\n\n## Ek bağlantılar\n\n' + links
+                stored = _stored_list(card['meta'].get('ek_urller')) + _stored_list(card['meta'].get('ek_urller_yerel'))
+                before = _extra_urls(url, stored, stored=True)
+                merged, merged_local = _extra_urls(url, stored + extra_urls + local_urls, stored=True)
+                if (merged, merged_local) != before:  # an unchanged list keeps the card's own text
+                    for key, values, name, links in (
+                            ('ek_urller', merged, 'Ek bağlantılar', '\n'.join('- ' + item for item in merged)),
+                            ('ek_urller_yerel', merged_local, LOCAL_LINKS, _local_links(merged_local))):
+                        if not values:
+                            continue
+                        card['meta'][key] = values
+                        if _section(body, name):
+                            body = _without_section(body, name, links)
+                        else:
+                            addition += '\n\n## ' + name + '\n\n' + links
                 copied = _capture_files(vault, folder, files)
                 if copied:
                     addition += '\n\n## Dosyalar\n\n' + '\n'.join('- [[' + item + ']]' for item in copied)
-                if text or copied or any(kind_of(value) == 'mail' for value in merged):
+                if text or copied or merged_local or any(kind_of(value) == 'mail' for value in merged):
                     card['meta']['visibility'] = 'private'
                 if capture_id:
                     identifiers = _capture_ids(card['meta'])
@@ -574,7 +585,7 @@ def _capture(vault, url=None, text=None, files=(), why='', app=None, title=None,
     path = _unique(folder / (name + '.md'))
     meta = {'tur': 'yakala', 'durum': 'bekliyor', 'kaynak_turu': kind, 'baslik': _first_line(title, 160),
             'url': url, 'yakalandi': stamp.isoformat(timespec='seconds'), 'arac': tool, 'uygulama': app,
-            'visibility': 'private' if (kind in ('mail', 'metin', 'dosya') or text or files or
+            'visibility': 'private' if (kind in ('mail', 'metin', 'dosya') or text or files or local_urls or
                                        any(kind_of(value) == 'mail' for value in extra_urls)) else 'internal'}
     body = ['# ' + _first_line(title, 160), '', '## Neden', '', why or '_(not yok)_']
     if url:
@@ -582,6 +593,9 @@ def _capture(vault, url=None, text=None, files=(), why='', app=None, title=None,
     if extra_urls:
         meta['ek_urller'] = extra_urls
         body += ['', '## Ek bağlantılar', ''] + ['- ' + item for item in extra_urls]
+    if local_urls:
+        meta['ek_urller_yerel'] = local_urls
+        body += ['', '## ' + LOCAL_LINKS, '', _local_links(local_urls)]
     if text:
         body += ['', '## Secim', '', _quote(text)]
     if copied:
@@ -592,18 +606,47 @@ def _capture(vault, url=None, text=None, files=(), why='', app=None, title=None,
     return {'status': 'yakalandi', 'id': path.stem, 'kaynak_turu': kind, 'path': path.relative_to(vault).as_posix()}
 
 
-def _extra_urls(url, values):
-    """Validate every attachment offline, keeping the primary URL's identity stable."""
-    if not isinstance(values, (list, tuple)):
+LOCAL_LINKS = 'Yerel ağ bağlantıları'
+LOCAL_LINKS_NOTE = '_Yerel veya özel ağ adresi: Yakala bu adresleri açmaz, kart özel kalır._'
+
+
+def _extra_urls(url, values, stored=False):
+    """(public, local) attachments, validated offline; the primary URL's identity stays stable.
+
+    A well-formed HTTP(S) link to a local or private network address no longer cancels the whole
+    capture (#486): it is kept apart (`ek_urller_yerel`) as a reference that `isle` never opens,
+    and its card is private. An option, a non-HTTP scheme, credentials or an obfuscated host are
+    still refused. Values read back from a card (`stored`) are skipped instead, so a hand-edited
+    or synced card can never block a new capture of its page.
+    """
+    if stored:
+        values = _stored_list(values)
+    elif not isinstance(values, (list, tuple)):
         raise ValueError('Ek bağlantılar bir liste olmalı.')
-    seen, result = {canonical(url)}, []
+    seen, public, local = {canonical(url)}, [], []
     for value in values:
-        _safe_source_url(value)
+        try:
+            _safe_source_url(value)
+            target = public
+        except _LocalAddress:
+            target = local
+        except ValueError:
+            if stored:
+                continue
+            raise
         key = canonical(value)
         if key not in seen:
-            result.append(value)
+            target.append(value)
             seen.add(key)
-    return result
+    return public, local
+
+
+def _local_links(links):
+    return '\n'.join([LOCAL_LINKS_NOTE, ''] + ['- ' + item for item in links])
+
+
+def _stored_list(value):
+    return value if isinstance(value, list) else [value] if isinstance(value, str) else []
 
 
 def _capture_files(vault, folder, files):
@@ -1258,8 +1301,12 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
         entry = {'id': card['id'], 'kart': card['path'].relative_to(vault).as_posix(),
                  'kaynak_turu': meta.get('kaynak_turu'), 'baslik': meta.get('baslik'),
                  'neden': _section(body, 'Neden'), 'url': meta.get('url')}
-        if meta.get('ek_urller'):
-            entry['ek_urller'] = meta['ek_urller']
+        extras, local = _extra_urls(meta.get('url'), _stored_list(meta.get('ek_urller')) +
+                                    _stored_list(meta.get('ek_urller_yerel')), stored=True)
+        if extras:
+            entry['ek_urller'] = extras
+        if local:
+            entry['ek_urller_yerel'] = local  # references only: never fetched here, the skill says not to open them
         try:
             if info.get('title') and (not meta.get('baslik') or str(meta.get('baslik')).startswith(('http://', 'https://'))):
                 body = re.sub(r'^# .*$', lambda _m: '# ' + _first_line(info['title'], 160), body, count=1, flags=re.M)
@@ -6768,6 +6815,8 @@ Windows'ta komutlardaki `python3` yerine `py -3` yaz.
    önce bölüm başlıklarına bak, sonra nedenle ilgili kısmı oku. `ajan-okusun` yönteminde dosyayı
    kendin aç. Mail kartında Gmail/Outlook bağlantın varsa thread'in tamamını oradan oku.
    İsteğe bağlı `ek_urller` ve `## Ek bağlantılar` seçilen diğer adresleri taşır; `isle` ana `url`'yi çıkarır.
+   `ek_urller_yerel` ve `## Yerel ağ bağlantıları` yerel veya özel ağ adresleridir: yalnız kayıttır,
+   onları açmaya ya da indirmeye çalışma.
 3. **Dersleri bağla.** Kaynak başına 1-5 somut ders çıkar. Önce `knowledge/index.md` ve ilgili
    kavramı oku; mevcut notu geliştir, yoksa `beyin` skill'indeki kuralla `knowledge/concepts/<konu>.md`
    oluştur. Her dersin altında kaynak satırı: kart bağlantısı, URL ve videoda zaman damgası

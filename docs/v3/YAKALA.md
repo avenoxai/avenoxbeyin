@@ -348,6 +348,12 @@ ve isteğe bağlı `ek_urller` listesinde tutulur; `isle` ana URL'yi işler. Ayn
 olarak gösterilmez. Yalnız bir bağlantıyı kaydetmek için diğerlerinin işaretini kaldır.
 Pano metni, dosya veya mail adresi eklenen mevcut URL kartı da `private` olur.
 Mail adresi ana kaynak yerine `ek_urller` içinde seçilmiş olsa da bütün kart özel kalır.
+Ek bağlantılardan biri yerel veya özel ağ adresiyse (`127.0.0.1`, `192.168.x.x`, `intranet`,
+`nas.local`) yakalama iptal olmaz: adres ayrı bir `ek_urller_yerel` listesine ve
+`## Yerel ağ bağlantıları` bölümüne yalnız kayıt olarak yazılır, kart `private` olur. `isle` bu
+adresleri açmaz. Ana `url` yine yalnız herkese açık adres olabilir; seçenek, `file://`, kullanıcı
+bilgisi veya kodlanmış IP yazımı içeren ek bağlantı reddedilir. Elle düzenlenmiş ya da eşitlenmiş
+bir karttaki bozuk `ek_urller` değeri o sayfanın yeni yakalamasını engellemez.
 Aynı popup'ın kayıt kimliği tekrar oynatılsa bile ikinci
 commit yapılmaz.
 
