@@ -15,6 +15,7 @@ import stat
 import tempfile
 import threading
 import time
+import unicodedata
 import uuid
 
 LOCAL_DIRECTORY = '.beyin-note-write'
@@ -44,42 +45,99 @@ def _unlinked(path):
         raise ValueError('symlink or junction path rejected')
 
 
-def validate_source_name(source):
-    """Reject nonportable names before note-create or task-create journals them.
+# A new note or task name must be one that Windows, macOS and Linux can all store, so the vault
+# stays movable between them. 255 UTF-8 bytes is the smallest common per-name limit (ext4);
+# the whole source stays under half of macOS' 1024-byte path limit, leaving room for the vault
+# folder. Windows' 260-character path limit still depends on where the vault lives.
+MAX_NAME_BYTES = 255
+MAX_SOURCE_BYTES = 512
+_RESERVED_CHARACTERS = '<>:"|?*'
 
-    Read and edit do not use this. An existing note whose name is legal on macOS
-    or Linux, such as knowledge/Neden?.md, stays readable.
+
+def validate_source_name(source):
+    """Reject nonportable names before note-create, task-create or a creating note-edit writes.
+
+    Reading or editing a file that already exists does not use this. An existing note
+    whose name is legal on macOS or Linux, such as knowledge/Neden?.md, stays readable.
     """
     _source_name(source, creating=True)
 
 
 def _source_name(source, *, creating):
-    """creating adds the Windows-only checks. Read and edit keep main's set."""
-    if (not isinstance(source, str) or not source or '\\' in source or ':' in source or
-            (creating and any(ord(character) < 32 or ord(character) == 127 or character in '<>"|?*'
-                              for character in source))):
+    """creating adds the portability checks. Read and edit keep main's set."""
+    if not isinstance(source, str) or not source or '\\' in source or (':' in source and not creating):
         raise ValueError('use a vault-relative Markdown path with / separators')
     parts = source.split('/')
+    if creating:
+        _portable_name(source, parts)
     if any(not part or part in ('.', '..') or part.startswith('.') or
            part.endswith((' ', '.')) for part in parts):
         raise ValueError('only visible vault-relative sources are supported')
-    if creating:
-        # Windows trims trailing dots/spaces and treats these names, including CONIN$/CONOUT$
-        # and superscript digits (COM¹), as device paths.
-        if any(_windows_device(part) for part in parts):
-            raise ValueError('device paths are not sources')
-    elif any(re.fullmatch(r'(?i)(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?', part)
-             for part in parts):
+    if not creating and any(re.fullmatch(r'(?i)(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?', part)
+                            for part in parts):
         raise ValueError('device paths are not sources')
 
 
+def _portable_name(source, parts):
+    try:
+        size = len(source.encode('utf-8'))
+    except UnicodeEncodeError:
+        raise ValueError('source name is not valid Unicode text') from None
+    for part in parts:
+        if not part or part in ('.', '..'):
+            continue  # reported by the shared visible-path check
+        reserved = sorted({character for character in part
+                           if ord(character) < 32 or ord(character) == 127 or character in _RESERVED_CHARACTERS})
+        if reserved:
+            raise ValueError('source name %r has characters Windows cannot store (%s); choose another name'
+                             % (part, ' '.join(repr(character)[1:-1] for character in reserved)))
+        if part.endswith((' ', '.')):
+            raise ValueError('source name %r ends with a dot or space, which Windows drops; choose another name'
+                             % part)
+        if _windows_device(part):
+            raise ValueError('source name %r is a reserved Windows device name (CON, PRN, AUX, NUL, COM0-9, '
+                             'LPT0-9); device paths are not sources' % part)
+        if len(part.encode('utf-8')) > MAX_NAME_BYTES:
+            raise ValueError('source name is %d UTF-8 bytes; each folder or file name may be at most %d'
+                             % (len(part.encode('utf-8')), MAX_NAME_BYTES))
+    if size > MAX_SOURCE_BYTES:
+        raise ValueError('source path is %d UTF-8 bytes; a new source may be at most %d' % (size, MAX_SOURCE_BYTES))
+
+
 def _windows_device(part):
+    # Windows trims trailing dots/spaces before the extension and treats these names, including
+    # CONIN$/CONOUT$ and superscript digits (COM¹), as device paths whatever the extension.
     stem, dot, rest = part.partition('.')
     candidate = stem.rstrip(' .') + (dot + rest if dot else '')
     return re.fullmatch(
-        r'(?i)(?:con|prn|aux|nul|conin\$|conout\$|com[1-9\u00b9\u00b2\u00b3\u2070\u2074-\u2079]|'
-        r'lpt[1-9\u00b9\u00b2\u00b3\u2070\u2074-\u2079])(?:\..*)?',
+        r'(?i)(?:con|prn|aux|nul|conin\$|conout\$|com[0-9\u00b9\u00b2\u00b3\u2070\u2074-\u2079]|'
+        r'lpt[0-9\u00b9\u00b2\u00b3\u2070\u2074-\u2079])(?:\..*)?',
         candidate) is not None
+
+
+def refuse_unicode_alias(root, source):
+    """Refuse a new source when a folder or file on its path already exists in another Unicode form.
+
+    macOS treats NFC and NFD spellings as one name, Linux and Windows as two. A second
+    spelling beside the first cannot move between them, and on macOS the write lands under
+    a spelling the index readback does not know. Checked before anything is written.
+    """
+    cursor, parts = Path(root), source.split('/')
+    for index, part in enumerate(parts):
+        try:
+            with os.scandir(cursor) as entries:
+                names = [entry.name for entry in entries]
+        except OSError:
+            return  # nothing below exists yet; the writer reports any other failure itself
+        if part in names:
+            cursor = cursor / part
+            continue
+        key = unicodedata.normalize('NFC', part)
+        existing = next((name for name in names if unicodedata.normalize('NFC', name) == key), None)
+        if existing is not None:
+            raise ValueError('%r already exists in another Unicode form (NFC/NFD) of the same name; '
+                             'use the existing spelling' % '/'.join(parts[:index] + [existing]))
+        return
 
 
 def _checked_source(engine, source):
@@ -333,8 +391,9 @@ def _apply(engine, request, committed):
         if actual != expected:
             raise NoteConflict('source changed; note-read again and rebuild the targeted edits')
         if raw is None:
-            # A missing note is a create. Same name gate as note-create, before any write.
+            # A missing note is a create. Same name gates as note-create, before any write.
             validate_source_name(source)
+            refuse_unicode_alias(engine.root, source)
             if 'edits' in request or not isinstance(request.get('content'), str):
                 raise ValueError('new source requires content and expected_sha256:null')
             text = request['content']

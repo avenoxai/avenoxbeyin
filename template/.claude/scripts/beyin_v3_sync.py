@@ -32,7 +32,7 @@ from beyin_v3_projections import (is_receipt_view_source, is_receipt_view_confli
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
 from beyin_v3_notes import (NoteConflict, locked as note_locked,
-                            validate_source_name,
+                            validate_source_name, refuse_unicode_alias,
                             read as note_read_source, apply as note_apply_edits)
 
 
@@ -1332,6 +1332,7 @@ class SyncEngine:
         # clients use different state roots. Acquire it before the DB transaction.
         with note_locked(self):
             self._refuse_excluded(source)
+            refuse_unicode_alias(self.root, source)
             path = self._path(source)
             with self.store._connect() as db:
                 db.execute('BEGIN IMMEDIATE')
@@ -1402,6 +1403,7 @@ class SyncEngine:
         intended = render(metadata, text+'\n')
         with self.store._connect() as db:
             db.execute('BEGIN IMMEDIATE')
+            refuse_unicode_alias(self.root, source)
             if path.exists() or db.execute('SELECT 1 FROM records WHERE id=?', (metadata['id'],)).fetchone():
                 raise ValueError('task source or id exists; use task-update')
             self._intent(source, None, intended, 'task')
