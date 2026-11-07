@@ -175,7 +175,16 @@ def enqueue_mutation(state, action, source, payload, vault=None, mutation_id=Non
     _check_payload(action, source, payload)
     if mutation_id is not None and (not isinstance(mutation_id, str) or not _CLIENT_ID.fullmatch(mutation_id)):
         raise ValueError("mutation_id must be 8-64 letters, digits, '_' or '-'")
+    if vault is not None:
+        # Bind a fresh queue or check the existing runtime before saving any payload.
+        # Replay cannot detect a wrong-vault enqueue once its source is only relative.
+        from beyin_v3 import MemoryStore
+        MemoryStore(state, vault)
     with _queue_lock(state):
+        if vault is not None:
+            # Concurrent first-use initializers can both observe no binding; only the
+            # committed owner may enqueue after they contend for the queue lock.
+            MemoryStore(state, vault, read_only=True)
         return _enqueue_mutation(state, action, source, payload, vault, mutation_id)
 
 
@@ -498,7 +507,9 @@ def _replay_mutations(vault: str | Path, state: str | Path, sync_engine=None) ->
             elif action == "task_create":
                 if target_path.is_file():
                     stored_meta, stored_text = parse(target_path.read_bytes().decode('utf-8'))
-                    meta, _ = sync_engine._protect_metadata(payload.get('metadata') or {})
+                    meta, _ = sync_engine._protect_metadata(dict(payload.get('metadata') or {}))
+                    # task_create stores canonical refs; leave the queued payload unchanged.
+                    sync_engine._canonical_refs(meta)
                     text, _ = sync_engine._protect(payload.get('text', ''))
                     if (meta.get('id') and stored_meta.get('kind') == 'task' and
                             stored_meta.get('revision') == 1 and
