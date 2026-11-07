@@ -368,7 +368,7 @@ Git for Windows varsayılanı `core.autocrlf=true`, `.gitattributes` ile sabitle
 receipt dosyalarını CRLF olarak çıkarabilir. Güncel motor yeni özetleri LF ile yazar,
 CRLF/CR/LF farkını aynı receipt kabul eder ve eski kaynak dosyayı yeniden yazmaz.
 3.12.0 ve öncesinin CRLF çıkışını okurken indekste bıraktığı son CR de aynı receipt sayılır.
-Gerçek özet, refs veya links değişiklikleri hâlâ çakışmadır. Eski istemcilerde
+Gerçek özet, refs veya links değişiklikleri hala çakışmadır. Eski istemcilerde
 satır sonu farkı `event id collision` hatasına yol açabilir.
 
 `doctor`, Git deposunda `core.autocrlf=true` iken `receipts/` için `-text` veya `eol=lf`
@@ -382,6 +382,14 @@ Satır sonu değişmiş eski kaynaklar için yerel veritabanını silmek gerekme
 receipt'lerden güvenle yeniden üretilemezse dosya korunur. Bu durumda
 [arşivleyerek görünüm kurtarma](RUNTIME.md#receipt-görünümü-çakışması-ve-kurtarma)
 komutunu kullanın; kaynak receipt'leri silmeyin.
+
+Bu tolerans yalnız güncel motorda vardır. `rollback` yerel veritabanını geri almaz ve
+3.12.0 veya öncesi yine bayt karşılaştırması yapar: satır sonu değişmiş eski bir kaynak
+orada yeniden `receipt_divergence` verir, CRLF özet dosyasıyla gönderilmiş bir receipt
+aynı dosyayla yeniden gönderilince `event id collision` alır. Eski sürümde kalacaksanız
+eski çözüm geçerlidir: state klasöründeki `memory.sqlite3` dosyasını yedeğe taşıyın,
+`python3 beyin.py sync` ve ardından `python3 beyin.py sync --recover-views` çalıştırın;
+yeniden gönderimde özeti LF satır sonlarıyla verin.
 
 Presence eşitlemesi varsayılan olarak kapalıdır. Her cihazda `preferences --parallel-sessions on`
 ile açılır. Yerel `<state>/parallel-presence-device.json` dosyası rastgele bir cihaz kimliği

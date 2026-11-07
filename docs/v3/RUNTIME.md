@@ -89,7 +89,10 @@ bağlamı, lifecycle kayıtları ve yeni receipt yazımı devam eder; gerçek ka
 bildirir. `history` JSON liste biçimini korur ve uyarıyı stderr'e yazar.
 
 Yalnız CRLF/CR/LF farkı elle düzenleme sayılmaz. Yeni receipt özetleri LF kullanır;
-eski kaynak dosyalar ve indeks özetleri yeniden yazılmaz. Görünüm, güncel deterministik
+eski kaynak dosyalar ve indeks özetleri yeniden yazılmaz. CRLF çıkışlı bir receipt
+kaynağı, 3.12.0'ın okuduğu gibi sondaki CR ile dizine alınır; böylece `rollback`
+sonrasında eski sürümün bayt karşılaştırması da aynı satırı görür. Eski özetlerdeki CR
+görünümde kalır, 3.12.0 da aynı metni gösterir. Görünüm, güncel deterministik
 çıktıyla satır sonları dışında aynıysa güncellenebilir. Eski karma satır sonlu görünüm
 gecikmişse, içerdiği receipt bağlantıları yalnız yeniden üretilecek alt kümeyi seçer:
 yeniden üretilen **ham baytların** hash'i kayıtlı eski hash'e eşit olmalı, mevcut metin
