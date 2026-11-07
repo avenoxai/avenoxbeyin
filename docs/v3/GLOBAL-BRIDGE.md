@@ -77,9 +77,18 @@ kurulumdan sonra her istemcide aşağıdaki geri okumayı yapın.
 
 ## Kapsam ve ayrı bütçe
 
-- Yalnız `SessionStart`, `Stop`, `PreCompact`, `SessionEnd` iletilir.
-  `UserPromptSubmit` ve `PostToolUse` hiç iletilmez.
-- `--event SessionStart --event SessionEnd` ile olay kümesi daraltılabilir.
+- `SessionStart`, `Stop`, `PreCompact`, `SessionEnd` iletilir. `UserPromptSubmit`
+  hiç iletilmez.
+- Claude ve Codex'te `Stop` seçiliyken kurulum ayrıca `PostToolUse` handler'ını
+  yalnız dosya düzenleyen araçlara bağlar (`Edit|Write|apply_patch|MultiEdit|NotebookEdit`).
+  Bu olay kuyruğa alınmaz, senkronizasyon başlatmaz ve bağlam eklemez; yalnız runtime
+  klasöründe bu proje ve oturumun hash'iyle adlandırılmış küçük bir düzenleme işareti
+  yazar. Yol, araç girdisi veya transcript saklanmaz. Kabuk komutuyla yapılan
+  düzenlemeler bu olayı tetiklemez; `beyin.py` ile Claude Code Bash aracından yazılan
+  not veya görev aynı işareti açar (Claude Code'un `CLAUDE_CODE_SESSION_ID` değeriyle).
+- `--event SessionStart --event SessionEnd` ile olay kümesi daraltılabilir. `Stop`
+  seçilmezse `PostToolUse` handler'ı da kurulmaz. Yeniden kurulum önceki köprü
+  handler'larının hepsini kaldırıp seçilen kümeyi yazar.
 - Antigravity'de `PreCompact` ve `SessionEnd` yoktur. Vault adaptörüyle aynı sınırlar kullanılır:
   `PreInvocation` yalnız `invocationNum: 0` iken `SessionStart`, `Stop` yalnız `fullyIdle: true`
   iken `Stop` sayılır. Hook komutu `hooks.json` klasöründe çalıştığı için proje, payload'daki ilk
@@ -88,7 +97,10 @@ kurulumdan sonra her istemcide aşağıdaki geri okumayı yapın.
 - `--context-chars 1500` başlangıç talimatı sınırıdır (0–4000). `0` enjeksiyonu
   kapatır. Tam talimat sığmazsa kesik komut yerine boş çıktı verilir.
 - Başlangıçta proje etiketi, receipt oturum kimliği, mutlak CLI yolu ve kaynaklı
-  kayıt talimatı verilir. Companion, Last-Session, eski receipt veya kişisel not
+  kayıt talimatı verilir: anlamlı işten sonra önce `note-create` ile sonuç veya kalıcı
+  öğrenim vault notuna yazılır, sonra o not `receipt --ref` ile gösterilir. Mutlak CLI
+  yolu bir kez yazılır; alt komutlar onunla başlar, böylece uzun yollar bütçeyi
+  tüketmez. Companion, Last-Session, eski receipt veya kişisel not
   gövdesi harici projeye otomatik taşınmaz. Ajan gerektiğinde açık proje
   filtresiyle `context` çağırır. Issue'daki geçici sarmalayıcıdan bu noktada
   bilinçli olarak daha dar bir davranış seçildi.
@@ -128,8 +140,22 @@ python3 "/tam/yol/Beynim/beyin.py" receipt --harness claude --file receipt.json 
 python3 "/tam/yol/Beynim/beyin.py" doctor --json
 ```
 
-`refs` var olan vault-relative kaynaklara gider. Harici repo dosyalarını veya
-konuşmaları sırf hook çalıştı diye kopyalamayın. Checkpoint yalnız olayın
+`refs` var olan vault-relative kaynaklara gider. Henüz kaynak yoksa önce
+`note-create` ile not yazılır (stdin JSON: `{"source": "knowledge/concepts/AD.md", "text": "..."}`);
+yeni kavram için `knowledge/index.md` satırı `note-read` / `note-edit` ile eklenir.
+Harici repo dosyalarını veya konuşmaları sırf hook çalıştı diye kopyalamayın.
+
+Stop hatırlatması vault içindeki oturumla aynı kuralı izler
+([tercihler belgesi](PREFERENCES.md#stopta-receipt-hatırlatması)): düzenleme işareti
+olan ve düzenlemelerden sonra aynı `session` değeriyle receipt yazılmamış oturumda
+köprü Stop'u oturum başına bir kez engeller. Hatırlatma mutlak CLI yolunu bir kez
+verir, önce `note-create`, sonra `receipt --ref` adımını ister; iş kalıcı bir şey
+bırakmadıysa ajanın bunu tek cümleyle söylemesi yeterlidir. Receipt öğrenim beyan
+eder ama `knowledge/` altında not yazılmamışsa aynı tek seferlik bilgi hatırlatması
+gelir. Yalnız okuyan oturum, `stop_hook_active` taşıyan ikinci Stop, manual profil,
+`no_memory: true` ve `BEYIN_V3_NO_RECEIPT_REMINDER=1` engellenmez. Başka projede
+aynı ham oturum kimliği bu işareti göremez. `UserPromptSubmit` alınmadığı için
+`[kaydetme]` istem işareti köprüde okunmaz. Checkpoint yalnız olayın
 görüldüğünü gösterir; iş sonucu veya görev tamamlanması değildir.
 `doctor --json` içindeki `receipt-gaps.json.checkpoints` alanında proje etiketi
 ve `project_id` bulunur. Prompt olayları alınmadığı için her turun eksiksiz
@@ -175,7 +201,11 @@ diğer handler'ları koruyun. Geçici susturma için manual profil kullanılabil
 bu yerel otomatik işleri de durdurur.
 
 Güncelleme sarmalayıcıyı diğer yönetilen runtime dosyalarıyla günceller; global
-ayarlar kullanıcıya ait kalır. Köprüyü içermeyen eski sürüme rollback veya
+ayarlar kullanıcıya ait kalır. Bu yüzden düzenleme gözlemi (`PostToolUse`) daha önce
+kurulmuş köprüye kendiliğinden eklenmez: güncellemeden sonra aynı `bridge --install`
+komutunu yeniden çalıştırın. Komut satırı değişmediği için bu handler'ı içeren ayarla
+eski bir sürüme dönülürse eski köprü `PostToolUse` olayına `{}` cevabı verir; eski
+`--uninstall` da tüm olaylardaki köprü handler'larını kaldırır. Köprüyü içermeyen eski sürüme rollback veya
 uninstall yapmadan **önce global handler'ları kaldırın** (`--uninstall`). Olmayan scripti global
 hook'ta bırakmak istemci hatası üretir. Yeniden etkinleştirirken güncel JSON'u
 üretin ve gerekli güven incelemesini tamamlayın.

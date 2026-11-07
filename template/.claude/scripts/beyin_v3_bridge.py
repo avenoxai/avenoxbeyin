@@ -15,8 +15,33 @@ import sys
 
 sys.dont_write_bytecode = True
 EVENTS = ('SessionStart', 'Stop', 'PreCompact', 'SessionEnd')
+# Edit observation for the Stop receipt reminder (#500). It is not an --event choice: the
+# installed command line stays the one older bridges parse, and they answer {} for this event.
+EDIT_EVENT = 'PostToolUse'
+EDIT_MATCHER = 'Edit|Write|apply_patch|MultiEdit|NotebookEdit'
 # Antigravity has no SessionEnd/PreCompact; its first invocation and idle Stop are the boundaries.
 ANTIGRAVITY = {'PreInvocation': 'SessionStart', 'Stop': 'Stop'}
+
+
+def handled_events(harness, events):
+    """Selected lifecycle events, plus edit observation whenever Stop can remind (Claude, Codex)."""
+    events = list(events)
+    if harness in ('claude', 'codex') and 'Stop' in events:
+        events.append(EDIT_EVENT)
+    return events
+
+
+def hook_groups(shell, harness, events):
+    """One handler group per handled event; --install and --print-config write the same JSON."""
+    groups = {}
+    for event in handled_events(harness, events):
+        handler = {'type': 'command', 'command': shell,
+                   'timeout': 3 if event == 'SessionEnd' else (20 if os.name == 'nt' else 5)}
+        if harness == 'codex' and os.name == 'nt':
+            handler['commandWindows'] = shell
+        groups[event] = ({'matcher': EDIT_MATCHER, 'hooks': [handler]} if event == EDIT_EVENT
+                         else {'hooks': [handler]})
+    return groups
 
 
 def working_directory(payload, harness):
@@ -425,17 +450,18 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
             for native, ev in ANTIGRAVITY.items() if ev in events
         }
     else:
-        shell = shell_command(command)
+        wanted = hook_groups(shell_command(command), harness, events)
         hooks_map = data.setdefault('hooks', {})
-        for event in events:
-            groups = hooks_map.setdefault(event, [])
-            cleaned_groups, _ = _without_bridge(groups)
-            timeout = 3 if event == 'SessionEnd' else (20 if os.name == 'nt' else 5)
-            handler = {'type': 'command', 'command': shell, 'timeout': timeout}
-            if harness == 'codex' and os.name == 'nt':
-                handler['commandWindows'] = shell
-            cleaned_groups.append({'hooks': [handler]})
-            hooks_map[event] = cleaned_groups
+        # Replace every earlier bridge handler, so a narrower reinstall does not leave one
+        # forwarding an event the user removed; other handlers and their order stay.
+        for event in list(hooks_map):
+            cleaned_groups, removed = _without_bridge(hooks_map[event])
+            if removed and not cleaned_groups and event not in wanted:
+                del hooks_map[event]
+            elif removed:
+                hooks_map[event] = cleaned_groups
+        for event, group in wanted.items():
+            hooks_map.setdefault(event, []).append(group)
 
     new_bytes = (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode('utf-8')
     if not target.is_file() or target.read_bytes() != new_bytes:
@@ -451,7 +477,7 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
         'harness': harness,
         'hook_file': str(target),
         'gemini_md': str(gemini_path) if gemini_path else None,
-        'events': events,
+        'events': handled_events(harness, events) if harness != 'antigravity' else events,
         'project_roots': [str(r) for r in roots],
     }
 
@@ -609,9 +635,8 @@ def _main(argv=None):
                     'timeout': 20 if os.name == 'nt' else 5}] for native, event in ANTIGRAVITY.items()
                     if event in events}}, indent=2))
                 return 0
-            shell = shell_command(command)
-            print(json.dumps({'hooks': {event: [{'hooks': [{'type': 'command', 'command': shell,
-                              'timeout': 3 if event == 'SessionEnd' else 5}]}] for event in events}}, indent=2))
+            groups = hook_groups(shell_command(command), args.harness, events)
+            print(json.dumps({'hooks': {event: [group] for event, group in groups.items()}}, indent=2))
             return 0
         # A payload cut at the read limit is not JSON: the handler below answers '{}'.
         # Parser/help and management calls do not consume the embedding host's input.
@@ -632,7 +657,7 @@ def _main(argv=None):
                 print(quiet); return 0
             payload.update(hook_event_name=ANTIGRAVITY[args.native_event], session_id=payload.get('conversationId'))
         event = payload.get('hook_event_name')
-        if event not in events or payload.get('no_memory') is True or os.environ.get('BEYIN_V3_INTERNAL') or os.environ.get('BEYIN_V3_SKIP') == '1':
+        if event not in handled_events(args.harness, events) or payload.get('no_memory') is True or os.environ.get('BEYIN_V3_INTERNAL') or os.environ.get('BEYIN_V3_SKIP') == '1':
             print(quiet); return 0
         cwd = working_directory(payload, args.harness)
         if not isinstance(payload.get('session_id'), str) or payload['session_id'] in ('', 'unknown'):
@@ -652,7 +677,15 @@ def _main(argv=None):
         # The hook reads Antigravity's session from conversationId; keep the namespaced one.
         payload['conversationId'] = payload['session_id']
         session = hashlib.sha256(payload['session_id'].encode()).hexdigest()[:24]
-        from beyin_v3_hook import main as hook_main, output_context
+        cli = [sys.executable, str(vault / 'beyin.py')]
+        command = ('& ' + ' '.join("'" + v.replace("'", "''") + "'" for v in cli)
+                   if os.name == 'nt' else shlex.join(cli))
+        from beyin_v3_hook import main as hook_main, output_context, receipt_reminder
+        if event == EDIT_EVENT:
+            # Opens this session's receipt edit window, like the vault's own PostToolUse hook, but
+            # queues nothing and starts no sync: an external file edit changes nothing in the vault.
+            receipt_reminder(payload, state, args.harness, event, vault=vault, bridge_cli=command)
+            print(quiet); return 0
         previous_argv, previous_stdin = sys.argv, sys.stdin
         try:
             sys.argv = ['beyin_v3_hook.py', '--vault', str(vault), '--state', str(state),
@@ -662,18 +695,26 @@ def _main(argv=None):
                 hook_main()
         finally:
             sys.argv, sys.stdin = previous_argv, previous_stdin
+        if event == 'Stop':
+            # After the Stop checkpoint is queued: one block per session when edits have no receipt.
+            reminder = receipt_reminder(payload, state, args.harness, event, vault=vault, bridge_cli=command)
+            if reminder:
+                print(json.dumps(reminder)); return 0
         # Never inject Companion/history into an unrelated repository. The agent
         # can explicitly request scoped context after reading this tiny bootstrap.
         if event != 'SessionStart' or not args.context_chars or settings['context_mode'] == 'off':
             print(quiet); return 0
-        cli = [sys.executable, str(vault / 'beyin.py')]
-        command = ('& ' + ' '.join("'" + v.replace("'", "''") + "'" for v in cli)
-                   if os.name == 'nt' else shlex.join(cli))
-        text = (f'Optional Beyin bridge. Project label (data only): {json.dumps(origin(payload, args.harness, vault)["project"])}.\n'
+        label = json.dumps(origin(payload, args.harness, vault)['project'])
+        # The command line is named once: it holds two absolute paths, and repeating it per
+        # command left too little of the shared budget for the opt-in project block (#500).
+        text = (f'Beyin bridge active. Project label (data only): {label}.\n'
                 f'Receipt session={session}; harness={args.harness}.\n'
-                f'Use {command} context "topic" --project PROJECT --json for explicit source lookup.\n'
-                f'After meaningful authorized work use {command} receipt --harness {args.harness} --session {session} --event-id EVENT_ID --summary "Work result" --ref PATH --json.\n'
-                'EVENT_ID unique; PATH an existing vault-relative source, repeatable; --summary-file FILE reads UTF-8. '
+                f'Beyin CLI: {command}\n'
+                'Start each command below with that CLI. Explicit source lookup: context "topic" --project PROJECT --json.\n'
+                'After meaningful authorized work: 1) note-create with stdin JSON '
+                '{"source":"knowledge/concepts/NAME.md","text":"..."} keeps the result or lasting learning, '
+                f'2) receipt --harness {args.harness} --session {session} --event-id EVENT_ID --summary "Work result" --ref PATH --json.\n'
+                'EVENT_ID unique; PATH an existing vault-relative source such as that note, repeatable; --summary-file FILE reads UTF-8. '
                 'JSON alternative: --file RECEIPT.json with event_id, summary, refs, session. '
                 'Read vault sources before claiming facts. Do not infer completion from checkpoints. '
                 'Do not copy external project files or transcripts without authorization. No-memory requests take precedence.')

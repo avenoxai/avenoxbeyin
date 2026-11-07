@@ -52,6 +52,20 @@ NO_LEARNING_CHALLENGE_REMINDER = (
     'python3 beyin.py learn --session {session} --candidate "Lesson". If this edit was purely mechanical/routine '
     "without new lessons, state that in one sentence to proceed."
 )
+# Global bridge sessions run in another project, where a relative `beyin.py` does not exist and
+# no vault note may exist yet to cite, so the note comes first (#500). The command line is named
+# once; BRIDGE_CLI_LIMIT keeps the Stop reason far below Claude Code's 10,000-character limit.
+BRIDGE_CLI_LIMIT = 1000
+BRIDGE_RECEIPT_REMINDER = (
+    "Beyin bridge: files were edited in this external project session but no receipt was written after "
+    "the edits. Beyin CLI for this project: {cli}\n"
+    "If the work is done: 1) keep its result or lasting learning in the vault with note-create "
+    '(stdin JSON {{"source": "knowledge/concepts/NAME.md", "text": "..."}}; a new concept also gets one line in '
+    "knowledge/index.md through note-read and note-edit), 2) then receipt --harness {harness} --session {session} "
+    '--event-id EVENT_ID --summary "Work result" --ref PATH --json, where PATH is that note or another existing '
+    "vault-relative source. Receipt session={session}. If the edits left nothing worth keeping or the user asked "
+    "for no memory, say so in one sentence instead."
+)
 HARNESS_SYNTHETIC_PROMPT_PREFIXES = (
     "<task-notification>",
     # Claude Desktop linked-session completion/status notifications (#566).
@@ -391,6 +405,12 @@ def _edits_only_outside_vault(vault, payload):
         return False
 
 
+def _bridge_cli(command):
+    """The bridge's command line, or a bounded pointer when an extreme vault path would not fit."""
+    command = str(command)
+    return command if len(command) <= BRIDGE_CLI_LIMIT else "beyin.py in the Beyin vault folder"
+
+
 def _shell_edit(payload, vault, state, harness):
     """A Bash edit of this turn as {'at', 'knowledge'}, or None; Claude Code transcripts only.
 
@@ -433,7 +453,7 @@ def _queue_cli_edit(flag, vault, state, payload):
         pass  # coverage bookkeeping never costs the reminder
 
 
-def receipt_reminder(payload, state, harness, event, vault=None):
+def receipt_reminder(payload, state, harness, event, vault=None, bridge_cli=None):
     """Track edits per session and return a one-time Stop block, or None.
 
     Installed PostToolUse hooks match Edit|Write|apply_patch|MultiEdit|NotebookEdit for Claude and
@@ -446,6 +466,10 @@ def receipt_reminder(payload, state, harness, event, vault=None):
     Stop then looks for a receipt of this harness and session in the runtime store.
     If a receipt declared learnings but no note under knowledge/ was touched,
     Stop reminds once to distill into knowledge/concepts/.
+
+    `bridge_cli` is the global bridge's Beyin command line (#500): there every edit belongs to
+    the external project, so vault-external edits open the window, and the Stop reasons name
+    that command line and note-create instead of a relative `beyin.py`.
     """
     if harness not in ("claude", "codex") or event not in ("UserPromptSubmit", "PostToolUse", "Stop"):
         return None
@@ -472,7 +496,7 @@ def receipt_reminder(payload, state, harness, event, vault=None):
                 edited.unlink(missing_ok=True)
             return None
         if event == "PostToolUse":
-            if _edits_only_outside_vault(vault, payload):
+            if bridge_cli is None and _edits_only_outside_vault(vault, payload):
                 return None
             if not edited.exists():
                 atomic(edited, {"at": time.time()})
@@ -484,7 +508,8 @@ def receipt_reminder(payload, state, harness, event, vault=None):
         if payload.get("stop_hook_active") is True:
             return None
         if not edited.exists():
-            shell = _shell_edit(payload, vault, state, harness)
+            # The global bridge keeps its editor-only window (#500): no transcript read there.
+            shell = _shell_edit(payload, vault, state, harness) if bridge_cli is None else None
             if shell is None:
                 return None
             atomic(edited, {"at": shell["at"], "knowledge": True} if shell["knowledge"] else {"at": shell["at"]})
@@ -501,6 +526,9 @@ def receipt_reminder(payload, state, harness, event, vault=None):
                 folder.mkdir(parents=True, exist_ok=True)
                 with done.open("x", encoding="utf-8"):  # FileExistsError if a concurrent Stop reminded first
                     pass
+                if bridge_cli is not None:
+                    return {"decision": "block", "reason": BRIDGE_RECEIPT_REMINDER.format(
+                        cli=_bridge_cli(bridge_cli), harness=harness, session=session)}
                 return {"decision": "block", "reason": RECEIPT_REMINDER.format(harness=harness, session=session)}
             return None
 
@@ -520,6 +548,10 @@ def receipt_reminder(payload, state, harness, event, vault=None):
                         pass
                 except FileExistsError:
                     return None
+                if bridge_cli is not None:
+                    cli = _bridge_cli(bridge_cli)
+                    reason = (reason.replace("python3 beyin.py", cli) +
+                              f" Beyin CLI for this project: {cli}; write the note with note-create.")
                 return {"decision": "block", "reason": reason}
 
         edited.unlink(missing_ok=True)  # later edits open a new window
@@ -793,7 +825,8 @@ def main():
                     raise
                 sync_note, due = WORKER_SPAWN_REFUSED_NOTE, False
         # After enqueue, so reminder bookkeeping can never cost the queued checkpoint.
-        # The global bridge (--metadata-only) discards stdout, so it keeps no reminder state.
+        # The global bridge (--metadata-only) discards stdout; it asks receipt_reminder itself with
+        # its own command line and external-project edit window (#500).
         # A refused state write stops the main body before this bookkeeping, so its Stop answers {}
         # (#417); an earlier edit marker must not reopen that path as a block in a state this client
         # cannot write. The writable path keeps its reminder untouched.

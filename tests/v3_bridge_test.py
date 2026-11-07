@@ -142,6 +142,9 @@ class BridgeTest(unittest.TestCase):
             text = result['hookSpecificOutput']['additionalContext']
             self.assertIn('receipt --harness ' + harness, text)
             self.assertIn('--event-id EVENT_ID --summary "Work result" --ref PATH', text)
+            self.assertIn('note-create', text)
+            self.assertIn('Beyin bridge active', text)
+            self.assertNotIn('Optional Beyin bridge', text)
             self.assertIn(str(self.vault / 'beyin.py'), text)
             self.assertLessEqual(len(text), 1500)
         events = self.queued()
@@ -162,6 +165,219 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(result.stdout)
         self.assertIn('hookSpecificOutput', data)
+
+    def test_stop_forwards_receipt_reminder_when_session_was_edited(self):
+        # 1. Startup instructions contain note-create instruction
+        start_res = self.invoke(harness='claude')
+        self.assertIn('note-create', start_res['hookSpecificOutput']['additionalContext'])
+        # A real CLI write records the same project namespace as the bridge.
+        self.create_cli_knowledge()
+        # 3. Invoke Stop via bridge: must forward block decision with reminder
+        stop_payload = dict(self.payload, hook_event_name='Stop')
+        stop_res = self.invoke(stop_payload, harness='claude')
+        self.assertEqual(stop_res.get('decision'), 'block')
+        self.assertIn('files were edited in this external project session but no receipt was written',
+                      stop_res.get('reason', ''))
+
+    def create_cli_knowledge(self):
+        env = dict(self.env, CLAUDE_CODE_SESSION_ID='one-session')
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/beyin_v3.py'),
+                                 '--vault', str(self.vault), '--state', str(self.state),
+                                 'note-create', '--file', '-'],
+                                input=json.dumps({'source': 'knowledge/concepts/finding.md',
+                                                  'text': '# Durable finding\n'}),
+                                text=True, capture_output=True, env=env, cwd=self.project, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_real_cli_write_does_not_mark_another_project(self):
+        self.invoke(harness='claude')
+        self.create_cli_knowledge()
+        other = self.root / 'Projects/other'
+        other.mkdir()
+        stop = dict(self.payload, hook_event_name='Stop', cwd=str(other))
+        self.assertEqual(self.invoke(stop, harness='claude'), {})
+        self.assertEqual(self.invoke(dict(self.payload, hook_event_name='Stop'), harness='claude')['decision'], 'block')
+
+    def test_real_cli_knowledge_and_receipt_satisfy_stop(self):
+        self.invoke(harness='claude')
+        self.create_cli_knowledge()
+        session = hashlib.sha256(json.dumps([str(self.project), 'one-session']).encode()).hexdigest()[:24]
+        SyncEngine(self.vault, self.state).receipt('finding', 'Learned: durable finding',
+            ['knowledge/concepts/finding.md'], 'claude', session=session)
+        self.assertEqual(self.invoke(dict(self.payload, hook_event_name='Stop'), harness='claude'), {})
+
+    def test_long_vault_path_preserves_bootstrap(self):
+        self.vault = self.root / ('Brain' + 'x' * 160)
+        self.vault.mkdir()
+        text = self.invoke(harness='claude')['hookSpecificOutput']['additionalContext']
+        self.assertIn('note-create', text)
+        self.assertIn('receipt --harness claude', text)
+        self.assertIn(json.dumps(self.project.name), text)
+        self.assertLessEqual(len(text), 1500)
+
+    def installed_handlers(self, harness):
+        """Bridge handler groups per event as the client reads them from its global settings."""
+        data = json.loads(bridge.global_hook_path(harness, home=self.home).read_text(encoding='utf-8'))
+        return {event: [group for group in groups
+                        if any('beyin_v3_bridge.py' in bridge._decoded_command(h.get('command'))
+                               for h in group.get('hooks', []))]
+                for event, groups in data['hooks'].items()}
+
+    def run_installed(self, groups, payload):
+        """Run one installed handler the way the client does: its own shell, the project as cwd."""
+        command = groups[0]['hooks'][0]['command']
+        result = subprocess.run(command, shell=True, input=json.dumps(payload), capture_output=True,
+                                text=True, encoding='utf-8', env=self.env, cwd=self.project, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def cli(self, *args, request=None, session='issue-500'):
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
+                                 '--state', str(self.state), *args],
+                                input=json.dumps(request) if request is not None else None,
+                                text=True, encoding='utf-8', capture_output=True, timeout=30,
+                                env=dict(self.env, CLAUDE_CODE_SESSION_ID=session), cwd=self.project)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return json.loads(result.stdout)
+
+    def test_issue_500_four_event_bridge_reminds_a_session_that_never_wrote_a_note(self):
+        # #500 as reported: claude, the four lifecycle events, four project roots, an external
+        # project session that edits files and never writes a note or a receipt.
+        roots = [self.root / 'Projects'] + [self.root / name for name in ('Work', 'Lab', 'Client')]
+        for root in roots[1:]:
+            root.mkdir()
+        bridge.install_bridge(self.vault, self.state, 'claude', roots,
+                              ['SessionStart', 'Stop', 'PreCompact', 'SessionEnd'], home=self.home)
+        handlers = self.installed_handlers('claude')
+        self.assertEqual(set(handlers), {'SessionStart', 'Stop', 'PreCompact', 'SessionEnd', 'PostToolUse'})
+        self.assertEqual(handlers['PostToolUse'][0]['matcher'], bridge.EDIT_MATCHER)
+        for event, groups in handlers.items():
+            # Older bridges parse this command line too; they answer {} to the edit observer.
+            self.assertNotIn('PostToolUse', bridge._decoded_command(groups[0]['hooks'][0]['command']))
+        base = dict(session_id='issue-500', cwd=str(self.project), transcript_path=str(self.root / 'none.jsonl'))
+        start = self.run_installed(handlers['SessionStart'], dict(base, hook_event_name='SessionStart', source='startup'))
+        text = start['hookSpecificOutput']['additionalContext']
+        self.assertIn('note-create', text)
+        self.assertLessEqual(len(text), 1500)
+        session = text.split('Receipt session=')[1].split(';')[0]
+        # A session that only reads is never stopped.
+        self.assertEqual(self.run_installed(handlers['Stop'], dict(base, hook_event_name='Stop', stop_hook_active=False)), {})
+        queued = len(self.queued())
+        edit = dict(base, hook_event_name='PostToolUse', tool_name='Edit',
+                    tool_input={'file_path': str(self.project / 'app.py'), 'old_string': 'a', 'new_string': 'b'})
+        self.assertEqual(self.run_installed(handlers['PostToolUse'], edit), {})
+        self.assertEqual(len(self.queued()), queued)  # the observer queues nothing and starts no sync
+        stop = self.run_installed(handlers['Stop'], dict(base, hook_event_name='Stop', stop_hook_active=False))
+        self.assertEqual(stop['decision'], 'block')
+        reason = stop['reason']
+        self.assertIn('note-create', reason)
+        self.assertLess(reason.index('note-create'), reason.index('receipt --harness claude --session ' + session))
+        self.assertIn(str(self.vault / 'beyin.py'), reason)
+        self.assertLess(len(reason), 10000)
+        self.assertNotIn('app.py', reason)
+        self.assertEqual(self.run_installed(handlers['Stop'], dict(base, hook_event_name='Stop', stop_hook_active=True)), {})
+        # The agent follows the reminder from the project folder: note first, then a receipt citing it.
+        created = self.cli('note-create', '--file', '-',
+                           request={'source': 'knowledge/concepts/issue-500.md', 'text': '# Kalıcı öğrenim\n'})
+        self.assertEqual(created['source'], 'knowledge/concepts/issue-500.md')
+        self.cli('receipt', '--harness', 'claude', '--session', session, '--event-id', 'issue-500-work',
+                 '--summary', 'Ürün düzeltildi.\nLearned: köprü notu', '--ref', 'knowledge/concepts/issue-500.md')
+        for _ in range(2):  # once per session: no knowledge or receipt block follows
+            self.assertEqual(self.run_installed(handlers['Stop'], dict(base, hook_event_name='Stop', stop_hook_active=False)), {})
+
+    def test_edit_window_belongs_to_one_project_and_session(self):
+        edit = dict(self.payload, hook_event_name='PostToolUse', tool_name='Write',
+                    tool_input={'file_path': str(self.project / 'new.txt'), 'content': 'x'})
+        self.assertEqual(self.invoke(edit, harness='claude'), {})
+        other = self.root / 'Projects' / 'other'; other.mkdir()
+        self.assertEqual(self.invoke(dict(self.payload, hook_event_name='Stop', cwd=str(other)), harness='claude'), {})
+        self.assertEqual(self.invoke(dict(self.payload, hook_event_name='Stop', session_id='second'), harness='claude'), {})
+        self.assertEqual(self.invoke(dict(self.payload, hook_event_name='Stop'), harness='claude')['decision'], 'block')
+        self.assertEqual(self.invoke(dict(self.payload, hook_event_name='Stop'), harness='claude'), {})
+
+    def test_codex_apply_patch_opens_the_window_with_its_own_harness(self):
+        patch_text = '*** Begin Patch\n*** Update File: app.py\n@@\n-a\n+b\n*** End Patch\n'
+        edit = dict(self.payload, hook_event_name='PostToolUse', tool_name='apply_patch',
+                    tool_input={'command': patch_text})
+        self.assertEqual(self.invoke(edit), {})
+        reason = self.invoke(dict(self.payload, hook_event_name='Stop'))['reason']
+        self.assertIn('receipt --harness codex', reason)
+        self.assertIn('note-create', reason)
+
+    def test_edit_observer_respects_scope_opt_outs_and_selected_events(self):
+        edit = dict(self.payload, hook_event_name='PostToolUse', tool_name='Edit',
+                    tool_input={'file_path': str(self.project / 'app.py')})
+        markers = self.state / 'receipt-reminders'
+        cases = [('no Stop selected', edit, ['--event', 'SessionStart']),
+                 ('no memory', dict(edit, no_memory=True), []),
+                 ('outside roots', dict(edit, cwd=str(self.root)), [])]
+        for label, payload, extra in cases:
+            with self.subTest(label):
+                self.assertEqual(self.invoke(payload, extra=extra, harness='claude'), {})
+                self.assertFalse(markers.exists() and any(markers.iterdir()))
+        self.env['BEYIN_V3_NO_RECEIPT_REMINDER'] = '1'
+        self.assertEqual(self.invoke(edit, harness='claude'), {})
+        self.assertEqual(self.invoke(dict(self.payload, hook_event_name='Stop'), harness='claude'), {})
+        del self.env['BEYIN_V3_NO_RECEIPT_REMINDER']
+        (self.vault / '.beyin-preferences.json').write_text('{"auto_sync": false}')
+        self.assertEqual(self.invoke(edit, harness='claude'), {})
+        self.assertFalse(markers.exists() and any(markers.iterdir()))
+        self.assertEqual([event['event'] for event in self.queued()], ['Stop'])  # never an edit event
+
+    def test_reinstall_replaces_every_earlier_bridge_handler(self):
+        target = bridge.global_hook_path('claude', home=self.home)
+        target.parent.mkdir(parents=True)
+        custom = {'matcher': 'Edit', 'hooks': [{'type': 'command', 'command': 'echo custom'}]}
+        target.write_text(json.dumps({'hooks': {'PostToolUse': [custom]}}), encoding='utf-8')
+        bridge.install_bridge(self.vault, self.state, 'claude', [self.project], home=self.home)
+        self.assertEqual(set(self.installed_handlers('claude')),
+                         {'SessionStart', 'Stop', 'PreCompact', 'SessionEnd', 'PostToolUse'})
+        bridge.install_bridge(self.vault, self.state, 'claude', [self.project], ['SessionStart'], home=self.home)
+        hooks = json.loads(target.read_text(encoding='utf-8'))['hooks']
+        self.assertEqual(set(hooks), {'PostToolUse', 'SessionStart'})
+        self.assertEqual(hooks['PostToolUse'], [custom])
+        bridge.uninstall_bridge('claude', home=self.home)
+        self.assertEqual(json.loads(target.read_text(encoding='utf-8')), {'hooks': {'PostToolUse': [custom]}})
+
+    def test_cli_print_config_keeps_the_selected_events(self):
+        base = [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault), '--state', str(self.state),
+                'bridge', '--harness', 'claude', '--project-root', str(self.project), '--print-config']
+        for extra, expected in (([], set(bridge.EVENTS) | {'PostToolUse'}),
+                                (['--event', 'SessionStart'], {'SessionStart'}),
+                                (['--event', 'Stop'], {'Stop', 'PostToolUse'})):
+            with self.subTest(extra=extra):
+                result = subprocess.run(base + extra, capture_output=True, text=True, encoding='utf-8',
+                                        env=self.env, cwd=self.project, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(set(json.loads(result.stdout)['hooks']), expected)
+
+    def test_bridge_reminders_name_the_cli_and_stay_bounded(self):
+        self.state.mkdir()
+        for cli in ('python3 /v/beyin.py', 'x' * 20000):
+            with self.subTest(length=len(cli)):
+                payload = {'session_id': json.dumps([str(self.project), str(len(cli))]), 'cwd': str(self.project),
+                           'hook_event_name': 'PostToolUse', 'tool_input': {'file_path': str(self.project / 'a.py')}}
+                hook.receipt_reminder(payload, self.state, 'claude', 'PostToolUse', vault=self.vault, bridge_cli=cli)
+                reason = hook.receipt_reminder(dict(payload, hook_event_name='Stop'), self.state, 'claude', 'Stop',
+                                               vault=self.vault, bridge_cli=cli)['reason']
+                self.assertLess(len(reason), 3000)
+                self.assertEqual(reason.count(cli), 1 if len(cli) < 1000 else 0)
+
+    def test_bridge_knowledge_reminder_points_at_note_create(self):
+        (self.vault / 'notes').mkdir()
+        (self.vault / 'notes/result.md').write_text('# Result\n', encoding='utf-8')
+        edit = dict(self.payload, hook_event_name='PostToolUse', tool_name='Edit',
+                    tool_input={'file_path': str(self.project / 'app.py')})
+        self.invoke(edit, harness='claude')
+        self.assertEqual(self.invoke(dict(self.payload, hook_event_name='Stop'), harness='claude')['decision'], 'block')
+        session = hashlib.sha256(json.dumps([str(self.project), 'one-session']).encode()).hexdigest()[:24]
+        SyncEngine(self.vault, self.state).receipt('result', 'Done.\nLearned: köprü dersi', ['notes/result.md'],
+                                                   'claude', session=session)
+        reason = self.invoke(dict(self.payload, hook_event_name='Stop'), harness='claude')['reason']
+        self.assertIn('knowledge/concepts/', reason)
+        self.assertIn(str(self.vault / 'beyin.py'), reason)
+        self.assertIn('note-create', reason)
+        self.assertEqual(self.invoke(dict(self.payload, hook_event_name='Stop'), harness='claude'), {})
 
     def test_sensitive_folder_task_cannot_enter_external_project_context(self):
         secret = self.vault / '🔐 Kasa/task.md'
@@ -415,7 +631,8 @@ class BridgeTest(unittest.TestCase):
         self.assertTrue(installed.is_file())
         for harness in ('codex', 'claude'):
             config = self.invoke(extra=['--print-config'], harness=harness, script=installed)
-            self.assertEqual(set(config['hooks']), set(bridge.EVENTS))
+            self.assertEqual(set(config['hooks']), set(bridge.EVENTS) | {'PostToolUse'})
+            self.assertEqual(config['hooks']['PostToolUse'][0]['matcher'], bridge.EDIT_MATCHER)
             command = config['hooks']['SessionStart'][0]['hooks'][0]['command']
             result = subprocess.run(command, shell=True, input=json.dumps(self.payload), capture_output=True,
                                     text=True, encoding='utf-8', env=self.env, cwd=self.project, timeout=20)
