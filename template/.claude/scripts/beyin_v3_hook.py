@@ -54,6 +54,8 @@ NO_LEARNING_CHALLENGE_REMINDER = (
 )
 HARNESS_SYNTHETIC_PROMPT_PREFIXES = (
     "<task-notification>",
+    # Claude Desktop linked-session completion/status notifications (#566).
+    "<system-reminder>",
     "Another Claude session sent a message:",
     "<agent-message",
     "<local-command-caveat>",
@@ -343,11 +345,49 @@ def _edits_knowledge(vault, payload):
     return False
 
 
+def _edits_only_outside_vault(vault, payload):
+    """Only suppress when every identified editor path is known to be outside.
+
+    Keep the historical reminder for pathless/unsupported events, malformed paths,
+    and relative paths without an absolute payload cwd. No file contents are read.
+    """
+    from beyin_v3_hygiene import edited_paths
+    tool_input = payload.get("tool_input")
+    if vault is None or not isinstance(tool_input, dict):
+        return False
+    cwd = payload.get("cwd")
+    has_cwd = isinstance(cwd, str) and bool(cwd.strip()) and Path(cwd).is_absolute()
+    for key in ("file_path", "path", "notebook_path"):
+        if key in tool_input:
+            value = tool_input[key]
+            if not isinstance(value, str) or not value.strip() or "\0" in value:
+                return False
+            if not has_cwd and not Path(value.strip()).is_absolute():
+                return False
+    if "command" in tool_input:
+        command = tool_input["command"]
+        if (not isinstance(command, str) or "*** Begin Patch" not in command
+                or "*** End Patch" not in command or not has_cwd or "\0" in command):
+            return False
+        headers = ("*** Add File: ", "*** Update File: ", "*** Move to: ", "*** Delete File: ")
+        for line in command.splitlines():
+            if line.startswith("***") and line not in ("*** Begin Patch", "*** End Patch", "*** End of File"):
+                if not line.startswith(headers) or not line.partition(": ")[2].strip():
+                    return False
+    try:
+        root = Path(vault).resolve()
+        paths = edited_paths(payload, limit=None, include_deleted=True)
+        return bool(paths) and all(not path.resolve().is_relative_to(root) for path in paths)
+    except (ValueError, OSError, RuntimeError):
+        return False
+
+
 def receipt_reminder(payload, state, harness, event, vault=None):
     """Track edits per session and return a one-time Stop block, or None.
 
     Installed PostToolUse hooks match Edit|Write|apply_patch|MultiEdit|NotebookEdit for Claude and
-    Codex, so that event marks the session as edited without reading transcripts.
+    Codex. Known vault-external edits do not mark the session; unknown/pathless
+    events retain the legacy reminder behavior without reading transcripts.
     Stop then looks for a receipt of this harness and session in the runtime store.
     If a receipt declared learnings but no note under knowledge/ was touched,
     Stop reminds once to distill into knowledge/concepts/.
@@ -367,13 +407,16 @@ def receipt_reminder(payload, state, harness, event, vault=None):
         if done.exists() and kdone.exists():
             return None
         if event == "UserPromptSubmit":
-            if "[kaydetme]" in prompt_text(payload):
+            # Quoted worker output is data, not the user's instruction to opt out.
+            if not is_synthetic_prompt(payload) and "[kaydetme]" in prompt_text(payload):
                 folder.mkdir(parents=True, exist_ok=True)
                 done.touch()
                 kdone.touch()
                 edited.unlink(missing_ok=True)
             return None
         if event == "PostToolUse":
+            if _edits_only_outside_vault(vault, payload):
+                return None
             if not edited.exists():
                 atomic(edited, {"at": time.time()})
             if vault is not None and _edits_knowledge(vault, payload):
@@ -738,6 +781,7 @@ def main():
                            'Read current sources or use beyin.py context for fresh information.' + skip_hint + '\n')
             else:
                 warning = ''
+            coverage = ''
             health = state / "hook-health.json"
             if health.exists():
                 sync = json.loads(health.read_text(encoding="utf-8")).get("sync", {})
@@ -757,8 +801,27 @@ def main():
                         detail = f'{recent} in the last 7 days ({no_edits} without observed edits)'
                     else:
                         detail = f'{recent} in the last 7 days'
-                    warning += (f'Prior checkpoints may lack structured receipts ({detail}); '
+                    coverage = (f'Prior checkpoints may lack structured receipts ({detail}); '
                                 'check Last-Session/Threads and current sources for unfinished work.\n')
+            topic_session = payload.get('session_id', 'unknown')
+            dedupe_enabled = (state / 'context-dedupe.json').is_file() or os.environ.get('BEYIN_V3_CONTEXT_DEDUPE') == '1'
+            # The coverage notice is a session fact like the receipt: said once, again when its count changes.
+            if coverage and dedupe_enabled:
+                try:
+                    from beyin_v3_dedupe import notice_delivered
+                    if notice_delivered(state, args.harness, topic_session, coverage):
+                        coverage = ''
+                except Exception:
+                    pass
+            warning += coverage
+
+            def remember_notice(shown):
+                if coverage and dedupe_enabled and coverage.strip() in shown:
+                    try:
+                        from beyin_v3_dedupe import record_delivered
+                        record_delivered(state, args.harness, topic_session, [], notice=coverage)
+                    except Exception:
+                        pass
             from beyin_v3_companion import (context as companion_context, relevant, opening_budget, client_budget,
                                             client_rebudget, fit_client)
             # Both budgets stop below a client's own cut-off; past it the client files the text away (#175).
@@ -801,7 +864,6 @@ def main():
                     context = {"records": []}
                 inherited = False
                 from beyin_v3_continuity import resolve, remember
-                topic_session = payload.get('session_id', 'unknown')
                 try:
                     context, inherited = resolve(store, args.harness, topic_session, query, context,
                                                  budget_chars=limit, project=project)
@@ -818,7 +880,6 @@ def main():
                                                    timeout_cap=min(2.0, remaining), project=project)
                         except Exception:
                             pass  # an advisor failure must never cost the local context
-                dedupe_enabled = (state / 'context-dedupe.json').is_file() or os.environ.get('BEYIN_V3_CONTEXT_DEDUPE') == '1'
                 duplicates = []
                 suffix = receipt
                 if dedupe_enabled and context.get("records"):
@@ -861,9 +922,12 @@ def main():
                     pass
                 if not delivered.get("records") and not receipt_only:
                     diagnostic = fit_client(args.harness, (notice + warning)[:limit])
+                    remember_notice(diagnostic)
                     print(json.dumps(output_context(args.harness, event, diagnostic)) if diagnostic else "{}")
                     return
-            output = output_context(args.harness, event, fit_client(args.harness, (notice + text)[:limit]))
+            shown = fit_client(args.harness, (notice + text)[:limit])
+            remember_notice(shown)
+            output = output_context(args.harness, event, shown)
             print(json.dumps(output))
         else:
             print(json.dumps(reminder) if reminder else (json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == "antigravity" else "{}")))
