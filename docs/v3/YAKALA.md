@@ -481,6 +481,31 @@ Ham metin kart klasörünün içinde `.ham/` altında durur. Nokta ile başlayan
 aramaya ve Obsidian'a karışmaz. `.ham/` ve yakalanan dosyaların durduğu `dosyalar/`, içlerine yazılan
 `.gitignore` ile kart klasörü hangisi olursa olsun depoya da girmez.
 
+### Web sayfasında eksik bölüm uyarısı
+
+Defuddle metin döndürdükten sonra `isle`, aynı kaynak URL'sine **bir ek kaynak alımı** yaparak
+ana içerikteki h2/h3 başlıklarını çıkarılan metinle karşılaştırır. Yönlendirmeler ek HTTP
+istekleri gerektirebilir. Bu kontrol mevcut HTTP
+korumalarını kullanır: DNS ve yönlendirmelerde özel/yerel adresler reddedilir; bağlantı/okuma
+zaman aşımı 30 saniyedir, karşılaştırma için HTML en fazla 5 MB olabilir. Kaynak HTML tekrar
+deneme döngüsünde indirilmez ve `.ham/` dosyasına eklenmez. Defuddle başarısızsa düz HTTP
+yedeği yine tek kaynak alımı kullanır. Video, dosya, seçili metin ve Web Clipper yollarında bu ek
+kaynak alımı yoktur; Web Clipper metni ayrıca doğrulanmış sayılmaz.
+
+Kontrol bir sezgiseldir: tek bir `article` veya `main` alanında en az 6 farklı, anlamlı h2/h3
+başlığı aranır. Gezinme, yan panel ve açıkça gizlenmiş içerik ayıklanır; aynı başlık tekrarları,
+büyük/küçük harf, HTML entity ve olağan Markdown biçim farkları sayılmaz. En az 3 başlık
+metinde bulunuyor, en az 3 başlık ve toplamın en az %25'i bulunamıyorsa kartın `uyari`
+alanına **"Metin eksik olabilir"** yazılır; aynı uyarı `isle` sonucunda `not` olarak görünür.
+Metin korunur ve durum `cikarildi` kalır. Ajan ders çıkarmadan önce kaynak sayfayı kontrol etmelidir.
+
+Başlık kontrolü metnin tam olduğunu kanıtlamaz. Başlıkları korunmuş eksik paragrafları,
+içindekiler tablosunda kalan başlıkları veya CSS ile gizlenen her öğeyi tespit edemez.
+Birden çok ana içerik alanı, yetersiz başlık/örtüşme, başarısız istek veya boyut sınırı varsa
+yeni bir eksiklik iddiası üretilmez. Önceki uyarı kontrol yapılamadığında korunur; yeni kaynak
+yanıtındaki bütün uygun başlıklar metinde bulunduğunda kaldırılır. Daha önce işlenmiş kartlar
+kendiliğinden değişmez; yeniden kontrol için `python3 beyin.py yakala isle <id>` kullanılır.
+
 ### Videoda transkriptin dili
 
 Otomatik dublajlı bir videoda YouTube her dublaj için ayrı bir altyazı izi sunar. `isle`,
