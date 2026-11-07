@@ -102,6 +102,10 @@ Windows'ta aynı komutun başında `py -3` kullan. Kurulumda özel runtime yolu 
 
 Video, tweet, makale, mail ya da dosyayı gördüğün yerde yakala; ajanın metni çıkarıp dersleri `knowledge/` notlarına bağlasın. Kurulum bir kez: `python3 beyin.py yakala kur` (Windows'ta `py -3`). Sonra her uygulamada Mac'te `Control+Option+B`, Windows'ta `Ctrl+Alt+B`; Linux'ta KDE Plasma'da `Ctrl+Alt+B` (GNOME'da da kurulur ama gerçek masaüstünde henüz denenmedi), diğer masaüstlerinde `kur`'un verdiği komutu kendin bir tuşa bağlarsın; tarayıcıda Obsidian Web Clipper'ın "Beyne at" şablonu. Tuşu değiştirmek için `beyin.py yakala kisayol 'cmd+"'`. Ajanına "yakalananları işle" demen yeter. YouTube'da önce altyazı, yoksa yalnız ses yerelde yazıya dökülür. Ayrıntı: [docs/v3/YAKALA.md](docs/v3/YAKALA.md).
 
+## İsteğe bağlı: yerel web görünümü
+
+`python3 beyin.py web ac` görevleri, son receipt'leri, hafıza dosyalarının boyutunu ve doktor özetini tarayıcıda gösterir. Yalnız bu bilgisayarda (`127.0.0.1`) açılır, 30 dakika kullanılmazsa kapanır; kurulum ve hook'lar onu hiç başlatmaz. Gizli (`visibility: private`) ve hariç tutulan notlar gösterilmez; görev ve sıkıştırma yazmaları CLI komutlarıyla aynı yoldan gider, `--read-only` hepsini kapatır. Ayrıntı: [docs/v3/WEB.md](docs/v3/WEB.md).
+
 ## Tüketim ve kontrol sıklığı
 
 Ajanına **“ekonomik moda geç”**, **“otomatik kontrolleri kapat”** veya **“kontrol aralığını 30 dakika yap”** diyebilirsin. Üç istemci aynı vault tercihini kullanır; güncellemeler tercihini korur.
