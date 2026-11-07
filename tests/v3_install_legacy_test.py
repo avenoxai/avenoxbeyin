@@ -289,6 +289,20 @@ class InstallLegacyExemptionTest(unittest.TestCase):
                         else:
                             self.assertIn(b'BEYIN_V3_LEGACY_RETIRED', planned)
 
+    def test_runner_already_retired_on_another_machine_needs_no_review(self):
+        # A vault synced between machines carries the stubs the first machine's install wrote;
+        # the second machine has no install record for them, and its own stubs are no customization.
+        seeded = {}
+        for name in self.installer.LEGACY_RUNNERS:
+            stub = self.installer.RETIRED_STUB + (b'raise SystemExit(0)\n' if name.endswith('.py') else b'exit 0\n')
+            if name.endswith('.sh'):
+                stub = b'#!/bin/sh\n' + stub
+            seeded[name] = (self.seed(name, stub.replace(b'\n', b'\r\n') if name.endswith('.ps1') else stub), stub)
+        result = self.cli()
+        self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
+        for name, (path, stub) in seeded.items():
+            self.assertTrue(self.installer.line_endings_only(stub, path.read_bytes()), name)
+
     def test_customized_legacy_runner_needs_its_own_named_acceptance(self):
         runner = self.seed('.claude/scripts/flush.py', CUSTOM_RUNNER)
         with self.assertRaises(ValueError) as raised:
