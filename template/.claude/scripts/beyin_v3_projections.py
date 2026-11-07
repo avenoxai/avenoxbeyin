@@ -808,9 +808,10 @@ def _receipt_view_contents(engine, db, warnings=None, *, include_human_daily=Fal
     historical = set(previous.get('historical_receipts', []))
     zone = _local_zone()
     grouped = defaultdict(list)
-    events = [json.loads(row[0]) for row in db.execute('SELECT payload FROM receipts ORDER BY id')]
-    if receipt_sources is not None:
-        events = [event for event in events if 'receipts/' + _hash(event['event_id']) + '.md' in receipt_sources]
+    rows = db.execute('SELECT id, payload FROM receipts ORDER BY id')
+    # An ownership proof selects a few linked receipts; skip parsing the rest.
+    events = [json.loads(payload) for event_id, payload in rows
+              if receipt_sources is None or 'receipts/' + _hash(event_id) + '.md' in receipt_sources]
     hidden = set() if released_format else _hidden_ref_sources(db, [ref for event in events for ref in _event_refs(event)])
     for event in events:
         source = 'receipts/' + _hash(event['event_id']) + '.md'
