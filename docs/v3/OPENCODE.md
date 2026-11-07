@@ -14,7 +14,7 @@ OpenCode also loads plugins from `~/.config/opencode/plugins/` (`$XDG_CONFIG_HOM
 python3 "/tam/yol/Beynim/beyin.py" bridge --harness opencode --project-root "/tam/yol/Projelerim" --install
 ```
 
-The bridge plugin forwards only `SessionStart`, `Stop`, `PreCompact` and `SessionEnd` to `beyin_v3_bridge.py`, stays silent inside a vault and outside the chosen project roots, and injects the same scoped startup text as the Claude, Codex and Antigravity bridges. `--uninstall` removes only the managed file; a user-owned file at that path is never replaced or deleted. `--print-config` prints the plugin path and generated content without writing.
+The bridge plugin forwards only `SessionStart`, `Stop`, `PreCompact` and `SessionEnd` to `beyin_v3_bridge.py`, stays silent inside a vault and outside the chosen project roots, sends nothing for a session whose folder it cannot read (the bridge also ignores an OpenCode event without `cwd`), and injects the same scoped startup text as the Claude, Codex and Antigravity bridges. `--uninstall` removes only the managed file; a user-owned file at that path is never replaced or deleted. `--print-config` prints the plugin path and generated content without writing.
 
 The vault plugin and the global bridge plugin can be loaded at the same time. The bridge answers `{}` for a vault-owned directory, so a vault session queues its events once, through the local plugin.
 

@@ -437,7 +437,8 @@ function lifecycle(infoOf) {
   const sessions = new Map()
   const send = (event, id) => {
     const info = sessions.get(id)
-    return runBridge({ hook_event_name: event, session_id: id, ...(info?.cwd ? { cwd: info.cwd } : {}) })
+    // Without a session folder the bridge would see the service's own directory: send nothing.
+    return info?.cwd ? runBridge({ hook_event_name: event, session_id: id, cwd: info.cwd }) : Promise.resolve("")
   }
   const tracked = (id) => {
     const info = typeof id === "string" && id ? sessions.get(id) : undefined
@@ -855,6 +856,10 @@ def _main(argv=None):
             payload.update(hook_event_name=ANTIGRAVITY[args.native_event], session_id=payload.get('conversationId'))
         event = payload.get('hook_event_name')
         if event not in events or payload.get('no_memory') is True or os.environ.get('BEYIN_V3_INTERNAL') or os.environ.get('BEYIN_V3_SKIP') == '1':
+            print(quiet); return 0
+        # The OpenCode service runs in its own directory (home on 2.x) for every session: only the
+        # session folder the plugin sends may select a project root, never the process directory.
+        if args.harness == 'opencode' and not isinstance(payload.get('cwd'), str):
             print(quiet); return 0
         cwd = working_directory(payload, args.harness)
         if not isinstance(payload.get('session_id'), str) or payload['session_id'] in ('', 'unknown'):

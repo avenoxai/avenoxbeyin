@@ -85,6 +85,48 @@ console.log(JSON.stringify(result))
 process.exit(0)
 """
 
+# A 2.x instance whose session folder cannot be read: no location on the session or ctx.
+# The service directory (the Node cwd here) must never stand in for it.
+OPENCODE_NO_FOLDER_DRIVER = r"""
+import { pathToFileURL } from "node:url"
+const [plugin] = process.argv.slice(1)
+const hooks = {}
+const register = (domain) => async (name, callback) => {
+  hooks[`${domain}.${name}`] = callback
+  return { dispose: async () => {} }
+}
+const events = [{ type: "session.execution.succeeded", data: { sessionID: "lost-1" } },
+                { type: "session.execution.succeeded", data: { sessionID: "lost-2" } }]
+let release
+const ready = new Promise((resolve) => { release = resolve })
+async function* subscribe() {
+  await ready
+  yield* events
+}
+const ctx = {
+  session: { hook: register("session"),
+    get: async ({ sessionID }) => {
+      if (sessionID === "lost-2") throw new Error("session lookup failed")
+      return { id: sessionID, projectID: "global" }
+    } },
+  event: { subscribe },
+}
+const definition = (await import(pathToFileURL(plugin).href)).default
+const cleanup = await definition.setup(ctx)
+const result = {}
+for (const sessionID of ["lost-1", "lost-2"]) {
+  await hooks["session.prompt"]({ sessionID, messageID: "msg", prompt: { text: "hi", files: [] }, delivery: "steer" })
+  const event = { sessionID, agent: "build", model: {}, system: [], messages: [], options: {}, tools: {} }
+  await hooks["session.context"](event)
+  result[sessionID] = event.system
+}
+release()
+await new Promise((resolve) => setTimeout(resolve, 200))
+await cleanup()
+console.log(JSON.stringify(result))
+process.exit(0)
+"""
+
 
 class BridgeTest(unittest.TestCase):
     def cleanup_tmp(self):
@@ -339,6 +381,17 @@ class BridgeTest(unittest.TestCase):
         self.assertIn('hookSpecificOutput', self.invoke(payload, harness='claude', cwd=self.home))
         self.assertIn('hookSpecificOutput', self.invoke(payload, harness='codex'))
         self.assertEqual(self.invoke(dict(self.payload, cwd=123)), {})
+
+    def test_opencode_never_uses_the_process_directory(self):
+        # The OpenCode service runs in its own directory for every session (home on 2.x); a
+        # payload without the session folder must not be attributed to it, even inside a root.
+        payload = {k: v for k, v in self.payload.items() if k != 'cwd'}
+        self.assertEqual(self.invoke(payload, harness='opencode', cwd=self.project), {})
+        self.assertEqual(self.invoke(dict(payload, cwd=None), harness='opencode', cwd=self.project), {})
+        self.assertEqual(self.queued(), [])
+        self.assertIn('hookSpecificOutput', self.invoke(dict(payload, cwd=str(self.project)), harness='opencode',
+                                                        cwd=self.home))
+        self.assertEqual([event['project'] for event in self.queued()], [self.project.name])
 
     def agy(self, native, workspaces, cwd=None, **fields):
         # Antigravity sends camelCase fields, no cwd, and runs the hook in the hooks.json folder.
@@ -934,6 +987,19 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual({e['project'] for e in done}, {self.project.name},
                          'The session directory names the project, not the service directory')
         self.assertEqual(sorted(e['event'] for e in done), ['SessionEnd', 'SessionStart', 'Stop'])
+
+    @unittest.skipUnless(shutil.which('node'), 'node is required to execute the OpenCode plugin')
+    def test_opencode_bridge_plugin_without_a_session_folder_sends_nothing(self):
+        target = bridge.global_opencode_plugin_path(home=self.home)
+        bridge.install_bridge(self.vault, self.state, 'opencode', [self.root / 'Projects'], home=self.home)
+        # The service directory is inside a project root: falling back to it would bridge the session.
+        result = subprocess.run([shutil.which('node'), '--input-type=module', '-e', OPENCODE_NO_FOLDER_DRIVER,
+                                 str(target)], capture_output=True, text=True, encoding='utf-8', env=self.env,
+                                cwd=self.project, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout.strip().splitlines()[-1]), {'lost-1': [], 'lost-2': []})
+        self.assertEqual(self.queued(), [])
+        self.assertFalse((self.state / 'hook-done').exists() and any((self.state / 'hook-done').iterdir()))
 
 
 if __name__ == '__main__':

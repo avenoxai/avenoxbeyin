@@ -117,7 +117,9 @@ kurulumdan sonra her istemcide aşağıdaki geri okumayı yapın.
   Geçersiz/izin dışı cwd ve eksik oturum kimliği kayıt oluşturmaz.
 - OpenCode'da cwd oturum dizininden gelir (2.x `session.location.directory`, 1.x
   `session.directory`; oturum okunamazsa eklentinin yüklendiği klasör, 2.x
-  `ctx.location.directory`, 1.x fabrika `directory`); sunucu süreç dizinine düşülmez. Global
+  `ctx.location.directory`, 1.x fabrika `directory`); sunucu süreç dizinine düşülmez.
+  Klasör bilinmiyorsa eklenti olay göndermez, köprü de cwd'siz OpenCode olayını
+  kaydetmez. Global
   eklenti her klasörde yüklenir ama köprü vault ve proje kökleri dışında `{}`
   döner; vault oturumları yerel eklentiyle bir kez kaydedilir.
 - Kuyruk yalnız olay/harness/oturum hash'i, sınırlı proje etiketi, proje yolunun
