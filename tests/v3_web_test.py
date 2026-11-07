@@ -228,6 +228,7 @@ class WebGuardTest(WebFixture):
         self.server.last_activity = 0.0
         self.request('GET', '/app.js')
         self.request('GET', '/app.css')
+        self.assertTrue(web.alive({'port': self.server.port, 'token': self.server.token}))
         self.assertEqual(self.server.last_activity, 0.0)
         self.assertTrue(self.server.idle_expired(now=web.IDLE_SECONDS + 1))
         self.request('GET', '/api/durum', {'Cookie': cookie})

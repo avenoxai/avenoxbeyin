@@ -452,10 +452,12 @@ class Handler(BaseHTTPRequestHandler):
         if not url.path.startswith('/api/'):
             self._fail(404, 'Bulunamadı')
             return
-        if not (self._session() or self._bearer()):
+        session = self._session()
+        if not (session or self._bearer()):
             self._fail(401, 'Oturum yok; beyin.py web ac ile yeniden aç')
             return
-        self.server.touch()
+        if session:  # `web durum` from a terminal is not use of the page
+            self.server.touch()
         core, query = self.server.core, urllib.parse.parse_qs(url.query)
         routes = {
             '/api/durum': lambda: {'surum': core.version(), 'kasa': core.vault.name, 'salt_okunur': self.server.read_only,
