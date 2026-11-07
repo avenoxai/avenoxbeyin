@@ -99,7 +99,10 @@ kuralının temkinli bir alt kümesidir: `@` satır başında ya da boşluktan s
 boşlukta ya da ters bölüde biter, boşluk `\ ` ile yazılır, `#` sonrası bölüm adıdır. Yol
 `./`, `~/`, `/` ya da `A-Z a-z 0-9 . _ -` karakterlerinden biriyle başlamalıdır; emoji ya da
 Türkçe harfle başlayan bir klasör (varsayılan `🔮 850-Companion` dahil) için `@./🔮\ 850-Companion/Kurallar.md`
-yazılır, `@🔮\ 850-Companion/Kurallar.md` Claude Code'da içe aktarılmaz ve sayılmaz. Yol içe
+yazılır, `@🔮\ 850-Companion/Kurallar.md` Claude Code'da içe aktarılmaz ve sayılmaz. Kasa
+kökündeki `CLAUDE.md` kurulumun izlediği bir dosyadır ve bir güncellemeden sonra değişirse
+`rollback` çakışma bildirir; içe aktarma satırı için bu takibin dışındaki `CLAUDE.local.md`
+uygundur. Yol içe
 aktaran dosyaya göre görelidir, en çok dört adım izlenir; 4 MiB'den büyük ya da metin olarak
 okunmayan uzantılı dosya sayılmaz. Frontmatter, kod aralığı, kod bloğu, girintili kod, HTML
 bloğu ve yorumu, bağlantı hedefi ve başlığı, görsel metni ve tablo içindekiler sayılmaz

@@ -183,6 +183,28 @@ class OpeningBoundsTest(unittest.TestCase):
         for _, text, missing_rules, _ in self.check(rules=1500, topics=300, astral=True, history=6):
             self.assertTrue(missing_rules)
 
+    def test_budget_search_stops_at_half_the_hook_budget(self):
+        self.seed()
+        calls = []
+
+        def renderer(store, budget, *args, **kwargs):
+            calls.append(budget)
+            return 'PRIORITY_CANARY\n' + 'ç' * budget  # every render overflows the byte cap
+
+        payload = dict(hook_event_name='SessionStart', session_id='deadline-codex', cwd=str(self.vault))
+        output = io.StringIO()
+        argv = ['hook', '--vault', str(self.vault), '--state', str(self.store.state_dir), '--harness', 'codex']
+        with patch.object(sys, 'argv', argv), patch.object(sys, 'stdin', io.StringIO(json.dumps(payload))), \
+                patch.object(sys, 'stdout', output), patch.object(hook, 'HOOK_BUDGET', 0.0), \
+                patch.object(companion, 'context', side_effect=renderer), \
+                patch.dict(os.environ, inherited_env(BEYIN_V3_NO_SPAWN='1', BEYIN_UPDATES_OFF='1'), clear=True):
+            hook.main()
+        # The first render and the ratio retry only: no bisection once the budget is spent.
+        self.assertEqual(len(calls), 2)
+        text = json.loads(output.getvalue())['hookSpecificOutput']['additionalContext']
+        self.assertIn('PRIORITY_CANARY', text)
+        self.assertLessEqual(companion.client_size('codex', text), companion.CLIENT_TEXT_LIMITS['codex'][0])
+
     def test_notice_over_the_cap_still_delivers_a_trimmed_opening(self):
         self.seed()
         for harness, notice in (('codex', 'ç' * 6000), ('claude', '😀' * 5200)):
