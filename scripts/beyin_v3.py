@@ -1173,6 +1173,37 @@ def parser(note_namespace=None, is_json=False):
     return root
 
 
+def utf8_output():
+    """Write this process's own output as UTF-8 (#594). A piped or redirected Windows console
+    otherwise uses the ANSI code page (cp1254, cp1252): a Turkish character then fails on
+    stdout or turns into an escape on stderr. An embedded call (return_result) never calls this:
+    it prints nothing and the caller's streams stay as they are."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8")
+            except (OSError, ValueError):
+                pass  # the stream keeps its encoding; print_error still writes valid JSON
+
+
+def readable_json(value):
+    """JSON with real characters (#587). Characters a terminal hides or reorders (bidi and other
+    format controls, line separators) and lone surrogates stay escaped, as ensure_ascii wrote them."""
+    import unicodedata
+    return "".join(json.dumps(ch)[1:-1] if unicodedata.category(ch) in ("Cf", "Cs", "Zl", "Zp") else ch
+                   for ch in json.dumps(value, ensure_ascii=False))
+
+
+def print_error(error, stream):
+    """An error object a person may read: real characters in UTF-8 (#587), not \\u escapes.
+    Stays valid JSON either way; a stream that cannot take UTF-8 gets the escaped form."""
+    utf8_output()
+    try:
+        print(readable_json(error), file=stream)
+    except UnicodeEncodeError:
+        print(json.dumps(error, ensure_ascii=True), file=stream)
+
+
 def main(argv=None, return_result=False):
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8-sig")
@@ -1185,9 +1216,7 @@ def main(argv=None, return_result=False):
             getattr(args, name) is not None for name in ("event_id", "summary", "summary_file", "ref", "link", "session"))
         if receipt_flags:
             if not return_result:
-                for stream in (sys.stdout, sys.stderr):
-                    if hasattr(stream, "reconfigure"):
-                        stream.reconfigure(encoding="utf-8")
+                utf8_output()
             if args.file is not None:
                 argument_parser.error("--file cannot be combined with receipt flags")
             if args.event_id is None:
@@ -1208,13 +1237,13 @@ def main(argv=None, return_result=False):
         error = {"error": "SystemExit", "message": str(exc)}
         if return_result:
             return error, 2
-        print(json.dumps(error, ensure_ascii=True), file=sys.stderr)
+        print_error(error, sys.stderr)
         return 2
     except NoteUsageError as exc:
         result = {'status': 'usage_error', 'error': type(exc).__name__, 'message': str(exc)}
         if return_result:
             return result, 64
-        print(json.dumps(result, ensure_ascii=True))
+        print_error(result, sys.stdout)
         return 64
     try:
         vault = args.vault.expanduser().resolve()
@@ -1957,8 +1986,7 @@ def main(argv=None, return_result=False):
             error["hint"] = ERROR_HINTS[str(exc)]
         if return_result:
             return error, code
-        print(json.dumps(error, ensure_ascii=True),
-              file=sys.stdout if args.command in NOTE_JSON_COMMANDS else sys.stderr)
+        print_error(error, sys.stdout if args.command in NOTE_JSON_COMMANDS else sys.stderr)
         return code
 
 

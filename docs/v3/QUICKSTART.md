@@ -163,6 +163,11 @@ evidence that a fact is false. `--audience internal` includes internal and publi
 records but excludes records marked `visibility: private`. Internal records may
 still be sensitive; use synthetic inputs for public demonstrations.
 
+A `--json` error object is written as UTF-8 with its real characters
+(`Erişim engellendi`, not `\u015f` escapes), also through a piped Windows console;
+decode it as UTF-8. A settings file that is not valid JSON (`.beyin-runtime.json`,
+`.beyin-preferences.json`) is named in the error message.
+
 This release establishes local source-backed retrieval and state semantics.
 It does not establish broad natural-language intelligence, installed lifecycle
 parity, remote synchronization, or automatic third-party memory integration.

@@ -266,7 +266,8 @@ metin sessizce değiştirilmez. Önceden yazılmış sırrı silen düzenleme ka
 `written` veya `unchanged` çıkış 0, `conflict` çıkış 2, `error` çıkış 1.
 Eksik kaynak argümanı, eksik `--file` değeri ve bilinmeyen seçenek gibi komut
 kullanım hataları `usage_error` ve çıkış 64 verir; `note-read` / `note-edit`
-için bunlar da stdout'ta JSON'dur. `--help` olağan yardım metnini gösterir.
+için bunlar da stdout'ta JSON'dur. Hata nesnesi UTF-8 yazılır; Türkçe karakterler
+`\u` kaçışı yerine olduğu gibi görünür. `--help` olağan yardım metnini gösterir.
 Çakışmada yeniden oku ve diğer ajanın metnini koruyarak hedefli düzenlemeyi yeniden
 kur. Sadece hash'i yenileyip eski metni yeniden yazma; doğrudan dosya yazımıyla
 korumayı atlama. Atomik değiştirme tamamlandıktan sonraki dosya denetimi, dizin
