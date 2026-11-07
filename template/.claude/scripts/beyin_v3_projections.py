@@ -779,7 +779,8 @@ def _receipt_link(source, event_id):
     """Wikilink to a receipt, shown by its event_id instead of the hash file name (#514).
 
     Characters that would end or split an Obsidian link become spaces; an id with nothing
-    readable left keeps the bare link.
+    readable left, or none given for a withheld receipt, keeps the bare link. Obsidian's
+    graph still labels the node by the hash file name, which is the receipt's identity.
     """
     alias = ' '.join(re.sub(r'[\[\]|#^]', ' ', event_id).split())[:80].strip()
     return f'[[{source}|{alias}]]' if alias else f'[[{source}]]'
@@ -813,9 +814,12 @@ def _receipt_view_contents(engine, db, warnings=None, *, include_human_daily=Fal
             if warnings is not None:
                 warnings.append({'source': source, 'reason': 'unreadable receipt created_at; omitted from daily/v3'})
             continue
-        summary = WITHHELD_SUMMARY if hidden.intersection(_event_refs(event)) else event['summary']
+        withheld = bool(hidden.intersection(_event_refs(event)))
+        summary = WITHHELD_SUMMARY if withheld else event['summary']
+        # The agent-chosen event id usually names the same work as the summary, so a
+        # withheld receipt keeps the bare hash link, as recap shows no event id either.
         grouped[day].append((_receipt_instant(event['created_at']), event['created_at'], source, summary,
-                             event['event_id']))
+                             '' if withheld else event['event_id']))
     desired = {}
     outcomes = []
     for day, items in sorted(grouped.items()):

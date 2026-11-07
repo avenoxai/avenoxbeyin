@@ -19,7 +19,7 @@ Kurucu ortak motoru, `beyin`, `beyin-doktor`, `beyin-guncelle` skill'lerini, kur
 - Markdown ekleme, düzenleme, silme ve yeniden adlandırma indeksle birleşir. Task metadata güncellemesi effective revision ve kaynak hash kontrolü kullanır; gövde korunur.
 - Kısa lifecycle hook'ları kalıcı metadata kuyruğuna yazar. İş gerektiğinde başlar; istemciler kapalıyken sürekli çalışan servis yoktur.
 - Kaynak bağlantılı receipt tekrar denemede aynı sonucu verir. Önceki sonuç sonraki oturumda tarihsel iddia olarak bulunur; ham sohbet doğrulanmış bilgiye çevrilmez.
-- Yeni sonuçlar varsayılan olarak `daily/v3/` ve `knowledge/v3/outcomes.md` altında receipt bağlantılarıyla görünür. `preferences --daily-layout flat` ile günlükler `daily/` altında tek listede gösterilebilir; ayrıntılar [günlük receipt düzeninde](PREFERENCES.md#günlük-receipt-düzeni). Eski günlük ve bilgi metinleri yeniden yazılmaz.
+- Yeni sonuçlar varsayılan olarak `daily/v3/` ve `knowledge/v3/outcomes.md` altında receipt bağlantılarıyla görünür. `preferences --daily-layout flat` ile günlükler `daily/` altında tek listede gösterilebilir; ayrıntılar [günlük receipt düzeninde](PREFERENCES.md#günlük-receipt-düzeni). Eski günlük ve bilgi metinleri yeniden yazılmaz. Receipt dosya adı kimlik olduğu için hash olarak kalır; Obsidian grafiğinde gizlemek için [Obsidian grafiği ve receipt dosyaları](PREFERENCES.md#obsidian-grafiği-ve-receipt-dosyaları).
 - Ortak skill kaynakları `.agents/skills` içindedir. Claude ve Kiro kendi proje kopyalarına erişir; kişisel skill çakışmaları gizlenmez.
 - Updater yalnız resmi stable release veya açıkça verilen yerel paketi kullanır. Yönetilen dosya yedekleri, kesinti journal'ı, checksum ve runtime ön kontrolleri uygulanır; başarılı sürüm kaydı en son yazılır.
 
