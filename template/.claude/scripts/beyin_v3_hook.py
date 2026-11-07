@@ -126,11 +126,20 @@ def _safe_replace(source, destination):
 def atomic(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
-    with temporary.open("w", encoding="utf-8") as out:
-        json.dump(data, out, ensure_ascii=False)
-        out.flush()
-        os.fsync(out.fileno())
-    _safe_replace(temporary, path)
+    try:
+        with temporary.open("w", encoding="utf-8") as out:
+            json.dump(data, out, ensure_ascii=False)
+            out.flush()
+            os.fsync(out.fileno())
+        _safe_replace(temporary, path)
+    except BaseException:
+        # A refused replace (a Windows sharing violation, a read-only target) or a failed
+        # write must not leave its copy in the state folder for good (#585).
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def permission_refused(exc):
@@ -492,7 +501,7 @@ def enqueue_event(vault, state, payload, harness):
     return key
 
 
-def drain_queue(vault, state):
+def drain_queue(vault, state, maintenance=False):
     state = Path(state)
     from beyin_v3_sync import SyncEngine
     pending = list((state / "hook-queue").glob("*.json"))
@@ -555,6 +564,14 @@ def drain_queue(vault, state):
             prune(engine.store)
         except Exception:
             pass
+        if maintenance:
+            # Bounded event retention and stale temp files (#585), never in a worker that a
+            # prompt or session-start hook waits for: the hook's own budget is not spent here.
+            try:
+                from beyin_v3_retention import maintain
+                maintain(engine.store)
+            except Exception:
+                pass
         return {"processed": processed, "failed": 0, "pending": len(list((state / "hook-queue").glob("*.json")))}
     return {"processed": 0, "failed": len(pending), "pending": len(pending)}
 
@@ -570,6 +587,7 @@ def main():
     parser.add_argument("--event")
     parser.add_argument("--worker", action="store_true")
     parser.add_argument("--drain-queue", action="store_true")
+    parser.add_argument("--maintenance", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--metadata-only", action="store_true", help="Queue lifecycle metadata without injecting vault context")
     args = parser.parse_args()
     vault = args.vault.resolve()
@@ -589,7 +607,7 @@ def main():
         if args.worker and not read(vault)['auto_sync']:
             print(json.dumps({'processed': 0, 'failed': 0, 'paused': True}))
             return
-        result = drain_queue(vault, state)
+        result = drain_queue(vault, state, maintenance=args.maintenance)
         print(json.dumps(result))
         if result["failed"]:
             raise SystemExit(1)
@@ -693,6 +711,8 @@ def main():
             sync_note = STATE_WRITE_REFUSED_NOTE
         command = [sys.executable, str(Path(__file__).resolve()), "--vault", str(vault),
                    "--state", str(state), "--harness", args.harness, "--worker"]
+        if event not in ("SessionStart", "UserPromptSubmit"):
+            command.append("--maintenance")  # no hook waits for this worker
         options = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
                    "stderr": subprocess.DEVNULL, "close_fds": True}
         if os.name == "nt":
