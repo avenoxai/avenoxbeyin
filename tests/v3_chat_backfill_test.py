@@ -403,12 +403,26 @@ class BackfillTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'not a link'):
             self.plan(projects_dir=link)
 
-    def test_summary_with_secret_or_email_is_rejected_before_any_write(self):
+    def test_summary_with_secret_email_or_phone_is_rejected_before_any_write(self):
         self.enable()
-        for text in ('Token ghp_' + 'a' * 36 + ' kullanıldı.', 'ada@example.com ile konuşuldu.'):
-            with self.assertRaisesRegex(ValueError, 'secret-like value or an e-mail'):
+        for text in ('Token ghp_' + 'a' * 36 + ' kullanıldı.', 'ada@example.com ile konuşuldu.',
+                     'Müşteri 0532 123 45 67 numarasından arandı.', 'Destek hattı +44 20 7946 0958 olarak not edildi.'):
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, 'secret-like value, an e-mail address or a phone'):
                 self.backfill.write(self.vault, self.state, self.s1, text)
         self.assertFalse((self.vault / 'knowledge').exists())
+        # Dates, amounts, versions and issue numbers are not phone numbers.
+        ok = 'Toplantı 2026-09-05 12:30, bütçe 4.500.000 TL, sürüm 3.12.0, #599 ve 1500 karakter sınırı.'
+        self.assertEqual(self.backfill.write(self.vault, self.state, self.s1, ok)['backfill'], 'written')
+
+    def test_digest_masks_phone_numbers(self):
+        calls = Transcript('e1e1e1e1-aaaa-4aaa-8aaa-0000000000e1', self.vault, '2026-09-13')
+        calls.user('Ada Hanım 0532 123 45 67, ofis (0212) 555 12 34, yurt dışı +1 (415) 555-0100. Fiyat 4.500 TL.')
+        session = h(calls.save(self.folder, self.base + 90).stem)
+        self.enable()
+        result = self.backfill.show(self.vault, self.state, session)
+        self.assertEqual(result['messages'][0]['text'],
+                         'Ada Hanım [telefon], ofis [telefon], yurt dışı [telefon]. Fiyat 4.500 TL.')
+        self.assertEqual(result['redacted'], 3)
 
     def test_running_session_is_left_to_receipts_and_live_traces(self):
         self.enable()
