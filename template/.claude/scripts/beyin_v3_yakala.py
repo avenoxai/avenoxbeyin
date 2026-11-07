@@ -1085,22 +1085,51 @@ def via_youtube(url, found, allow_audio=True, info=None):
     return None, None, 'YouTube icerigi alinamadi: npx (Node), yt-dlp ya da whisper bulunamadi veya video erisilemez.'
 
 
-def _fetch_html(url, complete=False):
-    """One bounded, guarded HTML request, shared by the check and the fallback."""
+CHECK_TIMEOUT = 15  # seconds per connect/read of the optional completeness check
+CHECK_BUDGET = 30  # seconds for its whole request: redirects and body reads stop after this
+
+
+def _fetch_html(url, complete=False, budget=None):
+    """One bounded, guarded HTML request, shared by the check and the fallback.
+
+    With `budget` (the optional completeness check) the request also has a total deadline, so a
+    server that drips bytes just under the per-read timeout cannot hold `isle`; the answer is then
+    None (unknown), never partial evidence.
+    """
     from urllib.request import HTTPRedirectHandler, Request
+
+    deadline = None if budget is None else time.monotonic() + budget
+
+    def late():
+        return deadline is not None and time.monotonic() > deadline
 
     class PublicRedirects(HTTPRedirectHandler):
         def redirect_request(self, request, fp, code, msg, headers, new_url):
             _safe_network_url(new_url)
+            if late():
+                raise TimeoutError('kaynak kontrolu suresi doldu')
             return super().redirect_request(request, fp, code, msg, headers, new_url)
 
     _safe_network_url(url)
     try:
         request = Request(url, headers={'User-Agent': 'Mozilla/5.0 (beyin-yakala)'})
-        with _public_opener(PublicRedirects()).open(request, timeout=30) as response:
+        timeout = 30 if budget is None else min(CHECK_TIMEOUT, budget)
+        with _public_opener(PublicRedirects()).open(request, timeout=timeout) as response:
             if 'html' not in response.headers.get('Content-Type', 'text/html'):
                 return None
-            raw = response.read(5_000_000 + int(complete))
+            if deadline is None:
+                raw = response.read(5_000_000 + int(complete))
+            else:
+                parts, size = [], 0
+                while size <= 5_000_000:
+                    if late():
+                        return None
+                    part = response.read1(65536)  # returns what arrived; read(n) would wait for all n bytes
+                    if not part:
+                        break
+                    parts.append(part)
+                    size += len(part)
+                raw = b''.join(parts)
             if len(raw) > 5_000_000:
                 return None  # never compare headings from a truncated response
             return raw.decode(response.headers.get_content_charset() or 'utf-8', 'replace')
@@ -1199,14 +1228,15 @@ def _heading_check(html, markdown):
                                    any(parent is articles[0][1] for parent in mains[0][2])):
         return {}  # disjoint main/article regions are competing candidates, not a nested article
     headings = set(articles[0][1] if articles else mains[0][1] if mains else [])
-    if not 6 <= len(headings) <= 512:
+    if not 6 <= len(headings) <= 512 or len(markdown) > 5_000_000:
         return {}
     # Preserve code before stripping markup: backtick text can itself contain <T> or [a](b).
-    markup = (r'(`+)(.*?)\1'
-              r'|!?\[([^\]\n]+)\]\([^\n)]*\)'
-              r'|!?\[([^\]\n]+)\]\[[^\]\n]*\]'
-              r'|<((?:[a-z][a-z0-9+.-]{1,31}:)[^<>\s]+|[^<>\s@]+@[^<>\s@]+)>'
-              r'|<[^>]*>')
+    # Every repetition is bounded or stops at the next opener, so page text cannot make this quadratic.
+    markup = (r'(`{1,16})(.{0,2000}?)\1'
+              r'|!?\[([^\[\]\n]{1,500})\]\([^\[\n)]{0,2000}\)'
+              r'|!?\[([^\[\]\n]{1,500})\]\[[^\[\]\n]{0,200}\]'
+              r'|<((?:[a-z][a-z0-9+.-]{1,31}:)[^<>\s]{1,2000}|[^<>\s@]{1,256}@[^<>\s@]{1,256})>'
+              r'|<[^<>]{0,1000}>')
     visible = re.sub(markup, lambda match: next((part for part in match.groups()[1:] if part is not None), ''),
                      markdown, flags=re.S | re.I)
     text = ' ' + normalized(visible) + ' '
@@ -1345,11 +1375,13 @@ def extract(vault, card, found, allow_audio=True, info=None):
         if text:
             check = {}
             try:
-                html = _fetch_html(url, complete=True)
+                # Defuddle's CLI fetches the URL itself and does not return the HTML, so the check
+                # needs its own guarded request. Bounded in time and size; any failure means unknown.
+                html = _fetch_html(url, complete=True, budget=CHECK_BUDGET)
                 if html is not None:
                     check = _heading_check(html, text)
-            except (OSError, ValueError):
-                pass  # a failed optional check must not discard an extracted page
+            except Exception:  # DNS refusal, parser edge cases: an optional check never discards a page
+                check = {}
             if info is not None:
                 info.update(check)
             return text, 'defuddle', check.get('uyari')

@@ -5,7 +5,8 @@ import os
 import shlex
 import subprocess
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from email.message import Message
 from pathlib import Path
 import sys
@@ -36,11 +37,17 @@ class Response(io.BytesIO):
         super().__init__(html.encode() if isinstance(html, str) else html)
         self.headers = Message()
         self.headers['Content-Type'] = content_type
-        self.read_sizes = []
+        self.read_sizes, self.delivered = [], 0
 
     def read(self, size=-1):
         self.read_sizes.append(size)
         return super().read(size)
+
+    def read1(self, size=-1):
+        self.read_sizes.append(size)
+        part = super().read1(size)
+        self.delivered += len(part)
+        return part
 
 
 class CompletenessTest(unittest.TestCase):
@@ -84,7 +91,7 @@ class CompletenessTest(unittest.TestCase):
         self.assertIn(text, raw)
         self.assertNotIn(HEADINGS[-1], raw)
         self.opener.open.assert_called_once()
-        self.assertEqual(response.read_sizes, [5_000_001])
+        self.assertEqual(set(response.read_sizes), {65536})  # bounded chunks, each checked against the deadline
 
     def test_heading_formatting_case_entities_duplicates_and_boilerplate_do_not_warn(self):
         card = y.find_card(self.vault, self.saved['id'])
@@ -152,7 +159,8 @@ class CompletenessTest(unittest.TestCase):
         entry, meta, _, response = self.run_capture(html, extracted(HEADINGS[:6]))
         self.assertEqual(meta['uyari'], before['uyari'])
         self.assertEqual(entry['not'], meta['uyari'])
-        self.assertEqual(response.read_sizes, [5_000_001])
+        self.assertEqual(set(response.read_sizes), {65536})
+        self.assertLessEqual(response.delivered, 5_000_000 + 65536)  # stops once the limit is passed
 
     def test_failed_defuddle_reuses_single_stdlib_fetch(self):
         entry, _, raw, _ = self.run_capture(source(), '')
@@ -219,6 +227,80 @@ class CompletenessTest(unittest.TestCase):
             text, method, warning = y.extract(self.vault, card, self.found)
         self.assertEqual((text, method, warning), (extracted(HEADINGS[:6]), 'defuddle', None))
         opener.assert_not_called()
+
+    def test_any_failure_inside_the_optional_check_keeps_the_extracted_page(self):
+        # html.parser raises AssertionError (3.11 before 3.11.14) or NotImplementedError on some
+        # malformed declarations; such pages must still be captured, just without new evidence.
+        for error in (AssertionError('unknown status keyword'), NotImplementedError('error()'), RecursionError()):
+            with self.subTest(error=type(error).__name__), patch.object(y, '_heading_check', side_effect=error):
+                entry, meta, raw, _ = self.run_capture(source(), extracted(HEADINGS[:6]))
+                self.assertEqual((entry['durum'], entry['yontem']), ('cikarildi', 'defuddle'))
+                self.assertNotIn('uyari', meta)
+                self.assertIn(extracted(HEADINGS[:6]), raw)
+
+    def test_markup_stripping_stays_linear_on_hostile_page_text(self):
+        # Unbounded patterns took ~14 s each on these 12k-character lines (quadratic backtracking).
+        size = 12_000
+        for md in ('[' * size, '`' * 2_000 + 'a' * size, '[a](' * (size // 4), '<' * size, '<a@' * (size // 3)):
+            with self.subTest(md=md[:8]):
+                started = time.monotonic()
+                self.assertEqual(y._heading_check(source(), extracted(HEADINGS[:6]) + '\n\n' + md)['uyari'][:20],
+                                 'Metin eksik olabilir')
+                self.assertLess(time.monotonic() - started, 2)
+        self.assertEqual(y._heading_check(source(), 'x' * 5_000_001), {})  # larger than any source it came from
+
+    def test_slow_source_cannot_hold_isle_past_the_check_budget(self):
+        import socket
+        import urllib.request
+        html = source().encode()
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.end_headers()
+                try:  # every byte arrives well within the per-read timeout, the whole page takes ~4 s
+                    for start in range(0, len(html), len(html) // 20 + 1):
+                        self.wfile.write(html[start:start + len(html) // 20 + 1])
+                        self.wfile.flush()
+                        time.sleep(0.2)
+                except OSError:
+                    pass
+
+            def log_message(self, *_):
+                pass
+
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        self.addCleanup(server.server_close)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        self.addCleanup(worker.join, 10)
+        self.addCleanup(server.shutdown)
+        dns, connect, opener = socket.getaddrinfo, socket.create_connection, urllib.request.build_opener
+
+        def answer(host, port, *args, **kwargs):
+            if host == 'example.com':
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('8.8.8.8', port))]
+            return dns(host, port, *args, **kwargs)
+
+        def local_transport(address, timeout=30, source_address=None):
+            self.assertEqual(address[0], '8.8.8.8')
+            return connect(('127.0.0.1', server.server_port), timeout, source_address)
+
+        card = {'meta': {'url': f'http://example.com:{server.server_port}/slow'}, 'body': ''}
+        with patch.object(socket, 'getaddrinfo', side_effect=answer), \
+                patch.object(socket, 'create_connection', side_effect=local_transport), \
+                patch.object(urllib.request, 'build_opener', side_effect=lambda *handlers:
+                             opener(urllib.request.ProxyHandler({}), *handlers)), \
+                patch.object(y, 'CHECK_BUDGET', 1), patch.object(y, 'CHECK_TIMEOUT', 1), \
+                patch.object(y, 'via_defuddle', return_value=extracted(HEADINGS[:6])):
+            started = time.monotonic()
+            info = {}
+            self.assertEqual(y.extract(self.vault, card, self.found, info=info),
+                             (extracted(HEADINGS[:6]), 'defuddle', None))
+            self.assertLess(time.monotonic() - started, 2.5)
+            self.assertNotIn('uyari', info)  # an unfinished read is unknown, not evidence either way
+            self.assertIn(HEADINGS[-1], y.via_stdlib(card['meta']['url']))  # the fallback keeps its own limits
 
     def test_info_is_optional_but_warning_is_still_returned(self):
         card = y.find_card(self.vault, self.saved['id'])

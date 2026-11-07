@@ -484,10 +484,13 @@ aramaya ve Obsidian'a karışmaz. `.ham/` ve yakalanan dosyaların durduğu `dos
 ### Web sayfasında eksik bölüm uyarısı
 
 Defuddle metin döndürdükten sonra `isle`, aynı kaynak URL'sine **bir ek kaynak alımı** yaparak
-ana içerikteki h2/h3 başlıklarını çıkarılan metinle karşılaştırır. Yönlendirmeler ek HTTP
+ana içerikteki h2/h3 başlıklarını çıkarılan metinle karşılaştırır. Defuddle komutu sayfayı kendisi
+indirir ve HTML'i geri vermez; bu yüzden kontrol kendi isteğini yapar. Yönlendirmeler ek HTTP
 istekleri gerektirebilir. Bu kontrol mevcut HTTP
-korumalarını kullanır: DNS ve yönlendirmelerde özel/yerel adresler reddedilir; bağlantı/okuma
-zaman aşımı 30 saniyedir, karşılaştırma için HTML en fazla 5 MB olabilir. Kaynak HTML tekrar
+korumalarını kullanır: DNS ve yönlendirmelerde özel/yerel adresler reddedilir. Bağlantı ve her
+okuma için zaman aşımı 15 saniyedir; yönlendirmeler dahil isteğin tamamı en fazla 30 saniye sürer,
+süre dolarsa kontrol yapılmamış sayılır. Karşılaştırma için HTML en fazla 5 MB olabilir. Kontrolde
+oluşan herhangi bir hata (ağ, ayrıştırma) metni düşürmez; kart yine `cikarildi` olur. Kaynak HTML tekrar
 deneme döngüsünde indirilmez ve `.ham/` dosyasına eklenmez. Defuddle başarısızsa düz HTTP
 yedeği yine tek kaynak alımı kullanır. Video, dosya, seçili metin ve Web Clipper yollarında bu ek
 kaynak alımı yoktur; Web Clipper metni ayrıca doğrulanmış sayılmaz.
