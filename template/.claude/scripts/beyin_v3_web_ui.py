@@ -98,7 +98,7 @@ APP_JS = r"""
   const TUR = { task: 'görev', note: 'not', receipt: 'receipt', inference: 'çıkarım', preference: 'tercih' };
   const DOKTOR = { ok: ['Sağlıklı', 'iyi'], never_seen: ['Hook henüz çalışmadı', 'uyari'], degraded: ['Dikkat gerekiyor', 'uyari'],
     failed: ['Hata', 'kotu'], invalid: ['Geçersiz', 'kotu'] };
-  const HAFIZA = { within_limit: 'Sınırda', limit_off: 'Sınır kapalı', planned: 'Taşınacak', needs_rewrite: 'Elle kısaltılmalı',
+  const HAFIZA = { within_limit: 'Sınır içinde', limit_off: 'Sınır kapalı', planned: 'Taşınacak', needs_rewrite: 'Elle kısaltılmalı',
     needs_attention: 'Dikkat', compacted: 'Taşındı', ok: 'Sağlıklı', dry_run: 'Önizleme', conflict: 'Başka bir işlem sürüyor' };
   if (!CSRF) { return; }
 
@@ -235,7 +235,7 @@ APP_JS = r"""
       gorevVerisi.durumlar.forEach(function (d) { yeniDurum.append(el('option', { value: d, text: DURUM[d] || d, selected: d === 'inbox' })); });
     }
     const not = [];
-    if (gorevVerisi.eski) { not.push(gorevVerisi.eski + ' görevin kaynağı dizinden yeni; Eşitle ile güncelle.'); }
+    if (gorevVerisi.eski) { not.push(gorevVerisi.eski + ' görev dosyası dizinden sonra değişti; Eşitle ile güncelle.'); }
     if (gorevVerisi.kisaltildi) { not.push('İlk ' + gorevVerisi.gorevler.length + ' görev gösteriliyor (toplam ' + gorevVerisi.toplam + ').'); }
     $('gorev-notu').textContent = not.join(' ');
     panoyuCiz();
