@@ -115,6 +115,12 @@ class KnowledgeLintTest(unittest.TestCase):
             with self.subTest(name=name):
                 with self.assertRaises(ValueError):
                     linter.generate_moc(self.vault, 'knowledge', name)
+        # Instruction, companion and rule file names are refused even where none exists yet.
+        for name in ('CLAUDE.md', 'agents.md', 'GEMINI.md', 'Kurallar.md', 'rules.md', 'Soul.md', 'setup-ek.md'):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, 'reserved'):
+                    linter.generate_moc(self.vault, 'projects/app' if name == 'Kurallar.md' else 'knowledge', name)
+        self.assertEqual(sorted(path.name for path in (self.vault / 'knowledge').iterdir()), [])
         (self.vault / '.claude').mkdir()
         with self.assertRaises(ValueError):
             linter.generate_moc(self.vault, '.claude')
@@ -144,6 +150,45 @@ class KnowledgeLintTest(unittest.TestCase):
         text = (self.vault / 'knowledge/MOC.md').read_text(encoding='utf-8')
         self.assertIn('güncel', text)
         self.assertNotIn('eski', text)
+
+    def test_official_template_archive_folder_is_skipped(self):
+        for source, text in (('📦 900-Archive/eski/x.md', '# Eski\n[[yok-olan]]\n'),
+                             ('2024_Arşivler/y.md', '# Eski2\n[[yok-olan]]\n'),
+                             ('knowledge/archive-araçları.md', '# Araç notu\n'),
+                             ('knowledge/a.md', '# A\n[[archive-araçları]]\n')):
+            path = self.vault / source
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding='utf-8')
+        result = linter.lint_vault(self.vault)
+        self.assertEqual((result['status'], result['scanned_files_count']), ('ok', 2))
+        linter.generate_moc(self.vault, '.', 'Harita.md')
+        text = (self.vault / 'Harita.md').read_text(encoding='utf-8')
+        self.assertIn('Araç notu', text)
+        self.assertNotIn('Eski', text)
+
+    def test_moc_headings_keep_turkish_letters(self):
+        for source in ('knowledge/iş-planı/a.md', 'knowledge/KİŞİSEL/b.md'):
+            path = self.vault / source
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('# Not\n', encoding='utf-8')
+        linter.generate_moc(self.vault, 'knowledge/iş-planı', 'Harita.md')
+        self.assertTrue((self.vault / 'knowledge/iş-planı/Harita.md').read_text(encoding='utf-8')
+                        .startswith('# Knowledge/iş planı '))
+        linter.generate_moc(self.vault)
+        headings = [line for line in (self.vault / 'knowledge/MOC.md').read_text(encoding='utf-8').splitlines()
+                    if line.startswith('### ')]
+        self.assertEqual(headings, ['### KİŞİSEL', '### İş planı'])
+
+    def test_lint_lists_are_bounded_but_counts_are_complete(self):
+        for index in range(linter.LINT_REPORT_LIMIT + 5):
+            (self.vault / f'n{index:03}.md').write_text(f'# {index}\n[[{"y" * 400}{index}]]\n', encoding='utf-8')
+        result = linter.lint_vault(self.vault)
+        self.assertEqual((result['orphan_count'], result['broken_links_count']),
+                         (linter.LINT_REPORT_LIMIT + 5, linter.LINT_REPORT_LIMIT + 5))
+        self.assertEqual(len(result['orphans']), linter.LINT_REPORT_LIMIT)
+        self.assertEqual(len(result['broken_links']), linter.LINT_REPORT_LIMIT)
+        self.assertEqual(result['truncated'], {'broken_links': 5, 'orphans': 5})
+        self.assertTrue(all(len(link['raw']) <= linter.MAX_RAW_LINK_CHARS for link in result['broken_links']))
 
     def test_wikilink_scan_stays_linear_on_adversarial_lines(self):
         import time

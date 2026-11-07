@@ -38,11 +38,16 @@ HEADING_PATTERN = re.compile(r"#{1,6}[ \t]+(.+)")
 FENCE_PATTERN = re.compile(r" {0,3}(`{3,}|~{3,})")
 INLINE_CODE_PATTERN = re.compile(r"`[^`\r\n]*`")
 
-ARCHIVE_DIR_NAMES = ("arsiv", "archive", "archives")
+ARCHIVE_DIR_NAMES = ("arsiv", "arsivler", "archive", "archives")
+# The official template numbers and decorates its folders: "📦 900-Archive" is the archive.
+_LEADING_NON_LETTERS = re.compile(r"^[\W\d_]+")
 
 # A MOC lists a note only when every reader of the MOC may also read that note.
 VISIBILITY_RANK = {"public": 0, "internal": 1, "private": 2}
 MAX_MOC_TITLE_CHARS = 120
+# Lint returns every count in full and at most this many entries per list.
+LINT_REPORT_LIMIT = 100
+MAX_RAW_LINK_CHARS = 200
 
 
 def _norm_key(text):
@@ -120,12 +125,16 @@ def extract_wikilinks(text):
     return results
 
 
+def _archive_folder(name):
+    from beyin_v3 import sensitive_fold
+    # sensitive_fold keeps Turkish case rules: "ARŞİV" and NFD "Arşiv" both fold to "arsiv".
+    return _LEADING_NON_LETTERS.sub("", sensitive_fold(name)) in ARCHIVE_DIR_NAMES
+
+
 def _withheld_path(relative):
     """A path inside a sensitive or archive folder never enters the lint or MOC index."""
-    from beyin_v3 import sensitive_fold, sensitive_source
-    # sensitive_fold keeps Turkish case rules: "ARŞİV" and NFD "Arşiv" both fold to "arsiv".
-    return sensitive_source(relative) or any(sensitive_fold(part) in ARCHIVE_DIR_NAMES
-                                             for part in Path(relative).parts[:-1])
+    from beyin_v3 import sensitive_source
+    return sensitive_source(relative) or any(_archive_folder(part) for part in Path(relative).parts[:-1])
 
 
 def _note_metadata(vault_root, path):
@@ -326,8 +335,8 @@ def lint_vault(vault_root, folder=None):
                     broken_links.append({
                         "source": rel_path,
                         "line": link["line"],
-                        "target": link["file_target"],
-                        "raw": link["raw"],
+                        "target": link["file_target"][:MAX_RAW_LINK_CHARS],
+                        "raw": link["raw"][:MAX_RAW_LINK_CHARS],
                         "type": "embed" if link["is_embed"] else "wikilink",
                     })
                 continue
@@ -347,8 +356,8 @@ def lint_vault(vault_root, folder=None):
                 broken_links.append({
                     "source": rel_path,
                     "line": link["line"],
-                    "target": link["file_target"],
-                    "raw": link["raw"],
+                    "target": link["file_target"][:MAX_RAW_LINK_CHARS],
+                    "raw": link["raw"][:MAX_RAW_LINK_CHARS],
                     "type": "wikilink",
                 })
 
@@ -366,17 +375,23 @@ def lint_vault(vault_root, folder=None):
         if len(incoming_links[f]) == 0 and f not in orphans:
             unlinked.append(f)
 
-    return {
+    lists = {"broken_links": broken_links, "orphans": sorted(orphans), "unlinked": sorted(unlinked)}
+    result = {
         "status": "ok" if not broken_links else "issues_found",
         "scanned_files_count": len(target_files),
         "total_links_count": all_extracted_count,
         "broken_links_count": len(broken_links),
         "orphan_count": len(orphans),
         "unlinked_count": len(unlinked),
-        "broken_links": broken_links,
-        "orphans": sorted(orphans),
-        "unlinked": sorted(unlinked),
     }
+    result.update({name: items[:LINT_REPORT_LIMIT] for name, items in lists.items()})
+    truncated = {name: len(items) - LINT_REPORT_LIMIT for name, items in lists.items()
+                 if len(items) > LINT_REPORT_LIMIT}
+    if truncated:
+        # The counts above stay complete; lint a narrower --folder to list every entry.
+        result["truncated"] = truncated
+        result["report_limit"] = LINT_REPORT_LIMIT
+    return result
 
 
 def extract_note_title(full_path):
@@ -468,11 +483,28 @@ def _plain_folder_parts(vault_root, folder_path):
 
 
 def _moc_name(moc_filename):
+    from beyin_v3_companion import NAMES as COMPANION_NAMES
     name = moc_filename if isinstance(moc_filename, str) else ""
     if (not name or name != name.strip() or "/" in name or "\\" in name or name.startswith(".")
             or not name.casefold().endswith(".md")):
         raise ValueError("MOC file must be a plain .md file name inside the target folder")
+    # Agents load these as instructions or project rules; a MOC must never become one.
+    reserved = EXCLUDED_FILE_NAMES | {item.casefold() for item in COMPANION_NAMES} | {"rules.md"}
+    if name.casefold() in reserved or name.casefold().startswith("setup-"):
+        raise ValueError(f"MOC file name {name} is reserved for instruction, companion or rule files")
     return name
+
+
+def _display_name(text):
+    """'iş-planı' -> 'İş planı': only the first letter is raised, with Turkish i rules.
+
+    str.title() turns 'KİŞİSEL' into 'Ki̇şi̇sel' and 'iş' into 'Iş'.
+    """
+    text = text.replace("-", " ")
+    if not text:
+        return text
+    first = {"i": "İ", "ı": "I"}.get(text[0], text[0].upper())
+    return (first if len(first) == 1 else text[0]) + text[1:]
 
 
 def _snapshot(path):
@@ -629,7 +661,7 @@ def _generate_moc(vault_root, target_folder="knowledge", moc_filename="MOC.md"):
             if category == ".":
                 category = "Genel"
             else:
-                category = category.replace("-", " ").title()
+                category = _display_name(category)
 
             notes_by_category[category].append({
                 "rel_path": rel_to_vault,
@@ -667,7 +699,7 @@ def _generate_moc(vault_root, target_folder="knowledge", moc_filename="MOC.md"):
             action_status = "updated"
     else:
         # Create fresh MOC file
-        folder_display = target_folder.replace("-", " ").title()
+        folder_display = _display_name(target_folder)
         new_text = f"""# {folder_display} — Map of Content (MOC)
 
 Bu not, `{target_folder}` altındaki notların navigasyon ve içerik haritasıdır.

@@ -107,10 +107,13 @@ veya symlink yapılandırma üzerine yazılmaz; önce dosyayı onar.
   kalır; aynı `workspace provision <id>` komutu kaydı kaldığı yerden tamamlar.
 - `lint [--folder <klasör>]` kırık wikilink, eksik başlık veya ek, yetim ve gelen bağlantısı
   olmayan notları raporlar. Kısmi yol (`[[klasör/not]]`) ve ekler Obsidian gibi ad ve yol
-  sonuyla çözülür; kod blokları ve satır içi kod sayılmaz. Hassas, arşiv, `visibility: private`
-  ve kurulum klasörlerindeki notlar taranmaz; böyle bir nota giden bağlantı da kırık görünür.
+  sonuyla çözülür; kod blokları ve satır içi kod sayılmaz. Hassas, arşiv (`📦 900-Archive`,
+  `Arşiv` gibi), `visibility: private` ve kurulum klasörlerindeki notlar taranmaz; böyle bir nota
+  giden bağlantı da kırık görünür. Sayılar her zaman tam döner; listeler en fazla 100 kayıt
+  taşır, kalanı `truncated` alanında sayılır (tamamı için daha dar bir `--folder` kullan).
 - `moc [--folder knowledge] [--file MOC.md]` yalnız hedef klasördeki düz bir `.md` dosyasına
-  yazar. Dosya yoksa oluşturur. Varsa yalnız tek bir `<!-- beyin-moc:start -->` ve
+  yazar. `CLAUDE.md`, `AGENTS.md`, `Kurallar.md` gibi talimat, companion veya kural dosyası
+  adları kabul edilmez. Dosya yoksa oluşturur. Varsa yalnız tek bir `<!-- beyin-moc:start -->` ve
   `<!-- beyin-moc:end -->` çifti taşıdığında ve yalnız bu iki işaretin arasını yeniden üretir;
   işaretsiz dosyaya dokunmaz. Dizinin görüneceği yere işaret çiftini elle ekle. MOC yalnız
   kendi okuyucularının da görebildiği notları listeler: notun proje kapsamı (`project` alanı
