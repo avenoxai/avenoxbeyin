@@ -60,13 +60,14 @@ Ajanına şunu söyle:
 
 > Beyin skill'ini kullan. Beni tanımak için kısa sorular sor; cevapları kaynak notlara kaydet. Sonra birlikte bir görev oluşturup tekrar okuyalım.
 
-Kurulu üç skill:
+Kurulu dört skill:
 
 | Skill | Ne zaman kullanılır? |
 | --- | --- |
 | **beyin** | Not bulmak, bilgi kaydetmek, görev değiştirmek, iş sonucu ve ders çıkarmak |
 | **beyin-doktor** | Bir not bulunamıyorsa, bağlantı veya kayıt sorunu varsa |
 | **beyin-guncelle** | Kurulu sistemi kontrol etmek, güncellemek veya geri almak |
+| **beyin-kontrol** | Hafızada yazılı durumun hala doğru olup olmadığını denetlemek; yalnız sen istediğinde çalışır, sen onay vermeden hiçbir şey yazmaz |
 
 Bunlar `.agents/skills` altında bulunur; Claude ve Kiro kendi proje skill kopyalarını kullanır. Eklemek istediğin kişisel skill'leri ayrıca içe alabilirsin. Aynı adlı farklı içerik sessizce ezilmez.
 

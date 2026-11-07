@@ -272,6 +272,29 @@ def _destination(vault, state, operation):
     return path
 
 
+SKILL_FILE = re.compile(r'(?:\.agents|\.claude|\.kiro)/skills/[^/]+/SKILL\.md')
+
+
+def _prune_emptied_skill_folders(vault, state, journal):
+    """Remove the skill folders this journal left empty by removing their SKILL.md.
+
+    Skill sync reads every folder under a skills root, and a folder without SKILL.md whose name
+    it recorded earlier is a conflict. A rollback past a release that added a skill (#589), or an
+    excluded starter skill, would otherwise leave doctor asking for attention. Only a folder that
+    holds nothing at all is removed; anything the user put there keeps it."""
+    for operation in journal['operations']:
+        if operation.get('scope') != 'vault' or operation.get('new') is not None:
+            continue
+        if not SKILL_FILE.fullmatch(operation['name']):
+            continue
+        folder = _destination(vault, state, operation).parent
+        try:
+            if folder.is_dir() and not folder.is_symlink() and not any(folder.iterdir()):
+                folder.rmdir()
+        except OSError:
+            pass
+
+
 def _runtime_health(state):
     path = state / 'memory.sqlite3'
     if not path.exists(): return
@@ -336,6 +359,7 @@ def _apply(vault, state, journal, migration=None):
         if path.exists() and operation.get('new_mtime') is not None:
             os.utime(path, (operation['new_mtime'], operation['new_mtime']))
         transaction_hook('after_replace', index)
+    _prune_emptied_skill_folders(vault, state, journal)
     if journal['direction'] == 'update':
         atomic(state / 'last-update.json', jbytes(journal))
     else:

@@ -442,6 +442,8 @@ Kullanıcı gereksinim duymadığı başlangıç skill'lerini, adaptörleri, ba�
 Hariç tutulabilen bileşenler:
 `agents_block`, `adapters`, `adapters/hermes`, `adapters/omp`, `adapters/opencode`, `harnesses/antigravity`, `launchers`, `skills`, `skills/beyin`, `skills/beyin-doktor`, `skills/beyin-guncelle`.
 
+`beyin-kontrol` skill'i yalnız kullanıcı açıkça istediğinde çalışır ve onay olmadan yazmaz; tek başına hariç tutma adı yoktur, `skills` dört başlangıç skill'ini birlikte kaldırır. Yeni bir ad eski sürümlerin `.beyin-exclusions.json` doğrulamasını bozacağı için rollback uyumluluğu adına eklenmedi.
+
 Hariç tutma tercihleri vault kökünde bağımsız `.beyin-exclusions.json` dosyasında saklanır (`.beyin-preferences.json` dosyasını değiştirmez; böylece eski sürümlere rollback 3.4.0 uyumlu kalır). Tercih kaydedildiğinde bir sonraki kurulum veya güncellemede uygulanır (`update` veya `install`). Değiştirilmemiş hariç tutulan dosyalar temizlenir, kullanıcının değiştirdiği dosyalar ise çakışma vermeden korunur. `doctor` çıktısı hem uygulanan hariç tutmaları hem de bekleyen değişiklikleri gösterir.
 
 ## Hermes platform tercihi (`hermes-platforms.json`)

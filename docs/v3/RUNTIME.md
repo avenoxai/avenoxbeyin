@@ -75,7 +75,7 @@ Supply a dedicated application runtime directory. Initialization sets that exact
 V3 writes exclusively to its explicit managed vault files:
 - Entry point and metadata: `beyin.py`, `.beyin-runtime.json`, `.beyin-version`.
 - Scripts: `.claude/scripts/beyin_v3*.py`.
-- Managed starter skills: `.agents/skills/{beyin,beyin-doktor,beyin-guncelle}/`, `.claude/skills/...`, and `.kiro/skills/...`.
+- Managed starter skills: `.agents/skills/{beyin,beyin-doktor,beyin-guncelle,beyin-kontrol}/`, `.claude/skills/...`, and `.kiro/skills/...`. A same-named skill the user already has is left as it is; a rollback removes the folders of a skill the update added.
 - Platform launchers: `Beyni Guncelle.cmd`, `Beyni Güncelle.sh`, `Beyni Guncelle.command`, `Beyni Güncelle.desktop`.
 - Adapter shims: `.claude/hermes-plugin/`, `.claude/scripts/beyin_v3_kiro.py`, `.opencode/plugins/`, `.omp/hooks/`.
 - Harness hook declarations: `.claude/settings.local.json`, `.codex/hooks.json`, `.codex/config.toml`, `.agents/hooks.json`, `.kiro/hooks/beyin-v3.json`.
