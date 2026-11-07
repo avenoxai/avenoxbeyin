@@ -1263,11 +1263,13 @@ def _completeness_check(html, markdown):
     if len(headings) > 512 or len(headings) < 6 and not blocks or len(markdown) > 5_000_000:
         return {}
     # Preserve code before stripping markup: backtick text can itself contain <T> or [a](b).
+    # A backslash escape is literal text: Defuddle writes a heading "The <details> element" as "\<details>".
     # Every repetition is bounded or stops at the next opener, so page text cannot make this quadratic.
     markup = (r'(`{1,16})(.{0,2000}?)\1'
               r'|!?\[([^\[\]\n]{1,500})\]\([^\[\n)]{0,2000}\)'
               r'|!?\[([^\[\]\n]{1,500})\]\[[^\[\]\n]{0,200}\]'
               r'|<((?:[a-z][a-z0-9+.-]{1,31}:)[^<>\s]{1,2000}|[^<>\s@]{1,256}@[^<>\s@]{1,256})>'
+              r'|\\([!-/:-@\[-`{-~])'
               r'|<[^<>]{0,1000}>')
     visible = re.sub(markup, lambda match: next((part for part in match.groups()[1:] if part is not None), ''),
                      markdown, flags=re.S | re.I)

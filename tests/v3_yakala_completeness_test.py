@@ -176,6 +176,15 @@ class CompletenessTest(unittest.TestCase):
         md = extracted(HEADINGS[:3] + [f'Literal `[option]({n})` syntax' for n in range(3)])
         self.assertEqual(y._completeness_check(source(titles), md), {'uyari': None})
 
+    def test_backslash_escaped_tags_in_headings_are_text_not_html(self):
+        # Defuddle (Turndown) escapes "<" in prose: a real MDN heading came out as
+        # "### Styling the \<details> element" and was counted as missing.
+        titles = HEADINGS[:3] + ['Styling the &lt;details&gt; element', 'Using &lt;canvas&gt; for charts',
+                                 'Wrapping text in &lt;pre&gt; blocks', 'Reading [literal] brackets safely']
+        md = extracted(HEADINGS[:3] + ['Styling the \\<details> element', 'Using \\<canvas\\> for charts',
+                                       'Wrapping text in \\<pre> blocks', 'Reading \\[literal\\] brackets safely'])
+        self.assertEqual(y._completeness_check(source(titles), md), {'uyari': None})  # was a false warning
+
     def test_autolink_text_is_not_mistaken_for_html_tags(self):
         links = ['https://example.com/one', 'https://example.com/two', 'person@example.com']
         titles = HEADINGS[:3] + ['Documentation for ' + link for link in links]
