@@ -5765,7 +5765,10 @@ def listen_windows(vault, script, spec=None, state=None):
 # ---------------------------------------------------------------- isolated Windows readers
 
 WIN_CAPTURE_SCHEMA = 3
-WIN_CAPTURE_VERSION = 'win-capture-2026.10.17-agent-1'
+# Wire-format version of the listener <-> popup pipe. The listener runs its state copy until
+# `yakala kur`, while each warm popup starts from the vault's current module, so a mismatch
+# makes the listener give up the hotkey. Change it only when the messages themselves change.
+WIN_CAPTURE_VERSION = 'win-capture-2026.10.13-r2'
 WIN_MESSAGE_LIMIT = 64 * 1024
 WIN_READ_LIMIT = 68 * 1024 * 1024
 WIN_TEXT_LIMIT = 4 * 1024 * 1024
