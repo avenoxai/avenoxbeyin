@@ -674,6 +674,15 @@ def person_sources(vault, target=None):
     return found
 
 
+def _is_file(path):
+    """is_file() that answers False instead of raising: Python 3.11-3.13 raise PermissionError
+    for a file in an unreadable directory, and a notice line must never cost the session its context."""
+    try:
+        return path.is_file()
+    except (OSError, ValueError):
+        return False
+
+
 def context(store, budget, session, harness, query='', receipt='', warning='', project=None, report=None,
             rules_project=None):
     """Budget actual displayed text, not repeated JSON metadata; never cut a record header.
@@ -700,7 +709,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
     records = snapshot['records']
     notice = ''
     missing = snapshot['missing_sources']
-    kept = {name for name in IDENTITY if (target / name).is_file()}
+    kept = {name for name in IDENTITY if _is_file(target / name)}
     if kept:
         # Core.md and Soul.md are alternatives: setup creates Core.md, a V2 vault keeps Soul.md.
         # Drop only the one the vault does not keep; a kept one that is excluded stays listed.
