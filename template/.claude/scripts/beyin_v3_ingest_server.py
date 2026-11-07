@@ -276,6 +276,17 @@ class IngestHandler(BaseHTTPRequestHandler):
         sys.stderr.write(f"[ingest-server] {self.address_string()} request completed\n")
 
 
+class IngestServer(ThreadingHTTPServer):
+    """Threading HTTP server with platform-safe address reuse.
+
+    On POSIX, allow_reuse_address allows fast restart without waiting for
+    TIME_WAIT sockets to clear. On Windows (nt/cygwin), SO_REUSEADDR permits
+    multiple listeners to bind the exact same port simultaneously, so address
+    reuse is disabled there (see socket.create_server() in Python stdlib).
+    """
+    allow_reuse_address = os.name not in ("nt", "cygwin")
+
+
 def create_server(vault: Path, host: str = "127.0.0.1", port: int = 8484, token: str | None = None) -> ThreadingHTTPServer:
     token = token or os.environ.get("BEYIN_INGEST_TOKEN")
 
@@ -286,7 +297,7 @@ def create_server(vault: Path, host: str = "127.0.0.1", port: int = 8484, token:
     BoundHandler.token = token
     if host not in ("127.0.0.1", "localhost", "::1") and not token:
         raise ValueError("Non-loopback ingest requires a Bearer token")
-    return ThreadingHTTPServer((host, port), BoundHandler)
+    return IngestServer((host, port), BoundHandler)
 
 
 def run_server(vault: Path, host: str = "127.0.0.1", port: int = 8484, token: str | None = None):
