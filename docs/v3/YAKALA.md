@@ -476,7 +476,7 @@ python3 beyin.py yakala kur --klasor "Notlar/Yakala"
 | X, Reddit, GitHub, makale | Defuddle; yoksa düz HTTP ile metin |
 | Mail | Seçili metin; tamamı için ajanın Gmail/Outlook bağlantısı |
 | PDF, metin dosyası | `pdftotext` ya da doğrudan okuma; görselleri ajan açar |
-| DOCX dosyası | Metin ve tablo hücreleri yerel olarak okunur; görsel, ek içerik veya metinsiz belge ajan incelemesine bırakılır |
+| DOCX dosyası | Metin ve tablo hücreleri yerel olarak okunur; görsel, ek içerik veya metinsiz belge ajan incelemesine bırakılır, eksik kalan kısım kartın `uyari` alanında yazar |
 
 Ham metin kart klasörünün içinde `.ham/` altında durur. Nokta ile başlayan klasör olduğu için
 aramaya ve Obsidian'a karışmaz. `.ham/` ve yakalanan dosyaların durduğu `dosyalar/`, içlerine yazılan
