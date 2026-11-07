@@ -1922,7 +1922,7 @@ def main(argv=None, return_result=False):
             result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])
         if (args.command in SOURCE_WRITE_COMMANDS
                 and (args.command != "note-edit" or result.get('status') == 'written')
-                and os.environ.get("CLAUDE_CODE_SESSION_ID")):
+                and (os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID"))):
             mark_session_edit(state)
         if return_result:
             return result, 0
