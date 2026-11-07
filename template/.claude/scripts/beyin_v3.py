@@ -1114,6 +1114,8 @@ class MemoryStore:
         that synchronization deleted (source removed or no longer valid) keeps its
         audit trail: the snapshot stored in its final delete event sets the
         boundary instead, because there is no current source left to verify.
+        Old snapshots expire under beyin_v3_retention.py; the newest event of a
+        current record is always kept (#585).
         """
         if audience not in ("public", "internal", "private"):
             raise ValueError("invalid audience")
