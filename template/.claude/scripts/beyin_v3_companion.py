@@ -1472,7 +1472,16 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
                                 minimum[i] += max(0, min(available - sum(minimum), goal - minimum[i]))
             if sum(minimum) <= available:
                 preferred = [max(floor, need) for floor, need in zip(lengths, minimum)]
-                lengths = preferred if sum(preferred) <= available else minimum
+                if sum(preferred) <= available:
+                    lengths = preferred
+                else:
+                    # The floors do not all fit beside the protected core. The room left
+                    # still goes to floored sources first (handoff, topics and the identity
+                    # that opens, #316/#591), in proportion to what each floor lacks, before
+                    # unfloored ones such as the journal share it evenly below.
+                    spare = available - sum(minimum)
+                    gaps = [want - floor for want, floor in zip(preferred, minimum)]
+                    lengths = [floor + gap * spare // sum(gaps) for floor, gap in zip(minimum, gaps)]
         spare = available - sum(lengths)
         while spare > 0 and any(lengths[i] < len(item[1]) for i, item in enumerate(parts)):
             for i, (_, body, _) in enumerate(parts):
