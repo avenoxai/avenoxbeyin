@@ -575,7 +575,8 @@ bir ağ adresine yönlendirdiğini söyleyen bir notla hata olur. HTTPS bağlant
 
 Ortamda (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`) ya da yt-dlp için işletim sisteminde bir proxy
 ayarlıysa (örneğin `127.0.0.1:7890` gibi yerel bir proxy istemcisi) koruma kapanmaz, o proxy'nin
-önünde durur: her hedef önce aynı kapıdan geçer, ancak sonra kullanıcının proxy'si bağlantıyı taşır.
+önünde durur: her hedef önce aynı kapıdan geçer, bağlantıyı ancak ondan sonra kullanıcının proxy'si
+taşır.
 Yerel veya özel adrese giden bir adım kullanıcının proxy'sine hiç sorulmaz. HTTP proxy'si, `socks5h`
 ve `socks4a` hedef adını alıp kendisi çözer (Python yolundaki gibi); `socks5` ve `socks4` denetlenen
 IP adresini alır. `NO_PROXY` listesindeki herkese açık bir ad doğrudan, denetlenen IP adresine
