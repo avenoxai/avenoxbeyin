@@ -5,9 +5,11 @@ write left the receipt reminder silent. Matching Bash itself would start a hook 
 every shell command, and the command text alone cannot prove a write. Stop instead reads the
 bounded tail of the session's own transcript and stops at the turn's prompt, so a command is
 attributed to the session that ran it. A command counts only when a vault Markdown file it
-names (a plain or quoted path, or a glob in the last path component) has a modification time
-after the command was issued. Nothing is counted from the command text alone: a variable
-path, a script that computes its paths, a rename or a deletion stays unseen, as before.
+names (a plain or quoted path, or a glob in the last path component) was last modified while
+that command ran: between its call and its result record. Nothing is counted from the command
+text alone, and a later write by someone else to a file the command only read falls outside
+that window. A variable path, a script that computes its paths, a background write, a rename
+or a deletion stays unseen, as before.
 
 Bounded: at most TAIL_BYTES of the transcript, MAX_COMMANDS commands, MAX_STATS file stats,
 MAX_LISTED directory entries per glob; no vault walk. Nothing from the transcript is kept or
@@ -27,12 +29,13 @@ MAX_COMMAND_CHARS = 64 * 1024
 MAX_TOKENS = 64
 MAX_STATS = 256
 MAX_LISTED = 512
-# A command's transcript stamp precedes its writes; file systems with whole or two-second
-# timestamps (HFS+, FAT) and coarse kernel clocks can still date a write slightly earlier.
+# A command's writes fall between its call record and its result record; file systems with
+# whole or two-second timestamps (HFS+, FAT) and coarse kernel clocks can date them slightly off.
 SLACK = 2.0
 SHELL_TOOLS = ('Bash', 'PowerShell')
 _USER = re.compile(rb'"type"\s*:\s*"user"')
 _SHELL = re.compile(rb'"name"\s*:\s*"(?:Bash|PowerShell)"')
+_RESULT_ID = re.compile(rb'"tool_use_id"\s*:\s*"([^"\\]{1,200})"')
 _QUOTED = re.compile(r'"((?:[^"\\\n]|\\.)*)"|\'([^\'\n]*)\'')
 _POSIX_TOKEN = re.compile(r'(?:\\.|[^\s\'"`;|&<>(),=\\])+')
 _POWERSHELL_TOKEN = re.compile(r'[^\s\'"`;|&<>(),=]+')
@@ -88,14 +91,16 @@ def _is_prompt(record):
 
 
 def turn_commands(lines):
-    """[(stamp, command, cwd, powershell)] of the current turn, oldest first.
+    """[(issued, finished, command, cwd, powershell)] of the current turn, oldest first.
 
     Read backward from the end to the turn's prompt; without a prompt in the tail every
     record in it belongs to the current turn. Only lines that can be a prompt or a shell
-    call are decoded.
+    call are decoded, then the tool_result lines that answer one of those calls. A call
+    without its result in the tail (still running, cut off) is left out.
     """
-    found = []
-    for line in reversed(lines):
+    calls, start = [], 0
+    for index in range(len(lines) - 1, -1, -1):
+        line = lines[index]
         user = _USER.search(line) is not None and b'"tool_result"' not in line
         shell = b'"tool_use"' in line and _SHELL.search(line) is not None
         if not user and not shell:
@@ -108,6 +113,7 @@ def turn_commands(lines):
             continue
         if record.get('type') == 'user':
             if _is_prompt(record):
+                start = index + 1
                 break
             continue
         if record.get('type') != 'assistant':
@@ -123,10 +129,35 @@ def turn_commands(lines):
                 continue
             data = block.get('input')
             command = data.get('command') if isinstance(data, dict) else None
-            if isinstance(command, str) and command.strip():
-                found.append((moment, command[:MAX_COMMAND_CHARS], cwd, block.get('name') == 'PowerShell'))
-        if len(found) >= MAX_COMMANDS:
+            if isinstance(command, str) and command.strip() and isinstance(block.get('id'), str) and block['id']:
+                calls.append((block['id'], moment, command[:MAX_COMMAND_CHARS], cwd, block.get('name') == 'PowerShell'))
+        if len(calls) >= MAX_COMMANDS:
             break
+    if not calls:
+        return []
+    pending, finished = {call[0] for call in calls}, {}
+    for line in lines[start:]:
+        if b'"tool_result"' not in line:
+            continue
+        ids = {match.group(1).decode('utf-8', 'replace') for match in _RESULT_ID.finditer(line)} & pending
+        if not ids:
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict) or record.get('type') != 'user':
+            continue
+        message = record.get('message')
+        content = message.get('content') if isinstance(message, dict) else None
+        moment = _stamp(record.get('timestamp'))
+        if moment is None or not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get('type') == 'tool_result' and block.get('tool_use_id') in ids:
+                finished.setdefault(block['tool_use_id'], moment)
+    found = [(moment, finished[tool], command, cwd, powershell)
+             for tool, moment, command, cwd, powershell in calls if tool in finished]
     found.reverse()
     return found
 
@@ -214,8 +245,8 @@ class _Probe:
         except (sqlite3.Error, OSError, ValueError):
             return True  # unknown ownership: a dated daily note is treated as a view
 
-    def changed(self, path, since):
-        """(relative, mtime) of a vault Markdown file modified at or after `since`, else None."""
+    def changed(self, path, since, until):
+        """(relative, mtime) of a vault Markdown file last modified within [since, until], else None."""
         if self.stats >= MAX_STATS:
             return None
         self.stats += 1
@@ -226,7 +257,7 @@ class _Probe:
             info = os.stat(path)
         except (OSError, ValueError):
             return None
-        if not stat.S_ISREG(info.st_mode) or info.st_mtime < since or self.generated(relative):
+        if not stat.S_ISREG(info.st_mode) or not since <= info.st_mtime <= until or self.generated(relative):
             return None
         return relative, info.st_mtime
 
@@ -277,7 +308,7 @@ def _paths(token, bases):
 
 def shell_edit(payload, vault, state=None):
     """{'at': stamp, 'knowledge': bool} for the first shell command of this turn that changed a
-    vault Markdown file it names, or None. `at` is the command's own transcript stamp."""
+    vault Markdown file it names, or None. `at` is the command's own call stamp."""
     try:
         lines = _tail(payload.get('transcript_path'))
         if not lines:
@@ -288,7 +319,7 @@ def shell_edit(payload, vault, state=None):
         probe = _Probe(vault, state)
         cwd = payload.get('cwd')
         first, knowledge = None, False
-        for moment, command, record_cwd, powershell in commands:
+        for moment, done, command, record_cwd, powershell in commands:
             bases = []
             for base in (record_cwd, cwd, str(probe.root)):
                 if isinstance(base, str) and base.strip() and Path(base).is_absolute() and Path(base) not in bases:
@@ -309,7 +340,7 @@ def shell_edit(payload, vault, state=None):
                         if concrete in seen:
                             continue
                         seen.add(concrete)
-                        hit = probe.changed(concrete, moment - SLACK)
+                        hit = probe.changed(concrete, moment - SLACK, done + SLACK)
                         if hit is not None:
                             hits.append(hit[0])
             if hits:

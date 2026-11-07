@@ -167,6 +167,15 @@ class ShellEditReminderTest(unittest.TestCase):
         self.shell('codex', 'echo x >> notes/a.md', lambda: self.write('notes/a.md', 'codex\n', append=True))
         self.assertEqual(self.stop('codex', harness='codex'), {})
 
+    def test_a_later_write_to_a_note_the_command_only_read_is_not_this_sessions_edit(self):
+        self.prompt('late', 'notu oku', at=time.time() - 12)
+        self.shell('late', 'cat notes/a.md "notes/Günlük Not.md"', at=time.time() - 10)
+        # Another session or the editor writes the same notes long after the read finished.
+        self.write('notes/a.md', 'başka oturum\n', append=True)
+        self.write('notes/Günlük Not.md', 'editör\n', append=True)
+        self.assertEqual(self.stop('late'), {})
+        self.assertFalse(self.marker('late').exists())
+
     def test_receipt_views_rewritten_by_the_sync_are_not_this_sessions_edit(self):
         self.prompt('views', 'özetlere bak')
         self.shell('views', 'cat daily/v3/2026-11-07.md knowledge/v3/outcomes.md', lambda: (
@@ -294,21 +303,30 @@ class ShellEditUnitTest(unittest.TestCase):
         self.assertEqual(tokens('Set-Content -Path notes\\a.md -Value "x"', powershell=True), ['notes\\a.md'])
         self.assertEqual(tokens('a.mdx README.MD'), ['README.MD'])
 
-    def test_turn_commands_reads_back_to_the_prompt(self):
+    def test_turn_commands_reads_back_to_the_prompt_and_pairs_results(self):
         def line(entry):
             return json.dumps(entry, separators=(',', ':')).encode()
-        call = {'type': 'assistant', 'timestamp': '2026-11-07T10:00:05.000Z', 'cwd': '/v', 'message': {
-            'content': [{'type': 'tool_use', 'name': 'Bash', 'input': {'command': 'echo new >> a.md'}}]}}
+
+        def call(tool_id, command, name='Bash', at='2026-11-07T10:00:05.000Z'):
+            return {'type': 'assistant', 'timestamp': at, 'cwd': '/v', 'message': {
+                'content': [{'type': 'tool_use', 'id': tool_id, 'name': name, 'input': {'command': command}}]}}
+
+        def result(tool_id, at='2026-11-07T10:00:07.000Z'):
+            return {'type': 'user', 'timestamp': at, 'message': {'content': [
+                {'tool_use_id': tool_id, 'type': 'tool_result', 'content': 'ok'}]}}
+
         lines = [line({'type': 'user', 'message': {'content': 'eski'}}),
-                 line(dict(call, message={'content': [{'type': 'tool_use', 'name': 'Bash', 'input': {'command': 'old'}}]})),
+                 line(call('t0', 'old')), line(result('t0')),
                  line({'type': 'user', 'message': {'content': [{'type': 'text', 'text': 'yeni tur'}]}}),
-                 line(call), line({'type': 'user', 'message': {'content': [{'type': 'tool_result', 'content': 'ok'}]}}),
-                 line(dict(call, timestamp='2026-11-07T10:00:05')),  # no zone: skipped
-                 line(dict(call, message={'content': [{'type': 'tool_use', 'name': 'Read', 'input': {'command': 'x'}}]})),
+                 line(call('t1', 'echo new >> a.md')), line({'type': 'progress', 'data': 'x'}), line(result('t1')),
+                 line(call('t2', 'naive', at='2026-11-07T10:00:05')), line(result('t2')),  # no zone: skipped
+                 line(call('t3', 'x', name='Read')), line(result('t3')),
+                 line(call('t4', 'still running')),  # no result yet: skipped
                  b'{broken', b'']
         found = self.module.turn_commands(lines)
-        self.assertEqual([(command, cwd) for _, command, cwd, _ in found], [('echo new >> a.md', '/v')])
-        self.assertEqual(found[0][0], datetime(2026, 11, 7, 10, 0, 5, tzinfo=timezone.utc).timestamp())
+        self.assertEqual([(command, cwd) for _, _, command, cwd, _ in found], [('echo new >> a.md', '/v')])
+        self.assertEqual(found[0][:2], (datetime(2026, 11, 7, 10, 0, 5, tzinfo=timezone.utc).timestamp(),
+                                        datetime(2026, 11, 7, 10, 0, 7, tzinfo=timezone.utc).timestamp()))
 
     def test_dated_daily_note_counts_unless_the_index_owns_it_as_a_receipt_view(self):
         import sqlite3
@@ -327,7 +345,9 @@ class ShellEditUnitTest(unittest.TestCase):
             for day, expected in (('2026-11-07', None), ('2026-11-06', 'hit')):
                 with self.subTest(day):
                     log.write_text(json.dumps({'type': 'assistant', 'timestamp': stamp(time.time() - 1), 'message': {
-                        'content': [{'type': 'tool_use', 'name': 'Bash', 'input': {'command': 'cat daily/' + day + '.md'}}]}}) + '\n',
+                        'content': [{'type': 'tool_use', 'id': 'd', 'name': 'Bash', 'input': {'command': 'cat daily/' + day + '.md'}}]}})
+                                   + '\n' + json.dumps({'type': 'user', 'timestamp': stamp(time.time()), 'message': {
+                                       'content': [{'type': 'tool_result', 'tool_use_id': 'd', 'content': ''}]}}) + '\n',
                                    encoding='utf-8')
                     found = self.module.shell_edit({'transcript_path': str(log), 'cwd': str(vault)}, vault, state)
                     self.assertEqual(found and 'hit', expected)
@@ -347,12 +367,14 @@ class ShellEditUnitTest(unittest.TestCase):
             entries = [{'type': 'user', 'message': {'content': 'tur'}}]
             entries += [{'type': 'user', 'message': {'content': [{'type': 'tool_result', 'content': 'y' * 2000}]}}] * 4
             entries += [{'type': 'assistant', 'timestamp': at, 'message': {'content': [
-                {'type': 'tool_use', 'name': 'Bash', 'input': {'command': 'echo x >> notes/a.md'}}]}}]
+                {'type': 'tool_use', 'id': 'w', 'name': 'Bash', 'input': {'command': 'echo x >> notes/a.md'}}]}},
+                        {'type': 'user', 'timestamp': stamp(time.time()), 'message': {'content': [
+                            {'type': 'tool_result', 'tool_use_id': 'w', 'content': ''}]}}]
             log.write_text(''.join(json.dumps(entry) + '\n' for entry in entries), encoding='utf-8')
             payload = {'transcript_path': str(log), 'cwd': str(vault)}
             with patch.object(self.module, 'TAIL_BYTES', 4096):
                 self.assertIsNotNone(self.module.shell_edit(payload, vault, root / 'state'))
-            log.write_text(''.join(json.dumps(entry) + '\n' for entry in entries[:1] + entries[-1:] + entries[1:-1]),
+            log.write_text(''.join(json.dumps(entry) + '\n' for entry in entries[:1] + entries[-2:] + entries[1:-2]),
                            encoding='utf-8')
             with patch.object(self.module, 'TAIL_BYTES', 4096):
                 self.assertIsNone(self.module.shell_edit(payload, vault, root / 'state'))
