@@ -253,6 +253,8 @@ def shell_command(argv):
 
 
 def global_hook_path(harness, home=None):
+    if harness == 'opencode':
+        return global_opencode_plugin_path(home=home)
     if home is not None:
         base = Path(home).resolve()
         if harness == 'antigravity':
@@ -278,6 +280,19 @@ def global_hook_path(harness, home=None):
 def global_gemini_md_path(home=None):
     base = Path(home).resolve() if home is not None else Path.home().resolve()
     return base / '.gemini/config/GEMINI.md'
+
+
+def global_opencode_plugin_path(home=None):
+    if home is not None:
+        config = Path(home).resolve() / '.config'
+    else:
+        config = Path(os.environ.get('XDG_CONFIG_HOME') or (Path.home() / '.config')).resolve()
+    return config / 'opencode/plugins/beyin-v3-bridge.js'
+
+
+def global_opencode_settings_path(home=None):
+    """The bridge command and roots, beside (not inside) the folder OpenCode imports plugins from."""
+    return global_opencode_plugin_path(home=home).parent.parent / 'beyin-v3-bridge.json'
 
 
 def _gemini_md_path(path):
@@ -405,6 +420,235 @@ def remove_gemini_md(home=None):
     return 1
 
 
+OPENCODE_MARKER = '// beyin-v3-bridge: installer-owned, removed by --uninstall'
+OPENCODE_MANAGED = 'beyin-v3-bridge'
+
+OPENCODE_PLUGIN = r'''// beyin-v3-bridge: installer-owned, removed by --uninstall.
+// OpenCode loads this global plugin in every directory; the bridge itself stays
+// silent inside a vault and outside the project roots it was installed for.
+import { execFile } from "node:child_process"
+import { readFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
+
+// A running OpenCode service can keep serving the module it imported after this file is
+// rewritten (seen on 2.2.6), so the interpreter, bridge command and project roots live in
+// a managed file read on every event: other roots or an uninstall apply to the next event.
+const SETTINGS = fileURLToPath(new URL("../beyin-v3-bridge.json", import.meta.url))
+const TIMEOUT = process.platform === "win32" ? 20000 : 6000
+
+function settings() {
+  try {
+    const data = JSON.parse(readFileSync(SETTINGS, "utf8"))
+    const valid = data?.managed_by === "beyin-v3-bridge" && typeof data.python === "string" && data.python &&
+      Array.isArray(data.command) && data.command.length && data.command.every((value) => typeof value === "string")
+    return valid ? data : null
+  } catch {
+    return null
+  }
+}
+
+function runBridge(payload) {
+  // Fail open: missing settings or interpreter, timeout or invalid output means no context.
+  const bridge = settings()
+  if (!bridge) return Promise.resolve("")
+  return new Promise((resolve) => {
+    try {
+      const child = execFile(bridge.python, bridge.command, { timeout: TIMEOUT, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
+        env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONDONTWRITEBYTECODE: "1" } },
+        (error, stdout) => {
+          try {
+            const text = error ? "" : JSON.parse(String(stdout || "{}"))?.hookSpecificOutput?.additionalContext
+            resolve(typeof text === "string" ? text : "")
+          } catch {
+            resolve("")
+          }
+        })
+      child.on("error", () => resolve(""))
+      child.stdin.on("error", () => {})
+      child.stdin.end(JSON.stringify(payload))
+    } catch {
+      resolve("")
+    }
+  })
+}
+
+// The session's own folder: 2.x keeps it under location (checked on 2.0.18 and 2.2.6),
+// 1.x on the session itself.
+function directoryOf(value) {
+  const directory = value?.location?.directory ?? value?.directory
+  return typeof directory === "string" && directory ? directory : undefined
+}
+
+// Only the four lifecycle boundaries the bridge forwards; the project comes from the
+// session directory, never from the directory the OpenCode service was started in.
+function lifecycle(infoOf) {
+  const sessions = new Map()
+  const send = (event, id) => {
+    const info = sessions.get(id)
+    // Without a session folder the bridge would see the service's own directory: send nothing.
+    return info?.cwd ? runBridge({ hook_event_name: event, session_id: id, cwd: info.cwd }) : Promise.resolve("")
+  }
+  const tracked = (id) => {
+    const info = typeof id === "string" && id ? sessions.get(id) : undefined
+    return info && !info.child ? info : undefined
+  }
+  async function open(id) {
+    if (!sessions.has(id)) {
+      let info = {}
+      try {
+        info = (await infoOf(id)) || {}
+      } catch {}
+      // Sub-agent sessions never submit receipts; tracking them would report false gaps.
+      sessions.set(id, { child: Boolean(info.child), cwd: info.cwd, start: null, ended: false })
+    }
+    return sessions.get(id)
+  }
+  return {
+    sessions,
+    tracked,
+    async message(id) {
+      if (typeof id !== "string" || !id) return
+      const info = await open(id)
+      if (info.child || info.start !== null) return
+      info.start = await send("SessionStart", id)
+    },
+    // SessionStart context stays for the whole session.
+    context(id) {
+      const info = tracked(id)
+      return info && info.start ? [info.start] : []
+    },
+    async compact(id) {
+      if (tracked(id)) await send("PreCompact", id)
+    },
+    async stop(id) {
+      if (tracked(id)) await send("Stop", id)
+    },
+    async end(id) {
+      const info = tracked(id)
+      if (info && !info.ended) {
+        info.ended = true
+        await send("SessionEnd", id)
+      }
+      sessions.delete(id)
+    },
+  }
+}
+
+// OpenCode 1.x: a factory returning named hooks.
+export const BeyinV3 = async ({ client, directory } = {}) => {
+  const core = lifecycle(async (id) => {
+    let session
+    try {
+      session = (await client?.session?.get?.({ path: { id } }))?.data
+    } catch {}
+    return { child: session?.parentID, cwd: directoryOf(session) ?? directoryOf({ directory }) }
+  })
+  return {
+    "chat.message": async (input) => {
+      await core.message(input?.sessionID)
+    },
+    "experimental.chat.system.transform": async (input, output) => {
+      if (Array.isArray(output?.system)) output.system.push(...core.context(input?.sessionID))
+    },
+    "experimental.session.compacting": async (input) => {
+      await core.compact(input?.sessionID)
+    },
+    event: async ({ event } = {}) => {
+      if (event?.type === "session.idle") await core.stop(event.properties?.sessionID)
+      else if (event?.type === "session.deleted") await core.end(event.properties?.info?.id)
+    },
+  }
+}
+
+// OpenCode 2.x ends a turn with an execution event and no longer emits session.idle;
+// idle stays accepted so a release that brings it back cannot double Stop.
+const TURN_END = new Set(["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted", "session.idle"])
+
+// OpenCode 2.x: setup(ctx) registers hooks on the context and returns a cleanup.
+async function setup(ctx) {
+  const core = lifecycle(async (id) => {
+    let session
+    try {
+      session = await ctx?.session?.get?.({ sessionID: id })
+    } catch {}
+    return { child: session?.parentID, cwd: directoryOf(session) ?? directoryOf(ctx) }
+  })
+  const hook = async (register) => {
+    try {
+      await register()
+    } catch {}
+  }
+
+  await hook(() => ctx.session.hook("prompt", async (event) => {
+    await core.message(event?.sessionID)
+    const info = core.tracked(event?.sessionID)
+    if (info) info.awaitingStop = true
+  }))
+  await hook(() => ctx.session.hook("context", async (event) => {
+    if (Array.isArray(event?.system))
+      for (const text of core.context(event?.sessionID)) event.system.push({ type: "text", text })
+  }))
+  await hook(() => ctx.session.hook("compaction", async (event) => {
+    await core.compact(event?.sessionID)
+  }))
+
+  const controller = new AbortController()
+  ;(async () => {
+    try {
+      for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+        const id = event?.data?.sessionID
+        const info = core.tracked(id)
+        if (TURN_END.has(event?.type) && info?.awaitingStop) {
+          info.awaitingStop = false
+          await core.stop(id)
+        } else if (event?.type === "session.deleted") await core.end(id)
+      }
+    } catch {}
+  })()
+
+  // The background service outlives any client, so SessionEnd also comes from cleanup.
+  return async () => {
+    controller.abort()
+    await Promise.all([...core.sessions.keys()].map((id) => core.end(id)))
+  }
+}
+
+// 2.x reads { id, setup }; 1.x (1.3.4+) reads { id, server } and ignores setup.
+export default { id: "beyin-v3-bridge", server: BeyinV3, setup }
+'''
+
+
+def opencode_plugin_content():
+    """The same module for every install; what changes per install is in the settings file."""
+    return OPENCODE_PLUGIN
+
+
+def opencode_settings_content(vault, state, roots, events, context_chars):
+    command = [str(Path(__file__).resolve()), '--vault', str(vault),
+               '--state', str(state), '--harness', 'opencode', '--context-chars', str(context_chars)]
+    for root in roots:
+        command.extend(['--project-root', str(root)])
+    for event in events:
+        command.extend(['--event', event])
+    return json.dumps({'managed_by': OPENCODE_MANAGED, 'schema': 1, 'python': sys.executable, 'command': command},
+                      indent=2, ensure_ascii=False) + '\n'
+
+
+def _managed_opencode_file(path):
+    """Only files this bridge wrote are replaced or removed; anything else at the path is preserved."""
+    try:
+        text = path.read_text(encoding='utf-8')
+    except (OSError, ValueError):
+        return False
+    if path.suffix == '.js':
+        return OPENCODE_MARKER in text
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return False
+    return isinstance(data, dict) and data.get('managed_by') == OPENCODE_MANAGED
+
+
 def install_bridge(vault, state, harness, roots, events=None, context_chars=1500, home=None):
     vault = Path(vault).expanduser().resolve()
     if not vault.is_dir() or not 0 <= context_chars <= 4000:
@@ -416,6 +660,29 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
     if not roots or any(not p.is_dir() for p in roots):
         raise ValueError('Project roots must exist')
     events = list(dict.fromkeys(events or EVENTS))
+    if harness == 'opencode':
+        target = global_opencode_plugin_path(home=home)
+        settings_path = global_opencode_settings_path(home=home)
+        files = [(settings_path, opencode_settings_content(vault, state, roots, events, context_chars)),
+                 (target, opencode_plugin_content())]
+        # Check both paths before writing either: a user file at one of them is never replaced.
+        for path, _ in files:
+            if (path.exists() or path.is_symlink()) and not (path.is_file() and _managed_opencode_file(path)):
+                raise ValueError(f'{path.name} exists and is not managed; preserved')
+        from beyin_v3_sync import atomic
+        # Settings first: a plugin a running service already imported reads them on the next event.
+        for path, text in files:
+            if not path.is_file() or path.read_bytes() != text.encode('utf-8'):
+                _backup_file(path)
+                atomic(path, text)
+        return {
+            'status': 'installed',
+            'harness': harness,
+            'hook_file': str(target),
+            'gemini_md': None,
+            'events': events,
+            'project_roots': [str(r) for r in roots],
+        }
     if harness == 'antigravity':
         events = [event for event in events if event in ANTIGRAVITY.values()]
         if not events:
@@ -483,10 +750,22 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
 
 
 def uninstall_bridge(harness, home=None):
-    if harness not in ('claude', 'codex', 'antigravity'):
+    if harness not in ('claude', 'codex', 'antigravity', 'opencode'):
         raise ValueError(f'Unsupported harness: {harness}')
     target = global_hook_path(harness, home=home)
     removed_count = 0
+    if harness == 'opencode':
+        # Settings first: a plugin module a running service keeps in memory then has nothing to run.
+        for path in (global_opencode_settings_path(home=home), target):
+            if path.is_file() and not path.is_symlink() and _managed_opencode_file(path):
+                path.unlink()
+                removed_count += 1
+        return {
+            'status': 'uninstalled',
+            'harness': harness,
+            'hook_file': str(target),
+            'removed_count': removed_count,
+        }
     if target.is_file():
         data = _read_global_settings(target)
         if isinstance(data, dict):
@@ -559,7 +838,7 @@ def _main(argv=None):
                            description=__doc__)
     parser.add_argument('--vault', type=Path, help='Path to vault root')
     parser.add_argument('--state', type=Path, help='Defaults to the installed vault runtime locator')
-    parser.add_argument('--harness', choices=('claude', 'codex', 'antigravity', 'pi'), required=True)
+    parser.add_argument('--harness', choices=('claude', 'codex', 'antigravity', 'pi', 'opencode'), required=True)
     parser.add_argument('--native-event', choices=tuple(ANTIGRAVITY), help='Antigravity hook event; set by --print-config')
     parser.add_argument('--project-root', type=Path, action='append', help='Project root directory')
     parser.add_argument('--context-chars', type=int, default=1500, help='Startup instructions only; 0 disables injection')
@@ -624,6 +903,13 @@ def _main(argv=None):
             return 0
 
         if args.print_config:
+            if args.harness == 'opencode':
+                print(json.dumps({'plugin': str(global_opencode_plugin_path()), 'content': opencode_plugin_content(),
+                                  'settings': str(global_opencode_settings_path()),
+                                  'settings_content': opencode_settings_content(vault, state, roots, events,
+                                                                                args.context_chars)},
+                                 indent=2, ensure_ascii=False))
+                return 0
             command = [sys.executable, str(Path(__file__).resolve()), '--vault', str(vault),
                        '--state', str(state), '--harness', args.harness, '--context-chars', str(args.context_chars)]
             for root in roots:
@@ -660,6 +946,10 @@ def _main(argv=None):
             payload.update(hook_event_name=ANTIGRAVITY[args.native_event], session_id=payload.get('conversationId'))
         event = payload.get('hook_event_name')
         if event not in handled_events(args.harness, events) or payload.get('no_memory') is True or os.environ.get('BEYIN_V3_INTERNAL') or os.environ.get('BEYIN_V3_SKIP') == '1':
+            print(quiet); return 0
+        # The OpenCode service runs in its own directory (home on 2.x) for every session: only the
+        # session folder the plugin sends may select a project root, never the process directory.
+        if args.harness == 'opencode' and not isinstance(payload.get('cwd'), str):
             print(quiet); return 0
         cwd = working_directory(payload, args.harness)
         if not isinstance(payload.get('session_id'), str) or payload['session_id'] in ('', 'unknown'):

@@ -1252,7 +1252,7 @@ def parser(note_namespace=None, is_json=False):
     ingest_server.add_argument("--port", type=int, default=8484, help="Port to listen on (default 8484)")
     ingest_server.add_argument("--token", help="Optional Bearer token for authentication")
     bridge = sub.add_parser("bridge", help="Manage global lifecycle bridge configuration")
-    bridge.add_argument("--harness", choices=("claude", "codex", "antigravity"), required=True)
+    bridge.add_argument("--harness", choices=("claude", "codex", "antigravity", "opencode"), required=True)
     bridge.add_argument("--project-root", type=Path, action="append", help="Project root to bridge (repeatable)")
     bridge.add_argument("--install", action="store_true", help="Install global bridge hooks")
     bridge.add_argument("--uninstall", action="store_true", help="Uninstall global bridge hooks")
