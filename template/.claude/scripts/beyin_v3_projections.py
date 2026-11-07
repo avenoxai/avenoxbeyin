@@ -444,7 +444,7 @@ def _latest_receipts(db):
     return latest
 
 
-EDIT_OBSERVING_HARNESSES = frozenset({'claude', 'codex', 'kiro', 'opencode', 'omp'})
+EDIT_OBSERVING_HARNESSES = frozenset({'claude', 'codex', 'kiro', 'opencode', 'omp', 'pi'})
 
 
 def _coverage_threshold(at, turn_at, edit_at):

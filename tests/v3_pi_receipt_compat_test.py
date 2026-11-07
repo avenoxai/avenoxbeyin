@@ -127,7 +127,7 @@ class PiReceiptCompatTest(unittest.TestCase):
         (queue / f'{int(at * 1000)}-{os.urandom(4).hex()}.json').write_text(
             json.dumps({'harness': harness, 'event': event, 'session': session, 'at': at}), encoding='utf-8')
 
-    def test_pi_receipt_closes_pi_checkpoint(self):
+    def test_pi_receipt_closes_pi_checkpoint_and_pi_observes_edits(self):
         now = time.time()
         for session, events in (('pi-edit', ('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop')),
                                 ('pi-read', ('SessionStart', 'UserPromptSubmit', 'Stop'))):
@@ -138,6 +138,10 @@ class PiReceiptCompatTest(unittest.TestCase):
         with self.engine.store._connect() as db:
             coverage = receipt_coverage(db, now=time.time(), state=self.state)
         self.assertEqual((coverage['total'], coverage['covered'], coverage['missing']), (2, 1, 1))
+        # Pi reports edit/write tool results as PostToolUse, so a prompt-only Pi session is
+        # classified like a Claude/Codex session without an observed edit.
+        self.assertEqual(coverage['no_observed_edit'], 1)
+        self.assertEqual(coverage['missing_no_observed_edit'], 1)
 
 
 if __name__ == '__main__':
