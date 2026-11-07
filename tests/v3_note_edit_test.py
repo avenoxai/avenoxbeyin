@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -15,7 +16,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
 from beyin_v3_sync import SyncEngine
-from beyin_v3_notes import LOCAL_DIRECTORY, NoteConflict, locked
+from beyin_v3_notes import LOCAL_DIRECTORY, NoteConflict, Utf8InputError, locked
+from v3_package_helpers import inherited_env
 
 SPEC = importlib.util.spec_from_file_location('note_cli', ROOT / 'scripts/beyin_v3.py')
 cli = importlib.util.module_from_spec(SPEC)
@@ -501,31 +503,142 @@ with locked(engine):
 
 
 
+    def run_raw(self, *args, data=None):
+        return subprocess.run(self.command(*args), input=data, capture_output=True,
+                              timeout=30, env=inherited_env())
+
     def test_invalid_utf8_is_rejected_without_changing_source(self):
-        for raw in (b'\xed\xa0\xbd\xed\xb8\x8a\n', b'\xed\xa0\x80\n', b'\xff\n'):
+        cases = ((b'\xed\xa0\xbd\xed\xb8\x8a\n',
+                  r'CESU-8 encoded U\+1F60A \(surrogate pair U\+D83D U\+DE0A\) at byte 0'),
+                 (b'ok \xed\xa0\x80\n', r'encoded lone surrogate U\+D800 at byte 3'),
+                 (b'\xff\n', r'invalid UTF-8 sequence starting with byte 0xFF at byte 0'))
+        for raw, message in cases:
             with self.subTest(raw=raw):
                 path = self.vault / 'surrogate.md'
                 path.write_bytes(raw)
-                with self.assertRaises(UnicodeDecodeError):
+                with self.assertRaisesRegex(Utf8InputError, message):
                     self.engine.note_read('surrogate.md')
                 request = {'source': 'surrogate.md', 'expected_sha256': hashlib.sha256(raw).hexdigest(),
                            'edits': [{'old': '\n', 'new': ' appended\n'}]}
-                with self.assertRaises(UnicodeDecodeError):
+                with self.assertRaisesRegex(Utf8InputError, message):
                     self.engine.note_edit(request)
                 self.assertEqual(path.read_bytes(), raw)
                 result = self.run_cli('note-read', None, 'surrogate.md')
                 self.assertEqual(result.returncode, 1, result.stderr)
-                self.assertEqual(json.loads(result.stdout)['status'], 'error')
+                output = json.loads(result.stdout)
+                self.assertEqual((output['status'], output['error']), ('error', 'Utf8InputError'))
+                self.assertRegex(output['message'], message)
                 self.assertNotIn('Traceback', result.stderr)
+                # Sync skips the source with the same named reason and never rewrites it.
+                warnings = self.engine.sync()['warnings']
+                self.assertTrue(any(warning.get('source') == 'surrogate.md' and
+                                    re.search(message, warning['reason']) for warning in warnings), warnings)
                 self.assertEqual(path.read_bytes(), raw)
         self.assertFalse((self.vault / LOCAL_DIRECTORY / 'backups').exists())
 
     def test_unpaired_surrogate_cannot_create_a_partial_note(self):
-        request = {'source': 'broken.md', 'expected_sha256': None,
-                   'content': 'new lone surrogate \ud800'}
-        with self.assertRaises(UnicodeEncodeError):
-            self.engine.note_edit(request)
-        self.assertFalse((self.vault / 'broken.md').exists())
+        # Two separate code points, as surrogatepass decodes CESU-8; JSON would join them.
+        split = b'\xed\xa0\xbd\xed\xb8\x80'.decode('utf-8', 'surrogatepass')
+        cases = (('new lone surrogate \ud800', r'content is not valid UTF-8: unpaired surrogate U\+D800 at character 19'),
+                 ('x ' + split, r'surrogate pair U\+D83D U\+DE00 instead of U\+1F600 at character 2'),
+                 ('\ude00\ud83d', r'unpaired surrogate U\+DE00 at character 0'))
+        for content, message in cases:
+            with self.subTest(content=ascii(content)):
+                with self.assertRaisesRegex(Utf8InputError, message):
+                    self.engine.note_edit({'source': 'broken.md', 'expected_sha256': None, 'content': content})
+        # Rejected before the note lock: not even the local lock folder is created.
+        self.assertEqual(list(self.vault.iterdir()), [])
+
+    def test_surrogate_edits_leave_source_and_backups_untouched(self):
+        path = self.write()
+        request = self.request()
+        cases = (({'old': 'alpha', 'new': 'x\ud800'}, r'edits\[1\]\.new is not valid UTF-8: unpaired surrogate U\+D800'),
+                 ({'old': 'alpha\udcff', 'new': 'x'}, r'edits\[1\]\.old .* \(undecodable input byte 0xFF\)'),
+                 ({'old': 'alpha', 'new': '\udced\udca0\udcbd\udced\udcb8\udc80'},
+                  r'CESU-8 encoded U\+1F600 .* at character 0 \(undecodable input bytes\)'))
+        for edit, message in cases:
+            with self.subTest(edit=ascii(edit)):
+                with self.assertRaisesRegex(Utf8InputError, message):
+                    self.engine.note_edit(dict(request, edits=[{'old': 'beta', 'new': 'BETA'}, edit]))
+                self.assertEqual(path.read_bytes(), b'alpha\nbeta\n')
+        self.assertFalse((self.vault / LOCAL_DIRECTORY / 'backups').exists())
+        # A JSON escape pair is one valid character and is written as standard UTF-8.
+        emoji = json.loads('"\\ud83d\\ude00 Şifre"')
+        result = self.engine.note_edit(dict(request, edits=[{'old': 'alpha', 'new': emoji}]))
+        self.assertEqual(result['status'], 'written')
+        self.assertEqual(path.read_bytes(), '\U0001F600 Şifre\nbeta\n'.encode('utf-8'))
+
+    def test_surrogate_sources_are_rejected_before_any_filesystem_access(self):
+        # A surrogate source would reach the filesystem as a raw CESU-8 byte name on
+        # POSIX or an unpaired UTF-16 name on Windows.
+        sources = ('\ud800.md', 'notes/\udced\udca0\udcbd\udced\udcb8\udc80.md', 'a\udcff.md',
+                   b'notes/\xed\xa0\xbd\xed\xb8\x80.md'.decode('utf-8', 'surrogatepass'))
+        for source in sources:
+            with self.subTest(source=ascii(source)):
+                with self.assertRaisesRegex(Utf8InputError, 'source is not valid UTF-8'):
+                    self.engine.note_read(source)
+                with self.assertRaisesRegex(Utf8InputError, 'source is not valid UTF-8'):
+                    self.engine.note_edit({'source': source, 'expected_sha256': None, 'content': 'x'})
+                with self.assertRaisesRegex(Utf8InputError, 'source is not valid UTF-8'):
+                    self.engine.note_create('notes/' + source.rsplit('/', 1)[-1], 'x')
+        self.assertEqual(list(self.vault.iterdir()), [])
+        self.assertEqual(list(self.state.glob('markdown-journal/*')), [])
+
+    def test_note_create_rejects_surrogate_text_and_metadata_before_journal(self):
+        cases = ((('notes/a.md', 'body \ud800'), r'text is not valid UTF-8: unpaired surrogate U\+D800'),
+                 (('notes/a.md', 'body', {'title': 'T\udced\udca0\udc80'}),
+                  r'metadata\.title .* encoded lone surrogate U\+D800'),
+                 (('notes/a.md', 'body', {'facts': {'k\ud800': 'v'}}), r'metadata\.facts key'),
+                 (('notes/a.md', 'body', {'facts': {'k': ['ok', '\ude00']}}), r'metadata\.facts\.k\[1\]'))
+        for args, message in cases:
+            with self.subTest(args=ascii(args)):
+                with self.assertRaisesRegex(Utf8InputError, message):
+                    self.engine.note_create(*args)
+        self.assertEqual(list(self.vault.iterdir()), [])
+        self.assertEqual(list(self.state.glob('markdown-journal/*')), [])
+        self.assertEqual(self.engine.note_create('notes/a.md', 'Müşteri \U0001F600')['status'], 'succeeded')
+
+    def test_cli_rejects_cesu8_and_surrogates_from_args_stdin_and_files(self):
+        cesu = b'\xed\xa0\xbd\xed\xb8\x80'
+        raw_json = b'{"source": "new.md", "expected_sha256": null, "content": "x ' + cesu + b'"}'
+        request_file = Path(self.temp.name) / 'request.json'
+        request_file.write_bytes(b'\xef\xbb\xbf' + raw_json)
+        lone = json.dumps({'source': 'new.md', 'expected_sha256': None, 'content': 'x \ud800'})
+        escaped_source = json.dumps({'source': '\udced\udca0\udcbd\udced\udcb8\udc80.md',
+                                     'expected_sha256': None, 'content': 'x'})
+        created = json.dumps({'source': 'notes/a.md', 'text': 'body', 'metadata': {'facts': {'k': '\udfff'}}})
+        cesu_message = r'JSON input is not valid UTF-8: CESU-8 encoded U\+1F600 \(surrogate pair U\+D83D U\+DE00\)'
+        cases = ((('note-edit',), raw_json, cesu_message),
+                 (('note-edit', '--file', str(request_file)), None, cesu_message),
+                 (('note-edit',), lone.encode('ascii'), r'content is not valid UTF-8: unpaired surrogate U\+D800'),
+                 (('note-edit',), escaped_source.encode('ascii'),
+                  r'source is not valid UTF-8: CESU-8 encoded U\+1F600 .*\(undecodable input bytes\)'),
+                 (('note-create',), created.encode('ascii'), r'metadata\.facts\.k is not valid UTF-8'),
+                 (('note-create',), b'{"source": "notes/a.md", "text": "x \xed\xb0\x80"}',
+                  r'JSON input is not valid UTF-8: encoded lone surrogate U\+DC00'))
+        for args, data, message in cases:
+            with self.subTest(args=args, data=data):
+                done = self.run_raw(*args, data=data)
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                # Note JSON commands answer on stdout; note-create reports errors on stderr.
+                output = json.loads(done.stdout if args[0] == 'note-edit' else done.stderr)
+                self.assertEqual(output['error'], 'Utf8InputError')
+                self.assertRegex(output['message'], message)
+                self.assertNotIn(b'Traceback', done.stderr)
+        # A source argument: Windows passes UTF-16 with unpaired surrogates as they are,
+        # POSIX passes undecodable bytes as U+DC80..U+DCFF.
+        for source in ('\ud800.md', '\udced\udca0\udcbd\udced\udcb8\udc80.md'):
+            with self.subTest(source=ascii(source)):
+                result, code = cli.main(self.command('note-read', source)[2:], return_result=True)
+                self.assertEqual((code, result['status'], result['error']), (1, 'error', 'Utf8InputError'))
+        if os.name != 'nt':
+            done = self.run_raw('note-read', cesu + b'.md')
+            self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+            output = json.loads(done.stdout)
+            self.assertEqual(output['error'], 'Utf8InputError')
+            self.assertRegex(output['message'], r'source is not valid UTF-8: CESU-8 encoded U\+1F600')
+        self.assertEqual(list(self.vault.iterdir()), [])
+        self.assertEqual(list(self.state.glob('markdown-journal/*')), [])
 
     def test_invalid_timeouts_are_rejected(self):
         from beyin_v3_notes import locked

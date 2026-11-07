@@ -34,6 +34,116 @@ class NotePartialWrite(NoteConflict):
         self.details = dict(details, write_occurred=True, cause=type(cause).__name__)
 
 
+class Utf8InputError(UnicodeError):
+    """Text that is not standard UTF-8; raised before any source write (#543).
+
+    Lone surrogates and CESU-8 encoded supplementary characters are rejected, never
+    passed through or replaced. A UnicodeError, so also a ValueError for callers.
+    """
+
+
+_SURROGATE = re.compile('[\ud800-\udfff]')
+
+
+def _encoded_surrogate(raw, at, first, last):
+    """The surrogate a 3-byte ED sequence encodes, as CESU-8/WTF-8 do; 0 otherwise."""
+    if (len(raw) >= at + 3 and raw[at] == 0xED and first <= raw[at + 1] <= last
+            and 0x80 <= raw[at + 2] <= 0xBF):
+        return 0xD000 | ((raw[at + 1] & 0x3F) << 6) | (raw[at + 2] & 0x3F)
+    return 0
+
+
+def _pair(high, low):
+    return 0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)
+
+
+def _byte_problem(raw, start, where):
+    high = _encoded_surrogate(raw, start, 0xA0, 0xAF)
+    low = _encoded_surrogate(raw, start + 3, 0xB0, 0xBF) if high else 0
+    if low:
+        return 'CESU-8 encoded U+%X (surrogate pair U+%04X U+%04X) at %s' % (
+            _pair(high, low), high, low, where)
+    single = _encoded_surrogate(raw, start, 0xA0, 0xBF)
+    if single:
+        return 'encoded lone surrogate U+%04X at %s' % (single, where)
+    return 'invalid UTF-8 sequence starting with byte 0x%02X at %s' % (raw[start], where)
+
+
+def utf8_problem(raw, start):
+    """Describe the invalid UTF-8 at raw[start], e.g. from UnicodeDecodeError.start."""
+    return _byte_problem(raw, start, 'byte %d' % start)
+
+
+def decode_utf8(raw, what='source'):
+    """Strict UTF-8 decode whose error names CESU-8 and lone surrogates."""
+    try:
+        return raw.decode('utf-8')
+    except UnicodeDecodeError as exc:
+        raise Utf8InputError(what + ' is not valid UTF-8: ' + utf8_problem(raw, exc.start) +
+                             '; it was left unchanged, re-save it as standard UTF-8 '
+                             '(lone surrogates and CESU-8 are rejected)') from exc
+
+
+def require_utf8_text(value, what):
+    """Reject a str holding surrogate code points; other types are left to the caller.
+
+    A str only keeps surrogates that could not form a character: JSON decodes a valid
+    \\ud83d\\ude00 escape pair to one character. Adjacent high/low code points came from
+    CESU-8 or UTF-16 units decoded one by one; POSIX argv and streams carry
+    undecodable bytes as U+DC80..U+DCFF (surrogateescape).
+    """
+    if not isinstance(value, str):
+        return value
+    match = _SURROGATE.search(value)
+    if match is None:
+        return value
+    at = match.start()
+    where = 'character %d' % at
+    first = ord(value[at])
+    second = ord(value[at + 1]) if at + 1 < len(value) else 0
+    if 0xD800 <= first <= 0xDBFF and 0xDC00 <= second <= 0xDFFF:
+        problem = 'CESU-8/UTF-16 surrogate pair U+%04X U+%04X instead of U+%X at %s' % (
+            first, second, _pair(first, second), where)
+    else:
+        problem = 'unpaired surrogate U+%04X at %s' % (first, where)
+        if 0xDC80 <= first <= 0xDCFF:
+            end = at
+            while end < len(value) and 0xDC80 <= ord(value[end]) <= 0xDCFF:
+                end += 1
+            escaped = bytes(ord(char) - 0xDC00 for char in value[at:end])
+            if _encoded_surrogate(escaped, 0, 0xA0, 0xBF):
+                problem = _byte_problem(escaped, 0, where) + ' (undecodable input bytes)'
+            else:
+                problem += ' (undecodable input byte 0x%02X)' % escaped[0]
+    raise Utf8InputError(what + ' is not valid UTF-8: ' + problem +
+                         '; nothing was written, send standard UTF-8 '
+                         '(lone surrogates and CESU-8 are rejected)')
+
+
+def require_utf8_values(value, what):
+    """require_utf8_text over JSON-like nested dict keys, values and list items."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            require_utf8_text(key, what + ' key')
+            require_utf8_values(item, what + '.' + key if isinstance(key, str) else what)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            require_utf8_values(item, '%s[%d]' % (what, index))
+    else:
+        require_utf8_text(value, what)
+    return value
+
+
+def _require_request_text(request):
+    require_utf8_text(request.get('content'), 'content')
+    edits = request.get('edits')
+    if isinstance(edits, list):
+        for index, edit in enumerate(edits):
+            if isinstance(edit, dict):
+                for key in ('old', 'new'):
+                    require_utf8_text(edit.get(key), 'edits[%d].%s' % (index, key))
+
+
 def _unlinked(path):
     """Also reject junctions on Python 3.11, which has no Path.is_junction()."""
     try:
@@ -48,6 +158,8 @@ def _checked_source(engine, source):
     from beyin_v3_sync import EXCLUDED_DIRS, EXCLUDED_FILES
     if not isinstance(source, str) or not source or '\\' in source or ':' in source:
         raise ValueError('use a vault-relative Markdown path with / separators')
+    # A surrogate would reach the filesystem as a CESU-8/raw-byte or UTF-16 name.
+    require_utf8_text(source, 'source')
     parts = source.split('/')
     if any(not part or part in ('.', '..') or part.startswith('.') or
            part.endswith((' ', '.')) for part in parts):
@@ -263,7 +375,7 @@ def read(engine, source):
         source = path.relative_to(engine.root).as_posix()
         _refuse_tracked_view(engine, source)
         raw = _bytes(path)
-        text = raw.decode('utf-8') if raw is not None else None
+        text = decode_utf8(raw) if raw is not None else None
         if text is not None:
             _human(text)
     return {'source': source, 'sha256': _hash(raw) if raw is not None else None,
@@ -294,6 +406,7 @@ def _apply(engine, request, committed):
     if expected is not None and (not isinstance(expected, str) or
                                  not re.fullmatch('[0-9a-f]{64}', expected)):
         raise ValueError('expected_sha256 must be a SHA-256 hex digest or null')
+    _require_request_text(request)  # Before the lock: invalid text writes nothing at all.
     with locked(engine) as folder:
         path = source_path(engine, source)  # Revalidate after waiting for the lock.
         source = path.relative_to(engine.root).as_posix()
@@ -309,7 +422,7 @@ def _apply(engine, request, committed):
         else:
             if 'content' in request or not isinstance(request.get('edits'), list) or not request['edits']:
                 raise ValueError('existing source requires nonempty targeted edits, not content')
-            text = raw.decode('utf-8')
+            text = decode_utf8(raw)
             _human(text)
             for edit in request['edits']:
                 if not isinstance(edit, dict):

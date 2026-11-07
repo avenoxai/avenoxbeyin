@@ -32,7 +32,8 @@ from beyin_v3_projections import (is_receipt_view_source, is_receipt_view_confli
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
 from beyin_v3_notes import (NoteConflict, locked as note_locked,
-                            read as note_read_source, apply as note_apply_edits)
+                            read as note_read_source, apply as note_apply_edits,
+                            decode_utf8, require_utf8_text, require_utf8_values)
 
 
 def _hash(data):
@@ -844,7 +845,7 @@ class SyncEngine:
                             records[id] = None
                             continue
                     raw = path.read_bytes()
-                    text = raw.decode('utf-8')
+                    text = decode_utf8(raw)  # Names CESU-8 and lone surrogates in the warning.
                     if _has_conflict_markers(text):
                         raise ValueError('unresolved git conflict markers; resolve the merge before sync')
                     metadata, body = parse(text)
@@ -1292,6 +1293,10 @@ class SyncEngine:
             sys.path.insert(0, _MODULE_DIR)
         if not isinstance(text, str) or not text.strip() or (metadata is not None and not isinstance(metadata, dict)):
             raise ValueError('note text and metadata required')
+        # Before the note lock and journal intent: invalid text writes nothing (#543).
+        require_utf8_text(source, 'source')
+        require_utf8_text(text, 'text')
+        require_utf8_values(metadata, 'metadata')
         if text.lstrip().startswith('---'):
             raise ValueError('text must be body only; put frontmatter fields in metadata')
         if not source.startswith(('notes/', 'knowledge/')) or not source.endswith('.md'):
