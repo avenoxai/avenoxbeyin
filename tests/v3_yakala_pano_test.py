@@ -6,6 +6,7 @@ The real Windows clipboard is exercised only on a Windows CI runner (or with BEY
 because those tests replace whatever the clipboard holds.
 """
 import contextlib
+import ctypes
 import os
 from pathlib import Path
 import re
@@ -16,7 +17,7 @@ import tempfile
 import time
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import zlib
 
 from v3_package_helpers import inherited_env
@@ -357,8 +358,12 @@ class FakeWin32:
         self.formats, self.busy, self.slack, self.unlockable = dict(formats), busy, slack, set(unlockable)
         self.is_open, self.locked, self.asked, self.closed, self.buffers = False, set(), [], 0, {}
         for name in ('OpenClipboard', 'CloseClipboard', 'IsClipboardFormatAvailable', 'RegisterClipboardFormatW',
-                     'GetClipboardData', 'GlobalSize', 'GlobalLock', 'GlobalUnlock'):
+                     'GetClipboardData', 'GlobalSize', 'GlobalLock', 'GlobalUnlock', 'DragQueryFileW',
+                     'GetClipboardSequenceNumber'):
             setattr(self, name, Call(getattr(self, '_' + name)))
+
+    def _GetClipboardSequenceNumber(self):
+        return 42
 
     def _OpenClipboard(self, _window):
         assert not self.is_open
@@ -405,6 +410,25 @@ class FakeWin32:
         self.locked.remove(handle)
         return 0
 
+    def _DragQueryFileW(self, handle, index, buffer, size):
+        data = self.formats.get(handle - 0x7FF000000000) if handle else None
+        if not data or len(data) < 20:
+            return 0
+        pFiles = struct.unpack_from('<I', data, 0)[0]
+        raw = data[pFiles:]
+        paths = [p for p in raw.decode('utf-16-le', 'ignore').split('\0') if p]
+        if index == 0xFFFFFFFF:
+            return len(paths)
+        if 0 <= index < len(paths):
+            path = paths[index]
+            if buffer is None or size == 0:
+                return len(path)
+            for i, ch in enumerate(path[:size - 1]):
+                buffer[i] = ch
+            buffer[min(len(path), size - 1)] = '\0'
+            return min(len(path), size - 1)
+        return 0
+
 
 class WindowsReaderFlowTest(unittest.TestCase):
     """_win_clipboard_payload() against a recording stand-in for user32/kernel32, on every OS.
@@ -415,9 +439,10 @@ class WindowsReaderFlowTest(unittest.TestCase):
 
     def read(self, formats, limit=None, **options):
         import ctypes
+        snapshot = options.pop('snapshot', False)
         fake = FakeWin32(formats, **options)
         with patch.object(ctypes, 'WinDLL', lambda _name: fake, create=True), patch.object(time, 'sleep') as sleep:
-            payload = yakala._win_clipboard_payload(**({'limit': limit} if limit else {}))
+            payload = yakala._win_clipboard_payload(**({'limit': limit} if limit else {}), snapshot=snapshot)
         self.assertFalse(fake.is_open)
         self.assertEqual(fake.locked, set())
         return payload, fake, sleep
@@ -471,6 +496,21 @@ class WindowsReaderFlowTest(unittest.TestCase):
                 self.assertIsNone(yakala.clipboard_image('', {}))  # the popup sees "no picture", not the error
         self.assertEqual(fake.closed, 2)
 
+    def test_file_drop_format_is_extracted_when_snapshot_requested(self):
+        with tempfile.NamedTemporaryFile(suffix='.txt') as tmp1, tempfile.NamedTemporaryFile(suffix='.pdf') as tmp2:
+            paths = [tmp1.name, tmp2.name]
+            drop = file_drop(*paths)
+            payload, fake, _ = self.read({15: drop}, snapshot=True)
+            self.assertEqual(payload.get('dosyalar'), paths)
+            self.assertEqual(payload.get('text'), '')
+            self.assertFalse(payload['image'])
+
+    def test_file_drop_is_ignored_when_snapshot_not_requested(self):
+        with tempfile.NamedTemporaryFile(suffix='.txt') as tmp:
+            payload, fake, _ = self.read({15: file_drop(tmp.name)}, snapshot=False)
+            self.assertNotIn('dosyalar', payload)
+            self.assertFalse(payload['image'])
+
 
 class Widget:
     """Stand-in for a Tk widget: every call the test does not care about is accepted and ignored."""
@@ -515,6 +555,9 @@ class Root(Widget):
                     self.bound[value](None)
             elif action == 'alt':
                 self.entry.handlers['<Alt-KeyPress>'](types.SimpleNamespace(**value))
+            elif action == 'event':  # a root binding with real event fields, e.g. a modified Esc
+                sequence, fields = value
+                self.bound[sequence](types.SimpleNamespace(**fields))
             elif action == 'type':
                 self.entry.type(value)
             else:
@@ -998,6 +1041,28 @@ class PopupWiringTest(ScreenshotFiles, unittest.TestCase):
         self.assertEqual(guard.call_args.args[1:3], (99, 42))  # popup frame, source window
         guard.return_value.assert_called()  # and stopped again when the popup closed
 
+    def test_windows_modified_escape_in_the_focused_popup_is_left_to_the_system(self):
+        # The hook passes Shift/Ctrl/Alt/Win+Esc on without dismissing (#459), but Tk's <Escape>
+        # matches every modifier state, so the focused popup's own binding has to skip them too.
+        # Tk on Windows: Shift 0x1, Control 0x4, Alt 0x20000; Caps 0x2, Num 0x8 and Scroll Lock 0x20
+        # are lock states. The Windows key is not in event.state, only in the thread's key state.
+        held, real = set(), getattr(ctypes, 'WinDLL', None)
+        user = Mock()
+        user.GetKeyState.side_effect = lambda key: -128 if key in held else 0  # SHORT, high bit = down
+        cases = ((0x1, (), True), (0x4, (), True), (0x20000, (), True), (0x1 | 0x4 | 0x8, (), True),
+                 (0, (0x5B,), True), (0x8, (0x5C,), True),
+                 (0, (), False), (0x2, (), False), (0x8, (), False), (0x20, (), False), (0x2 | 0x8 | 0x20, (), False))
+        for state, keys, modified in cases:
+            held.clear()
+            held.update(keys)
+            with self.subTest(state=hex(state), keys=keys), \
+                    patch.object(ctypes, 'WinDLL', create=True,
+                                 side_effect=lambda name, **kw: user if name == 'user32' else real(name, **kw)):
+                result, root, _ = self.popup('', None, [('event', ('<Escape>', {'keysym': 'Escape', 'state': state}))],
+                                             windows=True)
+                self.assertEqual(result, {'status': 'vazgecildi'})
+                self.assertEqual(root.alive, modified, 'a modified Esc keeps the popup, a plain one cancels it')
+
     def test_windows_cancel_does_not_consume_sequence_and_double_enter_saves_once(self):
         state = Path(self.tmp.name) / 'state/yakala/pano-sira.txt'
         result, root, _ = self.popup('new', None, [('key', '<Escape>')], windows=True, fresh=True)
@@ -1206,6 +1271,14 @@ class WindowsClipboardTest(unittest.TestCase):
             del thumb
         finally:
             root.destroy()
+
+    def test_file_drop_round_trip_in_snapshot(self):
+        with tempfile.NamedTemporaryFile(suffix='.txt') as tmp:
+            set_clipboard({15: file_drop(tmp.name)})
+            payload = self.payload(snapshot=True)
+            self.assertEqual(payload.get('dosyalar'), [tmp.name])
+            self.assertEqual(payload.get('text'), '')
+            self.assertFalse(payload['image'])
 
 
 if __name__ == '__main__':

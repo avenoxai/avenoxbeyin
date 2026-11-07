@@ -3111,6 +3111,10 @@ class AgentManualProcessRaceTest(unittest.TestCase):
         self.vault = Path(temporary.name) / 'Örnek Vault'
         self.state = Path(temporary.name) / 'state'
         self.vault.mkdir()
+        # Card locks use default_state even when a caller supplies a different state.
+        local_state = patch.object(yakala, 'default_state', return_value=self.state)
+        local_state.start()
+        self.addCleanup(local_state.stop)
         result = yakala.capture(self.vault, text='Original source text', why='Initial reason', state=self.state)
         self.card_id, self.card_path = result['id'], self.vault / result['path']
         self.raw_path = self.card_path.parent / '.ham' / (self.card_id + '.md')
@@ -3168,6 +3172,50 @@ class AgentManualProcessRaceTest(unittest.TestCase):
         self.assertEqual(meta['durum'], 'cikarildi')
         self.assertEqual(result['kartlar'][0]['durum'], 'cikarildi')
         self.assertIn('Expected extracted source', self.raw_path.read_text(encoding='utf-8'))
+
+    def test_snapshot_preserves_metadata_and_body_for_all_newlines(self):
+        original = self.card_path.read_bytes()
+        for newline in (b'\n', b'\r\n', b'\r', b'mixed'):
+            with self.subTest(newline=newline):
+                encoded = (b''.join(line + (b'\r', b'\r\n', b'\n')[i % 3]
+                                    for i, line in enumerate(original.split(b'\n')))
+                           if newline == b'mixed' else original.replace(b'\n', newline))
+                self.card_path.write_bytes(encoded)
+                before_meta, before_body = yakala.read_card(self.card_path)
+                def extract(_vault, card, *_args):
+                    self.assertEqual(card['meta'], before_meta)
+                    self.assertEqual(card['body'], before_body)
+                    return 'Expected extracted text', 'test', None
+                with patch.object(yakala, 'tools', return_value={}), \
+                        patch.object(yakala, 'extract', side_effect=extract):
+                    result = yakala.process(self.vault, [self.card_id], state=self.state)
+                after, body = yakala.read_card(self.card_path)
+                for field in ('tur', 'baslik', 'visibility', 'kaynak_turu'):
+                    self.assertEqual(after[field], before_meta[field])
+                self.assertEqual(after['visibility'], 'private')
+                self.assertEqual(yakala.read_card(self.raw_path)[0]['visibility'], 'private')
+                self.assertIn('Original source text', body)
+                self.assertIn('Initial reason', body)
+                self.assertEqual(result['kartlar'][0]['durum'], 'cikarildi')
+
+    def test_normalization_does_not_hide_a_concurrent_newline_only_edit(self):
+        original = self.card_path.read_bytes()
+        for newline, changed_newline in ((b'\n', b'\r'), (b'\r', b'\r\n'), (b'\r\n', b'\n')):
+            with self.subTest(newline=newline):
+                self.card_path.write_bytes(original.replace(b'\n', newline))
+                changed = original.replace(b'\n', changed_newline)
+                self.raw_path.parent.mkdir(parents=True, exist_ok=True)
+                self.raw_path.write_bytes(b'Existing raw source')
+                def extract(*_args):
+                    self.card_path.write_bytes(changed)
+                    return 'Late extraction', 'test', None
+                with patch.object(yakala, 'tools', return_value={}), \
+                        patch.object(yakala, 'extract', side_effect=extract):
+                    result = yakala.process(self.vault, [self.card_id], state=self.state)
+                self.assertEqual(result['kartlar'][0]['durum'], 'hata')
+                self.assertIn('degisti', result['kartlar'][0]['not'])
+                self.assertEqual(self.card_path.read_bytes(), changed)
+                self.assertEqual(self.raw_path.read_bytes(), b'Existing raw source')
 
 
 if __name__ == '__main__':

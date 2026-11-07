@@ -1,11 +1,15 @@
 """Receipt field flags and JSON modes through the installed public entry point."""
 from contextlib import closing
 import hashlib
+import importlib.util
+import io
 import json
 from pathlib import Path
 import sqlite3
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from v3_package_helpers import install, isolated_env, run_python, snapshot
 
@@ -38,6 +42,26 @@ class ReceiptCliTest(unittest.TestCase):
         result = self.cli(*args, payload=payload)
         self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8'))
         return json.loads(result.stdout.decode('utf-8'))
+
+    def test_embedded_receipt_preserves_caller_output_encoding(self):
+        script = Path(__file__).resolve().parents[1] / 'scripts/beyin_v3.py'
+        spec = importlib.util.spec_from_file_location('embedded_receipt_cli', script)
+        cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli)
+        for encoding in ('ascii', 'cp1252'):
+            with self.subTest(encoding=encoding):
+                with closing(io.TextIOWrapper(io.BytesIO(), encoding=encoding, errors='backslashreplace')) as stdout, \
+                     closing(io.TextIOWrapper(io.BytesIO(), encoding=encoding, errors='backslashreplace')) as stderr:
+                    before = (stdout.encoding, stdout.errors, stderr.encoding, stderr.errors)
+                    with patch.object(sys, 'stdout', stdout), patch.object(sys, 'stderr', stderr), \
+                         patch.object(sys, 'stdin', io.StringIO()):
+                        result, code = cli.main(['--vault', str(self.vault), '--state', str(self.state),
+                            'receipt', '--event-id', 'embedded-' + encoding,
+                            '--summary', 'Ölçüm kaydedildi. Öğrenilen: yok', '--ref', 'notes/ilk.md'],
+                            return_result=True)
+                    self.assertEqual((code, result['status']), (0, 'succeeded'))
+                    self.assertEqual((stdout.encoding, stdout.errors, stderr.encoding, stderr.errors), before)
+                    self.assertEqual((stdout.buffer.getvalue(), stderr.buffer.getvalue()), (b'', b''))
 
     def assert_parse_error(self, args, message):
         before = snapshot(self.vault), snapshot(self.state)

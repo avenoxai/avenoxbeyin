@@ -1213,6 +1213,8 @@ def extract(vault, card, found, allow_audio=True, info=None):
     url, kind = meta.get('url'), meta.get('kaynak_turu') or kind_of(meta.get('url'))
     if url:
         _safe_source_url(url)  # Cards can also be edited, clipped or synced.
+        if kind == 'youtube' and kind_of(url) != 'youtube':
+            kind = kind_of(url)  # an edited field never hands another site to yt-dlp's generic extractor
     clipped = _section(body, 'Icerik') or _section(body, 'İçerik')
     if clipped and len(clipped) > 200 and kind != 'youtube':
         return clipped, 'web-clipper', None
@@ -1270,7 +1272,7 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
     results = []
     for card in targets:
         expected = card['path'].read_bytes()
-        meta, body = _parse_card_text(expected.decode('utf-8').replace('\r\n', '\n'))
+        meta, body = _parse_card_text(expected.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n'))
         card = dict(card, meta=meta, body=body)
         raw_write = None
         if meta.get('durum') in AGENT_CARD_BUSY:
@@ -2147,10 +2149,17 @@ def _post_title(post, article, link=''):
     link = re.sub(r'\s+', ' ', link or '').strip()
     handle = re.match(r'^https://x\.com/([A-Za-z0-9_]{1,15})/status/', post or '')
     if handle and link:
+        at = text.find(link)
         mention = re.search(r'@' + re.escape(handle.group(1)) + r'(?![A-Za-z0-9_])', text, re.I)
-        # A display name or handle can itself contain the timestamp (for example @abc2h).
-        # Keep the existing fallback for accessibility text that omits the handle entirely.
-        at = text.find(link, mention.end() if mention else 0)
+        if mention:
+            # The header reads "@handle · <time>", and a name or handle can itself contain the time
+            # (for example @abc2h), so the time right after the handle splits. A time after the name
+            # (never at the very start) but before the mention means the header omits the handle and
+            # the body mentions it, so the first time still splits, as without any mention.
+            after = text.find(link, mention.end())
+            header = after >= 0 and not text[mention.end():after].strip(' ·')
+            if header or not 0 < at < mention.start():
+                at = after
         if at >= 0:
             body = text[at + len(link):].strip()
             text = '@%s: %s' % (handle.group(1), body) if body else '@' + handle.group(1)
@@ -3320,12 +3329,12 @@ def windows_sources(context, clip, fresh, image=None, shot=None):
     """Pure source decisions. All alternatives survive, even when another is initially selected."""
     sources = []
 
-    def add(kind, value, label, on, key, title=None, picture=None):
+    def add(kind, value, label, on, key, title=None, picture=None, clipboard=False):
         if kind == 'url' and value and any(source['kind'] == 'url' and canonical(source['value']) == canonical(value)
                                           for source in sources):
             return
         if value:
-            sources.append(dict(kind=kind, value=value, label=label, on=bool(on), key=key, title=title, image=picture))
+            sources.append(dict(kind=kind, value=value, label=label, on=bool(on), key=key, title=title, image=picture, clipboard=clipboard))
     copied_url = tab_url(clip) if re.match(r'^https?://', clip, re.I) else None
     hovered, page = context.get('url_imlec'), context.get('url')
     # A link read from the browser is what the key was pressed for: it wins over anything on the
@@ -3350,8 +3359,11 @@ def windows_sources(context, clip, fresh, image=None, shot=None):
                                     (shot, 'Pencere görüntüsü', False, 'w')):
         if picture:
             add('file', picture['path'], label, on, key, picture=picture)
+    clipboard_files = bool(context.get('dosyalar_pano'))
+    files_on = clipboard_leads if clipboard_files else True
     for index, path in enumerate(context.get('dosyalar') or []):
-        add('file', path, Path(path).name, True, str(index + 1) if index < 9 else '')
+        add('file', path, Path(path).name, files_on, str(index + 1) if index < 9 else '',
+            clipboard=clipboard_files)
     for source in sources:
         source['clipboard'] = source.get('clipboard', False) or source['key'] in ('p', 'm', 'g')
     return sources
@@ -3526,6 +3538,24 @@ def _escape_scope(front, source, popup):
     if not front or front == popup:
         return None
     return 'consume' if source and front == source else 'pass'
+
+
+def _win_escape_modified(event):
+    """Whether an Esc that reached the popup carries Shift, Ctrl, Alt or Win: the hook's rule for Tk.
+
+    Tk on Windows reports Shift 0x1, Control 0x4 and Alt 0x20000 in event.state; Caps 0x2, Num 0x8
+    and Scroll Lock 0x20 are lock states, so a plain Esc with them still cancels. Tk leaves the
+    Windows key out of event.state; GetKeyState reads it as of this key message on the GUI thread.
+    """
+    if getattr(event, 'state', 0) & 0x20005:
+        return True
+    try:
+        import ctypes
+        user32 = ctypes.WinDLL('user32')
+        user32.GetKeyState.argtypes, user32.GetKeyState.restype = [ctypes.c_int], ctypes.c_short
+        return any(user32.GetKeyState(key) & 0x8000 for key in (0x5B, 0x5C))  # VK_LWIN, VK_RWIN
+    except (AttributeError, OSError):
+        return False
 
 
 def _win_escape_guard(root, popup, source, dismiss):
@@ -4449,6 +4479,25 @@ def _win_clipboard_payload(limit=IMAGE_LIMIT, tries=6, snapshot=False):
             before = _clipboard_sequence()
             raw = take(13)
             found['text'] = raw.decode('utf-16le', 'replace').split('\0', 1)[0] if raw else ''
+            if user32.IsClipboardFormatAvailable(15):  # CF_HDROP
+                handle = user32.GetClipboardData(15)
+                if handle:
+                    shell32 = ctypes.WinDLL('shell32')
+                    shell32.DragQueryFileW.argtypes = [wintypes.HANDLE, wintypes.UINT, wintypes.LPWSTR, wintypes.UINT]
+                    shell32.DragQueryFileW.restype = wintypes.UINT
+                    count = shell32.DragQueryFileW(handle, 0xFFFFFFFF, None, 0)
+                    files = []
+                    for i in range(min(count, 20)):
+                        length = shell32.DragQueryFileW(handle, i, None, 0)
+                        buf = ctypes.create_unicode_buffer(length + 1)
+                        shell32.DragQueryFileW(handle, i, buf, length + 1)
+                        try:
+                            if buf.value and Path(buf.value).is_file():
+                                files.append(buf.value)
+                        except (OSError, ValueError):
+                            pass
+                    if files:
+                        found['dosyalar'] = files
         for name in ('PNG', 'image/png'):  # what the Snipping Tool, browsers and Office put next to the bitmap
             found['png'] = found['png'] or take(user32.RegisterClipboardFormatW(name))
         if not (found['png'] and png_info(found['png'])):
@@ -5058,7 +5107,11 @@ def popup(vault, context=None, state=None, root=None, session=None):
         root.destroy()
         return 'break'
 
-    root.bind('<Escape>', dismiss if windows else lambda _e: close())
+    def escape(event):
+        # Tk's <Escape> matches any modifier state; like the hook, only a plain Esc cancels.
+        return None if _win_escape_modified(event) else dismiss(event)
+
+    root.bind('<Escape>', escape if windows else lambda _e: close())
     if windows:
         root.protocol('WM_DELETE_WINDOW', dismiss)
         close_label = canvas.create_text(W - pad, 33, text='×', anchor='e', fill=P['muted'], font=_font(20))
@@ -6213,10 +6266,21 @@ class _JsonPipe:
         self.write_thread.start()
 
     def _read(self):
+        import errno
         import queue
+        retries = 0
         try:
             while not self.stopping.is_set():
-                line = self.reader.readline(WIN_MESSAGE_LIMIT + 1)
+                try:
+                    line = self.reader.readline(WIN_MESSAGE_LIMIT + 1)
+                except OSError as exc:
+                    if exc.errno not in (errno.EINTR, errno.EAGAIN, errno.EWOULDBLOCK) or retries >= 3:
+                        break
+                    retries += 1
+                    self.stopping.wait(0.01)
+                    continue
+                retries = 0
+                # A blocking pipe returns empty bytes only at EOF, never for a delayed packet.
                 if not line or len(line) > WIN_MESSAGE_LIMIT or not line.endswith(b'\n'):
                     break
                 message = json.loads(line)
@@ -6660,6 +6724,10 @@ def _collect_windows(context, vault, state, cancel=None):
         context = windows_enrich(context, cancel)
         if cancel and cancel.is_set():
             return None
+        copied_files = [p for p in payload.get('dosyalar', []) if not (image and snip_path(p))]
+        if copied_files and not context.get('dosyalar'):
+            context['dosyalar'] = copied_files
+            context['dosyalar_pano'] = True
         shot = window_image(context, cancel=cancel)
         sources = windows_sources(context, clip, fresh, image, shot)
         success = True
@@ -6874,6 +6942,35 @@ def _links_skills(skills):
 
 def _state_path(state):
     return Path(state) / STATE_FILE
+
+
+def _mac_path():
+    """Predictable, sanitized PATH for LaunchAgent: active Python dir, Homebrew, and POSIX system bins."""
+    ordered = []
+    py_dir = str(Path(sys.executable).parent)
+    defaults = [py_dir, '/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin']
+    for p in defaults:
+        if p and p not in ordered:
+            ordered.append(p)
+    return ':'.join(ordered)
+
+
+def _bootstrap_with_retry(domain, agent, retries=5, delay=0.2):
+    """Call `launchctl bootstrap` with backoff retries when launchd returns EIO (5).
+
+    When a previously running LaunchAgent is booted out, launchd teardown can be
+    asynchronous. A rapid bootstrap call immediately afterwards may fail with
+    EIO (5) until the previous job completely unbinds.
+    """
+    import time
+    for attempt in range(retries):
+        proc = subprocess.run(['launchctl', 'bootstrap', domain, str(agent)], capture_output=True)
+        if proc.returncode == 0:
+            return proc
+        if proc.returncode != 5 or attempt == retries - 1:
+            raise subprocess.CalledProcessError(proc.returncode, proc.args,
+                                                output=proc.stdout, stderr=proc.stderr)
+        time.sleep(delay * (attempt + 1))
 
 
 def _launch_agent():
@@ -7249,7 +7346,7 @@ def install(vault, state, hotkey=True, spec=None, folder_spec=None):
                  'ProgramArguments': [sys.executable, str(runner), 'dinle', '--vault', str(vault),
                                       '--keycode', str(keycode), '--mods', str(modifiers)],
                  'ProcessType': 'Interactive', 'StandardErrorPath': str(state / 'yakala' / 'dinleyici.log'),
-                 'EnvironmentVariables': {'PATH': os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin'),
+                 'EnvironmentVariables': {'PATH': _mac_path(),
                                           'LANG': 'en_US.UTF-8'}}
         agent = _launch_agent()
         previous = _agent_vault()
@@ -7259,7 +7356,7 @@ def install(vault, state, hotkey=True, spec=None, folder_spec=None):
         domain = 'gui/' + str(os.getuid())
         subprocess.run(['launchctl', 'bootout', domain + '/' + LAUNCH_LABEL], capture_output=True)
         agent.write_bytes(plistlib.dumps(plist))
-        subprocess.run(['launchctl', 'bootstrap', domain, str(agent)], check=True, capture_output=True)
+        _bootstrap_with_retry(domain, agent)
         done['kisayol'] = label
         done['kisayol_calisiyor'] = _listener_ok()
     elif hotkey and sys.platform.startswith('linux'):
@@ -7835,13 +7932,17 @@ def _agent_load_job(vault, state, job_id):
         raise ValueError('Ajan is kaydi baska vaulta ait veya semasi desteklenmiyor.')
     # Reject a damaged record here, before queue ordering or worker dispatch can
     # let one malformed job stop every unrelated request in this vault.
-    if (job.get('state') not in (*AGENT_ACTIVE, 'completed', 'failed', 'approval_required') or
+    if (job.get('state') not in (*AGENT_ACTIVE, 'completed', 'failed', 'approval_required', 'cancelled') or
             type(job.get('created_ns')) is not int or job['created_ns'] < 0 or
             not isinstance(job.get('request'), str) or not job['request'].strip() or
             len(job['request']) > AGENT_MAX_REQUEST or '\0' in job['request'] or
             not isinstance(job.get('url'), str) or not isinstance(job.get('config'), dict)):
         raise ValueError('Ajan is kaydinin durumu, sirasi veya girdisi gecersiz.')
     _agent_extra_source_urls(job.get('extra_urls', []), job['url'])
+    if job.get('batch_id') is not None:
+        _agent_uuid(job['batch_id'])
+    if job['state'] == 'cancelled' and not job.get('batch_id'):
+        raise ValueError('Iptal kaydinin toplu is kimligi eksik.')
     reconcile = job.get('card_reconcile', False)
     if (type(reconcile) is not bool or
             (reconcile and (job['state'] in AGENT_ACTIVE or
@@ -8134,7 +8235,8 @@ def enqueue_agent(vault, state, card_id, request, delivery_id=None, *, music=Non
                    'url': card['meta'].get('url') or '', 'client': config['client'], 'session_id': session_id,
                    'extra_urls': _agent_extra_source_urls(card['meta'].get('ek_urller', []),
                                                           card['meta'].get('url') or ''),
-                   'delivery_id': delivery_id, 'created_ns': time.time_ns(), 'created': now().isoformat(timespec='seconds'),
+                   'delivery_id': delivery_id, 'created_ns': _agent_next_created_ns(jobs),
+                   'created': now().isoformat(timespec='seconds'),
                    'state': 'preparing', 'config': config}
             if music is not None:
                 job['music'] = music  # host-authored CLI consent, committed before worker wake-up
@@ -8899,6 +9001,8 @@ def _atomic_bytes(path, data):
 
 
 def _agent_end(vault, state, job, status, reason):
+    if status == 'cancelled':
+        return _agent_end_cancelled(vault, state, job, reason)
     mapped = {'completed': 'islendi', 'failed': 'hata', 'approval_required': 'onay-bekliyor'}[status]
     job.update(state=status, ended=now().isoformat(timespec='seconds'), result_summary=reason, card_reconcile=True)
     _agent_json(_agent_job_dir(vault, state, job['id']) / 'job.json', job)
@@ -11679,6 +11783,428 @@ def release_agent_card(vault, state, card_id):
     return {'status': 'ajan_karti_serbest', 'id': card_id,
             'ipucu': 'Kart normal islemeye birakildi; yeni bir ajan isi veya genel izin verilmedi.'}
 
+# ---------------------------------------------------------------- explicit bulk agent requests
+
+AGENT_BATCH_LIMIT = 32
+AGENT_BATCH_BYTES = 4 * 1024 * 1024
+
+
+def _agent_next_created_ns(jobs):
+    """Append to the durable FIFO even when the wall clock repeats or moves backwards."""
+    import time
+    return max(time.time_ns(), max((job['created_ns'] for job in jobs), default=0) + 1)
+
+
+def _agent_batch_path(state, batch_id):
+    return _agent_no_links(_agent_root(state) / 'batches' / (_agent_uuid(batch_id) + '.json'))
+
+
+def _agent_batch_load(vault, state, batch_id):
+    path = _agent_batch_path(state, batch_id)
+    if path.stat().st_size > AGENT_BATCH_BYTES:
+        raise ValueError('Toplu is kaydi cok buyuk.')
+    batch = json.loads(path.read_text(encoding='utf-8'))
+    if (not isinstance(batch, dict) or batch.get('schema') != 1 or batch.get('id') != batch_id or
+            batch.get('vault') != str(Path(vault).resolve()) or
+            batch.get('state') not in ('preparing', 'submitted', 'interrupted') or
+            batch.get('request_source') not in ('neden', 'ortak') or
+            type(batch.get('created_ns')) is not int or batch['created_ns'] < 0 or
+            not isinstance(batch.get('items'), list) or not 1 <= len(batch['items']) <= AGENT_BATCH_LIMIT):
+        raise ValueError('Toplu is kaydi gecersiz veya baska vaulta ait.')
+    identifiers, cards_seen = set(), set()
+    for item in batch['items']:
+        if (not isinstance(item, dict) or not isinstance(item.get('card_id'), str) or
+                not isinstance(item.get('request'), str) or not item['request'].strip() or
+                len(item['request']) > AGENT_MAX_REQUEST or '\0' in item['request']):
+            raise ValueError('Toplu is uyesi gecersiz.')
+        job_id = _agent_uuid(item.get('job_id'))
+        parts = _agent_parts(item.get('card_path'))
+        if Path(parts[-1]).stem != item['card_id'] or job_id in identifiers or item['card_id'] in cards_seen:
+            raise ValueError('Toplu is uyesinin kimligi veya kart yolu gecersiz.')
+        identifiers.add(job_id)
+        cards_seen.add(item['card_id'])
+    return batch
+
+
+def _agent_batch_jobs(vault, state):
+    """Read-only inventory: an unreadable job makes capacity/ownership unknown, never zero."""
+    folder = _agent_no_links(_agent_root(state) / 'jobs')
+    jobs, errors = [], []
+    if folder.exists():
+        for entry in sorted(folder.iterdir()):
+            try:
+                _agent_no_links(entry)
+                if entry.is_dir():
+                    jobs.append(_agent_load_job(vault, state, entry.name))
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                errors.append({'kayit': entry.name, 'hata': type(exc).__name__})
+    return sorted(jobs, key=lambda job: (job['created_ns'], job['id'])), errors
+
+
+def _agent_batch_cards(vault, state):
+    """Read bounded local card snapshots without following a captured/synced link."""
+    import hashlib
+    folder = _agent_no_links(inbox(vault, state))
+    found = []
+    if not folder.is_dir():
+        return found
+    for path in sorted(folder.glob('*.md')):
+        _agent_no_links(path)
+        if not path.is_file():
+            continue
+        with path.open('rb') as stream:
+            raw = stream.read(_AGENT_NOTE_BYTES + 1)
+        if len(raw) > _AGENT_NOTE_BYTES:
+            raise ValueError('Toplu is karti 200 KiB sinirini asti: ' + path.stem)
+        meta, body = _parse_card_text(raw.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n'))
+        if meta.get('tur') == 'yakala':
+            relative = path.relative_to(vault).as_posix()
+            _agent_parts(relative)
+            found.append({'id': path.stem, 'path': path, 'meta': meta, 'body': body,
+                          'snapshot': hashlib.sha256(raw).hexdigest()})
+    return found
+
+
+def _agent_batch_card_order(card):
+    from datetime import timezone
+    try:
+        stamp = datetime.fromisoformat(card['meta'].get('yakalandi', ''))
+        if stamp.tzinfo is not None:
+            return 0, stamp.astimezone(timezone.utc).isoformat(), card['id']
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return 1, '', card['id']  # unknown timestamps come last, then the stable card id
+
+
+def _agent_batch_new_job(vault, card, item, config, batch, created_ns, session_id):
+    """Build the same bounded input for read-only previews and durable submission."""
+    primary = card['meta'].get('url') or ''
+    job = {'schema': AGENT_SCHEMA, 'id': item['job_id'], 'vault': str(vault), 'card_id': card['id'],
+           'card_path': item['card_path'], 'request': item['request'], 'url': primary,
+           'extra_urls': _agent_extra_source_urls(card['meta'].get('ek_urller', []), primary),
+           'client': config['client'], 'session_id': session_id, 'delivery_id': None,
+           'created_ns': created_ns, 'created': batch['created'], 'state': 'preparing',
+           'config': dict(config), 'batch_id': batch['id']}
+    _agent_validate_new_job(job)
+    return job
+
+
+def _agent_batch_plan(vault, state, ids=(), request=None, use_why=False, kinds=(), domains=(), limit=10):
+    import hashlib
+    if type(limit) is not int or not 1 <= limit <= AGENT_BATCH_LIMIT:
+        raise ValueError('Toplu is limiti 1 ile 32 arasinda olmali.')
+    if type(use_why) is not bool or (request is None) == (not use_why):
+        raise ValueError('Toplu is icin yalniz --neden veya --istek sec.')
+    if request is not None and (not isinstance(request, str) or not request.strip() or
+                                len(request) > AGENT_MAX_REQUEST or '\0' in request):
+        raise ValueError('Ortak istek bos olamaz; en fazla 16000 karakter olmali.')
+    if isinstance(ids, str) or not isinstance(ids, (list, tuple)) or len(ids) > AGENT_BATCH_LIMIT * 2:
+        raise ValueError('Kart kimlikleri liste olmali; en fazla 64 kimlik veya dosya adi ver.')
+    for identifier in ids:
+        if (not isinstance(identifier, str) or not identifier or len(identifier) > 300 or
+                any(c in identifier for c in '/\\\r\n\0') or Path(identifier).name != identifier):
+            raise ValueError('Toplu is kart kimligi gecersiz.')
+    for values in (kinds, domains):
+        if isinstance(values, str) or not isinstance(values, (list, tuple)) or len(values) > 32:
+            raise ValueError('Toplu is filtreleri liste olmali; en fazla 32 deger ver.')
+    if any(not isinstance(kind, str) or not re.fullmatch(r'[a-z][a-z0-9_-]{0,31}', kind) for kind in kinds):
+        raise ValueError('Kaynak turu filtresi gecersiz.')
+    normalized_domains = set()
+    for domain in domains:
+        if (not isinstance(domain, str) or not domain or len(domain) > 253 or
+                any(char in domain for char in '/:#?@') or domain != domain.strip()):
+            raise ValueError('Alan adi filtresi yalniz sunucu adi olmali.')
+        _safe_source_url('https://' + domain)
+        normalized_domains.add(domain.lower().rstrip('.').removeprefix('www.').removeprefix('m.'))
+    config = agent_settings(vault, state)
+    jobs, job_errors = _agent_batch_jobs(vault, state)
+    all_cards = _agent_batch_cards(vault, state)
+    by_id = {card['id']: card for card in all_cards}
+    selected_ids = set()
+    for identifier in ids:
+        key = identifier if identifier in by_id else identifier.removesuffix('.md')
+        if key not in by_id:
+            raise ValueError('Kart bulunamadi: ' + identifier)
+        if by_id[key]['meta'].get('durum') != 'bekliyor':
+            raise ValueError('Toplu is yalniz bekliyor kartlarini secer: ' + key)
+        selected_ids.add(key)
+    active = {job['card_id'] for job in jobs if job['state'] in AGENT_ACTIVE}
+    candidates, excluded = [], []
+    for card in sorted(all_cards, key=_agent_batch_card_order):
+        meta = card['meta']
+        if meta.get('durum') != 'bekliyor' or (ids and card['id'] not in selected_ids):
+            continue
+        if kinds and meta.get('kaynak_turu') not in kinds:
+            continue
+        source = meta.get('url') or ''
+        if not isinstance(source, str):
+            raise ValueError('Kartin URL alani gecersiz: ' + card['id'])
+        if source:
+            _safe_source_url(source)
+        host = (urlparse(source).hostname or '').lower().rstrip('.').removeprefix('www.').removeprefix('m.')
+        if normalized_domains and host not in normalized_domains:
+            continue
+        if card['id'] in active:
+            excluded.append({'id': card['id'], 'neden': 'Bu kartin sirada veya calisan bir isi var.'})
+            continue
+        candidates.append(card)
+    chosen, rows = candidates[:limit], []
+    # Fixed-width placeholders measure the actual serialized job without allocating
+    # sessions or persisting an intent. Sending validates the real identities again.
+    probe_id = '00000000-0000-4000-8000-000000000000'
+    probe_batch = {'id': probe_id, 'created': now().isoformat(timespec='seconds')}
+    probe_created_ns = _agent_next_created_ns(jobs)
+    for index, card in enumerate(chosen):
+        instruction = request.strip() if request is not None else _section(card['body'], 'Neden')
+        error = ''
+        relative = card['path'].relative_to(vault).as_posix()
+        if not instruction or instruction == '_(not yok)_' or len(instruction) > AGENT_MAX_REQUEST or '\0' in instruction:
+            error = 'Neden alani bos veya gecersiz; bu kart icin acik bir istek ver.'
+        else:
+            item = {'job_id': probe_id, 'card_path': relative, 'request': instruction}
+            try:
+                _agent_batch_new_job(vault, card, item, config, probe_batch, probe_created_ns + index,
+                                     probe_id if config['client'] == 'claude' else None)
+            except ValueError as exc:
+                error = str(exc)
+        rows.append({'id': card['id'], 'path': relative,
+                     'baslik': str(card['meta'].get('baslik') or card['id'])[:160],
+                     'kaynak_turu': card['meta'].get('kaynak_turu'), 'istek': instruction, 'hata': error})
+    count = sum(job['state'] in AGENT_ACTIVE for job in jobs)
+    source = 'neden' if use_why else 'ortak'
+    payload = {'ids': sorted(selected_ids), 'kinds': sorted(set(kinds)), 'domains': sorted(normalized_domains),
+               'limit': limit, 'request_source': source, 'config': config,
+               'cards': [{'id': card['id'], 'snapshot': card['snapshot'], 'request': row['istek']}
+                         for card, row in zip(chosen, rows)]}
+    digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
+    plan = {'status': 'toplu_onizleme', 'plan': digest, 'istek_kaynagi': source, 'ajan': config['client'],
+            'ag': config['ag'], 'gorunum': config['gorunum'], 'secilen': len(rows), 'uygun': len(candidates),
+            'kuyrukta_aktif': count, 'kuyruk_siniri': config['max_queue'],
+            'bos_yer': max(0, config['max_queue'] - count), 'atlanan': excluded, 'kayit_sorunlari': job_errors,
+            'gonderilebilir': bool(rows) and config['client'] != 'kapali' and not job_errors and
+                              not any(row['hata'] for row in rows) and count + len(rows) <= config['max_queue'],
+            'kartlar': rows, 'ipucu': 'Onizleme is baslatmaz. Gondermek icin ayni komuta --gonder ekle.'}
+    return plan, chosen, jobs, config
+
+
+def _agent_batch_member(vault, state, batch, item):
+    job = _agent_load_job(vault, state, item['job_id'])
+    if (job.get('batch_id') != batch['id'] or job['card_id'] != item['card_id'] or
+            job['card_path'] != item['card_path'] or job['request'] != item['request']):
+        raise ValueError('Is kaydi toplu is uyesiyle eslesmiyor.')
+    return job
+
+
+def agent_batch_status(vault, state, batch_id):
+    """Recompute from worker-verified terminal records; enqueue success is never completion."""
+    batch = _agent_batch_load(vault, state, batch_id)
+    counts = {key: 0 for key in ('preparing', 'queued', 'running', 'completed', 'failed',
+                                'approval_required', 'cancelled', 'kayit_yok', 'kayit_gecersiz')}
+    rows, reconciles = [], 0
+    for item in batch['items']:
+        row = {'id': item['card_id'], 'job_id': item['job_id'], 'path': item['card_path']}
+        try:
+            job = _agent_batch_member(vault, state, batch, item)
+            row.update(durum=job['state'], ozet=job.get('result_summary', ''),
+                       sonuc=job.get('outcome'), receipt=job.get('receipt'),
+                       kart_uzlastirma=bool(job.get('card_reconcile')))
+            reconciles += bool(job.get('card_reconcile'))
+        except FileNotFoundError:
+            row.update(durum='kayit_yok', ozet='Is veya kart kaydi yok; calisma sonucu dogrulanamadi.')
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            row.update(durum='kayit_gecersiz', ozet='Is kaydi dogrulanamadi: ' + type(exc).__name__)
+        counts[row['durum']] += 1
+        rows.append(row)
+    finished = not reconciles and all(row['durum'] in ('completed', 'failed', 'approval_required', 'cancelled') for row in rows)
+    result = {'status': 'toplu_durumu', 'batch_id': batch['id'], 'gonderim_durumu': batch['state'],
+              'istek_kaynagi': batch['request_source'], 'secilen': len(rows), 'sayilar': counts,
+              'kart_uzlastirma_bekleyen': reconciles, 'bitti': finished,
+              'hepsi_basarili': finished and counts['completed'] == len(rows), 'kartlar': rows}
+    for key in ('submission_error', 'worker_error', 'cancel_requested'):
+        if batch.get(key):
+            result[key] = batch[key]
+    return result
+
+
+def _agent_batch_commit(vault, state, batch, chosen, config, created_ns):
+    import hashlib
+    import uuid
+    # Validate every member before writing even the manifest: a malformed source
+    # or oversized UTF-8 record must not leave earlier cards/jobs partly submitted.
+    prepared = [_agent_batch_new_job(vault, card, item, config, batch, created_ns + index,
+                                     str(uuid.uuid4()) if config['client'] == 'claude' else None)
+                for index, (card, item) in enumerate(zip(chosen, batch['items']))]
+    _agent_json(_agent_batch_path(state, batch['id']), batch)  # complete intent, before the first job
+    try:
+        for card, job in zip(chosen, prepared):
+            _agent_no_links(card['path'])
+            if hashlib.sha256(card['path'].read_bytes()).hexdigest() != card['snapshot']:
+                raise ValueError('Kart gonderim sirasinda degisti: ' + card['id'])
+            job_id, session_id = job['id'], job['session_id']
+            folder = _agent_job_dir(vault, state, job_id)
+            _agent_json(folder / 'job.json', job)
+            meta = dict(card['meta'])
+            meta.update(durum='ajanda', ajan=job['client'], ajan_isi=job_id, ajan_oturum=session_id,
+                        ajan_asama='sirada', ajan_gonderildi=job['created'])
+            meta.pop('ajan_notu', None)
+            write_card(card['path'], meta, card['body'])
+            job['state'] = 'queued'
+            _agent_json(folder / 'job.json', job)
+        batch['state'] = 'submitted'
+        _agent_json(_agent_batch_path(state, batch['id']), batch)
+    except Exception as exc:
+        # Existing committed jobs keep their identities. Never retry the whole selection implicitly.
+        batch.update(state='interrupted', submission_error=type(exc).__name__ + ': ' + str(exc)[:400])
+        try:
+            _agent_json(_agent_batch_path(state, batch['id']), batch)
+        except (OSError, ValueError):
+            pass  # the already durable preparing manifest still identifies every intended member
+        return False
+    return True
+
+
+def enqueue_agent_batch(vault, state, ids=(), request=None, use_why=False, kinds=(), domains=(),
+                        limit=10, send=False, expected_plan=None):
+    """Only an explicit send commits. A preview neither creates state nor starts any process."""
+    import uuid
+    vault, state = Path(vault).resolve(), Path(state).resolve()
+    if type(send) is not bool:
+        raise ValueError('Toplu is gonderim secimi gecersiz.')
+    if expected_plan is not None and (not isinstance(expected_plan, str) or
+                                       not re.fullmatch(r'[a-f0-9]{64}', expected_plan)):
+        raise ValueError('Onizleme plan kimligi gecersiz.')
+    options = dict(ids=ids, request=request, use_why=use_why, kinds=kinds, domains=domains, limit=limit)
+    if not send:
+        return _agent_batch_plan(vault, state, **options)[0]
+    with _AgentFileLock(_agent_root(state) / 'queue.lock'), _WindowsCommitLock(vault):
+        plan, chosen, jobs, config = _agent_batch_plan(vault, state, **options)
+        if expected_plan and not secrets.compare_digest(expected_plan, plan['plan']):
+            raise ValueError('Onizleme plani degisti; kartlari ve ayarlari yeniden incele.')
+        if config['client'] == 'kapali':
+            raise ValueError('Ajan kapali; toplu is gonderilmedi.')
+        if plan['kayit_sorunlari']:
+            raise ValueError('Okunamayan is kayitlari var; kuyruk kapasitesi dogrulanamadi. Once ajan durumunu incele.')
+        invalid = [row['id'] + ': ' + row['hata'] for row in plan['kartlar'] if row['hata']]
+        if invalid:
+            raise ValueError('Toplu is girdisi gecersiz; hicbir is gonderilmedi: ' + '; '.join(invalid))
+        if len(chosen) > plan['bos_yer']:
+            raise ValueError('Toplu secim kuyruga sigmiyor; hicbir is gonderilmedi. Bos yer: ' + str(plan['bos_yer']))
+        if not chosen:
+            return dict(plan, status='toplu_bos', ipucu='Gonderilecek uygun bekleyen kart yok; is baslatilmadi.')
+        batch_id, created_ns = str(uuid.uuid4()), _agent_next_created_ns(jobs)
+        batch = {'schema': 1, 'id': batch_id, 'vault': str(vault), 'state': 'preparing',
+                 'created_ns': created_ns, 'created': now().isoformat(timespec='seconds'),
+                 'request_source': plan['istek_kaynagi'], 'plan': plan['plan'],
+                 'items': [{'card_id': row['id'], 'card_path': row['path'], 'request': row['istek'],
+                            'job_id': str(uuid.uuid4())} for row in plan['kartlar']]}
+        complete = _agent_batch_commit(vault, state, batch, chosen, config, created_ns)
+    if complete:
+        try:
+            _agent_spawn_worker(vault, state)
+        except Exception as exc:
+            # Another worker may already have claimed a member. Preserve all jobs, including queued ones.
+            with _AgentFileLock(_agent_root(state) / 'queue.lock'):
+                batch = _agent_batch_load(vault, state, batch_id)
+                batch['worker_error'] = 'Kuyruk uyandirilamadi; kayitli isler korundu. ajan-devam kullan. ' + type(exc).__name__
+                _agent_json(_agent_batch_path(state, batch_id), batch)
+    result = agent_batch_status(vault, state, batch_id)
+    result['status'] = 'toplu_gonderildi' if complete else 'toplu_kismi'
+    result['plan'] = plan['plan']
+    return result
+
+
+def _agent_batch_execution_evidence(vault, state, job):
+    if any(key in job for key in ('started', 'agent_pid', 'worker_pid', 'outcome', 'receipt', 'codex_mcp_off')):
+        return True
+    folder = _agent_job_dir(vault, state, job['id'])
+    return any(_agent_no_links(folder / name).exists() for name in
+               ('prompt.txt', 'events.jsonl', 'stderr.log', 'result.json', 'downloads', 'notes'))
+
+
+def _agent_end_cancelled(vault, state, job, reason):
+    """Queue lock is held by the caller. Persist cancellation before restoring the owned card."""
+    if (job['state'] not in ('preparing', 'queued', 'cancelled') or not job.get('batch_id') or
+            _agent_batch_execution_evidence(vault, state, job)):
+        raise ValueError('Baslamis veya calisma izi bulunan is geri alinamaz.')
+    current, _body = read_card(_agent_card_path(vault, job))
+    if current.get('ajan_isi') != job['id']:
+        raise ValueError('Kart baska bir ise ait; iptal icin degistirilmedi.')
+    job.update(state='cancelled', result_summary=reason, card_reconcile=True)
+    job.setdefault('ended', now().isoformat(timespec='seconds'))
+    _agent_json(_agent_job_dir(vault, state, job['id']) / 'job.json', job)
+    try:
+        _agent_update_card(vault, job, 'bekliyor', reason, ajan_asama='iptal')
+        job['card_reconcile'] = False
+        _agent_json(_agent_job_dir(vault, state, job['id']) / 'job.json', job)
+    except (OSError, ValueError) as exc:
+        _agent_log(state, job['card_id'], 'Iptal kart guncellemesi bekliyor: ' + type(exc).__name__)
+
+
+def cancel_agent_batch(vault, state, batch_id):
+    """Cancel queued members only; a running claim and all completed results remain untouched."""
+    vault, state = Path(vault).resolve(), Path(state).resolve()
+    cancelled, skipped = [], []
+    with _AgentFileLock(_agent_root(state) / 'queue.lock'):
+        batch = _agent_batch_load(vault, state, batch_id)
+        for item in batch['items']:
+            try:
+                job = _agent_batch_member(vault, state, batch, item)
+                if job['state'] == 'cancelled' and not job.get('card_reconcile'):
+                    continue  # idempotent; do not rewrite an already restored card
+                if job['state'] not in ('preparing', 'queued', 'cancelled'):
+                    skipped.append({'id': item['card_id'], 'neden': 'Is baslamis veya bitmis; sonucu ve karti korundu.'})
+                    continue
+                _agent_end_cancelled(vault, state, job, 'Kullanici toplu kuyruktaki baslamamis isi iptal etti.')
+                cancelled.append(item['card_id'])
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                skipped.append({'id': item['card_id'], 'neden': 'Guvenli iptal dogrulanamadi: ' + type(exc).__name__})
+        batch['cancel_requested'] = now().isoformat(timespec='seconds')
+        _agent_json(_agent_batch_path(state, batch_id), batch)
+    result = agent_batch_status(vault, state, batch_id)
+    result.update(status='toplu_iptal', iptal_edilen=cancelled, korunan=skipped)
+    return result
+
+
+def _agent_batch_human(result):
+    labels = {'preparing': 'hazirlaniyor', 'queued': 'sirada', 'running': 'calisiyor', 'completed': 'tamamlandi',
+              'failed': 'hata', 'approval_required': 'onay-bekliyor', 'cancelled': 'iptal',
+              'kayit_yok': 'kayit-yok', 'kayit_gecersiz': 'kayit-gecersiz'}
+    if result['status'] in ('toplu_onizleme', 'toplu_bos'):
+        lines = ['Toplu is onizlemesi: ' + str(result['secilen']) + ' kart, ' + str(result['bos_yer']) + ' bos kuyruk yeri.',
+                 'Ajan: ' + result['ajan'] + '; ag: ' + result['ag'] + '; istek: ' + result['istek_kaynagi'],
+                 'Plan: ' + result['plan']]
+        for row in result['kartlar']:
+            lines.append('[' + ('HATA' if row['hata'] else 'bekliyor') + '] ' + row['id'])
+            lines.append('  Istek: ' + json.dumps(row['istek'], ensure_ascii=False))
+            if row['hata']:
+                lines.append('  ' + row['hata'])
+        if not result['gonderilebilir'] and result['secilen']:
+            lines.append('Bu secim gonderime hazir degil; ayar, istek ve kuyruk kapasitesini kontrol et.')
+        if result['kayit_sorunlari']:
+            lines.append('Okunamayan is kaydi: ' + str(len(result['kayit_sorunlari'])))
+        lines.append(result['ipucu'])
+        return '\n'.join(lines)
+    lines = ['Toplu is: ' + result['batch_id'],
+             'Gonderim: ' + result['gonderim_durumu'] + '; tum isler bitti: ' + ('evet' if result['bitti'] else 'hayir')]
+    lines.append(', '.join(labels[key] + ': ' + str(value) for key, value in result['sayilar'].items() if value))
+    for row in result['kartlar']:
+        lines.append('[' + labels[row['durum']] + '] ' + row['id'])
+        if row.get('ozet'):
+            lines.append('  ' + json.dumps(row['ozet'], ensure_ascii=False))
+        if row.get('sonuc'):
+            lines.append('  Sonuc: ' + json.dumps(row['sonuc'], ensure_ascii=False))
+    if result.get('kart_uzlastirma_bekleyen'):
+        lines.append('Kart guncellemesi bekleyen: ' + str(result['kart_uzlastirma_bekleyen']) + '; ajan-devam kullan.')
+    for key in ('submission_error', 'worker_error'):
+        if result.get(key):
+            lines.append('UYARI: ' + result[key])
+    if result['status'] == 'toplu_kismi':
+        lines.append('Gonderim kismen kaldi; tum secimi tekrar gonderme. Kayitlari incele, gerekirse ajan-devam kullan.')
+    if result['status'] == 'toplu_iptal' and result.get('korunan'):
+        lines.append('Degistirilmeyen uye: ' + str(len(result['korunan'])) + '; calisan ve bitmis isler geri alinmaz.')
+    return '\n'.join(lines)
+
+
 # ---------------------------------------------------------------- CLI
 
 def default_state(vault):
@@ -11707,6 +12233,8 @@ def resolve_state(vault):
 
 
 def human(result, command):
+    if command in ('ajan-toplu', 'ajan-toplu-durum', 'ajan-toplu-iptal'):
+        return _agent_batch_human(result)
     if result.get('status') == 'yakalandi':
         return 'Beyne atildi: ' + result['path']
     if result.get('status') == 'mevcut_karta_eklendi':
@@ -11861,6 +12389,20 @@ def main(argv=None, vault=None, state=None):
     music.add_argument('provider', nargs='?', choices=('durum', 'audd', 'kapali'), default='durum')
     music.add_argument('--anahtar-dosyasi', type=Path,
                        help='Vault disindaki yerel UTF-8 anahtar dosyasi; yoksa terminalde gizli giris')
+    batch = command_parser('ajan-toplu', help='Bekleyen kartlari onizle; yalniz --gonder ile toplu ajana ver')
+    batch.add_argument('ids', nargs='*', metavar='KART_ID')
+    instruction = batch.add_mutually_exclusive_group(required=True)
+    instruction.add_argument('--neden', action='store_true', help='Her kartin ilk Neden alanini acik istek olarak kullan')
+    instruction.add_argument('--istek', help='Secilen her kart icin ayni acik istegi kullan')
+    batch.add_argument('--tur', action='append', default=[], help='Kaynak turu; birden cok kez verilebilir')
+    batch.add_argument('--alan', action='append', default=[], help='Tam alan adi, ornek: instagram.com')
+    batch.add_argument('--limit', type=int, default=10, help='En eski kac kart (varsayilan 10, en fazla 32)')
+    batch.add_argument('--gonder', action='store_true', help='Bu komutta secilen kartlari kalici kuyruga gonder')
+    batch.add_argument('--plan', help='Onizlemedeki 64 karakterli plan; degisirse gonderim reddedilir')
+    for name, description in (('ajan-toplu-durum', 'Toplu islerin gercek calisma sonucunu ve ozetini goster'),
+                              ('ajan-toplu-iptal', 'Yalniz bu toplu isin baslamamis kuyruk uyelerini geri al')):
+        batch_action = command_parser(name, help=description)
+        batch_action.add_argument('batch_id', metavar='TOPLU_ID')
     command_parser('ajan-devam', help='Kalici kuyrugu uyandir; kesilen isi otomatik tekrarlamaz')
     release = command_parser('ajan-serbest', help='Incelenmis hata/onay kartini normal islemeye birak')
     release.add_argument('id')
@@ -11901,6 +12443,14 @@ def main(argv=None, vault=None, state=None):
                                music=consent if args.ses_isle or args.tani_servise_gonder else None)
     elif command == 'ajan-muzik':
         result = configure_agent_music(vault, state, args.provider, args.anahtar_dosyasi)
+    elif command == 'ajan-toplu':
+        result = enqueue_agent_batch(vault, state, ids=args.ids, request=args.istek, use_why=args.neden,
+                                     kinds=args.tur, domains=args.alan, limit=args.limit,
+                                     send=args.gonder, expected_plan=args.plan)
+    elif command == 'ajan-toplu-durum':
+        result = agent_batch_status(vault, state, args.batch_id)
+    elif command == 'ajan-toplu-iptal':
+        result = cancel_agent_batch(vault, state, args.batch_id)
     elif command == 'ajan-devam':
         _agent_spawn_worker(vault, state)
         result = agent_status(vault, state)
@@ -11912,6 +12462,11 @@ def main(argv=None, vault=None, state=None):
         if getattr(args, 'hazir', False):
             result = warm_popup(vault, state, getattr(args, 'instance', None))
             if os.name == 'nt':
+                # The IPC reader is a daemon thread blocked on stdin; normal interpreter shutdown
+                # waits 1 s for that BufferedReader lock and then aborts the process
+                # (Fatal Python error: _enter_buffered_busy). DONE is already flushed by pipe.finish().
+                if argv is None:
+                    os._exit(0)
                 return 0  # protocol endpoint, not a second JSON CLI response
         else:
             context = json.loads(args.baglam) if getattr(args, 'baglam', None) else gather_context()

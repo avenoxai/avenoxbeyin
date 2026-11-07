@@ -131,13 +131,16 @@ class SnapshotTest(unittest.TestCase):
         self.assertTrue(rules['clipped'])
         self.assertEqual(rules['chars'], len(rules_file(45600)[0]))
         share = rules['share']
+        self.assertIn(f'Memory hygiene: Kurallar.md opens clipped (fit ceiling {share} of {rules["chars"]} chars).', text)
         self.assertEqual(companion.rules_opening(self.store, 5000), rules)
         # A rule file of exactly that size arrives whole; one character more is clipped.
         whole, _ = rules_file(share, exact=True)
         self.assertEqual(len(whole), share)
         self.write('Kurallar.md', whole)
         self.assertFalse(companion.rules_opening(self.store, 5000)['clipped'])
-        shown = section(companion.context(self.store, 5000, '0' * 24, 'claude'), 'Kurallar.md')
+        whole_text = companion.context(self.store, 5000, '0' * 24, 'claude')
+        self.assertNotIn('Memory hygiene: Kurallar.md opens clipped', whole_text)
+        shown = section(whole_text, 'Kurallar.md')
         self.assertEqual(shown, whole)
         self.write('Kurallar.md', rules_file(share + 1, exact=True)[0])
         self.assertTrue(companion.rules_opening(self.store, 5000)['clipped'])
@@ -185,6 +188,7 @@ class InstalledOpeningTest(unittest.TestCase):
         self.rules(text)
         context = self.session_start()
         self.assertLessEqual(len(context.encode('utf-16-le')) // 2, 10000)
+        self.assertIn('Memory hygiene: Kurallar.md opens clipped (fit ceiling ', context)
         shown = section(context, 'Kurallar.md')
         self.assertTrue(shown.startswith(HEAD), shown[:160])
         marker = MARKER.search(shown)
@@ -197,7 +201,7 @@ class InstalledOpeningTest(unittest.TestCase):
 
     def test_doctor_names_the_opening_ceiling_and_writes_nothing(self):
         self.rules(rules_file(45600)[0])
-        self.session_start()
+        initial_context = self.session_start()
         before = self.tree()
         report = json.loads(self.run_cli(self.vault / 'beyin.py', 'doctor', '--json'))['companion_rules_opening']
         human = self.run_cli(self.vault / 'beyin.py', 'doctor', '--human')
@@ -206,10 +210,14 @@ class InstalledOpeningTest(unittest.TestCase):
         self.assertIn(f'Kurallar.md acilista kirpiliyor (bilgi): kural metni {report["chars"]} karakter; '
                       f'Claude Code acilisi bu ayarlarla (5000 karakter) en fazla {report["share"]} karakterini tam gosterir',
                       human)
+        self.assertIn(f'Memory hygiene: Kurallar.md opens clipped (fit ceiling {report["share"]} of {report["chars"]} chars).',
+                      initial_context)
         # The number is the hook's own: a rule file of exactly that size arrives whole at SessionStart.
         whole, _ = rules_file(report['share'], exact=True)
         self.rules(whole)
-        self.assertEqual(section(self.session_start(), 'Kurallar.md'), whole)
+        whole_context = self.session_start()
+        self.assertEqual(section(whole_context, 'Kurallar.md'), whole)
+        self.assertNotIn('Memory hygiene: Kurallar.md opens clipped', whole_context)
         self.assertEqual(json.loads(self.run_cli(self.vault / 'beyin.py', 'doctor', '--json'))
                          ['companion_rules_opening']['status'], 'ok')
         self.assertNotIn('Kurallar.md acilista kirpiliyor', self.run_cli(self.vault / 'beyin.py', 'doctor', '--human'))

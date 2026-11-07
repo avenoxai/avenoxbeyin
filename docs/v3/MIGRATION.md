@@ -151,6 +151,11 @@ worker projects new structured receipt summaries into:
   edited one is kept and reported as a conflict until you move or delete it.
 - `knowledge/v3/outcomes.md`: an index linking those outcomes to their receipts.
 
+Both views link a receipt as `[[receipts/<hash>.md|<event_id>]]`, so the reading
+view shows the event id instead of the hash file name; `[`, `]`, `|`, `#` and `^`
+in an id become spaces and the alias stops at 80 characters. Views written
+before this change are regenerated on the next sync unless they were edited.
+
 These are explicitly generated indexes of agent-authored claims, not automatic
 knowledge distillation or external verification. Existing human daily and
 knowledge texts remain untouched. Pre-cutover receipt files are not recaptured.
@@ -223,8 +228,11 @@ receipt already closed (#373). Edits made during such a turn count toward the
 latest turn a person started.
 
 The per-turn context names receipt gaps only for sessions that finished in the
-last 7 days, with their count as measured by the latest sync. The all-time
-count stays in `doctor` as `potential_missing_receipts`.
+last 7 days, with their count as measured by the latest sync. Checkpoints from
+edit-observing harnesses that saw no file edits are reported separately in the
+warning (`(N without observed edits)`) and tagged in `receipt-gaps.json`,
+matching `doctor`'s `no_observed_edit` counter (#462). The all-time count stays
+in `doctor` as `potential_missing_receipts`.
 
 `doctor` also reports `receipt_coverage`: the share of finished sessions with a
 matching receipt, for all time and for the last 7 and 30 days, measured when
@@ -235,7 +243,12 @@ count can therefore be smaller than `potential_missing_receipts`, which counts
 every finished checkpoint. Checkpoints recorded before this field existed have
 no prompt marker, so the ratio starts with sessions after the upgrade and stays
 `null` until one is observed. A receipt whose `created_at` cannot be read never
-covers a session.
+covers a session. The global bridge installs no UserPromptSubmit, so sessions
+outside the vault never count. `without_prompt` reports how many finished
+sessions were left out for lacking a prompt marker, wherever they ran: sessions
+outside the vault, and vault sessions recorded before the marker existed or
+closed before a prompt was observed. `without_prompt_with_receipt` counts how
+many of them wrote a receipt anyway.
 
 ## Validation boundary
 
