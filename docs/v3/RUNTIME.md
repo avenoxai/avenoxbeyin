@@ -98,9 +98,9 @@ veya symlink yapılandırma üzerine yazılmaz; önce dosyayı onar.
 - `workspace provision <id>` ilk dosyadan önce `provision.status: pending` kaydını yazar, sonra
   klasörleri ve şablonları oluşturur (var olan dosya korunur), klasörleri bağlar ve doğrular.
   Proje klasörü vault'un kendi proje klasörünün altındadır (şablonda `🏰 300-Projects/<id>`,
-  yoksa `projects/<id>`). `--source` verilse de kural ve MOC şablonlarının bulunduğu proje klasörü ve not kökü de bu
-  çalışma alanına bağlanır (`plan` çıktısındaki `bindings`); doğrulama, şablon dosyalarının
-  retrieval kapsamında bu çalışma alanına düştüğünü de denetler.
+  yoksa `projects/<id>`). `--source` verilse de kural ve MOC şablonlarının bulunduğu bu klasör
+  ve not kökü de çalışma alanına bağlanır (`plan` çıktısındaki `bindings`); doğrulama, şablon
+  dosyalarının retrieval kapsamında bu çalışma alanına düştüğünü de denetler.
   Hata olursa yalnız bu denemenin kendi değişiklikleri geri alınır: oluşturduğu ve değişmemiş
   dosyalar, boş kalan klasörler, hala bu çalışma alanını gösteren bağlantılar ve kendi kaydı.
   Arada yapılmış başka değişiklikler korunur. Bir şey geri alınamazsa hata çıktısındaki
@@ -122,14 +122,15 @@ veya symlink yapılandırma üzerine yazılmaz; önce dosyayı onar.
   MOC'unkinden dar olmamalı (`visibility: public` bir MOC yalnız public notları listeler) ve
   `trust: untrusted` ya da reddedilmiş çıkarım olmamalı. İç içe kapsamda her proje klasörü için
   ayrı `moc --folder <klasör>` çalıştır; atlanan notlar çıktıdaki `skipped` sayılarında görünür.
-  Kapsam dosyası değişince `moc` yeniden çalıştırılmalı. Değişiklik
-  yoksa dosyaya yazılmaz. Obsidian Beyin kilidini kullanmadığı için dosya, yeni metin hazır
+  Kapsam dosyası değişince `moc` yeniden çalıştırılmalı. Değişiklik yoksa dosyaya yazılmaz.
+  Obsidian Beyin kilidini kullanmadığı için dosya, yeni metin hazır
   olduktan sonra yeniden adlandırmadan hemen önce (içerik özeti, mtime, boyut, inode) tekrar
   karşılaştırılır; değiştiyse hiçbir şey yazılmaz ve komut yeniden çalıştırılmayı ister.
   macOS ve Linux'ta eski dosya yeniden adlandırma boyunca açık tutulur, bu arada yerinde
   kaydedilen bir düzenleme fark edilip geri konur; önce dosyayı boşaltıp sonra yazan editör
-  için geri koymadan önce dosyanın değişmesi durana kadar (en fazla 0,2 sn) beklenir. Kalan sınır: bir editör dosyayı tam bu
-  mikro saniyelik aralıkta yeni bir dosyayla değiştirirse işletim sistemi bunu kilitleyemez.
+  için geri koymadan önce dosyanın değişmesi durana kadar (en fazla 0,2 sn) beklenir. Kalan
+  sınır: bir editör dosyayı tam bu mikro saniyelik aralıkta yeni bir dosyayla değiştirirse
+  işletim sistemi bunu kilitleyemez.
 
 ## Receipt görünümü çakışması ve kurtarma
 
