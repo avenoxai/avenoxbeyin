@@ -106,6 +106,28 @@ class AutoContextTest(unittest.TestCase):
         sent = [n['title'] for n in self.calls[0][0]['state']['notes'].values()]
         self.assertEqual(sorted(sent), ['deploy', 'pricing', 'rollback'])
 
+    def test_a_drop_returns_its_room_to_the_kept_record_text(self):
+        detail = ' '.join('Deploy step %d checks the quartz site build.' % i for i in range(20))
+        self.record('price-long', 'Quartz pricing: deploy the yearly plan at ninety dollars. ' + detail)
+        self.record('deploy-long', 'Quartz deploy steps: push to main, the site server pulls. ' + detail)
+        self.answers.update({'price-long': 0.05, 'deploy-long': 0.9})
+        self.config()
+        local = self.store.context_for('claude', QUERY, strict=True, budget_chars=1500)
+        clipped = {r['id']: r['text'] for r in local['records']}
+        self.assertIn('price-long', clipped)
+        self.assertTrue(next(r for r in local['records'] if r['id'] == 'deploy-long')['text_truncated'])
+        result = self.filtered(context=local, budget_chars=1500)
+        self.assertNotIn('price-long', self.ids(result))
+        kept = next(r for r in result['records'] if r['id'] == 'deploy-long')
+        # The first pack cut this text to share the budget; the drop frees room, so the final
+        # pack starts again from the retrieved excerpt instead of the earlier clip.
+        self.assertGreater(len(kept['text']), len(clipped['deploy-long']))
+        self.assertLessEqual(result['used_chars'], 1500)
+        # The final envelope is packed from the unclipped originals as well.
+        self.assertEqual([s['id'] for s in result.sources], self.ids(result))
+        self.assertGreaterEqual(len(next(s for s in result.sources if s['id'] == 'deploy-long')['text']),
+                                len(kept['text']))
+
     def test_budget_bounds_the_final_set(self):
         self.config()
         self.answers.update(pricing=0.9, rollback=0.9)

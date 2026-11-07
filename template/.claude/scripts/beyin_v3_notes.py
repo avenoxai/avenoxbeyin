@@ -8,6 +8,7 @@ import hashlib
 import base64
 import errno
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -65,7 +66,9 @@ def _checked_source(engine, source):
     if (folded[-1] in EXCLUDED_FILES or folded[-1].startswith('setup-') or
             any(part in EXCLUDED_DIRS for part in folded[:-1])):
         raise ValueError('configuration or excluded source rejected')
-    engine._refuse_excluded(source)
+    from beyin_v3 import sensitive_source
+    if sensitive_source(source):
+        raise ValueError('source is under a sensitive directory excluded from the memory index')
     path = engine._path(source)
     # Sync follows a junction that stays inside the vault; a cooperative writer is stricter
     # and never writes through any link or reparse point between the vault and the note.
@@ -150,16 +153,34 @@ def _bytes(path):
 
 @contextmanager
 def locked(engine, timeout=15):
+    """Engine entry point; all human-note writers share the vault protocol."""
+    with vault_locked(engine.root, timeout=timeout) as folder:
+        yield folder
+
+
+@contextmanager
+def vault_locked(vault, timeout=15):
+    """Persistent vault-wide OS lock, also usable without a database/SyncEngine.
+
+    Order: note lock -> optional companion lock -> database transaction.
+    Recovery already holding the DB may only try this lock with timeout=0.
+    """
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        raise ValueError('timeout must be a number')
+    timeout = float(timeout)
+    if not math.isfinite(timeout) or timeout < 0:
+        raise ValueError('timeout must be finite and non-negative')
+    vault = Path(vault).resolve()
     # Recovery can run inside note-create/note-edit's sync. Reuse only this
     # thread's lock; a forked child and other threads still need their own OS lock.
     held = getattr(_HELD_LOCKS, 'held', None)
     if held is None:
         held = _HELD_LOCKS.held = {}
-    key = (os.getpid(), os.path.normcase(str(engine.root)))
+    key = (os.getpid(), os.path.normcase(str(vault)))
     if key in held:
         yield held[key]
         return
-    folder = engine.root / LOCAL_DIRECTORY
+    folder = vault / LOCAL_DIRECTORY
     _unlinked(folder)
     folder.mkdir(exist_ok=True, mode=0o700)
     # Also protects existing installs whose top-level .gitignore is user-owned.
@@ -172,38 +193,67 @@ def locked(engine, timeout=15):
         pass
     lock = folder / 'writer.lock'
     _unlinked(lock)
-    with lock.open('a+b') as handle:
-        # Windows can lock byte zero beyond EOF. Do not write a sentinel before
-        # acquisition: another handle may already own that byte of an empty file.
-        deadline = time.monotonic() + timeout
-        while True:
+    deadline = time.monotonic() + timeout
+    while True:
+        _unlinked(lock)
+        with lock.open('a+b') as handle:
+            # Windows can lock byte zero beyond EOF. Do not write a sentinel before
+            # acquisition: another handle may already own that byte of an empty file.
+            while True:
+                try:
+                    handle.seek(0)
+                    if os.name == 'nt':
+                        import msvcrt
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise NoteConflict('writer busy; reread the source and retry') from exc
+                    time.sleep(0.05)
+
+            stale = False
             try:
+                st1 = os.fstat(handle.fileno())
+                _unlinked(lock)
+                st2 = os.stat(lock)
+                if st1.st_dev != st2.st_dev or st1.st_ino != st2.st_ino:
+                    stale = True
+            except OSError:
+                stale = True
+
+            if stale:
                 handle.seek(0)
                 if os.name == 'nt':
                     import msvcrt
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
                 else:
                     import fcntl
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except OSError as exc:
-                if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
-                    raise
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                 if time.monotonic() >= deadline:
-                    raise NoteConflict('writer busy; reread the source and retry') from exc
+                    raise NoteConflict('writer busy; reread the source and retry')
                 time.sleep(0.05)
-        try:
-            held[key] = folder
+                continue
+
             try:
-                yield folder
+                held[key] = folder
+                try:
+                    yield folder
+                    return
+                finally:
+                    held.pop(key, None)
             finally:
-                held.pop(key, None)
-        finally:
-            handle.seek(0)
-            if os.name == 'nt':
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                handle.seek(0)
+                if os.name == 'nt':
+                    import msvcrt
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def read(engine, source):
@@ -409,19 +459,26 @@ def _apply(engine, request, committed):
         # Keep the lock through indexing so another participating writer cannot
         # change this source between the write and projection readback.
         result = engine.sync()
-        with engine.store._connect() as db:
-            row = db.execute('SELECT r.payload FROM records r JOIN markdown_sources m ON r.id=m.id '
-                             'WHERE m.source=?', (source,)).fetchone()
-        if (engine._source_issues(result, source) or not row or
-                json.loads(row[0]).get('source_sha256') != _hash(updated) or
-                _bytes(source_path(engine, source)) != updated):
-            raise NoteConflict('source written but index readback failed; reread and run sync')
-        written_details = {
-            'status': 'written',
-            'source': source,
-            'sha256': _hash(updated),
-            'backup': backup.relative_to(engine.root).as_posix() if backup else None,
-        }
-        if evidence_refs:
-            written_details['evidence_refs'] = evidence_refs
-        return engine._write_diagnostics(written_details, result)
+        from beyin_v3_index import dir_key, exclusions as index_exclusions
+        excluded_keys = index_exclusions(engine.state, engine.root)[0] if engine.state else frozenset()
+        is_index_excluded = bool(excluded_keys and any(dir_key(part) in excluded_keys for part in Path(source).parts[:-1]))
+        if not is_index_excluded:
+            with engine.store._connect() as db:
+                row = db.execute('SELECT r.payload FROM records r JOIN markdown_sources m ON r.id=m.id '
+                                 'WHERE m.source=?', (source,)).fetchone()
+            if (engine._source_issues(result, source) or not row or
+                    json.loads(row[0]).get('source_sha256') != _hash(updated) or
+                    _bytes(source_path(engine, source)) != updated):
+                raise NoteConflict('source written but index readback failed; reread and run sync')
+        else:
+            if _bytes(source_path(engine, source)) != updated:
+                raise NoteConflict('external edit detected after replace; reread source')
+    written_details = {
+        'status': 'written',
+        'source': source,
+        'sha256': _hash(updated),
+        'backup': backup.relative_to(engine.root).as_posix() if backup else None,
+    }
+    if evidence_refs:
+        written_details['evidence_refs'] = evidence_refs
+    return engine._write_diagnostics(written_details, result)

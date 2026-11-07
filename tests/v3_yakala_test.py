@@ -15,6 +15,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -811,7 +812,8 @@ class YakalaUnitTest(unittest.TestCase):
 
     def test_fallback_on_other_systems_never_opens_a_linux_dialog(self):
         with patch.object(yakala, '_linux_ask', side_effect=AssertionError('Linux dialog')), \
-                patch.object(yakala, '_osascript', return_value='mac nedeni') as mac:
+                patch.object(yakala, '_osascript', return_value='mac nedeni') as mac, \
+                patch.object(yakala, 'default_state', return_value=Path(self.tmp.name) / 'capture-state'):
             with patch.object(yakala.sys, 'platform', 'darwin'):
                 saved = yakala._popup_fallback(self.vault, {'url': 'https://ornek.com/mac', 'baslik': 'Başlık', 'uygulama': 'Safari'})
             with patch.object(yakala.sys, 'platform', 'win32'):
@@ -1076,7 +1078,7 @@ class YakalaUnitTest(unittest.TestCase):
                 patch.object(yakala.sys, 'platform', 'darwin'), \
                 patch.object(yakala.os, 'getuid', return_value=501, create=True), \
                 patch.object(yakala, '_listener_ok', return_value=True), \
-                patch.object(yakala.subprocess, 'run'):
+                patch.object(yakala.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, b'', b'')):
             yakala.install(self.vault, state)
             import plistlib
             plist = plistlib.loads(agent.read_bytes())
@@ -1139,6 +1141,51 @@ class YakalaUnitTest(unittest.TestCase):
             yakala.install(self.vault, state)
         self.assertEqual(calls, [('bootout', True), ('bootstrap', True), ('print', True)])
         self.assertEqual(runner.read_bytes(), script.read_bytes())
+
+    def test_mac_bootstrap_retries_only_eio_without_final_sleep(self):
+        for code, attempts in ((5, 3), (1, 1), (64, 1)):
+            with self.subTest(code=code):
+                result = subprocess.CompletedProcess(['launchctl', 'bootstrap'], code, b'', b'failure')
+                with patch.object(yakala.subprocess, 'run', return_value=result) as run, patch('time.sleep') as sleep:
+                    with self.assertRaises(subprocess.CalledProcessError) as raised:
+                        yakala._bootstrap_with_retry('gui/501', Path('test.plist'), retries=3)
+                self.assertEqual(raised.exception.returncode, code)
+                self.assertEqual(run.call_count, attempts)
+                self.assertEqual(sleep.call_count, attempts - 1)
+
+    def test_mac_install_retries_bootstrap_on_eio(self):
+        state, agent = Path(self.tmp.name) / 'mac-state', Path(self.tmp.name) / 'agent.plist'
+        bootstrap_attempts = []
+
+        def launchctl(command, **_options):
+            if command[1] == 'bootstrap':
+                bootstrap_attempts.append(len(bootstrap_attempts) + 1)
+                # First attempt fails with EIO (code 5) due to asynchronous bootout unwinding
+                if len(bootstrap_attempts) == 1:
+                    return subprocess.CompletedProcess(command, 5, b'', b'Bootstrap failed: 5: Input/output error\n')
+                return subprocess.CompletedProcess(command, 0, b'', b'')
+            return subprocess.CompletedProcess(command, 0, b'\tstate = running\n', b'')
+
+        with self.mac(agent, launchctl):
+            result = yakala.install(self.vault, state)
+            self.assertIs(result['kisayol_calisiyor'], True)
+        self.assertEqual(bootstrap_attempts, [1, 2])
+
+    def test_mac_install_sanitizes_environment_path(self):
+        import plistlib
+        state, agent = Path(self.tmp.name) / 'mac-state', Path(self.tmp.name) / 'agent.plist'
+        polluted_path = '/var/folders/zz/tmp_session_shim/bin:/usr/bin:/bin'
+
+        with patch.dict(os.environ, {'PATH': polluted_path}):
+            with self.mac(agent, lambda cmd, **_opt: subprocess.CompletedProcess(cmd, 0, b'\tstate = running\n', b'')):
+                yakala.install(self.vault, state)
+
+        plist = plistlib.loads(agent.read_bytes())
+        saved_path = plist['EnvironmentVariables']['PATH']
+        self.assertNotIn('/var/folders/zz/tmp_session_shim/bin', saved_path)
+        self.assertIn('/usr/bin', saved_path)
+        self.assertIn('/opt/homebrew/bin', saved_path)
+        self.assertIn(str(Path(sys.executable).parent), saved_path)
 
     def test_uninstall_boots_the_listener_out_before_its_files_go(self):
         state, agent, calls = Path(self.tmp.name) / 'mac-state', Path(self.tmp.name) / 'agent.plist', []
@@ -1924,6 +1971,112 @@ class YakalaWindowsCommandUnitTest(unittest.TestCase):
         self.assertIsNone(result)
 
 
+def _cleanup_windows_fixture(directory, timeout=5.0):
+    # The child has exited before cleanup. Another Windows handle can briefly keep
+    # its copied image shared; retain a hard failure for a persistent lock.
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            directory.cleanup()
+            return
+        except PermissionError as error:
+            if getattr(error, 'winerror', None) != 32:
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            time.sleep(min(0.05, remaining))
+
+
+class WindowsFixtureCleanupTest(unittest.TestCase):
+    @staticmethod
+    def sharing_error():
+        error = PermissionError('fixture executable is still shared')
+        error.winerror = 32
+        return error
+
+    def test_transient_sharing_lock_eventually_removes_directory(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = tempfile.TemporaryDirectory(dir=root)
+            path = Path(directory.name)
+            (path / 'node.exe').write_bytes(b'fixture')
+            cleanup = directory.cleanup
+            def cleanup_after_release():
+                if directory.cleanup.call_count == 1:
+                    raise self.sharing_error()
+                cleanup()
+            # The second attempt performs actual deletion, not just a mocked success.
+            directory.cleanup = Mock(side_effect=cleanup_after_release)
+            with patch.object(time, 'sleep') as sleep:
+                _cleanup_windows_fixture(directory)
+            self.assertEqual(directory.cleanup.call_count, 2)
+            sleep.assert_called_once()
+            self.assertFalse(path.exists())
+
+    def test_persistent_sharing_lock_raises_at_deadline(self):
+        error = self.sharing_error()
+        directory = Mock()
+        directory.cleanup.side_effect = error
+        with patch.object(time, 'monotonic', side_effect=[0, 0, 5]), patch.object(time, 'sleep'):
+            with self.assertRaises(PermissionError) as caught:
+                _cleanup_windows_fixture(directory)
+        self.assertIs(caught.exception, error)
+        self.assertEqual(directory.cleanup.call_count, 2)
+
+    def test_other_permission_errors_are_never_retried(self):
+        for code in (None, 5):
+            with self.subTest(winerror=code):
+                error = PermissionError('access denied')
+                if code is not None:
+                    error.winerror = code
+                directory = Mock()
+                directory.cleanup.side_effect = error
+                with patch.object(time, 'sleep') as sleep:
+                    with self.assertRaises(PermissionError) as caught:
+                        _cleanup_windows_fixture(directory)
+                self.assertIs(caught.exception, error)
+                directory.cleanup.assert_called_once()
+                sleep.assert_not_called()
+
+    @unittest.skipUnless(os.name == 'nt', 'native Windows sharing handle')
+    def test_real_sharing_handle_is_released_before_successful_cleanup(self):
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                        wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        with tempfile.TemporaryDirectory() as root:
+            directory = tempfile.TemporaryDirectory(dir=root)
+            path = Path(directory.name)
+            executable = path / 'node.exe'
+            executable.write_bytes(b'fixture')
+            # Share reads/writes, but deny deletion while this handle is open.
+            handle = kernel32.CreateFileW(str(executable), 0x80000000, 3, None, 3, 0, None)
+            self.assertNotEqual(handle, ctypes.c_void_p(-1).value)
+            released = []
+            wait = time.sleep
+            def release(_delay):
+                nonlocal handle
+                if handle is not None:
+                    self.assertTrue(kernel32.CloseHandle(handle))
+                    released.append(handle)
+                    handle = None
+                wait(_delay)
+            try:
+                with patch.object(time, 'sleep', side_effect=release) as sleep:
+                    _cleanup_windows_fixture(directory)
+                self.assertGreaterEqual(sleep.call_count, 1)
+                self.assertEqual(len(released), 1)
+                self.assertFalse(path.exists())
+            finally:
+                if handle is not None:
+                    kernel32.CloseHandle(handle)
+                directory.cleanup()
+
+
 @unittest.skipUnless(os.name == 'nt', 'Windows cmd.exe argument handling')
 class YakalaWindowsRunTest(unittest.TestCase):
     """Real child processes on Windows. On 3.9.0 these fail: the marker command runs and the URL
@@ -1932,7 +2085,7 @@ class YakalaWindowsRunTest(unittest.TestCase):
     def setUp(self):
         public_dns_fixture(self)
         self.tmp = tempfile.TemporaryDirectory(prefix='v3-winrun-')
-        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(_cleanup_windows_fixture, self.tmp)
         self.work = Path(self.tmp.name)
         self.marker = self.work / MARKER
         old = os.getcwd()
