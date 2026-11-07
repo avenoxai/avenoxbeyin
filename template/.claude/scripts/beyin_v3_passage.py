@@ -109,6 +109,32 @@ def settings(state_dir):
     return result
 
 
+def unscoped_settings(state_dir):
+    """Opt-in rules of unscoped explicit `context` lookups (MemoryStore._unscoped_rules).
+
+    unscoped_min_shared is 1 or 2 and unscoped_dominant_weight is 0 < w <= 1; the defaults
+    1 and 1.0 leave that path unchanged, and so does an invalid file or value. Same file as
+    settings(); versions that do not know these keys ignore them.
+    """
+    result = {"min_shared": 1, "dominant_weight": 1.0}
+    path = Path(state_dir) / CONFIG_NAME
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 65536:
+            return result
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return result
+    if not isinstance(value, dict):
+        return result
+    shared = value.get("unscoped_min_shared")
+    if type(shared) is int and shared in (1, 2):
+        result["min_shared"] = shared
+    weight = value.get("unscoped_dominant_weight")
+    if type(weight) in (int, float) and 0.0 < weight <= 1.0:
+        result["dominant_weight"] = float(weight)
+    return result
+
+
 def _windows(text, start, end, target, overlap):
     """Cut an oversized span on sentence, then whitespace, boundaries; windows overlap."""
     if end - start <= target + overlap:

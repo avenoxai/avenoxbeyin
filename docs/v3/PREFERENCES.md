@@ -352,9 +352,36 @@ Runtime klasöründeki (konumu için bkz. QUICKSTART) isteğe bağlı `retrieval
 
 - `strict_floor`: 0 ile 2 arası sayı, varsayılan 0,20. Yükseltmek yanlış eklemeyi azaltır, cevabı bulma oranını da düşürür.
 - `strict_exclude`: vault köküne göre en fazla 64 yol öneki. `daily/` ve `receipts/` her zaman dışarıdadır, liste bunlara eklenir. Karşılaştırma büyük/küçük harfe ve Unicode biçimine (NFC/NFD) duyarsızdır, `\` ayırıcısı da kabul edilir. Arşiv ya da oturum dökümü klasörleri için uygundur. Bu ayar strict arama yollarında, not düzeyi yedek arama dahil, sonuçları eler. `context_mode: session` açılışındaki companion kaynak seçimine uygulanmaz ve açık non-strict geçmiş aramasını engellemez. Arşiv klasörünü indeksten tamamen uzak tutmak için aşağıda anlatılan `--index-exclude-dir` tercih edilmelidir.
+- `unscoped_min_shared` (1 ya da 2, varsayılan 1) ve `unscoped_dominant_weight` (0'dan büyük, en fazla 1; varsayılan 1): yalnız `--project` verilmeden çalışan açık `beyin.py context` aramasına iki isteğe bağlı kural ekler. İkisi de varsayılan olarak kapalıdır; ayrıntı aşağıdaki bölümde.
 - Dosya bozuksa ya da bir değer geçersizse varsayılanlar kullanılır; hook bozulmaz.
 
-Bu ayar makineye özeldir ve `.beyin-preferences.json` şemasına girmez: eski bir sürüme dönüldüğünde tanımadığı bir tercih alanı yüzünden hook'un durması istenmedi.
+Bu ayar makineye özeldir ve `.beyin-preferences.json` şemasına girmez: eski bir sürüme dönüldüğünde tanımadığı bir tercih alanı yüzünden hook'un durması istenmedi. Eski sürümler bu dosyada okumadıkları anahtarları yok sayar.
+
+### Projesiz açık arama: iki isteğe bağlı kural (#532)
+
+`beyin.py context "<soru>"` proje verilmeden çalıştığında sonuçlar BM25 ile sıralanır ve soruyla tek bir kelime paylaşan not da sonuca girer. Notların çoğunu tek bir projede (ders notları, eski bir arşiv) tutan bir vault'ta bu iki şey olabilir: o proje her sorunun ilk beşini hacmiyle doldurur ve vault dışı bir soru tek ortak kelime yüzünden alakasız bir not getirir. İki kural bunlar için `retrieval.json` ile açılır:
+
+```json
+{"unscoped_min_shared": 2, "unscoped_dominant_weight": 0.25}
+```
+
+- `unscoped_min_shared: 2`: çok kelimeli bir soru, notla en az iki kelime paylaşmalıdır (hook'un strict yolundaki kapının aynısı). Tek ortak kelimeyle gelen not elenir; hiçbir not kalmazsa sonuç `records: []` ve `abstained: true` olur. Tam ad eşleşmesi (#354) ya da notun kendi projesini adlandıran bir kelime tek başına yeter ("tavla oyunu ne durumda" tavla notlarına ulaşır). Tek kelimelik soru tek ortak kelimeyle çalışmaya devam eder; yazım hatası düzeltmesi düzelttiği kelimenin yerine sayılır, ikinci kelime sayılmaz.
+- `unscoped_dominant_weight`: uygun kayıtların yarısından fazlasını tek bir proje tutuyorsa (indeks en az 20 kayıt) o projenin kayıtlarının BM25 ağırlığı bu katsayıyla çarpılır. Kayıt silinmez, yalnız aşağı iner. Ad eşleşmesi, vadesi gelen görev ve kapalı görev düzeltmeleri ölçeklenmez. Soruda projenin adı ya da `.beyin-projects.json` içinde ona eşlenen klasörün adı geçiyorsa düşürme uygulanmaz. Kaydın projesi önce kendi `project` alanından, yoksa `.beyin-projects.json` klasör eşlemesinden gelir; `--project` ile aynı mantık.
+- Etkilemedikleri: `--project` verilen sorgular, her mesajdaki hook bağlamı (strict yol), oturum açılışındaki companion seçimi, Jev aday havuzları ve `--jev` yolu.
+
+Neden kapalı: kazanç vault'un yapısına bağlı. Katkıyı getiren ölçümde (698 not, notların %83'ü tek bir ders projesinde) iki kural birlikte İngilizce 20 soruda top-1'i 14'ten 16'ya çıkardı, top-3'ü 18'den 17'ye indirdi; vault dışı 4 sorunun 4'ünde boş sonuç döndü (önce 0), sonradan okunan notu ilk beşte bulma 8'den 7'ye indi. Depodaki sabit fixture'lar aynı projesiz açık arama yolundan sorulduğunda:
+
+| Ölçüm (projesiz açık `context`) | kapalı (varsayılan) | `unscoped_min_shared: 2` | `unscoped_dominant_weight: 0.25` |
+|---|---|---|---|
+| Arama benchmark'ı, 32 soru, proje yok: top-1 / top-3 | 30 / 32 | 30 / 32 | 30 / 32 |
+| Aynı benchmark, üst klasör proje sayıldığında (`knowledge` %57): top-1 / top-3 | 30 / 32 | 30 / 32 | 21 / 26 |
+| Pasaj korpusu, 42 kısa soru, cevaplar %71'lik projede: ilk beşte | 41 | 41 | 24 |
+| Aynı korpus, proje %80: ilk beşte, kısa / uzun soru | 41 / 38 | 41 / 38 | 10 / 0 |
+| Karar fixture'ı, 22 beklenen not: bulunan / fazladan teslim | 19 / 43 | 18 / 32 | 19 / 43 |
+| Pasaj korpusu gürültüsü, 15 gündelik / 15 ajan komutu: sonuç dönen | 12 / 13 | 5 / 4 | 12 / 13 |
+| Senaryo fixture'ı, 12 cevaplı soru: ilk beşte | 12 | 12 | 12 |
+
+Düşürme, cevaplar baskın projenin içindeyken her katsayıda (0,25 ile 0,9 arası denendi) isabeti azaltıyor; eşiği yükseltmek yalnız sınırı kaydırıyor. İki kelime kuralı gürültüyü belirgin azaltıyor ama tek ortak kelimeyle doğru notu bulan bir soruyu ("aynı şekilde geri al") boş bırakıyor. Bu yüzden ikisi de açıkça seçilen ayarlar. Vault'unuzda notların çoğu tek bir projedeyse ve projesiz sorularınız genelde o projeyle ilgili değilse açmayı deneyin; önce ve sonra kendi sorularınızla ölçün.
 
 ### Ölçüm ve varsayılan `strict_floor`
 
