@@ -1,5 +1,6 @@
 """Unit tests for mobile / external ingest server (Issue #288 Item 4)."""
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -332,6 +333,122 @@ class IngestServerTest(unittest.TestCase):
             time.sleep(0.02)
         self.assertEqual(len(closed), len(accepted))
         self.assertEqual(errors, [])
+
+    def test_invalid_unicode_json_returns_400_and_server_remains_healthy(self):
+        server = ingest_server.create_server(self.vault, port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close(), thread.join(2)))
+        base = f'http://127.0.0.1:{server.server_address[1]}'
+        request = urllib.request.Request(base + '/ingest', data=b'{"text":"\\ud800"}',
+                                         headers={'Content-Type': 'application/json'})
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            urllib.request.urlopen(request)
+        error = raised.exception
+        try:
+            self.assertEqual(error.code, 400)
+            self.assertEqual(json.loads(error.read())['error'], 'bad_request')
+        finally:
+            error.close()
+        self.assertEqual(list(self.vault.rglob('*.md')), [])
+        with urllib.request.urlopen(base + '/health') as response:
+            self.assertEqual(response.status, 200)
+
+    def test_allow_reuse_address_is_enabled(self):
+        server = ingest_server.create_server(self.vault, port=0)
+        try:
+            self.assertEqual(server.allow_reuse_address, os.name not in ("nt", "cygwin"))
+        finally:
+            server.server_close()
+
+    def test_daemon_survives_bad_request_unicode(self):
+        import socket
+        import threading
+        server = ingest_server.create_server(self.vault, port=0)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close(), t.join(2)))
+
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect(("127.0.0.1", port))
+        # Send raw invalid bytes at the HTTP request boundary to trigger unhandled exceptions
+        s.sendall(b"\xff\xfe\xfa\r\n\r\n")
+        try:
+            s.recv(1024)
+        except OSError:
+            pass
+        finally:
+            s.close()
+        
+        # Server must still be responsive
+        import urllib.request
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health") as resp:
+            self.assertEqual(resp.status, 200)
+
+
+
+    def raw_http_client(self):
+        import socket
+        server = ingest_server.create_server(self.vault, port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close(), thread.join(2)))
+
+        def exchange(payload):
+            with socket.create_connection(('127.0.0.1', server.server_address[1]), timeout=5) as connection:
+                connection.sendall(payload)
+                connection.shutdown(socket.SHUT_WR)
+                response = bytearray()
+                while True:
+                    chunk = connection.recv(4096)
+                    if not chunk:
+                        return bytes(response)
+                    response.extend(chunk)
+        return exchange
+
+    def test_malformed_utf8_request_line_returns_400(self):
+        # BaseHTTPRequestHandler decodes request lines as Latin-1. Its syntax
+        # validation already rejects these bytes; no UnicodeError catch is needed.
+        response = self.raw_http_client()(b'\xff\xfe\xfa\r\n\r\n')
+        self.assertIn(b'400', response)
+        self.assertFalse(any(self.vault.rglob('*.md')))
+
+    def test_malformed_requests_and_content_length_resilience(self):
+        exchange = self.raw_http_client()
+        for length, status, message in ((b'not-a-number', b'400', b'Invalid Content-Length'),
+                                        (b'-50', b'400', b'Negative Content-Length'),
+                                        (b'2000000', b'413', b'Payload exceeds')):
+            with self.subTest(length=length):
+                response = exchange(b'POST /ingest HTTP/1.1\r\nContent-Length: ' + length + b'\r\n\r\n')
+                self.assertIn(status, response.split(b'\r\n')[0])
+                self.assertIn(message, response)
+        for payload, message in ((b'{"text": "incomplete', b'Malformed JSON'),
+                                 (b'\xff', b'Invalid UTF-8 payload')):
+            with self.subTest(payload=payload):
+                response = exchange(b'POST /ingest HTTP/1.1\r\nContent-Type: application/json\r\n'
+                                    b'Content-Length: ' + str(len(payload)).encode() + b'\r\n\r\n' + payload)
+                self.assertIn(b'400', response.split(b'\r\n')[0])
+                self.assertIn(message, response)
+        self.assertFalse(any(self.vault.rglob('*.md')))
+        # Explicit plain text remains a supported ingest format.
+        payload = b'{this is plain text'
+        response = exchange(b'POST /ingest HTTP/1.1\r\nContent-Type: text/plain\r\n'
+                            b'Content-Length: ' + str(len(payload)).encode() + b'\r\n\r\n' + payload)
+        self.assertIn(b'201', response.split(b'\r\n')[0])
+        self.assertEqual(len(list(self.vault.rglob('*.md'))), 1)
+
+    def test_windows_port_binding_collision_fails(self):
+        server1 = ingest_server.create_server(self.vault, host="127.0.0.1", port=0)
+        port = server1.server_address[1]
+        try:
+            self.assertEqual(server1.allow_reuse_address, os.name not in ("nt", "cygwin"))
+            if os.name in ("nt", "cygwin"):
+                with self.assertRaises(OSError):
+                    server2 = ingest_server.create_server(self.vault, host="127.0.0.1", port=port)
+                    server2.server_close()
+        finally:
+            server1.server_close()
 
 
 if __name__ == '__main__':

@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import patch
 
 import v3_yakala_ajan_test as fixtures
+from v3_package_helpers import inherited_env
 
 y = fixtures.yakala
 
@@ -109,7 +110,7 @@ with y._WindowsCommitLock(Path(sys.argv[2])):
                 self.assertEqual(y._capture_lock_path(renamed), before)
                 child = subprocess.Popen([sys.executable, '-c', program, str(fixtures.SCRIPTS),
                                           str(renamed), str(self.local)], stdout=subprocess.PIPE,
-                                         stderr=subprocess.PIPE, text=True)
+                                         stderr=subprocess.PIPE, text=True, env=inherited_env())
                 self.assertEqual(child.stdout.readline().strip(), 'ready')
                 with self.assertRaises(subprocess.TimeoutExpired):
                     child.communicate(timeout=0.3)
