@@ -196,7 +196,10 @@ class PiHarnessTest(unittest.TestCase):
                            '--summary', 'Pi contract checked.\nÖğrenilen: yok', '--ref', 'notes/klima.md')
         self.assertEqual(receipt.returncode, 0, receipt.stderr)
         source = self.vault / json.loads(receipt.stdout)['source']
-        self.assertIn('"harness": "pi"', source.read_text(encoding='utf-8'))
+        # Released 3.12.0 rejects an unknown harness in receipt sources; Pi is named in `client` (#385).
+        text = source.read_text(encoding='utf-8')
+        self.assertIn('"harness": "manual",\n  "client": "pi"', text)
+        self.assertNotIn('"harness": "pi"', text)
         self.assertEqual(self.cli('context', 'klima', '--harness', 'pi').returncode, 0)
         self.assertIn('pi', json.loads(self.cli('doctor').stdout)['lifecycle'])
 
