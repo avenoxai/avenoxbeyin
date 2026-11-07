@@ -42,6 +42,39 @@ class WorkspaceBuilderTest(unittest.TestCase):
         scopes = projects.read_project_scopes(self.vault)
         self.assertEqual(runtime.record_scope({'source': 'notes/alpha/note.md'}, scopes), 'alpha')
 
+    def test_provision_with_source_keeps_rules_inside_the_workspace_scope(self):
+        # --source replaces the default project folder as a source, but the rules and MOC
+        # templates still live there; left unbound they joined every project via shared_unscoped.
+        (self.vault / 'clients/beta').mkdir(parents=True)
+        (self.vault / 'clients/beta/b.md').write_text('# Beta\nBeta notu.\n', encoding='utf-8')
+        scope_file = self.vault / projects.PROJECT_SCOPES_FILE
+        scope_file.write_text(json.dumps({'folders': {'clients/beta': 'beta'}, 'shared_unscoped': True}),
+                              encoding='utf-8')
+        result, code = cli.main(['--vault', str(self.vault), '--state', str(self.state), 'workspace', 'provision',
+                                 'alpha', '--source', 'clients/alpha',
+                                 '--rules', 'Alpha müşterisi Zeta Bank, fiyat tabanı 9 milyon'], return_result=True)
+        self.assertEqual((code, result['status'], result['verified']), (0, 'provisioned', True))
+        scopes = projects.read_project_scopes(self.vault)
+        for source in ('projects/alpha/Kurallar.md', 'projects/alpha/MOC.md', 'clients/alpha/x.md', 'notes/alpha/x.md'):
+            self.assertEqual(runtime.record_scope({'source': source}, scopes), 'alpha', source)
+        self.assertEqual(sorted(result['workspace']['sources']), ['clients/alpha', 'notes/alpha', 'projects/alpha'])
+        for reader, visible in (('beta', False), ('alpha', True)):
+            answer, code = cli.main(['--vault', str(self.vault), '--state', str(self.state), 'context',
+                                     '--project', reader, 'Zeta Bank fiyat'], return_result=True)
+            self.assertEqual(code, 0, answer)
+            self.assertEqual('Zeta Bank' in json.dumps(answer, ensure_ascii=False), visible, reader)
+
+    def test_provision_rolls_back_when_kept_rules_belong_to_another_project(self):
+        rules = self.vault / 'projects/alpha/Kurallar.md'
+        rules.parent.mkdir(parents=True)
+        rules.write_text('---\nproject: beta\n---\n# Beta kuralları\n', encoding='utf-8')
+        with self.assertRaisesRegex(workspaces.WorkspaceProvisionError, 'outside the workspace scope') as caught:
+            workspaces.provision_workspace(self.vault, 'alpha')
+        report = caught.exception.workspace_reconciliation
+        self.assertEqual((report['rollback'], report['registry']), ('complete', 'removed'))
+        self.assertEqual(rules.read_text(encoding='utf-8'), '---\nproject: beta\n---\n# Beta kuralları\n')
+        self.assertEqual(json.loads((self.vault / projects.PROJECT_SCOPES_FILE).read_text(encoding='utf-8'))['folders'], {})
+
     def test_failed_provision_does_not_erase_later_registry_change(self):
         def concurrent_change(vault, workspace_id):
             workspaces.create_workspace(vault, 'beta')

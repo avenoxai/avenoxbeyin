@@ -482,6 +482,13 @@ def _plan(vault_root, workspace_id, kind="general", name=None, description=None,
         {"path": moc_file_path, "content": moc_content, "purpose": "navigation"},
     ]
 
+    # The folder holding the rules and MOC is always bound too: the rules carry the user's
+    # own text and must stay inside this workspace's scope even with --source elsewhere.
+    bindings = []
+    for folder in source_list + [default_project_dir, default_note_dir]:
+        if not any(_source_key(item) == _source_key(folder) for item in bindings):
+            bindings.append(folder)
+
     return {
         "workspace_id": workspace_id,
         "name": display_name,
@@ -493,7 +500,24 @@ def _plan(vault_root, workspace_id, kind="general", name=None, description=None,
         "memory_policy": "selective",
         "directories": dirs_to_create,
         "files": files_to_create,
+        "bindings": bindings,
     }
+
+
+def _outside_scope(root, workspace_id, files):
+    """Files retrieval would not keep inside this workspace (beyin_v3.record_scope)."""
+    from beyin_v3 import read_project_scopes as runtime_scopes, record_scope
+    from beyin_v3_sync import parse
+    scopes = runtime_scopes(root) or {"folders": [], "shared_unscoped": False}
+    outside = []
+    for relative in files:
+        try:
+            metadata, _ = parse((root / relative).read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError, UnicodeError):
+            metadata = {"project": None}
+        if record_scope({"project": metadata.get("project"), "source": relative}, scopes) != workspace_id:
+            outside.append(relative)
+    return outside
 
 
 def _make_dirs(path, created):
@@ -634,7 +658,7 @@ def provision_workspace(vault_root, workspace_id, kind="general", name=None, des
     # Validate the complete plan before the first directory, file or record is written.
     for relative in plan['directories'] + [item['path'] for item in plan['files']]:
         checked_path(relative)
-    bind_sources = list(dict.fromkeys(plan["sources"] + plan["note_roots"]))
+    bind_sources = plan["bindings"]
     folders = _folders(_read_scopes(root))
     for folder in bind_sources:
         _, owner = _owner(folders, folder)
@@ -693,6 +717,10 @@ def provision_workspace(vault_root, workspace_id, kind="general", name=None, des
         unbound = [folder for folder in bind_sources if _source_key(folder) not in bound_keys]
         if unbound:
             raise RuntimeError("verification failed: source folders not bound: " + ", ".join(unbound))
+        outside = _outside_scope(root, workspace_id, [item["path"] for item in plan["files"]])
+        if outside:
+            raise RuntimeError("verification failed: workspace files outside the workspace scope: "
+                               + ", ".join(outside))
 
         _finish_provision(root, workspace_id, token)
         result = {
