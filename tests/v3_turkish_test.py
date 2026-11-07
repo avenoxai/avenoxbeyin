@@ -68,6 +68,14 @@ GUARDS = (
     ('claude', 'claudenin'), ('claude', 'claudeye'), ('claude', 'claudede'),
 )
 
+# A possessive on a three-letter root stays on the word, because _stem keeps four letters.
+# (note word, question word): the question must still find the root. Upper case questions run
+# Turkish I/ı and İ/i folding through the same path.
+SHORT_ROOTS = (
+    ('boy', 'boyum'), ('yaş', 'yaşını'), ('göz', 'gözümün'), ('kol', 'kolumda'),
+    ('baş', 'başı'), ('kız', 'KIZIM'), ('diş', 'DİŞİM'), ('ses', 'sesimi'), ('cep', 'cebimi'),
+)
+
 FILLER = 'Bu sentetik test kaydıdır.'
 
 
@@ -256,6 +264,89 @@ class TurkishVerbIssueTest(VaultTestCase):
             self.store.STRICT_PASSAGES = passages
             with self.subTest(passages=passages):
                 self.assertEqual(self.context('şu testleri çalıştır ve sonucu göster'), [])
+
+
+class TurkishShortRootTest(VaultTestCase):
+    """A possessive question word finds the short root a note writes ("boyum" -> "Boy: 180")."""
+
+    def setUp(self):
+        super().setUp()
+        self.ingest('saglik', 'Boy: 180 cm. Kilo: 75 kg.', 'body/saglik.md')
+        self.ingest('pano', 'Pano ölçüsü 120 cm x 80 cm, parçalar 20 cm.', 'notes/pano.md')
+        self.ingest('kamera', 'Kamera odak mesafesi 30 cm.', 'notes/kamera.md')
+
+    def context(self, query):
+        return [record['id'] for record in
+                self.store.context_for('claude', query, strict=True, budget_chars=2000)['records']]
+
+    def test_possessive_question_finds_the_root_note(self):
+        self.assertEqual(self.ids('benim boyum kaç cm?')[0], 'saglik')
+        for passages in (True, False):
+            self.store.STRICT_PASSAGES = passages
+            with self.subTest(passages=passages):
+                self.assertEqual(self.context('benim boyum kaç cm?'), ['saglik'])
+                self.assertEqual(self.context('BOYUM KAÇ CM'), ['saglik'])
+
+    def test_a_word_the_vault_uses_does_not_fall_back(self):
+        # durum is its own word, not dur plus a possessive: notes that say durum keep it apart.
+        self.ingest('durum-1', 'Proje durumu: test aşamasında.', 'notes/durum-1.md')
+        self.ingest('durum-2', 'Sunucu durum raporu hazır.', 'notes/durum-2.md')
+        self.ingest('dur', 'Kırmızı ışıkta dur.', 'notes/dur.md')
+        self.assertCountEqual(self.ids('durum'), ['durum-1', 'durum-2'])
+        for passages in (True, False):
+            self.store.STRICT_PASSAGES = passages
+            with self.subTest(passages=passages):
+                self.assertCountEqual(self.context('durum'), ['durum-1', 'durum-2'])
+
+    def test_a_word_of_its_own_stays_apart_where_the_root_is_more_common(self):
+        # durum and verim are words, not dur and ver plus a possessive: a vault that says dur
+        # or ver in more notes must still answer them with the notes that say durum and verim.
+        self.ingest('dur-1', 'Zirkon rotasında dur.', 'notes/dur-1.md')
+        self.ingest('dur-2', 'Zirkon yolunda dur.', 'notes/dur-2.md')
+        self.ingest('durum', 'Zirkon durum raporu.', 'notes/durum.md')
+        self.ingest('ver-1', 'Zirkon kartını ajana ver.', 'notes/ver-1.md')
+        self.ingest('ver-2', 'Zirkon özetini Codex\'e ver.', 'notes/ver-2.md')
+        self.ingest('verim', 'Zirkon verim ölçümü.', 'notes/verim.md')
+        for passages in (True, False):
+            self.store.STRICT_PASSAGES = passages
+            with self.subTest(passages=passages):
+                self.assertEqual(self.context('zirkon durum'), ['durum'])
+                self.assertEqual(self.context('zirkon verim'), ['verim'])
+
+    def test_a_pronoun_does_not_fall_back(self):
+        common = lambda stem: 9 if stem in ('bun', 'sun') else 0
+        self.assertEqual(self.module._query_roots({'bunu', 'bunun', 'sunu'}, common), {})
+
+    def test_one_root_answers_one_question_word(self):
+        # A single "Boy" in the note must not pass the two-word gate for boyum and boyun.
+        for passages in (True, False):
+            self.store.STRICT_PASSAGES = passages
+            with self.subTest(passages=passages):
+                self.assertEqual(self.context('boyum boyun'), [])
+
+    def test_a_project_word_does_not_return_as_a_root(self):
+        text = 'Boy projesi: zirkon seçildi.'
+        (self.vault / 'notes').mkdir(exist_ok=True)
+        (self.vault / 'notes/zirkon.md').write_text(text, encoding='utf-8')
+        self.store.ingest({'id': 'zirkon', 'kind': 'note', 'status': 'active', 'visibility': 'internal',
+                           'text': text, 'facts': {}, 'source': 'notes/zirkon.md', 'project': 'boy',
+                           'updated_at': '2026-09-18T10:00:00Z'})
+        for passages in (True, False):
+            self.store.STRICT_PASSAGES = passages
+            with self.subTest(passages=passages):
+                found = self.store.context_for('claude', 'boyum zirkon', project='boy', strict=True,
+                                               budget_chars=2000)['records']
+                self.assertEqual(found, [])
+
+
+class TurkishShortRootMatrixTest(VaultTestCase):
+    def test_each_possessive_reaches_its_root(self):
+        for index, (written, _) in enumerate(SHORT_ROOTS):
+            self.ingest('kok-%02d' % index, written + ' hakkında kısa kayıt. ' + FILLER,
+                        'notes/kok-%02d.md' % index)
+        for index, (_, asked) in enumerate(SHORT_ROOTS):
+            with self.subTest(query=asked):
+                self.assertEqual(self.ids(asked), ['kok-%02d' % index])
 
 
 class LegacyStateTest(VaultTestCase):

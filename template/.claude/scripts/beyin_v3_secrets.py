@@ -1,10 +1,22 @@
-"""Opt-in local secret redaction for user-authored V3 write commands."""
+"""Opt-in local secret redaction for user-authored V3 write commands.
+
+Known patterns and safe custom literals are scanned in raw and Cf-normalized
+text (including code blocks), redacting the union of original spans. This is not
+exhaustive for combined boundary/interior obfuscations: normalization can remove
+a boundary while the raw pattern sees only part of an interrupted token.
+Arbitrary base64 is not decoded: a zero-width character must not hide a secret,
+and stripping format characters must not turn a short or placeholder literal
+into a pattern that redacts ordinary text. The existing Basic auth check stays.
+"""
 from __future__ import annotations
 
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+import base64
+import binascii
 import re
+import unicodedata
 import sqlite3
 
 
@@ -63,18 +75,98 @@ def _custom_literals(state):
     return values
 
 
+_BASIC_AUTH = re.compile(r"(?i)\bbasic[ \t]+([A-Za-z0-9+/]+={0,2})(?![A-Za-z0-9+/=])")
+
+
+def _without_format(text):
+    return ''.join(character for character in text if unicodedata.category(character) != 'Cf')
+
+
+def _sub_normalized(pattern, text, positions):
+    parts, mapped, spans = [], [], []
+    end, count = 0, 0
+    for match in pattern.finditer(text):
+        value = '[REDACTED]'
+        parts.append(text[end:match.start()])
+        mapped.extend(positions[end:match.start()])
+        parts.append(value)
+        mapped.extend([positions[match.start()]] * len(value))
+        spans.append((positions[match.start()], positions[match.end() - 1] + 1, value))
+        end = match.end()
+        count += 1
+    parts.append(text[end:])
+    mapped.extend(positions[end:])
+    return ''.join(parts), mapped, spans, count
+
+
+def _restore_original(text, spans):
+    merged = []
+    for start, stop, value in sorted(spans):
+        if merged and start < merged[-1][1]:
+            previous = merged[-1]
+            merged[-1] = (previous[0], max(stop, previous[1]), previous[2])
+        else:
+            merged.append((start, stop, value))
+    parts, end = [], 0
+    for start, stop, value in merged:
+        parts.extend((text[end:start], value))
+        end = stop
+    parts.append(text[end:])
+    return ''.join(parts), len(merged)
+
+
+def _redact(text, patterns):
+    # ASCII cannot contain Cf characters; preserve the original substitution path.
+    if text.isascii() or not any(unicodedata.category(character) == 'Cf' for character in text):
+        result, count = text, 0
+        for pattern in patterns:
+            result, matches = pattern.subn('[REDACTED]', result)
+            count += matches
+        return result, count
+    positions = [index for index, character in enumerate(text)
+                 if unicodedata.category(character) != 'Cf']
+    normalized = ''.join(text[index] for index in positions)
+    spans = []
+    for pattern in patterns:
+        normalized, positions, found, _ = _sub_normalized(pattern, normalized, positions)
+        spans.extend(found)
+    # Normalization can remove an existing regex boundary (x + Cf + sk-...).
+    # Preserve raw matches too; union their original spans before replacing so a
+    # raw partial match cannot prevent normalization from masking the whole key.
+    raw, raw_positions = text, range(len(text))
+    for pattern in patterns:
+        raw, raw_positions, found, _ = _sub_normalized(pattern, raw, raw_positions)
+        spans.extend(found)
+    return _restore_original(text, spans)
+
+
 def redact(text, state):
     if not isinstance(text, str):
         raise ValueError('secret filter input must be text')
-    result, count = text, 0
-    for pattern in BUILTIN_PATTERNS:
-        result, matches = pattern.subn('[REDACTED]', result)
-        count += matches
+    result, count = _redact(text, BUILTIN_PATTERNS)
+    def redact_basic(match):
+        nonlocal count
+        try:
+            decoded = base64.b64decode(match[1], validate=True)
+        except (ValueError, binascii.Error):
+            return match[0]
+        if b':' not in decoded:
+            return match[0]
+        count += 1
+        return '[REDACTED]'
+
+    result = _BASIC_AUTH.sub(redact_basic, result)
     for literal in _custom_literals(state):
-        matches = result.count(literal)
-        if matches:
-            result = result.replace(literal, '[REDACTED]')
-            count += matches
+        normalized = _without_format(literal)
+        if (len(normalized) >= 4 and '[REDACTED]' not in normalized
+                and normalized not in '[REDACTED]'):
+            result, matches = _redact(result, (re.compile(re.escape(normalized)),))
+        else:
+            # Unsafe normalized values must retain only their original exact match.
+            matches = result.count(literal)
+            if matches:
+                result = result.replace(literal, '[REDACTED]')
+        count += matches
     return result, count
 
 

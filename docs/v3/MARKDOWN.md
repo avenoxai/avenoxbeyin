@@ -51,7 +51,21 @@ Tasks can opt into a completion contract with `"completion_contract": "strict"` 
 
 `doctor` reports `task_completion.strict_issues` for indexed strict tasks whose contract is incomplete or whose evidence source is missing, and `task_completion.legacy_done` for completed tasks without the opt-in contract. Both lists are bounded to 20 with separate counts and a truncation flag. Legacy done tasks are informational and do not make doctor unhealthy; strict issues do.
 
-The local SQLite write lock serializes participating clients across processes without a platform-specific file-lock dependency. It does not lock other editors or cloud synchronization. Source hash comparison detects observed changes; an unrelated writer can still race after the final check, so reread/sync remains the conflict-resolution path.
+The local SQLite write lock serializes task/receipt transactions across processes sharing a state database. It does not lock other editors or cloud synchronization. Source hash comparison detects observed changes; an unrelated writer can still race after the final check, so reread/sync remains the conflict-resolution path.
+
+## Cooperative human-note writes
+
+`note-read`, `note-edit`, `note-create`, companion bootstrap, `companion-compact` and note-intent recovery share the persistent vault-local `.beyin-note-write/writer.lock`. This also coordinates clients using different state directories. Integrations must delegate to `SyncEngine.note_read` / `note_edit`, or hold `beyin_v3_notes.vault_locked(vault)` from their first source read through their last replacement. A pre-replacement hash check without this shared lock leaves a lost-update window.
+
+The acquisition order is **note lock → companion lock (if needed) → state DB transaction (if needed)**. Ordinary writes acquire the note lock before any DB transaction and keep it through sync/readback. Compaction acquires it before reading the source/plan, existing archive and decision ledger, and releases it after all archive, ledger and live-note writes finish. Its existing `.beyin-compact.lock` remains an inner lock to serialize with older compact processes. No participating operation may acquire the companion lock first and then wait for the note lock.
+
+Sync recovery already holds the DB transaction, so it only tries the note lock with `timeout=0`. If another writer owns it, recovery skips that note intent without reporting a source conflict; the writer's own sync or a later sync retries it. A successful recovery keeps the note lock through DB commit and intent cleanup. This exception never waits in the reverse order. The lock is reentrant only within the same process/thread and canonical vault.
+
+Contention returns a visible `conflict` after the normal 15-second note-lock timeout. A compaction lock acquisition failure returns `needs_attention` without changing notes; content I/O failures remain distinguishable. Hooks retain their existing fail-open handling. A dry run performs no writes and takes no lock. Bootstrap only takes the lock when its initialization marker is missing, then rechecks under the lock.
+
+On Windows this is an `msvcrt` byte-zero lock (including an empty file); POSIX uses `flock`. Do not write a sentinel before acquiring the Windows lock. Process exit releases ownership; **never delete a lock file**, which could split ownership across directory entries. Keep `.beyin-note-write/` and companion lock files out of Git and cloud synchronization. Note edits retain exact-byte SHA-256 preconditions, unique targeted edits, managed-type gates, exact preimage backups, fsync and atomic replacement. `write_occurred: true` means replacement completed but a later step failed; reread and sync before retrying.
+
+This is a same-machine cooperative protocol, not a distributed or multi-file transaction. Obsidian, older code already loaded in memory and raw filesystem writers cannot be made participants by changing instructions. Drain old write processes before installing the new engine and adapters together. An older compactor's inner lock only bridges compactor-to-compactor serialization; it does not make that old compactor safe against note-edit. An interrupted compact can leave duplicate archive entries on retry, as before. Generated capture/task/receipt workflows retain their own protocols and are outside the human-note writer contract.
 
 ## Receipts and recovery
 
