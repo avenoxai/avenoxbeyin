@@ -80,6 +80,48 @@ etiketli kurallar da açılışa girer ve proje dosyası otomatik gelmez. Bu yü
 ajana dosyayı ne zaman açacağını söyler. Etkin projeyi `cwd` üzerinden bulma ayrı bir iştir
 ([#288](https://github.com/avenoxai/avenoxbeyin/issues/288)).
 
+## Bilgi haritası ve isteğe bağlı `INDEKS.md` (#595)
+
+Açılıştaki bilgi haritası varsayılan olarak `knowledge/index.md` dosyasıdır: derleyicinin
+tuttuğu makale listesi. Bilgi tabanı büyüdükçe bu liste haritanın payında (companion kaynakları
+sığarken en fazla 1.500, kırpılırken en fazla 600 karakter) kesilir ve alttaki satırlar görünmez
+olur. [#595](https://github.com/avenoxai/avenoxbeyin/issues/595) bunun yerine yazarın elle
+tuttuğu kısa bir yönlendirme kartını önerdi: her satır notun ne olduğunu ve ne zaman açılacağını
+söyler, içerikler açılışa girmez.
+
+Bu isteğe bağlıdır. `knowledge/` klasörünün kendisinde `INDEKS.md` varsa (Türkçe yazımlar
+`İNDEKS.md`, `İndeks.md`, `Indeks.md` ve `indeks.md` de tanınır) açılış haritası olarak makale
+listesinin yerine bu kart gelir; etiket `[Knowledge map: knowledge/INDEKS.md]` olur. Pay ve
+kırpma kuralları aynıdır: uzun bir kart da kesilir ve kesim işaretlenir. Kart yoksa hiçbir şey
+değişmez. Önerilen biçim:
+
+```markdown
+# Bilgi tabanı: ne zaman aç
+
+42 makale; içerikleri açılışa girmez, yalnız konu açılınca ilgili makaleyi aç.
+
+| Konu | Ne zaman aç |
+| --- | --- |
+| [[concepts/musteri-notlari\|Müşteri notları]] | Sözleşme maddesi ya da teslim tarihi konuşulursa |
+| [[concepts/arac-listesi\|Araç listesi]] | Yeni bir araç seçilirken |
+```
+
+Kart her açılışta okunur, bu yüzden kısa tutulmalıdır: her satır tek not ve tek "ne zaman aç"
+cümlesi. Derleyici (`compile.py`) kartı yazmaz ve silmez; satırları yazar ya da ajan tutar.
+
+Kart diğer companion kaynaklarıyla aynı kapılardan geçer: indekslenmiş, son eşitlemeden beri
+değişmemiş, `private` ya da `untrusted` olmayan bir kaynak olmalıdır. Bu koşullardan biri
+tutmazsa açılış eski davranışla `knowledge/index.md` dosyasını gösterir; kartın metni hiçbir
+durumda açılışa sızmaz. Soru taşımayan açılışta kart makale listesinin yerini tutar: alttaki
+ilgili kaynaklar bölümü ne listeyi ne de kartı yeniden ekler. Soru taşıyan açılışta liste,
+soruyla eşleşirse ilgili kaynak olarak gelebilir. Tam gösterilen bir harita, kart olsun ya da
+olmasın, ilgili kaynaklarda tekrar edilmez.
+
+Yalnız `knowledge/` kökündeki kart açılışa girer. Başka klasörlerdeki `INDEKS.md` dosyaları
+sıradan notlardır: soru onlarla eşleşirse ilgili kaynak olarak gelirler, açılışa kendiliğinden
+eklenmezler. `Threads.md` açık konuların açılış görünümünü kendisi taşır; ayrı klasördeki
+konu dosyaları için bir kart, taslak üreten bir script ya da `doctor` denetimi bu sürümde yoktur.
+
 ## Boyut sınırı ve arşivleme (#96)
 
 [Issue #96](https://github.com/avenoxai/avenoxbeyin/issues/96) beş haftalık bir kasada

@@ -674,6 +674,33 @@ def person_sources(vault, target=None):
     return found
 
 
+# Optional routing card (#595): an author-written INDEKS.md that says, row by row, what each
+# note is and when to open it. When knowledge/ has one, the opening carries it in place of the
+# article list in knowledge/index.md; without one nothing changes. The Turkish spellings are
+# listed in both Unicode forms because the index stores file names as the file system gave them.
+ROUTING_CARDS = tuple(dict.fromkeys(
+    unicodedata.normalize(form, name)
+    for name in ('INDEKS.md', 'İNDEKS.md', 'Indeks.md', 'İndeks.md', 'indeks.md') for form in ('NFC', 'NFD')))
+
+
+def knowledge_map(store):
+    """The opening's knowledge map: knowledge/INDEKS.md when it is indexed, current and not
+    private, else knowledge/index.md under the same gates; None when neither qualifies.
+
+    One listing of knowledge/ itself (never a walk) names the cards on disk, so a vault without
+    one makes the same single-name snapshot as before: every extra name is another scan of the
+    ingested records. One snapshot reads card and list, so a changed or private card falls back
+    to the article list."""
+    try:
+        cards = sorted((path.name for path in (Path(store.vault_root) / 'knowledge').iterdir()
+                        if path.name in ROUTING_CARDS), key=ROUTING_CARDS.index)
+    except OSError:
+        cards = []
+    records = store.source_snapshot([*cards, 'index.md'], source_directory='knowledge',
+                                    budget_chars=4000 * (1 + len(cards)))['records']
+    return records[0] if records else None  # records keep the requested order: a card comes first
+
+
 def context(store, budget, session, harness, query='', receipt='', warning='', project=None, report=None,
             rules_project=None):
     """Budget actual displayed text, not repeated JSON metadata; never cut a record header.
@@ -831,9 +858,10 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
     companion_clipped = needed > available
     text, rules = companion(available)
     extra = ''
-    index = store.source_snapshot(['index.md'], source_directory='knowledge', budget_chars=4000)
-    if index['records']:
-        label = '\n[Knowledge map: knowledge/index.md]\n'
+    index = knowledge_map(store)
+    shown_map = set()  # map sources retrieval must not repeat below
+    if index:
+        label = f'\n[Knowledge map: {index["source"]}]\n'
         room = budget - len(text)
         allowance = min(600, room // 3)
         if not companion_clipped:
@@ -841,7 +869,13 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
             # there each extra character would come out of what #140/#143 give back to them.
             allowance = min(1500, max(allowance, room // 4))
         if allowance > len(label) + 40:
-            extra += label + clip(index['records'][0]['text'], allowance - len(label))
+            extra += label + clip(index['text'], allowance - len(label))
+            if not query and Path(index['source']).name in ROUTING_CARDS:
+                # The card stands in for the article list (#595): the unqueried snapshot repeats
+                # neither, only a question brings the list back.
+                shown_map.update((index['source'], 'knowledge/index.md'))
+            elif len(index['text']) <= allowance - len(label):
+                shown_map.add(index['source'])
     remaining = budget - len(text) - len(extra)
     # At SessionStart without a query, an unqueried snapshot must never starve clipped companion
     # sources: an ambient note yields its budget so active threads and rules stay whole.
@@ -861,6 +895,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
     else:
         ranked = {'records': []}
     used = {r['source'] for r in records}
+    used |= shown_map
     for label, _, _ in sections:
         clean = label.strip()
         if clean.startswith('[') and clean.endswith(']'):
