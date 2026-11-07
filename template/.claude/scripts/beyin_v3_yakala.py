@@ -504,10 +504,16 @@ def canonical(url):
     video/post identity across URL forms, matched on the exact domain (notyoutube.com is not YouTube).
     Other pages ignore scheme, www/m and a trailing slash, as before, but keep a non-default port and a
     routing fragment (#/..., #!...), which name different pages.
+
+    Never raises: a hand-edited or synced card value ('http://[oops', a YAML list) names only itself,
+    so one broken card cannot stop the `isle` queue or a new capture.
     """
-    if not url:
+    if not url or not isinstance(url, str):
         return ''
-    parts = urlparse(url.strip())
+    try:
+        parts = urlparse(url.strip())
+    except ValueError:
+        return 'gecersiz:' + url.strip()
     host = (parts.hostname or '').lower().rstrip('.').removeprefix('www.').removeprefix('m.')
     try:
         port = parts.port
@@ -1560,8 +1566,7 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
         entry = {'id': card['id'], 'kart': card['path'].relative_to(vault).as_posix(),
                  'kaynak_turu': meta.get('kaynak_turu'), 'baslik': meta.get('baslik'),
                  'neden': _section(body, 'Neden'), 'url': meta.get('url')}
-        primary = meta.get('url') if isinstance(meta.get('url'), str) else None  # an edited card must not stop the queue
-        extras, local = _extra_urls(primary, _stored_list(meta.get('ek_urller')) +
+        extras, local = _extra_urls(meta.get('url'), _stored_list(meta.get('ek_urller')) +
                                     _stored_list(meta.get('ek_urller_yerel')), stored=True)
         if extras:
             entry['ek_urller'] = extras

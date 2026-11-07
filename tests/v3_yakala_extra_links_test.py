@@ -104,6 +104,25 @@ class LocalExtraLinkTest(unittest.TestCase):
         self.assertEqual([entry['durum'] for entry in entries], ['hata', 'cikarildi'])
         self.assertEqual(entries[0]['ek_urller_yerel'], ['http://10.0.0.9/x'])
 
+    def test_a_malformed_url_string_fails_only_its_own_card(self):
+        """urlparse rejects these; the card fails alone, the queue and new captures go on."""
+        for bad in ('http://[oops', 'http://[example.com]/'):
+            with self.subTest(url=bad):
+                vault = Path(tempfile.mkdtemp(prefix='bozuk-', dir=self.vault.parent))
+                broken = yakala.capture(vault, url='https://example.com/a', extra_urls=['http://10.0.0.9/x'])
+                note = yakala.capture(vault, text='Bağımsız not')
+                path = vault / broken['path']
+                meta, body = yakala.read_card(path)
+                meta['url'] = bad
+                yakala.write_card(path, meta, body)
+                with patch.object(yakala, 'tools', return_value=NO_TOOLS):
+                    entries = yakala.process(vault, [broken['id'], note['id']])['kartlar']
+                self.assertEqual([entry['durum'] for entry in entries], ['hata', 'cikarildi'])
+                self.assertIn('Yakala URL hatali', entries[0]['not'])
+                self.assertEqual(entries[0]['ek_urller_yerel'], ['http://10.0.0.9/x'])
+                other = yakala.capture(vault, url='https://example.org/b')  # the broken card never matches
+                self.assertEqual(other['status'], 'yakalandi')
+
     def test_primary_url_stays_public_only(self):
         for url in ('http://127.0.0.1/doc', 'http://intranet/rapor'):
             with self.subTest(url=url), self.assertRaises(ValueError):
