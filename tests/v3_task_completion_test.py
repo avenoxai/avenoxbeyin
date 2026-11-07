@@ -59,7 +59,7 @@ class TaskCompletionTest(unittest.TestCase):
         self.assertEqual(list((self.state / 'markdown-journal').glob('*.json')), [])
 
         evidence = self.engine.note_create('notes/calibration-result.md',
-                                           'Synthetic calibration result reviewed.', {'kind': 'fact'})
+                                           'Synthetic calibration result reviewed.\nsynthetic-task\n', {'kind': 'fact'})
         self.assertEqual(evidence['status'], 'succeeded')
         with self.assertRaisesRegex(ValueError, 'repeat a source'):
             self.engine.update_task('synthetic-task', 1,
@@ -91,7 +91,7 @@ class TaskCompletionTest(unittest.TestCase):
         self.engine.task_create('tasks/synthetic.md', 'Inspect calibration.', self.metadata)
         self.engine.task_create('tasks/legacy.md', 'Legacy task.',
                                 {'id': 'legacy-task', 'owner': 'Synthetic Reviewer', 'status': 'active'})
-        self.engine.note_create('notes/result.md', 'Synthetic calibration result.', {'kind': 'fact'})
+        self.engine.note_create('notes/result.md', 'Synthetic calibration result.\nsynthetic-task\n', {'kind': 'fact'})
         done = {'status': 'done', 'evidence_refs': ['notes/result.md']}
         task = self.vault / 'tasks/synthetic.md'
         before = task.read_bytes()
@@ -136,7 +136,7 @@ class TaskCompletionTest(unittest.TestCase):
 
     def test_cancelled_task_can_leave_a_missing_evidence_source(self):
         self.engine.task_create('tasks/synthetic.md', 'Strict task.', self.metadata)
-        self.engine.note_create('notes/result.md', 'Synthetic result.', {'kind': 'fact'})
+        self.engine.note_create('notes/result.md', 'Synthetic result.\nsynthetic-task\ndone-task\nlegacy-task\n', {'kind': 'fact'})
         self.engine.update_task('synthetic-task', 1,
                                 {'status': 'done', 'evidence_refs': ['notes/result.md']})
         (self.vault / 'notes/result.md').unlink()
@@ -182,7 +182,7 @@ class TaskCompletionTest(unittest.TestCase):
 
         (self.vault / 'notes').mkdir()
         source = self.vault / 'notes/result.md'
-        source.write_text('Synthetic result.\n', encoding='utf-8')
+        source.write_text('Synthetic result.\nsynthetic-task\n', encoding='utf-8')
         metadata['evidence_refs'] = ['notes/result.md']
         task.write_text('---\n' + json.dumps(metadata) + '\n---\n' + body, encoding='utf-8')
         self.engine.sync()
@@ -199,7 +199,7 @@ class TaskCompletionTest(unittest.TestCase):
 
     def test_doctor_reports_unavailable_task_source_without_crashing(self):
         (self.vault / 'notes').mkdir()
-        (self.vault / 'notes/result.md').write_text('Synthetic result.\n', encoding='utf-8')
+        (self.vault / 'notes/result.md').write_text('Synthetic result.\nsynthetic-task\n', encoding='utf-8')
         self.engine.task_create('tasks/synthetic.md', 'Strict task.', self.metadata)
         self.engine.update_task('synthetic-task', 1,
                                 {'status': 'done', 'evidence_refs': ['notes/result.md']})
@@ -217,8 +217,8 @@ class TaskCompletionTest(unittest.TestCase):
 
     def test_evidence_refs_are_stored_as_canonical_vault_paths(self):
         self.engine.task_create('tasks/synthetic.md', 'Strict task.', self.metadata)
-        self.engine.note_create('notes/result.md', 'Synthetic result.', {'kind': 'fact'})
-        self.engine.note_create('notes/other.md', 'Synthetic result.', {'kind': 'fact'})
+        self.engine.note_create('notes/result.md', 'Synthetic result.\nsynthetic-task\ndone-task\nlegacy-task\n', {'kind': 'fact'})
+        self.engine.note_create('notes/other.md', 'Synthetic result.\nsynthetic-task\ndone-task\nlegacy-task\n', {'kind': 'fact'})
         # Windows accepts a backslash separator; a POSIX reader of the same vault needs '/'.
         second = 'notes\\other.md' if os.name == 'nt' else 'notes/other.md/'
         expected = ['notes/result.md', 'notes/other.md']
@@ -235,7 +235,7 @@ class TaskCompletionTest(unittest.TestCase):
 
     def test_case_variant_refs_are_one_source_on_case_insensitive_volumes(self):
         self.engine.task_create('tasks/synthetic.md', 'Strict task.', self.metadata)
-        self.engine.note_create('notes/result.md', 'Synthetic result.', {'kind': 'fact'})
+        self.engine.note_create('notes/result.md', 'Synthetic result.\nsynthetic-task\ndone-task\nlegacy-task\n', {'kind': 'fact'})
         if not (self.vault / 'NOTES/RESULT.md').exists():
             self.skipTest('case-sensitive volume')
         task = self.vault / 'tasks/synthetic.md'
@@ -258,7 +258,7 @@ class TaskCompletionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'list of source paths'):
             self.engine.update_task('legacy-task', 2, {'evidence_refs': 'still text'})
 
-        self.engine.note_create('notes/result.md', 'Synthetic result.', {'kind': 'fact'})
+        self.engine.note_create('notes/result.md', 'Synthetic result.\nsynthetic-task\ndone-task\nlegacy-task\n', {'kind': 'fact'})
         self.engine.update_task('legacy-task', 2, {'evidence_refs': ['notes/result.md']})
         (self.vault / 'notes/result.md').unlink()
         self.assertEqual(self.engine.update_task('legacy-task', 3, {'priority': 'low'})['revision'], 4)
