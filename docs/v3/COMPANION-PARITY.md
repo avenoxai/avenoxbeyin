@@ -137,14 +137,21 @@ Düzeltme dört parçadır:
   otomatik bağlama ve olağan aramaya girmez, gerektiğinde doğrudan açılır. Canlı dosyada
   arşiv yolunu gösteren tek bir satır kalır. Frontmatter, kod blokları, CRLF satır sonları
   ve tarihsiz yapı korunur. Taşınacak tarihli kayıt yoksa ya da taşımadan sonra dosya
-  hala sınırı aşıyorsa komut dosyanın kalan tam metnini aynı aylık arşive kelimesi
-  kelimesine yedekler (`backup: written`; dosya değişmemişse yeniden kopyalamaz,
-  `backup: exists`). Taşınacak kayıt kalmamışsa aynı tam metin yedeği önceki 12 aylık
-  arşivde de aranır (toplam en fazla 8 MiB okuma); bulununca rapor gerçek eski arşiv
-  yolunu verir, yeni ayda aynı metni yeniden yazmaz. Eksik, değişmiş, okunamayan,
-  sembolik bağlı veya bu sınırların dışındaki arşiv bir yedeğin kanıtı sayılmaz;
-  komut güvenli biçimde yeni tam yedek yazar. Eski kopyaları silmez. Tarama sırasında
-  canlı dosya değişirse eski yedek kabul edilmez ve `conflict` döner.
+  hala sınırı aşıyorsa komut dosyanın kalan tam metnini aynı aylık arşive yedekler
+  (`backup: written`). Aynı metin SHA-256 özetiyle bu ayın arşivinde ve önceki 12 aylık
+  arşivde (toplam en fazla 8 MiB okuma) aranır; bulununca yeniden yazılmaz, rapor
+  `backup: exists` ve gerçek arşiv yolunu verir. Ayın ilk yedeği her zaman tam metindir.
+  Dosya aynı ay içinde yalnız biraz değiştiyse (#596) yeni yedek o aylık dosyadaki son
+  tam yedeğe göre fark yedeği olarak yazılır (`backup_format: delta`); fark metnin en
+  fazla yarısı kadarsa. Fark başka bir aya ya da başka bir farka dayanmaz, her aylık
+  dosya kendi başına geri kurulur. Her kayıt uzunluk ve SHA-256 ile doğrulanır;
+  depodaki `scripts/restore_v3_compact_backup.py` doğrulanmış sürümleri listeler ve
+  seçileni vault dışında yeni bir dosyaya yazar. Eksik, değişmiş, okunamayan, sembolik
+  bağlı veya bu sınırların dışındaki arşiv bir yedeğin kanıtı sayılmaz; komut güvenli
+  biçimde yeni yedek yazar. Eski kopyaları silmez. Kesintiden sonra yeniden çalışan
+  taşıma da aynı sınırlı taramayla önceki kaydı tanır ve metni ikinci kez eklemez;
+  pencerenin dışındaki bir kayıt yalnız fazladan bir kopyaya yol açar, metin kaybına
+  değil. Tarama sırasında canlı dosya değişirse eski yedek kabul edilmez ve `conflict` döner.
   Komut `needs_rewrite` döner; ajan dosyayı ancak bundan sonra sınır içinde
   yeniden yazar, böylece özetleme hiçbir metnin tek kopyası olmaz (#168). Arşiv
   yazıldıktan sonra canlı dosya değişmişse arşiv eski baytlarına döner ve `conflict`

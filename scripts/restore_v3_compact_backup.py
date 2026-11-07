@@ -2,7 +2,9 @@
 
 py -3 scripts/restore_v3_compact_backup.py --vault /path/to/vault --name Threads.md
 Add --sha256 HASH --output /path/outside/vault/recovered-Threads.md to recover a version.
-This utility never changes archives, live notes, or state.
+A delta backup is rebuilt from the complete backup in the same monthly archive file and
+checked against its SHA-256 before it is listed. This utility reads every monthly archive,
+never takes the compaction lock and never changes archives, live notes, or state.
 """
 import argparse
 import json
@@ -19,9 +21,16 @@ def main():
     args = p.parse_args()
     vault = args.vault.resolve()
     sys.path.insert(0, str(vault / '.claude/scripts'))
-    from beyin_v3_compact import _archive_history
-    from beyin_v3_companion import directory
-    _, versions = _archive_history(directory(vault), args.name, vault)
+    try:
+        from beyin_v3_compact import _archive_history
+        from beyin_v3_companion import directory
+    except ImportError:
+        p.error('the vault has no Beyin V3 runtime with compact backup records')
+    target = directory(vault)
+    if target is None:
+        p.error('multiple companion directories; nothing read')
+    locations = {}
+    _, versions = _archive_history(target, args.name, vault, locations=locations)
     if args.sha256:
         if args.output is None or args.sha256 not in versions:
             p.error('provide --output and a verified hash from the list')
@@ -30,7 +39,7 @@ def main():
         with args.output.open('xb') as output:
             output.write(versions[args.sha256].encode('utf-8'))
     else:
-        print(json.dumps([dict(sha256=k, chars=len(v), bytes=len(v.encode('utf-8')))
+        print(json.dumps([dict(sha256=k, chars=len(v), bytes=len(v.encode('utf-8')), archive=locations.get(k))
                           for k, v in versions.items()], ensure_ascii=False, indent=2))
 
 
