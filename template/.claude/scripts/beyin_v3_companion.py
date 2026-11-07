@@ -801,6 +801,12 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
     fixed = len(header) + len(notice) + sum(len(label) for label, _, _ in sections)
     if fixed > budget:
         return clip(header + notice + 'Read companion files: ' + ', '.join(r['source'] for r in records), budget)
+    floors = dict(FLOORS)
+    opened = {name for _, _, name in sections}
+    if 'Soul.md' in opened and 'Core.md' not in opened:
+        # The identity floor belongs to the identity that opens (#591): a V2 vault that keeps
+        # only Soul.md gives it Core.md's floor. Beside Core.md it stays a style note (#316).
+        floors['Soul.md'] = floors.pop('Core.md')
 
     def share(available, parts):
         # Rules and the handoff get a floor first: an even split leaves the two continuity
@@ -809,7 +815,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         # A floor belongs to a category, not each source: global and project rules
         # share the rules floor. Repeating it can reserve more than available.
         counts = {name: sum(item[2] == name for item in parts) for _, _, name in parts}
-        lengths = [min(len(body), int(available * FLOORS.get(name, 0) / counts[name]))
+        lengths = [min(len(body), int(available * floors.get(name, 0) / counts[name]))
                    for _, body, name in parts]
         spare = available - sum(lengths)
         while spare > 0 and any(lengths[i] < len(item[1]) for i, item in enumerate(parts)):
