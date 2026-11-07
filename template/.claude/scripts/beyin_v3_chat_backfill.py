@@ -27,7 +27,8 @@ MAX_FILES = 2_000              # transcript files considered per call, oldest fi
 MAX_LINE = 1 << 20             # longer records (images, tool output) are skipped, never loaded
 MAX_SCAN_BYTES = 256 << 20     # per transcript
 USER_CHARS, ASSISTANT_CHARS = 1_500, 700
-PAGE_CHARS, MAX_PAGES = 24_000, 40
+# A page is measured as encoded JSON so `--show` output stays below Claude Code's tool output cap.
+PAGE_CHARS, MAX_DIGEST_CHARS = 20_000, 800_000
 LIST_DEFAULT, LIST_MAX = 20, 200
 SANITIZED_MAX = 200            # Claude Code keeps 200 characters of a long folder name, then adds a hash
 STEM = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
@@ -277,7 +278,7 @@ def _session(path, vault_keys, explicit, state, collect=False):
         return bool(USER_LINE.search(line) or (collect and ASSISTANT_LINE.search(line)))
 
     def keep(role, text, limit):
-        if info['chars'] >= MAX_PAGES * PAGE_CHARS:
+        if info['chars'] >= MAX_DIGEST_CHARS:
             info['truncated'] = True
             return
         text = _filtered(text, limit, state, counts)
@@ -447,16 +448,17 @@ def _locate(vault, state, session, projects_dir, collect):
 def show(vault, state, session, projects_dir=None, page=1):
     """One bounded page of a cleaned, secret-filtered digest. Nothing is written anywhere."""
     _require_enabled(state)
-    if type(page) is not int or not 1 <= page <= MAX_PAGES:
-        raise ValueError('backfill --page must be 1..%d' % MAX_PAGES)
+    if type(page) is not int or page < 1:
+        raise ValueError('backfill --page must be a positive number')
     info = _locate(vault, state, session, projects_dir, collect=True)
     pages, current, size = [], [], 0
     for message in info['messages']:
-        if current and size + len(message['text']) > PAGE_CHARS:
+        cost = len(json.dumps(message, ensure_ascii=False))
+        if current and size + cost > PAGE_CHARS:
             pages.append(current)
             current, size = [], 0
         current.append(message)
-        size += len(message['text'])
+        size += cost
     if current:
         pages.append(current)
     if page > max(1, len(pages)):

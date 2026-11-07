@@ -168,7 +168,9 @@ class BackfillTest(unittest.TestCase):
     def test_digest_pages_are_bounded_and_complete(self):
         long = Transcript('66666666-aaaa-4aaa-8aaa-000000000006', self.vault, '2026-09-20')
         for n in range(40):
-            long.user('Soru %02d ' % n + 'x' * 1490).assistant('Yanıt %02d ' % n + 'y' * 690)
+            # Quotes and newlines double when JSON-escaped; pages are measured after escaping.
+            body = 'x' * 1490 if n % 2 else '"\n' * 745
+            long.user('Soru %02d ' % n + body).assistant('Yanıt %02d ' % n + 'y' * 690)
         session = h(long.save(self.folder, self.base + 50).stem)
         self.enable()
         first = self.backfill.show(self.vault, self.state, session)
@@ -176,13 +178,18 @@ class BackfillTest(unittest.TestCase):
         seen = []
         for page in range(1, first['pages'] + 1):
             result = self.backfill.show(self.vault, self.state, session, page=page)
-            self.assertLessEqual(sum(len(m['text']) for m in result['messages']), self.backfill.PAGE_CHARS)
+            self.assertLessEqual(sum(len(json.dumps(m, ensure_ascii=False)) for m in result['messages']),
+                                 self.backfill.PAGE_CHARS)
+            # Claude Code cuts Bash output past 30,000 characters; a whole page must fit.
+            self.assertLess(len(json.dumps(result, ensure_ascii=False, indent=2)), 25_000)
             self.assertEqual('next_page' in result, page < first['pages'])
-            seen += [m['text'][:9] for m in result['messages']]
-        self.assertEqual(seen[:2], ['Soru 00 x', 'Yanıt 00 '])
-        self.assertEqual(len(seen), 80)
+            seen += [m['text'][:8] for m in result['messages']]
+        self.assertEqual(seen, [label % n for n in range(40) for label in ('Soru %02d ', 'Yanıt %02d')])
         with self.assertRaisesRegex(ValueError, 'past the last page'):
             self.backfill.show(self.vault, self.state, session, page=first['pages'] + 1)
+        for bad in (0, -1, '2', True):
+            with self.assertRaisesRegex(ValueError, 'positive number'):
+                self.backfill.show(self.vault, self.state, session, page=bad)
 
     def test_write_dates_trace_to_the_session_month_and_replay_is_idempotent(self):
         from beyin_v3_sync import SyncEngine
