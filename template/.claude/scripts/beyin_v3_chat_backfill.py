@@ -32,8 +32,10 @@ USER_CHARS, ASSISTANT_CHARS = 1_500, 700
 # Secrets are looked for this far past the cut: more than any bounded built-in pattern or the
 # 1,000-character custom literals. Private key blocks are handled whole, see _without_private_keys.
 REDACT_MARGIN = 8_192
-# A page is measured as encoded JSON so `--show` output stays below Claude Code's tool output cap.
+# A page is measured as the CLI prints it (indented JSON, UTF-16 units like Claude Code counts) so
+# `--show` output stays below Claude Code's 30,000-character tool output cap with the envelope.
 PAGE_CHARS, MAX_DIGEST_CHARS = 20_000, 800_000
+PAGE_ITEM = 24                 # indentation, braces and separators json.dumps(indent=2) adds per message
 LIST_DEFAULT, LIST_MAX = 20, 200
 SANITIZED_MAX = 200            # Claude Code keeps 200 characters of a long folder name, then adds a hash
 STEM = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
@@ -520,7 +522,7 @@ def show(vault, state, session, projects_dir=None, page=1):
     info = _locate(vault, state, session, projects_dir, collect=True)
     pages, current, size = [], [], 0
     for message in info['messages']:
-        cost = len(json.dumps(message, ensure_ascii=False))
+        cost = len(json.dumps(message, ensure_ascii=False).encode('utf-16-le')) // 2 + PAGE_ITEM
         if current and size + cost > PAGE_CHARS:
             pages.append(current)
             current, size = [], 0

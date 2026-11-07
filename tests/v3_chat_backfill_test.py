@@ -191,6 +191,26 @@ class BackfillTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'positive number'):
                 self.backfill.show(self.vault, self.state, session, page=bad)
 
+    def test_pages_of_many_short_or_wide_messages_fit_the_tool_output_cap(self):
+        short = Transcript('67676767-aaaa-4aaa-8aaa-000000000067', self.vault, '2026-09-21')
+        for _ in range(700):
+            short.user('ok').assistant('tamam')  # indentation per message outweighs the text itself
+        wide = Transcript('68686868-aaaa-4aaa-8aaa-000000000068', self.vault, '2026-09-22')
+        for _ in range(60):
+            wide.user('\U0001F600' * 700).assistant('tamam')  # emoji count twice in UTF-16, as Claude Code counts
+        self.enable()
+        for transcript, messages in ((short, 1400), (wide, 120)):
+            session = h(transcript.save(self.folder, self.base + 55).stem)
+            pages = self.backfill.show(self.vault, self.state, session)['pages']
+            self.assertGreater(pages, 1)
+            total = 0
+            for page in range(1, pages + 1):
+                result = self.backfill.show(self.vault, self.state, session, page=page)
+                printed = json.dumps(result, ensure_ascii=False, indent=2)  # exactly what the CLI prints
+                self.assertLess(len(printed.encode('utf-16-le')) // 2, 25_000)
+                total += len(result['messages'])
+            self.assertEqual(total, messages)
+
     def test_write_dates_trace_to_the_session_month_and_replay_is_idempotent(self):
         from beyin_v3_sync import SyncEngine
         self.enable()
