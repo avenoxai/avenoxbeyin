@@ -844,6 +844,10 @@ def main(argv=None):
             # Optional capture tool: its own small CLI, no index or sync engine.
             import beyin_v3_yakala as yakala
             return yakala.main((['--json'] if force_json else []) + argv[1:], vault=vault, state=state)
+        if argv and argv[0] == 'web':
+            # Optional local web view; only this explicit command ever starts it.
+            import beyin_v3_web as web
+            return web.main((['--json'] if force_json else []) + argv[1:], vault=vault, state=state, cli=cli)
         if argv and argv[0] in ('update', 'rollback', 'recover'):
             import argparse
             import beyin_v3_update as updater
