@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import ExitStack
+import codecs
 from datetime import datetime, timezone
 import json
 import os
@@ -288,6 +289,11 @@ EXCLUDED_DIRS = {'node_modules', 'receipts', '__pycache__'}
 # Nothing else is skipped by name: "vendor" or "external" is also an ordinary notes folder.
 COMPLETION_FIELDS = {'completion_contract', 'completion_criterion', 'evidence_refs'}
 TASK_STATUSES = ('inbox', 'active', 'waiting', 'blocked', 'done', 'cancelled')
+# Evidence newly linked to a strict done task must name the task within this many bytes.
+EVIDENCE_SCAN_BYTES = 1024 * 1024
+# A FAT/exFAT stamp is local wall time and a synced or shared copy keeps the writer's clock.
+# UTC offsets span 26 hours (UTC-12 to UTC+14); the rest is margin for DST and clock drift.
+EVIDENCE_FUTURE_SLACK_SECONDS = 48 * 3600
 
 
 def _check_task_dates(fields):
@@ -661,8 +667,48 @@ class SyncEngine:
         if isinstance(refs, list):
             metadata['evidence_refs'] = [self._path(ref).relative_to(self.root).as_posix() for ref in refs]
 
-    def _completion_issue(self, metadata, task_source=None):
-        """Validate an opt-in task contract without changing its evidence sources."""
+    @staticmethod
+    def _evidence_identity_issue(path, task_id):
+        """Newly linked strict evidence must name its task and carry a plausible timestamp."""
+        try:
+            if path.stat().st_mtime > time.time() + EVIDENCE_FUTURE_SLACK_SECONDS:
+                return 'evidence file has an invalid future modification time'
+            with path.open('rb') as handle:
+                head = handle.read(EVIDENCE_SCAN_BYTES)
+                # One lookahead byte distinguishes real EOF from a truncated scan.
+                truncated = bool(handle.read(1))
+        except OSError:
+            return 'evidence file must contain the matching task identifier'
+        decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+        text = unicodedata.normalize('NFC', decoder.decode(head, final=not truncated))
+        if truncated:
+            # The limit may cut an identifier (or a UTF-8 tail), so a trailing run cannot end a match.
+            # Matched on the reversed text: `[\w.-]+$` backtracks quadratically over a long run.
+            text = text[:len(text) - re.match(r'[\w.-]*', text[::-1]).end()]
+        task_id = unicodedata.normalize('NFC', str(task_id))
+        # A dot or hyphen continues the identifier only before another word character (T-1.2,
+        # T-1-b); at a sentence end ("Done: T-1.") it is punctuation.
+        if not re.search(r'(?<![\w.-])' + re.escape(task_id) + r'(?![.-]*\w)', text):
+            return 'evidence file must contain the matching task identifier'
+        return None
+
+    def _ref_identities(self, refs):
+        """Source identities of stored evidence refs; refs that no longer resolve are skipped."""
+        identities = set()
+        for ref in refs if isinstance(refs, list) else ():
+            try:
+                identities.add(self._source_identity(self._path(ref)))
+            except ValueError:
+                continue
+        return identities
+
+    def _completion_issue(self, metadata, task_source=None, linked=None):
+        """Validate an opt-in task contract without changing its evidence sources.
+
+        `linked` holds the identities of evidence a strict done task already had before this
+        write; each other ref is newly linked and must name the task. None (doctor, or a write
+        that links no evidence) skips that check, so evidence accepted when a task was closed
+        is never re-judged and an upgrade cannot turn a completed task invalid."""
         contract = metadata.get('completion_contract')
         if contract is not None and contract != 'strict':
             return 'completion_contract must be strict when set'
@@ -682,6 +728,8 @@ class SyncEngine:
                 task_identity = self._source_identity(self._path(task_source))
             except ValueError:
                 return 'task source is unavailable or outside vault'
+        verify = (linked is not None and contract == 'strict' and metadata.get('status') == 'done'
+                  and metadata.get('id'))
         seen = set()
         for ref in refs:
             try:
@@ -694,6 +742,10 @@ class SyncEngine:
             seen.add(identity)
             if task_identity is not None and identity == task_identity:
                 return 'evidence ref cannot be the task source itself'
+            if verify and identity not in linked:
+                issue = self._evidence_identity_issue(path, metadata['id'])
+                if issue:
+                    return issue
         return None
 
     def completion_health(self):
@@ -1242,7 +1294,13 @@ class SyncEngine:
             metadata, body = parse(raw.decode('utf-8'))
             if metadata.get('id') != id or type(metadata.get('revision')) is not int or metadata['revision'] > expected_revision:
                 raise RevisionConflict('source revision conflict')
-            before = {field: metadata.get(field) for field in ('status', 'completion_contract', 'completion_criterion')}
+            before = {field: metadata.get(field) for field in ('status', 'completion_contract', 'completion_criterion', 'evidence_refs')}
+            # Evidence is judged when it is linked: every ref when this update closes a strict task
+            # (or opts a closed one in), only added refs on a strict task that was already done.
+            # Refs a closed task already had stay accepted, so no upgrade invalidates its completion.
+            linked = set()
+            if before['status'] == 'done' and before['completion_contract'] == 'strict':
+                linked = self._ref_identities(before['evidence_refs']) if 'evidence_refs' in changes else None
             metadata.update(changes)
             metadata['revision'] = expected_revision + 1
             # The criterion is judged as it stood before completion, so neither it nor the
@@ -1257,7 +1315,7 @@ class SyncEngine:
                                      'omit it or pass the stored value, or change it in a separate update first')
             # A task that never opted in keeps unrelated updates, even with a same-named legacy field.
             if metadata.get('completion_contract') is not None or COMPLETION_FIELDS & set(changes):
-                issue = self._completion_issue(metadata, record['source'])
+                issue = self._completion_issue(metadata, record['source'], linked)
                 if issue:
                     raise ValueError(issue)
                 self._canonical_refs(metadata)
@@ -1396,7 +1454,7 @@ class SyncEngine:
         metadata, meta_redacted = self._protect_metadata(metadata)
         redacted += meta_redacted
         metadata.update(kind='task', revision=1)
-        issue = self._completion_issue(metadata, source)
+        issue = self._completion_issue(metadata, source, linked=set())
         if issue:
             raise ValueError(issue)
         self._canonical_refs(metadata)
