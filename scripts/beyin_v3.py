@@ -42,7 +42,8 @@ def mark_session_edit(state: Path, vault: Path | None = None, source: str | None
     tool was invisible to the receipt reminder. Claude Code sets CLAUDE_CODE_SESSION_ID in Bash
     subprocesses to the session_id its hooks receive. External project writes use the same
     cwd/session namespace as the global bridge; successful distilled-note writes retain
-    knowledge evidence even though the note mtime precedes this marker. Other shells and harnesses do not set it and nothing is guessed. Never costs the write itself.
+    knowledge evidence even though the note mtime precedes this marker. Other shells and
+    harnesses do not set it and nothing is guessed. Never costs the write itself.
     """
     session = os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not session or os.environ.get("BEYIN_V3_NO_RECEIPT_REMINDER") == "1":
