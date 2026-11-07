@@ -8266,6 +8266,10 @@ def enqueue_agent(vault, state, card_id, request, delivery_id=None, *, music=Non
             if job['state'] != 'queued':
                 return {'status': 'ayni_ajan_isi', 'id': card_id, 'job_id': job_id, 'session_id': job.get('session_id')}
             reason = 'Bagimsiz calisan baslatilamadi: ' + str(exc)[:300]
+            if getattr(exc, 'winerror', None) == 5:
+                # A listener copy older than this module keeps the popup in a Job Object
+                # without breakaway; capture still works, only the worker cannot leave it.
+                reason += ' (Windows: yakala kur ile dinleyiciyi yenile, sonra karti yeniden gonder.)'
             _agent_end(vault, state, job, 'failed', reason)
         return {'status': 'ajan_baslatilamadi', 'id': card_id, 'job_id': job_id, 'hata': reason}
     return {'status': 'ajanda', 'id': card_id, 'job_id': job_id, 'session_id': session_id}

@@ -496,7 +496,10 @@ Kurulumu yapan ajan, arka plan ajanını yalnız sen açıkça istersen açar; i
 Codex seçmek için `--ajan codex` kullan. Yakala zaten kuruluysa `py -3 beyin.py yakala ajan claude`
 veya `py -3 beyin.py yakala ajan codex` yeterlidir. Mac/Linux'ta `py -3` yerine `python3` yaz.
 Bu Windows sürümüne ilk geçişte `kur` komutunu yeniden çalıştır: state'teki dinleyici kopyası da
-ajan işinin popup'tan ayrılmasını sağlayan yeni süreç ayarını almalıdır.
+ajan işinin popup'tan ayrılmasını sağlayan yeni süreç ayarını almalıdır. Popup ile dinleyici
+arasındaki mesaj biçimi 3.12.0 ile aynıdır; `kur` yenilenmeden önce de kısayol ve normal kayıt çalışır,
+güncelleme veya geri alma kısayolu kapatmaz. Yalnız ajan işi başlayamaz: kart kaydedilir, `hata`
+durumuna geçer ve `ajan_notu` alanı `yakala kur` ile dinleyiciyi yenileyip kartı yeniden göndermeyi söyler.
 
 **Görünüm: gizli ya da pencere.** Windows'ta Claude ve Codex için ajanın nasıl çalışacağını seçebilirsin:
 
