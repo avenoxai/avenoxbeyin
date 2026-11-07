@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -69,6 +70,31 @@ class KnowledgeLintTest(unittest.TestCase):
                 linter.generate_moc(self.vault)
         self.assertIn('Window edit', target.read_text(encoding='utf-8'))
         self.assertEqual([p.name for p in target.parent.iterdir() if p.name.startswith('.beyin')], [])
+
+    @unittest.skipIf(os.name == 'nt', 'Windows cannot rename over an open file; only the pre-rename check applies')
+    def test_moc_waits_for_a_truncating_save_before_restoring(self):
+        # The editor truncated the file inside the replace window and writes a moment later:
+        # restoring the empty read would blank the user's note.
+        target = self._owned_moc()
+        saved = ('Handwritten text\n' + linter.MOC_START_MARKER + '\nold\n' + linter.MOC_END_MARKER
+                 + '\nKaydedilen yeni satır\n').encode('utf-8')
+        original_replace = os.replace
+        editor = {}
+        def editor_truncates_then_rename(source, destination, *args, **kwargs):
+            if Path(destination).resolve() == target.resolve() and not editor:
+                editor['handle'] = open(target, 'r+b')
+                editor['handle'].truncate(0)
+            return original_replace(source, destination, *args, **kwargs)
+        def editor_finishes_write(seconds):
+            handle = editor.get('handle')
+            if handle is not None and not handle.closed:
+                handle.write(saved)
+                handle.close()
+        with patch.object(os, 'replace', editor_truncates_then_rename), \
+                patch.object(time, 'sleep', editor_finishes_write):
+            with self.assertRaisesRegex(ValueError, 'restored'):
+                linter.generate_moc(self.vault)
+        self.assertEqual(target.read_bytes(), saved)
 
     def test_moc_never_rewrites_a_file_without_one_marker_pair(self):
         (self.vault / 'knowledge').mkdir()

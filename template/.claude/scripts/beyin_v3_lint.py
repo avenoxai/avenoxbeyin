@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import stat
 import tempfile
+import time
 import unicodedata
 
 # ReDoS-safe wikilink pattern: bounded character class prevents catastrophic backtracking.
@@ -45,6 +46,9 @@ _LEADING_NON_LETTERS = re.compile(r"^[\W\d_]+")
 # A MOC lists a note only when every reader of the MOC may also read that note.
 VISIBILITY_RANK = {"public": 0, "internal": 1, "private": 2}
 MAX_MOC_TITLE_CHARS = 120
+# After a save is seen in the replace window, re-read the held file until it is stable.
+MOC_SETTLE_READS = 10
+MOC_SETTLE_SECONDS = 0.02
 # Lint returns every count in full and at most this many entries per list.
 LINT_REPORT_LIMIT = 100
 MAX_RAW_LINK_CHARS = 200
@@ -534,6 +538,19 @@ def _write_temporary(directory, data):
     return temporary
 
 
+def _read_held(fd):
+    """((mtime, size), bytes) of the file behind an open descriptor."""
+    after = os.fstat(fd)
+    os.lseek(fd, 0, os.SEEK_SET)
+    chunks = []
+    while True:
+        chunk = os.read(fd, 1 << 16)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return (after.st_mtime_ns, after.st_size), b"".join(chunks)
+
+
 def _replace_if_unchanged(path, data, expected):
     """Replace path with data only while it still matches the snapshot the new text came from.
 
@@ -554,16 +571,17 @@ def _replace_if_unchanged(path, data, expected):
             raise MocConflict("MOC changed during update; nothing was replaced, rerun moc")
         _rename(temporary, path)
         if held is not None:
-            after = os.fstat(held)
-            os.lseek(held, 0, os.SEEK_SET)
-            chunks = []
-            while True:
-                chunk = os.read(held, 1 << 16)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            user = b"".join(chunks)
-            if (after.st_mtime_ns, after.st_size, hashlib.sha256(user).hexdigest()) != (expected[1], expected[2], expected[0]):
+            state = _read_held(held)
+            if (*state[0], hashlib.sha256(state[1]).hexdigest()) != (expected[1], expected[2], expected[0]):
+                # An editor that truncates before it writes can be caught mid-save: wait until
+                # the held file stops changing, so an empty or partial read is not restored.
+                for _ in range(MOC_SETTLE_READS):
+                    time.sleep(MOC_SETTLE_SECONDS)
+                    again = _read_held(held)
+                    if again == state:
+                        break
+                    state = again
+                user = state[1]
                 restored = _snapshot(path)
                 if restored is not None and restored[0] == data:
                     back = _write_temporary(path.parent, user)

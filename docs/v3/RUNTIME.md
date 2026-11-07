@@ -126,7 +126,8 @@ veya symlink yapılandırma üzerine yazılmaz; önce dosyayı onar.
   olduktan sonra yeniden adlandırmadan hemen önce (içerik özeti, mtime, boyut, inode) tekrar
   karşılaştırılır; değiştiyse hiçbir şey yazılmaz ve komut yeniden çalıştırılmayı ister.
   macOS ve Linux'ta eski dosya yeniden adlandırma boyunca açık tutulur, bu arada yerinde
-  kaydedilen bir düzenleme fark edilip geri konur. Kalan sınır: bir editör dosyayı tam bu
+  kaydedilen bir düzenleme fark edilip geri konur; önce dosyayı boşaltıp sonra yazan editör
+  için geri koymadan önce dosyanın değişmesi durana kadar (en fazla 0,2 sn) beklenir. Kalan sınır: bir editör dosyayı tam bu
   mikro saniyelik aralıkta yeni bir dosyayla değiştirirse işletim sistemi bunu kilitleyemez.
 
 ## Receipt görünümü çakışması ve kurtarma
