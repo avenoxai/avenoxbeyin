@@ -57,19 +57,23 @@ def mark_session_edit(state: Path, vault: Path | None = None, source: str | None
         previous = json.loads(edited.read_text(encoding="utf-8")) if edited.exists() else None
         marker = dict(previous) if previous is not None else {"at": time.time()}
         if vault is not None and source:
-            from beyin_v3_projections import is_distilled_note
-            lexical = Path(vault) / source
-            canonical = lexical.resolve().relative_to(Path(vault).resolve()).as_posix()
-            if not lexical.is_symlink() and lexical.is_file() and is_distilled_note(canonical):
-                marker['knowledge'] = True
+            # Knowledge evidence is optional: a source that cannot be classified still opens the window.
+            try:
+                from beyin_v3_projections import is_distilled_note
+                lexical = Path(vault) / source
+                canonical = lexical.resolve().relative_to(Path(vault).resolve()).as_posix()
+                if not lexical.is_symlink() and lexical.is_file() and is_distilled_note(canonical):
+                    marker['knowledge'] = True
+            except Exception:
+                pass
         if marker == previous:
             return
         folder.mkdir(parents=True, exist_ok=True)
         temporary = folder / (edited.name + "." + str(os.getpid()) + ".tmp")
         temporary.write_text(json.dumps(marker), encoding="utf-8")
         os.replace(temporary, edited)
-    except (OSError, ValueError, TypeError):
-        pass
+    except Exception:
+        pass  # reminder bookkeeping never costs the write that already succeeded
 
 
 def _is_absolute_cross_platform(raw: str) -> bool:
@@ -1269,6 +1273,7 @@ def main(argv=None, return_result=False):
                 bridge_args = ["--vault", str(vault), "--state", str(state), "--harness", args.harness,
                                "--context-chars", str(args.context_chars), "--print-config"]
                 for r in roots: bridge_args.extend(["--project-root", str(r)])
+                for event in events: bridge_args.extend(["--event", event])
                 code = bridge_mod.main(bridge_args)
                 if return_result:
                     return None, code
