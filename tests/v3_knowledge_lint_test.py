@@ -174,6 +174,19 @@ class KnowledgeLintTest(unittest.TestCase):
         self.assertEqual(result['resolved_path'], 'b/note.md')
         self.assertFalse(linter.resolve_wikilink(self.vault, 'missing/note')['exists'])
 
+    def test_root_relative_and_partial_path_links_resolve_like_obsidian(self):
+        for source, text in [('note.md', '# N'), ('a.md', '[[./note]]'),
+                             ('knowledge/kavramlar/temel.md', '# T'), ('p/x.md', '[[kavramlar/temel]]'),
+                             ('b/sub/source.md', '[[./note]] [[missing/temel]]')]:
+            path = self.vault / source
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding='utf-8')
+        result = linter.lint_vault(self.vault)
+        self.assertEqual(sorted((link['source'], link['raw']) for link in result['broken_links']),
+                         [('b/sub/source.md', '[[./note]]'), ('b/sub/source.md', '[[missing/temel]]')])
+        self.assertNotIn('a.md', result['orphans'])
+        self.assertNotIn('knowledge/kavramlar/temel.md', result['orphans'])
+
     def test_folder_lint_counts_external_backlinks_and_missing_embeds(self):
         (self.vault / 'knowledge').mkdir()
         (self.vault / 'knowledge/a.md').write_text('# Present\n![[missing]]\n[[#Absent]]', encoding='utf-8')

@@ -177,16 +177,27 @@ def resolve_wikilink(vault_root, link_target, source_file=None, vault_index=None
     if k_ext in by_rel:
         return {"exists": True, "resolved_path": by_rel[k_ext]}
 
-    # 3. Check relative to source_file parent folder if source_file provided
+    # 3. Check relative to source_file parent folder if source_file provided ("./x" from a root note too)
     if source_file:
         source_parent = Path(source_file).parent.as_posix()
-        if source_parent and source_parent != ".":
-            candidate_rel = posixpath.normpath(f"{source_parent}/{target_with_ext}")
-            k_cand = _norm_key(candidate_rel)
-            if k_cand in by_rel:
-                return {"exists": True, "resolved_path": by_rel[k_cand]}
+        base = "" if source_parent in ("", ".") else source_parent + "/"
+        candidate_rel = posixpath.normpath(base + target_with_ext)
+        k_cand = _norm_key(candidate_rel)
+        if k_cand in by_rel:
+            return {"exists": True, "resolved_path": by_rel[k_cand]}
 
     if "/" in norm_target:
+        # Obsidian resolves a partial path by its ending ("kavramlar/temel" ->
+        # "knowledge/kavramlar/temel.md"), never by the file name alone, so a
+        # missing "missing/note" stays broken. "./" and "../" stay relative only.
+        if norm_target.startswith(("./", "../")):
+            return {"exists": False, "resolved_path": None}
+        suffix = "/" + _norm_key(target_with_ext)
+        matches = sorted((path for path in by_basename.get(_norm_key(target_stem), [])
+                          if ("/" + _norm_key(path)).endswith(suffix)),
+                         key=lambda path: (path.count("/"), path))
+        if matches:
+            return {"exists": True, "resolved_path": matches[0]}
         return {"exists": False, "resolved_path": None}
 
     # 4. Check basename lookup (Obsidian standard shortest path)
