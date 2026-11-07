@@ -54,6 +54,75 @@ ve dosyayı okumak gerektiğini söyler. Kesme satır sınırındadır, yarım k
 haritası ve ilişkili kaynaklar payını aldıktan sonra artan bütçe kırpılmış companion
 bölümlerine geri verilir; sınır hiçbir durumda aşılmaz.
 
+Açılışta yer darsa tam genel/proje kuralları (gerekçeleri çıkarmak gerekebilir), en üstteki
+tarihli devir kartı ve bütün açık konuların kısa görünümü önce ayrılır. Kuralların taban
+payı kategoriye aittir; genel ve proje dosyaları aynı payı bölüşür. Kimlik, üslup, Journal,
+bilgi haritası, receipt ve sorgu sonuçları kalan alanı kullanır. Bu çekirdek de sığmıyorsa
+önce kimlik, Journal ve öbür isteğe bağlı kaynaklar kısa bir başa iner; devir dosyası en üstteki
+kartını ve en az taban payını korur, konuların kısa görünümü kalanı alır. Bu kalan, eski orantılı
+paylaşımın konulara verdiğinden azsa her kaynak önce o orantılı payı (korunan kısmıyla ya da taban
+payıyla sınırlı) alır; artan alan sırayla kalan kurallara, en üstteki devir kartına ve konuların
+kısa görünümüne gider. Böylece kurallar ne kadar uzarsa uzasın devir kartı ve konu adımları eski
+paylaşımın gösterdiğinden azına inmez. Kuralların kendisi de sığmıyorsa sınırlı paylar ve açık
+kırpma işaretleri geçerlidir; keyfi uzunluktaki kuralların her sonlu bütçeye tam sığacağı
+söylenmez. Kaynak dosyalar bu işlemde değiştirilmez.
+Bu çekirdek bir tabandır, tavan değildir: kalan alan önce bütün kaynaklara paylaşılır. Böylece
+paralel oturumların daha eski devir kartları ve konu kartlarının tamamı sığdıkça gelir; en
+üstteki kart her zaman tam ve önce gelir, kesilen devir ayrıntısı `[truncated: read source]`
+işaretiyle biter. Konu kartları ya tam ya kısa görünümleriyle gelir; tam kartın kullanamadığı
+alan öbür kaynaklara geri döner.
+
+`Threads.md` içindeki `###` başlıklarının her biri kısa görünümde korunur. `**Status:**` /
+`**Durum:**` ile `**Next step:**` / `**Sonraki adım:**` paragrafları varsa bunlar, devam
+satırlarıyla birlikte aynen alınır; kalın yazılmamış `Status:` / `Next:` alanları da tanınır.
+İlk durum ve sonraki adım alanı güncel karttır; sonraki tarihli geçmiş paragrafları bu kısa
+görünümü büyütmez. Ayrıntı paragrafı boş satırla ayrılır. Eski serbest
+metin biçiminde ilk cümle ve bekleyen iş/hatırlatma belirten cümleler aynen seçilir.
+Alan daralırsa bu eski biçimden bir bekleyen adım cümlesi seçilir; başlıkların kendisi de
+sığamayacak kadar küçük bütçelerde bütün başlıkların görünmesi garanti edilmez.
+Bu seçim anlamsal bir özet değildir; etiketsiz veya farklı ifadeli bir sonraki adımı
+bulacağı garanti edilmez. Kısa görünüm ayrıntı ve etiketsiz adımlar için kaynağa yönlendirir.
+Kapalı konular ve kod çitlerindeki örnek başlıklar bu görünümün parçası değildir.
+Kısa görünüm de sığmadığında bütün başlıklar korunur; alan dosyadaki sırayla konulara en az
+80 karakterlik dilimler halinde verilir, sonrakiler yalnız başlıklarıyla gelir ve bölüm
+`[Thread overview clipped; read source]` işaretiyle biter. Yüzlerce konuda her başlığa bir iki
+karakter düşüp anlamsız parçalar oluşmaz. Başlıklar alanın neredeyse tamamını alıp daha az konuya
+durum bırakacaksa konular dosyadaki sırayla tam kısa görünümleriyle gelir, ardından sığan
+başlıklar ve aynı işaret; böylece alan büyüdükçe görünen sonraki adım sayısı azalmaz.
+
+İstemcinin kendi talimat dosyası bir companion dosyasını zaten tam yüklüyorsa açılış onu
+ikinci, kırpılmış bir kopya olarak tekrar etmez ([#610](https://github.com/avenoxai/avenoxbeyin/issues/610)).
+Bugün yalnız Claude Code için tanımlıdır: oturum kasa kökünde ya da kasa içindeki bir klasörde
+başladıysa, çalışma klasöründen kasa köküne kadar her klasördeki `CLAUDE.md`, `.claude/CLAUDE.md`
+ve `CLAUDE.local.md` ile bunların `@yol` içe aktarmaları okunur. Sayım Claude Code'un kendi
+kuralının temkinli bir alt kümesidir: `@` satır başında ya da boşluktan sonra gelir; yol sonraki
+boşlukta ya da ters bölüde biter, boşluk `\ ` ile yazılır, `#` sonrası bölüm adıdır. Yol
+`./`, `~/`, `/` ya da `A-Z a-z 0-9 . _ -` karakterlerinden biriyle başlamalıdır; emoji ya da
+Türkçe harfle başlayan bir klasör (varsayılan `🔮 850-Companion` dahil) için `@./🔮\ 850-Companion/Kurallar.md`
+yazılır, `@🔮\ 850-Companion/Kurallar.md` Claude Code'da içe aktarılmaz ve sayılmaz. Kasa
+kökündeki `CLAUDE.md` kurulumun izlediği bir dosyadır ve bir güncellemeden sonra değişirse
+`rollback` çakışma bildirir; içe aktarma satırı için bu takibin dışındaki `CLAUDE.local.md`
+uygundur. Yol içe
+aktaran dosyaya göre görelidir, en çok dört adım izlenir; 4 MiB'den büyük ya da metin olarak
+okunmayan uzantılı dosya sayılmaz. Frontmatter, kod aralığı, kod bloğu, girintili kod, HTML
+bloğu ve yorumu, bağlantı hedefi ve başlığı, görsel metni ve tablo içindekiler sayılmaz
+(tabloyu yeni Claude Code okur, eskisi okumaz). Belirsiz Markdown'da (kapanmamış ters tırnak ya
+da yorum, kalın yazı içindeki `**@yol**`, `[@yol](...)` bağlantı metni) hiçbir içe aktarma
+sayılmaz; bunları Claude Code yükleyebilir, o zaman kaynak açılışta ikinci kez görünür ama
+kaybolmaz. Çalışma klasörünün dışına çıkan içe aktarma Claude Code'da kullanıcı onayı beklediği
+için sayılmaz; kasa dışında başlayan oturum, Codex ve öbür istemciler (`AGENTS.md`, `GEMINI.md`)
+bütün kaynakları almaya devam eder; `.claude/rules/` klasörü de okunmaz. Eşleşen bölümün etiketi
+kalır, gövdesi `[Loaded in full by CLAUDE.md @import; not repeated here]` işaretçisine iner ve
+açılan alan konulara ve devir kartlarına gider. Yalnız kasa içindeki dosyalar okunur, hiçbir şey
+yazılmaz; doğrulanamayan bir yol tekrar edilir, düşürülmez. `doctor` içindeki
+`companion_rules_opening` kasa kökünde başlayan bir oturumu varsayar ve içe aktarılan
+`Kurallar.md` için `imported: true` döner, kırpma bildirmez; başka bir klasörde başlayan oturumun
+açılışı farklı olabilir.
+
+Claude/Codex açılışında yeniden üretim, istemcinin UTF-16/UTF-8 ölçüsüne sığana kadar
+küçülen bütçeyle tekrarlanır. Hook'un ayrı bildirimleri de karakter bütçesinden düşülür;
+sondaki güvenlik kesmesinin companion kaynaklarını kaybetmesine güvenilmez.
+
 Bu paylaşımdan önce companion dosyaları kaynak doğrulamalı anlık görüntüden 200.000
 karakterlik bir üst sınırla okunur ([#374](https://github.com/avenoxai/avenoxbeyin/issues/374)).
 Payından kısa kalan dosya artanı uzun dosyalara bırakır; böylece kural kırpması ve
@@ -156,7 +225,8 @@ Düzeltme dört parçadır:
   gösterilir, bunlara sınır uygulanmaz. Hook `Kurallar.md` dosyasını doğrudan okur ve
   sığmadığında başını ve sonunu atlanan kural aralığıyla birlikte verir (#45, #196).
   `doctor` ayrıca `companion_rules_opening` altında Claude Code açılışının kural metninin
-  en fazla kaç karakterini tam gösterdiğini (`share`) hook'un kendi hesabıyla verir; sayı
+  o anki karakter payını (`share`) hook'un kendi hesabıyla verir; sayı sabit bir tavan değildir,
+  daha kısa bir kural dosyası isteğe bağlı ayrıntının yerini alabilir. Pay
   öbür companion dosyalarının o anki boyutuna ve receipt'e göre değişir. Kurallar
   kırpılıyorsa `--human` çıktısında tek satır görünür. Bilgi amaçlıdır, `doctor` durumunu
   değiştirmez ve hiçbir dosya yazmaz (#374). Ayrıca açılışta `Kurallar.md` kırpılıyorsa oturum
