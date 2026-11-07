@@ -5091,6 +5091,9 @@ def popup(vault, context=None, state=None, root=None, session=None):
 
     def send_agent(_event=None):
         if agent_client == 'kapali':
+            if not (saving['on'] or result):
+                # Before the agent existed Ctrl+Enter fell through to a plain save; say why nothing happened.
+                canvas.itemconfigure(status, text='Ajan kapalı · kaydetmek için Enter', fill=P['accent'])
             return 'break'
         return save(send_agent=True)
 
