@@ -685,7 +685,9 @@ class SyncEngine:
             # Matched on the reversed text: `[\w.-]+$` backtracks quadratically over a long run.
             text = text[:len(text) - re.match(r'[\w.-]*', text[::-1]).end()]
         task_id = unicodedata.normalize('NFC', str(task_id))
-        if not re.search(r'(?<![\w.-])' + re.escape(task_id) + r'(?![\w.-])', text):
+        # A dot or hyphen continues the identifier only before another word character (T-1.2,
+        # T-1-b); at a sentence end ("Done: T-1.") it is punctuation.
+        if not re.search(r'(?<![\w.-])' + re.escape(task_id) + r'(?![.-]*\w)', text):
             return 'evidence file must contain the matching task identifier'
         return None
 

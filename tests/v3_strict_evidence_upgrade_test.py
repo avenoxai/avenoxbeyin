@@ -114,6 +114,22 @@ class StrictEvidenceUpgradeTest(unittest.TestCase):
         self.assertEqual(self.engine.completion_health()['strict_issue_count'], 0)
         self.assertEqual(self.engine.update_task('T-1', 2, {'priority': 'low'})['revision'], 3)
 
+    def test_sentence_punctuation_ends_an_identifier(self):
+        metadata = {'id': 'T-1', 'status': 'done', 'completion_contract': 'strict',
+                    'completion_criterion': CRITERION, 'evidence_refs': ['notes/result.md']}
+        self.note('tasks/t.md', 'Synthetic task.\n')
+        for text, accepted in (('Görev tamamlandı: T-1.\n', True), ('Sonuç T-1...', True),
+                               ("T-1'in sonucu kaydedildi.\n", True), ('Done (T-1).\n', True),
+                               ('Result for T-1.2 only.\n', False), ('See T-1.md for details.\n', False),
+                               ('Result for T-1--b only.\n', False), ('Result for T-10.\n', False)):
+            self.note('notes/result.md', text)
+            issue = self.engine._completion_issue(metadata, 'tasks/t.md', linked=set())
+            with self.subTest(text=text):
+                if accepted:
+                    self.assertIsNone(issue)
+                else:
+                    self.assertIn('matching task identifier', issue)
+
     def test_decomposed_evidence_names_a_composed_identifier(self):
         task_id = 'görev-ş1'
         metadata = {'id': task_id, 'owner': 'Synthetic Reviewer', 'status': 'active',
