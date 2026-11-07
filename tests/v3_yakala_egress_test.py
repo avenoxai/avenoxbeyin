@@ -25,7 +25,7 @@ PUBLIC = '8.8.8.8'  # the address the fake resolver gives a "public" test name
 def without_proxies():
     """os.environ for a helper run: the suite's environment with no proxy or bypass list of its own."""
     env = {key: value for key, value in inherited_env().items()
-           if key.upper() not in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY')}
+           if key.upper() not in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'NPM_CONFIG_NOPROXY')}
     return patch.dict(os.environ, env, clear=True)
 
 
