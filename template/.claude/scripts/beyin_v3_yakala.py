@@ -1829,6 +1829,27 @@ def _card_file(vault_root, card, link):
     return path
 
 
+def _docx_reader():
+    """The stdlib DOCX reader ships beside this file; None when this file runs alone.
+
+    The hotkey listener runs a copy of this file alone from the state folder (#501), and
+    `python -I` leaves the script folder off sys.path. A missing reader is the agent fallback.
+    """
+    try:
+        import beyin_v3_docx
+        return beyin_v3_docx
+    except ImportError:
+        pass
+    source = Path(__file__).resolve().with_name('beyin_v3_docx.py')
+    if not source.is_file():
+        return None
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('beyin_v3_docx', source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def extract(vault, card, found, allow_audio=True, info=None):
     """Return (text, method, note). Prefer what is already captured, then the cheapest fetch."""
     meta, body = card['meta'], card['body']
@@ -1852,6 +1873,8 @@ def extract(vault, card, found, allow_audio=True, info=None):
         return _section(body, 'Secim') or body, 'metin', None
     if kind == 'dosya':
         parts = []
+        document_issues = []
+        read_docx = False
         vault_root = Path(vault).resolve()
         for link in re.findall(r'\[\[([^\]]+)\]\]', _section(body, 'Dosyalar')):
             path = _card_file(vault_root, card, link)
@@ -1864,8 +1887,28 @@ def extract(vault, card, found, allow_audio=True, info=None):
                         parts.append('## ' + path.name + '\n\n' + out)
                 except (OSError, subprocess.TimeoutExpired):
                     pass
+            elif path.suffix.lower() == '.docx':
+                reader = _docx_reader()
+                if reader is None:
+                    document_issues.append(path.name + ': docx_reader_missing')
+                    continue
+                with path.open('rb') as source:
+                    result = reader.extract_docx(source.read(reader.MAX_SOURCE + 1))
+                read_docx = True
+                if result['text']:
+                    parts.append('## ' + path.name + '\n\n' + result['text'])
+                if result['state'] != 'ready':
+                    document_issues.append(path.name + ': ' + ', '.join(result['issues']))
         if parts:
-            return '\n\n'.join(parts), 'dosya', None
+            note = None
+            if document_issues:
+                note = ('; '.join(document_issues) +
+                        '; cikarilan metin eksik olabilir, kalan icerik icin dosyayi ajan incelesin.')
+            if read_docx and info is not None:
+                info['uyari'] = note  # kept on the card like a video caveat; a clean rerun clears it
+            return '\n\n'.join(parts), 'dosya', note
+        if document_issues:
+            return None, 'ajan-okusun', '; '.join(document_issues) + '; dosyayi ajan dogrudan incelesin.'
         return None, 'ajan-okusun', 'Dosyayi ajan dogrudan okusun (gorsel, PDF ya da ikili dosya).'
     if url:
         _safe_network_url(url)  # before npx/yt-dlp can make the first request
@@ -1957,7 +2000,9 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
                                             'Tam metin ham dosyaya tasindi: `' + raw.relative_to(vault).as_posix() + '`')
                 meta.update(durum='cikarildi', yontem=method, ham=raw.relative_to(vault).as_posix())
                 meta.pop('hata', None)
-                for key in ('dil', 'altyazi', 'uyari'):  # only explicit evidence replaces an earlier warning
+                # Video, DOCX and the web completeness check report these; only explicit
+                # evidence replaces an earlier warning, an unknown check keeps it.
+                for key in ('dil', 'altyazi', 'uyari'):
                     if key in info:
                         meta.pop(key, None)
                         if info[key]:
