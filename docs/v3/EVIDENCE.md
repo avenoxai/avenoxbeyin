@@ -9,6 +9,12 @@ Her görünüm, kopyalanan kaynak aralığının çıktıdaki yerini de tutar; b
 son zarfın ortasında kesilen bir pasajın yalnız gösterilen kısmı hatırlanır.
 Bu üçü Python nesnesinin attribute'larıdır; zarf JSON'una eklenmez.
 
+Strict kaydın tam kaynak ve bölüm genişletmesi yalnız aynı kaydın metninden
+gelir ve yalnız mevcut pasaj payları ayrıldıktan sonra kalan bütçeyi kullanır.
+Aylık sohbet izi notları (`chat_trace`, `knowledge/conversations/YYYY-MM.md`)
+farklı oturumların ve projelerin kısa özetlerini tek başlık altında topladığı
+için genişletilmez; her paragraf ayrı bir kaynak gibi kalır.
+
 Strict arama seçimini değiştirmez. Jev kartı dar ve varsa geniş seçimin her
 pasajına yer ayırır; uzun parçada sorguya uyan pencereyi kullanır. Gevşek adayın
 ilgili pasajı karttan önce yerelde seçilir. Kurtarıldığında dar görünüm notun

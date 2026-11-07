@@ -202,11 +202,38 @@ class TraceTest(unittest.TestCase):
         result = engine.store.context_for('claude', 'zirkon robot kamerası', strict=True)
         self.assertEqual(len(result['records']), 1)
         self.assertIn('sabit ray', result['records'][0]['text'])
-        # The selected primary passage is query-specific. A small complete
-        # monthly source may also be delivered from spare room (#530).
+        # A monthly trace keeps its paragraphs separate even with spare room (#530):
+        # neither the whole note nor its one section is a delivery extension.
+        self.assertNotIn('Kobalt deneyi', result['records'][0]['text'])
         self.assertNotIn('Kobalt deneyi', result.sources[0]['text'])
         self.assertFalse(remote_allowed(result['records'][0]))
         self.assertFalse((self.vault / '.beyin-preferences.json').exists())
+
+    def test_monthly_trace_never_hands_a_prompt_other_sessions_summaries(self):
+        from beyin_v3 import render_context
+        from beyin_v3_sync import SyncEngine
+        import beyin_v3_continuity as continuity
+        self.enable()
+        mine = 'Alfa projesi: zirkon robot kamerası sabit ray üzerinde denendi.'
+        other = 'Beta projesi: kobalt sözleşmesi için sentetik fiyat 4200 konuşuldu.'
+        self.write(mine)
+        self.trace.write(self.vault, self.state, 'claude', hashlib.sha256(b'other').hexdigest()[:24], other)
+        engine = SyncEngine(self.vault, self.state)
+        engine.sync()
+        context = engine.store.context_for('claude', 'zirkon robot kamerası', strict=True, budget_chars=8000)
+        self.assertEqual(len(context['records']), 1)
+        self.assertTrue(context['records'][0]['chat_trace'])
+        self.assertEqual(getattr(context, 'extensions', {}), {})
+        wire, delivered = render_context(context, 8000, prefix='Receipt session=synthetic\n')
+        self.assertIn(mine, wire)
+        self.assertNotIn('kobalt', wire.casefold())
+        self.assertNotIn('4200', wire)
+        continuity.remember(engine.store, 'claude', 'trace-session', 'zirkon robot kamerası', delivered)
+        saved = json.loads(continuity._path(engine.store, 'claude', 'trace-session').read_text(encoding='utf-8'))
+        record = next(r for r in engine.store._records() if r['id'] == context['records'][0]['id'])
+        shown = ''.join(record['text'][start:end] for start, end in saved['refs'][0]['ranges'])
+        self.assertIn(mine, shown)
+        self.assertNotIn(other, shown)
 
     def test_explicit_write_replay_is_idempotent_and_long_text_is_rejected(self):
         self.enable()

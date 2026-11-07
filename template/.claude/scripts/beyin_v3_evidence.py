@@ -146,7 +146,14 @@ def strict_extensions(record, selected, budget):
 
     They include every selected body span. They do not choose candidates or
     change the evidence excerpt shown to the advisor.
+
+    A monthly chat trace (knowledge/conversations/, chat_trace) collects short
+    summaries of unrelated sessions, of any project, under one heading; each
+    paragraph is its own searchable source. Its whole note or section would hand
+    a prompt every other session's summary, so it keeps the selected passages.
     """
+    if record.get('chat_trace'):
+        return [], []
     from beyin_v3_passage import split_blocks, _partial
     blocks = split_blocks(record['text'])
     sections = []
