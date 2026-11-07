@@ -109,6 +109,32 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(redact(text, self.state), (text, 0))
 
+    def test_subscript_and_command_forms_redact(self):
+        for text, expected in (
+                (f'os.environ["TYPESAFE_API_KEY"] = "{VALUE}"', 'os.environ[[REDACTED]'),
+                (f"os.environ['OPENAI_API_KEY']='{VALUE}'", 'os.environ[[REDACTED]'),
+                (f'process.env["MY_SECRET"] = "{VALUE}";', 'process.env[[REDACTED];'),
+                (f'setx TYPESAFE_API_KEY "{VALUE}"', '[REDACTED]'),
+                (f'setx /M TYPESAFE_API_KEY {VALUE}', '[REDACTED]'),
+                (f'SETX OPENAI_API_KEY "{VALUE}" /M', '[REDACTED] /M'),
+                (f'[Environment]::SetEnvironmentVariable("TYPESAFE_API_KEY", "{VALUE}", "User")',
+                 '[Environment]::[REDACTED], "User")'),
+                (f"[System.Environment]::SetEnvironmentVariable('DB_PASSWORD','{VALUE}','Machine')",
+                 '[System.Environment]::[REDACTED])'),
+                (f'set -gx TYPESAFE_API_KEY "{VALUE}"', '[REDACTED]'),
+                (f'set -Ux MY_SECRET {VALUE}', '[REDACTED]')):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text, self.state), (expected, 1))
+        # A space also separates prose words: unquoted command values need a digit.
+        for text in ('setx TYPESAFE_API_KEY komutunu kullan', 'set -x GITHUB_TOKEN değişkenini oku',
+                     'setx TYPESAFE_API_KEY ""', 'setx PATH "%PATH%;C:\\Tools\\bin"',
+                     'setx TYPESAFE_BASE_URL https://example.com/v1', 'reset -x MY_TOKEN abcdefgh12',
+                     'set -x\nGITHUB_TOKEN abcdefgh12', f'[token]: https://example.com/{VALUE}',
+                     '[Environment]::GetEnvironmentVariable("TYPESAFE_API_KEY", "User")',
+                     'x["pad_token"] = tokenizer.eos_token'):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text, self.state), (text, 0))
+
     def test_prefixed_query_assignment_preserves_other_parameters(self):
         for name in NAMES:
             text = f'https://example.com/?{name}={VALUE}&format=markdown'

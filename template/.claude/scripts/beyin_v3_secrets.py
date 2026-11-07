@@ -36,12 +36,23 @@ _SECRET_NAME = (r"(?!(?:pad|eos|bos|unk|sep|cls|mask)_token(?a:(?![a-z0-9_])))"
 # the Turkish İ and ı, which hid the whole value of KİŞİSEL_API_KEY=... while
 # MÜŞTERI_API_KEY=... was masked.
 _NAME_START = r"(?a:(?<![a-z0-9_]))"
+_SECRET_VALUE = r"""(?:\\{0,8}["\']\S{8,}\\{0,8}["\']|[^"\'\s,;][^\s,;]{7,})"""
 
 
 BUILTIN_PATTERNS = (
     re.compile(r"(?i)(?<=[?&])" + _SECRET_NAME + r"=[^&\s]{8,}"),
+    # A quoted name may close a subscript: os.environ["NAME"] = "value". The
+    # quote is required so a Markdown reference link [token]: url stays text.
     re.compile(r"""(?i)""" + _NAME_START + r"""(?:\\{0,8}["\']?""" + _SECRET_NAME +
-               r"""\\{0,8}["\']?)\s*[:=]\s*(?:\\{0,8}["\']\S{8,}\\{0,8}["\']|[^"\'\s,;][^\s,;]{7,})"""),
+               r"""(?:\\{0,8}["\']\]|\\{0,8}["\']?))\s*[:=]\s*""" + _SECRET_VALUE),
+    # Commands that separate the name from the value without = or a colon:
+    # Windows setx and [Environment]::SetEnvironmentVariable, fish set -x. A
+    # space also separates prose words, so an unquoted value needs a digit:
+    # "setx TYPESAFE_API_KEY komutunu kullan" stays text.
+    re.compile(r"""(?i)(?a:(?<![a-z0-9_-]))(?:(?:setx(?:[ \t]+/m)?|set[ \t]+-[a-z]{0,3}x[a-z]{0,3})"""
+               r"""[ \t]+["\']?""" + _SECRET_NAME + r"""["\']?[ \t]+|setenvironmentvariable\([ \t]*["\']"""
+               + _SECRET_NAME + r"""["\'][ \t]*,[ \t]*)"""
+               r"""(?:\\{0,8}["\']\S{8,}\\{0,8}["\']|(?=[^\s,;]*\d)[^"\'\s,;][^\s,;]{7,})"""),
     re.compile(r"(?<=://)[^/\s?#:]*:[^/\s?#]*(?=@[^/\s?#@]+)"),
     re.compile(r"\bgh(?:p|o|u|s|r)_[A-Za-z0-9]{20,255}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,255}\b"),
