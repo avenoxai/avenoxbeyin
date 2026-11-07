@@ -111,6 +111,29 @@ class UnscopedDominantProjectTest(unittest.TestCase):
     def test_one_word_query_keeps_its_single_match(self):
         self.assertEqual(self.ids('recipe'), ['cooking'])
 
+    def test_one_word_typo_keeps_its_single_match(self):
+        # "reciep" also searches "recipe"; the fix stands for the one query word, so the
+        # two-word gate must not count the misspelling as a second word.
+        self.assertEqual(self.ids('reciep', explicit=False), ['cooking'])
+        self.assertEqual(self.ids('reciep'), ['cooking'])
+
+    def test_demotion_scales_only_the_lexical_weight(self):
+        # A closed task carries a negative weight; scaling the whole weight would raise the
+        # demoted one above the stronger match outside the dominant project.
+        for id, text, source, project in (
+                ('closed-school', 'Invoice archive closed. Invoice archive.', 'school/old-invoice.md', 'school'),
+                ('closed-home', 'Invoice archive closed, invoice archive done, invoice archive, invoice.',
+                 'notes/old-invoice.md', None)):
+            path = self.vault / source
+            path.write_text(text, encoding='utf-8')
+            record = {'id': id, 'kind': 'task', 'status': 'done', 'visibility': 'internal', 'text': text,
+                      'facts': {}, 'source': source, 'updated_at': '2026-09-01T10:00:00Z'}
+            if project:
+                record['project'] = project
+            self.store.ingest(record)
+        self.assertEqual(self.without_demotion('invoice archive')[:2], ['closed-home', 'closed-school'])
+        self.assertEqual(self.ids('invoice archive')[:2], ['closed-home', 'closed-school'])
+
     def test_word_naming_the_records_project_admits_it(self):
         # "garden" names the garden project, so its card qualifies on that word alone,
         # while the weekly note that shares only "update" does not.

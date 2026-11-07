@@ -1399,13 +1399,16 @@ class MemoryStore:
     DUE_STRICT_BONUS = 25.0
     CLOSED_TASK_PENALTY = 50.0
 
-    def _weighted_rank(self, ranked, terms, term_counts, name_scores=None, today=None, allowed_statuses=None):
+    def _weighted_rank(self, ranked, terms, term_counts, name_scores=None, today=None, allowed_statuses=None,
+                       factors=None):
         """Order without dropping anything: Okapi BM25 over stem counts, no thresholds.
 
         A raw shared-term count favours whichever note has the largest vocabulary, so one long
         hub note can win every query; a presence-only idf weight still cannot tell a note that
         is about a term from one that mentions it once. Records with no shared term (scoped
-        listings, snapshots) weigh 0 and keep their previous updated_at order.
+        listings, snapshots) weigh 0 and keep their previous updated_at order. factors scales
+        the BM25 part of a record's weight only (dominant-project demotion); name, due and
+        closed-task adjustments keep their size, so a negative weight is never raised.
         """
         total = len(term_counts)
         lengths = {rid: sum(counts.values()) for rid, counts in term_counts.items()}
@@ -1419,6 +1422,8 @@ class MemoryStore:
             weight = sum(math.log((total - frequency[term] + 0.5) / (frequency[term] + 0.5) + 1) *
                          counts[term] * (self.BM25_K1 + 1) / (counts[term] + norm)
                          for term in terms if counts.get(term))
+            if factors and record["id"] in factors:
+                weight *= factors[record["id"]]
             if name_scores and record["id"] in name_scores:
                 weight += self.NAME_MATCH_WEIGHT * name_scores[record["id"]]
             if is_due_task(record, today_iso):
@@ -1432,17 +1437,17 @@ class MemoryStore:
     # explicit=True; not strict, not a snapshot) get two extra rules. Scoped (--project)
     # queries, the strict hook path, companion retrieval, the advisor pools and plain
     # retrieve()/candidates() calls are unchanged.
-    # Admission: a multiword query needs EXPLICIT_MIN_SHARED shared words, the same gate as
-    # the strict hook path, so a question that shares one common word with some note
+    # Admission: a multiword query needs EXPLICIT_MIN_SHARED shared query words, the same
+    # gate as the strict hook path, so a question that shares one common word with some note
     # ("password", "recipe") abstains instead of returning that note. A full name match or a
     # word naming the record's own project still admits it alone; one-word queries keep
-    # their single shared word.
+    # their single shared word, and a typo fix counts for the word it fixes.
     # Dominant project: when one project owns more than DOMINANT_PROJECT_SHARE of the
-    # eligible records (in an index of at least DOMINANT_PROJECT_MIN_RECORDS), its records'
-    # weights are multiplied by DOMINANT_PROJECT_WEIGHT, so a large course or archive project
-    # cannot fill every unscoped top-5 by volume alone. Nothing is removed. The demotion is
-    # skipped when a query word names that project (its id, or the name of a folder mapped
-    # to it in .beyin-projects.json).
+    # eligible records (in an index of at least DOMINANT_PROJECT_MIN_RECORDS), the BM25 part
+    # of its records' weights is multiplied by DOMINANT_PROJECT_WEIGHT, so a large course or
+    # archive project cannot fill every unscoped top-5 by volume alone. Nothing is removed.
+    # The demotion is skipped when a query word names that project (its id, or the name of
+    # a folder mapped to it in .beyin-projects.json).
     # Calibration (real vault, 698 notes, one project 83 %): weights 0.5 / 0.35 / 0.25 / 0.15
     # gave English top-1 15 / 15 / 16 / 16 of 20 (13-14 without demotion); 0.25 is the
     # mildest setting at the plateau. The admission rule took out-of-scope probes 0/4 -> 4/4.
@@ -1450,6 +1455,9 @@ class MemoryStore:
     DOMINANT_PROJECT_SHARE = 0.5
     DOMINANT_PROJECT_MIN_RECORDS = 20
     DOMINANT_PROJECT_WEIGHT = 0.25
+
+    def _unscoped_settings(self):
+        return self.EXPLICIT_MIN_SHARED, self.DOMINANT_PROJECT_WEIGHT
 
     def _record_projects(self, records):
         """Project of every record (scope file folders included) and the words naming each project."""
@@ -1467,25 +1475,29 @@ class MemoryStore:
             names.setdefault(owner, set()).update(_tokens(folder.rsplit("/", 1)[-1]))
         return owners, names
 
-    def _unscoped_rank(self, weighted, terms, vocabularies, eligible, name_scores=None):
-        """Admission and dominant-project demotion for unscoped explicit lookups (see above)."""
-        min_shared = min(self.EXPLICIT_MIN_SHARED, len(terms))
+    def _unscoped_rules(self, ranked, terms, typo_fixes, vocabularies, eligible, name_scores,
+                        min_shared, dominant_weight):
+        """Admission and dominant-project factors for unscoped explicit lookups (see above).
+
+        terms are the query's own words; typo_fixes maps a misspelled word to the vocabulary
+        words searched for it, which count once, for that word. Returns (ranked, factors).
+        """
         owners, names = self._record_projects(eligible)
-        # A full name match (#354) or a word naming the record's own project is enough
-        # evidence on its own: "tavla oyunu ne durumda" must still reach the tavla notes.
-        name_scores = name_scores or {}
-        weighted = [(weight, record) for weight, record in weighted
-                    if len(terms & vocabularies[record["id"]]) >= min_shared or
-                    record["id"] in name_scores or terms & names.get(owners.get(record["id"]), set())]
-        if not weighted or len(eligible) < self.DOMINANT_PROJECT_MIN_RECORDS:
-            return weighted
+        if min_shared > 1:
+            needed = min(min_shared, len(terms))
+            groups = [typo_fixes.get(term, set()) | {term} for term in terms]
+            # A full name match (#354) or a word naming the record's own project is enough
+            # evidence on its own: "tavla oyunu ne durumda" must still reach the tavla notes.
+            ranked = [(score, record) for score, record in ranked
+                      if sum(1 for group in groups if group & vocabularies[record["id"]]) >= needed or
+                      record["id"] in name_scores or terms & names.get(owners.get(record["id"]), set())]
+        if dominant_weight >= 1 or not ranked or len(eligible) < self.DOMINANT_PROJECT_MIN_RECORDS:
+            return ranked, None
         counts = Counter(owners.values())
         dominant = {owner for owner, count in counts.items()
                     if count > self.DOMINANT_PROJECT_SHARE * len(eligible) and not (terms & names[owner])}
-        if not dominant:
-            return weighted
-        return self._by_weight([(weight * self.DOMINANT_PROJECT_WEIGHT if owners.get(record["id"]) in dominant else weight, record)
-                                for weight, record in weighted])
+        factors = {record["id"]: dominant_weight for _, record in ranked if owners.get(record["id"]) in dominant}
+        return ranked, factors or None
 
     # Strict automatic context: multiword queries need two shared words so that an incidental
     # common word cannot pull an unrelated note into the prompt. One-word queries use a
@@ -1630,6 +1642,7 @@ class MemoryStore:
         # Typo tolerance: a query word that appears in no record ("zmaan", "anketii") also
         # searches its closest vocabulary words, so misspelled prompts still reach the note.
         # Strict mode stays exact so automatic injection never widens on a guess.
+        query_terms, typo_fixes = terms, {}
         missing = {term for term in terms if len(term) >= 4 and not term.isdigit()}
         if missing and not strict:
             known = set().union(*vocabularies.values()) if vocabularies else set()
@@ -1638,8 +1651,9 @@ class MemoryStore:
                 # Only swapped, missing or extra letters count as typos; a substituted letter makes
                 # another word (kural/kurul), so the letter counts may differ by at most one.
                 letters = Counter(term)
-                fixes.update(word for word in difflib.get_close_matches(term, known, n=3, cutoff=0.75)
-                             if sum(((letters - Counter(word)) + (Counter(word) - letters)).values()) <= 1)
+                typo_fixes[term] = {word for word in difflib.get_close_matches(term, known, n=3, cutoff=0.75)
+                                    if sum(((letters - Counter(word)) + (Counter(word) - letters)).values()) <= 1}
+                fixes.update(typo_fixes[term])
             fixes -= terms
             if fixes:
                 terms = terms | fixes
@@ -1652,10 +1666,14 @@ class MemoryStore:
             ranked = self._strict_rank(ranked, terms, vocabularies, name_scores=name_scores,
                                        today=today, allowed_statuses=allowed_statuses)
         else:
+            factors = None
+            if explicit and project is None and not snapshot and not strict and query_terms:
+                min_shared, dominant_weight = self._unscoped_settings()
+                if min_shared > 1 or dominant_weight < 1:
+                    ranked, factors = self._unscoped_rules(ranked, query_terms, typo_fixes, vocabularies, eligible,
+                                                           name_scores, min_shared, dominant_weight)
             ranked = self._weighted_rank(ranked, terms, term_counts, name_scores=name_scores,
-                                         today=today, allowed_statuses=allowed_statuses)
-            if explicit and project is None and not snapshot and terms:
-                ranked = self._unscoped_rank(ranked, terms, vocabularies, eligible, name_scores)
+                                         today=today, allowed_statuses=allowed_statuses, factors=factors)
         if candidate_only:
             return [record for _, record in ranked[:limit]]
         return pack_context([record for _, record in ranked], limit, budget_chars, stale_count)
