@@ -274,6 +274,68 @@ class ShellEditReminderTest(unittest.TestCase):
         shell = [event for event in events if event.get('observed') == 'shell']
         self.assertEqual([(event['event'], event['session']) for event in shell], [('PostToolUse', digest('covered'))])
 
+    def cli_write(self, session, name):
+        env = dict(self.env, CLAUDE_CODE_SESSION_ID=session)
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
+                                 '--state', str(self.state), 'note-create', '--file', '-'],
+                                input=json.dumps({'source': 'notes/' + name + '.md', 'text': '# Sentetik ' + name + '\n'}),
+                                text=True, encoding='utf-8', capture_output=True, cwd=self.vault, env=env, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return time.time()
+
+    def test_beyin_cli_write_through_the_shell_closes_coverage_despite_a_later_question(self):
+        # A note or task written with beyin.py from the Bash tool opens the edit window itself
+        # (mark_session_edit), so the transcript is never read for it. Its own flag file still
+        # reaches coverage as an observed edit at the write's time; a later CLI turn needs its receipt.
+        import beyin_v3_hook as hook
+        self.engine().sync()
+        flag = self.state / 'receipt-reminders' / (hashlib.sha256(b'cli').hexdigest() + '.cli')
+        self.prompt('cli', 'not yaz')
+        written = []
+        self.shell('cli', 'python3 beyin.py note-create --file -', lambda: written.append(self.cli_write('cli', 'cli')))
+        self.assertLessEqual(json.loads(flag.read_text(encoding='utf-8'))['at'], written[0])
+        time.sleep(0.01)
+        self.engine().receipt('cli-1', 'Not yazıldı.', ['notes/cli.md'], 'claude', session=digest('cli'))
+        self.assertEqual(self.stop('cli'), {})
+        self.assertFalse(flag.exists())
+        time.sleep(0.01)
+        self.prompt('cli', 'teşekkürler, durum ne?')
+        self.assertEqual(self.stop('cli'), {})
+        self.assertEqual(hook.drain_queue(self.vault, self.state)['failed'], 0)
+        gaps = json.loads((self.state / 'receipt-gaps.json').read_text(encoding='utf-8'))
+        self.assertEqual(gaps['checkpoints'], [])
+        self.assertEqual((gaps['receipt_coverage']['covered'], gaps['receipt_coverage']['total']), (1, 1))
+        events = [json.loads(path.read_text(encoding='utf-8')) for path in (self.state / 'hook-done').glob('*.json')]
+        cli = [event for event in events if event.get('observed') == 'cli']
+        self.assertEqual([(event['event'], event['session']) for event in cli], [('PostToolUse', digest('cli'))])
+        self.assertLessEqual(cli[0]['at'], written[0])
+        # A later turn that writes again through the CLI is reminded and stays missing without a receipt.
+        time.sleep(0.01)
+        self.prompt('cli', 'bir not daha yaz')
+        self.shell('cli', 'python3 beyin.py note-create --file -', lambda: self.cli_write('cli', 'cli-2'))
+        self.assertEqual(self.stop('cli').get('decision'), 'block')
+        self.assertEqual(hook.drain_queue(self.vault, self.state)['failed'], 0)
+        gaps = json.loads((self.state / 'receipt-gaps.json').read_text(encoding='utf-8'))
+        self.assertEqual([item['session'] for item in gaps['checkpoints']], [digest('cli')])
+        self.assertFalse(gaps['checkpoints'][0].get('no_observed_edit'))
+
+    def test_beyin_cli_flag_reaches_coverage_after_both_reminders_and_only_for_claude(self):
+        # [kaydetme] spends both one-shot reminders, as an editor session can: the CLI edit still
+        # reaches coverage, like an editor PostToolUse. A Codex Stop never consumes the Claude flag.
+        import beyin_v3_hook as hook
+        self.engine().sync()
+        flag = self.state / 'receipt-reminders' / (hashlib.sha256(b'quiet-cli').hexdigest() + '.cli')
+        self.prompt('quiet-cli', 'not yaz [kaydetme]')
+        self.cli_write('quiet-cli', 'quiet')
+        self.assertEqual(self.stop('quiet-cli', harness='codex'), {})
+        self.assertTrue(flag.exists())
+        self.assertEqual(self.stop('quiet-cli', stop_hook_active=True), {})
+        self.assertFalse(flag.exists())
+        self.assertEqual(hook.drain_queue(self.vault, self.state)['failed'], 0)
+        gaps = json.loads((self.state / 'receipt-gaps.json').read_text(encoding='utf-8'))
+        self.assertEqual([item['session'] for item in gaps['checkpoints']], [digest('quiet-cli')])
+        self.assertFalse(gaps['checkpoints'][0].get('no_observed_edit'))
+
     def test_doctor_names_missing_sessions_without_observed_edits(self):
         sys.path.insert(0, str(ROOT / 'scripts'))
         self.addCleanup(lambda: sys.path.remove(str(ROOT / 'scripts')))

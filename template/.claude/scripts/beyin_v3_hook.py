@@ -394,14 +394,32 @@ def _shell_edit(payload, vault, state, harness):
     return shell_edit(payload, vault, state)
 
 
-def _queue_shell_edit(vault, state, payload, harness):
-    """Queue the shell edit like an editor PostToolUse, so receipt coverage counts this turn as
-    edited and a later question turn does not reopen it (#212). Metadata only, marked as such."""
+def _queue_observed_edit(vault, state, payload, harness, observed, at=None):
+    """Queue a shell or CLI edit like an editor PostToolUse, so receipt coverage counts its turn
+    as edited and a later question turn does not reopen it (#212). Metadata only, marked as such."""
     try:
         event_id = payload.get("event_id")
         enqueue_event(vault, state, dict(payload, hook_event_name="PostToolUse",
-                                         event_id=str(event_id) + ":shell-edit" if event_id else None),
-                      harness, observed="shell")
+                                         event_id=str(event_id) + ":" + observed + "-edit" if event_id else None),
+                      harness, observed=observed, at=at)
+    except Exception:
+        pass  # coverage bookkeeping never costs the reminder
+
+
+def _queue_cli_edit(flag, vault, state, payload):
+    """Consume the flag `beyin.py` left for a note or task written through the Claude Bash tool
+    (mark_session_edit): Bash queues no PostToolUse, so this Stop queues one at the write's time.
+    Runs before the one-shot reminder checks, as an editor PostToolUse is queued regardless of them."""
+    try:
+        try:
+            at = json.loads(flag.read_text(encoding="utf-8")).get("at")
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError, AttributeError):
+            at = None
+        flag.unlink(missing_ok=True)
+        valid = isinstance(at, (int, float)) and not isinstance(at, bool) and 0 < at <= time.time()
+        _queue_observed_edit(vault, state, payload, "claude", "cli", at=float(at) if valid else None)
     except Exception:
         pass  # coverage bookkeeping never costs the reminder
 
@@ -413,8 +431,9 @@ def receipt_reminder(payload, state, harness, event, vault=None):
     Codex. Known vault-external edits do not mark the session; unknown/pathless
     events retain the legacy reminder behavior without reading transcripts.
     Without such an edit, a Claude Stop reads the bounded tail of its own transcript once:
-    a vault Markdown file named by a shell command of this turn and modified after that
-    command opens the same window (#212, beyin_v3_shell_edits).
+    a vault Markdown file named by a shell command of this turn and modified while that
+    command ran opens the same window (#212, beyin_v3_shell_edits). A note or task written
+    with beyin.py through the Bash tool opens the window itself; its flag reaches coverage here.
     Stop then looks for a receipt of this harness and session in the runtime store.
     If a receipt declared learnings but no note under knowledge/ was touched,
     Stop reminds once to distill into knowledge/concepts/.
@@ -431,6 +450,8 @@ def receipt_reminder(payload, state, harness, event, vault=None):
         folder = Path(state) / "receipt-reminders"
         done, edited = folder / (digest + ".done"), folder / (digest + ".edited")
         kdone = folder / (digest + ".kdone")
+        if event == "Stop" and harness == "claude":
+            _queue_cli_edit(folder / (digest + ".cli"), vault, state, payload)
         if done.exists() and kdone.exists():
             return None
         if event == "UserPromptSubmit":
@@ -458,7 +479,7 @@ def receipt_reminder(payload, state, harness, event, vault=None):
             if shell is None:
                 return None
             atomic(edited, {"at": shell["at"], "knowledge": True} if shell["knowledge"] else {"at": shell["at"]})
-            _queue_shell_edit(vault, state, payload, harness)
+            _queue_observed_edit(vault, state, payload, harness, "shell")
         marker = json.loads(edited.read_text(encoding="utf-8"))
         since = float(marker["at"])
         session = digest[:24]  # the queued checkpoint's session value
@@ -498,7 +519,7 @@ def receipt_reminder(payload, state, harness, event, vault=None):
         return None  # fail open: never block Stop on a bookkeeping error
 
 
-def enqueue_event(vault, state, payload, harness, observed=None):
+def enqueue_event(vault, state, payload, harness, observed=None, at=None):
     state = Path(state)
     metadata = {"event": payload.get("hook_event_name"), "harness": harness,
                 "session": hashlib.sha256(str(payload.get("session_id", "unknown")).encode()).hexdigest()[:24]}
@@ -510,7 +531,7 @@ def enqueue_event(vault, state, payload, harness, observed=None):
     if payload.get('no_memory') is True:
         metadata['no_memory'] = True
     if observed:
-        # Recorded by the hook itself, not delivered by the client (the Stop-time shell edit).
+        # Recorded by the hook itself, not delivered by the client (a Stop-time shell or CLI edit).
         metadata['observed'] = observed
     if payload.get('hook_event_name') in ('UserPromptSubmit', 'SessionStart') and is_synthetic_prompt(payload):
         # No person typed this turn (#373): the event stays observable, but it opens no receipt checkpoint.
@@ -524,7 +545,7 @@ def enqueue_event(vault, state, payload, harness, observed=None):
     if not path.exists() and not (state / "hook-done" / (key + ".json")).exists():
         from beyin_v3_hook_done import acknowledged
         if not acknowledged(state, key):
-            atomic(path, dict(metadata, at=time.time()))
+            atomic(path, dict(metadata, at=time.time() if at is None else at))
     return key
 
 

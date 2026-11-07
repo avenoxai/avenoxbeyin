@@ -222,6 +222,11 @@ and stats the named files; it keeps a timestamp, never command text, and queues
 the edit as `PostToolUse` metadata marked `observed: shell`. A path in a
 variable, a script that computes its paths, a background write, a rename or a
 deletion is still not observed, and Codex shell commands are not read.
+A `note-create`, `note-edit`, `task-create` or `task-update` run through the
+Claude Code Bash tool names its session through `CLAUDE_CODE_SESSION_ID`: it
+opens the reminder window itself and leaves a small flag that the next Stop of
+that session queues as `PostToolUse` metadata marked `observed: cli`, stamped
+with the write's time, so such a turn is also an edited turn for coverage.
 Antigravity only
 provides the initial invocation boundary in this adapter, so its result is
 explicitly session-limited rather than proof of per-turn completeness. Missing

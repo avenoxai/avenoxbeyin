@@ -42,19 +42,27 @@ def mark_session_edit(state: Path) -> None:
     tool was invisible to the receipt reminder. Claude Code sets CLAUDE_CODE_SESSION_ID in Bash
     subprocesses to the session_id its hooks receive, so the marker names that exact session;
     other shells and harnesses do not set it and nothing is guessed. Never costs the write itself.
+    Every write also leaves its time in a `.cli` flag: no PostToolUse event exists for it, so the
+    next Stop of that session queues it for receipt coverage as an observed edit.
     """
     session = os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not session or os.environ.get("BEYIN_V3_NO_RECEIPT_REMINDER") == "1":
         return
     try:
         folder = Path(state) / "receipt-reminders"
-        edited = folder / (hashlib.sha256(session.encode("utf-8")).hexdigest() + ".edited")
-        if edited.exists():
-            return  # the window opened by the first edit stays, as for PostToolUse
+        name = hashlib.sha256(session.encode("utf-8")).hexdigest()
         folder.mkdir(parents=True, exist_ok=True)
-        temporary = folder / (edited.name + "." + str(os.getpid()) + ".tmp")
-        temporary.write_text(json.dumps({"at": time.time()}), encoding="utf-8")
-        os.replace(temporary, edited)
+        now = time.time()
+
+        def put(marker):
+            temporary = folder / (marker.name + "." + str(os.getpid()) + ".tmp")
+            temporary.write_text(json.dumps({"at": now}), encoding="utf-8")
+            os.replace(temporary, marker)
+
+        put(folder / (name + ".cli"))
+        edited = folder / (name + ".edited")
+        if not edited.exists():  # the window opened by the first edit stays, as for PostToolUse
+            put(edited)
     except OSError:
         pass
 
