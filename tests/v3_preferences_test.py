@@ -1,7 +1,9 @@
 """Offline preference and hook behavior contracts; synthetic vaults only."""
+from contextlib import closing
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -54,6 +56,45 @@ class PreferencesTest(unittest.TestCase):
         self.assertTrue(self.cli('preferences', '--secret-filter', 'on')['preferences']['secret_filter'])
         self.assertTrue(self.cli('preferences', '--profile', 'economical')['preferences']['secret_filter'])
         self.assertFalse(self.cli('preferences', '--secret-filter', 'off')['preferences']['secret_filter'])
+
+    def test_daily_layout_is_vault_owned_independent_and_survives_profiles(self):
+        self.assertEqual(self.cli('preferences')['daily_layout'], 'v3')
+        self.assertFalse((self.vault / '.beyin-daily-layout.json').exists())
+        self.cli('preferences', '--profile', 'normal')
+        before = (self.vault / '.beyin-preferences.json').read_bytes()
+        self.assertEqual(self.cli('preferences', '--daily-layout', 'flat')['daily_layout'], 'flat')
+        self.assertEqual((self.vault / '.beyin-preferences.json').read_bytes(), before)
+        self.assertEqual(self.cli('preferences', '--profile', 'manual')['daily_layout'], 'flat')
+        self.assertEqual(prefs.read_daily_layout(self.vault), 'flat')
+        stored = json.loads((self.vault / '.beyin-daily-layout.json').read_text())
+        self.assertEqual(stored, {'schema': 1, 'daily_layout': 'flat'})
+        self.assertEqual(self.cli('preferences', '--daily-layout', 'v3')['daily_layout'], 'v3')
+
+    def test_invalid_daily_layout_does_not_save_any_settings(self):
+        prefs.save_daily_layout(self.vault, 'flat')
+        path = self.vault / '.beyin-daily-layout.json'
+        before = path.read_bytes()
+        with self.assertRaises(ValueError):
+            prefs.save_daily_layout(self.vault, 'unknown')
+        self.assertEqual(path.read_bytes(), before)
+        for raw in ('{broken', '{"schema": 1, "daily_layout": "unknown"}',
+                    '{"schema": true, "daily_layout": "flat"}', '[]'):
+            path.write_text(raw, encoding='utf-8')
+            result = subprocess.run([sys.executable, str(ROOT / 'scripts/beyin_v3.py'),
+                                     '--vault', str(self.vault), '--state', str(self.state),
+                                     'preferences', '--daily-layout', 'v3', '--profile', 'manual'],
+                                    capture_output=True, text=True, encoding='utf-8', timeout=20)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(path.read_text(encoding='utf-8'), raw)
+            self.assertFalse((self.vault / '.beyin-preferences.json').exists())
+
+    def test_human_preferences_shows_active_daily_layout(self):
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        import beyin_entry
+        for layout, expected in (('flat', 'daily/YYYY-MM-DD.md'), ('v3', 'daily/v3/YYYY-MM-DD.md')):
+            result = self.cli('preferences', '--daily-layout', layout)
+            self.assertIn('Daily duzeni: ' + layout + ' (' + expected + ')',
+                          beyin_entry.human_result(result, 'preferences'))
 
     def test_invalid_settings_do_not_replace_user_preferences(self):
         prefs.save(self.vault, {}, 'economical')
@@ -207,6 +248,69 @@ class PreferencesTest(unittest.TestCase):
         self.assertTrue(prefs.claim_check(self.state, settings, 'Stop', now=1902))
         self.assertFalse(prefs.claim_check(self.state, prefs.PROFILES['manual'], 'SessionStart', now=2900))
 
+    @unittest.skipIf(os.name == 'nt' or (hasattr(os, 'geteuid') and os.geteuid() == 0),
+                     'a read-only directory needs POSIX permissions and a non-root user')
+    def test_unwritable_state_skips_the_check_instead_of_failing(self):
+        # #417 keeps the failure notice for a worker that cannot write its own state. The
+        # cadence record is not that: an unwritable runtime directory only means no automatic
+        # check this turn, and the previous index still answers the turn.
+        settings = prefs.PROFILES['economical']
+        self.state.mkdir()
+        self.state.chmod(0o555)
+        self.addCleanup(self.state.chmod, 0o755)
+        self.assertFalse(prefs.claim_check(self.state, settings, 'Stop', now=1000))
+        # A runtime directory that cannot be created at all is the same refusal, not a crash.
+        parent = self.root / 'locked'
+        parent.mkdir()
+        parent.chmod(0o555)
+        self.addCleanup(parent.chmod, 0o755)
+        self.assertFalse(prefs.claim_check(parent / 'state', settings, 'Stop', now=1000))
+        self.assertFalse((parent / 'state').exists())
+
+    def test_locked_cadence_record_skips_the_check_instead_of_failing(self):
+        # Another client holds BEGIN IMMEDIATE on the shared cadence record: skip this check
+        # and keep no hook error, exactly like an interval that has not elapsed.
+        settings = prefs.PROFILES['economical']
+        self.state.mkdir()
+        self.assertTrue(prefs.claim_check(self.state, settings, 'SessionStart', now=1000))
+        with closing(sqlite3.connect(self.state / 'check-cadence.sqlite3', timeout=0)) as holder, holder:
+            holder.execute('BEGIN IMMEDIATE')
+            self.assertFalse(prefs.claim_check(self.state, settings, 'Stop', now=1001))
+        # The released lock leaves a usable record: the next due check still claims it.
+        self.assertTrue(prefs.claim_check(self.state, settings, 'Stop', now=1900))
+
+    def test_skip_reason_separates_a_refusal_from_the_interval_preference(self):
+        # A permanent refusal must not read as the user's own interval setting, so the caller
+        # learns which of the two skipped the check.
+        settings = prefs.PROFILES['economical']
+        reason = []
+        self.assertTrue(prefs.claim_check(self.state, settings, 'SessionStart', now=1000, skip_reason=reason))
+        self.assertEqual(reason, [])
+        self.assertFalse(prefs.claim_check(self.state, settings, 'Stop', now=1001, skip_reason=reason))
+        self.assertEqual(reason, [prefs.SKIP_INTERVAL])
+        reason.clear()
+        with closing(sqlite3.connect(self.state / 'check-cadence.sqlite3', timeout=0)) as holder, holder:
+            holder.execute('BEGIN IMMEDIATE')
+            self.assertFalse(prefs.claim_check(self.state, settings, 'Stop', now=1002, skip_reason=reason))
+        self.assertEqual(reason, [prefs.SKIP_REFUSED])
+
+    def test_damaged_cadence_schema_stays_visible(self):
+        # Only locks and write refusals are skipped. A broken cadence table must fail loudly
+        # instead of silently disabling the interval for good.
+        settings = prefs.PROFILES['economical']
+        self.state.mkdir()
+        with closing(sqlite3.connect(self.state / 'check-cadence.sqlite3')) as db, db:
+            db.execute('CREATE TABLE cadence (id INTEGER PRIMARY KEY, other REAL)')
+        with self.assertRaises(sqlite3.OperationalError):
+            prefs.claim_check(self.state, settings, 'Stop', now=1000)
+
+    def test_state_path_that_is_not_a_directory_stays_visible(self):
+        # A state path that can never become a directory is a configuration error, not a
+        # refusal, so the cadence record still reports it.
+        self.state.write_text('not a directory', encoding='utf-8')
+        with self.assertRaises(OSError):
+            prefs.claim_check(self.state, prefs.PROFILES['economical'], 'Stop', now=1000)
+
     def test_manual_explicit_context_still_refreshes_current_source(self):
         prefs.save(self.vault, {}, 'manual')
         (self.vault / 'choice.md').write_text('Synthetic project format CSV.', encoding='utf-8')
@@ -225,10 +329,19 @@ class PreferencesTest(unittest.TestCase):
 
     def test_install_preserves_preferences_and_ships_working_command(self):
         prefs.save(self.vault, {}, 'economical')
+        prefs.save_daily_layout(self.vault, 'flat')
+        layout_before = (self.vault / '.beyin-daily-layout.json').read_bytes()
         before = (self.vault / '.beyin-preferences.json').read_bytes()
         r = subprocess.run([sys.executable, str(ROOT / 'scripts/install_v3.py'), '--vault',
                             str(self.vault), '--state', str(self.state)], capture_output=True, timeout=30)
         self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(before, (self.vault / '.beyin-preferences.json').read_bytes())
+        self.assertEqual(layout_before, (self.vault / '.beyin-daily-layout.json').read_bytes())
+        installed = subprocess.run([sys.executable, str(self.vault / 'beyin.py'), 'preferences',
+                                    '--daily-layout', 'v3', '--json'], capture_output=True,
+                                   text=True, encoding='utf-8', timeout=20)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        self.assertEqual(json.loads(installed.stdout)['daily_layout'], 'v3')
         self.assertEqual(before, (self.vault / '.beyin-preferences.json').read_bytes())
         r = subprocess.run([sys.executable, str(self.vault / 'beyin.py'), 'preferences', '--human'],
                            capture_output=True, text=True, encoding='utf-8', timeout=20)

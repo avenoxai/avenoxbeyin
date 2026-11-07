@@ -90,12 +90,31 @@ class DecisionQualityTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.candidates('x', limit=129)
 
+    @staticmethod
+    def shown(delivered):
+        """The envelope shows each delivered record without its index bookkeeping."""
+        return dict(delivered, records=[runtime._delivery_view(r) for r in delivered['records']])
+
+    def test_envelope_leaves_bookkeeping_out_and_keeps_it_for_continuity(self):
+        self.note('target', 'Quartz deployment ' * 200)
+        context = self.store.retrieve('Quartz deployment', budget_chars=900)
+        text, delivered = runtime.render_context(context, 900)
+        shown = json.loads(text)['records'][0]
+        for field in ('source_sha256', 'revision', 'visibility', 'supersedes'):
+            self.assertNotIn(field, shown)
+            self.assertIn(field, delivered['records'][0])
+        self.assertEqual(shown['text'], delivered['records'][0]['text'])
+        # The room bookkeeping no longer takes goes to the note text.
+        with patch.object(runtime, '_delivery_view', lambda record: record):
+            before = json.loads(runtime.render_context(context, 900)[0])['records'][0]
+        self.assertGreater(len(shown['text']), len(before['text']))
+
     def test_final_hook_envelope_remains_parseable(self):
         self.note('target', ('Quartz deployment "quoted"\\\n' * 100))
         context = self.store.retrieve('Quartz deployment', budget_chars=900)
         text, delivered = runtime.render_context(context, 1000, prefix='Header\n', suffix='History' * 100)
         self.assertLessEqual(len(text), 1000)
-        self.assertEqual(json.loads(text[len('Header\n'):]), delivered)
+        self.assertEqual(json.loads(text[len('Header\n'):]), self.shown(delivered))
         self.assertTrue(delivered['records'])
         self.assertEqual([r['id'] for r in delivered['records']], [c['id'] for c in delivered['citations']])
         self.assertEqual(runtime.render_context(context, 2)[0], '')
@@ -117,7 +136,7 @@ class DecisionQualityTest(unittest.TestCase):
         self.assertTrue(context['records'][0]['text_truncated'])
         self.assertEqual(context['omitted_count'], 1)
         text, delivered = runtime.render_context(context, 2000)
-        self.assertEqual(json.loads(text), delivered)
+        self.assertEqual(json.loads(text), self.shown(delivered))
         self.assertTrue(delivered['truncated'])
         self.assertEqual(delivered['omitted_count'], 1)
         # An additional envelope omission must be counted too.

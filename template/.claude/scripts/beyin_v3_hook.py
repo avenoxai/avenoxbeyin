@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Project-local lifecycle adapter; persists metadata, never transcript text."""
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -16,6 +17,21 @@ import uuid
 EVENTS = {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "PreCompact", "SessionEnd"}
 HOOK_BUDGET = 3.8  # seconds; installed POSIX hooks are killed at 5
 SYNC_WAIT = 1.5  # seconds the prompt hook waits for the source sync before reading the last index
+# A client that sandboxes its hook commands (a workspace-write profile, a read-only home) can read
+# the vault and the index the previous sync committed, but not the runtime state. Both refusals
+# below therefore keep the turn's context: it comes from that index with one line saying why it will
+# not be refreshed. A state that never had an index keeps the #417 failure notice instead.
+STATE_WRITE_REFUSED_NOTE = (
+    "V3 state folder is not writable in this client (sandbox or permissions); automatic sync cannot run "
+    "here, so this context comes from the previous index. Refresh it by running `beyin.py sync` from a "
+    "client that can write state.\n")
+WORKER_SPAWN_REFUSED_NOTE = (
+    "V3 could not start its sync worker in this client (sandbox or permissions); automatic sync cannot "
+    "run here, so this context comes from the previous index. Refresh it by running `beyin.py sync` from "
+    "a client that can write state.\n")
+# Refusals that mean "this client may not write here", not "the sync failed": the existing index is
+# still readable afterwards. A full disk or an I/O error has its own failure path (#417).
+PERMISSION_REFUSALS = frozenset({errno.EPERM, errno.EACCES, errno.EROFS})
 RECEIPT_REMINDER = (
     "Files were edited in this session but no receipt was written after the edits. If the work is done, write one now: "
     'python3 beyin.py receipt --harness {harness} --session {session} --event-id EVENT_ID --summary "Work result" --ref PATH. '
@@ -30,8 +46,16 @@ KNOWLEDGE_REMINDER = (
     "concept, then sync); "
     "if no permanent note is required, state that in one sentence to proceed."
 )
+NO_LEARNING_CHALLENGE_REMINDER = (
+    "Receipt declared no learnings ('Öğrenilen: yok') but files were edited in this session. "
+    "In V3, lasting lessons must be distilled into knowledge/ or staged as candidates: "
+    'python3 beyin.py learn --session {session} --candidate "Lesson". If this edit was purely mechanical/routine '
+    "without new lessons, state that in one sentence to proceed."
+)
 HARNESS_SYNTHETIC_PROMPT_PREFIXES = (
     "<task-notification>",
+    # Claude Desktop linked-session completion/status notifications (#566).
+    "<system-reminder>",
     "Another Claude session sent a message:",
     "<agent-message",
     "<local-command-caveat>",
@@ -107,6 +131,28 @@ def atomic(path, data):
         out.flush()
         os.fsync(out.fileno())
     _safe_replace(temporary, path)
+
+
+def permission_refused(exc):
+    """True when a state write or a worker spawn was refused for lack of permission.
+
+    On POSIX these are EPERM, EACCES and EROFS; Windows reports a protected volume as
+    ERROR_WRITE_PROTECT, which a win32 wrapper can raise with errno unset.
+    """
+    if not isinstance(exc, OSError):
+        return False
+    if getattr(exc, "winerror", None) in (5, 19):  # ERROR_ACCESS_DENIED, ERROR_WRITE_PROTECT
+        return True
+    return exc.errno in PERMISSION_REFUSALS
+
+
+def record_error(state, exc):
+    """hook-error.json is a diagnostic only. A state folder that refuses the write (read-only,
+    full disk) must not turn the fail-open handler itself into a traceback (#417)."""
+    try:
+        atomic(Path(state) / "hook-error.json", {"at": time.time(), "error": type(exc).__name__})
+    except OSError:
+        pass
 
 
 def output_context(harness, event, text):
@@ -217,24 +263,65 @@ def _has_declared_learning(summary):
     return False
 
 
+_NO_LEARNING_EXPLAINED = re.compile(
+    r"(?:(?:kalici\s+)?(?:öğrenim|ogrenim|ders)(?:ler)?\s+)?"
+    r"(?:yok(?:tur)?|hi[çc]\s+yok|hi[çc]biri|bulunmuyor|bulunmadi|none|nothing|no|n/?a|-+)"
+    r"\s*\([^()]+\)")
+
+
+def _is_bare_no_learning(summary):
+    """True when receipt declares 'none'/'yok' without a parenthetical explanation.
+
+    An empty label is not an answer: "Öğrenilen:" often heads a list on the following lines,
+    and the challenge must not tell that agent it declared no learnings.
+    """
+    if not isinstance(summary, str):
+        return False
+    for line in summary.splitlines():
+        match = _LEARNING_LABEL.match(_tr_fold(line).strip())
+        if match:
+            content = match.group(1).strip().strip(".!*_` ").strip()
+            if content and _NO_LEARNING.fullmatch(content) and not _NO_LEARNING_EXPLAINED.fullmatch(content):
+                return True
+    return False
+
+
+def _has_staged_candidates(state, session, since):
+    """Candidates staged in this edit window; an older entry must not answer for a new session."""
+    try:
+        from beyin_v3_learning import has_candidates
+        return has_candidates(state, session, since=since, status=None)
+    except Exception:
+        return False
+
+
 def _has_knowledge_update(vault, receipt, since):
-    """A knowledge ref is a citation, not evidence of a write in this edit window."""
-    if not receipt:
+    """A distilled note cited by this receipt with a recent mtime."""
+    if not receipt or not vault:
         return False
-    from beyin_v3_projections import DISTILLATION_ROOTS, is_distilled_note
-    if not vault:
+    from beyin_v3_projections import is_distilled_note
+    root = Path(vault).resolve()
+    refs = receipt.get("refs")
+    if not isinstance(refs, (list, tuple)):
         return False
-    for root in DISTILLATION_ROOTS:
-        k_dir = Path(vault) / root
-        if not k_dir.is_dir():
+    for ref in refs:
+        if not isinstance(ref, str) or not ref.strip():
             continue
-        for path in k_dir.rglob("*.md"):
-            try:
-                if (path.is_file() and not path.is_symlink() and path.stat().st_mtime >= since and
-                        is_distilled_note(path.relative_to(vault).as_posix())):
-                    return True
-            except (ValueError, OSError):
+        try:
+            rel = ref.strip().replace('\\', '/')
+            if not is_distilled_note(rel):
                 continue
+            lexical = root / rel
+            if lexical.is_symlink():
+                continue
+            path = lexical.resolve()
+            resolved_rel = path.relative_to(root).as_posix()
+            if not path.is_file() or not is_distilled_note(resolved_rel):
+                continue
+            if path.stat().st_mtime >= since:
+                return True
+        except (ValueError, OSError):
+            continue
     return False
 
 
@@ -247,7 +334,7 @@ def _edits_knowledge(vault, payload):
     from beyin_v3_hygiene import edited_paths
     from beyin_v3_projections import is_distilled_note
     root = Path(vault).resolve()
-    for path in edited_paths(payload):
+    for path in edited_paths(payload, limit=None):
         try:
             if path.is_symlink():
                 continue
@@ -258,11 +345,49 @@ def _edits_knowledge(vault, payload):
     return False
 
 
+def _edits_only_outside_vault(vault, payload):
+    """Only suppress when every identified editor path is known to be outside.
+
+    Keep the historical reminder for pathless/unsupported events, malformed paths,
+    and relative paths without an absolute payload cwd. No file contents are read.
+    """
+    from beyin_v3_hygiene import edited_paths
+    tool_input = payload.get("tool_input")
+    if vault is None or not isinstance(tool_input, dict):
+        return False
+    cwd = payload.get("cwd")
+    has_cwd = isinstance(cwd, str) and bool(cwd.strip()) and Path(cwd).is_absolute()
+    for key in ("file_path", "path", "notebook_path"):
+        if key in tool_input:
+            value = tool_input[key]
+            if not isinstance(value, str) or not value.strip() or "\0" in value:
+                return False
+            if not has_cwd and not Path(value.strip()).is_absolute():
+                return False
+    if "command" in tool_input:
+        command = tool_input["command"]
+        if (not isinstance(command, str) or "*** Begin Patch" not in command
+                or "*** End Patch" not in command or not has_cwd or "\0" in command):
+            return False
+        headers = ("*** Add File: ", "*** Update File: ", "*** Move to: ", "*** Delete File: ")
+        for line in command.splitlines():
+            if line.startswith("***") and line not in ("*** Begin Patch", "*** End Patch", "*** End of File"):
+                if not line.startswith(headers) or not line.partition(": ")[2].strip():
+                    return False
+    try:
+        root = Path(vault).resolve()
+        paths = edited_paths(payload, limit=None, include_deleted=True)
+        return bool(paths) and all(not path.resolve().is_relative_to(root) for path in paths)
+    except (ValueError, OSError, RuntimeError):
+        return False
+
+
 def receipt_reminder(payload, state, harness, event, vault=None):
     """Track edits per session and return a one-time Stop block, or None.
 
     Installed PostToolUse hooks match Edit|Write|apply_patch|MultiEdit|NotebookEdit for Claude and
-    Codex, so that event marks the session as edited without reading transcripts.
+    Codex. Known vault-external edits do not mark the session; unknown/pathless
+    events retain the legacy reminder behavior without reading transcripts.
     Stop then looks for a receipt of this harness and session in the runtime store.
     If a receipt declared learnings but no note under knowledge/ was touched,
     Stop reminds once to distill into knowledge/concepts/.
@@ -282,13 +407,16 @@ def receipt_reminder(payload, state, harness, event, vault=None):
         if done.exists() and kdone.exists():
             return None
         if event == "UserPromptSubmit":
-            if "[kaydetme]" in prompt_text(payload):
+            # Quoted worker output is data, not the user's instruction to opt out.
+            if not is_synthetic_prompt(payload) and "[kaydetme]" in prompt_text(payload):
                 folder.mkdir(parents=True, exist_ok=True)
                 done.touch()
                 kdone.touch()
                 edited.unlink(missing_ok=True)
             return None
         if event == "PostToolUse":
+            if _edits_only_outside_vault(vault, payload):
+                return None
             if not edited.exists():
                 atomic(edited, {"at": time.time()})
             if vault is not None and _edits_knowledge(vault, payload):
@@ -313,16 +441,23 @@ def receipt_reminder(payload, state, harness, event, vault=None):
                 return {"decision": "block", "reason": RECEIPT_REMINDER.format(harness=harness, session=session)}
             return None
 
-        # Receipt exists! Check if receipt declared learning but knowledge/ was not updated.
-        if (not kdone.exists() and _has_declared_learning(receipt.get("summary", "")) and
-                marker.get("knowledge") is not True and not _has_knowledge_update(vault, receipt, since)):
-            folder.mkdir(parents=True, exist_ok=True)
-            try:
-                with kdone.open("x", encoding="utf-8"):
-                    pass
-            except FileExistsError:
-                return None
-            return {"decision": "block", "reason": KNOWLEDGE_REMINDER}
+        # Receipt exists! Check if receipt declared learning or explicitly claimed no learning.
+        # The knowledge tree walk and the ledger read run only when a reminder is still due.
+        if not kdone.exists():
+            summary = receipt.get("summary", "")
+            reason = (KNOWLEDGE_REMINDER if _has_declared_learning(summary)
+                      else NO_LEARNING_CHALLENGE_REMINDER.format(session=session)
+                      if _is_bare_no_learning(summary) else None)
+            if (reason and marker.get("knowledge") is not True and
+                    not _has_staged_candidates(state, session, since) and
+                    not _has_knowledge_update(vault, receipt, since)):
+                folder.mkdir(parents=True, exist_ok=True)
+                try:
+                    with kdone.open("x", encoding="utf-8"):
+                        pass
+                except FileExistsError:
+                    return None
+                return {"decision": "block", "reason": reason}
 
         edited.unlink(missing_ok=True)  # later edits open a new window
         return None
@@ -336,7 +471,7 @@ def enqueue_event(vault, state, payload, harness):
                 "session": hashlib.sha256(str(payload.get("session_id", "unknown")).encode()).hexdigest()[:24]}
     # Keep a bounded label and opaque identity, never the full project path.
     from beyin_v3_bridge import origin
-    project = origin(payload, harness)
+    project = origin(payload, harness, vault)
     if project:
         metadata.update(project)
     if payload.get('no_memory') is True:
@@ -375,9 +510,10 @@ def drain_queue(vault, state):
         if gap_path.exists():
             gaps = json.loads(gap_path.read_text(encoding='utf-8'))
             result['potential_missing_receipts'] = gaps['potential_missing_receipts']
-            # The prompt warning names only the last 7 days, already counted by this sync (#373).
+            # The prompt warning names only the last 7 days, already counted by this sync (#373, #462).
             recent = (gaps.get('receipt_coverage') or {}).get('last_7d') or {}
             result['recent_missing_receipts'] = recent.get('missing', 0)
+            result['recent_no_observed_edit'] = recent.get('missing_no_observed_edit', recent.get('no_observed_edit', 0))
         from beyin_v3_skills import sync_skills
         skills = sync_skills(vault, state)
         # Skill mirroring owns no queued event, so its outcome is reported for
@@ -387,7 +523,7 @@ def drain_queue(vault, state):
         if skills.get("unmanaged"):
             result = dict(result, skill_unmanaged=skills["unmanaged"])
     except Exception as exc:
-        atomic(state / "hook-error.json", {"at": time.time(), "error": type(exc).__name__})
+        record_error(state, exc)
         return {"processed": 0, "failed": len(pending), "pending": len(pending)}
     atomic(state / "hook-health.json", {"at": time.time(), "worker_pid": os.getpid(), "sync": result})
     # A degraded scan is complete but excluded one or more invalid sources. The
@@ -439,12 +575,16 @@ def main():
     vault = args.vault.resolve()
     from beyin_v3 import resolve_state
     state = resolve_state(vault, args.state)
-    if state != args.state.expanduser().resolve() and not os.environ.get('BEYIN_V3_INTERNAL') and os.environ.get('BEYIN_V3_SKIP') != '1':
+    try:
+        pinned_state = args.state.expanduser().resolve()
+    except (OSError, ValueError, RuntimeError):
+        pinned_state = None
+    if state != pinned_state and not os.environ.get('BEYIN_V3_INTERNAL') and os.environ.get('BEYIN_V3_SKIP') != '1':
         print('V3 state fallback: synced foreign default resolved to this machine; reinstall hooks locally.', file=sys.stderr)
     if state == vault or vault in state.parents:
         raise ValueError("Runtime state must be outside vault")
     os.umask(0o077)
-    from beyin_v3_preferences import read, claim_check
+    from beyin_v3_preferences import read, claim_check, SKIP_REFUSED
     if args.worker or args.drain_queue:
         if args.worker and not read(vault)['auto_sync']:
             print(json.dumps({'processed': 0, 'failed': 0, 'paused': True}))
@@ -455,6 +595,7 @@ def main():
             raise SystemExit(1)
         return
     notice = ''
+    sync_note = ''  # set when a client refuses the state write or the sync worker spawn
     try:
         # A payload cut at the read limit is not JSON: the handler below answers "{}" and
         # records the error for doctor instead of silently dropping the turn.
@@ -542,7 +683,14 @@ def main():
         if not settings['auto_sync']:
             print(json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == 'antigravity' else '{}'))
             return
-        enqueue_event(vault, state, payload, args.harness)
+        try:
+            enqueue_event(vault, state, payload, args.harness)
+        except OSError as exc:
+            if not permission_refused(exc):
+                raise
+            # The queued checkpoint is metadata; the turn's context is not. The vault stays readable
+            # under the same sandbox, so only the write is lost here.
+            sync_note = STATE_WRITE_REFUSED_NOTE
         command = [sys.executable, str(Path(__file__).resolve()), "--vault", str(vault),
                    "--state", str(state), "--harness", args.harness, "--worker"]
         options = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
@@ -552,19 +700,39 @@ def main():
         else:
             options["start_new_session"] = True
         disabled = os.environ.get("BEYIN_V3_NO_SPAWN") == "1"
-        due = False if disabled else claim_check(state, settings, event)
-        process = subprocess.Popen(command, **options) if due else None
+        cadence_skip = []
+        # A refused queue write also prevents claiming the cadence database.
+        due = False if disabled or sync_note else claim_check(state, settings, event, skip_reason=cadence_skip)
+        refused = SKIP_REFUSED in cadence_skip
+        skip_notice = ('V3 automatic check skipped: the cadence record could not be written (locked or read-only)'
+                       if refused else 'V3 automatic check deferred by your interval preference')
+        skip_hint = ' Run beyin.py doctor if this repeats.' if refused else ''
+        process = None
+        if due:
+            try:
+                process = subprocess.Popen(command, **options)
+            except OSError as exc:
+                if not permission_refused(exc):
+                    raise
+                sync_note, due = WORKER_SPAWN_REFUSED_NOTE, False
         # After enqueue, so reminder bookkeeping can never cost the queued checkpoint.
         # The global bridge (--metadata-only) discards stdout, so it keeps no reminder state.
-        reminder = None if args.metadata_only else receipt_reminder(payload, state, args.harness, event, vault=vault)
+        # A refused state write stops the main body before this bookkeeping, so its Stop answers {}
+        # (#417); an earlier edit marker must not reopen that path as a block in a state this client
+        # cannot write. The writable path keeps its reminder untouched.
+        reminder = None if args.metadata_only or sync_note else receipt_reminder(payload, state, args.harness, event, vault=vault)
+        if not args.metadata_only and event == 'UserPromptSubmit' and (state / 'chat-trace.json').is_file():
+            try:
+                from beyin_v3_chat_trace import hint
+                notice += hint(state, args.harness, payload)
+            except Exception:
+                pass  # Optional conversation hints cannot cost a turn or replace its context.
         inject = settings['context_mode'] == 'turn' or (settings['context_mode'] == 'session' and event == 'SessionStart')
         if not inject or args.metadata_only or (event == 'UserPromptSubmit' and is_synthetic_prompt(payload)):
             print(json.dumps(reminder) if reminder else (json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == 'antigravity' else '{}')))
             return
         if event in ("SessionStart", "UserPromptSubmit"):
-            if not due and not disabled:
-                print(json.dumps(output_context(args.harness, event, notice + 'V3 automatic check deferred by your interval preference. Read current sources or use beyin.py context for fresh information.')))
-                return
+            deferred = not due and not disabled and not sync_note
             pending = False
             try:
                 if process is not None:
@@ -577,17 +745,25 @@ def main():
             # markdown_sources table, which the sync worker creates and every reader tolerates
             # missing, so the foreground skips importing the sync engine.
             from beyin_v3 import MemoryStore
-            if pending:
-                # A sync slower than SYNC_WAIT keeps running in the background. Retrieval reads the
-                # index the previous sync committed, read-only so it never contends for the
-                # worker's write lock; only a store that does not exist yet injects nothing.
-                # A sync that outgrows SQLite's page cache holds the exclusive lock until it commits;
-                # waiting the store's default 10 s would outlive the client's 5 s hook limit.
+            if pending or deferred or sync_note:
+                # A sync slower than SYNC_WAIT keeps running in the background, an interval preference
+                # defers source synchronization, or a sandboxed client cannot write the state at all.
+                # Retrieval reads only the index the previous sync committed, read-only so it never
+                # contends for the worker's write lock; only a store that does not exist yet injects
+                # nothing. A sync that outgrows SQLite's page cache holds the exclusive lock until it
+                # commits; waiting the store's default 10 s would outlive the client's 5 s hook limit.
                 try:
                     store = MemoryStore(state, vault, read_only=True,
                                         busy_timeout=max(0.1, HOOK_BUDGET - 1.0 - (time.monotonic() - started)))
                 except ValueError:
-                    print(json.dumps(output_context(args.harness, event, notice + "V3 source sync is pending. Verify current Markdown sources before using prior context.")))
+                    if pending:
+                        msg = "V3 source sync is pending. Verify current Markdown sources before using prior context."
+                    elif sync_note:
+                        msg = ("V3 source sync failed: automatic sync cannot run in this client and no index is "
+                               "readable yet. Run the local CLI doctor and verify current Markdown sources.")
+                    else:
+                        msg = skip_notice + ". Read current sources or use beyin.py context for fresh information." + skip_hint
+                    print(json.dumps(output_context(args.harness, event, notice + msg)))
                     return
             else:
                 store = MemoryStore(state, vault)
@@ -595,8 +771,17 @@ def main():
             project = payload.get('project')
             project = project if isinstance(project, str) and project.strip() else None
             session = hashlib.sha256(str(payload.get('session_id', 'unknown')).encode()).hexdigest()[:24]
-            warning = ('V3 source sync is still running; this context comes from the previous index. '
-                       'Verify current Markdown sources before relying on it.\n') if pending else ''
+            if pending:
+                warning = ('V3 source sync is still running; this context comes from the previous index. '
+                           'Verify current Markdown sources before relying on it.\n')
+            elif sync_note:
+                warning = sync_note
+            elif deferred:
+                warning = (skip_notice + '; this context comes from the previous index. '
+                           'Read current sources or use beyin.py context for fresh information.' + skip_hint + '\n')
+            else:
+                warning = ''
+            coverage = ''
             health = state / "hook-health.json"
             if health.exists():
                 sync = json.loads(health.read_text(encoding="utf-8")).get("sync", {})
@@ -608,10 +793,35 @@ def main():
                 if sync.get('skill_conflicts'):
                     warning += 'Shared skills differ between harnesses; both versions are preserved. Run doctor before trusting skill text.\n'
                 # Only recent gaps reach the prompt; the all-time count never clears and stays in doctor (#373).
+                # Checkpoints without observed edits are reported separately (#462).
                 recent = sync.get('recent_missing_receipts')
+                no_edits = sync.get('recent_no_observed_edit', 0)
                 if isinstance(recent, int) and recent > 0:
-                    warning += (f'Prior checkpoints may lack structured receipts ({recent} in the last 7 days); '
+                    if isinstance(no_edits, int) and no_edits > 0:
+                        detail = f'{recent} in the last 7 days ({no_edits} without observed edits)'
+                    else:
+                        detail = f'{recent} in the last 7 days'
+                    coverage = (f'Prior checkpoints may lack structured receipts ({detail}); '
                                 'check Last-Session/Threads and current sources for unfinished work.\n')
+            topic_session = payload.get('session_id', 'unknown')
+            dedupe_enabled = (state / 'context-dedupe.json').is_file() or os.environ.get('BEYIN_V3_CONTEXT_DEDUPE') == '1'
+            # The coverage notice is a session fact like the receipt: said once, again when its count changes.
+            if coverage and dedupe_enabled:
+                try:
+                    from beyin_v3_dedupe import notice_delivered
+                    if notice_delivered(state, args.harness, topic_session, coverage):
+                        coverage = ''
+                except Exception:
+                    pass
+            warning += coverage
+
+            def remember_notice(shown):
+                if coverage and dedupe_enabled and coverage.strip() in shown:
+                    try:
+                        from beyin_v3_dedupe import record_delivered
+                        record_delivered(state, args.harness, topic_session, [], notice=coverage)
+                    except Exception:
+                        pass
             from beyin_v3_companion import (context as companion_context, relevant, opening_budget, client_budget,
                                             client_rebudget, fit_client)
             # Both budgets stop below a client's own cut-off; past it the client files the text away (#175).
@@ -619,13 +829,31 @@ def main():
             limit = client_budget(args.harness, settings['context_chars'])
             receipt = receipt_context(vault, state)
             if event == 'SessionStart' or relevant(query):
+                # Claude Code and Antigravity send a working directory, not a project (#288, #403).
+                # A project found from it selects the project rules only: as a retrieval scope it
+                # would hide every note that does not carry that project field.
+                rules_project = project
+                if rules_project is None:
+                    from beyin_v3_bridge import working_directory
+                    from beyin_v3_projects import resolve_active_project, resolve_project_from_query
+                    try:
+                        rules_project = resolve_active_project(vault, working_directory(payload, args.harness))
+                    except Exception:
+                        rules_project = None
+                    if rules_project is None and query:
+                        try:
+                            rules_project = resolve_project_from_query(vault, query)
+                        except Exception:
+                            rules_project = None
                 # The opening may carry its own machine-local budget (#140); never a vault preference.
                 limit = client_budget(args.harness, opening_budget(state, settings['context_chars']))
-                text = companion_context(store, limit, session, args.harness, query, receipt, warning, project=project)
+                text = companion_context(store, limit, session, args.harness, query, receipt, warning, project=project,
+                                         rules_project=rules_project)
                 smaller = client_rebudget(args.harness, limit, notice + text)
                 if smaller is not None:
                     limit = smaller
-                    text = companion_context(store, limit, session, args.harness, query, receipt, warning, project=project)
+                    text = companion_context(store, limit, session, args.harness, query, receipt, warning,
+                                             project=project, rules_project=rules_project)
             else:
                 # Per-turn automatic context is strict: only meaningful lexical matches are
                 # injected, and an empty match injects nothing at all instead of a receipt
@@ -636,7 +864,6 @@ def main():
                     context = {"records": []}
                 inherited = False
                 from beyin_v3_continuity import resolve, remember
-                topic_session = payload.get('session_id', 'unknown')
                 try:
                     context, inherited = resolve(store, args.harness, topic_session, query, context,
                                                  budget_chars=limit, project=project)
@@ -653,7 +880,6 @@ def main():
                                                    timeout_cap=min(2.0, remaining), project=project)
                         except Exception:
                             pass  # an advisor failure must never cost the local context
-                dedupe_enabled = (state / 'context-dedupe.json').is_file() or os.environ.get('BEYIN_V3_CONTEXT_DEDUPE') == '1'
                 duplicates = []
                 suffix = receipt
                 if dedupe_enabled and context.get("records"):
@@ -696,19 +922,27 @@ def main():
                     pass
                 if not delivered.get("records") and not receipt_only:
                     diagnostic = fit_client(args.harness, (notice + warning)[:limit])
+                    remember_notice(diagnostic)
                     print(json.dumps(output_context(args.harness, event, diagnostic)) if diagnostic else "{}")
                     return
-            output = output_context(args.harness, event, fit_client(args.harness, (notice + text)[:limit]))
+            shown = fit_client(args.harness, (notice + text)[:limit])
+            remember_notice(shown)
+            output = output_context(args.harness, event, shown)
             print(json.dumps(output))
         else:
             print(json.dumps(reminder) if reminder else (json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == "antigravity" else "{}")))
     except Exception as exc:
-        if locals().get("pending") is True and type(exc).__module__ == "sqlite3":
-            # The previous index stayed locked by the running sync past the hook budget: the
-            # worker is not failing, so keep the pending notice and record no hook error.
-            print(json.dumps(output_context(args.harness, event, notice + "V3 source sync is pending. Verify current Markdown sources before using prior context.")))
+        if (locals().get("pending") is True or locals().get("deferred") is True) and type(exc).__module__ == "sqlite3":
+            # The previous index stayed locked past the hook budget: the
+            # worker is not failing, so keep the pending/deferred notice and record no hook error.
+            msg = ("V3 source sync is pending. Verify current Markdown sources before using prior context."
+                   if locals().get("pending") is True else
+                   (locals().get("skip_notice") or 'V3 automatic check deferred by your interval preference') +
+                   ". Read current sources or use beyin.py context for fresh information." +
+                   str(locals().get("skip_hint") or ''))
+            print(json.dumps(output_context(args.harness, event, notice + msg)))
             return
-        atomic(state / "hook-error.json", {"at": time.time(), "error": type(exc).__name__})
+        record_error(state, exc)
         if not args.metadata_only and locals().get("event") in ("SessionStart", "UserPromptSubmit"):
             print(json.dumps(output_context(args.harness, event, notice + "V3 source sync failed or conflicted; metadata remains queued. Run the local CLI doctor and verify current Markdown sources.")))
         else:

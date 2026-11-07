@@ -5,6 +5,8 @@ strict PNG reader. The popup wiring runs against a scripted stand-in for tkinter
 The real Windows clipboard is exercised only on a Windows CI runner (or with BEYIN_TEST_PANO=1),
 because those tests replace whatever the clipboard holds.
 """
+import contextlib
+import ctypes
 import os
 from pathlib import Path
 import re
@@ -15,7 +17,7 @@ import tempfile
 import time
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import zlib
 
 from v3_package_helpers import inherited_env
@@ -356,8 +358,12 @@ class FakeWin32:
         self.formats, self.busy, self.slack, self.unlockable = dict(formats), busy, slack, set(unlockable)
         self.is_open, self.locked, self.asked, self.closed, self.buffers = False, set(), [], 0, {}
         for name in ('OpenClipboard', 'CloseClipboard', 'IsClipboardFormatAvailable', 'RegisterClipboardFormatW',
-                     'GetClipboardData', 'GlobalSize', 'GlobalLock', 'GlobalUnlock'):
+                     'GetClipboardData', 'GlobalSize', 'GlobalLock', 'GlobalUnlock', 'DragQueryFileW',
+                     'GetClipboardSequenceNumber'):
             setattr(self, name, Call(getattr(self, '_' + name)))
+
+    def _GetClipboardSequenceNumber(self):
+        return 42
 
     def _OpenClipboard(self, _window):
         assert not self.is_open
@@ -404,6 +410,25 @@ class FakeWin32:
         self.locked.remove(handle)
         return 0
 
+    def _DragQueryFileW(self, handle, index, buffer, size):
+        data = self.formats.get(handle - 0x7FF000000000) if handle else None
+        if not data or len(data) < 20:
+            return 0
+        pFiles = struct.unpack_from('<I', data, 0)[0]
+        raw = data[pFiles:]
+        paths = [p for p in raw.decode('utf-16-le', 'ignore').split('\0') if p]
+        if index == 0xFFFFFFFF:
+            return len(paths)
+        if 0 <= index < len(paths):
+            path = paths[index]
+            if buffer is None or size == 0:
+                return len(path)
+            for i, ch in enumerate(path[:size - 1]):
+                buffer[i] = ch
+            buffer[min(len(path), size - 1)] = '\0'
+            return min(len(path), size - 1)
+        return 0
+
 
 class WindowsReaderFlowTest(unittest.TestCase):
     """_win_clipboard_payload() against a recording stand-in for user32/kernel32, on every OS.
@@ -414,9 +439,10 @@ class WindowsReaderFlowTest(unittest.TestCase):
 
     def read(self, formats, limit=None, **options):
         import ctypes
+        snapshot = options.pop('snapshot', False)
         fake = FakeWin32(formats, **options)
         with patch.object(ctypes, 'WinDLL', lambda _name: fake, create=True), patch.object(time, 'sleep') as sleep:
-            payload = yakala._win_clipboard_payload(**({'limit': limit} if limit else {}))
+            payload = yakala._win_clipboard_payload(**({'limit': limit} if limit else {}), snapshot=snapshot)
         self.assertFalse(fake.is_open)
         self.assertEqual(fake.locked, set())
         return payload, fake, sleep
@@ -470,6 +496,21 @@ class WindowsReaderFlowTest(unittest.TestCase):
                 self.assertIsNone(yakala.clipboard_image('', {}))  # the popup sees "no picture", not the error
         self.assertEqual(fake.closed, 2)
 
+    def test_file_drop_format_is_extracted_when_snapshot_requested(self):
+        with tempfile.NamedTemporaryFile(suffix='.txt') as tmp1, tempfile.NamedTemporaryFile(suffix='.pdf') as tmp2:
+            paths = [tmp1.name, tmp2.name]
+            drop = file_drop(*paths)
+            payload, fake, _ = self.read({15: drop}, snapshot=True)
+            self.assertEqual(payload.get('dosyalar'), paths)
+            self.assertEqual(payload.get('text'), '')
+            self.assertFalse(payload['image'])
+
+    def test_file_drop_is_ignored_when_snapshot_not_requested(self):
+        with tempfile.NamedTemporaryFile(suffix='.txt') as tmp:
+            payload, fake, _ = self.read({15: file_drop(tmp.name)}, snapshot=False)
+            self.assertNotIn('dosyalar', payload)
+            self.assertFalse(payload['image'])
+
 
 class Widget:
     """Stand-in for a Tk widget: every call the test does not care about is accepted and ignored."""
@@ -496,13 +537,27 @@ class Root(Widget):
     def winfo_screenheight(self):
         return 900
 
+    def geometry(self, value):
+        self.size = value
+
     def destroy(self):
         self.alive = False
 
     def mainloop(self):
         for action, value in self.script:
-            if action == 'key':
-                self.bound[value](None)
+            if action in ('key', 'root-key'):
+                if value.startswith(('<Alt-', '<Option-')) and value not in self.bound:
+                    modifier, key = value[1:-1].split('-', 1)
+                    event = types.SimpleNamespace(keysym=key, keycode=ord(key.upper()), state=0x20000, char=key)
+                    handlers = self.bound if action == 'root-key' else self.entry.handlers
+                    handlers['<' + modifier + '-KeyPress>'](event)
+                else:
+                    self.bound[value](None)
+            elif action == 'alt':
+                self.entry.handlers['<Alt-KeyPress>'](types.SimpleNamespace(**value))
+            elif action == 'event':  # a root binding with real event fields, e.g. a modified Esc
+                sequence, fields = value
+                self.bound[sequence](types.SimpleNamespace(**fields))
             elif action == 'type':
                 self.entry.type(value)
             else:
@@ -540,7 +595,23 @@ class Entry(Widget):
 class Canvas(Widget):
     def __init__(self, root, **_options):
         self.items = {}
-        root.canvas = self
+        self.options, self.clicks = dict(_options), {}
+        if 'canvas' not in vars(root):
+            root.canvas = self
+
+    def configure(self, **options):
+        self.options.update(options)
+
+    def yview_scroll(self, step, units):
+        self.options['last_scroll'] = (step, units)
+
+    def yview_moveto(self, fraction):
+        self.options['last_position'] = fraction
+
+    def tag_bind(self, item, event=None, handler=None):
+        if handler:
+            self.clicks[item, event] = handler
+        return self.clicks.get((item, event))
 
     def _create(self, *_coordinates, **options):
         self.items[len(self.items) + 1] = dict(options)
@@ -551,7 +622,11 @@ class Canvas(Widget):
         self.items[item].update(options)
 
     def texts(self):
-        return [item['text'] for item in self.items.values() if item.get('text')]
+        texts = [item['text'] for item in self.items.values() if item.get('text')]
+        for item in self.items.values():
+            if isinstance(item.get('window'), Canvas):
+                texts.extend(item['window'].texts())
+        return texts
 
 
 class Photo:
@@ -586,7 +661,7 @@ class PopupWiringTest(ScreenshotFiles, unittest.TestCase):
         self.bitmap = {'image': True, 'png': None, 'dib': make_dib(self.pixels, bits=32)}
         Photo.opened = []
 
-    def popup(self, clip, payload, script, context=None, windows=False, fresh=False, shot=None):
+    def popup(self, clip, payload, script, context=None, windows=False, fresh=False, shot=None, platform=None):
         roots = []
         fake = types.ModuleType('tkinter')
         fake.Tk = lambda: roots.append(Root(script)) or roots[-1]
@@ -594,15 +669,25 @@ class PopupWiringTest(ScreenshotFiles, unittest.TestCase):
         fake.font = types.ModuleType('tkinter.font')
         fake.font.Font = lambda **_options: types.SimpleNamespace(measure=lambda text: len(text) * 6)
         environment = {key: value for key, value in os.environ.items() if key != 'BEYIN_YAKALA_SNAPSHOT'}
-        if not windows and os.name == 'nt':
+        if not windows and os.name == 'nt' and platform is None:
             # On a Windows host the non-Windows model skips the desktop path this way; never on macOS,
             # where the variable starts the development screencapture of the (fake) window.
             environment['BEYIN_YAKALA_SNAPSHOT'] = 'model'
-        system = types.SimpleNamespace(**{**vars(os), 'name': 'nt' if windows else os.name})
+        # Replace only the capture module's os reference; pathlib keeps the host's real os.name.
+        name = 'posix' if platform in ('darwin', 'linux') else ('nt' if windows else os.name)
+        system = types.SimpleNamespace(**{**vars(os), 'name': name})
+        # Grouped so the with statement stays under Python's static nesting limit.
+        platform_patches = contextlib.ExitStack()
+        platform_patches.enter_context(patch.object(sys, 'platform', platform or sys.platform))
+        platform_patches.enter_context(patch.object(yakala, '_style_mac'))
+        if platform in ('darwin', 'linux') and os.name == 'nt':
+            # The commit lock's OS primitive belongs to the real host; Windows has no fcntl.
+            platform_patches.enter_context(
+                patch.object(yakala, '_WindowsCommitLock', lambda _vault: contextlib.nullcontext()))
         with patch.dict(sys.modules, {'tkinter': fake, 'tkinter.font': fake.font}), \
                 patch.dict(os.environ, environment, clear=True), \
                 patch.object(yakala, 'os', system), \
-                patch.object(yakala, '_style_mac'), \
+                platform_patches, \
                 patch.object(yakala, '_clipboard', return_value=clip), \
                 patch.object(yakala, '_clipboard_payload', return_value=payload, create=True) as probe, \
                 patch.object(yakala, '_windows_clipboard', return_value={**(payload or {}), 'text': clip, 'sequence': 77}), \
@@ -746,7 +831,7 @@ class PopupWiringTest(ScreenshotFiles, unittest.TestCase):
             self.assertIn('> aklıma gelen', self.card(result)['body'])
             self.assertEqual(root.seen[0][0], 'Aklındakini yaz…')
             self.assertNotIn('GÖRSEL', root.seen[0][1])
-        # The reader found no picture: the path text is saved exactly as it was before the fix.
+        # The reader found no picture: the path text is retained exactly as originally.
         result, _, _ = self.popup(REPORTED, {'image': False, 'png': None, 'dib': None}, [('key', '<Return>')])
         self.assertEqual(result['kaynak_turu'], 'metin')
         self.assertIn('> ' + REPORTED, self.card(result)['body'])
@@ -758,6 +843,59 @@ class PopupWiringTest(ScreenshotFiles, unittest.TestCase):
         self.assertEqual(result['kaynak_turu'], 'makale')
         probe.assert_not_called()
 
+    def test_linux_copied_files_are_saved_without_the_previously_captured_browser_url(self):
+        page, hover = 'https://example.com/page', 'https://example.com/hover'
+        previous = yakala.capture(self.vault, url=page)
+        previous_card = self.card(previous)['path'].read_bytes()
+        copied = Path(self.tmp.name) / 'copied document.txt'
+        copied.write_text('copied file contents', encoding='utf-8')
+        with patch.object(yakala, 'linux_browser_context', return_value={
+                'url': page, 'url_imlec': hover, 'baslik': 'Page', 'baslik_imlec': 'Hover',
+                'uygulama': 'Mozilla Firefox', 'url_yontem': 'linux-atspi-x11'}), \
+                patch.object(yakala, '_linux_clipboard_context', return_value={'dosyalar': [str(copied)]}):
+            context = yakala.linux_context()
+        result, root, _ = self.popup(copied.as_uri(), None,
+                                    [('look', None), ('key', '<Return>')], context, platform='linux')
+        self.assertEqual(result['status'], 'yakalandi')
+        self.assertEqual(result['kaynak_turu'], 'dosya')
+        self.assertNotEqual(result['id'], previous['id'])
+        card = self.card(result)
+        self.assertFalse(card['meta'].get('url'))
+        self.assertEqual(card['meta']['baslik'], copied.name)
+        self.assertNotIn(page, card['body'])
+        self.assertNotIn(hover, card['body'])
+        self.assertTrue(any(copied.name in text for text in root.seen[0][1]))
+        self.assertFalse(any(page in text or hover in text for text in root.seen[0][1]))
+        self.assertEqual([path.read_bytes() for path in self.saved_files()], [copied.read_bytes()])
+        self.assertEqual(self.card(previous)['path'].read_bytes(), previous_card)
+
+    def test_browser_shortcuts_use_the_displayed_platform_modifier(self):
+        context = {'url': 'https://example.com/page', 'url_imlec': 'https://example.com/hover',
+                   'baslik': 'Page', 'baslik_imlec': 'Hover'}
+        for platform, modifier in (('darwin', 'Option'), ('linux', 'Alt')):
+            page_key, hover_key = '<' + modifier + '-s>', '<' + modifier + '-i>'
+            # Entry adds the page without dropping the hover; the root shortcut can then
+            # remove the hover. Check the saved selections, not the older radio labels.
+            scenarios = (([], context['url_imlec'], 'Hover', []),
+                         ([('key', page_key)], context['url_imlec'], 'Hover', [context['url']]),
+                         ([('key', page_key), ('root-key', hover_key)], context['url'], 'Page', []))
+            for keys, expected, title, extras in scenarios:
+                with self.subTest(platform=platform, keys=keys), \
+                        patch.object(yakala, 'capture', return_value={'status': 'yakalandi'}) as save:
+                    result, root, _ = self.popup('', None,
+                        [('look', None), *keys, ('key', '<Return>')], context, platform=platform)
+                    for key in ('I', 'S'):
+                        self.assertIn(modifier + '+' + key, root.seen[0][1])
+                    other = 'Alt' if modifier == 'Option' else 'Option'
+                    self.assertNotIn('<' + other + '-KeyPress>', root.bound)
+                    self.assertNotIn('<' + other + '-KeyPress>', root.entry.handlers)
+                    self.assertEqual(result['status'], 'yakalandi')
+                    save.assert_called_once()
+                    self.assertEqual(save.call_args.kwargs['url'], expected)
+                    self.assertEqual(save.call_args.kwargs['title'], title)
+                    self.assertEqual(save.call_args.kwargs['extra_urls'], extras)
+                    self.assertEqual(save.call_args.kwargs['files'], [])
+
     def test_windows_page_link_wins_and_a_fresh_copied_link_stays_selectable(self):
         context = {'url': 'https://example.com/page', 'baslik': 'Page'}
         result, root, _ = self.popup('https://example.com/copied', None,
@@ -766,13 +904,102 @@ class PopupWiringTest(ScreenshotFiles, unittest.TestCase):
         self.assertTrue(any('Pano bağlantısı' in text for text in root.seen[0][1]))
         result, _, _ = self.popup('https://example.com/copied', None,
                                   [('key', '<Alt-p>'), ('key', '<Return>')], context, windows=True, fresh=True)
-        self.assertEqual(self.card(result)['meta']['url'], 'https://example.com/copied')
+        self.assertEqual(self.card(result)['meta']['url'], context['url'])
+        self.assertEqual(self.card(result)['meta']['ek_urller'], ['https://example.com/copied'])
 
     def test_windows_stale_text_is_off_even_when_window_capture_fails(self):
         for clip in ('eski özel metin', 'https://example.com/old'):
             result, _, _ = self.popup(clip, None, [('key', '<Return>'), ('key', '<Escape>')], windows=True)
             self.assertEqual(result, {'status': 'vazgecildi'})
         self.assertEqual(yakala.cards(self.vault), [])
+
+    def test_windows_stale_text_has_no_tile_or_hidden_attachment(self):
+        result, root, _ = self.popup('eski özel metin', None,
+                                     [('look', None), ('type', 'yeni not'), ('key', '<Return>')],
+                                     {'url': 'https://example.com/page'}, windows=True)
+        self.assertFalse(any('Pano metni' in text or 'eski özel metin' in text for text in root.seen[0][1]))
+        self.assertNotIn('eski özel metin', self.card(result)['body'])
+
+    def test_windows_fresh_text_is_visible_and_can_be_added_from_the_note_field(self):
+        result, root, _ = self.popup('taze metin', None,
+                                     [('look', None), ('type', 'notum'), ('key', '<Alt-m>'), ('key', '<Return>')],
+                                     {'url': 'https://example.com/page'}, windows=True, fresh=True)
+        self.assertTrue(any('Pano metni' in text for text in root.seen[0][1]))
+        self.assertIn('> taze metin', self.card(result)['body'])
+        self.assertIn('## Neden\n\nnotum', self.card(result)['body'])
+        self.assertEqual(self.card(result)['meta']['visibility'], 'private')
+
+    def test_alt_a_in_the_note_field_keeps_the_page_and_note(self):
+        context = {'url': 'https://example.com/page', 'url_alinti': 'https://example.com/quote'}
+        for key, state in (('a', 0x20000), ('A', 0x20003)):
+            with self.subTest(key=key):
+                result, root, _ = self.popup('', None,
+                    [('type', 'notum'), ('alt', dict(keysym=key, keycode=65, char=key, state=state)),
+                     ('look', None), ('key', '<Return>')], context, windows=True)
+                card = self.card(result)
+                self.assertEqual(card['meta']['url'], context['url'])
+                self.assertEqual(card['meta']['ek_urller'], [context['url_alinti']])
+                self.assertEqual(root.seen[0][0], 'notum')
+                self.assertIn(context['url_alinti'], card['body'])
+
+    def test_turkish_alt_i_and_caps_lock_work_in_the_note_field(self):
+        context = {'url': 'https://example.com/page', 'url_imlec': 'https://example.com/link'}
+        result, root, _ = self.popup('', None,
+            [('key', '<Alt-s>'), ('alt', dict(keysym='Iabovedot', keycode=73, char='İ', state=0x20002)),
+             ('look', None), ('key', '<Return>')], context, windows=True)
+        self.assertEqual(root.seen[0][0], 'Neden kaydediyorsun?')
+        self.assertEqual(self.card(result)['meta']['url'], context['url'])
+        self.assertNotIn('ek_urller', self.card(result)['meta'])
+
+    def test_duplicate_quote_has_no_second_tile(self):
+        page = 'https://www.instagram.com/reel/Abcd/'
+        result, root, _ = self.popup(page, None, [('look', None), ('key', '<Return>')],
+                                     {'url': page, 'url_alinti': page}, windows=True, fresh=True)
+        self.assertFalse(any('Alıntılanan gönderi' in text or 'Pano bağlantısı' in text for text in root.seen[0][1]))
+        self.assertNotIn('ek_urller', self.card(result)['meta'])
+
+    def test_link_and_window_picture_are_saved_together_only_after_alt_w(self):
+        page = 'https://example.com/page'
+        for enabled in (False, True):
+            shot = yakala.clipboard_image('', {}, payload=self.bitmap, offered=True)
+            script = [('look', None)] + ([('key', '<Alt-w>')] if enabled else []) + [('key', '<Return>')]
+            result, root, _ = self.popup('', None, script, {'url': page}, windows=True, shot=shot)
+            card = self.card(result)
+            self.assertTrue(any('Pencere görüntüsü' in text for text in root.seen[0][1]))
+            self.assertEqual(card['meta']['url'], page)
+            self.assertEqual(card['meta']['kaynak_turu'], 'makale')
+            self.assertEqual(len(self.saved_files()), int(enabled))
+            if enabled:
+                self.assertEqual(card['meta']['visibility'], 'private')
+                self.assertIn('## Dosyalar', card['body'])
+            self.assertFalse(Path(shot['folder']).exists())
+
+    def test_many_sources_fit_a_small_monitor_and_keep_controls_visible(self):
+        with patch.object(yakala, '_popup_bounds', return_value=(448, 288)):
+            result, root, _ = self.popup('', None,
+                [('look', None), ('key', '<Next>'), ('key', '<Alt-1>'), ('key', '<Escape>')],
+                {'dosyalar': [f'document-{i}.txt' for i in range(40)]}, windows=True)
+        self.assertEqual(result['status'], 'vazgecildi')
+        width, height = map(int, root.size.split('x'))
+        self.assertLessEqual(width, 448)
+        self.assertLessEqual(height, 288)
+        rows = next(item['window'] for item in root.canvas.items.values() if isinstance(item.get('window'), Canvas))
+        self.assertGreater(rows.options['scrollregion'][3], rows.options['height'])
+        self.assertEqual(rows.options['last_scroll'], (1, 'pages'))
+        self.assertEqual(rows.options['last_position'], 0)
+        self.assertTrue(any('Kaydet' in text for text in root.seen[0][1]))
+        self.assertFalse((self.vault / INBOX).exists())
+
+    def test_empty_windows_sources_keep_the_note_field_without_a_negative_viewport(self):
+        # Clipboard age is unknown and window capture failed: only the note remains.
+        result, root, _ = self.popup('old clipboard text', None,
+            [('type', 'yalnız bir not'), ('key', '<Return>')], windows=True)
+        self.assertEqual(result['status'], 'yakalandi')
+        self.assertIn('yalnız bir not', self.card(result)['body'])
+        self.assertNotIn('old clipboard text', self.card(result)['body'])
+        rows = [item['window'] for item in root.canvas.items.values()
+                if isinstance(item.get('window'), Canvas)]
+        self.assertEqual(rows, [])
 
     def test_windows_sequence_makes_image_fresh_without_snipping_tool_path(self):
         result, root, _ = self.popup('', self.bitmap, [('look', None), ('key', '<Return>')],
@@ -789,13 +1016,52 @@ class PopupWiringTest(ScreenshotFiles, unittest.TestCase):
     def test_windows_clipboard_and_window_images_are_independent(self):
         shot = yakala.clipboard_image('', {}, payload=self.bitmap, offered=True)
         self.assertIsNotNone(shot)
-        result, root, _ = self.popup('eski metin', self.bitmap,
+        result, root, _ = self.popup('taze metin', self.bitmap,
                                      [('look', None), ('key', '<Alt-g>'), ('key', '<Alt-m>'), ('key', '<Alt-w>'), ('key', '<Return>')],
-                                     windows=True, shot=shot)
+                                     windows=True, shot=shot, fresh=True, context={'url': 'https://example.com/page'})
         self.assertEqual(len(self.saved_files()), 2)
-        self.assertIn('> eski metin', self.card(result)['body'])
+        self.assertIn('> taze metin', self.card(result)['body'])
         self.assertTrue(any('Alt+M' in text for text in root.seen[0][1]))
         self.assertFalse(Path(shot['folder']).exists())
+
+    def test_windows_escape_guard_is_armed_even_when_the_popup_got_focus(self):
+        # A click on the page after the popup opened takes the key away from Tk, so the Esc hook
+        # must already be there; it was armed only when focus was refused before (#383).
+        guards = []
+
+        def hwnd(_root):
+            guards.append(yakala._win_escape_guard)  # the model's guard mock, live inside popup()
+            return 99
+        with patch.object(yakala, '_win_hwnd', side_effect=hwnd):
+            result, root, _ = self.popup('', None, [('key', '<Escape>')], {'hwnd': 42}, windows=True)
+        self.assertEqual(result, {'status': 'vazgecildi'})
+        self.assertFalse(root.alive)
+        guard = guards[-1]
+        guard.assert_called_once()
+        self.assertEqual(guard.call_args.args[1:3], (99, 42))  # popup frame, source window
+        guard.return_value.assert_called()  # and stopped again when the popup closed
+
+    def test_windows_modified_escape_in_the_focused_popup_is_left_to_the_system(self):
+        # The hook passes Shift/Ctrl/Alt/Win+Esc on without dismissing (#459), but Tk's <Escape>
+        # matches every modifier state, so the focused popup's own binding has to skip them too.
+        # Tk on Windows: Shift 0x1, Control 0x4, Alt 0x20000; Caps 0x2, Num 0x8 and Scroll Lock 0x20
+        # are lock states. The Windows key is not in event.state, only in the thread's key state.
+        held, real = set(), getattr(ctypes, 'WinDLL', None)
+        user = Mock()
+        user.GetKeyState.side_effect = lambda key: -128 if key in held else 0  # SHORT, high bit = down
+        cases = ((0x1, (), True), (0x4, (), True), (0x20000, (), True), (0x1 | 0x4 | 0x8, (), True),
+                 (0, (0x5B,), True), (0x8, (0x5C,), True),
+                 (0, (), False), (0x2, (), False), (0x8, (), False), (0x20, (), False), (0x2 | 0x8 | 0x20, (), False))
+        for state, keys, modified in cases:
+            held.clear()
+            held.update(keys)
+            with self.subTest(state=hex(state), keys=keys), \
+                    patch.object(ctypes, 'WinDLL', create=True,
+                                 side_effect=lambda name, **kw: user if name == 'user32' else real(name, **kw)):
+                result, root, _ = self.popup('', None, [('event', ('<Escape>', {'keysym': 'Escape', 'state': state}))],
+                                             windows=True)
+                self.assertEqual(result, {'status': 'vazgecildi'})
+                self.assertEqual(root.alive, modified, 'a modified Esc keeps the popup, a plain one cancels it')
 
     def test_windows_cancel_does_not_consume_sequence_and_double_enter_saves_once(self):
         state = Path(self.tmp.name) / 'state/yakala/pano-sira.txt'
@@ -996,7 +1262,7 @@ class WindowsClipboardTest(unittest.TestCase):
         try:
             root.withdraw()
             clip = yakala._clipboard(root).strip()
-            # This is the text the popup used to save as the note; the fix depends on recognising it.
+            # This is the text the popup used to save as the note; the resolution depends on recognising it.
             self.assertEqual(clip, str(path).replace('\\', '/'))
             self.assertEqual(yakala.snip_path(clip), clip)
             thumb = yakala._image_thumb(root, self.image(clip))
@@ -1005,6 +1271,14 @@ class WindowsClipboardTest(unittest.TestCase):
             del thumb
         finally:
             root.destroy()
+
+    def test_file_drop_round_trip_in_snapshot(self):
+        with tempfile.NamedTemporaryFile(suffix='.txt') as tmp:
+            set_clipboard({15: file_drop(tmp.name)})
+            payload = self.payload(snapshot=True)
+            self.assertEqual(payload.get('dosyalar'), [tmp.name])
+            self.assertEqual(payload.get('text'), '')
+            self.assertFalse(payload['image'])
 
 
 if __name__ == '__main__':

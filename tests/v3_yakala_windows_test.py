@@ -214,6 +214,35 @@ class WarmWindowTest(unittest.TestCase):
         child.stdin.close()
         self.assertEqual(child.wait(15), 0)
 
+    def test_warm_window_with_instance_exits_cleanly_on_stop(self):
+        vault = Path(tempfile.mkdtemp(prefix='v3-yakala-hazir-inst-'))
+        self.addCleanup(shutil.rmtree, vault, True)
+        instance = 'b' * 32
+        child = subprocess.Popen([sys.executable, str(MODULE), 'pencere', '--vault', str(vault),
+                                  '--hazir', '--instance', instance],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 env=inherited_env())
+
+        def stop_child():
+            for stream in (child.stdin, child.stdout, child.stderr):
+                if stream and not stream.closed:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+            if child.poll() is None:
+                child.kill()
+            child.wait(15)
+        self.addCleanup(stop_child)
+        ready_line = child.stdout.readline()
+        self.assertIn(b'"type":"READY"', ready_line)
+        # Broker sends STOP when window is dismissed or replaced
+        child.stdin.write(json.dumps(yakala._protocol_message('STOP', instance)).encode('ascii') + b'\n')
+        child.stdin.flush()
+        self.assertEqual(child.wait(10), 0)
+        stderr_output = child.stderr.read()
+        self.assertNotIn(b'_enter_buffered_busy', stderr_output)
+
 
 class LegacyListenerWindowTest(unittest.TestCase):
     """After an update the running listener is still the old state copy until `yakala kur`, but it
@@ -238,7 +267,7 @@ class BrowserUrlTest(unittest.TestCase):
     """The active tab's link comes from the browser's own address bar; anything else is not a link."""
 
     def test_address_bar_values(self):
-        self.assertEqual(yakala.tab_url('youtube.com/watch?v=abc\r\n'), 'https://youtube.com/watch?v=abc')
+        self.assertIsNone(yakala.tab_url('youtube.com/watch?v=abc\r\n'))
         self.assertIsNone(yakala.tab_url('http://127.0.0.1:8080/x'))
         self.assertEqual(yakala.tab_url('https://github.com/avenoxai'), 'https://github.com/avenoxai')
         for value in ('yarim kalmis arama', 'brave://settings', 'localhost', 'http://10.0.0.1/', 'https://user:pass@example.com/', 'https://[broken/', 'https://example.com:bad/', '', None):
@@ -252,7 +281,7 @@ class BrowserUrlTest(unittest.TestCase):
         with patch.object(yakala, '_windows_read', return_value={'value': 'https://github.com/avenoxai'}) as read:
             self.assertEqual(yakala.windows_browser_url(42, 'Brave'), 'https://github.com/avenoxai')
             self.assertEqual(yakala.windows_browser_url(42, 'msedge'), 'https://github.com/avenoxai')
-            self.assertIsNone(yakala.windows_browser_url(42, 'firefox'))
+            self.assertIsNone(yakala.windows_browser_url(42, 'not-a-browser'))
         self.assertEqual([c.args[1]['class'] for c in read.call_args_list], ['BraveOmniboxViewViews', 'OmniboxViewViews'])
 
     def test_reader_failure_falls_back_to_the_clipboard(self):
@@ -307,10 +336,10 @@ class WindowsCaptureModelTest(unittest.TestCase):
         for url in ('http://localhost:3000', 'http://192.168.1.20', 'https://örnek.com', 'file:///C:/secret'):
             self.assertIsNone(yakala.tab_url(url))
 
-    def test_opera_uses_the_omnibox_class_never_generic_edit_fields(self):
+    def test_opera_uses_the_verified_document_reader_never_generic_edit_fields(self):
         with patch.object(yakala, '_windows_read', return_value={'value': None}) as read:
             self.assertIsNone(yakala.windows_browser_url(42, 'opera'))
-        self.assertEqual(read.call_args.args[1]['class'], 'OmniboxViewViews')
+        self.assertEqual(read.call_args.args[0:2], ('opera', {'hwnd': 42}))
 
     def test_legacy_context_must_match_foreground_title(self):
         user = Mock()
@@ -371,11 +400,12 @@ class WindowsCaptureModelTest(unittest.TestCase):
         user.AttachThreadInput.assert_not_called()
         user.SetForegroundWindow.assert_called_once_with(99)
 
-    def test_escape_guard_covers_failed_focus_without_an_arbitrary_expiry(self):
-        self.assertTrue(yakala._escape_scope(42, 42, 99, False, 0.1))
-        self.assertTrue(yakala._escape_scope(42, 42, 99, False, 60))
-        self.assertFalse(yakala._escape_scope(50, 42, 99, False, 0.1))
-        self.assertFalse(yakala._escape_scope(99, 42, 99, True, 0.1))
+    def test_escape_scope_follows_the_foreground_while_the_popup_is_open(self):
+        self.assertEqual(yakala._escape_scope(42, 42, 99), 'consume')  # source page in front
+        self.assertEqual(yakala._escape_scope(50, 42, 99), 'pass')  # another window was clicked
+        self.assertIsNone(yakala._escape_scope(99, 42, 99))  # the popup's own Tk binding handles it
+        self.assertIsNone(yakala._escape_scope(None, 42, 99))
+        self.assertEqual(yakala._escape_scope(50, 0, 99), 'pass')
 
     def test_popup_position_uses_negative_monitor_work_area(self):
         self.assertEqual(yakala._popup_position((-1920, 0, 0, 1040), 640, 400), (-1280, 228))
@@ -446,11 +476,12 @@ class WindowsCaptureModelTest(unittest.TestCase):
         user.GetForegroundWindow.return_value = 42
         user.SetWindowsHookExW.return_value = 100
         user.CallNextHookEx.return_value = 0
+        user.GetAsyncKeyState.return_value = 0
         kernel.GetModuleHandleW.return_value = 1
         with patch.object(ctypes, 'WinDLL', side_effect=lambda name, **_kw: user if name == 'user32' else kernel):
             stop = yakala._win_escape_guard(root, 99, 42, dismiss)
             callback = user.SetWindowsHookExW.call_args.args[1]
-            key = ctypes.c_uint32(0x1B)
+            key = (ctypes.c_uint32 * 6)(0x1B, 0, 0, 0, 0, 0)  # KBDLLHOOKSTRUCT, including flags
             callback(0, 0x100, ctypes.addressof(key))
             root.after.call_args.args[1]()
             stop()

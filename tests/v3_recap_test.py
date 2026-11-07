@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
 sys.path.insert(0, str(ROOT / 'scripts'))
 
-from beyin_v3_projections import recent_receipts
+from beyin_v3_projections import WITHHELD_SUMMARY, recent_receipts
 from beyin_entry import human_result
 
 
@@ -88,10 +88,13 @@ class RecentReceiptsTest(unittest.TestCase):
             self.assertEqual(read.returncode, 0, read.stderr)
             result = json.loads(read.stdout)
             self.assertEqual(result['missing_source_omitted'], 1)
-            self.assertEqual([item['summary'] for item in result['items']], ['Outcome kept'])
+            # The summary of a receipt with a private ref usually describes that source: withheld too.
+            self.assertEqual([item['summary'] for item in result['items']], [WITHHELD_SUMMARY])
+            self.assertIs(result['items'][0]['summary_withheld'], True)
             self.assertEqual(result['items'][0]['refs'], ['notes/source.md'])
             self.assertEqual(result['items'][0]['refs_withheld'], {'private': 1, 'missing': 0})
             self.assertNotIn('diary', read.stdout)
+            self.assertNotIn('Outcome kept', read.stdout)
 
     def test_cli_returns_recorded_receipt_without_model_call(self):
         with tempfile.TemporaryDirectory() as temp:
