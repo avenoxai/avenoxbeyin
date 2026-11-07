@@ -634,12 +634,18 @@ def serve(core, port=None, read_only=False, open_browser=True, as_json=False):
             webbrowser.open(url)
         return 0
     server = bind(core, port, read_only)
-    write_running(core.state, server)
-    url = f'http://127.0.0.1:{server.port}/?token={server.token}'
-    _say(as_json, {'durum': 'basladi', 'adres': url, 'salt_okunur': server.read_only},
-         '\n'.join(('Beyin web görünümü açıldı (yalnız bu bilgisayar).', 'Adres: ' + url,
-                    'Mod: ' + ('salt okunur' if server.read_only else 'yazma açık (görev, eşitleme, sıkıştırma)'),
-                    f'{IDLE_SECONDS // 60} dakika kullanılmazsa kapanır. Kapatmak için Ctrl+C ya da beyin.py web durdur.')))
+    try:
+        write_running(core.state, server)
+        url = f'http://127.0.0.1:{server.port}/?token={server.token}'
+        _say(as_json, {'durum': 'basladi', 'adres': url, 'salt_okunur': server.read_only},
+             '\n'.join(('Beyin web görünümü açıldı (yalnız bu bilgisayar).', 'Adres: ' + url,
+                        'Mod: ' + ('salt okunur' if server.read_only else 'yazma açık (görev, eşitleme, sıkıştırma)'),
+                        f'{IDLE_SECONDS // 60} dakika kullanılmazsa kapanır. Kapatmak için Ctrl+C ya da beyin.py web durdur.')))
+    except BaseException:
+        # A server that never got announced never serves: no open port, no stale running record.
+        server.server_close()
+        clear_running(core.state, server.token)
+        raise
     if open_browser:
         webbrowser.open(url)
 
@@ -659,7 +665,7 @@ def serve(core, port=None, read_only=False, open_browser=True, as_json=False):
         server.server_close()
         clear_running(core.state, server.token)
     if not as_json:
-        print('Web görünümü kapandı.')
+        _say(False, None, 'Web görünümü kapandı.')
     return 0
 
 
@@ -703,7 +709,16 @@ def _human(result):
 
 
 def _say(as_json, data, text):
-    print(json.dumps(data, ensure_ascii=False) if as_json else text, flush=True)
+    # JSON stays ASCII, as the CLI's own, so it reads the same under any code page; text for a
+    # person relies on main() having set errors='replace' on stdout.
+    print(json.dumps(data, ensure_ascii=True) if as_json else text, flush=True)
+
+
+def _replace_unprintable(stream):
+    """A piped or redirected Windows stdout writes the ANSI code page, and cp1252 has no ı or ş:
+    a character it cannot show prints as '?' instead of failing the command (as beyin.py, #268)."""
+    if hasattr(stream, 'reconfigure'):
+        stream.reconfigure(errors='replace')
 
 
 def _state_for(vault, cli):
@@ -718,6 +733,7 @@ def _state_for(vault, cli):
 
 
 def main(argv=None, vault=None, state=None, cli=None):
+    _replace_unprintable(sys.stdout)  # before argparse too: its --help text is Turkish
     parser = argparse.ArgumentParser(prog='beyin.py web', description='İsteğe bağlı yerel web görünümü (yalnız 127.0.0.1)')
     parser.add_argument('--json', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--vault', type=Path, help=argparse.SUPPRESS)

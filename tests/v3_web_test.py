@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -417,6 +418,56 @@ class WebLifecycleTest(unittest.TestCase):
         self.assertEqual((code, json.loads(output.getvalue())['durum']), (1, 'hata'))
         self.assertFalse((self.vault / 'state').exists())
 
+    def test_a_legacy_windows_code_page_never_fails_the_command(self):
+        # A piped or redirected Windows stdout writes cp1252 (no ı or ş); agent shells always pipe.
+        def legacy(*argv):
+            buffer = io.BytesIO()
+            stream = io.TextIOWrapper(buffer, encoding='cp1252', errors='strict')
+            with patch('sys.stdout', stream):
+                try:
+                    code = web.main(list(argv), vault=self.vault, state=self.state, cli=CLI)
+                except SystemExit as exc:
+                    code = exc.code
+                stream.flush()
+            return code, buffer.getvalue()
+
+        code, output = legacy('durum')
+        self.assertEqual((code, output.decode('cp1252')), (0, 'Web görünümü çal??m?yor.\n'))
+        code, output = legacy('--help')
+        self.assertEqual(code, 0)
+        self.assertIn('?ste?e ba?l? yerel web görünümü', output.decode('cp1252'))
+        # A Turkish error in JSON mode stays ASCII, so it decodes the same under any code page.
+        with contextlib.closing(socket.socket()) as taken:
+            taken.bind(('127.0.0.1', 0))
+            taken.listen(1)
+            port = taken.getsockname()[1]
+            code, output = legacy('--json', 'ac', '--no-browser', '--port', str(port))
+        self.assertEqual(code, 1)
+        self.assertTrue(output.isascii())
+        self.assertEqual(json.loads(output), {'durum': 'hata', 'mesaj': f'Port kullanılamıyor: {port}'})
+        self.assertIsNone(web.read_running(self.state))
+
+    def test_a_start_that_cannot_announce_itself_leaves_no_listener_or_record(self):
+        class ClosedPipe(io.TextIOBase):
+            def write(self, text):
+                raise BrokenPipeError(32, 'Broken pipe')
+
+        bound, original = [], web.bind
+
+        def capture(*args, **kwargs):
+            bound.append(original(*args, **kwargs))
+            return bound[-1]
+
+        with patch.object(web, 'bind', capture), patch('sys.stdout', ClosedPipe()), \
+                patch.object(web.webbrowser, 'open') as opened:
+            with self.assertRaises(BrokenPipeError):
+                web.main(['ac', '--no-browser'], vault=self.vault, state=self.state, cli=CLI)
+        opened.assert_not_called()
+        self.assertEqual(len(bound), 1)
+        self.assertEqual(bound[0].socket.fileno(), -1)  # the port is released
+        self.assertIsNone(web.read_running(self.state))
+        self.assertEqual(web.status(self.state), {'durum': 'calismiyor', 'eski_kayit': False})
+
     def tearDown(self):
         running = web.read_running(self.state)
         if running:
@@ -445,6 +496,55 @@ class WebInstalledEntryTest(unittest.TestCase):
                                  env=env, capture_output=True, timeout=60)
             self.assertEqual(run.returncode, 0, run.stderr.decode('utf-8', 'replace'))
             self.assertEqual(json.loads(run.stdout), {'durum': 'calismiyor', 'eski_kayit': False})
+
+    def test_installed_web_commands_work_through_a_legacy_code_page_pipe(self):
+        # The entry leaves a piped stdout alone; on Windows it is cp1252 there, which has no ı or ş.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            vault, state = root / 'vault', root / 'state'
+            vault.mkdir()
+            env = isolated_env(root / 'home')
+            env['BEYIN_UPDATES_OFF'] = '1'
+            result = install(vault, state, env)
+            self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', 'replace'))
+            env['PYTHONIOENCODING'] = 'cp1252'
+            command = [sys.executable, str(vault / 'beyin.py'), 'web']
+
+            def run(*argv):
+                done = subprocess.run(command + list(argv), cwd=vault, env=env, capture_output=True, timeout=60)
+                return done.returncode, done.stdout.decode('cp1252'), done.stderr.decode('cp1252', 'replace')
+
+            self.assertEqual(run('durum')[:2], (0, 'Web görünümü çal??m?yor.' + os.linesep))
+            server = subprocess.Popen(command + ['ac', '--no-browser'], cwd=vault, env=env,
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.addCleanup(lambda: server.poll() is None and server.kill())
+            deadline = time.monotonic() + 30
+            while not (web.read_running(state) and web.alive(web.read_running(state))):
+                if server.poll() is not None:
+                    self.fail(server.communicate()[1].decode('cp1252', 'replace'))
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.1)
+            code, output, error = run('durum')
+            self.assertEqual(code, 0, error)
+            self.assertTrue(output.startswith('Web görünümü çal???yor: http://127.0.0.1:'), output)
+            self.assertEqual(run('durdur')[:2], (0, 'Web görünümü durduruldu.' + os.linesep))
+            output, error = server.communicate(timeout=30)
+            self.assertEqual(server.returncode, 0, error.decode('cp1252', 'replace'))
+            lines = output.decode('cp1252').splitlines()
+            self.assertEqual(lines[0], 'Beyin web görünümü aç?ld? (yaln?z bu bilgisayar).')
+            self.assertTrue(lines[1].startswith('Adres: http://127.0.0.1:'))
+            self.assertEqual(lines[-1], 'Web görünümü kapand?.')
+            self.assertIsNone(web.read_running(state))
+            # JSON stays ASCII under the legacy code page, Turkish messages included.
+            with contextlib.closing(socket.socket()) as taken:
+                taken.bind(('127.0.0.1', 0))
+                taken.listen(1)
+                port = taken.getsockname()[1]
+                code, output, error = run('ac', '--no-browser', '--port', str(port), '--json')
+            self.assertEqual(code, 1, error)
+            self.assertTrue(output.isascii())
+            self.assertEqual(json.loads(output), {'durum': 'hata', 'mesaj': f'Port kullanılamıyor: {port}'})
+            self.assertIsNone(web.read_running(state))
 
     def test_release_package_carries_the_web_files_through_the_updater_allowlist(self):
         spec = importlib.util.spec_from_file_location('beyin_web_release_builder', ROOT / 'scripts/build_v3_release.py')
