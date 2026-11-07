@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
 import beyin_v3 as runtime
 import beyin_v3_jev as advisor
 import beyin_v3_jev_client as client
+import beyin_v3_passage as passage
 
 QUERY = 'how do we deploy the quartz site'
 SECRET = 'sk-' + 'a' * 40
@@ -270,6 +271,77 @@ class AutoContextTest(unittest.TestCase):
         scored = [row for row in self.log() if row.get('event') == 'auto_context']
         self.assertEqual(scored[0]['strict'], 5)
         self.assertEqual(scored[0]['loose'], 3)
+
+    def sent_titles(self):
+        return [n['title'] for body, _timeout in self.calls for n in body['state']['notes'].values()]
+
+    def test_session_logs_do_not_use_up_the_loose_window(self):
+        # #533: the loose pool was cut to 2 * AUTO_POOL first and filtered after, so session logs
+        # that repeat the prompt's words took every place and the answer never reached a card.
+        for day in range(2 * advisor.AUTO_POOL):
+            self.record('log%d' % day, 'Went live, then undo. Undo again, live again.',
+                        source='daily/2026-01-%02d.md' % (day + 1))
+        self.answers.update(rollback=0.9)
+        self.config()
+        query = 'how to undo what went live'
+        self.assertEqual(self.ids(self.local(query)), [])
+        self.assertEqual(self.ids(self.filtered(query)), ['rollback'])
+        self.assertEqual(self.sent_titles(), ['rollback'])
+        # The window alone fixes it: a vault whose passage index is still pending ranks by words only.
+        self.calls.clear()
+        shutil.rmtree(self.state / '.cache')
+        with patch.object(passage, 'loose_ranking', return_value=[], create=True):
+            self.assertEqual(self.ids(self.filtered(query)), ['rollback'])
+        self.assertEqual(self.sent_titles(), ['rollback'])
+
+    def long_note_vault(self, **handbook):
+        # A strict floor nobody reaches stands in for a paraphrased prompt: only loose matches remain.
+        (self.state / 'retrieval.json').write_text(json.dumps({'strict_floor': 0.9}), encoding='utf-8')
+        filler = 'Notes on layout, colours, fonts, spacing, images, menus and footers for the pages we publish. '
+        sections = ['## Part %d\n\n%s' % (i, filler * 6) for i in range(10)]
+        sections[6] = '## Part 6\n\n' + filler * 3 + 'The preview server listens on port 8080. ' + filler * 2
+        self.record('handbook', '# Quartz handbook\n\n' + '\n\n'.join(sections), **handbook)
+        for i in range(10):
+            self.record('tip%d' % i, 'Quartz preview server tip %d: restart the quartz preview server.' % i)
+            self.answers['tip%d' % i] = 0.05
+        self.answers['handbook'] = 0.9
+        return 'which port does the quartz preview server listen on'
+
+    def test_a_long_note_answering_in_one_section_reaches_a_card(self):
+        # #533: whole-note BM25 ranks the long note under ten short notes repeating the common
+        # words, and the eight cards went to them. Its matching section ranks first by passage.
+        query = self.long_note_vault()
+        words = [r['id'] for r in self.store.candidates(query, limit=16)]
+        self.assertGreater(words.index('handbook'), advisor.AUTO_POOL)
+        self.config()
+        self.assertEqual(self.ids(self.local(query)), [])
+        self.assertEqual(self.ids(self.filtered(query)), ['handbook'])
+        sent = self.sent_titles()
+        self.assertEqual(len(sent), advisor.AUTO_POOL)
+        # The orders alternate: the first word match keeps its card.
+        self.assertEqual(sent[:2], [words[0], 'handbook'])
+
+    def test_the_passage_order_passes_the_same_gates(self):
+        query = self.long_note_vault(remote_allowed=False)
+        self.assertEqual(passage.loose_ranking(self.store, query)[:1], [])  # no strict pass yet
+        self.config()
+        self.filtered(query)
+        self.assertEqual(passage.loose_ranking(self.store, query)[0], 'handbook')
+        sent = self.sent_titles()
+        self.assertNotIn('handbook', sent)
+        self.assertEqual(len(sent), advisor.AUTO_POOL)
+        # An index built for another project scope is not reused.
+        self.assertEqual(passage.loose_ranking(self.store, query, project='other'), [])
+
+    def test_a_pending_index_leaves_the_word_order_alone(self):
+        query = self.long_note_vault()
+        self.local(query)
+        self.assertEqual(passage.loose_ranking(self.store, query)[0], 'handbook')
+        # A later turn whose cold build runs out of time falls back to the note-level path;
+        # the earlier pass's index must not rank its loose pool.
+        with patch.object(passage, 'build', side_effect=passage.IndexPending('pending')):
+            self.local(query)
+        self.assertEqual(passage.loose_ranking(self.store, query), [])
 
     def test_strict_exclude_applied_to_loose_candidates(self):
         (self.state / 'retrieval.json').write_text(json.dumps({'strict_exclude': ['archive/']}), encoding='utf-8')
