@@ -50,6 +50,8 @@ sys.dont_write_bytecode = True  # importing the hook module must not leave __pyc
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
 from beyin_v3_hook import is_synthetic_prompt  # noqa: E402  same classifier the hook uses
+# Claude Code's folder rule, shared with the packaged chat-trace backfill (#599).
+from beyin_v3_chat_backfill import claude_projects_root, project_dirs, sanitized, utf16_units  # noqa: E402,F401
 
 
 def synthetic_turn(prompt):
@@ -68,7 +70,6 @@ COMPANION_NAMES = ('Core.md', 'Soul.md', 'Kurallar.md', 'Last-Session.md', 'Thre
 LABEL = re.compile(r'\n\[([^\]\n]+)\]\n')
 RECEIPT = re.compile(r'\nLatest receipt \(([^;\n]+); historical agent claim')
 TRUNCATED = '[truncated:'
-SANITIZED_MAX = 200  # Claude Code keeps 200 characters of a long folder name, then adds a hash
 READ_TOOLS = ('Read', 'Grep')
 SHELL_TOOLS = ('Bash', 'PowerShell')
 EVENTS = ('SessionStart', 'UserPromptSubmit')
@@ -92,56 +93,6 @@ def nfc(text):
 
 def slash(path):
     return nfc(str(path)).replace('\\', '/')
-
-
-def utf16_units(text):
-    data = text.encode('utf-16-le', 'surrogatepass')
-    return [int.from_bytes(data[i:i + 2], 'little') for i in range(0, len(data), 2)]
-
-
-def sanitized(path):
-    """Claude Code's project folder name (checked in the 2.1.287 binary).
-
-    `path.replace(/[^a-zA-Z0-9]/g, "-")` works on UTF-16 code units, so an emoji becomes two
-    dashes; past 200 characters it keeps 200 and appends `-` + base36(|31-bit string hash|).
-    """
-    name = ''.join(c if c.isascii() and c.isalnum() else ('--' if ord(c) > 0xFFFF else '-') for c in path)
-    if len(name) <= SANITIZED_MAX:
-        return name
-    value = 0
-    for unit in utf16_units(path):
-        value = ((value << 5) - value + unit) & 0xFFFFFFFF
-    value = abs(value - (1 << 32) if value & 0x80000000 else value)
-    digits = ''
-    while True:
-        value, rest = divmod(value, 36)
-        digits = '0123456789abcdefghijklmnopqrstuvwxyz'[rest] + digits
-        if not value:
-            break
-    return name[:SANITIZED_MAX] + '-' + digits
-
-
-def claude_projects_root():
-    configured = os.environ.get('CLAUDE_CONFIG_DIR')
-    return Path(configured).expanduser() / 'projects' if configured else Path.home() / '.claude' / 'projects'
-
-
-def project_dirs(vault, root):
-    """Folders Claude Code would use for a session started at the vault root (absolute and real path)."""
-    spellings = set()
-    for path in {os.path.abspath(vault), os.path.realpath(vault)}:
-        spellings |= {unicodedata.normalize('NFC', path), unicodedata.normalize('NFD', path)}
-    found = {}
-    for spelling in sorted(spellings):
-        name = sanitized(spelling)
-        candidates = [root / name]
-        if len(name) > SANITIZED_MAX and not candidates[0].is_dir() and root.is_dir():
-            # Another client version may hash differently; the kept 200-character prefix still identifies it.
-            candidates = sorted(root.glob(name[:SANITIZED_MAX] + '-*'))
-        for candidate in candidates:
-            if candidate.is_dir():
-                found[os.path.realpath(candidate)] = candidate
-    return list(found.values())
 
 
 def transcripts(folder, since):

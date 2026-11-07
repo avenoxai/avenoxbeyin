@@ -157,7 +157,8 @@ class YakalaSecurityTest(unittest.TestCase):
             sys.path[:] = original_path
 
     def test_file_cards_reject_reserved_names_when_both_apis_are_removed(self):
-        valid = self.vault / 'valid.txt'
+        valid = yakala.inbox(self.vault) / yakala.FILES / 'valid.txt'  # a file card reads its own folder only
+        valid.parent.mkdir(parents=True)
         valid.write_text('VALID-FILE-CONTENT', encoding='utf-8')
         with ExitStack() as stack:
             stack.enter_context(patch.dict(os.path.__dict__))
@@ -172,7 +173,8 @@ class YakalaSecurityTest(unittest.TestCase):
                 card = {'meta': {'kaynak_turu': 'dosya'}, 'body': '## Dosyalar\n\n[[' + name + ']]'}
                 with self.subTest(name=name), self.assertRaises(ValueError):
                     yakala.extract(self.vault, card, self.no_tools)
-            card = {'meta': {'kaynak_turu': 'dosya'}, 'body': '## Dosyalar\n\n[[valid.txt]]'}
+            link = valid.relative_to(self.vault).as_posix()
+            card = {'meta': {'kaynak_turu': 'dosya'}, 'body': '## Dosyalar\n\n[[' + link + ']]'}
             self.assertIn('VALID-FILE-CONTENT', yakala.extract(self.vault, card, self.no_tools)[0])
 
     def test_file_cards_prefer_native_reserved_check_over_deprecated_pathlib(self):
@@ -633,32 +635,46 @@ class YakalaSecurityTest(unittest.TestCase):
 
     def test_helpers_keep_the_configured_proxy(self):
         """Yakala only fetches public URLs; like Jev's remote calls (#98, docs/v3/JEV.md) they keep
-        the user's proxy. Behind a corporate proxy npx, yt-dlp and whisper have no other way out."""
+        the user's proxy. Behind a corporate proxy npx, yt-dlp and whisper have no other way out.
+        Defuddle and yt-dlp reach it through the egress guard (#299), which checks each target and
+        then connects through the user's proxy; npm keeps it for its registry (npm_config_*)."""
         calls = ((yakala.via_defuddle, ('https://example.com/x', {'npx': 'npx'})),
                  (yakala.youtube_tracks, ('https://example.com/x', {'yt_dlp': 'yt-dlp'}, self.root)),
                  (yakala.via_audio, ('https://example.com/x', {'yt_dlp': 'yt-dlp', 'whisper': 'whisper'}, self.root)))
         # Proxy inheritance is offline: keep the real public-address validation,
         # but supply deterministic DNS rather than requiring external resolution.
         public = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('8.8.8.8', 443))]
+        seen = []
+
+        def started(*args, **kwargs):  # the helper is never run; record what its guard chains to
+            seen.append(getattr(yakala._HELPER_NETWORK, 'guard').proxies)
+            if os.name == 'nt' and sys.platform == 'win32':
+                return 0, '', ''
+            raise subprocess.TimeoutExpired(cmd='cmd', timeout=1)
         with patch.dict(os.environ, self.PROXIES):
             for function, args in calls:
                 with self.subTest(function=function.__name__), \
                         patch.object(socket, 'getaddrinfo', return_value=public) as dns:
+                    del seen[:]
                     if os.name == 'nt' and sys.platform == 'win32':
-                        with patch.object(yakala, '_windows_run', return_value=(0, '', '')) as run:
+                        with patch.object(yakala, '_windows_run', side_effect=started) as run:
                             function(*args)
                         env = run.call_args.args[3]
                     else:
-                        with patch('subprocess.run', side_effect=subprocess.TimeoutExpired(cmd='cmd', timeout=1)) as run:
+                        with patch('subprocess.run', side_effect=started) as run:
                             function(*args)
                         env = run.call_args.kwargs['env']
                     dns.assert_called_once_with('example.com', 443, type=socket.SOCK_STREAM)
-                    if os.name == 'nt':
-                        # Windows environment names are case-insensitive: os.environ folds
-                        # http_proxy and HTTP_PROXY into one upper-case key.
-                        env = {key.upper(): item for key, item in env.items()}
-                    for name, value in self.PROXIES.items():
-                        self.assertEqual(env.get(name.upper() if os.name == 'nt' else name), value)
+                    # Windows environment names are case-insensitive: os.environ folds
+                    # http_proxy and HTTP_PROXY into one upper-case key.
+                    env = {key.upper(): item for key, item in env.items()}
+                    self.assertRegex(env['ALL_PROXY'], r'^http://127\.0\.0\.1:\d+$')
+                    self.assertNotIn('HTTP_PROXY', env)
+                    self.assertNotIn('HTTPS_PROXY', env)
+                    self.assertEqual((env['NPM_CONFIG_HTTPS_PROXY'], env['NPM_CONFIG_PROXY']),
+                                     ('http://proxy.example:3128', 'http://proxy.example:3128'))
+                    self.assertEqual(seen, [{'http': 'http://proxy.example:3128', 'https': 'http://proxy.example:3128',
+                                             'all': 'socks5://proxy.example:1080'}])
 
     def test_stdlib_fetch_keeps_the_configured_proxy(self):
         """No empty ProxyHandler: urllib's default handler reads the environment and system proxy. Offline."""
@@ -672,11 +688,15 @@ class YakalaSecurityTest(unittest.TestCase):
         self.assertEqual(empty, [])
 
     def test_extra_urls_keep_public_only_validation(self):
-        for value in ('http://127.0.0.1/internal-ref', 'file:///secret',
-                      'https://user:pass@example.com/', '-option'):
+        for value in ('file:///secret', 'https://user:pass@example.com/', '-option', 'http://0x7f.1/'):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 yakala.capture(self.vault, url='https://example.com', extra_urls=[value])
         self.assertEqual(yakala.cards(self.vault), [])
+        # #486: a local address is kept as a reference only; the card turns private and is never fetched.
+        new = yakala.capture(self.vault, url='https://example.com', extra_urls=['http://127.0.0.1/internal-ref'])
+        meta = yakala.find_card(self.vault, new['id'])['meta']
+        self.assertEqual((meta.get('ek_urller'), meta['ek_urller_yerel'], meta['visibility']),
+                         (None, ['http://127.0.0.1/internal-ref'], 'private'))
 
 if __name__ == '__main__':
     unittest.main()

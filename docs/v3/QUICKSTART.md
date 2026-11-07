@@ -20,8 +20,11 @@ The vault must exist. State is stored outside it, in a per-vault directory under
 `~/Library/Application Support/beyin-v3` on macOS, `$XDG_STATE_HOME/beyin-v3`
 (or `~/.local/state/beyin-v3`) on Linux, and `%LOCALAPPDATA%/beyin-v3` on Windows.
 Moving a vault changes the default state key. The database is bound to its
-original vault root, so rebuild fresh local state from Markdown after moving;
-do not reuse the old database with `--state`. Do not put state in a synced
+original vault root and refuses any other path. For an installed vault that was
+moved, rerun the installer with the old `--state` and `--rebind-state`; it moves
+the binding only when the old path is gone and backs the database up first (see
+[MULTI-MACHINE.md](MULTI-MACHINE.md#vaultu-başka-klasöre-ya-da-hesaba-taşımak)).
+Otherwise rebuild fresh local state from Markdown. Do not put state in a synced
 vault. `--state /absolute/local/state` overrides the default and is rejected if
 it resolves inside the vault. Moving the state directory of an unchanged vault is
 a different, supported operation: copy it, leave any `update-journal.json`
@@ -162,6 +165,18 @@ status and returned data. An abstained retrieval is a valid empty answer, not
 evidence that a fact is false. `--audience internal` includes internal and public
 records but excludes records marked `visibility: private`. Internal records may
 still be sensitive; use synthetic inputs for public demonstrations.
+
+Error objects of the CLI and of `beyin.py` itself (a `--json` command failure,
+usage errors, `note-read` / `note-edit` errors) and the `history` source-sync
+warning on stderr are written as UTF-8 with their real characters
+(`Erişim engellendi`, not `\u015f` escapes), also through a piped Windows console.
+Decode error output as UTF-8 (for example `subprocess.run(..., encoding="utf-8")`),
+not with the Windows ANSI code page. Control, bidi and other invisible characters
+stay escaped, and success JSON is unchanged (ASCII). `beyin.py yakala --json`
+keeps its own rule: real characters only on a stream that is already UTF-8.
+A settings file that is not valid JSON (`.beyin-runtime.json`,
+`.beyin-preferences.json`, `.beyin-daily-layout.json`) is named in the error
+message, also by the lifecycle bridge and the Hermes plugin.
 
 This release establishes local source-backed retrieval and state semantics.
 It does not establish broad natural-language intelligence, installed lifecycle

@@ -52,6 +52,20 @@ NO_LEARNING_CHALLENGE_REMINDER = (
     'python3 beyin.py learn --session {session} --candidate "Lesson". If this edit was purely mechanical/routine '
     "without new lessons, state that in one sentence to proceed."
 )
+# Global bridge sessions run in another project, where a relative `beyin.py` does not exist and
+# no vault note may exist yet to cite, so the note comes first (#500). The command line is named
+# once; BRIDGE_CLI_LIMIT keeps the Stop reason far below Claude Code's 10,000-character limit.
+BRIDGE_CLI_LIMIT = 1000
+BRIDGE_RECEIPT_REMINDER = (
+    "Beyin bridge: files were edited in this external project session but no receipt was written after "
+    "the edits. Beyin CLI for this project: {cli}\n"
+    "If the work is done: 1) keep its result or lasting learning in the vault with note-create "
+    '(stdin JSON {{"source": "knowledge/concepts/NAME.md", "text": "..."}}; a new concept also gets one line in '
+    "knowledge/index.md through note-read and note-edit), 2) then receipt --harness {harness} --session {session} "
+    '--event-id EVENT_ID --summary "Work result" --ref PATH --json, where PATH is that note or another existing '
+    "vault-relative source. Receipt session={session}. If the edits left nothing worth keeping or the user asked "
+    "for no memory, say so in one sentence instead."
+)
 HARNESS_SYNTHETIC_PROMPT_PREFIXES = (
     "<task-notification>",
     # Claude Desktop linked-session completion/status notifications (#566).
@@ -126,11 +140,20 @@ def _safe_replace(source, destination):
 def atomic(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
-    with temporary.open("w", encoding="utf-8") as out:
-        json.dump(data, out, ensure_ascii=False)
-        out.flush()
-        os.fsync(out.fileno())
-    _safe_replace(temporary, path)
+    try:
+        with temporary.open("w", encoding="utf-8") as out:
+            json.dump(data, out, ensure_ascii=False)
+            out.flush()
+            os.fsync(out.fileno())
+        _safe_replace(temporary, path)
+    except BaseException:
+        # A refused replace (a Windows sharing violation, a read-only target) or a failed
+        # write must not leave its copy in the state folder for good (#585).
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def permission_refused(exc):
@@ -382,17 +405,73 @@ def _edits_only_outside_vault(vault, payload):
         return False
 
 
-def receipt_reminder(payload, state, harness, event, vault=None):
+def _bridge_cli(command):
+    """The bridge's command line, or a bounded pointer when an extreme vault path would not fit."""
+    command = str(command)
+    return command if len(command) <= BRIDGE_CLI_LIMIT else "beyin.py in the Beyin vault folder"
+
+
+def _shell_edit(payload, vault, state, harness):
+    """A Bash edit of this turn as {'at', 'knowledge'}, or None; Claude Code transcripts only.
+
+    Codex PostToolUse and Stop inputs carry no comparable verified record of shell calls, so
+    Codex keeps the editor-only window.
+    """
+    if harness != "claude" or vault is None:
+        return None
+    from beyin_v3_shell_edits import shell_edit
+    return shell_edit(payload, vault, state)
+
+
+def _queue_observed_edit(vault, state, payload, harness, observed, at=None):
+    """Queue a shell or CLI edit like an editor PostToolUse, so receipt coverage counts its turn
+    as edited and a later question turn does not reopen it (#212). Metadata only, marked as such."""
+    try:
+        event_id = payload.get("event_id")
+        enqueue_event(vault, state, dict(payload, hook_event_name="PostToolUse",
+                                         event_id=str(event_id) + ":" + observed + "-edit" if event_id else None),
+                      harness, observed=observed, at=at)
+    except Exception:
+        pass  # coverage bookkeeping never costs the reminder
+
+
+def _queue_cli_edit(flag, vault, state, payload):
+    """Consume the flag `beyin.py` left for a note or task written through the Claude Bash tool
+    (mark_session_edit): Bash queues no PostToolUse, so this Stop queues one at the write's time.
+    Runs before the one-shot reminder checks, as an editor PostToolUse is queued regardless of them."""
+    try:
+        try:
+            at = json.loads(flag.read_text(encoding="utf-8")).get("at")
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError, AttributeError):
+            at = None
+        flag.unlink(missing_ok=True)
+        valid = isinstance(at, (int, float)) and not isinstance(at, bool) and 0 < at <= time.time()
+        _queue_observed_edit(vault, state, payload, "claude", "cli", at=float(at) if valid else None)
+    except Exception:
+        pass  # coverage bookkeeping never costs the reminder
+
+
+def receipt_reminder(payload, state, harness, event, vault=None, bridge_cli=None):
     """Track edits per session and return a one-time Stop block, or None.
 
     Installed PostToolUse hooks match Edit|Write|apply_patch|MultiEdit|NotebookEdit for Claude and
     Codex. Known vault-external edits do not mark the session; unknown/pathless
     events retain the legacy reminder behavior without reading transcripts.
+    Without such an edit, a Claude Stop reads the bounded tail of its own transcript once:
+    a vault Markdown file named by a shell command of this turn and modified while that
+    command ran opens the same window (#212, beyin_v3_shell_edits). A note or task written
+    with beyin.py through the Bash tool opens the window itself; its flag reaches coverage here.
     Stop then looks for a receipt of this harness and session in the runtime store.
     If a receipt declared learnings but no note under knowledge/ was touched,
     Stop reminds once to distill into knowledge/concepts/.
+
+    `bridge_cli` is the global bridge's Beyin command line (#500): there every edit belongs to
+    the external project, so vault-external edits open the window, and the Stop reasons name
+    that command line and note-create instead of a relative `beyin.py`.
     """
-    if harness not in ("claude", "codex") or event not in ("UserPromptSubmit", "PostToolUse", "Stop"):
+    if harness not in ("claude", "codex", "pi") or event not in ("UserPromptSubmit", "PostToolUse", "Stop"):
         return None
     if os.environ.get("BEYIN_V3_NO_RECEIPT_REMINDER") == "1":
         return None
@@ -404,6 +483,8 @@ def receipt_reminder(payload, state, harness, event, vault=None):
         folder = Path(state) / "receipt-reminders"
         done, edited = folder / (digest + ".done"), folder / (digest + ".edited")
         kdone = folder / (digest + ".kdone")
+        if event == "Stop" and harness == "claude":
+            _queue_cli_edit(folder / (digest + ".cli"), vault, state, payload)
         if done.exists() and kdone.exists():
             return None
         if event == "UserPromptSubmit":
@@ -415,7 +496,7 @@ def receipt_reminder(payload, state, harness, event, vault=None):
                 edited.unlink(missing_ok=True)
             return None
         if event == "PostToolUse":
-            if _edits_only_outside_vault(vault, payload):
+            if bridge_cli is None and _edits_only_outside_vault(vault, payload):
                 return None
             if not edited.exists():
                 atomic(edited, {"at": time.time()})
@@ -424,8 +505,15 @@ def receipt_reminder(payload, state, harness, event, vault=None):
                 if marker.get("knowledge") is not True:
                     atomic(edited, dict(marker, knowledge=True))
             return None
-        if payload.get("stop_hook_active") is True or not edited.exists():
+        if payload.get("stop_hook_active") is True:
             return None
+        if not edited.exists():
+            # The global bridge keeps its editor-only window (#500): no transcript read there.
+            shell = _shell_edit(payload, vault, state, harness) if bridge_cli is None else None
+            if shell is None:
+                return None
+            atomic(edited, {"at": shell["at"], "knowledge": True} if shell["knowledge"] else {"at": shell["at"]})
+            _queue_observed_edit(vault, state, payload, harness, "shell")
         marker = json.loads(edited.read_text(encoding="utf-8"))
         since = float(marker["at"])
         session = digest[:24]  # the queued checkpoint's session value
@@ -438,6 +526,9 @@ def receipt_reminder(payload, state, harness, event, vault=None):
                 folder.mkdir(parents=True, exist_ok=True)
                 with done.open("x", encoding="utf-8"):  # FileExistsError if a concurrent Stop reminded first
                     pass
+                if bridge_cli is not None:
+                    return {"decision": "block", "reason": BRIDGE_RECEIPT_REMINDER.format(
+                        cli=_bridge_cli(bridge_cli), harness=harness, session=session)}
                 return {"decision": "block", "reason": RECEIPT_REMINDER.format(harness=harness, session=session)}
             return None
 
@@ -457,6 +548,10 @@ def receipt_reminder(payload, state, harness, event, vault=None):
                         pass
                 except FileExistsError:
                     return None
+                if bridge_cli is not None:
+                    cli = _bridge_cli(bridge_cli)
+                    reason = (reason.replace("python3 beyin.py", cli) +
+                              f" Beyin CLI for this project: {cli}; write the note with note-create.")
                 return {"decision": "block", "reason": reason}
 
         edited.unlink(missing_ok=True)  # later edits open a new window
@@ -465,7 +560,7 @@ def receipt_reminder(payload, state, harness, event, vault=None):
         return None  # fail open: never block Stop on a bookkeeping error
 
 
-def enqueue_event(vault, state, payload, harness):
+def enqueue_event(vault, state, payload, harness, observed=None, at=None):
     state = Path(state)
     metadata = {"event": payload.get("hook_event_name"), "harness": harness,
                 "session": hashlib.sha256(str(payload.get("session_id", "unknown")).encode()).hexdigest()[:24]}
@@ -476,6 +571,9 @@ def enqueue_event(vault, state, payload, harness):
         metadata.update(project)
     if payload.get('no_memory') is True:
         metadata['no_memory'] = True
+    if observed:
+        # Recorded by the hook itself, not delivered by the client (a Stop-time shell or CLI edit).
+        metadata['observed'] = observed
     if payload.get('hook_event_name') in ('UserPromptSubmit', 'SessionStart') and is_synthetic_prompt(payload):
         # No person typed this turn (#373): the event stays observable, but it opens no receipt checkpoint.
         metadata['synthetic'] = True
@@ -488,11 +586,11 @@ def enqueue_event(vault, state, payload, harness):
     if not path.exists() and not (state / "hook-done" / (key + ".json")).exists():
         from beyin_v3_hook_done import acknowledged
         if not acknowledged(state, key):
-            atomic(path, dict(metadata, at=time.time()))
+            atomic(path, dict(metadata, at=time.time() if at is None else at))
     return key
 
 
-def drain_queue(vault, state):
+def drain_queue(vault, state, maintenance=False):
     state = Path(state)
     from beyin_v3_sync import SyncEngine
     pending = list((state / "hook-queue").glob("*.json"))
@@ -555,6 +653,14 @@ def drain_queue(vault, state):
             prune(engine.store)
         except Exception:
             pass
+        if maintenance:
+            # Bounded event retention and stale temp files (#585), never in a worker that a
+            # prompt or session-start hook waits for: the hook's own budget is not spent here.
+            try:
+                from beyin_v3_retention import maintain
+                maintain(engine.store)
+            except Exception:
+                pass
         return {"processed": processed, "failed": 0, "pending": len(list((state / "hook-queue").glob("*.json")))}
     return {"processed": 0, "failed": len(pending), "pending": len(pending)}
 
@@ -566,10 +672,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--vault", required=True, type=Path)
     parser.add_argument("--state", required=True, type=Path)
-    parser.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro"), required=True)
+    parser.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro", "pi"), required=True)
     parser.add_argument("--event")
     parser.add_argument("--worker", action="store_true")
     parser.add_argument("--drain-queue", action="store_true")
+    parser.add_argument("--maintenance", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--metadata-only", action="store_true", help="Queue lifecycle metadata without injecting vault context")
     args = parser.parse_args()
     vault = args.vault.resolve()
@@ -589,7 +696,7 @@ def main():
         if args.worker and not read(vault)['auto_sync']:
             print(json.dumps({'processed': 0, 'failed': 0, 'paused': True}))
             return
-        result = drain_queue(vault, state)
+        result = drain_queue(vault, state, maintenance=args.maintenance)
         print(json.dumps(result))
         if result["failed"]:
             raise SystemExit(1)
@@ -653,7 +760,7 @@ def main():
                     if hygiene['promotion']:
                         touch_log(state, vault, payload)
                     if hygiene['word_cap_warning']:
-                        # Harness-gated inside: only Claude and Codex receive PostToolUse context.
+                        # Harness-gated inside: only adapters with tested PostToolUse delivery receive context.
                         notice += hook_cap_warning(vault, payload, cap=hygiene['max_words'],
                                                    harness=args.harness, state=state)
             except Exception:
@@ -693,6 +800,8 @@ def main():
             sync_note = STATE_WRITE_REFUSED_NOTE
         command = [sys.executable, str(Path(__file__).resolve()), "--vault", str(vault),
                    "--state", str(state), "--harness", args.harness, "--worker"]
+        if event not in ("SessionStart", "UserPromptSubmit"):
+            command.append("--maintenance")  # no hook waits for this worker
         options = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
                    "stderr": subprocess.DEVNULL, "close_fds": True}
         if os.name == "nt":
@@ -716,7 +825,8 @@ def main():
                     raise
                 sync_note, due = WORKER_SPAWN_REFUSED_NOTE, False
         # After enqueue, so reminder bookkeeping can never cost the queued checkpoint.
-        # The global bridge (--metadata-only) discards stdout, so it keeps no reminder state.
+        # The global bridge (--metadata-only) discards stdout; it asks receipt_reminder itself with
+        # its own command line and external-project edit window (#500).
         # A refused state write stops the main body before this bookkeeping, so its Stop answers {}
         # (#417); an earlier edit marker must not reopen that path as a block in a state this client
         # cannot write. The writable path keeps its reminder untouched.

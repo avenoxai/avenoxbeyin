@@ -18,7 +18,7 @@ Windows'ta `python3` yerine `py -3` kullan. Kurucu şunları yazar:
 
 - `.kiro/hooks/beyin-v3.json`: Kiro'nun `v1` proje hook biçiminde dört komut. Başka
   `.kiro/hooks/*.json` dosyalarına dokunmaz.
-- `.kiro/skills/{beyin,beyin-doktor,beyin-guncelle}/SKILL.md`: `.agents/skills`
+- `.kiro/skills/{beyin,beyin-doktor,beyin-guncelle,beyin-kontrol}/SKILL.md`: `.agents/skills`
   ile eşitlenen başlangıç skill'leri.
 - Vault kökündeki `AGENTS.md` içinde yönetilen Beyin bloğu. Kiro bu dosyayı
   doğrudan okur; ayrı bir `.kiro/steering/` kopyası gerekmez.

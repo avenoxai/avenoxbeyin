@@ -46,6 +46,8 @@ OpenCode için ek adım yok: installer vault içine eklentisini yazar, OpenCode 
 
 OMP (Oh My Pi) için ek adım yok: installer vault içine `.omp/hooks/pre/beyin-v3.ts` yazar, OMP vault klasöründe açılınca aynı motora bağlanır. Dosyayı global agentDir'e kopyalama; vault dışında işe yaramaz. Adımlar: [docs/v3/OMP.md](docs/v3/OMP.md).
 
+Pi için installer `.pi/extensions/beyin-v3.ts` üretir; vault klasöründe Pi'yi açıp extension için proje güvenini onayla. Pi ve OMP farklı istemcilerdir. Başka proje klasöründen merkezi vault'a erişim yalnız açık `--beyin-project-root` kapsamıyla etkinleşir. Kurulum, receipt ve kapsam ayrıntıları: [docs/v3/PI.md](docs/v3/PI.md).
+
 Kiro IDE 1.x ve CLI V3 için bu kaynak checkout'u `.kiro/hooks/beyin-v3.json` ve `.kiro/skills/` kurar. Kiro'da vault'u açıp hook'ları inceleyerek yeni oturum başlat. Eski ZIP paketlerinde bu dosyalar bulunmayabilir; kaynak kurulum adımları ve istemci sınırları: [docs/v3/KIRO.md](docs/v3/KIRO.md).
 
 ## İlk konuşma
@@ -60,13 +62,14 @@ Ajanına şunu söyle:
 
 > Beyin skill'ini kullan. Beni tanımak için kısa sorular sor; cevapları kaynak notlara kaydet. Sonra birlikte bir görev oluşturup tekrar okuyalım.
 
-Kurulu üç skill:
+Kurulu dört skill:
 
 | Skill | Ne zaman kullanılır? |
 | --- | --- |
 | **beyin** | Not bulmak, bilgi kaydetmek, görev değiştirmek, iş sonucu ve ders çıkarmak |
 | **beyin-doktor** | Bir not bulunamıyorsa, bağlantı veya kayıt sorunu varsa |
 | **beyin-guncelle** | Kurulu sistemi kontrol etmek, güncellemek veya geri almak |
+| **beyin-kontrol** | Hafızada yazılı durumun hala doğru olup olmadığını denetlemek; yalnız sen istediğinde çalışır, sen onay vermeden hiçbir şey yazmaz |
 
 Bunlar `.agents/skills` altında bulunur; Claude ve Kiro kendi proje skill kopyalarını kullanır. Eklemek istediğin kişisel skill'leri ayrıca içe alabilirsin. Aynı adlı farklı içerik sessizce ezilmez.
 
@@ -74,7 +77,7 @@ Bunlar `.agents/skills` altında bulunur; Claude ve Kiro kendi proje skill kopya
 
 Notu yaz, ajana ne istediğini söyle. Kaynaklar oturum açılışı ve konuşmanın uygun noktalarında yeniden indekslenir. İstemciler kapalıyken sürekli tarayan bir servis yoktur. Önemli iş sonuçları kısa, kaynak bağlantılı kayıtlarla tutulur; tüm sohbetin kendiliğinden doğru bilgiye dönüştüğü iddia edilmez.
 
-Beyin sohbet metnini saklamaz. Claude Code yerel sohbet kayıtlarını (`~/.claude/projects/`) varsayılan olarak 30 gün sonra siler; kalıcı olmasını istediğin karar ve bilgiyi nota yazdır. Süreyi uzatmak için `~/.claude/settings.json` içine örneğin `"cleanupPeriodDays": 365` ekle ([Claude Code belgesi](https://code.claude.com/docs/en/claude-directory#cleaned-up-automatically)).
+Beyin sohbet metnini saklamaz. Claude Code yerel sohbet kayıtlarını (`~/.claude/projects/`) varsayılan olarak 30 gün sonra siler; kalıcı olmasını istediğin karar ve bilgiyi nota yazdır. Süreyi uzatmak için `~/.claude/settings.json` içine örneğin `"cleanupPeriodDays": 365` ekle ([Claude Code belgesi](https://code.claude.com/docs/en/claude-directory#cleaned-up-automatically)). Silinmeden önce iz yazılmamış eski oturumlardan kısa özet çıkarmak için isteğe bağlı, varsayılanı deneme olan `python3 beyin.py chat-trace backfill` komutu var: [docs/v3/CHAT-TRACE.md](docs/v3/CHAT-TRACE.md).
 
 Son günlerde ne yapıldığını görmek için vault klasöründe `python3 beyin.py recap --days 7`
 çalıştır. Son yedi UTC gününün kaynak bağlantılı iş sonuçlarını en yeniden eskiye listeler;

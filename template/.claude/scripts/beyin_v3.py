@@ -22,7 +22,14 @@ import urllib.parse
 
 
 # Every supported client. "manual" is accepted for receipts only.
-HARNESSES = ("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro")
+HARNESSES = ("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro", "pi")
+
+# Clients newer than the receipt validator of released 3.12.0, which rejects any other
+# `harness` value and degrades sync. Their receipt sources are written as `harness: manual`
+# plus `client: <name>`, a field older versions ignore, so a rollback or an older device keeps
+# reading them while this version still attributes the receipt to its client (#385).
+RECEIPT_CLIENTS = ("pi",)
+RECEIPT_CLIENT_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}", re.ASCII)
 
 # rejected_at grammar: a date, optionally with an RFC 3339-style time.
 REJECTED_AT = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ](?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})?)?", re.ASCII)
@@ -488,6 +495,55 @@ def _scope_folder_exists(vault_root, folder):
     return True
 
 
+def _scope_entry_label(value):
+    """A bounded, quoted spelling of one configured entry for warnings."""
+    text = value if isinstance(value, str) else repr(value)
+    return repr(text[:120] + ("..." if len(text) > 120 else ""))
+
+
+def _skipped_scope_targets(vault_root, value):
+    """Scope keys of the vault folders a skipped entry may have meant; empty outside the vault.
+
+    "" stands for the whole vault. A key only ever blocks records for every project (#419)
+    and never grants a scope, so a generous guess cannot widen anything.
+    """
+    if not isinstance(value, str):
+        return set()
+    raw = unicodedata.normalize("NFC", value.replace("\\", "/")).strip()
+    root = Path(vault_root)
+    joined = raw if raw.startswith("/") or re.match(r"[A-Za-z]:", raw) else str(root).replace("\\", "/") + "/" + raw
+    targets = [joined]
+    # Follow links read-only, such as /var -> /private/var. Only an absolute path of this OS:
+    # never a network share, nor a drive or root-relative path resolved against the process cwd.
+    if os.path.isabs(joined) and not joined.startswith("//"):
+        try:
+            targets.append(os.path.realpath(joined))
+        except (OSError, RuntimeError, ValueError):
+            pass
+    bases = [root]
+    try:
+        bases.append(root.resolve())
+    except (OSError, RuntimeError, ValueError):
+        pass
+    keys = set()
+    for base in bases:
+        base = posixpath.normpath(_scope_key(str(base))).rstrip("/")
+        for target in targets:
+            target = posixpath.normpath(_scope_key(target))
+            if target == base:
+                keys.add("")
+            elif target.startswith(base + "/"):
+                keys.add(target[len(base) + 1:])
+    return keys
+
+
+def _scope_warning(message):
+    try:
+        print("Warning: " + message, file=sys.stderr)
+    except Exception:
+        pass
+
+
 def read_project_scopes(vault_root):
     """None when the vault has no scope file: every gate keeps its exact-field behavior.
 
@@ -495,6 +551,10 @@ def read_project_scopes(vault_root):
     field wins. shared_unscoped lets a project query also see records no folder or field
     assigns to any project. Another project's records never enter a project's scope.
     Missing folders are skipped with a warning so unrelated projects remain fully functional (#317).
+    An invalid entry (escaping or absolute path, empty project, a folder assigned twice) is
+    skipped with a warning instead of failing every explicit project (#419): the folder it
+    may name is blocked for every project, and shared_unscoped stays off until it is fixed.
+    A malformed file still fails closed.
     """
     path = Path(vault_root) / PROJECT_SCOPES_FILE
     if path.is_symlink():
@@ -513,36 +573,64 @@ def read_project_scopes(vault_root):
     if not isinstance(folders, dict) or not isinstance(shared, bool):
         raise ValueError("folders must be an object and shared_unscoped a boolean")
     mapped = {}
-    for folder, project in folders.items():
-        if not isinstance(project, str) or not project.strip():
-            raise ValueError("project scope names must be non-empty strings")
+    blocked = set()
+    skipped = 0
+    for raw, project in folders.items():
         try:
-            folder = _scope_path(folder)
+            folder = _scope_path(raw)
         except ValueError as exc:
-            # Still fail closed, but name the entry so the user can find it (#419).
-            raise ValueError(f"{exc}: {folder!r} in {PROJECT_SCOPES_FILE}") from None
+            skipped += 1
+            _scope_warning(f"skipped project scope entry {_scope_entry_label(raw)} in {PROJECT_SCOPES_FILE}: {exc}")
+            blocked.update(_skipped_scope_targets(vault_root, raw))
+            continue
+        key = _scope_key(folder)
+        if not isinstance(project, str) or not project.strip():
+            skipped += 1
+            _scope_warning(f"skipped project scope entry {_scope_entry_label(raw)} in {PROJECT_SCOPES_FILE}: "
+                           "project scope names must be non-empty strings")
+            blocked.add(key)
+            continue
         if not _scope_folder_exists(vault_root, folder):
             print(f"Warning: project scope folder not found in the vault: {folder}", file=sys.stderr)
             # Keep the boundary for stale indexed rows used by explicit --no-sync.
             # Dropping it would expose the other project's notes as shared_unscoped.
-        key = _scope_key(folder)
         if mapped.get(key, project) != project:
-            raise ValueError("project scope folder is assigned twice: " + folder)
+            skipped += 1
+            _scope_warning(f"skipped project scope entry {_scope_entry_label(raw)} in {PROJECT_SCOPES_FILE}: "
+                           "project scope folder is assigned twice")
+            blocked.add(key)
         mapped[key] = project
+    for key in blocked:
+        mapped.pop(key, None)
+    if skipped and shared:
+        _scope_warning(f"shared_unscoped stays off until the skipped {PROJECT_SCOPES_FILE} entries are fixed")
     # Longest folder first, so a nested folder can belong to a different project.
-    return {"folders": sorted(mapped.items(), key=lambda item: -len(item[0])), "shared_unscoped": shared}
+    return {"folders": sorted(mapped.items(), key=lambda item: -len(item[0])),
+            "shared_unscoped": shared and not skipped,
+            "blocked": sorted(blocked, key=len, reverse=True)}
+
+
+# record_scope result for a folder named only by a skipped scope entry: equal to no project
+# and never None, so it can neither join a project nor the shared scope.
+BLOCKED_SCOPE = object()
 
 
 def record_scope(record, scopes):
-    """The project a record belongs to under the scope file, or None when unscoped."""
+    """The project a record belongs to under the scope file, or None when unscoped.
+
+    A record under a folder blocked by a skipped entry gets BLOCKED_SCOPE unless a longer,
+    valid folder claims it: a skipped nested entry never falls back to its parent's project.
+    """
     project = record.get("project")
     if isinstance(project, str) and project.strip():
         return project
     source = _scope_key(str(record.get("source", "")))
+    blocked = max((len(key) for key in scopes.get("blocked", ())
+                   if key == "" or source.startswith(key + "/")), default=-1)
     for folder, name in scopes["folders"]:
         if source.startswith(folder + "/"):
-            return name
-    return None
+            return name if len(folder) > blocked else BLOCKED_SCOPE
+    return BLOCKED_SCOPE if blocked >= 0 else None
 
 
 # Turkish is agglutinative, so exact token intersection loses "fark" against "farki" and
@@ -913,6 +1001,10 @@ class MemoryStore:
         self.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.state_dir.chmod(0o700)
         with self._connect() as db:
+            if not db.execute("PRAGMA page_count").fetchone()[0]:
+                # Only a new file can take this without a VACUUM: pages freed by event retention
+                # return to the file system in bounded steps (#585). Older releases read it unchanged.
+                db.execute("PRAGMA auto_vacuum=INCREMENTAL")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY, payload TEXT NOT NULL);
@@ -1110,6 +1202,8 @@ class MemoryStore:
         that synchronization deleted (source removed or no longer valid) keeps its
         audit trail: the snapshot stored in its final delete event sets the
         boundary instead, because there is no current source left to verify.
+        Old snapshots expire under beyin_v3_retention.py; the newest event of a
+        current record is always kept (#585).
         """
         if audience not in ("public", "internal", "private"):
             raise ValueError("invalid audience")
@@ -1173,8 +1267,10 @@ class MemoryStore:
             db.execute("INSERT OR IGNORE INTO receipts VALUES (?,?)", (event_id, payload))
         return dict(event, id=event_id, status="succeeded")
 
-    def retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, strict=False, today=None):
-        return self._retrieve(query, project, audience, statuses, limit, budget_chars, strict=strict, today=today)
+    def retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, strict=False, today=None, explicit=False):
+        # explicit=True is the `beyin.py context` command: see the unscoped explicit rules below.
+        return self._retrieve(query, project, audience, statuses, limit, budget_chars, strict=strict, today=today,
+                              explicit=explicit)
 
     def candidates(self, query, project=None, audience="internal", statuses=None, limit=32, strict=False, today=None):
         """Bounded eligible candidates before any final context packing.
@@ -1397,13 +1493,16 @@ class MemoryStore:
     DUE_STRICT_BONUS = 25.0
     CLOSED_TASK_PENALTY = 50.0
 
-    def _weighted_rank(self, ranked, terms, term_counts, name_scores=None, today=None, allowed_statuses=None):
+    def _weighted_rank(self, ranked, terms, term_counts, name_scores=None, today=None, allowed_statuses=None,
+                       factors=None):
         """Order without dropping anything: Okapi BM25 over stem counts, no thresholds.
 
         A raw shared-term count favours whichever note has the largest vocabulary, so one long
         hub note can win every query; a presence-only idf weight still cannot tell a note that
         is about a term from one that mentions it once. Records with no shared term (scoped
-        listings, snapshots) weigh 0 and keep their previous updated_at order.
+        listings, snapshots) weigh 0 and keep their previous updated_at order. factors scales
+        the BM25 part of a record's weight only (opt-in dominant-project demotion); name, due
+        and closed-task adjustments keep their size, so a negative weight is never raised.
         """
         total = len(term_counts)
         lengths = {rid: sum(counts.values()) for rid, counts in term_counts.items()}
@@ -1417,6 +1516,8 @@ class MemoryStore:
             weight = sum(math.log((total - frequency[term] + 0.5) / (frequency[term] + 0.5) + 1) *
                          counts[term] * (self.BM25_K1 + 1) / (counts[term] + norm)
                          for term in terms if counts.get(term))
+            if factors and record["id"] in factors:
+                weight *= factors[record["id"]]
             if name_scores and record["id"] in name_scores:
                 weight += self.NAME_MATCH_WEIGHT * name_scores[record["id"]]
             if is_due_task(record, today_iso):
@@ -1425,6 +1526,83 @@ class MemoryStore:
                 weight -= self.CLOSED_TASK_PENALTY
             weighted.append((weight, record))
         return self._by_weight(weighted)
+
+    # Unscoped explicit lookups (`beyin.py context` without --project, which passes
+    # explicit=True; not strict, not a snapshot) can opt into two extra rules in the runtime
+    # retrieval.json (docs/v3/PREFERENCES.md). Both are off by default; scoped (--project)
+    # queries, the strict hook path, companion retrieval, the advisor pools and plain
+    # retrieve()/candidates() calls never use them.
+    # Admission ("unscoped_min_shared": 2): a multiword query needs two shared query words,
+    # the same gate as the strict hook path, so a question that shares one common word with
+    # some note ("password", "recipe") abstains instead of returning that note. A full name
+    # match or a word naming the record's own project still admits it alone; one-word
+    # queries keep their single shared word, and a typo fix counts for the word it fixes.
+    # Dominant project ("unscoped_dominant_weight": 0 < w < 1): when one project owns more
+    # than DOMINANT_PROJECT_SHARE of the eligible records (in an index of at least
+    # DOMINANT_PROJECT_MIN_RECORDS), the BM25 part of its records' weights is multiplied by
+    # w, so a large course or archive project cannot fill every unscoped top-5 by volume
+    # alone. Nothing is removed. The demotion is skipped when a query word names that
+    # project (its id, or the name of a folder mapped to it in .beyin-projects.json).
+    # Why opt-in (#532): on one 698-note vault whose course project held 83 % of the notes,
+    # w = 0.25 raised English top-1 from 14 to 16 of 20 but lowered top-3 from 18 to 17, and
+    # admission cost one later-read note its top-5 place (8 -> 7). On the repository's
+    # frozen fixtures queried through this path, demotion lowers recall whenever the answers
+    # live inside the dominant project, at every w from 0.25 to 0.9, and admission drops one
+    # expected decision note while it cuts everyday/agent-command noise from 12 and 13 to
+    # 5 and 4 of 15.
+    DOMINANT_PROJECT_SHARE = 0.5
+    DOMINANT_PROJECT_MIN_RECORDS = 20
+
+    def _unscoped_settings(self):
+        """(min_shared, dominant_weight) from the runtime retrieval.json; (1, 1.0) is off."""
+        try:
+            if _MODULE_DIR not in sys.path:
+                sys.path.insert(0, _MODULE_DIR)
+            from beyin_v3_passage import unscoped_settings
+        except ImportError:
+            return 1, 1.0
+        value = unscoped_settings(self.state_dir)
+        return value["min_shared"], value["dominant_weight"]
+
+    def _record_projects(self, records):
+        """Project of every record (scope file folders included) and the words naming each project."""
+        try:
+            scopes = read_project_scopes(self.vault_root)
+        except ValueError:
+            scopes = None  # an invalid scope file is reported by scoped queries and doctor
+        owners, names = {}, {}
+        for record in records:
+            owner = record_scope(record, scopes) if scopes else record.get("project")
+            if isinstance(owner, str) and owner.strip():
+                owners[record["id"]] = owner
+                names.setdefault(owner, set()).update(_tokens(owner))
+        for folder, owner in (scopes or {}).get("folders", ()):
+            names.setdefault(owner, set()).update(_tokens(folder.rsplit("/", 1)[-1]))
+        return owners, names
+
+    def _unscoped_rules(self, ranked, terms, typo_fixes, vocabularies, eligible, name_scores,
+                        min_shared, dominant_weight):
+        """Opt-in admission and dominant-project factors for unscoped explicit lookups (see above).
+
+        terms are the query's own words; typo_fixes maps a misspelled word to the vocabulary
+        words searched for it, which count once, for that word. Returns (ranked, factors).
+        """
+        owners, names = self._record_projects(eligible)
+        if min_shared > 1:
+            needed = min(min_shared, len(terms))
+            groups = [typo_fixes.get(term, set()) | {term} for term in terms]
+            # A full name match (#354) or a word naming the record's own project is enough
+            # evidence on its own: "tavla oyunu ne durumda" must still reach the tavla notes.
+            ranked = [(score, record) for score, record in ranked
+                      if sum(1 for group in groups if group & vocabularies[record["id"]]) >= needed or
+                      record["id"] in name_scores or terms & names.get(owners.get(record["id"]), set())]
+        if dominant_weight >= 1 or not ranked or len(eligible) < self.DOMINANT_PROJECT_MIN_RECORDS:
+            return ranked, None
+        counts = Counter(owners.values())
+        dominant = {owner for owner, count in counts.items()
+                    if count > self.DOMINANT_PROJECT_SHARE * len(eligible) and not (terms & names[owner])}
+        factors = {record["id"]: dominant_weight for _, record in ranked if owners.get(record["id"]) in dominant}
+        return ranked, factors or None
 
     # Strict automatic context: multiword queries need two shared words so that an incidental
     # common word cannot pull an unrelated note into the prompt. One-word queries use a
@@ -1494,7 +1672,7 @@ class MemoryStore:
         """Ids retired by any trusted record, not only by the ones this reader may see (#201)."""
         return resolve_supersedes(self._records() if records is None else records)[0]
 
-    def _retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, snapshot=False, strict=False, candidate_only=False, today=None):
+    def _retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, snapshot=False, strict=False, candidate_only=False, today=None, explicit=False):
         if audience not in ("public", "internal", "private"):
             raise ValueError("invalid audience")
         if not isinstance(query, str) or type(limit) is not int or limit < 0 or type(budget_chars) is not int or budget_chars < 0:
@@ -1569,6 +1747,7 @@ class MemoryStore:
         # Typo tolerance: a query word that appears in no record ("zmaan", "anketii") also
         # searches its closest vocabulary words, so misspelled prompts still reach the note.
         # Strict mode stays exact so automatic injection never widens on a guess.
+        query_terms, typo_fixes = terms, {}
         missing = {term for term in terms if len(term) >= 4 and not term.isdigit()}
         if missing and not strict:
             known = set().union(*vocabularies.values()) if vocabularies else set()
@@ -1577,8 +1756,9 @@ class MemoryStore:
                 # Only swapped, missing or extra letters count as typos; a substituted letter makes
                 # another word (kural/kurul), so the letter counts may differ by at most one.
                 letters = Counter(term)
-                fixes.update(word for word in difflib.get_close_matches(term, known, n=3, cutoff=0.75)
-                             if sum(((letters - Counter(word)) + (Counter(word) - letters)).values()) <= 1)
+                typo_fixes[term] = {word for word in difflib.get_close_matches(term, known, n=3, cutoff=0.75)
+                                    if sum(((letters - Counter(word)) + (Counter(word) - letters)).values()) <= 1}
+                fixes.update(typo_fixes[term])
             fixes -= terms
             if fixes:
                 terms = terms | fixes
@@ -1591,8 +1771,14 @@ class MemoryStore:
             ranked = self._strict_rank(ranked, terms, vocabularies, name_scores=name_scores,
                                        today=today, allowed_statuses=allowed_statuses)
         else:
+            factors = None
+            if explicit and project is None and not snapshot and not strict and query_terms:
+                min_shared, dominant_weight = self._unscoped_settings()
+                if min_shared > 1 or dominant_weight < 1:
+                    ranked, factors = self._unscoped_rules(ranked, query_terms, typo_fixes, vocabularies, eligible,
+                                                           name_scores, min_shared, dominant_weight)
             ranked = self._weighted_rank(ranked, terms, term_counts, name_scores=name_scores,
-                                         today=today, allowed_statuses=allowed_statuses)
+                                         today=today, allowed_statuses=allowed_statuses, factors=factors)
         if candidate_only:
             return [record for _, record in ranked[:limit]]
         return pack_context([record for _, record in ranked], limit, budget_chars, stale_count)

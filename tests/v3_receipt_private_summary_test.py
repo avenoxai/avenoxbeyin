@@ -65,6 +65,11 @@ class PrivateSummaryTest(unittest.TestCase):
         self.assertIn(WITHHELD_SUMMARY, text)
         self.assertNotIn(self.PRIVATE, text)
         self.assertIn(self.LATER, text)
+        # The link alias shows the event id (#514), which names the same work as the summary:
+        # a withheld receipt keeps the bare hash link, like recap, which shows no event id.
+        self.assertIn('.md|synthetic-general]]', text)
+        self.assertIn('.md|synthetic-later]]', text)
+        self.assertNotIn('synthetic-private', text)
 
         # The note becomes private after its receipt: the same sync that indexes the change
         # rewrites the generated views, not the next one.
@@ -74,6 +79,9 @@ class PrivateSummaryTest(unittest.TestCase):
         self.assertNotIn(self.LATER, text)
         self.assertNotIn(self.PRIVATE, text)
         self.assertIn(self.GENERAL, text)
+        self.assertNotIn('synthetic-later', text)
+        self.assertNotIn('synthetic-private', text)
+        self.assertIn('.md|synthetic-general]]', text)
         self.assertNotIn(self.LATER, json.dumps(self.beyin('recap'), ensure_ascii=False))
 
 

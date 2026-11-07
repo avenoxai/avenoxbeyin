@@ -55,16 +55,19 @@ Beyni Guncelle.cmd
 .claude/skills/beyin/
 .claude/skills/beyin-doktor/
 .claude/skills/beyin-guncelle/
+.claude/skills/beyin-kontrol/
 .agents/hooks.json
 .agents/skills/beyin/
 .agents/skills/beyin-doktor/
 .agents/skills/beyin-guncelle/
+.agents/skills/beyin-kontrol/
 .codex/config.toml
 .codex/hooks.json
 .kiro/hooks/beyin-v3.json
 .kiro/skills/beyin/
 .kiro/skills/beyin-doktor/
 .kiro/skills/beyin-guncelle/
+.kiro/skills/beyin-kontrol/
 .opencode/plugins/beyin-v3.js
 .omp/hooks/pre/beyin-v3.ts
 # companion-compact süreçler arası kilidi; kalıcıdır ama kullanıcı verisi değildir
@@ -242,7 +245,10 @@ python3 beyin.py note-edit --file istek.json
 ```
 
 Windows'ta `python3` yerine `py -3` kullan. `note-read` JSON olarak `source`,
-`sha256`, `content` verir; dosya yoksa son iki alan `null` olur. `source`, mevcut
+`exists`, `sha256`, `content` verir; dosya yoksa `exists: false` olur, son iki alan
+`null` olur ve çıkış 0'dır, böylece not `note-edit` ile oluşturulabilir. Dosyanın
+var olması gerekiyorsa `--must-exist` ekle: eksik dosya `error` (`FileNotFoundError`)
+ve çıkış 1 verir. `source`, mevcut
 dosya ve üst klasörlerin diskteki gerçek yazımıdır; büyük/küçük harf veya Windows
 kısa ad takma adıyla istek verilmişse girişten farklı olabilir. Sonraki istekte
 bu dönen yolu kullan. Kanonik yol için yönetilen, gizli ve hariç tutulan kaynak
@@ -263,7 +269,8 @@ metin sessizce değiştirilmez. Önceden yazılmış sırrı silen düzenleme ka
 `written` veya `unchanged` çıkış 0, `conflict` çıkış 2, `error` çıkış 1.
 Eksik kaynak argümanı, eksik `--file` değeri ve bilinmeyen seçenek gibi komut
 kullanım hataları `usage_error` ve çıkış 64 verir; `note-read` / `note-edit`
-için bunlar da stdout'ta JSON'dur. `--help` olağan yardım metnini gösterir.
+için bunlar da stdout'ta JSON'dur. Hata nesnesi UTF-8 yazılır; Türkçe karakterler
+`\u` kaçışı yerine olduğu gibi görünür. `--help` olağan yardım metnini gösterir.
 Çakışmada yeniden oku ve diğer ajanın metnini koruyarak hedefli düzenlemeyi yeniden
 kur. Sadece hash'i yenileyip eski metni yeniden yazma; doğrudan dosya yazımıyla
 korumayı atlama. Atomik değiştirme tamamlandıktan sonraki dosya denetimi, dizin
@@ -326,11 +333,52 @@ yolu (`hook_script_missing`, `other_vault`, `python_missing`) verir ([#204](http
 
 Çözüm, kurucuyu bu makinede yeni vault yoluyla yeniden çalıştırmaktır. Eski state klasörünü
 (ya da kopyasını) `--state` ile ver; kurulum kaydı oradadır ve kurucu yolları taşıyan bütün
-dosyaları yeniden üretir:
+dosyaları yeniden üretir. State'teki indeks (`memory.sqlite3`) de kurulduğu vault yoluna
+bağlıdır ve başka bir yoldaki vault'a açılmaz. Vault taşındıysa bu bağı `--rebind-state`
+açıkça yeni yola çeker ([#593](https://github.com/avenoxai/avenoxbeyin/issues/593)):
 
 ```text
-py -3 scripts/install_v3.py --vault "C:\Users\<yeni>\Beynim" --state "<eski state klasörünün kopyası>"
+py -3 scripts/install_v3.py --vault "C:\Users\<yeni>\Beynim" --state "<eski state klasörü ya da kopyası>" --rebind-state
 ```
+
+macOS ve Linux'ta aynı komut `python3 scripts/install_v3.py --vault "/yeni/yol/Beynim" --state
+"<eski state klasörü>" --rebind-state` biçimindedir. Eski state yolu vault'taki
+`.beyin-runtime.json` dosyasının `state` alanındadır.
+
+Bayrak verilmezse ve indeks başka bir yola bağlıysa kurucu hiçbir dosyayı değiştirmeden durur,
+eski ve yeni yolu gösterip bayrağı önerir. Taşınan vault'ta `beyin.py update` de aynı hatayla
+durur; `doctor` ve `sync` ise `runtime belongs to another vault` hatasına bu adımı anlatan bir
+`hint` ekler. Bayrak verildiğinde kurucu şu kuralları uygular:
+
+- Kayıtlı eski yol artık yoksa ya da aynı klasörün başka bir adıysa (örneğin yalnız harf
+  büyüklüğü değişen ad ya da eski yolda bırakılmış bir bağlantı) bağ yeni yola çekilir.
+- Eski yolda hala bir klasör varsa ve onun `.beyin-runtime.json` dosyası bu state'i gösteriyorsa
+  ya da okunamıyorsa kurucu reddeder: bu taşıma değil kopya olabilir ve iki vault aynı state'i
+  paylaşırdı. Eski klasör artık kullanılmayan bir kalıntıysa onu kenara taşı ya da adını
+  değiştir. İki kopyayı da tutacaksan yenisini state klasörünün bir **kopyasıyla** kur; eski
+  vault kendi state'iyle çalışmaya devam eder.
+- Vault'taki `.beyin-runtime.json`, bu state'in kurulum kaydının yazdığı dosyayla aynı
+  olmalıdır; değilse kurucu reddeder. Başka bir vault'un state'i bu yolla bağlanamaz.
+- Kayıtlı yol bu makinede mutlak bir yol değilse (başka işletim sisteminden gelen state) kurucu
+  reddeder.
+
+Eski yolun yok görünmesi taşımayı tek başına kanıtlamaz: çıkarılmış bir disk ya da o an bağlı
+olmayan bir ağ klasörü de yok görünür. Bayrağı yalnız vault'u gerçekten taşıdıysan ver. Yanlış
+bir bağlamada bile iki vault'un kaydı karışmaz: indeks tek bir yola bağlı kalır ve öbür vault'un
+komutları `runtime belongs to another vault` ile durur.
+
+Kurucu bağı değiştirmeden önce bütün çakışma kontrollerini bitirir, indeksin tam kopyasını
+state klasörüne `memory-before-rebind.sqlite3` adıyla yazar (sonraki kopyalar `.1`, `.2`
+ekiyle, eskisi silinmez) ve bağı tek bir SQLite transaction içinde değiştirir. Kayıtlar, olay
+geçmişi ve `hook_done` kaydı korunur; sonuç `rebound` alanında (`from`, `to`, `backup`) görünür.
+`--plan --rebind-state` aynı kontrolleri yapar, değişecek bağı `rebind` alanında gösterir ve
+hiçbir şey yazmaz. `doctor` ve `sync` sağlıklıysa yedek kopyayı kendin silebilirsin; hassas
+not metni taşıyabileceği için eşitleme ve Git dışında kalmalıdır.
+
+`beyin.py rollback` bu kurulumun dosya değişikliklerini geri alır, indeks bağını geri almaz:
+bağ vault'un bulunduğu yeri gösterir. Geri alınan hook dosyaları yine eski yolu gösterir
+(`doctor`: `hook_paths: stale`); geri dönülen sürümün kurucusunu aynı `--state` ile yeni yolda
+yeniden çalıştır. Bağ zaten bu yolu gösterdiği için bayrak gerekmez.
 
 Eski state yoksa kurucu kayıtsız bulduğu kurulum dosyalarını (`.beyin-runtime.json` gibi)
 `Unmanaged file conflict` ile korur ve durur. Hook dosyaları başka makineden git'le geldiyse
@@ -389,3 +437,68 @@ Presence eşitlemesi varsayılan olarak kapalıdır. Her cihazda `preferences --
 ile açılır. Yerel `<state>/parallel-presence-device.json` dosyası rastgele bir cihaz kimliği
 tutar; iki cihaz aynı kullanıcı ve state yolunu kullansa da diğerinin açık kaydını silmez.
 Bu kimlik dosyasını vault ile eşitleme. `doctor` kimlik veya presence dosyası oluşturmaz.
+
+## Çevrimdışı mutasyon kuyruğu (isteğe bağlı, yalnız bu makine)
+
+`mutation-queue` komutu bu makinenin state klasöründe yerel bir kuyruk tutar. Cihazlar arası
+taşıma, cihaz yetkilendirmesi, onay protokolü ya da otomatik eşitleme yapmaz; bunlar
+[#205](https://github.com/avenoxai/avenoxbeyin/issues/205) altında açık tasarım işidir.
+
+**Varsayılan olarak kapalıdır.** Her makinede ayrı açılır:
+
+```
+python3 beyin.py mutation-queue --enable     # kapatmak için --disable; kuyruktaki kayıtlar korunur
+python3 beyin.py mutation-queue              # durum: enabled, bekleyen/çakışan/başarısız sayıları
+```
+
+Anahtar `<state>/mutation-queue-settings.json` dosyasındadır, `.beyin-preferences.json`'a alan
+eklenmez: eski sürümler bilinmeyen tercih alanını reddettiği için rollback güvenli kalır. Bozuk
+bir anahtar dosyası kapalı sayılır ve üzerine yazılmaz. Kuyruk kapalıyken `--enqueue` ve
+`--replay` hata verir ve hiçbir kuyruk, kimlik ya da kilit dosyası açılmaz; `doctor` yalnız
+`mutation_queue: {"enabled": false}` gösterir.
+
+Komutlar:
+
+- `--enqueue --file x.json`: `{"action", "source", "payload", "mutation_id"?}`. Eylemler
+  `note_create`, `note_update`, `task_create`, `task_update`, `receipt`. Yük kuyruğa girmeden
+  doğrulanır (`note_update` için tam SHA-256 `expected_hash`, `task_update` için tam sayı
+  `expected_revision`). İsteğe bağlı `mutation_id` aynı mutasyonun yeniden gönderilmesini
+  tek kayda indirir; aynı kimlik farklı bir mutasyonla gelirse reddedilir.
+- `--list [--status pending|applied|conflict|failed|dismissed]`, `--replay`, `--clear-applied`
+  (uygulanan ve kapatılan kayıtları siler), `--retry <id>` (incelenmiş `conflict`/`failed`
+  kaydı yeniden `pending` yapar), `--dismiss <id>`.
+
+Kuyruk `<state>/mutation-queue.jsonl`, kimlik `<state>/device.json` dosyasındadır. State her
+zaman vault dışında olduğu için ikisi de vault ile eşitlenmez. Kimlik rastgele 32 haneli onaltılık
+bir değerdir (uuid4); kullanıcı adı, makine adı ya da yol içermez, hiçbir vault dosyasına
+yazılmaz ve `doctor` çıktısında gösterilmez. Presence kimliği varsa ilk kullanımda benimsenip
+`device.json`'a sabitlenir. Kuyruk yazımı, replay ve temizlik state içindeki ortak yerel kilidi
+paylaşır; kilit süresi dolarsa bekleyen çağrı yeniden denenebilir bir `writer busy` hatası alır.
+Kuyruk dosyası atomik olarak yeniden yazılır; Windows'ta kısa bir paylaşım ihlali diğer state
+yazımlarındaki gibi kısa süre yeniden denenir. Bozuk kuyruk satırı bildirilir ve dosya olduğu
+gibi bırakılır.
+
+Replay kuralları:
+
+- `note_update` normal not yazıcısını kullanır; kaynağın tam SHA-256'sı tutmazsa orijinal
+  değişmez ve özel olarak oluşturulan benzersiz bir `.sync-conflict-*.md` kopyası açılır
+  (`sync` bunu uyarı olarak gösterir, indekslemez). Verilmeyen metadata korunur
+  (`visibility`, `project` dahil). Açık sır süzgeci hem güncellemeye hem kopyaya uygulanır.
+- `note_create` ve `task_create` aynı içerik zaten diskteyse yeniden yazmaz, uygulanmış sayar.
+  `receipt` aynı `event_id` için motorun kendi idempotens kuralına uyar.
+- `task_update` çakışmasında kopya açılmaz; kayıt `conflict` olarak incelemeye kalır.
+
+**Kesinti ve uzlaştırma.** Her mutasyonun sonucu, sıradakine geçmeden kuyruğa yazılır. Süreç
+bir mutasyonu uyguladıktan sonra ama bu onayı yazmadan ölürse kayıt `pending` kalır. Sonraki
+`--replay` yeniden yazmadan önce hedefin bu mutasyonu zaten taşıyıp taşımadığına bakar:
+
+- `task_update`: revizyon çakışmasında önce `sync` çalışır (motorun yazma günlüğünde yarım kalan
+  kaynak yazımı tamamlanır), sonra görevin revizyonu `expected_revision`'dan büyükse ve istenen
+  her alan aynı değerdeyse kayıt `applied` ve `reconciled: true` olur. Revizyon ikinci kez
+  artmaz.
+- `note_update`: mevcut not bu güncellemenin üreteceği içerikle bayt bayt aynıysa kayıt
+  `applied` ve `reconciled: true` olur; çakışma kopyası açılmaz.
+
+Hedef mutasyonu taşımıyorsa (örneğin başka bir yazıcı görevi farklı bir değerle güncellediyse)
+kayıt `conflict` kalır ve inceleme gerekir. Bu, dağıtık ve tam bir kez çalışan bir işlem
+değildir; aynı değişikliği bağımsız olarak yapan başka bir yazıcı da uygulanmış sayılır.

@@ -169,7 +169,8 @@ class CardCompatibilityTest(unittest.TestCase):
         self.assertEqual(triage.scan_inbox(self.vault, y.now().timestamp())['count'], 0)
 
     def test_extra_url_security_checks_happen_before_any_card_or_file_is_written(self):
-        for unsafe in ('http://127.0.0.1/private', 'file:///secret', 'https://user:pass@example.org/', '-option'):
+        # A local address is kept as a never-fetched reference (#486); these are refused outright.
+        for unsafe in ('http://0x7f.1/private', 'file:///secret', 'https://user:pass@example.org/', '-option'):
             with self.subTest(unsafe=unsafe), self.assertRaises(ValueError):
                 y.capture(self.vault, url=PAGE, extra_urls=[unsafe])
         self.assertEqual(list(self.vault.iterdir()), [])

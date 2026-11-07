@@ -155,6 +155,20 @@ Both views link a receipt as `[[receipts/<hash>.md|<event_id>]]`, so the reading
 view shows the event id instead of the hash file name; `[`, `]`, `|`, `#` and `^`
 in an id become spaces and the alias stops at 80 characters. Views written
 before this change are regenerated on the next sync unless they were edited.
+A receipt whose summary is withheld because it cites a private, untrusted,
+unreadable or index-excluded source keeps the bare `[[receipts/<hash>.md]]`
+link: the agent-chosen event id usually names the same work, and `recap`
+shows no event id either.
+
+Obsidian's graph labels every node by its file name; `aliases` and `title` do
+not change core graph labels, so receipt nodes still show the hash. That file
+name is the receipt's identity (replay, recovery, multi-device matching and
+older engines rely on it), so receipts are never renamed, and Beyin never edits
+`.obsidian/` settings. To hide receipts in Obsidian, add `-path:"receipts/"` to
+the graph's Search files filter, or add `receipts/` (optionally `daily/v3/`
+and `knowledge/v3/`) under Settings > Files and links > Excluded files, which
+Obsidian hides from Graph view, Search and unlinked mentions. Details:
+[PREFERENCES.md](PREFERENCES.md#obsidian-grafiği-ve-receipt-dosyaları).
 
 These are explicitly generated indexes of agent-authored claims, not automatic
 knowledge distillation or external verification. Existing human daily and
@@ -214,7 +228,22 @@ that edited a file (a PostToolUse event from the installed edit matchers); a lat
 question or "thanks" turn without edits does not reopen the session, but a receipt
 from an earlier turn cannot cover a later turn that edited again. Without an
 observed edit the latest UserPromptSubmit or SessionStart boundary applies.
-Edits made through a shell command are not observed as edits. Antigravity only
+A Claude Code Stop without an editor edit in that turn also counts a shell edit
+(#212): a vault Markdown file that a Bash or PowerShell command of the turn names
+and that was last modified while that command ran (between its call and result
+records). The Stop reads only the bounded tail of that session's own transcript
+and stats the named files; it keeps a timestamp, never command text, and queues
+the edit as `PostToolUse` metadata marked `observed: shell`. A path in a
+variable, a script that computes its paths, a background write, a rename or a
+deletion is still not observed, and Codex shell commands are not read. Neither
+are commands of a Task subagent (its transcript is a separate file) or commands
+before an interrupt, compaction or slash-command record in the same turn.
+A `note-create`, `note-edit`, `task-create` or `task-update` run through the
+Claude Code Bash tool names its session through `CLAUDE_CODE_SESSION_ID`: it
+opens the reminder window itself and leaves a small flag that the next Stop of
+that session queues as `PostToolUse` metadata marked `observed: cli`, stamped
+with the write's time, so such a turn is also an edited turn for coverage.
+Antigravity only
 provides the initial invocation boundary in this adapter, so its result is
 explicitly session-limited rather than proof of per-turn completeness. Missing
 prompt events are reported as a terminal-only limitation. Explicit `no_memory`

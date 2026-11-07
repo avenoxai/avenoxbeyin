@@ -35,28 +35,71 @@ class NoteUsageError(ValueError):
     pass
 
 
-def mark_session_edit(state: Path) -> None:
-    """Open the Stop reminder's edit window for the Claude Code session that ran this write (#212).
+def mark_session_edit(state: Path, vault: Path | None = None, source: str | None = None) -> None:
+    """Open the Stop edit window for a CLI write from Claude or Pi's shell tool (#212).
 
-    Bash is not a PostToolUse matcher, so a note or task written through `beyin.py` from the Bash
-    tool was invisible to the receipt reminder. Claude Code sets CLAUDE_CODE_SESSION_ID in Bash
-    subprocesses to the session_id its hooks receive, so the marker names that exact session;
-    other shells and harnesses do not set it and nothing is guessed. Never costs the write itself.
+    Shell writes have no editor PostToolUse event. Both clients expose the real session ID to
+    shell subprocesses (CLAUDE_CODE_SESSION_ID, PI_SESSION_ID), as their hooks receive it; never
+    guess an ID in a plain shell. External project writes use the same cwd/session namespace as
+    the global bridge; successful distilled-note writes retain knowledge evidence even though the
+    note mtime precedes this marker. Bookkeeping cannot cost the write itself.
+    A Claude write also leaves its time in a `.cli` flag: no PostToolUse event exists for it, so the
+    next Claude Stop of that session queues it for receipt coverage as an observed edit.
     """
-    session = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    claude = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    session = claude or os.environ.get("PI_SESSION_ID")
     if not session or os.environ.get("BEYIN_V3_NO_RECEIPT_REMINDER") == "1":
         return
     try:
+        if vault is not None:
+            cwd = Path.cwd().resolve()
+            if not cwd.is_relative_to(Path(vault).resolve()):
+                session = json.dumps([str(cwd), session])
         folder = Path(state) / "receipt-reminders"
-        edited = folder / (hashlib.sha256(session.encode("utf-8")).hexdigest() + ".edited")
-        if edited.exists():
-            return  # the window opened by the first edit stays, as for PostToolUse
+        name = hashlib.sha256(session.encode("utf-8")).hexdigest()
+        now = time.time()
         folder.mkdir(parents=True, exist_ok=True)
-        temporary = folder / (edited.name + "." + str(os.getpid()) + ".tmp")
-        temporary.write_text(json.dumps({"at": time.time()}), encoding="utf-8")
-        os.replace(temporary, edited)
-    except OSError:
-        pass
+
+        def put(path, value):
+            temporary = folder / (path.name + "." + str(os.getpid()) + ".tmp")
+            temporary.write_text(json.dumps(value), encoding="utf-8")
+            os.replace(temporary, path)
+
+        if claude:
+            # First: an unreadable window marker cannot drop it. Only a Claude Stop consumes it.
+            put(folder / (name + ".cli"), {"at": now})
+        edited = folder / (name + ".edited")
+        previous = json.loads(edited.read_text(encoding="utf-8")) if edited.exists() else None
+        # The window opened by the first edit stays, as for PostToolUse; only knowledge evidence is added.
+        marker = dict(previous) if previous is not None else {"at": now}
+        if vault is not None and source:
+            # Knowledge evidence is optional: a source that cannot be classified still opens the window.
+            try:
+                from beyin_v3_projections import is_distilled_note
+                lexical = Path(vault) / source
+                canonical = lexical.resolve().relative_to(Path(vault).resolve()).as_posix()
+                if not lexical.is_symlink() and lexical.is_file() and is_distilled_note(canonical):
+                    marker['knowledge'] = True
+            except Exception:
+                pass
+        if marker != previous:
+            put(edited, marker)
+    except Exception:
+        pass  # reminder bookkeeping never costs the write that already succeeded
+
+
+def env_session(harness=None):
+    """Hashed session of the agent whose shell runs this command, as its hooks key it (#212).
+
+    Claude Code and Pi export their real session ID to shell subprocesses. A receipt names its
+    client, so `--harness pi` reads Pi's ID even when Pi itself runs inside a Claude Code shell
+    and inherits the outer CLAUDE_CODE_SESSION_ID. Nothing is guessed in a plain shell.
+    """
+    names = (("PI_SESSION_ID", "BEYIN_V3_SESSION_ID") if harness == "pi"
+             else ("CLAUDE_CODE_SESSION_ID", "BEYIN_V3_SESSION_ID", "PI_SESSION_ID") if harness is None
+             else ("CLAUDE_CODE_SESSION_ID", "BEYIN_V3_SESSION_ID"))
+    raw = next((os.environ[name] for name in names if os.environ.get(name)), None)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24] if raw else None
 
 
 def _is_absolute_cross_platform(raw: str) -> bool:
@@ -329,6 +372,11 @@ LAYA_NOTICE = ("provider laya: calls go only to the local laya-serve at {base_ur
 ERROR_HINTS = {
     "laya_shadow_only": ("Laya yalniz golge modda calisir: puanlari olcum icin kaydedilir, gordugun sonucu degistirmez. "
                          "Laya icin: jev shadow --provider laya. Acik mod icin: jev on --provider typesafe."),
+    # #593: the index names the folder it was built for. A moved vault reaches it through the pin.
+    "runtime belongs to another vault": (
+        "Bu state baska bir vault yoluna bagli. Vault tasindiysa ya da adi degistiyse paketteki kurucuyu "
+        "yeni vault yolu, ayni --state ve --rebind-state ile calistir; eski yol hala duruyorsa kurucu reddeder. "
+        "Ayrinti: https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/MULTI-MACHINE.md"),
 }
 
 
@@ -525,7 +573,8 @@ def hook_paths(vault: Path) -> dict:
         result["hint"] = ("Hook commands point to another install location (vault moved, or hook files synced "
                           "from another machine). Run the installer again on this machine with this vault; if the "
                           "vault moved from another account or folder, pass the old state folder (or a copy) with "
-                          "--state. Keep hook files out of sync: https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/MULTI-MACHINE.md")
+                          "--state, and --rebind-state when the installer asks for it. Keep hook files out of sync: "
+                          "https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/MULTI-MACHINE.md")
     return result
 
 
@@ -916,16 +965,38 @@ def hook_reconcile(vault: Path, state: Path, force: bool = False) -> dict:
 
 
 def read_json(filename: str):
-    if filename == "-":
-        if hasattr(sys.stdin, "reconfigure"):
-            try:
-                sys.stdin.reconfigure(encoding="utf-8-sig")
-            except Exception:
-                pass
-        raw = sys.stdin.read()
-        return json.loads(raw.lstrip("\ufeff").strip() or "{}")
-    with Path(filename).open(encoding="utf-8-sig") as stream:
-        return json.load(stream)
+    try:
+        if filename == "-":
+            if hasattr(sys.stdin, "reconfigure"):
+                try:
+                    sys.stdin.reconfigure(encoding="utf-8-sig")
+                except Exception:
+                    pass
+            raw = sys.stdin.read()
+            return json.loads(raw.lstrip("\ufeff").strip() or "{}")
+        with Path(filename).open(encoding="utf-8-sig") as stream:
+            return json.load(stream)
+    except UnicodeDecodeError as exc:
+        # Strict, never replaced; name CESU-8 and lone surrogates instead of a codec error (#543).
+        _ensure_scripts_path()
+        from beyin_v3_notes import Utf8InputError, utf8_problem
+        raise Utf8InputError("JSON input is not valid UTF-8: " + utf8_problem(exc.object, exc.start)
+                             + "; nothing was written, send standard UTF-8 (lone surrogates and CESU-8 are rejected)") from exc
+
+
+def note_request(filename, args):
+    """--idempotency-key/--evidence-ref fill the JSON request; a differing duplicate is refused."""
+    payload = read_json(filename)
+    if not isinstance(payload, dict):
+        raise ValueError(args.command + " payload must be a JSON object")
+    for field in ("idempotency_key", "evidence_refs"):
+        value = getattr(args, field, None)
+        if value is None:
+            continue
+        if payload.get(field, value) != value:
+            raise ValueError(field + " given in the request and on the command line with different values")
+        payload[field] = value
+    return payload
 
 
 def load_skills():
@@ -1078,13 +1149,24 @@ def parser(note_namespace=None, is_json=False):
                           help="Reset Hermes platform overrides to defaults")
     compact = sub.add_parser("companion-compact", help="Move older Last-Session/Threads entries verbatim into a private archive; deletes nothing")
     compact.add_argument("--dry-run", action="store_true", help="Report what would move without writing")
+    state_compact = sub.add_parser("state-compact", help="Drop event snapshots past retention and stale temp files "
+                                   "from local state, then VACUUM the index; never touches the vault")
+    state_compact.add_argument("--dry-run", action="store_true", help="Report what would be removed without writing")
     trace = sub.add_parser("chat-trace", help="Opt-in short conversation checkpoints; never saves transcripts")
-    trace.add_argument("action", choices=("status", "on", "off", "write"))
+    trace.add_argument("action", choices=("status", "on", "off", "write", "backfill"))
     trace.add_argument("--harness", choices=("claude", "codex"))
     trace.add_argument("--session", help="The 24-character Receipt session value shown by the hook")
     trace_text = trace.add_mutually_exclusive_group()
     trace_text.add_argument("--text", help="Explicit short summary; dated paragraph must fit 450 characters")
     trace_text.add_argument("--file", help="UTF-8 summary file, or - for stdin")
+    trace.add_argument("--show", action="store_true",
+                       help="backfill: print one session's bounded, secret-filtered digest; stores nothing")
+    trace.add_argument("--page", type=int, help="backfill --show: digest page (default 1)")
+    trace.add_argument("--skip", action="store_true",
+                       help="backfill: remember that this session has nothing worth keeping")
+    trace.add_argument("--projects-dir", type=Path,
+                       help="backfill: one explicitly chosen Claude Code project folder instead of this vault's")
+    trace.add_argument("--limit", type=int, help="backfill dry run: pending sessions to list (1-200, default 20)")
     skill = sub.add_parser("skill-import", help="Import one explicitly chosen skill directory")
     skill.add_argument("--source", type=Path, required=True)
     skill.add_argument("--name")
@@ -1092,16 +1174,34 @@ def parser(note_namespace=None, is_json=False):
     ingest.add_argument("--file", default="-", help="JSON input path, or - for stdin")
     note = sub.add_parser("note-create", help="Create a semantic Markdown source without overwriting")
     note.add_argument("--file", default="-", help="JSON {source, text, metadata}")
+    note.add_argument("--idempotency-key", help="Optional retry key (1-128 of A-Z a-z 0-9 _ -), bound to this exact request")
+    note.add_argument("--evidence-ref", action="append", dest="evidence_refs", help="Existing vault source path backing the note; repeatable")
     note_read = sub.add_parser("note-read", help="Read a human Markdown source and its byte SHA-256")
     note_read.add_argument("source")
+    note_read.add_argument("--must-exist", action="store_true",
+                           help="Report a missing source as an error (exit 1) instead of exists: false")
     note_edit = sub.add_parser("note-edit", help="Edit a human Markdown source with an expected SHA-256")
     note_edit.add_argument("--file", default="-", help="JSON {source, expected_sha256, edits} or new content; - for stdin")
+    note_edit.add_argument("--idempotency-key", help="Optional retry key (1-128 of A-Z a-z 0-9 _ -), bound to this exact request")
+    note_edit.add_argument("--evidence-ref", action="append", dest="evidence_refs", help="Existing vault source path backing the edit; repeatable")
     task = sub.add_parser("task-create", help="Create and verify an explicit new task")
     task.add_argument("--file", default="-", help="JSON {source: tasks/name.md, text, metadata: {id,status,owner}}")
+    mutation_queue = sub.add_parser("mutation-queue", help="Opt-in local offline mutation queue (off by default; machine-local state)")
+    queue_action = mutation_queue.add_mutually_exclusive_group()
+    queue_action.add_argument("--enable", action="store_true", help="Turn the queue on for this machine")
+    queue_action.add_argument("--disable", action="store_true", help="Turn the queue off; queued records are kept")
+    queue_action.add_argument("--enqueue", action="store_true", help="Enqueue mutation from --file")
+    queue_action.add_argument("--list", action="store_true", help="List queued mutations")
+    queue_action.add_argument("--replay", action="store_true", help="Replay pending mutations against vault")
+    queue_action.add_argument("--clear-applied", action="store_true", help="Clear applied and dismissed mutations from queue")
+    queue_action.add_argument("--retry", metavar="MUTATION_ID", help="Set a reviewed conflict or failed mutation back to pending")
+    queue_action.add_argument("--dismiss", metavar="MUTATION_ID", help="Dismiss a reviewed conflict or failed mutation")
+    mutation_queue.add_argument("--status", choices=["pending", "applied", "conflict", "failed", "dismissed"], help="Filter status for --list")
+    mutation_queue.add_argument("--file", default="-", help="JSON {action, source, payload, mutation_id?} for --enqueue, or - for stdin")
     context = sub.add_parser("context", help="Retrieve source-backed shared context")
     context.add_argument("query", nargs="?", help="Query; alternatively use --file")
     context.add_argument("--file", help="JSON retrieval arguments, or - for stdin")
-    context.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro"), default="codex")
+    context.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro", "pi"), default="codex")
     context.add_argument("--project")
     context.add_argument("--audience", choices=("internal", "public"), default="internal")
     context.add_argument("--status", action="append", dest="statuses")
@@ -1128,7 +1228,7 @@ def parser(note_namespace=None, is_json=False):
     answer.add_argument("--project", required=True)
     receipt = sub.add_parser("receipt", help="Submit an idempotent source-linked receipt")
     receipt.add_argument("--file", help="JSON input path, or - for stdin (default without receipt flags)")
-    receipt.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro"), default="codex")
+    receipt.add_argument("--harness", choices=("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro", "pi"), default="codex")
     receipt.add_argument("--event-id", help="Required receipt event identifier in flag mode")
     receipt.add_argument("--summary", help="Receipt summary text, preserving literal newlines")
     receipt.add_argument("--summary-file", type=Path, metavar="PATH", help="Read the receipt summary from a UTF-8 file")
@@ -1171,6 +1271,52 @@ def parser(note_namespace=None, is_json=False):
     return root
 
 
+def utf8_output():
+    """Write this process's own output as UTF-8 (#594). A piped or redirected Windows console
+    otherwise uses the ANSI code page (cp1254, cp1252): a Turkish character then fails on
+    stdout or turns into an escape on stderr. An embedded call (return_result) never calls this:
+    it prints nothing and the caller's streams stay as they are."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8")
+            except (OSError, ValueError):
+                pass  # the stream keeps its encoding; print_error still writes valid JSON
+
+
+def readable_json(value):
+    """JSON with real characters (#587). Characters a terminal acts on, hides or reorders (control
+    characters such as DEL and the C1 range, bidi and other format controls, line separators) and
+    lone surrogates stay escaped, as ensure_ascii wrote them."""
+    import unicodedata
+    return "".join(json.dumps(ch)[1:-1] if unicodedata.category(ch) in ("Cc", "Cf", "Cs", "Zl", "Zp") else ch
+                   for ch in json.dumps(value, ensure_ascii=False))
+
+
+def writes_utf8(stream):
+    import codecs
+    try:
+        return codecs.lookup(getattr(stream, "encoding", None) or "ascii").name == "utf-8"
+    except LookupError:
+        return False
+
+
+def print_error(error, stream, embedded=False):
+    """An error object a person may read: real characters in UTF-8 (#587), not \\u escapes.
+    Stays valid JSON either way; a stream that cannot take UTF-8 gets the escaped form.
+    embedded: a call with return_result leaves the caller's streams as they are, so it writes
+    real characters only to a stream that already writes UTF-8."""
+    if not embedded:
+        utf8_output()
+    elif not writes_utf8(stream):
+        print(json.dumps(error, ensure_ascii=True), file=stream)
+        return
+    try:
+        print(readable_json(error), file=stream)
+    except UnicodeEncodeError:
+        print(json.dumps(error, ensure_ascii=True), file=stream)
+
+
 def main(argv=None, return_result=False):
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8-sig")
@@ -1183,9 +1329,7 @@ def main(argv=None, return_result=False):
             getattr(args, name) is not None for name in ("event_id", "summary", "summary_file", "ref", "link", "session"))
         if receipt_flags:
             if not return_result:
-                for stream in (sys.stdout, sys.stderr):
-                    if hasattr(stream, "reconfigure"):
-                        stream.reconfigure(encoding="utf-8")
+                utf8_output()
             if args.file is not None:
                 argument_parser.error("--file cannot be combined with receipt flags")
             if args.event_id is None:
@@ -1206,13 +1350,13 @@ def main(argv=None, return_result=False):
         error = {"error": "SystemExit", "message": str(exc)}
         if return_result:
             return error, 2
-        print(json.dumps(error, ensure_ascii=True), file=sys.stderr)
+        print_error(error, sys.stderr)
         return 2
     except NoteUsageError as exc:
         result = {'status': 'usage_error', 'error': type(exc).__name__, 'message': str(exc)}
         if return_result:
             return result, 64
-        print(json.dumps(result, ensure_ascii=True))
+        print_error(result, sys.stdout)
         return 64
     try:
         vault = args.vault.expanduser().resolve()
@@ -1229,7 +1373,7 @@ def main(argv=None, return_result=False):
         if read_only_context and args.jev:
             raise ValueError("context --no-sync cannot be combined with --jev")
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
-        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace") else None
+        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue") else None
         store = engine.MemoryStore(state, vault, read_only=read_only_context) if engine else None
         sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
         if args.command == "bridge":
@@ -1256,6 +1400,7 @@ def main(argv=None, return_result=False):
                 bridge_args = ["--vault", str(vault), "--state", str(state), "--harness", args.harness,
                                "--context-chars", str(args.context_chars), "--print-config"]
                 for r in roots: bridge_args.extend(["--project-root", str(r)])
+                for event in events: bridge_args.extend(["--event", event])
                 code = bridge_mod.main(bridge_args)
                 if return_result:
                     return None, code
@@ -1463,7 +1608,7 @@ def main(argv=None, return_result=False):
         elif args.command == "doctor":
             _ensure_scripts_path()
             from beyin_v3_hook_done import summary as hook_done_summary
-            done = hook_done_summary(state, ('codex', 'claude', 'antigravity', 'hermes', 'opencode', 'omp', 'kiro'))
+            done = hook_done_summary(state, ('codex', 'claude', 'antigravity', 'hermes', 'opencode', 'omp', 'kiro', 'pi'))
             result = {"pending_events": len(list((state / "hook-queue").glob("*.json"))),
                       **done}
             for filename in ("hook-health.json", "hook-error.json", "receipt-gaps.json"):
@@ -1640,12 +1785,24 @@ def main(argv=None, return_result=False):
             except Exception as exc:  # never hides the rest of doctor
                 result['index_exclusions'] = {'status': 'unavailable', 'error': type(exc).__name__}
             result['receipt_line_endings'] = receipt_line_endings(vault)  # information only: the status below is untouched
+            try:  # information only (#585): index size, free pages, leftover temp files; reads only
+                _ensure_scripts_path()
+                import beyin_v3_retention as retention
+                result['state_storage'] = retention.storage_report(state)
+            except Exception as exc:
+                result['state_storage'] = {'status': 'unavailable', 'error': type(exc).__name__}
             try:
                 _ensure_scripts_path()
                 import beyin_v3_projects as projects
                 result['project_scopes'] = projects.check_project_scopes(vault)
             except Exception as exc:
                 result['project_scopes'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            try:
+                _ensure_scripts_path()
+                import beyin_v3_mutation as mutation
+                result['mutation_queue'] = mutation.doctor(state)
+            except Exception as exc:
+                result['mutation_queue'] = {'status': 'unavailable', 'error': type(exc).__name__}
             result['status'] = ('needs_attention' if health.get('sync', {}).get('status') in ('conflict', 'degraded') or result['hook_paths'].get('status') == 'stale' or result['skill_conflicts'] or result.get('instruction_conflicts') or result['hook-error.json'] or result['task_completion']['strict_issue_count'] or result['task_completion'].get('error') or result['validity']['ignored_rejection_count'] or result['validity'].get('error') or result.get('project_scopes', {}).get('status') in ('error', 'warning') else 'pending' if result['pending_events'] else 'observed_metadata' if result['acknowledged_events'] else 'never_seen')
             # Information only: a leftover global OMP hook copy predates the vault-owned plan
             # (OMP.md says the installer never updates or removes it). After an engine update the
@@ -1699,20 +1856,61 @@ def main(argv=None, return_result=False):
             if any(entry['status'] == 'compacted' for entry in result['files'].values()):
                 # Index the shorter sources and the private archive before anyone reads them.
                 result['sync'] = {'status': load_sync()(vault, state).sync().get('status')}
+        elif args.command == "state-compact":
+            _ensure_scripts_path()
+            import beyin_v3_retention as retention
+            result = retention.compact(store, dry_run=args.dry_run)
         elif args.command == "chat-trace":
             _ensure_scripts_path()
             import beyin_v3_chat_trace as chat_trace
-            if args.action == 'write':
+
+            def trace_text():
+                if args.file is None:
+                    return args.text
+                if args.file == '-':
+                    return sys.stdin.read(4097)
+                with Path(args.file).open(encoding='utf-8') as handle:
+                    return handle.read(4097)
+
+            backfill_only = (args.show or args.skip or args.page is not None
+                             or args.projects_dir is not None or args.limit is not None)
+            if args.action == 'backfill':
+                # Explicit, opt-in import of older Claude Code sessions (#599); the default is a dry run.
+                import beyin_v3_chat_backfill as backfill
+                summary = args.text is not None or args.file is not None
+                if args.harness not in (None, 'claude'):
+                    raise ValueError('backfill reads Claude Code transcripts only')
+                if args.show + args.skip + summary > 1:
+                    raise ValueError('use only one of --show, --skip or --text/--file')
+                if (args.show or args.skip or summary) != bool(args.session):
+                    raise ValueError('--show, --skip and --text/--file each need --session, and --session needs one of them')
+                if args.page is not None and not args.show:
+                    raise ValueError('--page is only valid with --show')
+                if args.limit is not None and args.session:
+                    raise ValueError('--limit is only valid for the dry run')
+                if args.show:
+                    result = backfill.show(vault, state, args.session, args.projects_dir,
+                                           1 if args.page is None else args.page)
+                    if return_result:
+                        return result, 0
+                    # A digest is read by people and agents; keep Turkish text readable.
+                    if hasattr(sys.stdout, "reconfigure"):
+                        sys.stdout.reconfigure(encoding="utf-8")
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                    return 0
+                if args.skip:
+                    result = backfill.skip(vault, state, args.session, args.projects_dir)
+                elif summary:
+                    result = backfill.write(vault, state, args.session, trace_text(), args.projects_dir)
+                else:
+                    result = backfill.plan(vault, state, args.projects_dir,
+                                           backfill.LIST_DEFAULT if args.limit is None else args.limit)
+            elif backfill_only:
+                raise ValueError('--show, --skip, --page, --projects-dir and --limit are only valid with chat-trace backfill')
+            elif args.action == 'write':
                 if not args.harness or not args.session or (args.text is None and args.file is None):
                     raise ValueError('write requires --harness, --session and --text or --file')
-                text = args.text
-                if args.file is not None:
-                    if args.file == '-':
-                        text = sys.stdin.read(4097)
-                    else:
-                        with Path(args.file).open(encoding='utf-8') as handle:
-                            text = handle.read(4097)
-                result = chat_trace.write(vault, state, args.harness, args.session, text)
+                result = chat_trace.write(vault, state, args.harness, args.session, trace_text())
             elif args.harness or args.session or args.text is not None or args.file is not None:
                 raise ValueError('summary arguments are only valid with chat-trace write')
             else:
@@ -1800,14 +1998,43 @@ def main(argv=None, return_result=False):
                         raise
         elif args.command == "note-read":
             result = sync.note_read(args.source)
+            if args.must_exist and not result['exists']:
+                # The documented note error: status error, exit 1. Exit 2 stays "conflict".
+                raise FileNotFoundError('note not found: ' + result['source'])
         elif args.command == "note-edit":
-            result = sync.note_edit(read_json(args.file))
+            result = sync.note_edit(note_request(args.file, args))
         elif args.command == "note-create":
-            payload = read_json(args.file)
-            result = sync.note_create(payload['source'], payload['text'], payload.get('metadata'))
+            payload = note_request(args.file, args)
+            result = sync.note_create(payload['source'], payload['text'], payload.get('metadata'),
+                                      idempotency_key=payload.get('idempotency_key'),
+                                      evidence_refs=payload.get('evidence_refs'))
         elif args.command == "task-create":
             payload = read_json(args.file)
             result = sync.task_create(payload['source'], payload['text'], payload['metadata'])
+        elif args.command == "mutation-queue":
+            _ensure_scripts_path()
+            import beyin_v3_mutation as mutation
+            if args.status is not None and not args.list:
+                raise ValueError("--status filters --list")
+            if args.enable or args.disable:
+                result = mutation.set_enabled(state, args.enable)
+            elif args.enqueue:
+                payload = read_json(args.file)
+                if not isinstance(payload, dict):
+                    raise ValueError("enqueue file must be a JSON object {action, source, payload}")
+                result = mutation.enqueue_mutation(state, payload.get('action'), payload.get('source'), payload.get('payload'),
+                                                   vault=vault, mutation_id=payload.get('mutation_id'))
+            elif args.replay:
+                # The engine is built only after the switch and queue checks, so an off queue opens nothing.
+                result = mutation.replay_mutations(vault, state)
+            elif args.clear_applied:
+                result = mutation.clear_applied(state)
+            elif args.retry or args.dismiss:
+                result = mutation.resolve(state, args.retry or args.dismiss, retry=bool(args.retry))
+            elif args.list:
+                result = mutation.list_mutations(state, status=args.status)
+            else:
+                result = mutation.status(state)
         elif args.command == "context":
             params = {"query": args.query, "project": args.project, "audience": args.audience,
                       "statuses": args.statuses, "limit": args.limit, "budget_chars": args.budget_chars}
@@ -1819,7 +2046,7 @@ def main(argv=None, return_result=False):
             if not isinstance(params["query"], str) or not params["query"].strip():
                 raise ValueError("context requires a nonempty query")
             if read_only_context:
-                result = store.context_for(args.harness, **params)
+                result = store.context_for(args.harness, explicit=True, **params)
                 result['source_sync'] = {'status': 'skipped', 'reason': 'explicit_no_sync'}
             else:
                 refreshed = sync.sync()
@@ -1832,7 +2059,7 @@ def main(argv=None, return_result=False):
                     from beyin_v3_jev import advise_context
                     result = advise_context(sync.store, **params)
                 else:
-                    result = sync.store.context_for(args.harness, **params)
+                    result = sync.store.context_for(args.harness, explicit=True, **params)
                 view_conflicts = [c for c in refreshed.get('conflicts', []) if is_receipt_view_conflict(c)]
                 if view_conflicts:
                     result['view_conflicts'] = view_conflicts
@@ -1875,14 +2102,14 @@ def main(argv=None, return_result=False):
                 payload = {"event_id": args.event_id, "summary": summary, "refs": args.ref}
                 if args.session is not None:
                     payload["session"] = args.session
-                elif os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID"):
-                    payload["session"] = hashlib.sha256((os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")).encode("utf-8")).hexdigest()[:24]
+                elif env_session(args.harness):
+                    payload["session"] = env_session(args.harness)
                 if args.link:
                     payload["links"] = args.link
             else:
                 payload = read_json(args.file if args.file is not None else "-")
-                if "session" not in payload and (os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")):
-                    payload["session"] = hashlib.sha256((os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")).encode("utf-8")).hexdigest()[:24]
+                if "session" not in payload and env_session(args.harness):
+                    payload["session"] = env_session(args.harness)
             result = sync.receipt(payload["event_id"], payload["summary"],
                                           payload["refs"], args.harness, session=payload.get('session'),
                                           links=payload.get('links'))
@@ -1894,17 +2121,16 @@ def main(argv=None, return_result=False):
                 raise RuntimeError('History blocked: source sync conflict. Run sync with the same vault/state to inspect and reconcile source issues, then retry history.')
             result = sync.store.history(args.record_id)
             if refreshed.get('status') == 'degraded':
-                # The public stdout contract remains a JSON list.
+                # The public stdout contract remains a JSON list. Warning sources are vault
+                # paths a person reads, so they keep their real characters (#587).
                 warnings = refreshed.get('warnings', [])
-                print(json.dumps({'source_sync': {'status': 'degraded', 'warnings': warnings[:20],
-                                                  'warning_count': len(warnings), 'truncated': len(warnings) > 20}},
-                                 ensure_ascii=True), file=sys.stderr)
+                print_error({'source_sync': {'status': 'degraded', 'warnings': warnings[:20],
+                                             'warning_count': len(warnings), 'truncated': len(warnings) > 20}},
+                            sys.stderr, embedded=return_result)
         elif args.command == "learn":
             _ensure_scripts_path()
             from beyin_v3_learning import stage_candidate, list_candidates, resolve_candidates
-            env_session = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")
-            sess = args.session or (hashlib.sha256(env_session.encode("utf-8")).hexdigest()[:24]
-                                    if env_session else "cli")
+            sess = args.session or env_session() or "cli"
             if getattr(args, "all", False):
                 target_sess = None
             else:
@@ -1922,10 +2148,11 @@ def main(argv=None, return_result=False):
         else:
             payload = read_json(args.file)
             result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])
-        if (args.command in SOURCE_WRITE_COMMANDS
+        if ((args.command in SOURCE_WRITE_COMMANDS or
+             (args.command == "mutation-queue" and args.replay and result.get("applied", 0) > 0))
                 and (args.command != "note-edit" or result.get('status') == 'written')
-                and os.environ.get("CLAUDE_CODE_SESSION_ID")):
-            mark_session_edit(state)
+                and (os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID"))):
+            mark_session_edit(state, vault, result.get("source"))
         if return_result:
             return result, 0
         print(json.dumps(result, ensure_ascii=True, indent=2))
@@ -1952,8 +2179,7 @@ def main(argv=None, return_result=False):
             error["hint"] = ERROR_HINTS[str(exc)]
         if return_result:
             return error, code
-        print(json.dumps(error, ensure_ascii=True),
-              file=sys.stdout if args.command in NOTE_JSON_COMMANDS else sys.stderr)
+        print_error(error, sys.stdout if args.command in NOTE_JSON_COMMANDS else sys.stderr)
         return code
 
 

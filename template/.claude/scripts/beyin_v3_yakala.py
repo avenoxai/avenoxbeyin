@@ -41,10 +41,15 @@ NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 BELOW_NORMAL = getattr(subprocess, 'BELOW_NORMAL_PRIORITY_CLASS', 0)
 
 
+class _LocalAddress(ValueError):
+    """A well-formed HTTP(S) URL whose host is a local or private network address (#486)."""
+
+
 def _safe_source_url(url):
     """Accept a public HTTP(S) URL, never a helper option or a local file address.
 
-    Pure syntax/IP-literal validation: capture() intentionally does no network I/O.
+    Pure syntax/IP-literal validation: capture() intentionally does no network I/O. A clean URL
+    that only names a local or private host raises _LocalAddress, still a ValueError.
     """
     if not isinstance(url, str) or not url or any(c.isspace() or ord(c) < 32 or c == '\\' for c in url):
         raise ValueError('Yakala URL gecersiz: bosluk veya kontrol karakteri var.')
@@ -61,9 +66,6 @@ def _safe_source_url(url):
     if not host.isascii() or '%' in host or host.endswith('..'):
         raise ValueError('Yakala URL sunucu adi gecersiz.')
     host = host.lower().removesuffix('.')
-    if not host or ('.' not in host and ':' not in host) or host in ('localhost', 'localhost.localdomain') or host.endswith(
-            ('.localhost', '.local', '.lan', '.internal', '.home.arpa')):
-        raise ValueError('Yakala yerel ag ve localhost adreslerini islemez.')
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
@@ -72,9 +74,12 @@ def _safe_source_url(url):
         if re.fullmatch(r'(?:[0-9]+|0x[0-9a-f]*)', labels[-1], re.I) or any(
                 not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in labels):
             raise ValueError('Yakala URL sunucu adi gecersiz.')
+        if '.' not in host or host in ('localhost', 'localhost.localdomain') or host.endswith(
+                ('.localhost', '.local', '.lan', '.internal', '.home.arpa')):
+            raise _LocalAddress('Yakala yerel ag ve localhost adreslerini islemez.')
     else:
         if not address.is_global or address.is_multicast:
-            raise ValueError('Yakala ozel veya yerel IP adreslerini islemez.')
+            raise _LocalAddress('Yakala ozel veya yerel IP adreslerini islemez.')
     return url
 
 
@@ -94,7 +99,8 @@ def _public_answers(host, port):
 def _safe_network_url(url):
     """Reject private DNS answers before extraction helpers and stdlib retrieval (including redirects).
 
-    Note: helper subprocesses resolve again themselves; only the stdlib path pins the checked address.
+    The connections themselves are pinned to a checked address: the stdlib path by _public_opener,
+    Defuddle and yt-dlp by _EgressGuard.
     """
     _safe_source_url(url)
     parsed = urlparse(url)
@@ -142,6 +148,371 @@ def _public_opener(*handlers):
             return self.do_open(pinned(http.client.HTTPSConnection, request), request, context=self._context, **extra)
 
     return build_opener(PublicHTTP(), PublicHTTPS(), *handlers)
+
+
+# ---------------------------------------------------------------- helper egress guard
+
+# Defuddle and yt-dlp fetch by themselves. Without a guard they follow a public page's redirect to
+# a local address and resolve its name again after our check (#299). Each helper run therefore gets
+# a loopback proxy as its only proxy: every connection it opens, every redirect hop included, names
+# its target here and goes through the same public-address gate as the stdlib path, dialled to the
+# checked IP. A proxy the user configured stays in use behind the guard (_proxy_open): the gate runs
+# first, then the user's proxy carries the connection.
+_PROXY_VARIABLES = ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY')
+_PROXY_SCHEMES = ('http', 'socks4', 'socks4a', 'socks5', 'socks5h')
+_HOP_HEADERS = frozenset(('connection', 'proxy-connection', 'keep-alive', 'proxy-authorization', 'te',
+                          'trailer', 'transfer-encoding', 'upgrade', 'host'))
+_HELPER_NETWORK = threading.local()
+
+
+def _user_proxies(system):
+    """The proxies the helper would have used, for the guard to chain to: the environment (all Defuddle
+    reads) and, for a urllib-based helper such as yt-dlp (`system`), the OS proxy settings when the
+    environment names none. {'http'|'https'|'all'|'no': value}; empty for direct connections."""
+    import urllib.request
+    try:
+        proxies = urllib.request.getproxies() if system else urllib.request.getproxies_environment()
+    except Exception:  # unreadable OS settings: no proxy known
+        proxies = {}
+    return {key: str(value).strip() for key, value in proxies.items()
+            if key in ('http', 'https', 'all', 'no') and value and str(value).strip()}
+
+
+def _guarded_env(env, proxy):
+    """The guard as the helper's only proxy. A NO_PROXY list (often localhost,127.0.0.1) would let the
+    helper go around it. npm ignores ALL_PROXY and keeps the user's proxies and bypass list for its own
+    registry requests through npm_config_*, so npx still reaches its registry as before."""
+    def first(*names):
+        return next((value for name in names for key, value in env.items() if key.upper() == name and value.strip()), None)
+    npm = {'npm_config_noproxy': first('NO_PROXY'), 'npm_config_https_proxy': first('HTTPS_PROXY', 'HTTP_PROXY'),
+           'npm_config_proxy': first('HTTP_PROXY')}
+    env = {key: value for key, value in env.items() if key.upper() not in _PROXY_VARIABLES + ('NO_PROXY',)}
+    for name, value in npm.items():
+        if value and not any(key.lower() == name for key in env):
+            env[name] = value
+    env['ALL_PROXY'] = proxy
+    return env
+
+
+def _proxy_address(value):
+    """(scheme, host, port, user, password) of a proxy setting; a value without a scheme is an HTTP
+    proxy, as for curl and urllib. OSError for one the guard cannot chain to (an https:// proxy).
+    The value may carry a password: it never goes into a message."""
+    try:
+        parsed = urlparse(value if '://' in value else 'http://' + value)
+        scheme, host, port = parsed.scheme.lower(), parsed.hostname, parsed.port
+    except ValueError:
+        scheme = host = None
+    if scheme not in _PROXY_SCHEMES or not host:
+        raise OSError('Yakala bu proxy turunu koruma uzerinden kullanamaz: ' + str(scheme or 'gecersiz'))
+    return scheme, host, port or (80 if scheme == 'http' else 1080), unquote(parsed.username or ''), unquote(parsed.password or '')
+
+
+def _recv_exact(sock, size):
+    data = b''
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise OSError('Yakala: proxy baglantisi kapandi.')
+        data += chunk
+    return data
+
+
+def _proxy_login(user, password):
+    if not user:
+        return []
+    import base64
+    return ['Proxy-Authorization: Basic ' + base64.b64encode((user + ':' + password).encode('utf-8')).decode('ascii')]
+
+
+def _http_tunnel(sock, authority, user, password):
+    """CONNECT through the user's HTTP proxy; the bytes it sent past its answer."""
+    sock.sendall(('\r\n'.join(['CONNECT ' + authority + ' HTTP/1.1', 'Host: ' + authority,
+                               *_proxy_login(user, password), '', ''])).encode('latin-1'))
+    try:
+        head, rest = _proxy_head(sock)
+    except ValueError as exc:
+        raise OSError(str(exc)) from exc
+    status = head.split('\r\n', 1)[0].split(' ')
+    if len(status) < 2 or not status[0].startswith('HTTP/1.') or status[1][:1] != '2':
+        raise OSError('Yakala: kullanicinin proxy\'si tuneli acmadi (' + ''.join(status[1:2])[:3] + ').')
+    return rest
+
+
+def _socks_tunnel(sock, scheme, name, port, user, password):
+    """SOCKS4/4a/5/5h CONNECT to name:port; `name` is a checked IP, or a host name the proxy resolves."""
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        address = None
+    encoded = name.encode('ascii')
+    if len(encoded) > 255:
+        raise OSError('Yakala: sunucu adi SOCKS icin cok uzun.')
+    if scheme.startswith('socks4'):
+        if address is not None and address.version != 4:
+            raise OSError('Yakala: SOCKS4 yalniz IPv4 adresine baglanir.')
+        target = address.packed if address is not None else b'\x00\x00\x00\x01'
+        sock.sendall(b'\x04\x01' + port.to_bytes(2, 'big') + target + user.encode('utf-8') + b'\x00'
+                     + (encoded + b'\x00' if address is None else b''))
+        if _recv_exact(sock, 8)[1] != 0x5A:
+            raise OSError('Yakala: SOCKS4 proxy baglantiyi reddetti.')
+        return
+    methods = b'\x00\x02' if user else b'\x00'
+    sock.sendall(b'\x05' + bytes([len(methods)]) + methods)
+    version, method = _recv_exact(sock, 2)
+    if version != 5 or method not in methods:
+        raise OSError('Yakala: SOCKS5 proxy giris yontemini kabul etmedi.')
+    if method == 2:
+        login, secret = user.encode('utf-8')[:255], password.encode('utf-8')[:255]
+        sock.sendall(b'\x01' + bytes([len(login)]) + login + bytes([len(secret)]) + secret)
+        if _recv_exact(sock, 2)[1] != 0:
+            raise OSError('Yakala: SOCKS5 proxy girisi reddetti.')
+    target = b'\x03' + bytes([len(encoded)]) + encoded if address is None else \
+        (b'\x01' if address.version == 4 else b'\x04') + address.packed
+    sock.sendall(b'\x05\x01\x00' + target + port.to_bytes(2, 'big'))
+    version, status, _, kind = _recv_exact(sock, 4)
+    if version != 5 or status != 0:
+        raise OSError('Yakala: SOCKS5 proxy baglantiyi reddetti (%d).' % status)
+    size = {1: 4, 4: 16}.get(kind)
+    if size is None:
+        if kind != 3:
+            raise OSError('Yakala: SOCKS5 proxy cevabi gecersiz.')
+        size = _recv_exact(sock, 1)[0]
+    _recv_exact(sock, size + 2)
+
+
+def _proxy_open(proxy, tunnel, host, port, answers):
+    """(socket through the user's proxy, bytes it sent past its answer) for a target that already passed
+    the public-address gate (`answers`). socks5 and socks4 get a checked address, as their clients
+    resolve names themselves; an HTTP proxy, socks5h and socks4a get the name and resolve it, as on the
+    stdlib path. `tunnel` is the CONNECT authority, or None for plain HTTP, which an HTTP proxy takes
+    as an absolute-form request instead. Every failure here is an OSError: no address was refused."""
+    scheme, proxy_host, proxy_port, user, password = proxy
+    try:
+        ipaddress.ip_address(host)
+        names = [host]
+    except ValueError:
+        if scheme in ('socks5', 'socks4'):
+            family = (socket.AF_INET,) if scheme == 'socks4' else (socket.AF_INET, socket.AF_INET6)
+            names = list(dict.fromkeys(item[4][0].split('%')[0] for item in answers if item[0] in family))
+        else:
+            names = [host]
+    error = OSError('Yakala: SOCKS4 icin IPv4 adresi yok.')
+    for name in names:
+        sock = socket.create_connection((proxy_host, proxy_port), 30)  # the user's own proxy, not gated
+        try:
+            if scheme != 'http':
+                _socks_tunnel(sock, scheme, name, port, user, password)
+                return sock, b''
+            return sock, (_http_tunnel(sock, tunnel, user, password) if tunnel else b'')
+        except OSError as exc:
+            sock.close()
+            error = exc
+    raise error
+
+
+def _socket_end(sock, how=socket.SHUT_RDWR):
+    try:
+        sock.shutdown(how)
+    except OSError:
+        pass
+
+
+def _proxy_head(sock, limit=65536):
+    data = b''
+    while b'\r\n\r\n' not in data:
+        if len(data) > limit:
+            raise ValueError('Yakala proxy istegi cok uzun.')
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise ValueError('Yakala proxy istegi yarim kaldi.')
+        data += chunk
+    head, _, rest = data.partition(b'\r\n\r\n')
+    return head.decode('latin-1'), rest
+
+
+def _proxy_reply(code, reason):
+    text = 'Yakala: ' + reason
+    return ('HTTP/1.1 %d %s\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s'
+            % (code, {403: 'Forbidden', 502: 'Bad Gateway'}[code], len(text), text)).encode('ascii')
+
+
+class _EgressGuard:
+    """Loopback proxy for one helper run: CONNECT tunnels (TLS stays end to end) and plain HTTP
+    GET/HEAD, one request per connection. Nothing reaches a local or private address. `proxies`
+    (_user_proxies) are the user's own: a target that passes the gate goes on through them."""
+
+    def __init__(self, proxies=None):
+        import socketserver
+        guard = self
+        self.proxies = dict(proxies or {})
+        self.blocked, self.sockets, self.lock, self.closed = [], set(), threading.Lock(), False
+
+        class Handler(socketserver.BaseRequestHandler):
+            def handle(self):
+                guard._serve(self.request)
+
+        class Server(socketserver.ThreadingTCPServer):
+            daemon_threads, block_on_close = True, False  # close() ends live relays; never wait on them
+
+        self.server = Server(('127.0.0.1', 0), Handler)
+        self.url = 'http://127.0.0.1:%d' % self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': 0.05},
+                                       name='yakala-egress', daemon=True)
+        self.thread.start()
+
+    def _track(self, sock, keep=True):
+        with self.lock:
+            if keep and not self.closed:
+                self.sockets.add(sock)
+                return
+            self.sockets.discard(sock)
+        if keep:  # opened after close(): end it now
+            _socket_end(sock)
+
+    def _upstream(self, scheme, host):
+        """The user's proxy for this target, picked as Defuddle and yt-dlp pick it (the scheme's own,
+        then for HTTPS the HTTP one, then `all`), or None: no proxy, or the host is on the bypass list."""
+        value = self.proxies.get(scheme) or (self.proxies.get('http') if scheme == 'https' else None) \
+            or self.proxies.get('all')
+        if not value:
+            return None
+        if self.proxies.get('no'):
+            import urllib.request
+            if urllib.request.proxy_bypass_environment(host, {'no': self.proxies['no']}):
+                return None
+        return _proxy_address(value)
+
+    def _open(self, head):
+        """(socket to the checked public address, bytes that start the stream there or None for a
+        tunnel, bytes for the helper after the tunnel answer)."""
+        lines = head.split('\r\n')
+        request = lines[0].split(' ')
+        if len(request) != 3 or not request[2].startswith('HTTP/1.'):
+            raise ValueError('Yakala proxy istegi gecersiz.')
+        method, target = request[:2]
+        if method == 'CONNECT':
+            if not re.fullmatch(r'(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\]):[0-9]{1,5}', target):
+                raise ValueError('Yakala proxy hedefi gecersiz: ' + target[:200])
+            url = 'https://' + target + '/'
+        elif method in ('GET', 'HEAD') and target[:7].lower() == 'http://':
+            url = target
+        else:
+            raise ValueError('Yakala proxy yalniz CONNECT ve HTTP GET/HEAD iletir.')
+        try:
+            _safe_source_url(url)
+            parsed = urlparse(url)
+            host, port = parsed.hostname, parsed.port or 80
+            proxy = self._upstream(parsed.scheme, host)
+            if proxy is None:
+                upstream, early = _public_connection((host, port), 30), b''
+            else:  # the same gate, then the user's proxy carries the connection
+                answers = _public_answers(host, port)
+        except ValueError as exc:
+            if isinstance(exc.__cause__, OSError):  # the name did not resolve: no address was refused
+                raise OSError(str(exc)) from exc
+            with self.lock:
+                self.blocked.append(url)
+            raise
+        if proxy is not None:
+            upstream, early = _proxy_open(proxy, target if method == 'CONNECT' else None, host, port, answers)
+        if method == 'CONNECT':
+            return upstream, None, early
+        path = (parsed.path or '/') + ('?' + parsed.query if parsed.query else '')
+        headers = [line for line in lines[1:] if line and line.split(':', 1)[0].strip().lower() not in _HOP_HEADERS]
+        line, login = method + ' ' + path, []
+        if proxy is not None and proxy[0] == 'http':  # an HTTP proxy takes the absolute form
+            line, login = method + ' http://' + parsed.netloc + path, _proxy_login(*proxy[3:])
+        start = '\r\n'.join([line + ' HTTP/1.1', 'Host: ' + parsed.netloc, *headers, *login, 'Connection: close', '', ''])
+        return upstream, start.encode('latin-1'), b''
+
+    def _serve(self, client):
+        upstream = None
+        self._track(client)
+        try:
+            client.settimeout(30)
+            head, rest = _proxy_head(client)
+            try:
+                upstream, start, early = self._open(head)
+            except ValueError:
+                client.sendall(_proxy_reply(403, 'yerel veya ozel ag adresine baglanilmaz.'))
+                return
+            except OSError:
+                client.sendall(_proxy_reply(502, 'hedefe baglanilamadi.'))
+                return
+            self._track(upstream)
+            if start is None:
+                client.sendall(b'HTTP/1.1 200 Connection established\r\n\r\n' + early)
+                start = b''
+            upstream.sendall(start + rest)
+            client.settimeout(None)
+            upstream.settimeout(None)
+            self._relay(client, upstream)
+        except (OSError, ValueError):
+            pass
+        finally:
+            for sock in (client, upstream):
+                if sock is not None:
+                    self._track(sock, keep=False)
+                    _socket_end(sock)
+                    sock.close()
+
+    @staticmethod
+    def _relay(client, upstream):
+        """Both ways. The target's end of stream ends the helper's; a helper that hangs up ends both."""
+        def back():
+            try:
+                while True:
+                    data = upstream.recv(65536)
+                    if not data:
+                        break
+                    client.sendall(data)
+            except OSError:
+                pass
+            finally:
+                _socket_end(client, socket.SHUT_WR)
+        reader = threading.Thread(target=back, name='yakala-egress-relay', daemon=True)
+        reader.start()
+        try:
+            while True:
+                data = client.recv(65536)
+                if not data:
+                    break
+                upstream.sendall(data)
+        except OSError:
+            pass
+        finally:
+            _socket_end(upstream)
+            reader.join(5)
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+        with self.lock:
+            self.closed, live = True, list(self.sockets)
+        for sock in live:
+            _socket_end(sock)
+        self.thread.join(1)
+
+
+class _HelperNetwork:
+    """`with _HelperNetwork(system):` around one helper run. `_run` hands a helper started inside
+    it a fresh _EgressGuard as its only proxy; a proxy the user configured sits behind the guard.
+    `system`: the helper also reads the OS proxy settings (yt-dlp), see _user_proxies."""
+
+    def __init__(self, system=False):
+        self.system, self.guard, self.outer = system, None, None
+
+    def __enter__(self):
+        self.outer = getattr(_HELPER_NETWORK, 'guard', None)
+        self.guard = _EgressGuard(_user_proxies(self.system))
+        _HELPER_NETWORK.guard = self.guard
+        return self.guard
+
+    def __exit__(self, *_):
+        _HELPER_NETWORK.guard = self.outer
+        if self.guard is not None:
+            self.guard.close()
 
 
 # ---------------------------------------------------------------- cards
@@ -282,10 +653,16 @@ def canonical(url):
     video/post identity across URL forms, matched on the exact domain (notyoutube.com is not YouTube).
     Other pages ignore scheme, www/m and a trailing slash, as before, but keep a non-default port and a
     routing fragment (#/..., #!...), which name different pages.
+
+    Never raises: a hand-edited or synced card value ('http://[oops', a YAML list) names only itself,
+    so one broken card cannot stop the `isle` queue or a new capture.
     """
-    if not url:
+    if not url or not isinstance(url, str):
         return ''
-    parts = urlparse(url.strip())
+    try:
+        parts = urlparse(url.strip())
+    except ValueError:
+        return 'gecersiz:' + url.strip()
     host = (parts.hostname or '').lower().rstrip('.').removeprefix('www.').removeprefix('m.')
     try:
         port = parts.port
@@ -531,7 +908,7 @@ def _capture(vault, url=None, text=None, files=(), why='', app=None, title=None,
             pass  # a local or malformed link stays what it was: copied text, never fetched
     if url:
         _safe_source_url(url)  # Capturing stays offline.
-    extra_urls = _extra_urls(url, extra_urls)
+    extra_urls, local_urls = _extra_urls(url, extra_urls)
     why = (why or '').strip()
     files = [Path(f).expanduser() for f in files]
     if not (url or text or files):
@@ -547,18 +924,28 @@ def _capture(vault, url=None, text=None, files=(), why='', app=None, title=None,
                 addition = '\n\n## Yeniden yakalandi (' + stamp.strftime('%Y-%m-%d %H:%M') + ')\n' + (why or '_(not yok)_')
                 if text:
                     addition += '\n\n' + _quote(text)
-                merged = _extra_urls(url, (card['meta'].get('ek_urller') or []) + extra_urls)
-                if merged:
-                    card['meta']['ek_urller'] = merged
-                    links = '\n'.join('- ' + item for item in merged)
-                    if _section(body, 'Ek bağlantılar'):
-                        body = _without_section(body, 'Ek bağlantılar', links)
-                    else:
-                        addition += '\n\n## Ek bağlantılar\n\n' + links
+                kept = (_stored_list(card['meta'].get('ek_urller')), _stored_list(card['meta'].get('ek_urller_yerel')))
+                merged, merged_local = _extra_urls(url, kept[0] + kept[1] + extra_urls + local_urls, stored=True)
+                # An unchanged list keeps the card's own text. A hand-edited one is sorted again: a local
+                # value moves out of `ek_urller`, which an older release would hand on as a normal link.
+                if (merged, merged_local) != kept:
+                    for key, values, name, links in (
+                            ('ek_urller', merged, 'Ek bağlantılar', '\n'.join('- ' + item for item in merged)),
+                            ('ek_urller_yerel', merged_local, LOCAL_LINKS, _local_links(merged_local))):
+                        if not values:  # a hand-edited list that held only local or broken values
+                            if key in card['meta']:
+                                card['meta'].pop(key)
+                                body = re.sub(r'^## ' + name + r'\s*$.*?(?=^## |\Z)', '', body, count=1, flags=re.M | re.S).rstrip()
+                            continue
+                        card['meta'][key] = values
+                        if _section(body, name):
+                            body = _without_section(body, name, links)
+                        else:
+                            addition += '\n\n## ' + name + '\n\n' + links
                 copied = _capture_files(vault, folder, files)
                 if copied:
                     addition += '\n\n## Dosyalar\n\n' + '\n'.join('- [[' + item + ']]' for item in copied)
-                if text or copied or any(kind_of(value) == 'mail' for value in merged):
+                if text or copied or merged_local or any(kind_of(value) == 'mail' for value in merged):
                     card['meta']['visibility'] = 'private'
                 if capture_id:
                     identifiers = _capture_ids(card['meta'])
@@ -574,7 +961,7 @@ def _capture(vault, url=None, text=None, files=(), why='', app=None, title=None,
     path = _unique(folder / (name + '.md'))
     meta = {'tur': 'yakala', 'durum': 'bekliyor', 'kaynak_turu': kind, 'baslik': _first_line(title, 160),
             'url': url, 'yakalandi': stamp.isoformat(timespec='seconds'), 'arac': tool, 'uygulama': app,
-            'visibility': 'private' if (kind in ('mail', 'metin', 'dosya') or text or files or
+            'visibility': 'private' if (kind in ('mail', 'metin', 'dosya') or text or files or local_urls or
                                        any(kind_of(value) == 'mail' for value in extra_urls)) else 'internal'}
     body = ['# ' + _first_line(title, 160), '', '## Neden', '', why or '_(not yok)_']
     if url:
@@ -582,6 +969,9 @@ def _capture(vault, url=None, text=None, files=(), why='', app=None, title=None,
     if extra_urls:
         meta['ek_urller'] = extra_urls
         body += ['', '## Ek bağlantılar', ''] + ['- ' + item for item in extra_urls]
+    if local_urls:
+        meta['ek_urller_yerel'] = local_urls
+        body += ['', '## ' + LOCAL_LINKS, '', _local_links(local_urls)]
     if text:
         body += ['', '## Secim', '', _quote(text)]
     if copied:
@@ -592,18 +982,47 @@ def _capture(vault, url=None, text=None, files=(), why='', app=None, title=None,
     return {'status': 'yakalandi', 'id': path.stem, 'kaynak_turu': kind, 'path': path.relative_to(vault).as_posix()}
 
 
-def _extra_urls(url, values):
-    """Validate every attachment offline, keeping the primary URL's identity stable."""
-    if not isinstance(values, (list, tuple)):
+LOCAL_LINKS = 'Yerel ağ bağlantıları'
+LOCAL_LINKS_NOTE = '_Yerel veya özel ağ adresi: Yakala bu adresleri açmaz, kart özel kalır._'
+
+
+def _extra_urls(url, values, stored=False):
+    """(public, local) attachments, validated offline; the primary URL's identity stays stable.
+
+    A well-formed HTTP(S) link to a local or private network address no longer cancels the whole
+    capture (#486): it is kept apart (`ek_urller_yerel`) as a reference that `isle` never opens,
+    and its card is private. An option, a non-HTTP scheme, credentials or an obfuscated host are
+    still refused. Values read back from a card (`stored`) are skipped instead, so a hand-edited
+    or synced card can never block a new capture of its page.
+    """
+    if stored:
+        values = _stored_list(values)
+    elif not isinstance(values, (list, tuple)):
         raise ValueError('Ek bağlantılar bir liste olmalı.')
-    seen, result = {canonical(url)}, []
+    seen, public, local = {canonical(url)}, [], []
     for value in values:
-        _safe_source_url(value)
+        try:
+            _safe_source_url(value)
+            target = public
+        except _LocalAddress:
+            target = local
+        except ValueError:
+            if stored:
+                continue
+            raise
         key = canonical(value)
         if key not in seen:
-            result.append(value)
+            target.append(value)
             seen.add(key)
-    return result
+    return public, local
+
+
+def _local_links(links):
+    return '\n'.join([LOCAL_LINKS_NOTE, ''] + ['- ' + item for item in links])
+
+
+def _stored_list(value):
+    return value if isinstance(value, list) else [value] if isinstance(value, str) else []
 
 
 def _capture_files(vault, folder, files):
@@ -709,6 +1128,9 @@ def _run(command, timeout, cwd=None):
     if os.name == 'nt':
         command = _windows_safe_command(command)
     env = dict(os.environ, PYTHONIOENCODING='utf-8', NO_COLOR='1')
+    guard = getattr(_HELPER_NETWORK, 'guard', None)
+    if guard is not None:  # a network helper inside `with _HelperNetwork()`
+        env = _guarded_env(env, guard.url)
     if os.name == 'nt' and sys.platform == 'win32':
         return _windows_run(command, timeout, cwd, env)
     result = subprocess.run(command, capture_output=True, timeout=timeout, cwd=cwd, env=env,
@@ -829,8 +1251,11 @@ def via_defuddle(url, found, info=None, lang=None):
         return None
     _safe_network_url(url)
     try:
-        code, out, _ = _run([found['npx'], '-y', DEFUDDLE, 'parse', '--json', '--markdown']
-                            + (['--lang', lang] if lang else []) + ['--', url], timeout=180)
+        with _HelperNetwork() as guard:  # Defuddle reads ALL_PROXY for the page and each redirect
+            code, out, _ = _run([found['npx'], '-y', DEFUDDLE, 'parse', '--json', '--markdown']
+                                + (['--lang', lang] if lang else []) + ['--', url], timeout=180)
+        if info is not None and guard is not None and guard.blocked:
+            info['ag_engeli'] = True
         data = json.loads(out) if code == 0 else {}
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return None
@@ -908,7 +1333,8 @@ def youtube_tracks(url, found, workdir):
         return None
     _safe_network_url(url)
     try:
-        _, out, _ = _run([found['yt_dlp'], '--skip-download', '--no-playlist', '-J', '--', url], timeout=180)
+        with _HelperNetwork(system=True):
+            _, out, _ = _run([found['yt_dlp'], '--skip-download', '--no-playlist', '-J', '--', url], timeout=180)
         data = json.loads(out)
         if isinstance(data, dict) and isinstance(data.get('entries'), list):  # a playlist address: its first video
             data = data['entries'][0] if data['entries'] else None
@@ -946,7 +1372,8 @@ def via_subtitles(found, workdir, track, automatic):
                '--write-auto-subs' if automatic else '--write-subs', '--sub-langs', track, '--sub-format', 'vtt',
                '-o', str(Path(workdir) / 'sub.%(ext)s')]
     try:
-        _run(command, timeout=120)
+        with _HelperNetwork(system=True):
+            _run(command, timeout=120)
         text = vtt_text((Path(workdir) / ('sub.' + track + '.vtt')).read_text(encoding='utf-8', errors='replace'))
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -989,7 +1416,8 @@ def via_audio(url, found, workdir, lang=None, problems=None):
     _safe_network_url(url)
     audio = Path(workdir) / 'ses'
     try:
-        _run([found['yt_dlp'], '-f', 'bestaudio/best', '--no-playlist', '-o', str(audio) + '.%(ext)s', '--', url], timeout=900)
+        with _HelperNetwork(system=True):
+            _run([found['yt_dlp'], '-f', 'bestaudio/best', '--no-playlist', '-o', str(audio) + '.%(ext)s', '--', url], timeout=900)
         files = sorted(Path(workdir).glob('ses.*'))
         if not files:
             return None
@@ -1178,6 +1606,36 @@ def _safe_vault_file(vault_root, link):
     return path
 
 
+def _card_files(vault_root, card):
+    """The card's own attachment folder, resolved: capture() copies every attached file into
+    `<card folder>/dosyalar`. None when it is missing or is itself a link (symlink, junction)."""
+    folder = Path(card['path']).parent if card.get('path') else inbox(vault_root)
+    try:
+        files = (folder / FILES).resolve()
+        expected = folder.resolve() / FILES
+    except (OSError, RuntimeError):
+        return None
+    return files if files == expected and files.is_dir() else None
+
+
+def _fold_path(path):
+    return unicodedata.normalize('NFC', str(path)).casefold()
+
+
+def _card_file(vault_root, card, link):
+    """A `## Dosyalar` link of a file card names only a file captured into that card's `dosyalar/`.
+
+    Any other vault file stays out (#299): a hand-edited or synced card cannot have a kasa-class
+    folder or `.obsidian/` copied into `.ham/`. The spelling (Unicode form, case) of a synced link
+    does not decide it; the resolved location does.
+    """
+    path = _safe_vault_file(vault_root, link)  # syntax first: no resolve for UNC, drives or `..`
+    folder = _card_files(vault_root, card)
+    if folder is None or not _fold_path(path).startswith(_fold_path(folder).rstrip('\\/') + os.sep):
+        raise ValueError('Yakala dosya baglantisi kartin dosyalar klasorunde degil: ' + link)
+    return path
+
+
 def extract(vault, card, found, allow_audio=True, info=None):
     """Return (text, method, note). Prefer what is already captured, then the cheapest fetch."""
     meta, body = card['meta'], card['body']
@@ -1203,7 +1661,7 @@ def extract(vault, card, found, allow_audio=True, info=None):
         parts = []
         vault_root = Path(vault).resolve()
         for link in re.findall(r'\[\[([^\]]+)\]\]', _section(body, 'Dosyalar')):
-            path = _safe_vault_file(vault_root, link)
+            path = _card_file(vault_root, card, link)
             if path.suffix.lower() in ('.md', '.txt', '.csv', '.json', '.html', '.srt', '.vtt'):
                 parts.append('## ' + path.name + '\n\n' + path.read_text(encoding='utf-8', errors='replace'))
             elif path.suffix.lower() == '.pdf' and found['pdftotext']:
@@ -1218,12 +1676,15 @@ def extract(vault, card, found, allow_audio=True, info=None):
         return None, 'ajan-okusun', 'Dosyayi ajan dogrudan okusun (gorsel, PDF ya da ikili dosya).'
     if url:
         _safe_network_url(url)  # before npx/yt-dlp can make the first request
+        info = {} if info is None else info
         text = via_defuddle(url, found, info)
         if text:
             return text, 'defuddle', None
         text = via_stdlib(url)
         if text:
             return text, 'http', None
+        if info.get('ag_engeli'):
+            return None, None, 'Sayfa yerel veya ozel bir ag adresine yonlendirdi; Yakala o adrese baglanmadi.'
         return None, None, 'Sayfa alinamadi (giris gerekebilir); Web Clipper ile sayfa acikken yakala.'
     return _section(body, 'Secim') or None, 'metin', None
 
@@ -1258,8 +1719,12 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
         entry = {'id': card['id'], 'kart': card['path'].relative_to(vault).as_posix(),
                  'kaynak_turu': meta.get('kaynak_turu'), 'baslik': meta.get('baslik'),
                  'neden': _section(body, 'Neden'), 'url': meta.get('url')}
-        if meta.get('ek_urller'):
-            entry['ek_urller'] = meta['ek_urller']
+        extras, local = _extra_urls(meta.get('url'), _stored_list(meta.get('ek_urller')) +
+                                    _stored_list(meta.get('ek_urller_yerel')), stored=True)
+        if extras:
+            entry['ek_urller'] = extras
+        if local:
+            entry['ek_urller_yerel'] = local  # references only: never fetched here, the skill says not to open them
         try:
             if info.get('title') and (not meta.get('baslik') or str(meta.get('baslik')).startswith(('http://', 'https://'))):
                 body = re.sub(r'^# .*$', lambda _m: '# ' + _first_line(info['title'], 160), body, count=1, flags=re.M)
@@ -6768,6 +7233,8 @@ Windows'ta komutlardaki `python3` yerine `py -3` yaz.
    önce bölüm başlıklarına bak, sonra nedenle ilgili kısmı oku. `ajan-okusun` yönteminde dosyayı
    kendin aç. Mail kartında Gmail/Outlook bağlantın varsa thread'in tamamını oradan oku.
    İsteğe bağlı `ek_urller` ve `## Ek bağlantılar` seçilen diğer adresleri taşır; `isle` ana `url`'yi çıkarır.
+   `ek_urller_yerel` ve `## Yerel ağ bağlantıları` yerel veya özel ağ adresleridir: yalnız kayıttır,
+   onları açmaya ya da indirmeye çalışma.
 3. **Dersleri bağla.** Kaynak başına 1-5 somut ders çıkar. Önce `knowledge/index.md` ve ilgili
    kavramı oku; mevcut notu geliştir, yoksa `beyin` skill'indeki kuralla `knowledge/concepts/<konu>.md`
    oluştur. Her dersin altında kaynak satırı: kart bağlantısı, URL ve videoda zaman damgası

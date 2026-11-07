@@ -2,7 +2,7 @@
 
 Vault dışındaki seçili proje oturumları için: [opsiyonel global köprü](GLOBAL-BRIDGE.md).
 
-V3'te Markdown kaynak, SQLite yerel indeks, Codex/Claude Code/Antigravity, [Hermes Agent](HERMES.md), [OpenCode](OPENCODE.md), [OMP](OMP.md) ve [Kiro](KIRO.md) ise aynı motora bağlanan istemcilerdir. Python 3.11+ dışında ek Python paketi gerekmez. Varsayılan akışta Mem0, API anahtarı, daemon veya ayrı sunucu kurulmaz. [Jev danışmanı](JEV.md) isteğe bağlıdır ve varsayılan kapalıdır; `beyin.py jev` ile açılmadıkça normal arama ve hook akışını değiştirmez. Aynı danışman ayrı kurulan yerel Laya sunucusunu da yalnız gölge modda, ölçüm için kullanabilir (`jev shadow --provider laya`).
+V3'te Markdown kaynak, SQLite yerel indeks, Codex/Claude Code/Antigravity, [Hermes Agent](HERMES.md), [OpenCode](OPENCODE.md), [OMP](OMP.md), [Kiro](KIRO.md) ve [Pi](PI.md) ise aynı motora bağlanan istemcilerdir. Python 3.11+ dışında ek Python paketi gerekmez. Varsayılan akışta Mem0, API anahtarı, daemon veya ayrı sunucu kurulmaz. [Jev danışmanı](JEV.md) isteğe bağlıdır ve varsayılan kapalıdır; `beyin.py jev` ile açılmadıkça normal arama ve hook akışını değiştirmez. Aynı danışman ayrı kurulan yerel Laya sunucusunu da yalnız gölge modda, ölçüm için kullanabilir (`jev shadow --provider laya`).
 
 [Yeni kullanıcı başlangıcı](../../README.md) · [Ajanla kurulum](../../SETUP-V3.md) · [Güncelleme/geri alma](UPDATE.md) · [Birden çok makine](MULTI-MACHINE.md) · [Kaynak şeması](MARKDOWN.md) · [Runtime](RUNTIME.md)
 
@@ -10,7 +10,7 @@ Geliştiriciler için: [kaynak ve dağıtım sınırları envanteri](MODULE-BOUN
 
 ## Kullanıcı paketi
 
-Kurucu ortak motoru, `beyin`, `beyin-doktor`, `beyin-guncelle` skill'lerini, kurulu `beyin.py` girişini ve işletim sistemine uygun güncelleme kısayolunu dağıtır. Paket ZIP olarak açılıp kullanılabilir; Git gerekmez. Kurulu vault kaynak repo klasöründen bağımsız çalışır.
+Kurucu ortak motoru, `beyin`, `beyin-doktor`, `beyin-guncelle`, `beyin-kontrol` skill'lerini, kurulu `beyin.py` girişini ve işletim sistemine uygun güncelleme kısayolunu dağıtır. Paket ZIP olarak açılıp kullanılabilir; Git gerekmez. Kurulu vault kaynak repo klasöründen bağımsız çalışır.
 
 [Son kararlı release](https://github.com/avenoxai/avenoxbeyin/releases/latest) ve içindeki `beyin-v3-X.Y.Z.zip` paketi stable dağıtım noktasıdır. V3.12.0 turunda 2316 test ile 10/10 development ve 6/6 holdout semantik senaryosu geçti; CI aynı paketi Windows, macOS ve Linux'ta doğrular.
 
@@ -19,7 +19,7 @@ Kurucu ortak motoru, `beyin`, `beyin-doktor`, `beyin-guncelle` skill'lerini, kur
 - Markdown ekleme, düzenleme, silme ve yeniden adlandırma indeksle birleşir. Task metadata güncellemesi effective revision ve kaynak hash kontrolü kullanır; gövde korunur.
 - Kısa lifecycle hook'ları kalıcı metadata kuyruğuna yazar. İş gerektiğinde başlar; istemciler kapalıyken sürekli çalışan servis yoktur.
 - Kaynak bağlantılı receipt tekrar denemede aynı sonucu verir. Önceki sonuç sonraki oturumda tarihsel iddia olarak bulunur; ham sohbet doğrulanmış bilgiye çevrilmez.
-- Yeni sonuçlar varsayılan olarak `daily/v3/` ve `knowledge/v3/outcomes.md` altında receipt bağlantılarıyla görünür. `preferences --daily-layout flat` ile günlükler `daily/` altında tek listede gösterilebilir; ayrıntılar [günlük receipt düzeninde](PREFERENCES.md#günlük-receipt-düzeni). Eski günlük ve bilgi metinleri yeniden yazılmaz.
+- Yeni sonuçlar varsayılan olarak `daily/v3/` ve `knowledge/v3/outcomes.md` altında receipt bağlantılarıyla görünür. `preferences --daily-layout flat` ile günlükler `daily/` altında tek listede gösterilebilir; ayrıntılar [günlük receipt düzeninde](PREFERENCES.md#günlük-receipt-düzeni). Eski günlük ve bilgi metinleri yeniden yazılmaz. Receipt dosya adı kimlik olduğu için hash olarak kalır; Obsidian grafiğinde gizlemek için [Obsidian grafiği ve receipt dosyaları](PREFERENCES.md#obsidian-grafiği-ve-receipt-dosyaları).
 - Ortak skill kaynakları `.agents/skills` içindedir. Claude ve Kiro kendi proje kopyalarına erişir; kişisel skill çakışmaları gizlenmez.
 - Updater yalnız resmi stable release veya açıkça verilen yerel paketi kullanır. Yönetilen dosya yedekleri, kesinti journal'ı, checksum ve runtime ön kontrolleri uygulanır; başarılı sürüm kaydı en son yazılır.
 

@@ -4,6 +4,8 @@ This module is an opt-in foundation, not a replacement installer or lifecycle mi
 
 `template/.claude/scripts/beyin_v3.py` exposes `MemoryStore(state_dir, vault_root)`. SQLite records and receipts persist in `state_dir/memory.sqlite3`; the runtime directory is private to the local account. Each operation owns and closes its connection. Write operations use `BEGIN IMMEDIATE` transactions; this is local process coordination, not distributed cloud synchronization.
 
+The database records the resolved vault root it was created for (`metadata.vault_root`) and refuses any other root with `runtime belongs to another vault`, so two vaults never share one index. Nothing rebinds it implicitly. For a moved vault, `install_v3.py --state <state> --rebind-state` moves the binding after verifying that the recorded folder is gone or is the same folder, or provably uses another state root, and that the vault carries this state's installation pin; it copies the database to `memory-before-rebind.sqlite3` first. See [MULTI-MACHINE.md](MULTI-MACHINE.md#vaultu-başka-klasöre-ya-da-hesaba-taşımak).
+
 ## Hook acknowledgement retention
 
 Every processed hook event is first acknowledged as a private `state/hook-done/<sha256>.json` marker. These recent markers prevent duplicate work without needing to read the database when the same event is immediately replayed.
@@ -13,6 +15,20 @@ On successful queue drains, `beyin_v3_hook_done.py` migrates markers older than 
 Newly delivered events are checked against both the live markers and this ledger. `doctor` combines recent JSON and archived lifecycle metadata so migration does not reset previously observed clients or inflate `acknowledged_events`. This is local-only and requires no extra service or dependency.
 
 The ledger intentionally **retains event hashes indefinitely**, because removing old hashes would allow very late event-ID replays. This change bounds the number of individual JSON files during ordinary use; it does not promise bounded SQLite storage or a measured speed-up. A state reset, backup or restore should keep `memory.sqlite3` and `hook-done/` together.
+
+## Event retention and state size
+
+Every real record change stores a full snapshot in the `events` table, so a vault that is edited daily, or reindexed by an upgrade, grew `memory.sqlite3` without bound before #585. Only `history` reads old snapshots; the receipt-view quarantine stores `MAX(sequence)` as a cutoff, and sync, receipts, `doctor` and the usage report never read old rows. `beyin_v3_retention.py` therefore keeps:
+
+- the newest event of every record that still exists, which is exactly what a fresh sync of the same vault writes, so `history` of a current record is never empty;
+- at most the 10 newest events of each record, and only for 30 days; a deleted record keeps its trail, ending in its `delete` event, for that window;
+- the newest row of the table, so `MAX(sequence)` never moves back. `AUTOINCREMENT` never reuses a sequence number.
+
+The table has no time column and gets none, because a release before this one reads the same database after a rollback. Age comes from sequence marks in `metadata`: at most once a day the current `MAX(sequence)` is saved with the time, and an event at or below a mark saved 30 days ago is at least that old. Events written before the first mark count as new for one full window, so an upgraded vault loses nothing older for 30 days except snapshots beyond a record's newest 10.
+
+The background queue worker prunes at most 500 rows per successful drain on the same SQLite writer lock, after acknowledgement and hook-done compaction, and never in a worker started by a `SessionStart` or `UserPromptSubmit` hook, which may wait for it. Once the backlog is gone it checks at most once a day. It never reads the vault. In the same run it removes leftover temp files older than one day from the state root, `hook-queue/` and `receipt-reminders/`, matching only the temp names this runtime writes there (`hook-health.json.<hex>.tmp`, `.index-xxxxxxxx` and the like). The hook's own atomic writer now removes its temp file when the replace fails.
+
+Deleted rows become free pages that SQLite reuses, so the file stops growing; it does not shrink by itself. A database created by this release uses incremental auto-vacuum and the worker returns at most 1024 free pages per run. A full `VACUUM` rewrites the whole file under an exclusive lock, so it runs only from the explicit command `python3 beyin.py state-compact` (Windows: `py -3 beyin.py state-compact`; `--dry-run` reports what would go without writing). The command prunes everything due now, removes stale temp files, switches an older file to incremental auto-vacuum and runs `VACUUM`; a busy index is reported and left as it was. `doctor` reports `state_storage` (index size, free bytes, event count, auto-vacuum mode, stale temp files) as information only and suggests the command when at least 64 MiB and a quarter of the file are free pages. Neither path touches the vault, the receipts or `hook_done_ledger`.
 
 ## Records and source references
 
@@ -32,7 +48,7 @@ Turkish is agglutinative, so every token is reduced to one canonical stem by a s
 
 Filters apply before scoring. Public sees public; internal sees internal and public; private is explicit. Untrusted records never enter context. Project filtering is exact. Supersession is resolved over every trusted record, not only the eligible ones: a `supersedes` value names a note by its explicit id, by vault path (with or without `.md`) or `[[link]]`, or by its file name when exactly one note has it, never by substring. A value that resolves to nothing, to several notes or to the note itself retires nothing; sync reports it as `supersedes_issues` and doctor as `supersedes`, without degrading either. Untrusted notes cannot retire another note. Without explicit statuses every route drops notes whose status starts with a retired word (`superseded`, `retired`, `archived`, `deprecated`, `obsolete`, `replaced`, `arşiv`, `eski`, `emekli`, `geçersiz`); any other status stays deliverable. Explicit status filters select exactly the requested first words, case and Turkish letters folded; a note without a status counts as active, a task without one does not. Non-strict matches (`retrieve`, `candidates`, the `context` command) are ranked by Okapi BM25 over stem counts (`k1` 1.5, `b` 0.75) with timestamp as a tie-breaker, so a long hub note that mentions every query word once no longer outranks the note that is about them; records with no shared term keep timestamp order. Strict matches keep the calibrated weight and thresholds described below. Unknown queries abstain. Structured facts and citations are preserved; oversized text may be clipped with an explicit marker and text_truncated flag when the metadata fits, otherwise the record is omitted; the budget measures serialized record/citation characters, not tokenizer tokens or the entire response envelope.
 
-The per-turn hook asks for strict context (`context_for(..., strict=True)`), which ranks Markdown passages instead of whole notes (`beyin_v3_passage.py`, #83). Each record's text is split into heading-aware blocks (oversized blocks become overlapping windows of about 900 characters), a block is admitted with the same relative-idf weight family scaled by query coverage, and the best block per source is delivered with its heading path through the same `pack_context` budget and citation contract. Admission uses block frequency, ranking among admitted sources uses source frequency, and the coverage denominator is capped at four terms so a long conversational prompt is not rejected for its length. Frontmatter is never read (records carry the Markdown body), `daily/` and `receipts/` are always excluded, supersession, visibility, trust, project and freshness gates are the same `_eligible()` gates as the note-level path, and explicit project words do not count as matches. The derived index lives in the runtime directory as JSON (`passages.json`, 0600), re-tokenised only for changed records; a cold build runs in one-second steps and meanwhile, like any real error, falls back to the note-level path. An empty passage result is an answer, not a fallback. `retrieval.json` in the runtime directory may set `strict_floor` (default 0.20) and extra `strict_exclude` prefixes; see PREFERENCES.md. `scripts/evaluate_v3_passages.py` measures both paths on a deterministic synthetic corpus or, read-only, on your own vault.
+The per-turn hook asks for strict context (`context_for(..., strict=True)`), which ranks Markdown passages instead of whole notes (`beyin_v3_passage.py`, #83). Each record's text is split into heading-aware blocks (oversized blocks become overlapping windows of about 900 characters), a block is admitted with the same relative-idf weight family scaled by query coverage, and the best block per source is delivered with its heading path through the same `pack_context` budget and citation contract. Admission uses block frequency, ranking among admitted sources uses source frequency, and the coverage denominator is capped at four terms so a long conversational prompt is not rejected for its length. Frontmatter is never read (records carry the Markdown body), `daily/` and `receipts/` are always excluded, supersession, visibility, trust, project and freshness gates are the same `_eligible()` gates as the note-level path, and explicit project words do not count as matches. The derived index lives in the runtime directory as JSON (`passages.json`, 0600), re-tokenised only for changed records; a cold build runs in one-second steps and meanwhile, like any real error, falls back to the note-level path. An empty passage result is an answer, not a fallback. `retrieval.json` in the runtime directory may set `strict_floor` (default 0.20) and extra `strict_exclude` prefixes; see PREFERENCES.md. The same file can opt the unscoped explicit `context` command (no `--project`) into two-word admission (`unscoped_min_shared: 2`) and dominant-project demotion (`unscoped_dominant_weight`, BM25 part only); both are off by default because they cost recall on the frozen fixtures (#532). `scripts/evaluate_v3_passages.py` measures both paths on a deterministic synthetic corpus or, read-only, on your own vault.
 
 Both clients call `shared_context(store, harness, query, **kwargs)` or `store.context_for(harness, query, **kwargs)`. Codex and Claude use exactly the same retrieval implementation and normalized output. `codex_context` and `claude_context` are convenience wrappers.
 
@@ -48,7 +64,7 @@ Each database is bound to the canonical vault root. Reusing a runtime for a diff
 
 ## Transactional history
 
-Record ingestion and revision updates append an immutable snapshot event inside the same SQLite transaction as the record projection. `history(record_id, audience="internal")` returns committed `{sequence,event_type,record_id,revision,record}` entries in global monotonic sequence order; event types are `ingest` and `update`, and Markdown synchronization adds `delete` when a source is removed or no longer validates. Duplicate ingestion, rejected revisions and validation failures create no events. History is empty when the current record is outside the audience or untrusted, or its source hash is stale; a deleted record is judged by the snapshot in its final `delete` event. Individual events outside the audience are omitted. The CLI `history` command synchronizes first. Returned JSON objects are fresh copies. Receipts retain their separate idempotency table.
+Record ingestion and revision updates append an immutable snapshot event inside the same SQLite transaction as the record projection. `history(record_id, audience="internal")` returns committed `{sequence,event_type,record_id,revision,record}` entries in global monotonic sequence order; event types are `ingest` and `update`, and Markdown synchronization adds `delete` when a source is removed or no longer validates. Duplicate ingestion, rejected revisions and validation failures create no events. History is empty when the current record is outside the audience or untrusted, or its source hash is stale; a deleted record is judged by the snapshot in its final `delete` event. Individual events outside the audience are omitted. Snapshots past the retention described in "Event retention and state size" are gone; the newest snapshot of a current record always stays. The CLI `history` command synchronizes first. Returned JSON objects are fresh copies. Receipts retain their separate idempotency table.
 
 Initialization adds the events table to existing foundation databases. Prior mutations remain explicitly unrecorded prehistory; the module does not invent baseline events for old rows. This is a local audit history, not a distributed log or a complete event-replay migration tool.
 
@@ -59,9 +75,9 @@ Supply a dedicated application runtime directory. Initialization sets that exact
 V3 writes exclusively to its explicit managed vault files:
 - Entry point and metadata: `beyin.py`, `.beyin-runtime.json`, `.beyin-version`.
 - Scripts: `.claude/scripts/beyin_v3*.py`.
-- Managed starter skills: `.agents/skills/{beyin,beyin-doktor,beyin-guncelle}/`, `.claude/skills/...`, and `.kiro/skills/...`.
+- Managed starter skills: `.agents/skills/{beyin,beyin-doktor,beyin-guncelle,beyin-kontrol}/`, `.claude/skills/...`, and `.kiro/skills/...`. A same-named skill the user already has is left as it is; a rollback removes the folders of a skill the update added.
 - Platform launchers: `Beyni Guncelle.cmd`, `Beyni Güncelle.sh`, `Beyni Guncelle.command`, `Beyni Güncelle.desktop`.
-- Adapter shims: `.claude/hermes-plugin/`, `.claude/scripts/beyin_v3_kiro.py`, `.opencode/plugins/`, `.omp/hooks/`.
+- Adapter shims: `.claude/hermes-plugin/`, `.claude/scripts/beyin_v3_kiro.py`, `.opencode/plugins/`, `.omp/hooks/`, `.pi/extensions/beyin-v3.ts`.
 - Harness hook declarations: `.claude/settings.local.json`, `.codex/hooks.json`, `.codex/config.toml`, `.agents/hooks.json`, `.kiro/hooks/beyin-v3.json`.
 - Companion instruction blocks: `AGENTS.md`, `CLAUDE.md`.
 
@@ -73,9 +89,15 @@ All other paths belong to the user. In particular, `.brain/` and `custom/` direc
 projelerin sorguları devam eder. Eksik klasör eşlemesi eski `--no-sync` indeks satırlarının
 başka projelere ortak not gibi açılmaması için kapsam sınırı olarak korunur.
 
+Kasa dışına çıkan, mutlak ya da `.` içeren yol, boş proje adı veya iki projeye atanmış klasör
+gibi tek bir hatalı girdi artık bütün açık proje çağrılarını durdurmaz: girdi stderr uyarısıyla
+atlanır, işaret edebileceği kasa klasörü hiçbir projeye açılmaz ve girdi düzeltilene kadar
+`shared_unscoped` kapalı sayılır. Bozuk JSON veya bilinmeyen anahtar gibi dosya düzeyindeki
+hatalar açık proje çağrısını durdurmaya devam eder. Okuma dosyayı değiştirmez.
+
 `project-scope list` yalnız okur. `project-scope add --folder "Projeler/Deneme" --project deneme`,
 `project-scope remove --folder "Projeler/Deneme"` ve `project-scope prune` açıkça kapsam
-dosyasını düzenler. `prune` yalnız artık bulunamayan klasör girdilerini çıkarır. Bozuk
+dosyasını düzenler. `prune` artık bulunamayan klasör girdilerini ve geçersiz yolları çıkarır. Bozuk
 veya symlink yapılandırma üzerine yazılmaz; önce dosyayı onar.
 
 ## Receipt görünümü çakışması ve kurtarma

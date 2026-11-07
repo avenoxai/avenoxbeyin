@@ -162,6 +162,10 @@ def index_exclusion_lines(report, pruned=False):
     return lines
 
 
+def megabytes(value):
+    return '%.1f' % ((value or 0) / 1048576)
+
+
 def rewrite_note(entry):
     """#168: the rewrite instruction, said only once the full text is safe in the archive."""
     if entry.get('backup') in ('written', 'exists'):
@@ -353,6 +357,34 @@ def human_result(result, command, installed_version=None):
             lines.append('Sinir ayari okunamadi; hicbir sey tasinmadi.' if result.get('limits_file') == 'invalid'
                          else 'Birden fazla companion klasoru var; hicbir sey tasinmadi.')
         return '\n'.join(lines + ['Hicbir metin silinmedi; model cagrilmadi.'])
+    if command == 'state-compact':
+        if status == 'planned':
+            return ('Eski olay kaydi: ' + str(result.get('events_prunable', 0)) + ' (yaklasik ' +
+                    megabytes(result.get('event_bytes_prunable', 0)) + ' MB), eski gecici dosya: ' +
+                    str(result.get('stale_temp_files', 0)) + '. Hicbir sey degismedi.')
+        lines = ['Silinen eski olay kaydi: ' + str(result.get('events_removed', 0)) + ', eski gecici dosya: ' +
+                 str(result.get('temp_files_removed', 0)) + '.']
+        if result.get('vacuum') == 'done':
+            lines.append('Yerel indeks ' + megabytes(result.get('database_bytes_before', 0)) + ' MB -> ' +
+                         megabytes(result.get('database_bytes_after', 0)) + ' MB.')
+        elif result.get('vacuum') == 'busy':
+            lines.append('Indeks su an kullaniliyor; VACUUM yapilamadi. Acik oturumlar bitince tekrar dene.')
+        else:
+            lines.append('VACUUM tamamlanamadi: ' + ascii_text(result.get('vacuum')))
+        return '\n'.join(lines + ['Vault dosyalarina dokunulmadi.'])
+    if command == 'mutation-queue':
+        if isinstance(result.get('enabled'), bool):
+            return ('Cevrimdisi mutasyon kuyrugu: ' + ('acik' if result['enabled'] else 'kapali (acmak icin: beyin.py mutation-queue --enable)') +
+                    '; ' + str(result.get('pending_count', 0)) + ' bekleyen, ' + str(result.get('conflict_count', 0)) +
+                    ' cakisma, ' + str(result.get('failed_count', 0)) + ' basarisiz.')
+        if 'replayed' in result:
+            return ('Kuyruk yeniden oynatildi: ' + str(result.get('applied', 0)) + ' uygulandi, ' +
+                    str(result.get('conflicts', 0)) + ' cakisma, ' + str(result.get('failed', 0)) + ' basarisiz.')
+        if 'pruned' in result:
+            return 'Kuyruktan ' + str(result['pruned']) + ' kayit temizlendi; ' + str(result.get('remaining', 0)) + ' kayit kaldi.'
+        if result.get('mutation_id'):
+            return ('Kuyruk kaydi ' + plain_text(result['mutation_id']) + ': ' + plain_text(result.get('status', '')) +
+                    (' (zaten kuyrukta)' if result.get('duplicate') else '') + '.')
     if command == 'doctor':
         labels = {'never_seen': 'Henuz gercek istemci oturumu gozlenmedi.',
                   'observed_metadata': 'Oturum olaylari gozleniyor.',
@@ -383,7 +415,12 @@ def human_result(result, command, installed_version=None):
             d7_text = ''
             if d7.get('total', 0) > 0 and d7.get('ratio') is not None:
                 d7_text = ', son 7 gun: %' + str(int(round(d7['ratio'] * 100)))
-            lines.append('Makbuz kapsami: %' + str(pct) + ' (' + str(cov['covered']) + '/' + str(cov['total']) + ' oturum' + d7_text + ')')
+            # A question-only session needs no receipt; name how many of the missing ones saw no edit (#212).
+            unobserved = cov.get('missing_no_observed_edit')
+            unobserved_text = ('; ' + str(unobserved) + ' eksik oturumda duzenleme gozlenmedi'
+                               if isinstance(unobserved, int) and unobserved > 0 else '')
+            lines.append('Makbuz kapsami: %' + str(pct) + ' (' + str(cov['covered']) + '/' + str(cov['total']) + ' oturum' + d7_text + ')'
+                         + unobserved_text)
         kf = result.get('knowledge_freshness')
         if isinstance(kf, dict) and kf.get('status') == 'unavailable':
             lines.append('Son bilgi damitmasi: olculemedi (' + str(kf.get('error') or 'hata') + ')')
@@ -421,6 +458,11 @@ def human_result(result, command, installed_version=None):
             lines.append('Hafiza hijyeni: ' + name + ' ' + str(entry['chars']) + ' karakter (sinir ' + str(entry['limit']) +
                          '). Ajanina "' + ('py -3' if sys.platform == 'win32' else 'python3') +
                          ' beyin.py companion-compact" calistirmasini soyle; eski kayitlar arsive tasinir, metin silinmez.')
+        storage = result.get('state_storage') or {}
+        if storage.get('compact_suggested'):
+            lines.append('Yerel indeks (bilgi): ' + megabytes(storage['database_bytes']) + ' MB, bunun ' +
+                         megabytes(storage['free_bytes']) + ' MB bos sayfa. Diske geri vermek icin: ' +
+                         ('py -3' if sys.platform == 'win32' else 'python3') + ' beyin.py state-compact')
         rules_opening = result.get('companion_rules_opening') or {}
         if rules_opening.get('status') == 'clipped':
             lines.append('Kurallar.md acilista kirpiliyor (bilgi): kural metni ' + str(rules_opening['chars']) +
@@ -500,6 +542,14 @@ def human_result(result, command, installed_version=None):
             lines.append('Oturum ici tekrar onleme: acik (' + str(dedupe.get('sessions', 0)) + ' oturum defteri)')
         elif dedupe.get('valid') is False:
             lines.append('context-dedupe.json gecersiz; oturum ici tekrar onleme kapali sayiliyor.')
+        queue = result.get('mutation_queue') or {}
+        if queue.get('valid') is False:
+            lines.append('mutation-queue-settings.json gecersiz; cevrimdisi kuyruk kapali sayiliyor.')
+        if queue.get('enabled') or queue.get('queue_exists'):
+            lines.append('Cevrimdisi mutasyon kuyrugu: ' + ('acik' if queue.get('enabled') else 'kapali') +
+                         (' (kuyruk dosyasi okunamadi)' if queue.get('status') == 'invalid' else
+                          ' (' + str(queue.get('pending_count', 0)) + ' bekleyen, ' + str(queue.get('conflict_count', 0)) +
+                          ' cakisma, ' + str(queue.get('failed_count', 0)) + ' basarisiz)'))
         index_scope = result.get('index_exclusions') or {}
         lines += index_exclusion_lines(index_scope)
         hint = index_scope.get('vendored_hint') or {}
@@ -539,9 +589,10 @@ def human_result(result, command, installed_version=None):
             lines.append('Git kurulum dosyasi kontrolu (bilgi): ' + plain_text(tracked.get('status')) +
                          ' (' + plain_text(tracked.get('reason', 'unknown')) + ').')
         scopes = result.get('project_scopes') or {}
-        if scopes.get('status') == 'error':
-            lines.append('Proje kapsamlari (.beyin-projects.json) gecersiz: ' + str(scopes.get('error', 'hata')))
-        elif scopes.get('status') == 'warning':
+        if scopes.get('status') == 'error' and scopes.get('error'):
+            lines.append('Proje kapsamlari (.beyin-projects.json) gecersiz: ' + plain_text(scopes['error']))
+        elif scopes.get('status') in ('error', 'warning'):
+            # Entry-level problems: name each entry instead of a bare "hata" (#419).
             details = []
             if scopes.get('missing_folders'):
                 details.append('kasada bulunamayan klasorler: ' + ', '.join(plain_text(f) for f in scopes['missing_folders']))
@@ -549,6 +600,9 @@ def human_result(result, command, installed_version=None):
                 details.append('birden fazla projeye atanan klasorler: ' + ', '.join(plain_text(f) for f in scopes['duplicate_folders']))
             if scopes.get('invalid_entries'):
                 details.append('gecersiz girdiler: ' + ', '.join(plain_text(f) for f in scopes['invalid_entries']))
+            if scopes.get('duplicate_folders') or scopes.get('invalid_entries'):
+                details.append('bu girdiler atlaniyor, adlandirdiklari kasa klasorleri hicbir projeye acilmiyor' +
+                               (' ve shared_unscoped duzeltilene kadar kapali' if scopes.get('shared_unscoped') else ''))
             lines.append('Proje kapsamlari (.beyin-projects.json) dikkat gerektiriyor: ' + '; '.join(details) +
                          '. Duzenlemek veya temizlemek icin: ' + ('py -3' if sys.platform == 'win32' else 'python3') +
                          ' beyin.py project-scope prune')
@@ -590,6 +644,8 @@ def human_result(result, command, installed_version=None):
         if action == 'list':
             if result.get('status') == 'absent':
                 return 'Proje kapsamlari (.beyin-projects.json) bulunamadi.'
+            if result.get('error'):
+                return 'Proje kapsamlari (.beyin-projects.json) gecersiz: ' + plain_text(result['error'])
             lines = ['Proje kapsamlari (.beyin-projects.json):']
             folders = result.get('folders', {})
             missing = set(result.get('missing_folders', []))
@@ -599,7 +655,14 @@ def human_result(result, command, installed_version=None):
             for f in result.get('missing_folders', []):
                 if f not in folders:
                     lines.append('  ' + plain_text(f) + ' (kasada bulunamadi)')
-            lines.append('  shared_unscoped: ' + ('acik' if result.get('shared_unscoped') else 'kapali'))
+            # Skipped entries (#419): named here, closed to every project until fixed.
+            for entry in result.get('invalid_entries', []) + result.get('duplicate_folders', []):
+                lines.append('  ' + plain_text(entry) + ' (atlandi)')
+            shared = result.get('shared_unscoped')
+            if shared and result.get('shared_unscoped_effective') is False:
+                lines.append('  shared_unscoped: kapali (atlanan girdiler duzeltilene kadar)')
+            else:
+                lines.append('  shared_unscoped: ' + ('acik' if shared else 'kapali'))
             return '\n'.join(lines)
         elif action == 'add':
             return 'Klasor proje kapsamina eklendi: ' + plain_text(result.get('folder', '')) + ' -> ' + plain_text(result.get('project', ''))
@@ -665,6 +728,24 @@ def trust_review_line(files):
             '; '.join(TRUST_REVIEW[name] for name in changed) + '. Ardindan yeni oturum ac.')
 
 
+def print_error(error):
+    """--json error on stderr with real characters as UTF-8 (#587), like the CLI's print_error.
+    Kept here because a broken .beyin-runtime.json fails before the CLI module is loaded."""
+    if hasattr(sys.stderr, 'reconfigure'):
+        try:
+            sys.stderr.reconfigure(encoding='utf-8')
+        except (OSError, ValueError):
+            pass
+    # Control characters (DEL, C1), bidi and other format controls, line separators and lone
+    # surrogates stay escaped.
+    text = ''.join(json.dumps(ch)[1:-1] if unicodedata.category(ch) in ('Cc', 'Cf', 'Cs', 'Zl', 'Zp') else ch
+                   for ch in json.dumps(error, ensure_ascii=False))
+    try:
+        print(text, file=sys.stderr)
+    except UnicodeEncodeError:
+        print(json.dumps(error, ensure_ascii=True), file=sys.stderr)
+
+
 def load_cli(directory):
     """The installed CLI module, loaded from its file like every other entry-point command."""
     spec = importlib.util.spec_from_file_location('beyin_installed_cli', directory / 'beyin_v3_cli.py')
@@ -695,7 +776,10 @@ def main(argv=None):
         config_path = vault / '.beyin-runtime.json'
         if not config_path.is_file():
             raise ValueError('Kurulum ayari eksik; resmi V3 installer ile bu vault kurulumunu tamamlayin.')
-        config = json.loads(config_path.read_text(encoding='utf-8'))
+        try:
+            config = json.loads(config_path.read_text(encoding='utf-8'))
+        except ValueError as exc:  # JSONDecodeError or UnicodeDecodeError: name the file (#587)
+            raise ValueError('Kurulum ayari okunamadi: .beyin-runtime.json gecerli JSON degil (' + str(exc) + ').') from None
         directory = vault / '.claude/scripts'
         sys.path.insert(0, str(directory))
         cli = None
@@ -733,8 +817,7 @@ def main(argv=None):
             class _UpdateArgumentParser(argparse.ArgumentParser):
                 def error(self, message):
                     if force_json:
-                        error = {'error': 'SystemExit', 'message': message}
-                        print(json.dumps(error, ensure_ascii=True), file=sys.stderr)
+                        print_error({'error': 'SystemExit', 'message': message})
                         self.exit(2)
                     super().error(message)
 
@@ -789,7 +872,10 @@ def main(argv=None):
         return code
     except Exception as exc:
         error = {'error': type(exc).__name__, 'message': str(exc)}
-        print(human_result(error, command, installed_version) if human else json.dumps(error, ensure_ascii=True), file=sys.stderr)
+        if human:
+            print(human_result(error, command, installed_version), file=sys.stderr)
+        else:
+            print_error(error)
         return 1
 
 

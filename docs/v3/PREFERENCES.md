@@ -57,6 +57,37 @@ aktarılır. Güncellemeden önce hem state hem eski görünümün kanıtı zate
 geçmiş güvenle çıkarılamaz; eski state veya vault yedeği gerekir. İnsan günlüklerini
 yanlışlıkla gizlememek için yalnız dosya adından geçmiş sahiplik uydurulmaz.
 
+### Obsidian grafiği ve receipt dosyaları
+
+Her receipt `receipts/<event-id-sha256>.md` adıyla yazılır. Bu ad receipt'in kimliğidir:
+aynı gönderimin tekrarı, yarım kalan yazmanın kurtarılması, başka makineden gelen kopyanın
+eşleşmesi ve eski sürümler bu adla çalışır. Beyin bu yüzden receipt dosyalarını yeniden
+adlandırmaz; elle de yeniden adlandırma, adı eşleşmeyen dosya receipt olarak okunmaz.
+
+`daily/v3/` ve `knowledge/v3/outcomes.md` görünümleri receipt'e
+`[[receipts/<hash>.md|<event_id>]]` biçiminde bağlanır, okuma görünümünde hash yerine
+event id görünür. Özeti gizlenen receipt'te (özel, güvenilmeyen, okunamayan veya indeks
+dışı bırakılan kaynağa bağlı) event id de gösterilmez; bağlantı yalnız hash adıyla kalır,
+çünkü ajanın seçtiği id çoğu zaman özetle aynı işi anlatır. `recap` da event id göstermez.
+
+Obsidian grafiği düğümleri dosya adıyla etiketler; `aliases` veya `title` özelliği çekirdek
+grafikteki etiketi değiştirmez. Receipt düğümleri bu yüzden grafikte hash adıyla görünür ve
+her receipt'e bağlanan `outcomes` büyük bir merkez düğüm olur. Beyin `.obsidian/` ayarlarına
+dokunmaz; receipt'leri grafikten çıkarmak Obsidian'da kullanıcının seçimidir:
+
+- Yalnız grafikten gizlemek için Graph view ayarlarında (dişli simgesi) Filters > Search files
+  alanına `-path:"receipts/"` yaz. Üretilmiş görünümleri de gizlemek için
+  `-path:"receipts/" -path:"daily/v3/" -path:"knowledge/v3/"` kullan. `path:` yolun içinde
+  arar; adı `receipts` ile biten başka bir klasör de gizlenir. Arama ve dosya gezgini değişmez.
+- Grafikten ve aramadan birlikte çıkarmak için Settings > Files and links > Excluded files
+  listesine `receipts/` ekle (istersen `daily/v3/` ve `knowledge/v3/` de). Obsidian bu
+  kalıplara uyan dosyaları Graph view, Search ve unlinked mentions içinde göstermez, Quick
+  Switcher ve bağlantı önerilerinde geri plana alır.
+
+Bu ayarlar yalnız Obsidian'ı etkiler; `sync`, `recap`, `context` ve oturum açılış bağlamı
+aynı kalır. Flat düzende görünümler insan günlükleriyle aynı `daily/` klasöründedir;
+`daily/` klasörünü dışlarsan kendi günlüklerin de gizlenir.
+
 ## Hafıza dosyası sınırları
 
 `Last-Session.md` varsayılan olarak 3.000, `Threads.md` 8.000 karakterle sınırlıdır.
@@ -290,9 +321,9 @@ python3 beyin.py preferences --context-dedupe on
 
 ## Stop'ta receipt hatırlatması
 
-Kurulum, Claude ve Codex için PostToolUse hook'unu yalnız dosya düzenleyen araçlara bağlar (`Edit|Write|apply_patch`). Bu olay geldiğinde hook, vault dışındaki runtime klasörüne oturum kimliğinin hash'iyle adlandırılmış küçük bir düzenleme işareti yazar; transcript okunmaz. Kabuk komutuyla yapılan düzenlemeler bu olayı tetiklemez. Stop'ta runtime kaydında aynı istemci ve aynı `session` değeriyle, düzenlemelerden sonra yazılmış bir receipt yoksa hook oturum başına bir kez Stop'u engeller ve `python3 beyin.py receipt --harness claude --session <değer> --event-id ... --summary ... --ref ...` komutunu (Codex için `--harness codex`, Windows'ta `py -3`; JSON alternatifi `--file RECEIPT_JSON`) `Receipt session=<değer>` bilgisiyle birlikte hatırlatır. Bu değer `--session` ile ya da receipt JSON'undaki `session` alanına yazılmazsa receipt bu checkpoint'i kapatmaz. Receipt'ten sonra yapılan yeni düzenlemeler yeni bir pencere açar.
+Kurulum, Claude ve Codex için PostToolUse hook'unu yalnız dosya düzenleyen araçlara bağlar (`Edit|Write|apply_patch|MultiEdit|NotebookEdit`). Bu olay geldiğinde hook, vault dışındaki runtime klasörüne oturum kimliğinin hash'iyle adlandırılmış küçük bir düzenleme işareti yazar; transcript okunmaz. Kabuk komutları bu olayı tetiklemez; her komutta bir hook süreci başlatmamak için Bash eşleştiriciye eklenmez. Bunun yerine Claude Code'da, turda editör düzenlemesi yoksa Stop kancası yalnız o oturumun kendi transcript dosyasının son 2 MB'ını okur ve turun başındaki kullanıcı mesajında durur (#212). Turdaki bir Bash veya PowerShell komutunun adını açıkça verdiği (tırnaklı yol, düz yol ya da son parçada `*.md` gibi bir glob) bir vault Markdown dosyası, en son o komut çalışırken (çağrı ile sonuç kaydı arasında) değiştiyse aynı düzenleme işareti o komutun zamanıyla açılır. Komutun yalnız okuduğu bir notu daha sonra başka bir oturumun ya da editörün değiştirmesi bu oturuma yazılmaz. Komut metni hiçbir yere yazılmaz; yalnız zaman damgası tutulur. Değişkenle verilen yol, yolunu kendisi hesaplayan betik, arka planda yazan komut, taşıma ve silme görülmez; nokta klasörleri ve sync'in yeniden yazdığı receipt görünümleri sayılmaz. Task alt ajanlarının komutları (transcript'leri ayrı dosyadadır) ve aynı turda bir kesme, sıkıştırma ya da slash komutu kaydından önceki komutlar da görülmez. Codex'te kabuk komutları okunmaz. Bash aracından çalışan `note-create`, `note-edit`, `task-create` ve `task-update` oturumu `CLAUDE_CODE_SESSION_ID` ile bilir: düzenleme işaretini kendisi açar ve küçük bir bayrak bırakır; o oturumun bir sonraki Stop'u bu yazmayı yazma zamanıyla `observed: cli` işaretli `PostToolUse` metadata'sı olarak kuyruğa alır, böylece receipt kapsamı bu turu da düzenlenmiş tur sayar. Stop'ta runtime kaydında aynı istemci ve aynı `session` değeriyle, düzenlemelerden sonra yazılmış bir receipt yoksa hook oturum başına bir kez Stop'u engeller ve `python3 beyin.py receipt --harness claude --session <değer> --event-id ... --summary ... --ref ...` komutunu (Codex için `--harness codex`, Windows'ta `py -3`; JSON alternatifi `--file RECEIPT_JSON`) `Receipt session=<değer>` bilgisiyle birlikte hatırlatır. Bu değer `--session` ile ya da receipt JSON'undaki `session` alanına yazılmazsa receipt bu checkpoint'i kapatmaz. Receipt'ten sonra yapılan yeni düzenlemeler yeni bir pencere açar.
 
-Stop olayı hatırlatmadan önce kuyruğa alınır. Runtime kaydı okunamazsa akış durdurulmaz. `stop_hook_active` taşıyan ikinci Stop, manuel profil (`auto_sync: false`) ve global köprü hatırlatma yapmaz; tek seferlik hakkı da harcamaz. Kullanıcı mesajında `[kaydetme]` yazarak bu oturumdaki hatırlatmayı kapatabilir; `BEYIN_V3_NO_RECEIPT_REMINDER=1` özelliği tamamen kapatır.
+Stop olayı hatırlatmadan önce kuyruğa alınır. Runtime kaydı okunamazsa akış durdurulmaz. `stop_hook_active` taşıyan ikinci Stop, manuel profil (`auto_sync: false`) ve `--metadata-only` hook çağrısı hatırlatma yapmaz; tek seferlik hakkı da harcamaz. Global köprü dış proje oturumu için aynı tek seferlik hatırlatmayı kendi düzenleme gözlemi ve mutlak CLI yoluyla verir ([global köprü](GLOBAL-BRIDGE.md#kaynaklı-kayıt-ve-doğrulama)). Kullanıcı mesajında `[kaydetme]` yazarak bu oturumdaki hatırlatmayı kapatabilir; `BEYIN_V3_NO_RECEIPT_REMINDER=1` özelliği tamamen kapatır.
 
 Receipt özetinde kalıcı bir öğrenim ayrı bir satırda, satır başında beyan edilir: `Öğrenilen: <tek cümle>` (ya da `Ders:`, `Learned:`, `Kalıcı öğrenim:`). Öğrenim yoksa gerekçe aynı satırda belirtilir: `Öğrenilen: yok (rutin kontrol)`. `yok`, `hiçbiri`, `bulunmadı`, `none` gibi cevaplar ve boş etiket öğrenim beyanı sayılmaz. Dosya düzenlenen bir oturumda gerekçesiz yalın `Öğrenilen: yok` cevabı bir kez sorgulanır; boş etiket liste başlığı olabileceğinden sorgulanmaz. Cevabın sonundaki parantezli açıklama da (`Öğrenilen: yok (rutin kontrol)`) cevabı değiştirmez; parantezden sonra gelen metin ise beyan sayılır. Etiket yalnız kendi satırında okunur; metin içinde geçen `machine learning:` gibi ifadeler beyan değildir. Receipt öğrenim beyan ettiği halde oturumda `knowledge/`, `🧠 500-Knowledge/` veya `500-Knowledge/` altında bir not yazılmadıysa ya da refs içinde böyle bir not yoksa, Stop kancası oturum başına bir kez ajana öğrenimi `knowledge/concepts/` altına damıtmasını hatırlatır. `knowledge/index.md`, `knowledge/log.md` ve `knowledge/v3/` damıtma sayılmaz; bunlar derleyici, git veya eşitleme tarafından da değişebilir. Receipt hatırlatmasına cevap olarak yazılan receipt, `stop_hook_active` taşıyan Stop'ta değil sonraki Stop'ta kontrol edilir. Kalıcı kavram gerekmiyorsa ajanın bunu tek cümleyle belirtmesi yeterlidir; kanca ikinci kez engellemez. Henüz kalıcı nota dönüşmemiş öğrenimler `python3 beyin.py learn --session SESSION --candidate "Öğrenim" --source notes/kaynak.md --scope PROJE` ile runtime içindeki `learning-state.jsonl` defterine kaydedilebilir; `learn --list` aktif adayları listeler. `--scope` verilmezse kapsam globaldir. Session değeri hook'un verdiği değer olmalıdır. Bu düzenleme penceresinin başlangıcından sonra kaydedilen bir aday, hem bilgi damıtımı hatırlatmasını hem de yalın `yok` sorgusunu karşılar; eski aday sonraki pencerelerde geçerli değildir. Gerekçeli `yok` cevabında, boş etikette ve hatırlatma gerekmeyen diğer receipt'lerde klasör taranmaz. Defter yerel bir ara kayıttır; otomatik damıtma yapmaz.
 
@@ -321,9 +352,36 @@ Runtime klasöründeki (konumu için bkz. QUICKSTART) isteğe bağlı `retrieval
 
 - `strict_floor`: 0 ile 2 arası sayı, varsayılan 0,20. Yükseltmek yanlış eklemeyi azaltır, cevabı bulma oranını da düşürür.
 - `strict_exclude`: vault köküne göre en fazla 64 yol öneki. `daily/` ve `receipts/` her zaman dışarıdadır, liste bunlara eklenir. Karşılaştırma büyük/küçük harfe ve Unicode biçimine (NFC/NFD) duyarsızdır, `\` ayırıcısı da kabul edilir. Arşiv ya da oturum dökümü klasörleri için uygundur. Bu ayar strict arama yollarında, not düzeyi yedek arama dahil, sonuçları eler. `context_mode: session` açılışındaki companion kaynak seçimine uygulanmaz ve açık non-strict geçmiş aramasını engellemez. Arşiv klasörünü indeksten tamamen uzak tutmak için aşağıda anlatılan `--index-exclude-dir` tercih edilmelidir.
+- `unscoped_min_shared` (1 ya da 2, varsayılan 1) ve `unscoped_dominant_weight` (0'dan büyük, en fazla 1; varsayılan 1): yalnız `--project` verilmeden çalışan açık `beyin.py context` aramasına iki isteğe bağlı kural ekler. İkisi de varsayılan olarak kapalıdır; ayrıntı aşağıdaki bölümde.
 - Dosya bozuksa ya da bir değer geçersizse varsayılanlar kullanılır; hook bozulmaz.
 
-Bu ayar makineye özeldir ve `.beyin-preferences.json` şemasına girmez: eski bir sürüme dönüldüğünde tanımadığı bir tercih alanı yüzünden hook'un durması istenmedi.
+Bu ayar makineye özeldir ve `.beyin-preferences.json` şemasına girmez: eski bir sürüme dönüldüğünde tanımadığı bir tercih alanı yüzünden hook'un durması istenmedi. Eski sürümler bu dosyada okumadıkları anahtarları yok sayar.
+
+### Projesiz açık arama: iki isteğe bağlı kural (#532)
+
+`beyin.py context "<soru>"` proje verilmeden çalıştığında sonuçlar BM25 ile sıralanır ve soruyla tek bir kelime paylaşan not da sonuca girer. Notların çoğunu tek bir projede (ders notları, eski bir arşiv) tutan bir vault'ta bu iki şey olabilir: o proje her sorunun ilk beşini hacmiyle doldurur ve vault dışı bir soru tek ortak kelime yüzünden alakasız bir not getirir. İki kural bunlar için `retrieval.json` ile açılır:
+
+```json
+{"unscoped_min_shared": 2, "unscoped_dominant_weight": 0.25}
+```
+
+- `unscoped_min_shared: 2`: çok kelimeli bir soru, notla en az iki kelime paylaşmalıdır (hook'un strict yolundaki kapının aynısı). Tek ortak kelimeyle gelen not elenir; hiçbir not kalmazsa sonuç `records: []` ve `abstained: true` olur. Tam ad eşleşmesi (#354) ya da notun kendi projesini adlandıran bir kelime tek başına yeter ("tavla oyunu ne durumda" tavla notlarına ulaşır). Tek kelimelik soru tek ortak kelimeyle çalışmaya devam eder; yazım hatası düzeltmesi düzelttiği kelimenin yerine sayılır, ikinci kelime sayılmaz.
+- `unscoped_dominant_weight`: uygun kayıtların yarısından fazlasını tek bir proje tutuyorsa (indeks en az 20 kayıt) o projenin kayıtlarının BM25 ağırlığı bu katsayıyla çarpılır. Kayıt silinmez, yalnız aşağı iner. Ad eşleşmesi, vadesi gelen görev ve kapalı görev düzeltmeleri ölçeklenmez. Soruda projenin adı ya da `.beyin-projects.json` içinde ona eşlenen klasörün adı geçiyorsa düşürme uygulanmaz. Kaydın projesi önce kendi `project` alanından, yoksa `.beyin-projects.json` klasör eşlemesinden gelir; `--project` ile aynı mantık.
+- Etkilemedikleri: `--project` verilen sorgular, her mesajdaki hook bağlamı (strict yol), oturum açılışındaki companion seçimi, Jev aday havuzları ve `--jev` yolu.
+
+Neden kapalı: kazanç vault'un yapısına bağlı. Katkıyı getiren ölçümde (698 not, notların %83'ü tek bir ders projesinde) iki kural birlikte İngilizce 20 soruda top-1'i 14'ten 16'ya çıkardı, top-3'ü 18'den 17'ye indirdi; vault dışı 4 sorunun 4'ünde boş sonuç döndü (önce 0), sonradan okunan notu ilk beşte bulma 8'den 7'ye indi. Depodaki sabit fixture'lar aynı projesiz açık arama yolundan sorulduğunda:
+
+| Ölçüm (projesiz açık `context`) | kapalı (varsayılan) | `unscoped_min_shared: 2` | `unscoped_dominant_weight: 0.25` |
+|---|---|---|---|
+| Arama benchmark'ı, 32 soru, proje yok: top-1 / top-3 | 30 / 32 | 30 / 32 | 30 / 32 |
+| Aynı benchmark, üst klasör proje sayıldığında (`knowledge` %57): top-1 / top-3 | 30 / 32 | 30 / 32 | 21 / 26 |
+| Pasaj korpusu, 42 kısa soru, cevaplar %71'lik projede: ilk beşte | 41 | 41 | 24 |
+| Aynı korpus, proje %80: ilk beşte, kısa / uzun soru | 41 / 38 | 41 / 38 | 10 / 0 |
+| Karar fixture'ı, 22 beklenen not: bulunan / fazladan teslim | 19 / 43 | 18 / 32 | 19 / 43 |
+| Pasaj korpusu gürültüsü, 15 gündelik / 15 ajan komutu: sonuç dönen | 12 / 13 | 5 / 4 | 12 / 13 |
+| Senaryo fixture'ı, 12 cevaplı soru: ilk beşte | 12 | 12 | 12 |
+
+Düşürme, cevaplar baskın projenin içindeyken her katsayıda (0,25 ile 0,9 arası denendi) isabeti azaltıyor; eşiği yükseltmek yalnız sınırı kaydırıyor. İki kelime kuralı gürültüyü belirgin azaltıyor ama tek ortak kelimeyle doğru notu bulan bir soruyu ("aynı şekilde geri al") boş bırakıyor. Bu yüzden ikisi de açıkça seçilen ayarlar. Vault'unuzda notların çoğu tek bir projedeyse ve projesiz sorularınız genelde o projeyle ilgili değilse açmayı deneyin; önce ve sonra kendi sorularınızla ölçün.
 
 ### Ölçüm ve varsayılan `strict_floor`
 
@@ -382,7 +440,11 @@ Kullanıcı gereksinim duymadığı başlangıç skill'lerini, adaptörleri, ba�
 - `python3 beyin.py preferences --include-component skills/beyin-doktor`
 
 Hariç tutulabilen bileşenler:
-`agents_block`, `adapters`, `adapters/hermes`, `adapters/omp`, `adapters/opencode`, `harnesses/antigravity`, `launchers`, `skills`, `skills/beyin`, `skills/beyin-doktor`, `skills/beyin-guncelle`.
+`agents_block`, `adapters`, `adapters/hermes`, `adapters/kiro`, `adapters/omp`, `adapters/opencode`, `harnesses/antigravity`, `launchers`, `skills`, `skills/beyin`, `skills/beyin-doktor`, `skills/beyin-guncelle`.
+
+`adapters` grubu Pi extension'ını (`.pi/extensions/beyin-v3.ts`) da kapsar. Pi için ayrı bir ad yoktur: `.beyin-exclusions.json` kasayla birlikte taşınır ve 3.12.0 ve öncesi bilinmeyen bir adı gördüğünde güncellemeyi durdurur.
+
+`beyin-kontrol` skill'i yalnız kullanıcı açıkça istediğinde çalışır ve onay olmadan yazmaz; tek başına hariç tutma adı yoktur, `skills` dört başlangıç skill'ini birlikte kaldırır. Yeni bir ad eski sürümlerin `.beyin-exclusions.json` doğrulamasını bozacağı için rollback uyumluluğu adına eklenmedi.
 
 Hariç tutma tercihleri vault kökünde bağımsız `.beyin-exclusions.json` dosyasında saklanır (`.beyin-preferences.json` dosyasını değiştirmez; böylece eski sürümlere rollback 3.4.0 uyumlu kalır). Tercih kaydedildiğinde bir sonraki kurulum veya güncellemede uygulanır (`update` veya `install`). Değiştirilmemiş hariç tutulan dosyalar temizlenir, kullanıcının değiştirdiği dosyalar ise çakışma vermeden korunur. `doctor` çıktısı hem uygulanan hariç tutmaları hem de bekleyen değişiklikleri gösterir.
 

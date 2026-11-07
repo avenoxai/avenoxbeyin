@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import ExitStack
+import codecs
 from datetime import datetime, timezone
 import json
 import os
@@ -20,7 +21,7 @@ _MODULE_DIR = str(Path(__file__).resolve().parent)
 if _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
-from beyin_v3 import (HARNESSES, MAX_RECEIPT_LINKS, REJECTED_AT, RETIRED_STATUSES, MemoryStore, ReceiptConflict, RevisionConflict, _json,
+from beyin_v3 import (HARNESSES, MAX_RECEIPT_LINKS, RECEIPT_CLIENT_NAME, RECEIPT_CLIENTS, REJECTED_AT, RETIRED_STATUSES, MemoryStore, ReceiptConflict, RevisionConflict, _json,
                       _path_redirected, _plain_link, _rejected_inference, _status_word, rejected_dependents, resolve_supersedes)
 from beyin_v3_index import applied_keys, dir_key, exclusions as index_exclusions, prune as prune_excluded
 from beyin_v3_hygiene import sensitive_excluded, sensitive_source
@@ -32,7 +33,8 @@ from beyin_v3_projections import (is_receipt_view_source, is_receipt_view_confli
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
 from beyin_v3_notes import (NoteConflict, locked as note_locked,
-                            read as note_read_source, apply as note_apply_edits)
+                            read as note_read_source, apply as note_apply_edits,
+                            decode_utf8, require_utf8_text, require_utf8_values)
 
 
 def _hash(data):
@@ -281,12 +283,34 @@ def render(metadata, body):
     return '---\n' + json.dumps(metadata, ensure_ascii=False, indent=2) + '\n---\n' + body
 
 
+def _receipt_harness(event):
+    """Receipt source fields naming the client; RECEIPT_CLIENTS persist as manual + client (#385).
+
+    Released 3.12.0 and older reject an unknown `harness` in a receipt source, so a receipt
+    written here would degrade their sync after a rollback or on another device that shares the
+    vault. They ignore `client`. The runtime index keeps the client name as the harness, so the
+    receipt still closes that client's checkpoint and Stop reminder.
+    """
+    harness = event['harness']
+    if harness in RECEIPT_CLIENTS:
+        return {'harness': 'manual', 'client': harness}
+    fields = {'harness': harness}
+    if isinstance(event.get('client'), str):
+        fields['client'] = event['client']
+    return fields
+
+
 EXCLUDED_FILES = {'agents.md', 'claude.md', 'gemini.md', 'skill.md', 'hooks.md', 'config.md', 'settings.md', 'instructions.md', 'codex.md', 'setup.md', 'install.md'}
 EXCLUDED_DIRS = {'node_modules', 'receipts', '__pycache__'}
 # User-chosen directory names (<state>/index.json) are pruned on top of these; see beyin_v3_index.
 # Nothing else is skipped by name: "vendor" or "external" is also an ordinary notes folder.
 COMPLETION_FIELDS = {'completion_contract', 'completion_criterion', 'evidence_refs'}
 TASK_STATUSES = ('inbox', 'active', 'waiting', 'blocked', 'done', 'cancelled')
+# Evidence newly linked to a strict done task must name the task within this many bytes.
+EVIDENCE_SCAN_BYTES = 1024 * 1024
+# A FAT/exFAT stamp is local wall time and a synced or shared copy keeps the writer's clock.
+# UTC offsets span 26 hours (UTC-12 to UTC+14); the rest is margin for DST and clock drift.
+EVIDENCE_FUTURE_SLACK_SECONDS = 48 * 3600
 
 
 def _check_task_dates(fields):
@@ -660,8 +684,48 @@ class SyncEngine:
         if isinstance(refs, list):
             metadata['evidence_refs'] = [self._path(ref).relative_to(self.root).as_posix() for ref in refs]
 
-    def _completion_issue(self, metadata, task_source=None):
-        """Validate an opt-in task contract without changing its evidence sources."""
+    @staticmethod
+    def _evidence_identity_issue(path, task_id):
+        """Newly linked strict evidence must name its task and carry a plausible timestamp."""
+        try:
+            if path.stat().st_mtime > time.time() + EVIDENCE_FUTURE_SLACK_SECONDS:
+                return 'evidence file has an invalid future modification time'
+            with path.open('rb') as handle:
+                head = handle.read(EVIDENCE_SCAN_BYTES)
+                # One lookahead byte distinguishes real EOF from a truncated scan.
+                truncated = bool(handle.read(1))
+        except OSError:
+            return 'evidence file must contain the matching task identifier'
+        decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+        text = unicodedata.normalize('NFC', decoder.decode(head, final=not truncated))
+        if truncated:
+            # The limit may cut an identifier (or a UTF-8 tail), so a trailing run cannot end a match.
+            # Matched on the reversed text: `[\w.-]+$` backtracks quadratically over a long run.
+            text = text[:len(text) - re.match(r'[\w.-]*', text[::-1]).end()]
+        task_id = unicodedata.normalize('NFC', str(task_id))
+        # A dot or hyphen continues the identifier only before another word character (T-1.2,
+        # T-1-b); at a sentence end ("Done: T-1.") it is punctuation.
+        if not re.search(r'(?<![\w.-])' + re.escape(task_id) + r'(?![.-]*\w)', text):
+            return 'evidence file must contain the matching task identifier'
+        return None
+
+    def _ref_identities(self, refs):
+        """Source identities of stored evidence refs; refs that no longer resolve are skipped."""
+        identities = set()
+        for ref in refs if isinstance(refs, list) else ():
+            try:
+                identities.add(self._source_identity(self._path(ref)))
+            except ValueError:
+                continue
+        return identities
+
+    def _completion_issue(self, metadata, task_source=None, linked=None):
+        """Validate an opt-in task contract without changing its evidence sources.
+
+        `linked` holds the identities of evidence a strict done task already had before this
+        write; each other ref is newly linked and must name the task. None (doctor, or a write
+        that links no evidence) skips that check, so evidence accepted when a task was closed
+        is never re-judged and an upgrade cannot turn a completed task invalid."""
         contract = metadata.get('completion_contract')
         if contract is not None and contract != 'strict':
             return 'completion_contract must be strict when set'
@@ -681,6 +745,8 @@ class SyncEngine:
                 task_identity = self._source_identity(self._path(task_source))
             except ValueError:
                 return 'task source is unavailable or outside vault'
+        verify = (linked is not None and contract == 'strict' and metadata.get('status') == 'done'
+                  and metadata.get('id'))
         seen = set()
         for ref in refs:
             try:
@@ -693,6 +759,10 @@ class SyncEngine:
             seen.add(identity)
             if task_identity is not None and identity == task_identity:
                 return 'evidence ref cannot be the task source itself'
+            if verify and identity not in linked:
+                issue = self._evidence_identity_issue(path, metadata['id'])
+                if issue:
+                    return issue
         return None
 
     def completion_health(self):
@@ -844,7 +914,7 @@ class SyncEngine:
                             records[id] = None
                             continue
                     raw = path.read_bytes()
-                    text = raw.decode('utf-8')
+                    text = decode_utf8(raw)  # Names CESU-8 and lone surrogates in the warning.
                     if _has_conflict_markers(text):
                         raise ValueError('unresolved git conflict markers; resolve the merge before sync')
                     metadata, body = parse(text)
@@ -947,6 +1017,11 @@ class SyncEngine:
             raise ValueError('filename does not match event_id hash')
         if harness not in HARNESSES + ('manual',):
             raise ValueError(f'invalid harness: {harness}')
+        client = metadata.get('client')
+        if client is not None and (not isinstance(client, str) or not RECEIPT_CLIENT_NAME.fullmatch(client)):
+            raise ValueError('invalid receipt client')
+        if harness == 'manual' and client in RECEIPT_CLIENTS:
+            harness = client  # the backward-readable form _receipt_harness writes (#385)
         # Refs were validated when the receipt was written; a later rename must not block recovery.
         if not isinstance(refs, list) or not refs or any(
                 not isinstance(ref, str) or not ref or Path(ref).is_absolute() or '..' in Path(ref).parts for ref in refs):
@@ -955,6 +1030,10 @@ class SyncEngine:
         if not summary.strip():
             raise ValueError('empty receipt summary')
         event = {'event_id': event_id, 'summary': summary, 'refs': [Path(ref).as_posix() for ref in refs], 'harness': harness}
+        if client is not None and client != harness:
+            # A client this version does not know (a newer writer) stays manual like on older
+            # versions; keeping the name lets an idempotent replay render the same bytes.
+            event['client'] = client
         links = metadata.get('links')
         if links is not None:
             if not isinstance(links, list) or not links:
@@ -1241,7 +1320,13 @@ class SyncEngine:
             metadata, body = parse(raw.decode('utf-8'))
             if metadata.get('id') != id or type(metadata.get('revision')) is not int or metadata['revision'] > expected_revision:
                 raise RevisionConflict('source revision conflict')
-            before = {field: metadata.get(field) for field in ('status', 'completion_contract', 'completion_criterion')}
+            before = {field: metadata.get(field) for field in ('status', 'completion_contract', 'completion_criterion', 'evidence_refs')}
+            # Evidence is judged when it is linked: every ref when this update closes a strict task
+            # (or opts a closed one in), only added refs on a strict task that was already done.
+            # Refs a closed task already had stay accepted, so no upgrade invalidates its completion.
+            linked = set()
+            if before['status'] == 'done' and before['completion_contract'] == 'strict':
+                linked = self._ref_identities(before['evidence_refs']) if 'evidence_refs' in changes else None
             metadata.update(changes)
             metadata['revision'] = expected_revision + 1
             # The criterion is judged as it stood before completion, so neither it nor the
@@ -1256,7 +1341,7 @@ class SyncEngine:
                                      'omit it or pass the stored value, or change it in a separate update first')
             # A task that never opted in keeps unrelated updates, even with a same-named legacy field.
             if metadata.get('completion_contract') is not None or COMPLETION_FIELDS & set(changes):
-                issue = self._completion_issue(metadata, record['source'])
+                issue = self._completion_issue(metadata, record['source'], linked)
                 if issue:
                     raise ValueError(issue)
                 self._canonical_refs(metadata)
@@ -1287,17 +1372,31 @@ class SyncEngine:
             sys.path.insert(0, _MODULE_DIR)
         return note_apply_edits(self, request)
 
-    def note_create(self, source, text, metadata=None):
+    def note_create(self, source, text, metadata=None, idempotency_key=None, evidence_refs=None):
         if _MODULE_DIR not in sys.path:
             sys.path.insert(0, _MODULE_DIR)
         if not isinstance(text, str) or not text.strip() or (metadata is not None and not isinstance(metadata, dict)):
             raise ValueError('note text and metadata required')
+        # Before the note lock and journal intent: invalid text writes nothing (#543).
+        require_utf8_text(source, 'source')
+        require_utf8_text(text, 'text')
+        require_utf8_values(metadata, 'metadata')
+        require_utf8_values(evidence_refs, 'evidence_refs')
         if text.lstrip().startswith('---'):
             raise ValueError('text must be body only; put frontmatter fields in metadata')
         if not source.startswith(('notes/', 'knowledge/')) or not source.endswith('.md'):
             raise ValueError('new semantic notes belong under notes/ or knowledge/')
         self._refuse_excluded(source)
         metadata = dict(metadata or {})
+        from beyin_v3_notes import check_idempotency_key, evidence_refs as note_evidence_refs
+        # The key and refs may also arrive in metadata; the key never reaches frontmatter.
+        for field, value in (('idempotency_key', idempotency_key), ('evidence_refs', evidence_refs)):
+            if value is not None and metadata.get(field, value) != value:
+                raise ValueError(field + ' given twice with different values')
+        idempotency_key = check_idempotency_key(metadata.pop('idempotency_key', idempotency_key))
+        refs = note_evidence_refs(self, metadata.pop('evidence_refs', evidence_refs), existing=False)
+        if refs:
+            metadata['evidence_refs'] = refs
         for field in ('project', 'kind', 'status', 'updated_at'):
             if metadata.get(field) is None:
                 metadata.pop(field, None)
@@ -1322,19 +1421,33 @@ class SyncEngine:
             raise ValueError('use task-create for new tasks')
         if metadata.get('generated') or metadata.get('kind') == 'receipt':
             raise ValueError('managed note kinds require their dedicated command')
+        from beyin_v3_notes import (_idempotency_path, _journal_idempotency, _replay_idempotency,
+                                    _request_digest, _seal_idempotency)
+        fingerprint = _request_digest({'operation': 'note-create', 'source': source,
+                                       'text': text, 'metadata': metadata})
         text, redacted = self._protect(text)
         metadata, meta_redacted = self._protect_metadata(metadata)
         redacted += meta_redacted
         intended = render(metadata, text+'\n')
         # All participating note writers share this vault-local lock, even when
         # clients use different state roots. Acquire it before the DB transaction.
-        with note_locked(self):
+        with note_locked(self) as folder:
             self._refuse_excluded(source)
             path = self._path(source)
+            idempotency_file = None
+            journal = {'status': 'succeeded', 'source': source, 'sha256': _hash(intended)}
+            if idempotency_key is not None:
+                idempotency_file = _idempotency_path(folder, idempotency_key)
+                replay = _replay_idempotency(self, idempotency_file, source, fingerprint, path, refs)
+                if replay is not None:
+                    return replay
+            note_evidence_refs(self, refs, source)
             with self.store._connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 if path.exists():
                     raise ValueError('source exists; preserve and edit deliberately')
+                if idempotency_file:
+                    _journal_idempotency(idempotency_file, journal, fingerprint, 'pending')
                 self._intent(source, None, intended, 'note')
             result = self.sync()
             record_id = metadata.get('id', 'md-' + _hash(source)[:24])
@@ -1347,12 +1460,17 @@ class SyncEngine:
             record = json.loads(row[0])
             if record.get('source') != source or record.get('source_sha256') != _hash(intended) or path.read_bytes() != intended.encode('utf-8'):
                 raise RevisionConflict('created note source readback mismatch')
-        self._record_redactions(redacted)
-        return {'status': 'succeeded', 'source': source, 'redacted': redacted,
-                'secrets_redacted': redacted, 'warnings': result['warnings'],
-                'conflicts': result['conflicts'],
-                'source_sync': {'status': result['status'], 'warnings': result['warnings'],
-                                'conflicts': result['conflicts']}}
+            self._record_redactions(redacted)
+            created_details = {'status': 'succeeded', 'source': source, 'sha256': _hash(intended),
+                               'redacted': redacted, 'secrets_redacted': redacted,
+                               'warnings': result['warnings'], 'conflicts': result['conflicts'],
+                               'source_sync': {'status': result['status'], 'warnings': result['warnings'],
+                                               'conflicts': result['conflicts']}}
+            if idempotency_file:
+                _seal_idempotency(idempotency_file, journal, fingerprint, created_details)
+            if refs:
+                created_details['evidence_refs'] = refs
+            return created_details
 
     def task_create(self, source, text, metadata):
         if not isinstance(source, str) or not source.startswith('tasks/') or not source.endswith('.md'):
@@ -1391,7 +1509,7 @@ class SyncEngine:
         metadata, meta_redacted = self._protect_metadata(metadata)
         redacted += meta_redacted
         metadata.update(kind='task', revision=1)
-        issue = self._completion_issue(metadata, source)
+        issue = self._completion_issue(metadata, source, linked=set())
         if issue:
             raise ValueError(issue)
         self._canonical_refs(metadata)
@@ -1473,7 +1591,7 @@ class SyncEngine:
                 if old['summary'] != summary or old['refs'] != refs or old.get('links', []) != links:
                     raise ReceiptConflict('event id collision')
                 event = old
-            receipt_metadata = {'kind': 'receipt', 'event_id': event_id, 'harness': event['harness'], 'refs': refs, 'visibility': 'internal'}
+            receipt_metadata = {'kind': 'receipt', 'event_id': event_id, **_receipt_harness(event), 'refs': refs, 'visibility': 'internal'}
             if links:
                 receipt_metadata['links'] = links
             if event.get('created_at'):

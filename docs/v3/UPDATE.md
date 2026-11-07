@@ -66,7 +66,7 @@ python3 beyin.py rollback
 
 `recover`, yarım kalan işlemin journal'ını okuyup planlanan işlemi tamamlar. Bir hata mesajı işlemin iptal edildiği anlamına gelmez; bazı sistem dosyaları yazılmış, başarılı sürüm damgası henüz yazılmamış olabilir.
 
-`rollback`, son sistem işleminin yedeğini geri getirir. [Opsiyonel global köprüyü](GLOBAL-BRIDGE.md) kendin eklediysen, köprüyü içermeyen eski bir sürüme (V3.1.0 ve öncesi) `rollback` veya `uninstall` yapmadan önce global ayardaki köprü handler'larını kaldır; olmayan bir scripti global hook'ta bırakmak istemci hatası üretir. Antigravity köprüsünü eklediysen aynısı 3.9.0 ve öncesine dönerken geçerlidir: o sürümlerin köprüsü `--harness antigravity` tanımaz, önce `~/.gemini/config/hooks.json` içindeki `beyin-v3-bridge` anahtarını kaldır. İlk V2 geçişinde önceki sürüm ve tanınan eski runner'lar da geri yüklenir. Temiz V3 kurulumunu geri almak `uninstalled` olarak raporlanır; olmayan bir eski sürüm uydurulmaz. Sonradan eklediğin kullanıcı notları silinmez. Bu komut bütün vault geçmişini geri alan bir işlem değildir.
+`rollback`, son sistem işleminin yedeğini geri getirir. [Opsiyonel global köprüyü](GLOBAL-BRIDGE.md) kendin eklediysen, köprüyü içermeyen eski bir sürüme (V3.1.0 ve öncesi) `rollback` veya `uninstall` yapmadan önce global ayardaki köprü handler'larını kaldır; olmayan bir scripti global hook'ta bırakmak istemci hatası üretir. Antigravity köprüsünü eklediysen aynısı 3.9.0 ve öncesine dönerken geçerlidir: o sürümlerin köprüsü `--harness antigravity` tanımaz, önce `~/.gemini/config/hooks.json` içindeki `beyin-v3-bridge` anahtarını kaldır. [Pi](PI.md) kullandıysan Pi desteği içermeyen bir sürüme (3.12.0 ve öncesi) dönerken: `rollback` ve `uninstall` `.pi/extensions/beyin-v3.ts` dosyasını kaldırır, kişisel Pi ayarına veya `pi -e ... --beyin-project-root ...` takma adına eklediğin yolu önce kaldır, yoksa Pi `Unknown option: --beyin-project-root` hatasıyla açılmaz. `--harness pi` receipt'leri kaynakta `harness: manual` ve eski sürümlerin yok saydığı `client: pi` alanıyla yazılır; eski sürüm bunları manual receipt olarak okur ve `sync` sağlıklı kalır, yeniden güncelleme Pi atfını korur. Pi için ayrı bir hariç tutma adı yoktur; extension `adapters` grubuyla hariç tutulur, eski sürümler bu adı tanır. İlk V2 geçişinde önceki sürüm ve tanınan eski runner'lar da geri yüklenir. Temiz V3 kurulumunu geri almak `uninstalled` olarak raporlanır; olmayan bir eski sürüm uydurulmaz. Sonradan eklediğin kullanıcı notları silinmez. Bu komut bütün vault geçmişini geri alan bir işlem değildir.
 
 Yönetilen dosyada araya giren kullanıcı değişikliği varsa işlem bunu ezmek yerine conflict ile durur. Desteklenen JSON ayarlarında ilgisiz değişiklikler korunur; çakışan yönetilen bölüm için inceleme gerekir. Kilitli/aktif bir writer varsa tamamlanmasını bekleyip tekrar dene. Kaybolmuş bir işin kilit/sentinel dosyasını gelişigüzel silme.
 
@@ -89,8 +89,9 @@ varsayılanı bırakıp state'i başka bir yere almak gerekir:
 
 Taşıma desteklenen bir işlemdir: `install_v3.py --state` yeni yolu sabitler. Veritabanı
 **vault kök yoluna** bağlıdır, state yoluna değil; bu yüzden aynı vault için state'i taşımak
-veritabanını geçersizleştirmez. Vault'u taşımak ayrı bir konudur ve orada yerel state
-Markdown'dan yeniden kurulur; ayrıntı için [QUICKSTART](QUICKSTART.md).
+veritabanını geçersizleştirmez. Vault'u taşımak ayrı bir konudur: kurucu eski state ve
+`--rebind-state` ile bağı yeni yola açıkça çeker (taşınan vault'ta `beyin.py update` bu adım
+yapılana kadar durur); ayrıntı için [MULTI-MACHINE](MULTI-MACHINE.md#vaultu-başka-klasöre-ya-da-hesaba-taşımak).
 
 ### Adımlar
 
