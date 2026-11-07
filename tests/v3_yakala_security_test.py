@@ -637,9 +637,13 @@ class YakalaSecurityTest(unittest.TestCase):
         calls = ((yakala.via_defuddle, ('https://example.com/x', {'npx': 'npx'})),
                  (yakala.youtube_tracks, ('https://example.com/x', {'yt_dlp': 'yt-dlp'}, self.root)),
                  (yakala.via_audio, ('https://example.com/x', {'yt_dlp': 'yt-dlp', 'whisper': 'whisper'}, self.root)))
+        # Proxy inheritance is offline: keep the real public-address validation,
+        # but supply deterministic DNS rather than requiring external resolution.
+        public = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('8.8.8.8', 443))]
         with patch.dict(os.environ, self.PROXIES):
             for function, args in calls:
-                with self.subTest(function=function.__name__):
+                with self.subTest(function=function.__name__), \
+                        patch.object(socket, 'getaddrinfo', return_value=public) as dns:
                     if os.name == 'nt' and sys.platform == 'win32':
                         with patch.object(yakala, '_windows_run', return_value=(0, '', '')) as run:
                             function(*args)
@@ -648,6 +652,7 @@ class YakalaSecurityTest(unittest.TestCase):
                         with patch('subprocess.run', side_effect=subprocess.TimeoutExpired(cmd='cmd', timeout=1)) as run:
                             function(*args)
                         env = run.call_args.kwargs['env']
+                    dns.assert_called_once_with('example.com', 443, type=socket.SOCK_STREAM)
                     if os.name == 'nt':
                         # Windows environment names are case-insensitive: os.environ folds
                         # http_proxy and HTTP_PROXY into one upper-case key.

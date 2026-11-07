@@ -530,6 +530,14 @@ def human_result(result, command, installed_version=None):
         if paths.get('status') == 'stale':
             lines.append('Hook yollari baska bir kuruluma isaret ediyor (' + str(len(paths.get('stale', []))) + ' eski yol). ' +
                          'Guncellemek icin: ' + ('py -3' if sys.platform == 'win32' else 'python3') + ' beyin.py hook-reconcile')
+        tracked = result.get('tracked_machine_files') or {}
+        if tracked.get('status') == 'warning':
+            lines.append('Git makineye ozel kurulum dosyalarini izliyor (bilgi): ' +
+                         ', '.join(plain_text(name) for name in tracked.get('tracked', [])) +
+                         '. Her makinenin kendi yedegini koruyarak docs/v3/MULTI-MACHINE.md rehberini incele; otomatik degisiklik yapilmadi.')
+        elif tracked.get('status') in ('unavailable', 'skipped'):
+            lines.append('Git kurulum dosyasi kontrolu (bilgi): ' + plain_text(tracked.get('status')) +
+                         ' (' + plain_text(tracked.get('reason', 'unknown')) + ').')
         scopes = result.get('project_scopes') or {}
         if scopes.get('status') == 'error':
             lines.append('Proje kapsamlari (.beyin-projects.json) gecersiz: ' + str(scopes.get('error', 'hata')))
