@@ -37,8 +37,9 @@ ancak kartın URL'si aynı sözdizimi/IP kontrolünden geçer.
 Defuddle ve yt-dlp artık `127.0.0.1` üzerindeki kısa ömürlü bir koruma proxy'si üzerinden çıkar:
 her bağlantı ve yönlendirme adımı aynı adres kapısından geçer, soket denetlenen IP adresine açılır.
 DNS kontrolü ile bağlantı arasında değişen cevap (rebinding) ve yerel adrese yönlendirme yardımcıyı
-yerel ağa ulaştıramaz. Kullanıcının kendi ayarladığı proxy varsa hedefi o proxy çözer; Defuddle'ın
-YouTube, Reddit ve X okuyucularının o sitelerin sabit adreslerine açtığı istekler koruma
+yerel ağa ulaştıramaz. Kullanıcının kendi ayarladığı proxy (HTTP veya SOCKS) korumanın arkasında
+kalır: hedef önce aynı kapıdan geçer, yerel bir adım o proxy'ye hiç sorulmaz. Defuddle'ın YouTube,
+Reddit, X, Bilibili ve C2 wiki okuyucularının o sitelerin sabit adreslerine açtığı istekler koruma
 proxy'sinden geçmez. Ayrıntı: [YAKALA.md](YAKALA.md) > Kaynak güvenliği.
 
 Dosya kartı yalnız kendi `dosyalar/` klasöründeki yakalanmış dosyaları okur; vault içindeki kasa

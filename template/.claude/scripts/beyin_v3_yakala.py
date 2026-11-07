@@ -156,37 +156,159 @@ def _public_opener(*handlers):
 # a local address and resolve its name again after our check (#299). Each helper run therefore gets
 # a loopback proxy as its only proxy: every connection it opens, every redirect hop included, names
 # its target here and goes through the same public-address gate as the stdlib path, dialled to the
-# checked IP. A proxy the user configured is kept instead; then that proxy resolves the target.
+# checked IP. A proxy the user configured stays in use behind the guard (_proxy_open): the gate runs
+# first, then the user's proxy carries the connection.
 _PROXY_VARIABLES = ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY')
+_PROXY_SCHEMES = ('http', 'socks4', 'socks4a', 'socks5', 'socks5h')
 _HOP_HEADERS = frozenset(('connection', 'proxy-connection', 'keep-alive', 'proxy-authorization', 'te',
                           'trailer', 'transfer-encoding', 'upgrade', 'host'))
 _HELPER_NETWORK = threading.local()
 
 
-def _user_proxy(system):
-    """A proxy the user set: the environment (what Defuddle reads) and, for a urllib-based helper
-    such as yt-dlp (`system`), the OS proxy settings as well."""
-    if any(key.upper() in _PROXY_VARIABLES and str(value).strip() for key, value in os.environ.items()):
-        return True
-    if system:
-        import urllib.request
-        try:
-            return bool({'http', 'https', 'all'} & set(urllib.request.getproxies()))
-        except Exception:  # unreadable OS settings: no proxy known, the guard stays
-            return False
-    return False
+def _user_proxies(system):
+    """The proxies the helper would have used, for the guard to chain to: the environment (all Defuddle
+    reads) and, for a urllib-based helper such as yt-dlp (`system`), the OS proxy settings when the
+    environment names none. {'http'|'https'|'all'|'no': value}; empty for direct connections."""
+    import urllib.request
+    try:
+        proxies = urllib.request.getproxies() if system else urllib.request.getproxies_environment()
+    except Exception:  # unreadable OS settings: no proxy known
+        proxies = {}
+    return {key: str(value).strip() for key, value in proxies.items()
+            if key in ('http', 'https', 'all', 'no') and value and str(value).strip()}
 
 
 def _guarded_env(env, proxy):
     """The guard as the helper's only proxy. A NO_PROXY list (often localhost,127.0.0.1) would let the
-    helper go around it; npm keeps that list for its own registry requests through npm_config_noproxy.
-    npm ignores ALL_PROXY, so npx still reaches its registry as before."""
-    bypass = next((value for key, value in env.items() if key.upper() == 'NO_PROXY' and value.strip()), None)
+    helper go around it. npm ignores ALL_PROXY and keeps the user's proxies and bypass list for its own
+    registry requests through npm_config_*, so npx still reaches its registry as before."""
+    def first(*names):
+        return next((value for name in names for key, value in env.items() if key.upper() == name and value.strip()), None)
+    npm = {'npm_config_noproxy': first('NO_PROXY'), 'npm_config_https_proxy': first('HTTPS_PROXY', 'HTTP_PROXY'),
+           'npm_config_proxy': first('HTTP_PROXY')}
     env = {key: value for key, value in env.items() if key.upper() not in _PROXY_VARIABLES + ('NO_PROXY',)}
-    if bypass and not any(key.lower() == 'npm_config_noproxy' for key in env):
-        env['npm_config_noproxy'] = bypass
+    for name, value in npm.items():
+        if value and not any(key.lower() == name for key in env):
+            env[name] = value
     env['ALL_PROXY'] = proxy
     return env
+
+
+def _proxy_address(value):
+    """(scheme, host, port, user, password) of a proxy setting; a value without a scheme is an HTTP
+    proxy, as for curl and urllib. OSError for one the guard cannot chain to (an https:// proxy).
+    The value may carry a password: it never goes into a message."""
+    try:
+        parsed = urlparse(value if '://' in value else 'http://' + value)
+        scheme, host, port = parsed.scheme.lower(), parsed.hostname, parsed.port
+    except ValueError:
+        scheme = host = None
+    if scheme not in _PROXY_SCHEMES or not host:
+        raise OSError('Yakala bu proxy turunu koruma uzerinden kullanamaz: ' + str(scheme or 'gecersiz'))
+    return scheme, host, port or (80 if scheme == 'http' else 1080), unquote(parsed.username or ''), unquote(parsed.password or '')
+
+
+def _recv_exact(sock, size):
+    data = b''
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise OSError('Yakala: proxy baglantisi kapandi.')
+        data += chunk
+    return data
+
+
+def _proxy_login(user, password):
+    if not user:
+        return []
+    import base64
+    return ['Proxy-Authorization: Basic ' + base64.b64encode((user + ':' + password).encode('utf-8')).decode('ascii')]
+
+
+def _http_tunnel(sock, authority, user, password):
+    """CONNECT through the user's HTTP proxy; the bytes it sent past its answer."""
+    sock.sendall(('\r\n'.join(['CONNECT ' + authority + ' HTTP/1.1', 'Host: ' + authority,
+                               *_proxy_login(user, password), '', ''])).encode('latin-1'))
+    try:
+        head, rest = _proxy_head(sock)
+    except ValueError as exc:
+        raise OSError(str(exc)) from exc
+    status = head.split('\r\n', 1)[0].split(' ')
+    if len(status) < 2 or not status[0].startswith('HTTP/1.') or status[1][:1] != '2':
+        raise OSError('Yakala: kullanicinin proxy\'si tuneli acmadi (' + ''.join(status[1:2])[:3] + ').')
+    return rest
+
+
+def _socks_tunnel(sock, scheme, name, port, user, password):
+    """SOCKS4/4a/5/5h CONNECT to name:port; `name` is a checked IP, or a host name the proxy resolves."""
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        address = None
+    encoded = name.encode('ascii')
+    if len(encoded) > 255:
+        raise OSError('Yakala: sunucu adi SOCKS icin cok uzun.')
+    if scheme.startswith('socks4'):
+        if address is not None and address.version != 4:
+            raise OSError('Yakala: SOCKS4 yalniz IPv4 adresine baglanir.')
+        target = address.packed if address is not None else b'\x00\x00\x00\x01'
+        sock.sendall(b'\x04\x01' + port.to_bytes(2, 'big') + target + user.encode('utf-8') + b'\x00'
+                     + (encoded + b'\x00' if address is None else b''))
+        if _recv_exact(sock, 8)[1] != 0x5A:
+            raise OSError('Yakala: SOCKS4 proxy baglantiyi reddetti.')
+        return
+    methods = b'\x00\x02' if user else b'\x00'
+    sock.sendall(b'\x05' + bytes([len(methods)]) + methods)
+    version, method = _recv_exact(sock, 2)
+    if version != 5 or method not in methods:
+        raise OSError('Yakala: SOCKS5 proxy giris yontemini kabul etmedi.')
+    if method == 2:
+        login, secret = user.encode('utf-8')[:255], password.encode('utf-8')[:255]
+        sock.sendall(b'\x01' + bytes([len(login)]) + login + bytes([len(secret)]) + secret)
+        if _recv_exact(sock, 2)[1] != 0:
+            raise OSError('Yakala: SOCKS5 proxy girisi reddetti.')
+    target = b'\x03' + bytes([len(encoded)]) + encoded if address is None else \
+        (b'\x01' if address.version == 4 else b'\x04') + address.packed
+    sock.sendall(b'\x05\x01\x00' + target + port.to_bytes(2, 'big'))
+    version, status, _, kind = _recv_exact(sock, 4)
+    if version != 5 or status != 0:
+        raise OSError('Yakala: SOCKS5 proxy baglantiyi reddetti (%d).' % status)
+    size = {1: 4, 4: 16}.get(kind)
+    if size is None:
+        if kind != 3:
+            raise OSError('Yakala: SOCKS5 proxy cevabi gecersiz.')
+        size = _recv_exact(sock, 1)[0]
+    _recv_exact(sock, size + 2)
+
+
+def _proxy_open(proxy, tunnel, host, port, answers):
+    """(socket through the user's proxy, bytes it sent past its answer) for a target that already passed
+    the public-address gate (`answers`). socks5 and socks4 get a checked address, as their clients
+    resolve names themselves; an HTTP proxy, socks5h and socks4a get the name and resolve it, as on the
+    stdlib path. `tunnel` is the CONNECT authority, or None for plain HTTP, which an HTTP proxy takes
+    as an absolute-form request instead. Every failure here is an OSError: no address was refused."""
+    scheme, proxy_host, proxy_port, user, password = proxy
+    try:
+        ipaddress.ip_address(host)
+        names = [host]
+    except ValueError:
+        if scheme in ('socks5', 'socks4'):
+            family = (socket.AF_INET,) if scheme == 'socks4' else (socket.AF_INET, socket.AF_INET6)
+            names = list(dict.fromkeys(item[4][0].split('%')[0] for item in answers if item[0] in family))
+        else:
+            names = [host]
+    error = OSError('Yakala: SOCKS4 icin IPv4 adresi yok.')
+    for name in names:
+        sock = socket.create_connection((proxy_host, proxy_port), 30)  # the user's own proxy, not gated
+        try:
+            if scheme != 'http':
+                _socks_tunnel(sock, scheme, name, port, user, password)
+                return sock, b''
+            return sock, (_http_tunnel(sock, tunnel, user, password) if tunnel else b'')
+        except OSError as exc:
+            sock.close()
+            error = exc
+    raise error
 
 
 def _socket_end(sock, how=socket.SHUT_RDWR):
@@ -217,11 +339,13 @@ def _proxy_reply(code, reason):
 
 class _EgressGuard:
     """Loopback proxy for one helper run: CONNECT tunnels (TLS stays end to end) and plain HTTP
-    GET/HEAD, one request per connection. Nothing reaches a local or private address."""
+    GET/HEAD, one request per connection. Nothing reaches a local or private address. `proxies`
+    (_user_proxies) are the user's own: a target that passes the gate goes on through them."""
 
-    def __init__(self):
+    def __init__(self, proxies=None):
         import socketserver
         guard = self
+        self.proxies = dict(proxies or {})
         self.blocked, self.sockets, self.lock, self.closed = [], set(), threading.Lock(), False
 
         class Handler(socketserver.BaseRequestHandler):
@@ -246,8 +370,22 @@ class _EgressGuard:
         if keep:  # opened after close(): end it now
             _socket_end(sock)
 
+    def _upstream(self, scheme, host):
+        """The user's proxy for this target, picked as Defuddle and yt-dlp pick it (the scheme's own,
+        then for HTTPS the HTTP one, then `all`), or None: no proxy, or the host is on the bypass list."""
+        value = self.proxies.get(scheme) or (self.proxies.get('http') if scheme == 'https' else None) \
+            or self.proxies.get('all')
+        if not value:
+            return None
+        if self.proxies.get('no'):
+            import urllib.request
+            if urllib.request.proxy_bypass_environment(host, {'no': self.proxies['no']}):
+                return None
+        return _proxy_address(value)
+
     def _open(self, head):
-        """(socket to the checked public address, bytes that start the stream there)."""
+        """(socket to the checked public address, bytes that start the stream there or None for a
+        tunnel, bytes for the helper after the tunnel answer)."""
         lines = head.split('\r\n')
         request = lines[0].split(' ')
         if len(request) != 3 or not request[2].startswith('HTTP/1.'):
@@ -264,19 +402,29 @@ class _EgressGuard:
         try:
             _safe_source_url(url)
             parsed = urlparse(url)
-            upstream = _public_connection((parsed.hostname, parsed.port or 80), 30)
+            host, port = parsed.hostname, parsed.port or 80
+            proxy = self._upstream(parsed.scheme, host)
+            if proxy is None:
+                upstream, early = _public_connection((host, port), 30), b''
+            else:  # the same gate, then the user's proxy carries the connection
+                answers = _public_answers(host, port)
         except ValueError as exc:
             if isinstance(exc.__cause__, OSError):  # the name did not resolve: no address was refused
                 raise OSError(str(exc)) from exc
             with self.lock:
                 self.blocked.append(url)
             raise
+        if proxy is not None:
+            upstream, early = _proxy_open(proxy, target if method == 'CONNECT' else None, host, port, answers)
         if method == 'CONNECT':
-            return upstream, None
+            return upstream, None, early
         path = (parsed.path or '/') + ('?' + parsed.query if parsed.query else '')
         headers = [line for line in lines[1:] if line and line.split(':', 1)[0].strip().lower() not in _HOP_HEADERS]
-        start = '\r\n'.join([method + ' ' + path + ' HTTP/1.1', 'Host: ' + parsed.netloc, *headers, 'Connection: close', '', ''])
-        return upstream, start.encode('latin-1')
+        line, login = method + ' ' + path, []
+        if proxy is not None and proxy[0] == 'http':  # an HTTP proxy takes the absolute form
+            line, login = method + ' http://' + parsed.netloc + path, _proxy_login(*proxy[3:])
+        start = '\r\n'.join([line + ' HTTP/1.1', 'Host: ' + parsed.netloc, *headers, *login, 'Connection: close', '', ''])
+        return upstream, start.encode('latin-1'), b''
 
     def _serve(self, client):
         upstream = None
@@ -285,7 +433,7 @@ class _EgressGuard:
             client.settimeout(30)
             head, rest = _proxy_head(client)
             try:
-                upstream, start = self._open(head)
+                upstream, start, early = self._open(head)
             except ValueError:
                 client.sendall(_proxy_reply(403, 'yerel veya ozel ag adresine baglanilmaz.'))
                 return
@@ -294,7 +442,7 @@ class _EgressGuard:
                 return
             self._track(upstream)
             if start is None:
-                client.sendall(b'HTTP/1.1 200 Connection established\r\n\r\n')
+                client.sendall(b'HTTP/1.1 200 Connection established\r\n\r\n' + early)
                 start = b''
             upstream.sendall(start + rest)
             client.settimeout(None)
@@ -349,14 +497,15 @@ class _EgressGuard:
 
 class _HelperNetwork:
     """`with _HelperNetwork(system):` around one helper run. `_run` hands a helper started inside
-    it a fresh _EgressGuard as its only proxy, unless the user configured one (_user_proxy)."""
+    it a fresh _EgressGuard as its only proxy; a proxy the user configured sits behind the guard.
+    `system`: the helper also reads the OS proxy settings (yt-dlp), see _user_proxies."""
 
     def __init__(self, system=False):
         self.system, self.guard, self.outer = system, None, None
 
     def __enter__(self):
         self.outer = getattr(_HELPER_NETWORK, 'guard', None)
-        self.guard = None if _user_proxy(self.system) else _EgressGuard()
+        self.guard = _EgressGuard(_user_proxies(self.system))
         _HELPER_NETWORK.guard = self.guard
         return self.guard
 

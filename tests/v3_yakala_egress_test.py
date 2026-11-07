@@ -2,6 +2,7 @@
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import base64
 import socket
 import subprocess
 import sys
@@ -10,6 +11,7 @@ import textwrap
 import threading
 import unittest
 from unittest.mock import patch
+from urllib.parse import urlparse
 
 from v3_package_helpers import inherited_env
 
@@ -92,6 +94,151 @@ class Pages:
         return patch.object(socket, 'getaddrinfo', side_effect=answer), patch.object(socket, 'create_connection', side_effect=dial)
 
 
+class Upstream:
+    """The user's own proxy, like a local proxy client: HTTP (CONNECT, absolute-form GET) and SOCKS4/5.
+    It connects wherever it is asked, loopback included, and records what it was asked."""
+
+    def __init__(self, test):
+        self.asked, self.refuse = [], False
+        self.server = socket.socket()
+        self.server.bind(('127.0.0.1', 0))
+        self.server.listen(16)
+        self.port = self.server.getsockname()[1]
+        test.addCleanup(self.server.close)
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def _accept(self):
+        while True:
+            try:
+                client, _ = self.server.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._serve, args=(client,), daemon=True).start()
+
+    @staticmethod
+    def _exact(sock, size):
+        data = b''
+        while len(data) < size:
+            chunk = sock.recv(size - len(data))
+            if not chunk:
+                raise OSError('closed')
+            data += chunk
+        return data
+
+    @staticmethod
+    def _until(sock, end):
+        data = b''
+        while not data.endswith(end):
+            chunk = sock.recv(1)
+            if not chunk:
+                raise OSError('closed')
+            data += chunk
+        return data[:-len(end)]
+
+    @staticmethod
+    def _dial(host, port):
+        """Resolves as a proxy client does (the test resolver), then dials (the test dialer)."""
+        address = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0][4][0]
+        return socket.create_connection((address, port), 10)
+
+    def _serve(self, client):
+        try:
+            first = client.recv(1, socket.MSG_PEEK)
+            if first == b'\x05':
+                target = self._socks5(client)
+            elif first == b'\x04':
+                target = self._socks4(client)
+            else:
+                target = self._http(client)
+            if target is not None:
+                self._relay(client, target)
+        except OSError:
+            pass
+        finally:
+            client.close()
+
+    def _http(self, client):
+        head = self._until(client, b'\r\n\r\n').decode('latin-1').split('\r\n')
+        method, target, _ = head[0].split(' ')
+        login = next((line.split(':', 1)[1].strip() for line in head[1:]
+                      if line.lower().startswith('proxy-authorization:')), None)
+        self.asked.append(('http', method, target, login))
+        if self.refuse:
+            client.sendall(b'HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n')
+            return None
+        if method == 'CONNECT':
+            host, port = target.rsplit(':', 1)
+            upstream = self._dial(host.strip('[]'), int(port))
+            client.sendall(b'HTTP/1.1 200 Connection established\r\n\r\n')
+            return upstream
+        parsed = urlparse(target)
+        upstream = self._dial(parsed.hostname, parsed.port or 80)
+        path = (parsed.path or '/') + ('?' + parsed.query if parsed.query else '')
+        upstream.sendall(('%s %s HTTP/1.0\r\nHost: %s\r\n\r\n' % (method, path, parsed.netloc)).encode())
+        return upstream
+
+    def _socks5(self, client):
+        methods = self._exact(client, self._exact(client, 2)[1])
+        method = 2 if 2 in methods else 0
+        client.sendall(bytes([5, method]))
+        login = None
+        if method == 2:
+            self._exact(client, 1)
+            user = self._exact(client, self._exact(client, 1)[0])
+            password = self._exact(client, self._exact(client, 1)[0])
+            login = (user + b':' + password).decode()
+            client.sendall(b'\x01\x00')
+        _, _, _, kind = self._exact(client, 4)
+        if kind == 3:
+            host = self._exact(client, self._exact(client, 1)[0]).decode()
+        else:
+            host = socket.inet_ntop(socket.AF_INET if kind == 1 else socket.AF_INET6, self._exact(client, 4 if kind == 1 else 16))
+        port = int.from_bytes(self._exact(client, 2), 'big')
+        self.asked.append(('socks5', kind, host, port, login))
+        upstream = self._dial(host, port)
+        client.sendall(b'\x05\x00\x00\x01' + bytes(6))
+        return upstream
+
+    def _socks4(self, client):
+        header = self._exact(client, 8)
+        port, address = int.from_bytes(header[2:4], 'big'), header[4:]
+        user = self._until(client, b'\x00').decode()
+        host = self._until(client, b'\x00').decode() if address[:3] == bytes(3) else socket.inet_ntoa(address)
+        self.asked.append(('socks4', host, port, user))
+        upstream = self._dial(host, port)
+        client.sendall(b'\x00\x5a' + bytes(6))
+        return upstream
+
+    @staticmethod
+    def _relay(client, upstream):
+        def back():
+            try:
+                while True:
+                    data = upstream.recv(65536)
+                    if not data:
+                        break
+                    client.sendall(data)
+            except OSError:
+                pass
+            finally:
+                try:
+                    client.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+        reader = threading.Thread(target=back, daemon=True)
+        reader.start()
+        try:
+            while True:
+                data = client.recv(65536)
+                if not data:
+                    break
+                upstream.sendall(data)
+        except OSError:
+            pass
+        reader.join(10)
+        upstream.close()
+
+
 def ask(proxy_port, request, follow=b''):
     """Send one raw proxy request and return the whole answer (the connection is closed after it)."""
     with socket.create_connection(('127.0.0.1', proxy_port), 10) as client:
@@ -168,12 +315,110 @@ class EgressGuardTest(unittest.TestCase):
             self.assertEqual(client.recv(4096), b'')  # the idle tunnel was ended, not left behind
 
 
+class UserProxyChainTest(unittest.TestCase):
+    """#299 review: with the user's own proxy set the guard stays in front of it. The public-address
+    gate runs first, then the user's proxy carries the connection; a local target never reaches it."""
+
+    def setUp(self):
+        self.pages = Pages(self)
+        self.upstream = Upstream(self)
+
+    def guard(self, proxies):
+        guard = yakala._EgressGuard(proxies)
+        self.addCleanup(guard.close)
+        return int(guard.url.rsplit(':', 1)[1]), guard
+
+    def test_http_proxy_carries_public_targets_and_never_sees_local_ones(self):
+        port, guard = self.guard({'http': 'http://kullanici:p%%40ss@127.0.0.1:%d' % self.upstream.port})
+        dns, dial = self.pages.network(private=('ic-ag.example',))
+        with dns, dial:
+            tunnel = ask(port, b'CONNECT ornek.example:443 HTTP/1.1\r\nHost: ornek.example:443\r\n\r\n',
+                         b'GET /tunel HTTP/1.1\r\nHost: ornek.example\r\nConnection: close\r\n\r\n')
+            forward = ask(port, b'GET http://ornek.example/duz?a=1 HTTP/1.1\r\nHost: ornek.example\r\n\r\n')
+            refused = [ask(port, request) for request in (
+                b'CONNECT 127.0.0.1:%d HTTP/1.1\r\n\r\n' % self.pages.secret,
+                b'GET http://127.0.0.1:%d/gizli HTTP/1.1\r\n\r\n' % self.pages.secret,
+                b'CONNECT ic-ag.example:443 HTTP/1.1\r\n\r\n',
+                b'GET http://localhost/ HTTP/1.1\r\n\r\n')]
+        self.assertIn(b'HTTP/1.1 200 Connection established', tunnel)
+        self.assertIn(b'Acik makale metni.', tunnel)
+        self.assertIn(b'Acik makale metni.', forward)
+        login = 'Basic ' + base64.b64encode(b'kullanici:p@ss').decode()  # the user's proxy login goes along
+        self.assertEqual(self.upstream.asked, [('http', 'CONNECT', 'ornek.example:443', login),
+                                               ('http', 'GET', 'http://ornek.example/duz?a=1', login)])
+        for reply in refused:
+            self.assertTrue(reply.startswith(b'HTTP/1.1 403'), reply[:80])
+        self.assertEqual(self.pages.hits, {'public': ['/tunel', '/duz?a=1'], 'secret': []})
+        self.assertIn('https://ic-ag.example:443/', guard.blocked)
+
+    def test_socks_proxies_get_the_checked_address_or_the_name(self):
+        """socks5/socks4 clients resolve names themselves: the guard hands them the checked address.
+        socks5h/socks4a resolve at the proxy: the name goes, as through an HTTP proxy."""
+        cases = (('socks5://127.0.0.1:%d', ('socks5', 1, PUBLIC, 443, None)),
+                 ('socks5h://127.0.0.1:%d', ('socks5', 3, 'ornek.example', 443, None)),
+                 ('socks5h://kim:gizli@127.0.0.1:%d', ('socks5', 3, 'ornek.example', 443, 'kim:gizli')),
+                 ('socks4://127.0.0.1:%d', ('socks4', PUBLIC, 443, '')),
+                 ('socks4a://127.0.0.1:%d', ('socks4', 'ornek.example', 443, '')))
+        for proxy, expected in cases:
+            with self.subTest(proxy=proxy.split(':')[0]):
+                del self.upstream.asked[:], self.pages.hits['public'][:]
+                port, guard = self.guard({'all': proxy % self.upstream.port})
+                dns, dial = self.pages.network(private=('ic-ag.example',))
+                with dns, dial:
+                    tunnel = ask(port, b'CONNECT ornek.example:443 HTTP/1.1\r\n\r\n',
+                                 b'GET /socks HTTP/1.1\r\nHost: ornek.example\r\nConnection: close\r\n\r\n')
+                    plain = ask(port, b'GET http://ornek.example/duz HTTP/1.1\r\n\r\n')
+                    refused = ask(port, b'CONNECT ic-ag.example:443 HTTP/1.1\r\n\r\n')
+                self.assertIn(b'Acik makale metni.', tunnel)
+                self.assertIn(b'Acik makale metni.', plain)
+                self.assertTrue(refused.startswith(b'HTTP/1.1 403'), refused[:80])
+                self.assertEqual(self.upstream.asked, [expected, expected[:-2] + (80, expected[-1])])
+                self.assertEqual((self.pages.hits['public'], guard.blocked), (['/socks', '/duz'], ['https://ic-ag.example:443/']))
+        self.assertEqual(self.pages.hits['secret'], [])
+
+    def test_bypass_list_goes_direct_and_still_through_the_gate(self):
+        port, _ = self.guard({'http': 'http://127.0.0.1:%d' % self.upstream.port, 'no': 'ornek.example,127.0.0.1'})
+        dns, dial = self.pages.network()
+        with dns, dial:
+            direct = ask(port, b'GET http://ornek.example/dogrudan HTTP/1.1\r\n\r\n')
+            refused = ask(port, b'GET http://127.0.0.1:%d/gizli HTTP/1.1\r\n\r\n' % self.pages.secret)
+        self.assertIn(b'Acik makale metni.', direct)
+        self.assertTrue(refused.startswith(b'HTTP/1.1 403'), refused[:80])
+        self.assertEqual((self.upstream.asked, self.pages.hits), ([], {'public': ['/dogrudan'], 'secret': []}))
+
+    def test_a_proxy_the_guard_cannot_use_fails_closed(self):
+        """An https:// or unknown proxy, or one that refuses the tunnel: 502, and no address counts as refused."""
+        values = ('https://127.0.0.1:%d' % self.upstream.port, 'ftp://127.0.0.1:%d' % self.upstream.port,
+                  'http://[oops', 'http://127.0.0.1:%d' % self.upstream.port)
+        self.upstream.refuse = True
+        for value in values:
+            with self.subTest(proxy=value.split(':')[0]):
+                port, guard = self.guard({'https': value, 'http': value})
+                dns, dial = self.pages.network()
+                with dns, dial:
+                    reply = ask(port, b'CONNECT ornek.example:443 HTTP/1.1\r\n\r\n')
+                self.assertTrue(reply.startswith(b'HTTP/1.1 502'), reply[:80])
+                self.assertEqual(guard.blocked, [])
+        self.assertEqual(self.upstream.asked, [('http', 'CONNECT', 'ornek.example:443', None)])  # only the refusing one
+        self.assertEqual(self.pages.hits, {'public': [], 'secret': []})
+
+
 # Stands in for `npx defuddle` as a real child process. Like Defuddle 0.19.4 (src/fetch.ts) it picks
 # its proxy per request from HTTP(S)_PROXY/ALL_PROXY unless NO_PROXY names the host, and follows each
 # redirect itself; without a proxy it connects directly.
 HELPER = textwrap.dedent('''
-    import json, os, sys, urllib.error, urllib.request
+    import json, os, socket, sys, urllib.error, urllib.request
     from urllib.parse import urljoin, urlparse
+
+    PUBLIC_PORT = os.environ.get('YAKALA_TEST_PUBLIC_PORT')
+    if PUBLIC_PORT:  # the test's internet: `*.example` names reach its public page, as in the parent
+        real_getaddrinfo = socket.getaddrinfo
+
+        def getaddrinfo(host, port, *args, **kwargs):
+            if str(host).endswith('.example'):
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('127.0.0.1', int(PUBLIC_PORT)))]
+            return real_getaddrinfo(host, port, *args, **kwargs)
+        socket.getaddrinfo = getaddrinfo
 
     class Manual(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args, **kwargs):
@@ -223,6 +468,7 @@ class GuardedHelperTest(unittest.TestCase):
         def run(command, timeout, cwd=None):  # the real _run (env, guard), aimed at the stand-in
             return real_run([sys.executable, str(self.root / 'defuddle_helper.py'), *command[1:]], timeout, cwd)
         for patcher in (patch.object(yakala, '_run', run), without_proxies(),
+                        patch.dict(os.environ, {'YAKALA_TEST_PUBLIC_PORT': str(self.pages.public)}),
                         patch('urllib.request.getproxies', return_value={})):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -246,6 +492,19 @@ class GuardedHelperTest(unittest.TestCase):
             text = yakala.via_defuddle('http://ornek.example/acik', dict(NO_TOOLS, npx='npx'), info)
         self.assertIn('Acik makale metni.', text)
         self.assertEqual((self.pages.hits['public'], info.get('ag_engeli')), (['/acik'], None))
+
+    def test_the_users_own_proxy_stays_behind_the_guard(self):
+        """#299 review: HTTP_PROXY set (a local proxy client that connects anywhere) used to switch the
+        guard off, and the redirect hop reached the local service through that proxy."""
+        upstream = Upstream(self)
+        dns, dial = self.pages.network()
+        info, page = {}, {}
+        with dns, dial, patch.dict(os.environ, {'HTTP_PROXY': 'http://127.0.0.1:%d' % upstream.port}):
+            self.assertIsNone(yakala.via_defuddle('http://ornek.example/yonlendir', dict(NO_TOOLS, npx='npx'), info))
+            text = yakala.via_defuddle('http://ornek.example/acik', dict(NO_TOOLS, npx='npx'), page)
+        self.assertEqual((self.pages.hits['secret'], info.get('ag_engeli')), ([], True))
+        self.assertIn('Acik makale metni.', text)
+        self.assertEqual([item[2] for item in upstream.asked], ['http://ornek.example/yonlendir', 'http://ornek.example/acik'])
 
     def test_no_proxy_list_cannot_send_the_helper_around_the_guard(self):
         # Kept, NO_PROXY would send the redirect hop to 127.0.0.1 straight past the guard.
@@ -282,26 +541,32 @@ class HelperEnvironmentTest(unittest.TestCase):
         return envs
 
     def test_every_network_helper_gets_the_guard_as_its_only_proxy(self):
-        for name, env in self.helper_envs({'NO_PROXY': 'localhost,127.0.0.1,.internal'}).items():
+        user = {'NO_PROXY': 'localhost,127.0.0.1,.internal', 'HTTPS_PROXY': 'http://kurum-proxy.example:8080',
+                'HTTP_PROXY': 'http://kurum-proxy.example:3128'}
+        for name, env in self.helper_envs(user).items():
             with self.subTest(helper=name):
                 upper = {key.upper(): value for key, value in env.items()}
                 self.assertRegex(upper['ALL_PROXY'], r'^http://127\.0\.0\.1:\d+$')
-                self.assertNotIn('NO_PROXY', upper)
-                self.assertNotIn('HTTPS_PROXY', upper)
-                # npm reads its own bypass list for its registry; Defuddle and yt-dlp do not.
-                self.assertEqual(upper['NPM_CONFIG_NOPROXY'], 'localhost,127.0.0.1,.internal')
+                for key in ('NO_PROXY', 'HTTPS_PROXY', 'HTTP_PROXY'):
+                    self.assertNotIn(key, upper)
+                # npm reads its own settings for its registry; Defuddle and yt-dlp do not.
+                self.assertEqual((upper['NPM_CONFIG_NOPROXY'], upper['NPM_CONFIG_HTTPS_PROXY'], upper['NPM_CONFIG_PROXY']),
+                                 ('localhost,127.0.0.1,.internal', 'http://kurum-proxy.example:8080',
+                                  'http://kurum-proxy.example:3128'))
 
-    def test_os_proxy_settings_stay_with_yt_dlp(self):
+    def test_the_users_proxies_sit_behind_the_guard(self):
         """yt-dlp honours the OS proxy (urllib.getproxies); Defuddle reads only the environment."""
+        kurum = 'http://kurum-proxy.example:8080'
         with without_proxies():
-            with patch('urllib.request.getproxies', return_value={'https': 'http://kurum-proxy.example:8080'}):
-                self.assertTrue(yakala._user_proxy(system=True))
-                self.assertFalse(yakala._user_proxy(system=False))
-            with patch.dict(os.environ, {'https_proxy': 'http://kurum-proxy.example:8080'}):
-                self.assertTrue(yakala._user_proxy(system=False))
-            with patch.dict(os.environ, {'https_proxy': 'http://kurum-proxy.example:8080'}), \
+            with patch('urllib.request.getproxies', return_value={'https': kurum, 'ftp': 'ftp://x.example'}):
+                self.assertEqual(yakala._user_proxies(system=True), {'https': kurum})
+                self.assertEqual(yakala._user_proxies(system=False), {})
+            with patch.dict(os.environ, {'https_proxy': kurum, 'NO_PROXY': '.kurum.example'}), \
                     yakala._HelperNetwork() as guard:
-                self.assertIsNone(guard)  # the user's proxy resolves targets, as on the stdlib path
+                self.assertEqual(guard.proxies, {'https': kurum, 'no': '.kurum.example'})
+                self.assertEqual(guard._upstream('https', 'ornek.example')[:3], ('http', 'kurum-proxy.example', 8080))
+                self.assertIsNone(guard._upstream('https', 'wiki.kurum.example'))
+                self.assertIsNone(guard._upstream('http', 'ornek.example'))  # HTTPS_PROXY is for HTTPS only
 
     def test_only_helpers_inside_the_block_are_routed(self):
         seen = []

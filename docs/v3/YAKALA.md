@@ -569,14 +569,26 @@ Defuddle ve yt-dlp her çalıştığında `isle` yalnız `127.0.0.1` üzerinde d
 koruma proxy'si açar ve onu yardımcının tek proxy'si yapar (`ALL_PROXY`). Yardımcının açtığı her
 bağlantı, yönlendirmelerin her adımı dahil, hedef adını bu proxy'ye söyler; proxy aynı kapıyla adresi
 denetler ve soketi denetlenen IP adresine açar. Herkese açık bir sayfanın yerel adrese yönlendirmesi
-ya da sonradan değişen DNS cevabı yardımcıyı yerel ağa ulaştıramaz; kart "yerel veya özel bir ağ
-adresine yönlendirdi" notuyla hata olur. HTTPS bağlantısı proxy içinde uçtan uca şifreli kalır.
-`NO_PROXY` listesi yardımcıya geçmez (npm kendi kayıt deposu için `npm_config_noproxy` ile korur).
-Sınırlar: ortamda (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`) ya da yt-dlp için işletim sisteminde
-proxy ayarlıysa yardımcı o proxy'yi kullanır ve hedefi o proxy çözer. Defuddle'ın YouTube, Reddit ve
-X okuyucuları o sitelerin sabit adreslerine kendi bağlantısını açar; bu istekler koruma proxy'sinden
-geçmez. yt-dlp yalnız YouTube adresiyle çalışır: kartın `kaynak_turu` alanı elle `youtube` yapılsa da
-başka bir site yt-dlp'ye verilmez, adres türüne göre işlenir.
+ya da sonradan değişen DNS cevabı yardımcıyı yerel ağa ulaştıramaz; kart, sayfanın yerel veya özel
+bir ağ adresine yönlendirdiğini söyleyen bir notla hata olur. HTTPS bağlantısı proxy içinde uçtan uca
+şifreli kalır. `NO_PROXY` listesi yardımcıya geçmez.
+
+Ortamda (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`) ya da yt-dlp için işletim sisteminde bir proxy
+ayarlıysa (örneğin `127.0.0.1:7890` gibi yerel bir proxy istemcisi) koruma kapanmaz, o proxy'nin
+önünde durur: her hedef önce aynı kapıdan geçer, ancak sonra kullanıcının proxy'si bağlantıyı taşır.
+Yerel veya özel adrese giden bir adım kullanıcının proxy'sine hiç sorulmaz. HTTP proxy'si, `socks5h`
+ve `socks4a` hedef adını alıp kendisi çözer (Python yolundaki gibi); `socks5` ve `socks4` denetlenen
+IP adresini alır. `NO_PROXY` listesindeki herkese açık bir ad doğrudan, denetlenen IP adresine
+bağlanır. Proxy girişi (`kullanici:parola@`) korunur. Koruma `https://` proxy'si (proxy'ye TLS ile
+bağlanma) gibi zincirleyemediği bir türde bağlantıyı açmaz; yardımcı o zaman sayfayı alamaz. npm
+yalnız kendi kayıt deposu için kullanıcının proxy ayarlarını ve `NO_PROXY` listesini
+`npm_config_https_proxy`, `npm_config_proxy` ve `npm_config_noproxy` üzerinden kullanmaya devam eder.
+
+Sınır: Defuddle'ın YouTube, Reddit, X, Bilibili ve C2 wiki okuyucuları o sitelerin sabit
+adreslerine kendi bağlantısını açar; bu istekler koruma proxy'sinden geçmez, ama hedefleri kart
+içeriğinin seçebildiği bir adres de değildir. yt-dlp yalnız YouTube adresiyle çalışır: kartın
+`kaynak_turu` alanı elle `youtube` yapılsa da başka bir site yt-dlp'ye verilmez, adres türüne göre
+işlenir.
 Ham kaynak metni güvenilmeyen veri olarak işaretlenir;
 metnin içindeki rol değişikliği, komut çalıştırma ve dosya silme istekleri talimat sayılmaz.
 
