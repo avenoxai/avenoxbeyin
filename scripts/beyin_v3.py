@@ -329,6 +329,11 @@ LAYA_NOTICE = ("provider laya: calls go only to the local laya-serve at {base_ur
 ERROR_HINTS = {
     "laya_shadow_only": ("Laya yalniz golge modda calisir: puanlari olcum icin kaydedilir, gordugun sonucu degistirmez. "
                          "Laya icin: jev shadow --provider laya. Acik mod icin: jev on --provider typesafe."),
+    # #593: the index names the folder it was built for. A moved vault reaches it through the pin.
+    "runtime belongs to another vault": (
+        "Bu state baska bir vault yoluna bagli. Vault tasindiysa ya da adi degistiyse paketteki kurucuyu "
+        "yeni vault yolu, ayni --state ve --rebind-state ile calistir; eski yol hala duruyorsa kurucu reddeder. "
+        "Ayrinti: docs/v3/MULTI-MACHINE.md"),
 }
 
 
@@ -525,7 +530,8 @@ def hook_paths(vault: Path) -> dict:
         result["hint"] = ("Hook commands point to another install location (vault moved, or hook files synced "
                           "from another machine). Run the installer again on this machine with this vault; if the "
                           "vault moved from another account or folder, pass the old state folder (or a copy) with "
-                          "--state. Keep hook files out of sync: https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/MULTI-MACHINE.md")
+                          "--state, and --rebind-state when the installer asks for it. Keep hook files out of sync: "
+                          "https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/MULTI-MACHINE.md")
     return result
 
 

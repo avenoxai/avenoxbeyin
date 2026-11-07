@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -436,9 +437,148 @@ def uninstalled_content(name, item, current, previous, kept):
                          " (content differs)") from None
 
 
+def recorded_vault(state):
+    """The vault root this state's index is bound to (#593); None without an index or binding.
+
+    Read-only, like every check before the transaction: plan and update preflights call it too."""
+    database = state / "memory.sqlite3"
+    try:
+        if database.is_symlink() or not database.is_file():
+            return None  # the runtime reports a linked database itself
+        connection = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+        try:
+            row = connection.execute("SELECT value FROM metadata WHERE key='vault_root'").fetchone()
+        finally:
+            connection.close()
+    except sqlite3.OperationalError as exc:
+        if "locked" in str(exc) or "busy" in str(exc):
+            raise ValueError("runtime/updater busy; retry after active work finishes") from exc
+        return None  # no metadata table yet: nothing is bound
+    except (OSError, sqlite3.Error):
+        return None
+    return row[0] if row and isinstance(row[0], str) else None
+
+
+def _same_directory(first, second):
+    try:
+        return os.path.samefile(first, second)
+    except (OSError, ValueError):
+        return False
+
+
+def _gone(path):
+    """True only when nothing is at path. An unreadable or unreachable location is not proof."""
+    try:
+        os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return True
+    except (OSError, ValueError):
+        return False
+    return False
+
+
+def _pinned_state(vault):
+    """The state root vault/.beyin-runtime.json names, resolved; None when absent or unreadable."""
+    try:
+        data = json.loads((Path(vault) / ".beyin-runtime.json").read_text(encoding="utf-8-sig"))
+        value = data.get("state") if isinstance(data, dict) else None
+        if not isinstance(value, str) or not value.strip() or "\0" in value:
+            return None
+        path = Path(value).expanduser()
+        return path.resolve() if path.is_absolute() else None
+    except (OSError, ValueError, UnicodeError, RuntimeError):
+        return None
+
+
+def vault_rebind(vault, state, manifest, allowed):
+    """#593: may this state's index follow its vault to the path being installed?
+
+    The index refuses a second vault (docs/v3/RUNTIME.md), and a moved vault is still the same
+    vault. A path that is gone also describes an unmounted or offline disk, though, so only an
+    explicit --rebind-state changes the binding, and only when the recorded folder is gone, is
+    this folder under another name, or is a copy that provably reads another state root; and
+    when this vault carries the runtime pin this state's install record wrote. Returns the
+    recorded path to replace, or None. Writes nothing."""
+    bound = recorded_vault(state)
+    if bound is None or bound == str(vault):
+        return None
+    old = Path(bound)
+    if not allowed:
+        raise ValueError("State is bound to another vault path: " + bound + " (this install: " + str(vault) +
+                         "). If this vault was moved or renamed here, rerun with --rebind-state; "
+                         "see docs/v3/MULTI-MACHINE.md")
+    if not old.is_absolute():
+        raise ValueError("Rebind refused: the recorded vault path " + bound + " is not an absolute path on this "
+                         "machine; this state was not created here")
+    if not _gone(old) and not _same_directory(old, vault):
+        other = _pinned_state(old) if old.is_dir() else None
+        if (other is None or os.path.normcase(str(other)) == os.path.normcase(str(state))
+                or _same_directory(other, state)):
+            raise ValueError("Rebind refused: " + bound + " still exists or cannot be checked, and it may be "
+                             "another copy of this vault using the same state. If it is a leftover, move or "
+                             "rename it and rerun; to keep both, install this copy with a copy of the state "
+                             "folder. See docs/v3/MULTI-MACHINE.md")
+    item = manifest.get("files", {}).get(".beyin-runtime.json")
+    baseline = (base64.b64decode(item["installed_content"])
+                if isinstance(item, dict) and item.get("installed_content") else None)
+    pin = vault / ".beyin-runtime.json"
+    current = pin.read_bytes() if pin.is_file() and not pin.is_symlink() else None
+    if not line_endings_only(baseline, current):
+        raise ValueError("Rebind refused: this vault's .beyin-runtime.json is not the one this state's install "
+                         "record wrote; pass the state folder named in this vault's .beyin-runtime.json")
+    return bound
+
+
+def rebind_index(state, old, vault):
+    """Back up memory.sqlite3, then move its binding from old to vault in one transaction (#593).
+
+    The writer lock is taken first, so the copy and the change see the same database; a second
+    connection makes the copy, since a backup read through the locking connection never ends."""
+    database = state / "memory.sqlite3"
+    index = 0
+    while True:
+        backup = state / ("memory-before-rebind" + ("." + str(index) if index else "") + ".sqlite3")
+        try:
+            os.close(os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+            break
+        except FileExistsError:
+            index += 1  # an earlier rebind's copy stays the user's
+    connection = sqlite3.connect(database, timeout=10, isolation_level=None)
+    try:
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError as exc:
+            raise ValueError("runtime/updater busy; retry after active work finishes") from exc
+        try:
+            row = connection.execute("SELECT value FROM metadata WHERE key='vault_root'").fetchone()
+            if not row or row[0] != old:
+                raise ValueError("vault binding changed during rebind; rerun the installer")
+            reader = sqlite3.connect(database, timeout=10)
+            try:
+                target = sqlite3.connect(backup)
+                try:
+                    reader.backup(target)
+                finally:
+                    target.close()
+            finally:
+                reader.close()
+            connection.execute("UPDATE metadata SET value=? WHERE key='vault_root'", (str(vault),))
+            connection.execute("COMMIT")
+        except BaseException:
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            backup.unlink(missing_ok=True)  # the binding is unchanged, so is the database
+            raise
+    finally:
+        connection.close()
+    return backup
+
+
 def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", legacy_hashes=None,
              legacy_skill_hashes=None, migration=None, migration_plan=None, accept_customized=(),
-             keep_customized=(), exclude_components=(), include_components=()):
+             keep_customized=(), exclude_components=(), include_components=(), rebind_state=False):
     vault, state = vault.resolve(), state.resolve()
     if not vault.is_dir() or state == vault or vault in state.parents:
         raise ValueError("Existing vault and state outside vault required")
@@ -484,6 +624,9 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
         if kept_user_text:
             result["kept_user_text"] = sorted(kept_user_text)
         return result
+    # Before any write and in plan mode too, so `beyin.py update` in a moved vault stops here
+    # instead of reporting success over an index that still names the old folder (#593).
+    rebind = vault_rebind(vault, state, manifest, rebind_state)
     planned = {}
     modes = {}
     if legacy_hashes is None:
@@ -816,7 +959,15 @@ Use Markdown source files as truth; run `python3 beyin.py sync` in the vault roo
     else:
         next_manifest.pop("excluded_components", None)
     if plan_only:
-        return {"planned": planned, "manifest": next_manifest, "modes": modes, "removed": removed, "preserved_excluded": preserved_excluded}
+        plan = {"planned": planned, "manifest": next_manifest, "modes": modes, "removed": removed, "preserved_excluded": preserved_excluded}
+        if rebind is not None:
+            plan["rebind"] = {"from": rebind, "to": str(vault)}
+        return plan
+    # Every conflict check above has passed. The recorded folder is gone (or is this one), so
+    # the old binding serves nobody, and a rerun after a failure below finds it already moved.
+    rebound = None
+    if rebind is not None:
+        rebound = {"from": rebind, "to": str(vault), "backup": str(rebind_index(state, rebind, vault))}
     spec = importlib.util.spec_from_file_location('beyin_install_transaction', ROOT / 'template/.claude/scripts/beyin_v3_update.py')
     updater = importlib.util.module_from_spec(spec); spec.loader.exec_module(updater)
     operations = []
@@ -853,6 +1004,8 @@ Use Markdown source files as truth; run `python3 beyin.py sync` in the vault roo
               'companion': companion,
               'update_notice': 'New releases are checked on GitHub at most daily; notes are not sent. Disable with beyin.py preferences --update-notifications off.',
               'skills':{'synced':[s for s in ('beyin','beyin-doktor','beyin-guncelle') if not is_component_excluded(f'.agents/skills/{s}/', user_excluded)],'conflicts':[], 'mode':'managed'}}
+    if rebound:
+        result['rebound'] = rebound
     # V2 flush sentinels whose writer provably died: the cutover went ahead, and the summaries
     # they were writing most likely never reached daily/.
     if migration_plan and migration_plan.get('orphaned_legacy_state'):
@@ -895,7 +1048,7 @@ def package_defaults():
 
 def install(vault, state, uninstall=False, plan_only=False, version=None, legacy_hashes=None,
             legacy_skill_hashes=None, accept_customized=(), keep_customized=(),
-            exclude_components=(), include_components=()):
+            exclude_components=(), include_components=(), rebind_state=False):
     package = package_defaults()
     if package is not None:
         if version is not None and version != package['version']:
@@ -912,7 +1065,8 @@ def install(vault, state, uninstall=False, plan_only=False, version=None, legacy
     if plan_only or uninstall:
         return _install(vault, state, uninstall, plan_only, version, legacy_hashes, legacy_skill_hashes,
                         accept_customized=accept_customized, keep_customized=keep_customized,
-                        exclude_components=exclude_components, include_components=include_components)
+                        exclude_components=exclude_components, include_components=include_components,
+                        rebind_state=rebind_state)
     directory = ROOT / 'template/.claude/scripts'
     if (Path(state).resolve() / 'update-journal.json').exists():
         spec = importlib.util.spec_from_file_location('beyin_install_recovery', directory / 'beyin_v3_update.py')
@@ -927,7 +1081,8 @@ def install(vault, state, uninstall=False, plan_only=False, version=None, legacy
             return _install(vault, state, version=version, legacy_hashes=legacy_hashes,
                             legacy_skill_hashes=legacy_skill_hashes, migration=module, migration_plan=plan,
                             accept_customized=accept_customized, keep_customized=keep_customized,
-                            exclude_components=exclude_components, include_components=include_components)
+                            exclude_components=exclude_components, include_components=include_components,
+                            rebind_state=rebind_state)
     finally:
         sys.path.remove(str(directory))
 
@@ -942,7 +1097,8 @@ def plan_report(plan):
             "keep": sorted(plan["manifest"].get("kept_legacy", [])),
             "excluded": sorted(plan["manifest"].get("excluded_components", [])),
             "removed": sorted(plan.get("removed", [])),
-            "preserved_excluded": sorted(plan.get("preserved_excluded", []))}
+            "preserved_excluded": sorted(plan.get("preserved_excluded", [])),
+            **({"rebind": plan["rebind"]} if plan.get("rebind") else {})}
 
 
 def main():
@@ -961,7 +1117,14 @@ def main():
                         help="disable/exclude a managed component, skill, adapter, or launcher; repeatable")
     parser.add_argument("--include-component", action="append", default=[], metavar="COMPONENT",
                         help="re-enable a previously excluded component; repeatable")
+    parser.add_argument("--rebind-state", action="store_true",
+                        help="this vault was moved or renamed: bind the --state index to its new path "
+                             "(refused while the old path still exists; the index is backed up first)")
     args = parser.parse_args()
+    if args.rebind_state and (args.uninstall or args.reconcile_hooks):
+        parser.error("--rebind-state applies to an install only")
+    if args.rebind_state and args.state is None:
+        parser.error("--rebind-state requires --state: the state folder named in the vault's .beyin-runtime.json")
     spec = importlib.util.spec_from_file_location("beyin_cli_defaults", ROOT / "scripts/beyin_v3.py")
     defaults = importlib.util.module_from_spec(spec); spec.loader.exec_module(defaults)
     default_state = defaults.default_state
@@ -984,7 +1147,7 @@ def main():
         result = install(args.vault, args.state or default_state(args.vault.resolve()), args.uninstall,
                          plan_only=args.plan, accept_customized=accepted, keep_customized=kept,
                          exclude_components=excluded,
-                         include_components=included)
+                         include_components=included, rebind_state=args.rebind_state)
         print(json.dumps(plan_report(result) if args.plan else result))
     except Exception as exc:
         print(json.dumps({"error": type(exc).__name__, "message": str(exc)}), file=sys.stderr)
