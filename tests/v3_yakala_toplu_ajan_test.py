@@ -170,6 +170,22 @@ class BatchPreviewTest(BatchFiles):
         with self.assertRaisesRegex(ValueError, 'kapasitesi dogrulanamadi'):
             self.submit()
 
+    def test_one_oversized_or_undecodable_inbox_note_does_not_block_other_cards(self):
+        self.configure()
+        _, card = self.card(why='Bu kaynagi incele.')
+        inbox = card['path'].parent
+        (inbox / 'buyuk-not.md').write_text('# Uzun\n' + 'x' * (300 * 1024), encoding='utf-8')
+        (inbox / 'bozuk.md').write_bytes(b'---\ntur: yakala\ndurum: bekliyor\n---\n\xff\xfe')
+        result = self.bulk(request=None, use_why=True)
+        self.assertEqual([row['id'] for row in result['kartlar']], [card['id']])
+        self.assertTrue(result['gonderilebilir'])
+        skipped = {row['id'] for row in result['atlanan']}
+        self.assertEqual(skipped, {'buyuk-not', 'bozuk'})
+        with self.assertRaisesRegex(ValueError, 'okunamadi'):
+            self.bulk(ids=['bozuk'], request=None, use_why=True)
+        submitted = self.submit(request=None, use_why=True)
+        self.assertEqual([member['card_id'] for member in self.members(submitted)], [card['id']])
+
     def test_linked_card_is_refused_before_reading_its_target(self):
         _, card = self.card()
         outside = Path(self.tmp.name) / 'outside.md'

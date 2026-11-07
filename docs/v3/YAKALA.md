@@ -488,7 +488,9 @@ Claude Code ya da Codex oturumu, oturum işareti yoksa kurulu tek CLI seçilir. 
 terminalde `1) claude / 2) codex` sorulur; JSON çıktıda veya etkileşimsiz kullanımda açıkça
 `claude` ya da `codex` seçmen gerekir. Hiçbiri bulunamazsa hata verilir. Ayara somut istemci
 yazılır; çıktının `secim` alanı `kurulum-ajani`, `tek-kurulu` veya `kullanici` yolunu gösterir.
-Kurulumu yapan ajan, başka bir istemci istemediysen `--ajan otomatik` kullanır.
+Kurulumu yapan ajan, arka plan ajanını yalnız sen açıkça istersen açar; istemci belirtmediysen
+`--ajan otomatik` kullanır. Skill, ajanın `ajan-gonder`, `ajan-toplu --gonder`, `--ses-isle` ve
+`--tani-servise-gonder` izinlerini senin yerine kendiliğinden vermemesini söyler.
 `--ajan` verilmezse varsayılan kapalı davranışı değişmez.
 
 Codex seçmek için `--ajan codex` kullan. Yakala zaten kuruluysa `py -3 beyin.py yakala ajan claude`
@@ -1167,6 +1169,8 @@ ve acik isteklerini yazar; her uyenin isi mevcut `jobs/<is-UUID>/job.json`
 duzeninde kalir. Son asamada tek worker uyandirma cagrisi yapilir. Manifest,
 kartlar ve isler yerel dosyalardir; istekler vault disindaki mevcut makine
 durumunda saklanir. Manifest okuma siniri 4 MiB, tek kart okuma siniri 200 KiB'dir.
+Bu siniri asan veya UTF-8 olmayan bir not secilmez; onizlemenin `atlanan` listesinde
+gorunur ve diger kartlarin gonderimini engellemez. Kimligiyle acikca secilirse hata verir.
 Sembolik baglar ve Windows junction/reparse yollarina izin verilmez. Okunamayan
 bir is kaydi varsa kapasite bilinmiyor sayilir ve yeni toplu gonderim reddedilir;
 once ilgili kaydi ve kartin konumunu incele. Eski bir kartin tasinmasi da bu

@@ -6904,7 +6904,12 @@ bir videodaki sarkiyi bulmak). Kullanicinin notlarindan, kisisel bilgilerinden v
 kendi yukledigi icerikten hicbir metni arama sorgusuna, URL'ye veya dosya adina koyma; bunu
 gerektiren is kullanicinin izni icin `approval_required` ile durur.
 
-Ajani kuran ajan, kullanici baska istemedikce `--ajan otomatik` kullanir; kurulum istemcisi kendisi secilir.
+Arka plan ajanini yalniz kullanici acikca isterse ac; `yakala kur` sirasinda kendiliginden `--ajan`
+ekleme. Kullanici ajani isteyip istemci belirtmediyse `--ajan otomatik` kullan; kurulum istemcisi
+kendisi secilir. `ajan-gonder`, `ajan-toplu --gonder --plan`, `--ses-isle` ve `--tani-servise-gonder`
+kullanicinin o is icin verdigi acik izinlerdir: kullanici istemeden bunlari calistirma veya ekleme,
+`onay-bekliyor` kartindaki onerilen komutu da once kullaniciya sor. Toplu gonderimden once
+onizlemeyi kullaniciya goster.
 Ajani kullanici icin kurarken (Windows + Claude) gorunumu kullaniciya sor ve cevabini
 `--ajan-gorunum` ile ver: `gizli` arka planda calisir ve bildirimle haber verir; `pencere`
 ekranda Claude Code penceresi acar, kullanici canli izler ve araya girebilir.
@@ -11842,12 +11847,16 @@ def _agent_batch_jobs(vault, state):
 
 
 def _agent_batch_cards(vault, state):
-    """Read bounded local card snapshots without following a captured/synced link."""
+    """Read bounded local card snapshots without following a captured/synced link.
+
+    An oversized or non-UTF-8 note is never selected, but it is reported instead of
+    blocking every other card in the inbox. A link is still refused outright.
+    """
     import hashlib
     folder = _agent_no_links(inbox(vault, state))
-    found = []
+    found, unreadable = [], []
     if not folder.is_dir():
-        return found
+        return found, unreadable
     for path in sorted(folder.glob('*.md')):
         _agent_no_links(path)
         if not path.is_file():
@@ -11855,14 +11864,20 @@ def _agent_batch_cards(vault, state):
         with path.open('rb') as stream:
             raw = stream.read(_AGENT_NOTE_BYTES + 1)
         if len(raw) > _AGENT_NOTE_BYTES:
-            raise ValueError('Toplu is karti 200 KiB sinirini asti: ' + path.stem)
-        meta, body = _parse_card_text(raw.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n'))
+            unreadable.append({'id': path.stem, 'neden': 'Not 200 KiB okuma sinirini asiyor; toplu ise alinmadi.'})
+            continue
+        try:
+            text = raw.decode('utf-8')
+        except UnicodeDecodeError:
+            unreadable.append({'id': path.stem, 'neden': 'Not UTF-8 degil; toplu ise alinmadi.'})
+            continue
+        meta, body = _parse_card_text(text.replace('\r\n', '\n').replace('\r', '\n'))
         if meta.get('tur') == 'yakala':
             relative = path.relative_to(vault).as_posix()
             _agent_parts(relative)
             found.append({'id': path.stem, 'path': path, 'meta': meta, 'body': body,
                           'snapshot': hashlib.sha256(raw).hexdigest()})
-    return found
+    return found, unreadable
 
 
 def _agent_batch_card_order(card):
@@ -11918,18 +11933,21 @@ def _agent_batch_plan(vault, state, ids=(), request=None, use_why=False, kinds=(
         normalized_domains.add(domain.lower().rstrip('.').removeprefix('www.').removeprefix('m.'))
     config = agent_settings(vault, state)
     jobs, job_errors = _agent_batch_jobs(vault, state)
-    all_cards = _agent_batch_cards(vault, state)
+    all_cards, unreadable = _agent_batch_cards(vault, state)
     by_id = {card['id']: card for card in all_cards}
+    unreadable_ids = {item['id']: item['neden'] for item in unreadable}
     selected_ids = set()
     for identifier in ids:
         key = identifier if identifier in by_id else identifier.removesuffix('.md')
+        if key not in by_id and key in unreadable_ids:
+            raise ValueError('Kart okunamadi: ' + key + ': ' + unreadable_ids[key])
         if key not in by_id:
             raise ValueError('Kart bulunamadi: ' + identifier)
         if by_id[key]['meta'].get('durum') != 'bekliyor':
             raise ValueError('Toplu is yalniz bekliyor kartlarini secer: ' + key)
         selected_ids.add(key)
     active = {job['card_id'] for job in jobs if job['state'] in AGENT_ACTIVE}
-    candidates, excluded = [], []
+    candidates, excluded = [], ([] if ids else list(unreadable))
     for card in sorted(all_cards, key=_agent_batch_card_order):
         meta = card['meta']
         if meta.get('durum') != 'bekliyor' or (ids and card['id'] not in selected_ids):
