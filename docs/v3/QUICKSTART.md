@@ -302,3 +302,25 @@ may require renewed `/hooks` trust review.
 
 Client references: [Codex hooks](https://learn.chatgpt.com/docs/hooks) and
 [Claude hooks](https://code.claude.com/docs/en/hooks).
+
+
+## Read-only triage of open topics
+
+Run `python3 beyin.py triage --stale-days 14` (add `--human` for readable output).
+The additive `threads` section reports stale and undated `###` topics in the
+configured/discovered companion `Threads.md`, alongside the existing task report.
+Topics under active sections (Active/Open/Aktif/Açık) or the top-level title are
+considered open; closed/other sections and fenced code examples are ignored.
+
+For each topic, `last_date` is the newest valid `YYYY-MM-DD` mention in its heading
+or body. This is a freshness hint, **not evidence that its status was verified**:
+a quoted historical date or future plan is still a date mention. Future dates
+have age zero. Written-out dates are not inferred, and topics without a valid ISO
+date have `last_date: null` and `age_days: null`; file mtime is never substituted.
+Check the actual source of the work before repeating an old status as current.
+
+This report does not edit, archive, or refresh the notes and does not change
+opening-context budgets. Private/untrusted or excluded sources and symlinks are
+not scanned. An ambiguous identity, invalid directory marker, or unsafe/unreadable
+source is reported as `status: unavailable` with a reason, not a successful empty
+scan; a missing `Threads.md` reports `status: absent`.
