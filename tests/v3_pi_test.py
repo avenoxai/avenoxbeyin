@@ -229,6 +229,28 @@ class PiHarnessTest(unittest.TestCase):
         self.assertIn('--harness pi', reminder['reason'])
         self.assertIn(hashlib.sha256(b'pi-1').hexdigest()[:24], reminder['reason'])
 
+    def test_receipt_and_learning_from_pi_shell_use_pi_session(self):
+        # Pi started from a Claude Code shell inherits the outer CLAUDE_CODE_SESSION_ID; a receipt
+        # that names --harness pi must still close the Pi checkpoint, not the Claude session.
+        pi_session = hashlib.sha256(b'pi-inner').hexdigest()[:24]
+        self.env.update(PI_SESSION_ID='pi-inner', CLAUDE_CODE_SESSION_ID='claude-outer')
+        receipt = self.cli('receipt', '--harness', 'pi', '--event-id', 'pi-nested', '--summary', 'Pi kabuğu sonucu.',
+                           '--ref', 'notes/klima.md')
+        self.assertEqual(receipt.returncode, 0, receipt.stderr)
+        text = (self.vault / json.loads(receipt.stdout)['source']).read_text(encoding='utf-8')
+        self.assertIn('"session": "' + pi_session + '"', text)
+        claude = self.cli('receipt', '--harness', 'claude', '--event-id', 'claude-nested', '--summary', 'Claude sonucu.',
+                          '--ref', 'notes/klima.md')
+        self.assertEqual(claude.returncode, 0, claude.stderr)
+        text = (self.vault / json.loads(claude.stdout)['source']).read_text(encoding='utf-8')
+        self.assertIn('"session": "' + hashlib.sha256(b'claude-outer').hexdigest()[:24] + '"', text)
+        del self.env['CLAUDE_CODE_SESSION_ID']
+        staged = self.cli('learn', '--candidate', 'Pi kabuğundan aday öğrenim.', '--source', 'notes/klima.md')
+        self.assertEqual(staged.returncode, 0, staged.stderr)
+        listed = self.cli('learn', '--list', '--session', pi_session)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertEqual([c['session'] for c in json.loads(listed.stdout)['candidates']], [pi_session])
+
     def test_exclusions_reinclude_and_customized_extension(self):
         # Released 3.12.0 reads the same vault-local .beyin-exclusions.json and stops its update on
         # an unknown name, so Pi has no exclusion name of its own; the adapters group covers it (#385).

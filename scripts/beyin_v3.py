@@ -57,6 +57,20 @@ def mark_session_edit(state: Path) -> None:
         pass
 
 
+def env_session(harness=None):
+    """Hashed session of the agent whose shell runs this command, as its hooks key it (#212).
+
+    Claude Code and Pi export their real session ID to shell subprocesses. A receipt names its
+    client, so `--harness pi` reads Pi's ID even when Pi itself runs inside a Claude Code shell
+    and inherits the outer CLAUDE_CODE_SESSION_ID. Nothing is guessed in a plain shell.
+    """
+    names = (("PI_SESSION_ID", "BEYIN_V3_SESSION_ID") if harness == "pi"
+             else ("CLAUDE_CODE_SESSION_ID", "BEYIN_V3_SESSION_ID", "PI_SESSION_ID") if harness is None
+             else ("CLAUDE_CODE_SESSION_ID", "BEYIN_V3_SESSION_ID"))
+    raw = next((os.environ[name] for name in names if os.environ.get(name)), None)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24] if raw else None
+
+
 def _is_absolute_cross_platform(raw: str) -> bool:
     """True if a path is absolute on any supported platform (Windows or POSIX)."""
     return bool(re.match(r"^([A-Za-z]:[/\\]|[/\\])", raw))
@@ -1873,14 +1887,14 @@ def main(argv=None, return_result=False):
                 payload = {"event_id": args.event_id, "summary": summary, "refs": args.ref}
                 if args.session is not None:
                     payload["session"] = args.session
-                elif os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID"):
-                    payload["session"] = hashlib.sha256((os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")).encode("utf-8")).hexdigest()[:24]
+                elif env_session(args.harness):
+                    payload["session"] = env_session(args.harness)
                 if args.link:
                     payload["links"] = args.link
             else:
                 payload = read_json(args.file if args.file is not None else "-")
-                if "session" not in payload and (os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")):
-                    payload["session"] = hashlib.sha256((os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")).encode("utf-8")).hexdigest()[:24]
+                if "session" not in payload and env_session(args.harness):
+                    payload["session"] = env_session(args.harness)
             result = sync.receipt(payload["event_id"], payload["summary"],
                                           payload["refs"], args.harness, session=payload.get('session'),
                                           links=payload.get('links'))
@@ -1900,9 +1914,7 @@ def main(argv=None, return_result=False):
         elif args.command == "learn":
             _ensure_scripts_path()
             from beyin_v3_learning import stage_candidate, list_candidates, resolve_candidates
-            env_session = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")
-            sess = args.session or (hashlib.sha256(env_session.encode("utf-8")).hexdigest()[:24]
-                                    if env_session else "cli")
+            sess = args.session or env_session() or "cli"
             if getattr(args, "all", False):
                 target_sess = None
             else:
