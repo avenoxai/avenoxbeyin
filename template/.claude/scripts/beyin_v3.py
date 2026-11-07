@@ -252,13 +252,61 @@ def _trusted_record(record):
             and not _rejected_inference(record))
 
 
+def _cyclic_supersedes(edges):
+    """Resolved supersedes edges that lie on a cycle, in O(V+E) via iterative Kosaraju.
+
+    An edge is cyclic when its ends share a strongly connected component: applying it would
+    retire every member of the loop. The walk is iterative so a long chain cannot raise
+    RecursionError and fail open.
+    """
+    reverse = {}
+    for source, targets in edges.items():
+        reverse.setdefault(source, [])
+        for target in targets:
+            reverse.setdefault(target, []).append(source)
+
+    seen, order = set(), []
+    for root in reverse:
+        if root in seen:
+            continue
+        seen.add(root)
+        stack = [(root, iter(edges.get(root, ())))]
+        while stack:
+            node, targets = stack[-1]
+            target = next(targets, None)
+            if target is None:
+                order.append(node)
+                stack.pop()
+            elif target not in seen:
+                seen.add(target)
+                stack.append((target, iter(edges.get(target, ()))))
+
+    components = {}
+    for root in reversed(order):
+        if root in components:
+            continue
+        component = len(components)
+        components[root] = component
+        stack = [root]
+        while stack:
+            for target in reverse[stack.pop()]:
+                if target not in components:
+                    components[target] = component
+                    stack.append(target)
+
+    return {(source, target) for source, targets in edges.items() for target in targets
+            if components[source] == components[target]}
+
+
 def resolve_supersedes(records):
     """Resolve trusted supersedes references to record ids and report links that do nothing.
 
     A value is an explicit id, else a vault path (with or without .md) or [[link]] by its whole
     value, else its last segment when exactly one note has that file name. Never a substring.
     A reference that resolves to the note itself retires nothing and is reported (#206).
-    Untrusted notes neither retire nor are counted as targets.
+    Untrusted notes neither retire nor are counted as targets. An edge on a supersedes cycle
+    (A->B->...->A) retires nothing either: applying it would silently retire every member, so
+    it is reported with the other dead references instead.
     """
     trusted = [record for record in records if isinstance(record, dict) and _trusted_record(record)]
     by_id = {record.get("id"): record for record in trusted if isinstance(record.get("id"), str)}
@@ -271,6 +319,8 @@ def resolve_supersedes(records):
         by_path.setdefault(path_key.casefold(), []).append(record)
         by_name.setdefault(path_key.rsplit("/", 1)[-1].casefold(), []).append(record)
     retired, dead = set(), []
+    resolved = []  # (record, raw, target) edges, applied after the cycle check
+    edges = {}
     for record in trusted:
         values = record.get("supersedes", [])
         if isinstance(values, str):
@@ -296,7 +346,15 @@ def resolve_supersedes(records):
             if target is None:
                 dead.append({"id": record.get("id"), "source": record.get("source", ""), "value": raw, "reason": reason})
             else:
-                retired.add(target["id"])
+                resolved.append((record, raw, target))
+                edges.setdefault(record.get("id"), set()).add(target["id"])
+    cyclic = _cyclic_supersedes(edges)
+    for record, raw, target in resolved:
+        if (record.get("id"), target["id"]) in cyclic:
+            dead.append({"id": record.get("id"), "source": record.get("source", ""), "value": raw,
+                         "reason": "supersedes reference is part of a cycle"})
+        else:
+            retired.add(target["id"])
     return retired, dead
 
 
@@ -451,7 +509,8 @@ def read_project_scopes(vault_root):
     if not path.exists():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        # Match the project-scope helper and doctor, including UTF-8 BOM files.
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (ValueError, OSError) as exc:
         raise ValueError("invalid project scopes file; expected JSON") from exc
     if not isinstance(data, dict) or set(data) - {"folders", "shared_unscoped"}:
@@ -772,6 +831,11 @@ def _fold_query_roots(term_counts, terms, ignored):
                 counts[term] += counts.pop(root)
 
 
+# Conventional Unicode hyphens/dashes and compatibility forms of ASCII hyphen.
+# Keep this filename-only: mathematical minus and arbitrary punctuation are not prefixes.
+_NAME_SEPARATORS = str.maketrans({c: " " for c in "-_\u2010\u2011\u2012\u2013\u2014\u2015\ufe63\uff0d"})
+
+
 def _name_candidates(record):
     """Candidate names for title-salience matching (#354): title, stem, stripped stem, aliases."""
     candidates = []
@@ -780,7 +844,7 @@ def _name_candidates(record):
         candidates.append(title[:160])
     source = str(record.get("source", "")).strip()
     if source:
-        stem = Path(source).stem.replace("-", " ").replace("_", " ").strip()
+        stem = Path(source).stem.translate(_NAME_SEPARATORS).strip()
         if stem:
             candidates.append(stem[:160])
             stripped = re.sub(r"^[0-9]+[ \t\-_]+", "", stem).strip()

@@ -346,6 +346,66 @@ class ProjectScopesTest(unittest.TestCase):
         json_file.write_bytes('\ufeff{"hello": "world"}'.encode('utf-8'))
         self.assertEqual(cli.read_json(str(json_file)), {'hello': 'world'})
 
+    def test_runtime_and_cli_accept_bom_without_weakening_project_gates(self):
+        import beyin_v3_projects as projects
+        self.vault_notes()
+        self.note('private', GAME + '/Private.md', visibility='private')
+        stale = self.note('stale', GAME + '/Stale.md')
+        (self.vault / stale['source']).write_text('Changed after indexing', encoding='utf-8')
+        data = {'folders': {GAME: 'oyun', ARCHIVE: 'arsiv'}, 'shared_unscoped': False}
+        path = self.vault / runtime.PROJECT_SCOPES_FILE
+        for bom in ('', '\ufeff'):
+            with self.subTest(bom=bool(bom)):
+                original = (bom + json.dumps(data, ensure_ascii=False)).encode('utf-8')
+                path.write_bytes(original)
+                self.assertEqual(projects.check_project_scopes(self.vault)['status'], 'ok')
+                helper = projects.read_project_scopes(self.vault)
+                actual = runtime.read_project_scopes(self.vault)
+                self.assertEqual(actual['folders'], helper['folders'])
+                self.assertEqual(actual['shared_unscoped'], helper['shared_unscoped'])
+                self.assertEqual(self.ids('oyun'), ['game', 'tagged'])
+                self.assertEqual(self.ids('arsiv'), ['archive'])
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
+                     '--state', str(self.store.state_dir), 'context', 'Kaynak notu',
+                     '--project', 'oyun', '--no-sync'], env=inherited_env(),
+                    capture_output=True, text=True, encoding='utf-8', timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, '')
+                records = json.loads(result.stdout)['records']
+                self.assertTrue(records)
+                self.assertTrue({record['id'] for record in records} <= {'game', 'tagged'})
+                self.assertEqual(path.read_bytes(), original)
+
+    def test_bom_malformed_scopes_still_fail_closed_in_runtime_and_cli(self):
+        import beyin_v3_projects as projects
+        self.vault_notes()
+        path = self.vault / runtime.PROJECT_SCOPES_FILE
+        cases = ('{broken', '[]', {'folders': []},
+                 {'folders': {GAME: 'oyun'}, 'shared_unscoped': 'yes'},
+                 {'folders': {GAME: 'oyun', '../escape': 'other'}, 'shared_unscoped': True},
+                 {'folders': {GAME: 'oyun', '/absolute': 'other'}},
+                 {'folders': {GAME: 'oyun', 'Projeler/./Other': 'other'}})
+        for bad in cases:
+            with self.subTest(bad=bad):
+                original = ('\ufeff' + (bad if isinstance(bad, str) else json.dumps(bad))).encode('utf-8')
+                path.write_bytes(original)
+                self.assertEqual(projects.check_project_scopes(self.vault)['status'], 'error')
+                with self.assertRaises(ValueError):
+                    projects.read_project_scopes(self.vault)
+                with self.assertRaises(ValueError):
+                    self.ids('oyun')
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
+                     '--state', str(self.store.state_dir), 'context', 'Kaynak notu',
+                     '--project', 'oyun', '--no-sync'], env=inherited_env(),
+                    capture_output=True, text=True, encoding='utf-8', timeout=30)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(result.stdout, '')
+                self.assertEqual(json.loads(result.stderr)['error'], 'ValueError')
+                self.assertNotIn('Traceback', result.stderr)
+                self.assertEqual(path.read_bytes(), original)
+
     def test_prune_recovers_from_invalid_and_outside_folder_paths(self):
         """Invalid or outside-the-vault folder paths do not deadlock project-scope prune."""
         import beyin_v3_projects as projects
