@@ -169,6 +169,21 @@ class InstalledProjectScopeOptionsTest(ProjectScopeFixture, unittest.TestCase):
                 self.assertEqual(done.returncode, 0, done.stderr)
                 self.assertEqual(json.loads(done.stdout)['shared_unscoped'], bool(shared))
 
+    def test_human_add_reports_the_saved_sharing_choice(self):
+        # The documented way to change the setting must confirm it on a terminal too.
+        self.scopes(False)
+        for flag, expected in ((['--shared-unscoped', 'on'], 'acik'), ([], 'acik'),
+                               (['--shared-unscoped', 'off'], 'kapali')):
+            with self.subTest(flag=flag):
+                done = self.cli('add', '--folder', FOLDER, '--project', PROJECT, *flag, '--human')
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual(done.stderr, b'')
+                lines = done.stdout.decode('utf-8').splitlines()
+                self.assertEqual(lines, ['Klasor proje kapsamina eklendi: ' + FOLDER + ' -> ' + PROJECT,
+                                         '  shared_unscoped: ' + expected])
+                saved = json.loads(self.scope_file.read_text(encoding='utf-8'))
+                self.assertIs(saved['shared_unscoped'], expected == 'acik')
+
     def test_help_identifies_the_add_only_flag(self):
         done = self.cli('--help')
         self.assertEqual(done.returncode, 0, done.stderr)

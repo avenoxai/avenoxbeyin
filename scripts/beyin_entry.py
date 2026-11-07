@@ -602,7 +602,10 @@ def human_result(result, command, installed_version=None):
             lines.append('  shared_unscoped: ' + ('acik' if result.get('shared_unscoped') else 'kapali'))
             return '\n'.join(lines)
         elif action == 'add':
-            return 'Klasor proje kapsamina eklendi: ' + plain_text(result.get('folder', '')) + ' -> ' + plain_text(result.get('project', ''))
+            # add is the only command that changes shared_unscoped (#607): show the saved value.
+            return ('Klasor proje kapsamina eklendi: ' + plain_text(result.get('folder', '')) + ' -> ' +
+                    plain_text(result.get('project', '')) +
+                    '\n  shared_unscoped: ' + ('acik' if result.get('shared_unscoped') else 'kapali'))
         elif action == 'remove':
             return 'Klasor proje kapsamindan cikarildi: ' + plain_text(result.get('folder', ''))
         elif action == 'prune':
