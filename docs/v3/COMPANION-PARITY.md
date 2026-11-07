@@ -58,9 +58,14 @@ Açılışta yer darsa tam genel/proje kuralları (gerekçeleri çıkarmak gerek
 tarihli devir kartı ve bütün açık konuların kısa görünümü önce ayrılır. Kuralların taban
 payı kategoriye aittir; genel ve proje dosyaları aynı payı bölüşür. Kimlik, üslup, Journal,
 bilgi haritası, receipt ve sorgu sonuçları kalan alanı kullanır. Bu çekirdek de sığmıyorsa
-önce sığan kurallar korunur, konu ayrıntısının payı bütün başlıklara dağıtılır. Kuralların
-kendisi de sığmıyorsa sınırlı paylar ve açık kırpma işaretleri geçerlidir; keyfi uzunluktaki
-kuralların her sonlu bütçeye tam sığacağı söylenmez. Kaynak dosyalar bu işlemde değiştirilmez.
+önce kimlik, Journal ve öbür isteğe bağlı kaynaklar kısa bir başa iner; devir dosyası en üstteki
+kartını ve en az taban payını korur, konuların kısa görünümü kalanı alır. Bu kalan, eski orantılı
+paylaşımın konulara verdiğinden azsa her kaynak önce o orantılı payı (korunan kısmıyla ya da taban
+payıyla sınırlı) alır; artan alan sırayla kalan kurallara, en üstteki devir kartına ve konuların
+kısa görünümüne gider. Böylece kurallar ne kadar uzarsa uzasın devir kartı ve konu adımları eski
+paylaşımın gösterdiğinden azına inmez. Kuralların kendisi de sığmıyorsa sınırlı paylar ve açık
+kırpma işaretleri geçerlidir; keyfi uzunluktaki kuralların her sonlu bütçeye tam sığacağı
+söylenmez. Kaynak dosyalar bu işlemde değiştirilmez.
 Bu çekirdek bir tabandır, tavan değildir: kalan alan önce bütün kaynaklara paylaşılır. Böylece
 paralel oturumların daha eski devir kartları ve konu kartlarının tamamı sığdıkça gelir; en
 üstteki kart her zaman tam ve önce gelir, kesilen devir ayrıntısı `[truncated: read source]`
@@ -81,7 +86,9 @@ Kapalı konular ve kod çitlerindeki örnek başlıklar bu görünümün parças
 Kısa görünüm de sığmadığında bütün başlıklar korunur; alan dosyadaki sırayla konulara en az
 80 karakterlik dilimler halinde verilir, sonrakiler yalnız başlıklarıyla gelir ve bölüm
 `[Thread overview clipped; read source]` işaretiyle biter. Yüzlerce konuda her başlığa bir iki
-karakter düşüp anlamsız parçalar oluşmaz.
+karakter düşüp anlamsız parçalar oluşmaz. Başlıklar alanın neredeyse tamamını alıp daha az konuya
+durum bırakacaksa konular dosyadaki sırayla tam kısa görünümleriyle gelir, ardından sığan
+başlıklar ve aynı işaret; böylece alan büyüdükçe görünen sonraki adım sayısı azalmaz.
 
 İstemcinin kendi talimat dosyası bir companion dosyasını zaten tam yüklüyorsa açılış onu
 ikinci, kırpılmış bir kopya olarak tekrar etmez ([#610](https://github.com/avenoxai/avenoxbeyin/issues/610)).

@@ -1101,7 +1101,8 @@ THREAD_SLICE = 80
 
 
 def clip_threads(text, budget):
-    """When even an overview cannot fit, share its room across all topic headings."""
+    """When even an overview cannot fit, share its room across all topic headings, or show
+    whole topics in order where the headings would leave fewer topics any status at all."""
     if len(text) <= budget or not (starts := headings(text, 3)):
         return clip(text, budget)
     marker = '\n[Thread overview clipped; read source]\n'
@@ -1109,22 +1110,25 @@ def clip_threads(text, budget):
     for i, start in enumerate(starts):
         title, _, body = text[start:starts[i + 1] if i + 1 < len(starts) else len(text)].partition('\n')
         cards.append((title + '\n', body.split('\n[Thread overview:', 1)[0].strip()))
-    fixed = text[:starts[0]] + ''.join(title for title, _ in cards) + marker
+    prefix = text[:starts[0]]
+    fixed = prefix + ''.join(title for title, _ in cards) + marker
     if len(fixed) > budget:
         return clip(text, budget)
     if len(fixed) + sum(len(body) + 1 for _, body in cards) <= budget:
         return text[:starts[0]] + ''.join(title + body + '\n' for title, body in cards) + marker
     room = budget - len(fixed)
-    result = text[:starts[0]]
+    result, shown = prefix, 0
     for i, (title, body) in enumerate(cards):
         # An equal share of a character or two per topic is noise. Topics in source order
         # get at least THREAD_SLICE each; the ones after keep their heading only.
         sharing = max(1, min(len(cards) - i, room // THREAD_SLICE))
         allowance = min(len(body) + 1, room // sharing)
         result += title
+        before = len(result)
         if len(body) + 1 <= allowance:
             result += body + '\n'
             room -= len(body) + 1
+            shown += bool(body.strip())
             continue
         # Spend a short allocation on both state and pending action, instead of
         # letting a long first paragraph hide every later topic and next step.
@@ -1135,7 +1139,22 @@ def clip_threads(text, budget):
                 result += line[:max(0, width - 1)] + '\n'
                 allowance -= width
                 room -= width
-    return result + marker
+        shown += bool(result[before:].strip())
+    # Hundreds of headings can take nearly all of the room. Whole topics in order, then
+    # the next headings while they fit, win when they give more topics their status.
+    whole, room, complete = prefix, budget - len(prefix) - len(marker), 0
+    for title, body in cards:
+        if len(title) + len(body) + 1 > room:
+            break
+        whole += title + body + '\n'
+        room -= len(title) + len(body) + 1
+        complete += 1
+    for title, _ in cards[complete:]:
+        if len(title) > room:
+            break
+        whole += title
+        room -= len(title)
+    return whole + marker if complete > shown else result + marker
 
 
 def project_rule_directory(vault, folder):
@@ -1380,23 +1399,32 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         if protect:
             minimum = [len(body) if name == 'Kurallar.md' else needs[i] for i, (_, body, name) in enumerate(parts)]
             if sum(minimum) > available:
-                # A long overview must not force otherwise affordable rules back
-                # into proportional clipping. Keep every rule before body detail.
-                minimum = [len(body) if name == 'Kurallar.md' else min(40, len(body))
-                           for _, body, name in parts]
-                for i, (_, body, name) in enumerate(parts):
-                    if name == 'Threads.md' and (starts := headings(body, 3)):
-                        titles_size = len(body[:starts[0]]) + len('\n[Thread overview clipped; read source]\n')
-                        titles_size += sum((end if (end := body.find('\n', start)) >= 0 else len(body)) - start + 1
-                                           for start in starts)
-                        if sum(minimum) + titles_size - minimum[i] <= available:
-                            minimum[i] = titles_size
-                for i, (_, body, name) in enumerate(parts):
-                    if name == 'Last-Session.md' and sum(minimum) + needs[i] - minimum[i] <= available:
-                        minimum[i] = max(minimum[i], needs[i])
-                for i, (_, body, name) in enumerate(parts):
-                    if name == 'Threads.md':
-                        minimum[i] += max(0, min(available - sum(minimum), needs[i] - minimum[i]))
+                # The whole core does not fit. Identity, journal and other optional sources
+                # yield to a short head; the handoff keeps its newest card and at least its
+                # floor; the topic overview takes the rest, as long as that rest is no less
+                # than the proportional split (the rule before #528) would give it.
+                base = share(available, parts)
+                minimum = [len(body) if name == 'Kurallar.md' else
+                           min(len(body), max(needs[i], lengths[i])) if name == 'Last-Session.md' else
+                           0 if name == 'Threads.md' else min(40, needs[i])
+                           for i, (_, body, name) in enumerate(parts)]
+                topics = [i for i, item in enumerate(parts) if item[2] == 'Threads.md']
+                if available - sum(minimum) >= sum(min(base[i], needs[i]) for i in topics):
+                    for i in topics:
+                        minimum[i] = min(needs[i], available - sum(minimum))
+                else:
+                    # Then every source first keeps what the proportional split gives it,
+                    # capped at its protected part or its floor (identity, handoff, topics),
+                    # so none of them shows less than that split did where it mattered. The
+                    # room left goes to the remaining rules, then the newest handoff card,
+                    # then the topic overview.
+                    minimum = [base[i] if name == 'Kurallar.md' else min(base[i], max(needs[i], lengths[i]))
+                               for i, (_, _, name) in enumerate(parts)]
+                    for wanted in ('Kurallar.md', 'Last-Session.md', 'Threads.md'):
+                        for i, (_, body, name) in enumerate(parts):
+                            if name == wanted:
+                                goal = len(body) if name == 'Kurallar.md' else needs[i]
+                                minimum[i] += max(0, min(available - sum(minimum), goal - minimum[i]))
             if sum(minimum) <= available:
                 preferred = [max(floor, need) for floor, need in zip(lengths, minimum)]
                 lengths = preferred if sum(preferred) <= available else minimum

@@ -116,10 +116,68 @@ class OpeningBoundsTest(unittest.TestCase):
         for _, text, missing_rules, missing_topics in self.check(rules=30, topics=300, history=6):
             self.assertEqual(missing_rules, [])
             self.assertTrue(missing_topics)
-            self.assertIn('Konu 299', text)  # every heading keeps a place while titles fit
-            self.assertIn('[Thread overview clipped; read source]', text)
+            # 300 headings would leave room for a handful of status lines: whole topics in
+            # source order come first instead, far more than the plain head clip showed.
+            shown = [i for i in range(300) if f'ADIM_{i:03d}' in text]
+            self.assertEqual(shown, list(range(len(shown))))
+            self.assertGreaterEqual(len(shown), 40)
+            for i in shown:
+                self.assertIn(f'**Durum:** DURUM_{i:03d} hazır ş.', text)
             # Shared room is never a one-character fragment per topic.
             self.assertNotRegex(text, r'\n\*\n###')
+
+    def opening(self, rules, budget):
+        with tempfile.TemporaryDirectory(prefix='opening-band-') as tmp:
+            vault = Path(tmp) / 'vault'
+            (vault / DIRECTORY).mkdir(parents=True)
+            store = runtime.MemoryStore(Path(tmp) / 'state', vault)
+            bodies = {
+                'Kurallar.md': '# Kurallar\n' + '\n'.join(
+                    f'- **kural:** KURAL_{i:03d} Şifre ve Müşteri ayrıntısını koru. **neden:** ' + 'Gerekçe. ' * 4
+                    for i in range(rules)) + '\n',
+                'Core.md': '# Kimlik\n' + 'Kimlik ayrıntısı. ' * 50,
+                'Threads.md': '\n\n'.join(
+                    f'### Konu {i}\n**Durum:** DURUM_{i}.\n**Sonraki adım:** ADIM_{i}.' for i in range(12)) + '\n',
+                'Last-Session.md': '# Son oturum\n## 2026-11-01 10:00 · a\nSON_DEVIR_KARTI kaldığımız yer: '
+                                   + 'ayrıntı. ' * 60 + 'KART_SONU\n',
+            }
+            for name, text in bodies.items():
+                source = f'{DIRECTORY}/{name}'
+                (vault / source).write_text(text, encoding='utf-8')
+                store.ingest(dict(id=source, source=source, text=text, kind='note', status='active',
+                                  updated_at='2026-11-01T00:00:00Z'))
+            return companion.context(store, budget, 's' * 24, 'claude')
+
+    def test_rules_that_fit_alone_do_not_cost_the_handoff_or_next_steps(self):
+        # Review repro (7 Nov): where the complete rules fit but rules, topic titles and the
+        # newest card do not, the card and most next steps vanished although the
+        # proportional split before #528 showed them all.
+        for budget, counts in ((5000, (40, 50, 55, 60, 64, 67, 70, 80, 120)), (2000, (5, 10, 15, 30))):
+            for rules in counts:
+                with self.subTest(budget=budget, rules=rules):
+                    text = self.opening(rules, budget)
+                    self.assertLessEqual(len(text), budget)
+                    self.assertIn('## 2026-11-01 10:00 · a\nSON_DEVIR_KARTI', text)
+                    if budget == 5000:
+                        self.assertIn('KART_SONU', text)
+                        self.assertEqual([i for i in range(12) if f'ADIM_{i}.' not in text], [])
+                        self.assertGreaterEqual(sum(f'KURAL_{i:03d}' in text for i in range(rules)), min(rules, 40))
+                    else:
+                        self.assertGreaterEqual(sum(f'ADIM_{i}.' in text for i in range(12)), 3)
+
+    def test_clip_threads_never_starves_status_for_headings(self):
+        overview = companion.thread_overview('## Açık konular\n' + '\n\n'.join(
+            f'### Konu {i:03d}\n**Durum:** DURUM_{i:03d}.\n**Sonraki adım:** ADIM_{i:03d}.' for i in range(300)))
+        previous = 0
+        for budget in range(3000, 12001, 250):
+            text = companion.clip_threads(overview, budget)
+            self.assertLessEqual(len(text), budget)
+            self.assertIn('read source', text)
+            steps = sum(f'ADIM_{i:03d}.' in text for i in range(300))
+            # More room never shows fewer next steps (the headings-only cliff, review 7 Nov).
+            self.assertGreaterEqual(steps, previous, budget)
+            previous = steps
+        self.assertGreater(previous, 100)
 
     def test_huge_rules_many_topics_and_astral_characters_together(self):
         for _, text, missing_rules, _ in self.check(rules=1500, topics=300, astral=True, history=6):
