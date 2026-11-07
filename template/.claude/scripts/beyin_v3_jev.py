@@ -176,6 +176,7 @@ AUTO_MIN_CHARS = 12  # a one or two word prompt carries no reliable topic
 AUTO_PROMPT = 2000
 AUTO_EXCERPT = 600
 AUTO_POOL = 8
+AUTO_SCAN = 64  # loose candidates looked at per order before AUTO_POOL cards are chosen (#533)
 AUTO_LIMIT = 5
 # Live synthetic calibration: greetings scored <= 0.16 on the gate and real topics >= 0.39;
 # past the gate, off-topic notes stayed <= 0.31 and on-topic ones >= 0.76. A strict local match
@@ -296,20 +297,34 @@ def auto_context(store, harness, query, context, *, budget_chars, timeout_cap=2.
         strict = _unclipped(context)
     known = {r['id'] for r in strict}
     try:
-        from beyin_v3_passage import settings as passage_settings, _path_key
+        from beyin_v3_passage import settings as passage_settings, _path_key, loose_ranking
         exclude_prefixes = tuple(_path_key(p) for p in passage_settings(store.state_dir).get('exclude', ()))
     except ImportError:
         exclude_prefixes = ()
         _path_key = lambda s: str(s).lower()
+        loose_ranking = lambda *args, **kwargs: []
 
-    loose = [r for r in store.candidates(query, project=project, limit=AUTO_POOL * 2)
-             if r['id'] not in known and not str(r.get('source', '')).startswith(store.STRICT_EXCLUDE)
-             and not (exclude_prefixes and _path_key(str(r.get('source', ''))).startswith(exclude_prefixes))]
+    def sendable(record):
+        return str(record.get('text', '')).strip() and remote_allowed(record)
+
+    def loose_admissible(record):
+        source = str(record.get('source', ''))
+        return (record['id'] not in known and sendable(record) and not source.startswith(store.STRICT_EXCLUDE)
+                and not (exclude_prefixes and _path_key(source).startswith(exclude_prefixes)))
+
+    # Filter before the cutoff (#533): session logs, strict matches and local-only notes used to
+    # take places in the first 2 * AUTO_POOL hits and were dropped only afterwards, leaving the
+    # remote slots empty. The store ranks every match anyway; a longer slice costs nothing.
+    by_words = [r for r in store.candidates(query, project=project, limit=AUTO_SCAN) if loose_admissible(r)]
+    # A second, passage-level order puts a long note whose one section answers the prompt next
+    # to the short notes whole-note BM25 prefers. The orders alternate, so the first word match
+    # keeps its slot; the same gates apply to both, and the cards sent stay AUTO_POOL.
+    by_passage = [eligible[i] for i in loose_ranking(store, query, project, AUTO_SCAN)
+                  if i in eligible and loose_admissible(eligible[i])]
+    loose_remote = _interleave([by_words, by_passage])
 
     # Strict records have verified lexical matches and take precedence in the advisor pool.
-    strict_remote = [r for r in strict if remote_allowed(r)]
-    strict_remote_ids = {r['id'] for r in strict_remote}
-    loose_remote = [r for r in loose if remote_allowed(r) and r['id'] not in strict_remote_ids]
+    strict_remote = [r for r in strict if sendable(r)]
 
     # Fill up to AUTO_POOL with remote-allowed candidates: strict first, then loose.
     evaluated_strict = strict_remote[:AUTO_POOL]

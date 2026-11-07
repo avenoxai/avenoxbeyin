@@ -463,18 +463,21 @@ def context_for(store, harness, query, project=None, audience="internal", status
     records = store._records()
     eligible, stale_count = store._eligible(audience, project, records=records)
     candidates = pool(store, eligible, statuses, config["exclude"], superseded=store._superseded_ids(records))
+    store._passage_index = None  # an earlier pass's index must not outlive a failed build
     index = build(store.state_dir, candidates, write=not store.read_only,
                   deadline=time.monotonic() + BUILD_SECONDS)
     if candidates and not index.passages:
         raise RuntimeError("passage index is empty")  # a failure, not an answer: caller falls back
-    ignored = STOPWORDS | _tokens(project or "")
-    terms = _strict_terms(_tokens(query) - ignored)
-    if not terms:
-        return pack_context([], limit, budget_chars, stale_count)
     from beyin_v3 import is_due_task, _is_closed_task
     adjustments = {r["id"]: (store.DUE_STRICT_BONUS if is_due_task(r, today) else
                    -store.CLOSED_TASK_PENALTY if statuses is None and _is_closed_task(r) else 0.0)
                    for r in candidates}
+    # The advisor's loose pool (loose_ranking) reuses this index within the same process.
+    store._passage_index = ((audience, project, statuses), index, adjustments)
+    ignored = STOPWORDS | _tokens(project or "")
+    terms = _strict_terms(_tokens(query) - ignored)
+    if not terms:
+        return pack_context([], limit, budget_chars, stale_count)
     records, wider = [], {}
     for _rank, first, second in search(index, terms, limit, config["floor"], ignored=ignored,
                                      rank_adjustments=adjustments, with_runner_up=True):
@@ -487,6 +490,26 @@ def context_for(store, harness, query, project=None, audience="internal", status
             wider[record["id"]] = dict(record, text=_excerpt(record, [first, second]),
                                        text_truncated=_partial(record, [first, second]))
     return pack_widened(records, wider, limit, budget_chars, stale_count)
+
+
+def loose_ranking(store, query, project=None, limit=32):
+    """Record ids ranked by their best passage for a loose pool: one shared word, no floor (#533).
+
+    Whole-note BM25 ranks a long note low when the answer sits in one of its sections, so the
+    advisor's few loose slots went to short notes that merely repeat a common query word. This
+    is the strict scorer without its admission gates. It ranks; it never admits: the caller
+    applies its own gates to every id. Only the index that this store's strict pass built in
+    this process for the same scope is used, so nothing is built or read here; without one the
+    result is empty and the caller keeps its own order.
+    """
+    memo = getattr(store, "_passage_index", None)
+    if not memo or memo[0] != ("internal", project, None):
+        return []
+    _scope, index, adjustments = memo
+    ignored = STOPWORDS | _tokens(project or "")
+    terms = _strict_terms(_tokens(query) - ignored)
+    return [passage[0]["id"] for _rank, passage in
+            search(index, terms, limit, floor=0.0, min_shared=1, ignored=ignored, rank_adjustments=adjustments)]
 
 
 def _excerpt(record, passages):
