@@ -49,9 +49,18 @@ yeni bir harness veya hariç tutma bileşeni kaydetmez. 3.11.0'a dönüldüğün
 köprü komutları çalışabilir, ancak yeni `bridge --install` / `--uninstall` komutları
 bulunmaz. Global köprüyü de kaldırmak istiyorsanız rollback öncesinde
 `python3 beyin.py bridge --harness antigravity --uninstall` çalıştırın.
-OpenCode köprüsü bu değişiklikle geldi; onu içermeyen bir sürüme dönmeden önce
-`python3 beyin.py bridge --harness opencode --uninstall` çalıştırın, yoksa global
-eklenti olmayan bir script yolunu çağırmaya devam eder.
+OpenCode köprüsü 3.12.0'dan sonra geldi; onu içermeyen bir sürüme dönmeden önce
+`python3 beyin.py bridge --harness opencode --uninstall` çalıştırın. Rollback global
+eklentiyi silmez: eklenti her OpenCode oturumunda vault'taki eski
+`beyin_v3_bridge.py` dosyasını çağırmaya devam eder, eski sürüm `--harness opencode`
+seçeneğini reddeder ve eklenti sessizce boş döner (bağlam ve kayıt yok, OpenCode
+oturumu etkilenmez). Eski sürümde `bridge --harness opencode --uninstall` da
+bulunmadığından, rollback sonrası kaldırmak için
+`~/.config/opencode/plugins/beyin-v3-bridge.js` dosyasını (`XDG_CONFIG_HOME` varsa
+`$XDG_CONFIG_HOME/opencode/plugins/beyin-v3-bridge.js`) elle silin; `.bak` yedekleri
+OpenCode tarafından yüklenmez. Beyin güncellemesi bu global dosyayı değiştirmez;
+sürüm notu OpenCode köprüsünde değişiklik bildirirse `--install` komutunu yeniden
+çalıştırın.
 
 ### 2. Manuel İnceleme ve Yazdırma (`--print-config`)
 
