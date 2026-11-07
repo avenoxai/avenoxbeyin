@@ -146,7 +146,7 @@ def _transcripts(folders):
             except OSError:
                 continue
             if stat.S_ISREG(info.st_mode) and not getattr(info, 'st_reparse_tag', 0):
-                found.setdefault(session_hash(path.stem), (info.st_mtime, path.stem, path))
+                found.setdefault(session_hash(path.stem), (info.st_mtime, path.stem, path, info.st_size))
     return sorted(found.values())
 
 
@@ -386,7 +386,7 @@ def plan(vault, state, projects_dir=None, limit=LIST_DEFAULT):
     current, keys = _current(), _vault_keys(vault)
     files = _transcripts(folders)
     counts, pending = Counter(transcripts=len(files)), []
-    for mtime, stem, path in files:
+    for mtime, stem, path, size in files:
         session = session_hash(stem)
         if session in ledger:
             counts[ledger[session]] += 1
@@ -412,7 +412,7 @@ def plan(vault, state, projects_dir=None, limit=LIST_DEFAULT):
         else:
             pending.append({'session': session, 'date': info['date'].isoformat(),
                             'last_activity': datetime.fromtimestamp(mtime).date().isoformat(),
-                            'human_turns': info['human_turns'], 'kib': max(1, round(path.stat().st_size / 1024)),
+                            'human_turns': info['human_turns'], 'kib': max(1, round(size / 1024)),
                             **({'partial': True} if info['partial'] else {})})
     counts['pending'] = len(pending)
     enabled = trace.settings(state)['enabled']
@@ -429,12 +429,12 @@ def _locate(vault, state, session, projects_dir, collect):
     if not isinstance(session, str) or not SESSION.fullmatch(session):
         raise ValueError('use a 24-character session value from the backfill dry run')
     folders, explicit = _folders(vault, projects_dir)
-    match = next(((stem, path) for _, stem, path in _transcripts(folders) if session_hash(stem) == session), None)
+    match = next((path for _, stem, path, _ in _transcripts(folders) if session_hash(stem) == session), None)
     if match is None:
         raise ValueError('session not found among the selected Claude Code transcripts')
     if session == _current():
         raise ValueError('the running session is covered by receipts and chat-trace write, not by backfill')
-    info = _session(match[1], _vault_keys(vault), explicit, state, collect=collect)
+    info = _session(match, _vault_keys(vault), explicit, state, collect=collect)
     if not info['cwd_ok']:
         raise ValueError('session did not start in this vault; choose its folder explicitly with --projects-dir')
     if not info['human_turns'] or info['date'] is None:
