@@ -557,3 +557,7 @@ izler; bu iki yardımcı için ağ çıkışı izolasyonu yoktur. yt-dlp yalnız
 `kaynak_turu` alanı elle `youtube` yapılsa da başka bir site yt-dlp'ye verilmez, adres türüne göre işlenir.
 Ham kaynak metni güvenilmeyen veri olarak işaretlenir;
 metnin içindeki rol değişikliği, komut çalıştırma ve dosya silme istekleri talimat sayılmaz.
+
+### Eşzamanlı kart yazımı
+
+Kart ve ham kaynak sonucu yalnız çıkarım başındaki bayt görüntüsü hâlâ geçerliyse birlikte kaydedilir. Başka bir yakalama veya iş kartı değiştirdiyse geç sonuç üzerine yazmaz. POSIX üzerinde kilit vault içindeki bir dosyaya değil, yerel durum kökünde dizinin aygıt/inode kimliğine bağlanır; farklı state seçimi aynı kart için ikinci bir kilit alanı oluşturmaz. Windows mevcut adlandırılmış mutex yolunu kullanır. Bu kilit yalnız aynı makinede bu modül üzerinden yazan süreçleri koordine eder.
