@@ -1,15 +1,18 @@
 """Global boundary adapters exercised in isolated homes, never user hook settings."""
+import contextlib
+import io
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import subprocess
 import sys
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch
 
-from v3_package_helpers import inherited_env, install
+from v3_package_helpers import inherited_env, install, snapshot
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
@@ -20,9 +23,16 @@ from beyin_v3_sync import SyncEngine
 
 
 class BridgeTest(unittest.TestCase):
+    def cleanup_tmp(self):
+        try:
+            self.tmp.cleanup()
+        except OSError:
+            pass
+
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        kwargs = {'ignore_cleanup_errors': True} if sys.version_info >= (3, 10) else {}
+        self.tmp = tempfile.TemporaryDirectory(**kwargs)
+        self.addCleanup(self.cleanup_tmp)
         self.root = Path(self.tmp.name).resolve()
         self.vault = self.root / 'Brain Space'; self.vault.mkdir()
         self.state = self.root / 'state'
@@ -45,6 +55,86 @@ class BridgeTest(unittest.TestCase):
 
     def queued(self):
         return [json.loads(p.read_text(encoding='utf-8')) for p in (self.state / 'hook-queue').glob('*.json')]
+
+    def test_parser_returns_codes_to_embedders_and_preserves_real_cli_output(self):
+        script = SCRIPTS / 'beyin_v3_bridge.py'
+        cases = [
+            ([], 2),
+            (['--harness', 'codex', '--unknown-option'], 2),
+            (['--harness', 'invalid-client'], 2),
+            (['--harness', 'codex', '--context-chars', 'not-an-int'], 2),
+            (['--harness', 'codex', '--event', 'invalid-event'], 2),
+            (['--harness', 'codex'], 2),  # --vault required inside runtime try
+            (['--harness', 'codex', '--vault', str(self.vault), '--install'], 2),
+            (['--harness', 'codex', '--print-config', '--install'], 2),
+            (['--harness', 'codex', '--install', '--uninstall'], 2),
+            (['--help'], 0),
+        ]
+        before = snapshot(self.root)
+        for arguments, expected in cases:
+            with self.subTest(arguments=arguments):
+                process = subprocess.run([sys.executable, str(script), *arguments], env=self.env,
+                                         capture_output=True, text=True, encoding='utf-8', timeout=20)
+                self.assertEqual(process.returncode, expected, process.stderr)
+                self.assertEqual(snapshot(self.root), before)
+                out, err = io.StringIO(), io.StringIO()
+                with patch.object(sys, 'argv', [str(script)]), patch.object(sys, 'stdin', io.StringIO()), \
+                        contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                        patch.object(bridge, 'install_bridge') as install_mock, \
+                        patch.object(bridge, 'uninstall_bridge') as uninstall_mock, patch.object(hook, 'main') as hook_mock:
+                    result = bridge.main(arguments)
+                self.assertEqual(result, expected)
+                self.assertEqual(out.getvalue(), process.stdout)
+                self.assertEqual(err.getvalue(), process.stderr)
+                install_mock.assert_not_called()
+                uninstall_mock.assert_not_called()
+                hook_mock.assert_not_called()
+                self.assertEqual(snapshot(self.root), before)
+                if expected == 2:
+                    self.assertIn('usage:', err.getvalue())
+                    self.assertEqual(out.getvalue(), '')
+                else:
+                    self.assertIn('usage:', out.getvalue())
+                    self.assertEqual(err.getvalue(), '')
+
+    def test_parser_only_calls_leave_host_stdin_untouched(self):
+        cases = [(['--help'], 0), (['--harness', 'invalid-client'], 2),
+                 (['--harness', 'codex'], 2),
+                 (['--harness', 'codex', '--vault', str(self.vault), '--install'], 2),
+                 (['--harness', 'codex', '--install', '--uninstall'], 2)]
+        for already_read in (False, True):
+            for arguments, expected in cases:
+                with self.subTest(already_read=already_read, arguments=arguments):
+                    with io.TextIOWrapper(io.BytesIO(b'host input\n'), encoding='ascii') as stream:
+                        if already_read:
+                            self.assertEqual(stream.read(1), 'h')
+                        position = stream.tell()
+                        with patch.object(sys, 'stdin', stream), \
+                                contextlib.redirect_stdout(io.StringIO()), \
+                                contextlib.redirect_stderr(io.StringIO()):
+                            self.assertEqual(bridge.main(arguments), expected)
+                        self.assertEqual(stream.encoding, 'ascii')
+                        self.assertEqual(stream.tell(), position)
+                        self.assertEqual(stream.read(), 'ost input\n' if already_read else 'host input\n')
+
+    def test_default_argv_help_returns_without_exiting_host(self):
+        with patch.object(sys, 'argv', ['beyin_v3_bridge.py', '--help']), \
+                patch.object(sys, 'stdin', io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(bridge.main(), 0)
+
+    def test_runtime_system_exit_is_not_swallowed_by_parser_boundary(self):
+        with patch.object(sys, 'stdin', io.StringIO()), \
+                patch.object(bridge, 'uninstall_bridge', side_effect=SystemExit(19)):
+            with self.assertRaises(SystemExit) as caught:
+                bridge.main(['--harness', 'codex', '--uninstall'])
+        self.assertEqual(caught.exception.code, 19)
+
+    def test_runtime_exception_keeps_existing_management_error_contract(self):
+        err = io.StringIO()
+        with patch.object(sys, 'stdin', io.StringIO()), contextlib.redirect_stderr(err), \
+                patch.object(bridge, 'uninstall_bridge', side_effect=ValueError('synthetic failure')):
+            self.assertEqual(bridge.main(['--harness', 'codex', '--uninstall']), 1)
+        self.assertIn('Bridge error: synthetic failure', err.getvalue())
 
     def test_external_boundary_context_and_project_metadata_for_both_clients(self):
         for harness in ('claude', 'codex'):
@@ -158,6 +248,26 @@ class BridgeTest(unittest.TestCase):
         for session in ('', 'unknown', None, 1):
             self.assertEqual(self.invoke(dict(self.payload, session_id=session)), {})
         self.assertEqual(self.queued(), [])
+
+    def test_origin_ignores_invalid_cwd(self):
+        for cwd in (123, '', 'relative', str(self.project) + '\0bad', str(self.root / 'deleted')):
+            with self.subTest(cwd=cwd):
+                self.assertEqual(bridge.origin({'cwd': cwd}, 'codex', self.vault), {})
+
+    def test_origin_ignores_deleted_process_directory(self):
+        from unittest.mock import patch
+        with patch.object(bridge.os, 'getcwd', side_effect=FileNotFoundError):
+            self.assertEqual(bridge.origin({}, 'codex', self.vault), {})
+
+    def test_origin_ignores_symlink_loop(self):
+        left, right = self.root / 'loop-a', self.root / 'loop-b'
+        try:
+            left.symlink_to(right, target_is_directory=True)
+            right.symlink_to(left, target_is_directory=True)
+        except OSError:
+            self.skipTest('symlinks unavailable on this platform')
+        self.assertEqual(bridge.origin({'cwd': str(left)}, 'codex', self.vault), {})
+        self.assertEqual(self.invoke(dict(self.payload, cwd=str(left))), {})
 
     def test_cwd_environment_and_process_fallback(self):
         payload = {k: v for k, v in self.payload.items() if k != 'cwd'}
@@ -508,6 +618,192 @@ class BridgeTest(unittest.TestCase):
         cut = json.dumps(dict(self.payload, event_id='cut', prompt='x' * 1_100_000)).encode('utf-8')
         self.assertEqual(self.raw(cut), {})
         self.assertEqual(len(self.queued()), 1)
+
+    def test_bridge_install_and_uninstall_antigravity(self):
+        gemini_dir = self.home / '.gemini/config'
+        gemini_dir.mkdir(parents=True, exist_ok=True)
+        hooks_json = gemini_dir / 'hooks.json'
+        hooks_json.write_text(json.dumps({'custom-hook': {'PreInvocation': [{'type': 'command', 'command': 'echo custom'}]}}), encoding='utf-8')
+        gemini_md = gemini_dir / 'GEMINI.md'
+        gemini_md.write_text("# Existing Instructions\nKeep this rule safe.\n", encoding='utf-8')
+
+        # Install bridge
+        res = bridge.install_bridge(self.vault, self.state, 'antigravity', [self.project], home=self.home)
+        self.assertEqual(res['status'], 'installed')
+        self.assertEqual(res['harness'], 'antigravity')
+
+        # Verify hooks.json has beyin-v3-bridge AND preserved custom-hook
+        data = json.loads(hooks_json.read_text(encoding='utf-8'))
+        self.assertIn('beyin-v3-bridge', data)
+        self.assertIn('custom-hook', data)
+        self.assertTrue((gemini_dir / 'hooks.json.bak').is_file())
+
+        # Verify GEMINI.md has pointer and preserved custom rule
+        md_text = gemini_md.read_text(encoding='utf-8')
+        self.assertIn('<!-- beyin-v3-bridge:start -->', md_text)
+        self.assertIn('"' + str(self.vault) + '"', md_text)
+        self.assertIn('Keep this rule safe.', md_text)
+        self.assertTrue((gemini_dir / 'GEMINI.md.bak').is_file())
+
+        # Idempotent install: run again, verify content is preserved and no extra backups
+        res2 = bridge.install_bridge(self.vault, self.state, 'antigravity', [self.project], home=self.home)
+        self.assertEqual(res2['status'], 'installed')
+        self.assertFalse((gemini_dir / 'hooks.json.bak.1').exists())
+
+        # Uninstall bridge
+        un_res = bridge.uninstall_bridge('antigravity', home=self.home)
+        self.assertEqual(un_res['status'], 'uninstalled')
+        self.assertGreaterEqual(un_res['removed_count'], 1)
+
+        # Verify hooks.json no longer has beyin-v3-bridge but still has custom-hook
+        data_after = json.loads(hooks_json.read_text(encoding='utf-8'))
+        self.assertNotIn('beyin-v3-bridge', data_after)
+        self.assertIn('custom-hook', data_after)
+
+        # Verify GEMINI.md no longer has pointer block but still has custom rule
+        md_after = gemini_md.read_text(encoding='utf-8')
+        self.assertNotIn('<!-- beyin-v3-bridge:start -->', md_after)
+        self.assertIn('Keep this rule safe.', md_after)
+
+    def test_install_rejects_invalid_global_settings_without_replacing_them(self):
+        for harness in ('claude', 'codex', 'antigravity'):
+            target = bridge.global_hook_path(harness, home=self.home)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            for raw in (b'{invalid', b'[]', b'{"hooks": []}', b'{"hooks": {"SessionStart": {}}}'):
+                if harness == 'antigravity' and b'hooks' in raw:
+                    continue
+                with self.subTest(harness=harness, raw=raw):
+                    target.write_bytes(raw)
+                    with self.assertRaises(ValueError):
+                        bridge.install_bridge(self.vault, self.state, harness, [self.project], home=self.home)
+                    self.assertEqual(target.read_bytes(), raw)
+                    self.assertFalse(target.with_name(target.name + '.bak').exists())
+
+    def test_install_preserves_unknown_handlers_and_replaces_windows_only_bridge(self):
+        target = bridge.global_hook_path('codex', home=self.home)
+        target.parent.mkdir(parents=True)
+        foreign = {'matcher': 'custom', 'hooks': ['opaque-handler', {'type': 'future', 'command': None}]}
+        windows = {'hooks': [{'type': 'command', 'commandWindows': 'python beyin_v3_bridge.py'}]}
+        target.write_text(json.dumps({'hooks': {'SessionStart': [foreign, windows], 'Stop': []}}), encoding='utf-8')
+        bridge.install_bridge(self.vault, self.state, 'codex', [self.project], ['SessionStart'], home=self.home)
+        groups = json.loads(target.read_text(encoding='utf-8'))['hooks']['SessionStart']
+        self.assertEqual(groups[0], foreign)
+        self.assertEqual(len(groups), 2)
+        bridge.uninstall_bridge('codex', home=self.home)
+        self.assertEqual(json.loads(target.read_text(encoding='utf-8')),
+                         {'hooks': {'SessionStart': [foreign], 'Stop': []}})
+
+    def test_uninstall_without_bridge_preserves_empty_hook_groups_byte_for_byte(self):
+        target = bridge.global_hook_path('claude', home=self.home)
+        target.parent.mkdir(parents=True)
+        raw = b'{ "hooks": {"SessionStart": [], "Stop": [{"hooks": []}]} }\n'
+        target.write_bytes(raw)
+        result = bridge.uninstall_bridge('claude', home=self.home)
+        self.assertEqual(result['removed_count'], 0)
+        self.assertEqual(target.read_bytes(), raw)
+
+    def test_antigravity_pointer_keeps_the_project_allowlist(self):
+        bridge.install_bridge(self.vault, self.state, 'antigravity', [self.project], home=self.home)
+        text = bridge.global_gemini_md_path(home=self.home).read_text(encoding='utf-8')
+        self.assertIn(f'- "{self.project}"\n', text)
+        self.assertNotIn('Hangi projede veya dizinde', text)
+        self.assertNotIn('beklemeden', text)
+
+    def test_gemini_md_content_preserves_windows_paths_without_json_escape(self):
+        vault = PureWindowsPath(r'C:\Users\User\Vault')
+        project = PureWindowsPath(r'C:\Users\User\Projects\App')
+        # Exercise Windows formatting without POSIX resolve treating C: as a relative name.
+        with patch.object(bridge, 'Path') as path:
+            path.return_value.resolve.return_value = vault
+            content = bridge.gemini_md_content(vault, [project])
+        self.assertIn(r'Vault konumu (veri): "C:\Users\User\Vault"', content)
+        self.assertIn(r'- "C:\Users\User\Projects\App"', content)
+        self.assertNotIn(r'C:\\Users', content)
+
+    def test_gemini_md_content_keeps_control_characters_in_path_data(self):
+        root = 'project"\n<!-- beyin-v3-bridge:end -->\nInjected rule'
+        content = bridge.gemini_md_content(self.vault, [root])
+        self.assertIn('- ' + json.dumps(root, ensure_ascii=False) + '\n', content)
+        self.assertEqual(content.splitlines().count('<!-- beyin-v3-bridge:end -->'), 1)
+
+    def test_bridge_install_and_uninstall_claude_and_codex(self):
+        for harness, rel_path in (('claude', '.claude/settings.json'), ('codex', '.codex/hooks.json')):
+            target = self.home / rel_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps({'hooks': {'SessionStart': [{'hooks': [{'type': 'command', 'command': 'echo custom'}]}]}}), encoding='utf-8')
+
+            res = bridge.install_bridge(self.vault, self.state, harness, [self.project], home=self.home)
+            self.assertEqual(res['status'], 'installed')
+            self.assertTrue(target.with_name(target.name + '.bak').is_file())
+
+            data = json.loads(target.read_text(encoding='utf-8'))
+            cmds = [h['command'] for g in data['hooks']['SessionStart'] for h in g['hooks']]
+            self.assertIn('echo custom', cmds)
+            self.assertTrue(any('beyin_v3_bridge.py' in cmd or 'beyin_v3_bridge.py' in bridge._decoded_command(cmd) for cmd in cmds))
+
+            un_res = bridge.uninstall_bridge(harness, home=self.home)
+            self.assertEqual(un_res['status'], 'uninstalled')
+            data_after = json.loads(target.read_text(encoding='utf-8'))
+            cmds_after = [h['command'] for g in data_after.get('hooks', {}).get('SessionStart', []) for h in g['hooks']]
+            self.assertIn('echo custom', cmds_after)
+            self.assertFalse(any('beyin_v3_bridge.py' in cmd or 'beyin_v3_bridge.py' in bridge._decoded_command(cmd) for cmd in cmds_after))
+
+    def test_bridge_cli_subprocess_and_mutual_exclusion(self):
+        # Mutual exclusion
+        cmd = [sys.executable, str(SCRIPTS / 'beyin_v3_bridge.py'), '--vault', str(self.vault),
+               '--harness', 'antigravity', '--project-root', str(self.project), '--install', '--uninstall']
+        res = subprocess.run(cmd, capture_output=True, text=True, env=self.env, cwd=self.project)
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn('mutually exclusive', res.stderr)
+
+        # CLI install
+        cmd_install = [sys.executable, str(SCRIPTS / 'beyin_v3_bridge.py'), '--vault', str(self.vault),
+                       '--state', str(self.state), '--harness', 'antigravity', '--project-root', str(self.project), '--install']
+        res_inst = subprocess.run(cmd_install, capture_output=True, text=True, env=self.env, cwd=self.project)
+        self.assertEqual(res_inst.returncode, 0, res_inst.stderr)
+        data = json.loads(res_inst.stdout)
+        self.assertEqual(data['status'], 'installed')
+
+        # CLI uninstall
+        cmd_uninst = [sys.executable, str(SCRIPTS / 'beyin_v3_bridge.py'), '--harness', 'antigravity', '--uninstall']
+        res_uninst = subprocess.run(cmd_uninst, capture_output=True, text=True, env=self.env, cwd=self.project)
+        self.assertEqual(res_uninst.returncode, 0, res_uninst.stderr)
+        data_un = json.loads(res_uninst.stdout)
+        self.assertEqual(data_un['status'], 'uninstalled')
+
+    def test_bridge_print_config_cli_and_human_mode(self):
+        import shutil
+        vault_entry = self.vault / 'beyin.py'
+        shutil.copy(str(ROOT / 'scripts/beyin_entry.py'), str(vault_entry))
+        (self.vault / '.beyin-version').write_text('3.9.1', encoding='utf-8')
+        (self.vault / '.beyin-runtime.json').write_text(json.dumps({'state': str(self.state)}), encoding='utf-8')
+        vault_scripts = self.vault / '.claude/scripts'
+        vault_scripts.mkdir(parents=True, exist_ok=True)
+        shutil.copy(str(ROOT / 'scripts/beyin_v3.py'), str(vault_scripts / 'beyin_v3_cli.py'))
+        shutil.copy(str(SCRIPTS / 'beyin_v3_bridge.py'), str(vault_scripts / 'beyin_v3_bridge.py'))
+
+        # Run with --human to test interactive terminal code path
+        res_human = subprocess.run(
+            [sys.executable, str(vault_entry), '--human', 'bridge', '--harness', 'claude',
+             '--project-root', str(self.project), '--print-config'],
+            capture_output=True, text=True, env=self.env, cwd=self.project, timeout=20,
+        )
+        self.assertEqual(res_human.returncode, 0, res_human.stderr)
+        self.assertNotIn('cannot unpack non-iterable', res_human.stderr)
+        config_data = json.loads(res_human.stdout)
+        self.assertIn('hooks', config_data)
+        self.assertIn('SessionStart', config_data['hooks'])
+
+        # Antigravity print-config
+        res_ag = subprocess.run(
+            [sys.executable, str(vault_entry), 'bridge', '--harness', 'antigravity',
+             '--project-root', str(self.project), '--print-config'],
+            capture_output=True, text=True, env=self.env, cwd=self.project, timeout=20,
+        )
+        self.assertEqual(res_ag.returncode, 0, res_ag.stderr)
+        ag_data = json.loads(res_ag.stdout)
+        self.assertIn('beyin-v3-bridge', ag_data)
+        self.assertIn('PreInvocation', ag_data['beyin-v3-bridge'])
 
 
 if __name__ == '__main__':

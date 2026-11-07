@@ -179,6 +179,8 @@ class KiroIntegrationTest(unittest.TestCase):
         updated = json.loads(self.run_python(cli, "update", "--package", package))
         self.assertEqual(updated["status"], "updated")
         self.assertTrue(updated["trust_review_required"])
+        # Only the Kiro hook file changed, so only Kiro's review is named.
+        self.assertEqual(updated["trust_review_files"], [".kiro/hooks/beyin-v3.json"])
         self.assertTrue(all((self.vault / name).is_file() for name in kiro_paths))
         self.assertEqual(user_hook.read_text(encoding="utf-8"), '{"version":"v1","hooks":[]}\n')
         rolled = json.loads(self.run_python(cli, "rollback"))

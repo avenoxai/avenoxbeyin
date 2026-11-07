@@ -168,6 +168,44 @@ class UninstallKeepsUserTextTest(unittest.TestCase):
         self.assertEqual(self.read_json('.agents/hooks.json'), {'kendi': {'Stop': [own_hook]}})
         self.assertEqual(result.get('kept_user_text'), ['.agents/hooks.json', '.claude/settings.local.json', '.codex/hooks.json'])
 
+    def test_hook_files_with_a_byte_order_mark_keep_user_entries(self):
+        # Windows PowerShell 5.1 (Set-Content -Encoding UTF8) and many editors save JSON with a
+        # UTF-8 BOM; install and update read these files as plain UTF-8 and stopped with
+        # "Unexpected UTF-8 BOM (decode using utf-8-sig)".
+        own_hook = {'type': 'command', 'command': 'echo kendi-hook'}
+        bom = b'\xef\xbb\xbf'
+        plain = {name: json.dumps({'hooks': {'Stop': [{'hooks': [own_hook]}]}}, indent=2).encode('utf-8')
+                 for name in ('.claude/settings.json', '.claude/settings.local.json', '.codex/hooks.json')}
+        plain['.agents/hooks.json'] = json.dumps({'kendi': {'Stop': [own_hook]}}, indent=2).encode('utf-8')
+        for via in ('none', 'update'):
+            with self.subTest(via=via):
+                self.fresh()
+                # Such an editor saves the user's files before install, or V3's between install and update.
+                seeded = {name: (bom if via == 'none' else b'') + data for name, data in plain.items()}
+                for name, data in seeded.items():
+                    self.path(name).parent.mkdir(parents=True, exist_ok=True)
+                    self.path(name).write_bytes(data)
+                self.install()
+                if via == 'update':
+                    for name in seeded:
+                        self.path(name).write_bytes(bom + self.path(name).read_bytes())
+                    self.refresh(via)
+                for name in seeded:
+                    data = json.loads(self.path(name).read_bytes())
+                    if name == '.agents/hooks.json':
+                        self.assertEqual(data['kendi'], {'Stop': [own_hook]})
+                        self.assertEqual(set(data['beyin-v3']), {'PreInvocation', 'Stop'})
+                        continue
+                    handlers = [h for group in data['hooks']['Stop'] for h in group['hooks']]
+                    self.assertIn(own_hook, handlers, name)
+                    if name != '.claude/settings.json':  # V3 adds its own hooks to the other two
+                        self.assertEqual(len(handlers), 2, name)
+                        self.assertEqual(set(data['hooks']), {'SessionStart', 'UserPromptSubmit', 'Stop',
+                                                              'PostToolUse', 'PreCompact', 'SessionEnd'}, name)
+                self.uninstall()
+                for name, data in seeded.items():
+                    self.assertEqual(self.path(name).read_bytes(), data, name)
+
     def test_existing_hook_files_get_original_back_with_later_entries(self):
         untouched = self.seed('.codex/hooks.json', json.dumps({'hooks': {'Stop': [{'hooks': [{'type': 'command', 'command': 'echo dur'}]}]}}))
         # A V2 entry install retires comes back next to the permission added after install.

@@ -295,5 +295,101 @@ class HookReconcileTest(unittest.TestCase):
         self.assertEqual(json.loads(path.read_text())['user_setting'], 'preserve me')
 
 
+    def test_hook_reconcile_syncs_runtime_json_and_launchers_and_manifest(self):
+        self.install()
+        import shutil
+        moved = self.root / 'Moved Space'
+        shutil.move(str(self.vault), str(moved))
+        self.vault = moved
+
+        runtime_path = self.vault / '.beyin-runtime.json'
+        rdata = json.loads(runtime_path.read_text(encoding='utf-8'))
+        rdata['state'] = str(self.root / 'stale-state')
+        runtime_path.write_text(json.dumps(rdata, indent=2) + '\n', encoding='utf-8')
+        old_runtime_bytes = runtime_path.read_bytes()
+
+        launcher_name = 'Beyni Guncelle.cmd' if os.name == 'nt' else ('Beyni Güncelle.command' if sys.platform == 'darwin' else 'Beyni Güncelle.sh')
+        launcher_path = self.vault / launcher_name
+        old_launcher_bytes = launcher_path.read_bytes() if launcher_path.is_file() else None
+
+        # Run hook-reconcile
+        recon = subprocess.run([sys.executable, str(self.vault / 'beyin.py'), '--state', str(self.state), 'hook-reconcile'],
+                               env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(recon.returncode, 0, recon.stderr)
+        recon_data = json.loads(recon.stdout)
+        self.assertEqual(recon_data['status'], 'reconciled')
+
+        # Verify .beyin-runtime.json and launcher were reconciled
+        reconciled_file_names = [f['file'] for f in recon_data['files']]
+        self.assertIn('.beyin-runtime.json', reconciled_file_names)
+        self.assertTrue(self.vault.joinpath('.beyin-runtime.json.bak').is_file())
+        self.assertNotEqual(runtime_path.read_bytes(), old_runtime_bytes)
+        self.assertEqual(json.loads(runtime_path.read_text(encoding='utf-8'))['state'], str(self.state.resolve()))
+
+        if launcher_path.is_file():
+            self.assertIn(launcher_name, reconciled_file_names)
+            self.assertTrue(launcher_path.with_name(launcher_name + '.bak').is_file())
+            self.assertNotEqual(launcher_path.read_bytes(), old_launcher_bytes)
+
+        # Verify manifest was updated with new hashes
+        manifest = json.loads((self.state / 'v3-install.json').read_text(encoding='utf-8'))
+        self.assertEqual(manifest['files']['.beyin-runtime.json']['installed_hash'],
+                         hashlib.sha256(runtime_path.read_bytes()).hexdigest())
+        if launcher_path.is_file():
+            self.assertEqual(manifest['files'][launcher_name]['installed_hash'],
+                             hashlib.sha256(launcher_path.read_bytes()).hexdigest())
+
+        # Update and uninstall both succeed without conflict
+        res_update = subprocess.run([sys.executable, str(INSTALLER), '--vault', str(self.vault), '--state', str(self.state)],
+                                    env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(res_update.returncode, 0, res_update.stderr)
+
+        res_uninst = subprocess.run([sys.executable, str(INSTALLER), '--vault', str(self.vault),
+                                     '--state', str(self.state), '--uninstall'],
+                                    env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(res_uninst.returncode, 0, res_uninst.stderr)
+        self.assertEqual(json.loads(res_uninst.stdout)['status'], 'uninstalled')
+
+    def test_semantic_unchanged_runtime_json_default_layout_and_msix(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("v3_installer", INSTALLER)
+        installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer)
+
+        base_data = {"schema": 1, "state": "C:\\Users\\Alice\\AppData\\Local\\beyin-v3\\0123456789abcdef"}
+        moved_data = {"schema": 1, "state": "C:\\Users\\Bob\\AppData\\Local\\beyin-v3\\fedcba9876543210"}
+        msix_data = {"schema": 1, "state": "C:\\Users\\Alice\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\\LocalCache\\Local\\beyin-v3\\0123456789abcdef"}
+
+        # Across moves with default layout: unchanged
+        self.assertTrue(installer.semantic_unchanged(".beyin-runtime.json", json.dumps(moved_data).encode(), json.dumps(base_data).encode(), (), (), ()))
+        # MSIX package redirect: unchanged
+        self.assertTrue(installer.semantic_unchanged(".beyin-runtime.json", json.dumps(msix_data).encode(), json.dumps(base_data).encode(), (), (), ()))
+        # Custom non-default state change must NOT be considered unchanged (must conflict)
+        custom_data = {"schema": 1, "state": "D:\\CustomStateLocation"}
+        self.assertFalse(installer.semantic_unchanged(".beyin-runtime.json", json.dumps(custom_data).encode(), json.dumps(base_data).encode(), (), (), ()))
+        # Schema change or extra field is not unchanged
+        altered_data = {"schema": 2, "state": "C:\\Users\\Alice\\AppData\\Local\\beyin-v3\\0123456789abcdef"}
+        self.assertFalse(installer.semantic_unchanged(".beyin-runtime.json", json.dumps(altered_data).encode(), json.dumps(base_data).encode(), (), (), ()))
+
+    def test_reconcile_preserves_edited_launcher_and_its_manifest_baseline(self):
+        self.install()
+        import shutil
+        moved = self.root / 'Moved Vault'
+        shutil.move(str(self.vault), str(moved))
+        self.vault = moved
+        name = 'Beyni Guncelle.cmd' if os.name == 'nt' else ('Beyni Güncelle.command' if sys.platform == 'darwin' else 'Beyni Güncelle.sh')
+        launcher = self.vault / name
+        edited = launcher.read_bytes() + b'\necho USER_CUSTOMIZATION\n'
+        launcher.write_bytes(edited)
+        manifest_path = self.state / 'v3-install.json'
+        baseline = json.loads(manifest_path.read_text(encoding='utf-8'))['files'][name]
+        for extra in ([], ['--force']):
+            result = subprocess.run([sys.executable, str(self.vault / 'beyin.py'), 'hook-reconcile', *extra],
+                                    env=self.env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(launcher.read_bytes(), edited)
+            self.assertEqual(json.loads(manifest_path.read_text(encoding='utf-8'))['files'][name], baseline)
+
+
 if __name__ == "__main__":
     unittest.main()

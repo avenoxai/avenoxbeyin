@@ -53,6 +53,37 @@ class CompanionBudgetTest(unittest.TestCase):
     def context(self, budget):
         return companion.context(self.store, budget, 'synthetic-budget', 'codex')
 
+    def test_global_and_project_rules_share_one_floor_and_stay_in_budget(self):
+        # Two Kurallar sections used to reserve 115% and water-fill with negative
+        # spare until every body was full. The hook then cut off the project rules.
+        for name in BODIES:
+            path = self.vault / COMPANION / name
+            path.write_text(path.read_text(encoding='utf-8') + '\n' + 'long body ' * 600,
+                            encoding='utf-8')
+        project = self.vault / 'projects' / 'Synthetic'
+        project.mkdir(parents=True)
+        (project / 'Kurallar.md').write_text(
+            '- PROJECT_RULE_CANARY\n' + '- project detail\n' * 600 + '- PROJECT_LAST_CANARY\n',
+            encoding='utf-8')
+        for path in [*(self.vault / COMPANION).glob('*.md'), project / 'Kurallar.md']:
+            source = path.relative_to(self.vault).as_posix()
+            record_id = path.name if path.parent.name == COMPANION else 'project-rules'
+            with self.store._connect() as db:
+                db.execute('DELETE FROM records WHERE id=?', (record_id,))
+            self.store.ingest({'id': record_id,
+                               'kind': 'note', 'status': 'active', 'source': source,
+                               'text': path.read_text(encoding='utf-8'),
+                               'updated_at': '2026-09-19T10:00:00Z'})
+        for budget in (0, 1, 100, 500, 1000, 2000, 5000, 9500, 12000, 24000):
+            with self.subTest(budget=budget):
+                text = companion.context(self.store, budget, 'synthetic-budget', 'codex',
+                                         rules_project='Synthetic')
+                self.assertLessEqual(len(text), budget)
+                if budget >= 2000:
+                    self.assertIn('[projects/Synthetic/Kurallar.md]', text)
+                    self.assertIn('PROJECT_RULE_CANARY', text)
+                    self.assertIn('FIRST_RULE_CANARY', text)
+
     def test_long_rule_set_keeps_first_and_last_rule_with_an_omission_notice(self):
         for budget in (1000, 2000, 5000, 12000):
             with self.subTest(budget=budget):

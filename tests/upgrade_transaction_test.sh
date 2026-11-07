@@ -531,7 +531,7 @@ bash -n "$0"
 
 test_untracks_tracked_pycache() {
   # A vault upgraded before .gitignore knew about __pycache__ carries compiled bytecode in the
-  # index. Adding the ignore rule alone does not fix that, so the upgrade must also untrack it,
+  # index. Adding the ignore rule alone does not remedy that, so the upgrade must also untrack it,
   # and it must leave the files on disk: python regenerates them, they are not the user's data.
   local case_dir vault pyc rel still_tracked
   case_dir=$(new_case)

@@ -328,6 +328,18 @@ class UsageReport(unittest.TestCase):
         with zipfile.ZipFile(target) as archive:
             self.assertFalse([name for name in archive.namelist() if 'usage' in name])
 
+    def test_utf16_units_converts_ascii_unicode_and_surrogates(self):
+        """utf16_units properly extracts 16-bit code units including surrogate pairs (#172)."""
+        self.assertEqual(usage.utf16_units(''), [])
+        self.assertEqual(usage.utf16_units('abc'), [97, 98, 99])
+        self.assertEqual(usage.utf16_units('türkçe'), [116, 252, 114, 107, 231, 101])
+        # Emoji 😀 (U+1F600) splits into high surrogate 0xD83D (55357) and low surrogate 0xDE00 (56832)
+        self.assertEqual(usage.utf16_units('😀'), [55357, 56832])
+        # Mixed string
+        self.assertEqual(usage.utf16_units('A😀B'), [65, 55357, 56832, 66])
+        # Lone surrogate with surrogatepass
+        self.assertEqual(usage.utf16_units('\ud800'), [0xd800])
+
 
 def snapshot(root):
     return {str(p.relative_to(root)): (hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None)

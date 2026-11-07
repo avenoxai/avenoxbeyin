@@ -264,6 +264,61 @@ class TaskCompletionTest(unittest.TestCase):
         self.assertEqual(self.engine.update_task('legacy-task', 3, {'priority': 'low'})['revision'], 4)
         self.assertEqual(self.engine.completion_health()['strict_issue_count'], 0)
 
+    def test_unicode_determinism(self):
+        import unicodedata
+        self.engine.task_create('tasks/synthetic.md', 'Strict task.', self.metadata)
+
+        nfc_name = unicodedata.normalize('NFC', 'notes/café.md')
+        nfd_name = unicodedata.normalize('NFD', 'notes/café.md')
+
+        path_nfc = self.vault / nfc_name
+        path_nfd = self.vault / nfd_name
+
+        id_nfc = self.engine._source_identity(path_nfc)
+        id_nfd = self.engine._source_identity(path_nfd)
+
+        self.assertEqual(id_nfc, id_nfd)
+
+    def test_circular_evidence_references_do_not_cause_recursion(self):
+        self.engine.task_create('tasks/synthetic.md', 'Strict task.', self.metadata)
+        (self.vault / 'notes').mkdir()
+
+        a = self.vault / 'notes/a.md'
+        b = self.vault / 'notes/b.md'
+        try:
+            os.symlink(b, a)
+            os.symlink(a, b)
+        except OSError:
+            self.skipTest('symlinks not supported in this environment')
+
+        task = self.vault / 'tasks/synthetic.md'
+        before = task.read_bytes()
+
+        with self.assertRaisesRegex(ValueError, 'existing vault source'):
+            self.engine.update_task('synthetic-task', 1, {'status': 'done', 'evidence_refs': ['notes/a.md']})
+
+        self.assertEqual(task.read_bytes(), before)
+
+    def test_symlink_loop_in_vault_is_a_sync_warning_not_a_crash(self):
+        """Python 3.11/3.12 resolve() raises RuntimeError on a loop; it stopped the whole sync, not one ref."""
+        notes = self.vault / 'notes'
+        notes.mkdir()
+        (notes / 'gercek.md').write_text('# Gercek\n\nKalibrasyon notu.\n', encoding='utf-8')
+        try:
+            os.symlink(notes / 'b.md', notes / 'a.md')
+            os.symlink(notes / 'a.md', notes / 'b.md')
+        except (OSError, NotImplementedError):
+            self.skipTest('symlinks not supported in this environment')
+        result = self.engine.sync()
+        self.assertEqual(result['indexed'], 1)
+        reasons = {warning['source']: warning['reason'] for warning in result['warnings']}
+        # The invariant is that each looped link becomes one rejected source. On Windows,
+        # Python 3.13+ resolves a loop without raising and lands outside the vault, so the
+        # same rejection is reported with the outside-vault reason there.
+        rejected = {'symlink source rejected'} | ({'source outside vault'} if os.name == 'nt' else set())
+        self.assertIn(reasons.get('notes/a.md'), rejected)
+        self.assertIn(reasons.get('notes/b.md'), rejected)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -27,7 +27,12 @@ def default_state(vault: Path) -> Path:
     return base / "beyin-v3" / key
 
 
-SOURCE_WRITE_COMMANDS = ("note-create", "task-create", "task-update")
+SOURCE_WRITE_COMMANDS = ("note-create", "note-edit", "task-create", "task-update")
+NOTE_JSON_COMMANDS = ("note-read", "note-edit")
+
+
+class NoteUsageError(ValueError):
+    pass
 
 
 def mark_session_edit(state: Path) -> None:
@@ -54,14 +59,37 @@ def mark_session_edit(state: Path) -> None:
         pass
 
 
+def _is_absolute_cross_platform(raw: str) -> bool:
+    """True if a path is absolute on any supported platform (Windows or POSIX)."""
+    return bool(re.match(r"^([A-Za-z]:[/\\]|[/\\])", raw))
+
+
+def _resolve_state_path(pinned: Path) -> Path:
+    """Validate a pin even when non-strict realpath suppresses invalid-path errors."""
+    if "\0" in str(pinned):
+        raise ValueError("embedded null character in state path")
+    resolved = Path(pinned).expanduser().resolve()
+    try:
+        resolved.stat()
+    except FileNotFoundError:
+        pass  # A valid state directory may not have been created yet.
+    return resolved
+
+
 def resolve_state(vault: Path, pinned: Path) -> Path:
     """Resolve a foreign OS/user's conventional default; preserve custom and local pins."""
     expected = default_state(vault).resolve()
     raw = str(pinned)
-    if not raw:
+    if not raw or not raw.strip():
         return expected
     if _in_package_container(raw):
-        return Path(pinned).expanduser().resolve()
+        try:
+            resolved = _resolve_state_path(pinned)
+            if _is_absolute_cross_platform(str(resolved)):
+                return resolved
+        except (OSError, ValueError, RuntimeError):
+            pass
+        return expected
     portable = raw.replace("\\", "/")
     # Match complete standard layouts, rather than a generic /state/ or /local/ suffix.
     # A copied vault normally changes its absolute path and therefore its hash.
@@ -72,10 +100,15 @@ def resolve_state(vault: Path, pinned: Path) -> Path:
     local_parent = str(expected.parent).replace("\\", "/").casefold()
     if conventional and portable.rsplit("/", 1)[0].casefold() != local_parent:
         return expected
+    try:
+        resolved = _resolve_state_path(pinned)
+    except (OSError, ValueError, RuntimeError):
+        return expected
+
     if not Path(pinned).expanduser().is_absolute():
         if re.match(r"^[A-Za-z]:[/\\]", raw) or (sys.platform == "win32" and raw.startswith(("/", "\\"))):
             return expected
-    return Path(pinned).expanduser().resolve()
+    return resolved
 
 
 def _in_package_container(pinned: str) -> bool:
@@ -163,6 +196,14 @@ def state_location(vault: Path, state: Path, windows=None) -> dict:
         report["pin_status"] = "present" if pinned else "unreadable"
     if pinned is None:
         return report
+    try:
+        resolved = _resolve_state_path(pinned)
+    except (OSError, ValueError, RuntimeError):
+        report.update(pinned_state=pinned, installed_at_pinned_state=False)
+        report["warnings"].append(
+            "invalid_state_path: the pinned state root cannot be resolved on this machine; "
+            "the local default is used. Reinstall here to bind lifecycle commands.")
+        return report
     if not Path(pinned).expanduser().is_absolute():
         report["warnings"].append(
             "pinned_state_not_absolute: the pinned state root is not an absolute path on this "
@@ -170,13 +211,9 @@ def state_location(vault: Path, state: Path, windows=None) -> dict:
             "through a synced vault or edited by hand (#249); the installed beyin.py reads this "
             "machine's default state instead. Installation files are per machine and stay out of "
             "the sync; see https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/MULTI-MACHINE.md.")
-    elif resolve_state(vault, Path(pinned)) != Path(pinned).expanduser().resolve():
+    elif resolve_state(vault, Path(pinned)) != resolved:
         report['warnings'].append('foreign_default_state: the synced default state belongs to another user or OS; '
                                   'this machine uses its local default. Reinstall here to bind lifecycle commands.')
-    try:
-        resolved = Path(pinned).expanduser().resolve()
-    except (OSError, ValueError, RuntimeError):
-        resolved = Path(pinned)
     same = os.path.normcase(str(resolved)) == os.path.normcase(pinned)
     report.update({"pinned_state": pinned, "pinned_resolves_here_to": str(resolved),
                    "pinned_in_package_container": _in_package_container(pinned),
@@ -309,10 +346,25 @@ def jev_status(state: Path):
     return jev_client().status(state)
 
 
+def jev_context_mode(vault):
+    """The vault's context_mode for the Jev notice only. Jev status and its off switch never depend on a
+    valid preferences file: a malformed or newer file (a key this version does not know) gives no notice."""
+    try:
+        import beyin_v3_preferences as preferences
+        return preferences.read(vault).get("context_mode")
+    except (ValueError, OSError):
+        return None
+
+
 def jev_advice(result):
     laya = result.get("provider") == "laya"
     if result.get("automatic_model_calls"):
         result["notice"] = JEV_NOTICE_LAYA if laya else JEV_NOTICE
+        if result.get("context_mode") and result.get("context_mode") != "turn":
+            result["context_mode_notice"] = (
+                f"Automatic context requires context_mode 'turn', but current mode is '{result['context_mode']}'. "
+                "Enable with: beyin.py preferences --context-mode turn"
+            )
     if laya:
         result["provider_notice"] = LAYA_NOTICE.format(base_url=result.get("laya", {}).get("base_url", "?"))
     elif result.get("mode") != "off" and not result.get("key_present"):
@@ -322,6 +374,69 @@ def jev_advice(result):
 
 HOOK_FILES = (".claude/settings.local.json", ".codex/hooks.json", ".agents/hooks.json",
               ".kiro/hooks/beyin-v3.json")
+
+
+# Fixed machine-local installation paths only, not all managed files/user scripts.
+MACHINE_LOCAL_FILES = tuple(sorted(set(HOOK_FILES + (
+    '.beyin-runtime.json', 'Beyni Guncelle.cmd', '.codex/config.toml', '.claude/hermes-plugin/__init__.py',
+    '.opencode/plugins/beyin-v3.js', '.omp/hooks/pre/beyin-v3.ts',
+    '.claude/scripts/compile.py', '.claude/scripts/flush.py',
+) + tuple('.claude/hooks/' + name + suffix
+          for name in ('session-start', 'session-end', 'pre-compact', 'prompt-counter')
+          for suffix in ('.sh', '.ps1')))))
+
+
+def tracked_machine_files(vault: Path) -> dict:
+    """Advisory only: query the local Git index, never source contents, remotes or Git writes.
+
+    Sparse checkouts/indexes are explicitly unavailable rather than expanded (which
+    could lazily fetch objects). Fixed literals exclude same-name directory children.
+    Each command has a two-second timeout; no raw Git stderr reaches the report.
+    """
+    report = {'status': 'ok', 'tracked': [], 'coverage': 'fixed_machine_local_installation_paths'}
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith('GIT_')}
+    env.update(GIT_OPTIONAL_LOCKS='0', GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+               GIT_TERMINAL_PROMPT='0', GIT_NO_LAZY_FETCH='1', GIT_ALLOW_PROTOCOL='', LC_ALL='C')
+    command = ['git', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-C', str(vault)]
+
+    def run(*args):
+        return subprocess.run(command + list(args), env=env, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2)
+
+    try:
+        inside = run('rev-parse', '--is-inside-work-tree')
+        if inside.returncode:
+            reason = ('not_git_repository' if b'not a git repository' in inside.stderr.lower() else 'git_error')
+            return dict(report, status='skipped' if reason == 'not_git_repository' else 'unavailable', reason=reason)
+        if inside.stdout.strip() != b'true':
+            return dict(report, status='skipped', reason='not_worktree')
+        # Checking both flags also covers an index awaiting sparse expansion after a
+        # configuration change. --bool produces only a bounded boolean, not config text.
+        for key in ('core.sparseCheckout', 'index.sparse'):
+            sparse = run('config', '--bool', '--get', key)
+            if sparse.returncode not in (0, 1):
+                return dict(report, status='unavailable', reason='git_config_error')
+            if sparse.returncode == 0 and sparse.stdout.strip() != b'false':
+                return dict(report, status='unavailable', reason='sparse_checkout_or_index')
+        pathspecs = [':(literal)' + name for name in MACHINE_LOCAL_FILES]
+        pathspecs += [':(exclude,glob)' + name + '/**' for name in MACHINE_LOCAL_FILES]
+        indexed = run('ls-files', '--cached', '--sparse', '-z', '--', *pathspecs)
+        if indexed.returncode:
+            return dict(report, status='unavailable', reason='git_index_error')
+        # Output has only fixed paths (at most three conflict stages per path).
+        limit = 3 * sum(len(name.encode('utf-8')) + 1 for name in MACHINE_LOCAL_FILES)
+        if len(indexed.stdout) > limit:
+            return dict(report, status='unavailable', reason='unexpected_index_output')
+        names = {name.decode('utf-8') for name in indexed.stdout.split(b'\0') if name}
+        if not names.issubset(MACHINE_LOCAL_FILES):
+            return dict(report, status='unavailable', reason='unexpected_index_output')
+        return dict(report, status='warning' if names else 'ok', tracked=sorted(names))
+    except FileNotFoundError:
+        return dict(report, status='skipped', reason='git_unavailable')
+    except subprocess.TimeoutExpired:
+        return dict(report, status='unavailable', reason='git_timeout')
+    except (OSError, UnicodeError, ValueError):
+        return dict(report, status='unavailable', reason='git_error')
 
 
 def _hook_arguments(command: str) -> list:
@@ -503,7 +618,51 @@ def hook_reconcile(vault: Path, state: Path, force: bool = False) -> dict:
             "message": "No installed hooks found to reconcile.",
         }
 
-    if paths_report.get("status") != "stale" and not force:
+    expected_state = str(state.resolve())
+    runtime_stale = False
+    runtime_path = vault / ".beyin-runtime.json"
+    if runtime_path.is_file():
+        _local_hook_file(vault, runtime_path)
+        try:
+            rdata = json.loads(runtime_path.read_text(encoding="utf-8"))
+            if isinstance(rdata, dict) and rdata.get("state") != expected_state:
+                runtime_stale = True
+        except (OSError, ValueError):
+            pass
+
+    launchers_stale = False
+    planned_launchers = {}
+    launcher_baselines = {}
+    try:
+        manifest = json.loads((state / "v3-install.json").read_text(encoding="utf-8"))
+        launcher_baselines = {name: base64.b64decode(info.get("installed_content") or "")
+                              for name, info in manifest.get("files", {}).items() if isinstance(info, dict)}
+    except (OSError, ValueError):
+        pass
+    launcher_script = vault / ".claude/scripts/beyin_v3_launchers.py"
+    if not launcher_script.is_file():
+        launcher_script = Path(__file__).resolve().parent / "beyin_v3_launchers.py"
+        if not launcher_script.is_file():
+            launcher_script = Path(__file__).resolve().parents[1] / "template/.claude/scripts/beyin_v3_launchers.py"
+    if launcher_script.is_file():
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("beyin_reconcile_launchers", launcher_script)
+            lmod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(lmod)
+            planned_launchers = lmod.plan_launchers(vault, state)
+            for lname, lbytes in planned_launchers.items():
+                lpath = vault / lname
+                if lpath.is_file():
+                    _local_hook_file(vault, lpath)
+                    original = lpath.read_bytes()
+                    baseline = launcher_baselines.get(lname)
+                    if baseline is not None and original.replace(b"\r\n", b"\n") == baseline.replace(b"\r\n", b"\n") and original != lbytes:
+                        launchers_stale = True
+        except Exception:
+            pass
+
+    if paths_report.get("status") != "stale" and not force and not runtime_stale and not launchers_stale:
         return {
             "status": "ok",
             "checked": paths_report.get("checked", 0),
@@ -648,6 +807,72 @@ def hook_reconcile(vault: Path, state: Path, force: bool = False) -> dict:
             })
             total_reconciled += file_reconciled
 
+    if runtime_path.is_file() and (runtime_stale or force):
+        try:
+            original_bytes = runtime_path.read_bytes()
+            rdata = json.loads(original_bytes.decode("utf-8"))
+            old_state = rdata.get("state", "")
+            if old_state != expected_state or force:
+                rdata["state"] = expected_state
+                target_bytes = (json.dumps(rdata, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+                if runtime_path.read_bytes() != original_bytes:
+                    raise RuntimeError("Runtime configuration changed during reconciliation; preserved")
+                backup_path = _backup_hook_file(runtime_path, original_bytes)
+                _local_hook_file(vault, runtime_path)
+                if runtime_path.read_bytes() != original_bytes:
+                    raise RuntimeError("Runtime configuration changed after backup; preserved")
+                runtime_path.write_bytes(target_bytes)
+                reconciled_originals[".beyin-runtime.json"] = original_bytes
+                reconciled_files.append({
+                    "file": ".beyin-runtime.json",
+                    "backup": str(backup_path.relative_to(vault).as_posix()),
+                    "reconciled": 1,
+                    "changes": [{
+                        "event": "runtime_state",
+                        "old_command": str(old_state),
+                        "new_command": expected_state,
+                        "old_summary": str(old_state),
+                        "new_summary": expected_state,
+                    }],
+                })
+                total_reconciled += 1
+        except (OSError, ValueError, UnicodeError):
+            pass
+
+    for lname, expected_bytes in planned_launchers.items():
+        lpath = vault / lname
+        if not lpath.is_file():
+            continue
+        try:
+            original_bytes = lpath.read_bytes()
+            baseline = launcher_baselines.get(lname)
+            if baseline is None or original_bytes.replace(b"\r\n", b"\n") != baseline.replace(b"\r\n", b"\n"):
+                continue  # A user-edited launcher remains user-owned, including with --force.
+            if original_bytes != expected_bytes or force:
+                if lpath.read_bytes() != original_bytes:
+                    raise RuntimeError("Launcher changed during reconciliation; preserved")
+                backup_path = _backup_hook_file(lpath, original_bytes)
+                _local_hook_file(vault, lpath)
+                if lpath.read_bytes() != original_bytes:
+                    raise RuntimeError("Launcher changed after backup; preserved")
+                lpath.write_bytes(expected_bytes)
+                reconciled_originals[lname] = original_bytes
+                reconciled_files.append({
+                    "file": lname,
+                    "backup": str(backup_path.relative_to(vault).as_posix()),
+                    "reconciled": 1,
+                    "changes": [{
+                        "event": "launcher",
+                        "old_command": "",
+                        "new_command": "",
+                        "old_summary": lname,
+                        "new_summary": lname,
+                    }],
+                })
+                total_reconciled += 1
+        except OSError:
+            pass
+
     manifest_path = state / "v3-install.json"
     if manifest_path.is_file() and (all_new_commands or reconciled_files):
         try:
@@ -663,7 +888,18 @@ def hook_reconcile(vault: Path, state: Path, force: bool = False) -> dict:
                     baseline = base64.b64decode(files[name].get("installed_content") or "")
                     original = reconciled_originals.get(name, b"")
                     # Never adopt user edits as installer-owned content.
-                    if file_path.is_file() and baseline.replace(b"\r\n", b"\n") == original.replace(b"\r\n", b"\n"):
+                    adopt = False
+                    if baseline.replace(b"\r\n", b"\n") == original.replace(b"\r\n", b"\n"):
+                        adopt = True
+                    elif name == ".beyin-runtime.json":
+                        try:
+                            orig_json = json.loads(original.decode("utf-8"))
+                            base_json = json.loads(baseline.decode("utf-8"))
+                            if isinstance(orig_json, dict) and isinstance(base_json, dict) and dict(orig_json, state=None) == dict(base_json, state=None):
+                                adopt = True
+                        except Exception:
+                            pass
+                    if file_path.is_file() and adopt:
                         file_bytes = file_path.read_bytes()
                         files[name]["installed_hash"] = hashlib.sha256(file_bytes).hexdigest()
                         files[name]["installed_content"] = base64.b64encode(file_bytes).decode("ascii")
@@ -739,10 +975,25 @@ def recap_bounds_inverted(since, until):
     return first > last
 
 
-def parser():
-    root = argparse.ArgumentParser(description=__doc__)
+class ArgumentParsingError(Exception):
+    pass
+
+
+def parser(note_namespace=None, is_json=False):
+    class ResultParser(argparse.ArgumentParser):
+        def error(self, message):
+            # argparse assigns the root command before parsing the subparser.
+            # The shared namespace also covers unknown options reported by root.
+            if getattr(note_namespace, 'command', None) in NOTE_JSON_COMMANDS:
+                raise NoteUsageError(message)
+            if is_json:
+                raise ArgumentParsingError(message)
+            super().error(message)
+
+    root = ResultParser(description=__doc__)
     root.add_argument("--vault", required=True, type=Path, help="Existing vault directory")
     root.add_argument("--state", type=Path, help="Local state directory outside the vault")
+    root.add_argument("--json", action="store_true", help="Format output as JSON")
     sub = root.add_subparsers(dest="command", required=True)
     sub.add_parser("init", help="Initialize local state; installs no hooks or services")
     sync_parser = sub.add_parser("sync", help="Reconcile Markdown sources into local state")
@@ -769,9 +1020,14 @@ def parser():
                        help="Explicit range end, inclusive: YYYY-MM-DD covers that whole local day; without "
                             "--since there is no lower bound")
     recap.set_defaults(usage_error=recap.error)  # cross-flag checks in main() report with recap's own usage
-    triage = sub.add_parser("triage", help="Vault digestion report: inbox items, stale tasks, and weekly knowledge summary")
-    triage.add_argument("--stale-days", type=int, default=14, help="Days of inactivity before an open task is considered stale (default: 14)")
+    triage = sub.add_parser("triage", help="Vault digestion report: inbox items, stale tasks/threads, and weekly knowledge summary")
+    triage.add_argument("--stale-days", type=int, default=14, help="Age threshold for open tasks and Threads ISO date mentions (default: 14)")
     triage.add_argument("--digest-days", type=int, default=7, help="Days to look back for knowledge notes and outcomes (default: 7)")
+    audit_parser = sub.add_parser("audit", help="Advisory memory auditor: detect near-duplicates, staleness, and contradictions")
+    audit_parser.add_argument("target", nargs="?", default=None, help="Specific markdown note to audit against vault memory (optional)")
+    audit_parser.add_argument("--threshold", type=float, default=0.60, help="Lexical overlap threshold 0.0..1.0 (default: 0.60)")
+    audit_parser.add_argument("--min-shared", type=int, default=5, help="Minimum shared topical terms (default: 5)")
+    audit_parser.add_argument("--limit", type=int, default=20, help="Maximum findings to return (default: 20)")
     settings = sub.add_parser("preferences", help="Control automatic local checks and injected context")
     settings.add_argument("--profile", choices=("normal", "economical", "manual"))
     settings.add_argument("--auto-sync", choices=("on", "off"))
@@ -781,6 +1037,8 @@ def parser():
     settings.add_argument("--companion-context-chars", type=int,
                           help="Opening context budget (SessionStart, continuity questions), 1000..24000; 0 uses --context-chars")
     settings.add_argument("--secret-filter", choices=("on", "off"))
+    settings.add_argument("--daily-layout", choices=("flat", "v3"),
+                          help="Vault-wide daily receipt view layout (default v3); applied by the next sync")
     settings.add_argument("--update-notifications", choices=("on", "off"))
     settings.add_argument("--last-session-chars", type=int, help="Hygiene limit for Last-Session.md; 0 turns it off")
     settings.add_argument("--threads-chars", type=int, help="Hygiene limit for Threads.md; 0 turns it off")
@@ -820,6 +1078,13 @@ def parser():
                           help="Reset Hermes platform overrides to defaults")
     compact = sub.add_parser("companion-compact", help="Move older Last-Session/Threads entries verbatim into a private archive; deletes nothing")
     compact.add_argument("--dry-run", action="store_true", help="Report what would move without writing")
+    trace = sub.add_parser("chat-trace", help="Opt-in short conversation checkpoints; never saves transcripts")
+    trace.add_argument("action", choices=("status", "on", "off", "write"))
+    trace.add_argument("--harness", choices=("claude", "codex"))
+    trace.add_argument("--session", help="The 24-character Receipt session value shown by the hook")
+    trace_text = trace.add_mutually_exclusive_group()
+    trace_text.add_argument("--text", help="Explicit short summary; dated paragraph must fit 450 characters")
+    trace_text.add_argument("--file", help="UTF-8 summary file, or - for stdin")
     skill = sub.add_parser("skill-import", help="Import one explicitly chosen skill directory")
     skill.add_argument("--source", type=Path, required=True)
     skill.add_argument("--name")
@@ -827,6 +1092,10 @@ def parser():
     ingest.add_argument("--file", default="-", help="JSON input path, or - for stdin")
     note = sub.add_parser("note-create", help="Create a semantic Markdown source without overwriting")
     note.add_argument("--file", default="-", help="JSON {source, text, metadata}")
+    note_read = sub.add_parser("note-read", help="Read a human Markdown source and its byte SHA-256")
+    note_read.add_argument("source")
+    note_edit = sub.add_parser("note-edit", help="Edit a human Markdown source with an expected SHA-256")
+    note_edit.add_argument("--file", default="-", help="JSON {source, expected_sha256, edits} or new content; - for stdin")
     task = sub.add_parser("task-create", help="Create and verify an explicit new task")
     task.add_argument("--file", default="-", help="JSON {source: tasks/name.md, text, metadata: {id,status,owner}}")
     context = sub.add_parser("context", help="Retrieve source-backed shared context")
@@ -882,36 +1151,69 @@ def parser():
     ingest_server.add_argument("--host", default="127.0.0.1", help="Host interface to bind (default 127.0.0.1)")
     ingest_server.add_argument("--port", type=int, default=8484, help="Port to listen on (default 8484)")
     ingest_server.add_argument("--token", help="Optional Bearer token for authentication")
+    bridge = sub.add_parser("bridge", help="Manage global lifecycle bridge configuration")
+    bridge.add_argument("--harness", choices=("claude", "codex", "antigravity"), required=True)
+    bridge.add_argument("--project-root", type=Path, action="append", help="Project root to bridge (repeatable)")
+    bridge.add_argument("--install", action="store_true", help="Install global bridge hooks")
+    bridge.add_argument("--uninstall", action="store_true", help="Uninstall global bridge hooks")
+    bridge.add_argument("--print-config", action="store_true", help="Print global hook JSON without installing")
+    bridge.add_argument("--event", choices=("SessionStart", "Stop", "PreCompact", "SessionEnd"), action="append")
+    bridge.add_argument("--context-chars", type=int, default=1500)
+    learn = sub.add_parser("learn", help="Stage or inspect learning candidates before distillation (RFC #368)")
+    learn.add_argument("--candidate", help="Candidate learning content text")
+    learn.add_argument("--source", default="", help="Source file or note path linking to this learning")
+    learn.add_argument("--scope", default=None, help="Scope of the learning: global or project name")
+    learn.add_argument("--session", default="", help="Session ID associated with candidate")
+    learn.add_argument("--list", action="store_true", help="List active candidate learnings")
+    learn.add_argument("--resolve", choices=("distilled", "discarded"), default=None,
+                       help="Resolve candidates for session as distilled or discarded")
+    learn.add_argument("--all", action="store_true", help="When resolving or listing, apply across all sessions")
     return root
 
 
 def main(argv=None, return_result=False):
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8-sig")
-    argument_parser = parser()
-    args = argument_parser.parse_args(argv)
-    receipt_flags = args.command == "receipt" and any(
-        getattr(args, name) is not None for name in ("event_id", "summary", "summary_file", "ref", "link", "session"))
-    if receipt_flags:
-        for stream in (sys.stdout, sys.stderr):
-            if hasattr(stream, "reconfigure"):
-                stream.reconfigure(encoding="utf-8")
-        if args.file is not None:
-            argument_parser.error("--file cannot be combined with receipt flags")
-        if args.event_id is None:
-            argument_parser.error("--event-id is required in flag mode")
-        if args.summary is not None and args.summary_file is not None:
-            argument_parser.error("use exactly one of --summary and --summary-file")
-        if args.summary is None and args.summary_file is None:
-            argument_parser.error("--summary or --summary-file is required in flag mode")
-        if not args.ref:
-            argument_parser.error("--ref is required in flag mode (at least one)")
-    if args.command == "recap":
-        # Usage errors, raised before any state is opened or synced.
-        if args.days is not None and (args.since is not None or args.until is not None):
-            args.usage_error("argument --days: not allowed with argument --since/--until")
-        if args.since is not None and args.until is not None and recap_bounds_inverted(args.since, args.until):
-            args.usage_error("argument --since: must not be after --until")
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    args = argparse.Namespace()
+    argument_parser = parser(note_namespace=args, is_json="--json" in args_list)
+    try:
+        args = argument_parser.parse_args(args_list, namespace=args)
+        receipt_flags = args.command == "receipt" and any(
+            getattr(args, name) is not None for name in ("event_id", "summary", "summary_file", "ref", "link", "session"))
+        if receipt_flags:
+            if not return_result:
+                for stream in (sys.stdout, sys.stderr):
+                    if hasattr(stream, "reconfigure"):
+                        stream.reconfigure(encoding="utf-8")
+            if args.file is not None:
+                argument_parser.error("--file cannot be combined with receipt flags")
+            if args.event_id is None:
+                argument_parser.error("--event-id is required in flag mode")
+            if args.summary is not None and args.summary_file is not None:
+                argument_parser.error("use exactly one of --summary and --summary-file")
+            if args.summary is None and args.summary_file is None:
+                argument_parser.error("--summary or --summary-file is required in flag mode")
+            if not args.ref:
+                argument_parser.error("--ref is required in flag mode (at least one)")
+        if args.command == "recap":
+            # Usage errors, raised before any state is opened or synced.
+            if args.days is not None and (args.since is not None or args.until is not None):
+                args.usage_error("argument --days: not allowed with argument --since/--until")
+            if args.since is not None and args.until is not None and recap_bounds_inverted(args.since, args.until):
+                args.usage_error("argument --since: must not be after --until")
+    except ArgumentParsingError as exc:
+        error = {"error": "SystemExit", "message": str(exc)}
+        if return_result:
+            return error, 2
+        print(json.dumps(error, ensure_ascii=True), file=sys.stderr)
+        return 2
+    except NoteUsageError as exc:
+        result = {'status': 'usage_error', 'error': type(exc).__name__, 'message': str(exc)}
+        if return_result:
+            return result, 64
+        print(json.dumps(result, ensure_ascii=True))
+        return 64
     try:
         vault = args.vault.expanduser().resolve()
         if not vault.is_dir():
@@ -927,10 +1229,44 @@ def main(argv=None, return_result=False):
         if read_only_context and args.jev:
             raise ValueError("context --no-sync cannot be combined with --jev")
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
-        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server") else None
+        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace") else None
         store = engine.MemoryStore(state, vault, read_only=read_only_context) if engine else None
-        sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
-        if args.command == "ingest-server":
+        sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
+        if args.command == "bridge":
+            if sum([bool(args.print_config), bool(args.install), bool(args.uninstall)]) > 1:
+                argument_parser.error("--print-config, --install, and --uninstall are mutually exclusive")
+            _ensure_scripts_path()
+            import beyin_v3_bridge as bridge_mod
+            events = list(dict.fromkeys(args.event or bridge_mod.EVENTS))
+            if args.harness == "antigravity":
+                events = [e for e in events if e in bridge_mod.ANTIGRAVITY.values()]
+                if not events:
+                    argument_parser.error("Antigravity offers only SessionStart and Stop")
+            if args.uninstall:
+                result = bridge_mod.uninstall_bridge(args.harness)
+            elif args.install:
+                if not args.project_root:
+                    argument_parser.error("--project-root is required with --install")
+                roots = [p.expanduser().resolve() for p in args.project_root]
+                result = bridge_mod.install_bridge(vault, state, args.harness, roots, events, args.context_chars)
+            elif args.print_config:
+                if not args.project_root:
+                    argument_parser.error("--project-root is required with --print-config")
+                roots = [p.expanduser().resolve() for p in args.project_root]
+                bridge_args = ["--vault", str(vault), "--state", str(state), "--harness", args.harness,
+                               "--context-chars", str(args.context_chars), "--print-config"]
+                for r in roots: bridge_args.extend(["--project-root", str(r)])
+                code = bridge_mod.main(bridge_args)
+                if return_result:
+                    return None, code
+                return code
+            else:
+                argument_parser.error("specify one of --install, --uninstall, or --print-config")
+            if return_result:
+                return result, 0
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        elif args.command == "ingest-server":
             _ensure_scripts_path()
             import beyin_v3_ingest_server
             beyin_v3_ingest_server.run_server(vault, host=args.host, port=args.port, token=args.token)
@@ -941,6 +1277,7 @@ def main(argv=None, return_result=False):
         elif args.command == "preferences":
             _ensure_scripts_path()
             import beyin_v3_preferences as preferences
+            daily_layout = preferences.read_daily_layout(vault)  # validate before saving any setting
             import beyin_v3_companion as companion
             limits = {name: value for name, value in (('Last-Session.md', args.last_session_chars),
                                                       ('Threads.md', args.threads_chars)) if value is not None}
@@ -1004,6 +1341,10 @@ def main(argv=None, return_result=False):
             result = {'status': 'saved' if changes or args.profile or (args.exclude_component or args.include_component) else 'current',
                       'preferences': settings, 'excluded_components': result_excluded,
                       'model_calls': False, 'timer_installed': False}
+            result['daily_layout'] = daily_layout
+            if args.daily_layout is not None:
+                result['daily_layout'] = preferences.save_daily_layout(vault, args.daily_layout)
+                result['status'] = 'saved'
             if exclusion_notice:
                 result['exclusion_notice'] = exclusion_notice
             # Machine-local like update notifications: rollback-safe, outside the vault schema.
@@ -1107,12 +1448,15 @@ def main(argv=None, return_result=False):
                 result = jev_client().status(state)
                 if args.check:
                     result["server"] = jev_client().probe(state)
+                result["context_mode"] = jev_context_mode(vault)
                 result = jev_advice(result)
             else:
                 if args.check:
                     raise ValueError("--check works only with jev status")
-                result = jev_advice(jev_client().set_mode(state, args.mode, enable=args.enable, disable=args.disable,
-                                                          provider=args.provider, laya=laya or None))
+                result = jev_client().set_mode(state, args.mode, enable=args.enable, disable=args.disable,
+                                                provider=args.provider, laya=laya or None)
+                result["context_mode"] = jev_context_mode(vault)
+                result = jev_advice(result)
                 result["changed"] = True
         elif args.command == "hook-reconcile":
             result = hook_reconcile(vault, state, force=getattr(args, 'force', False))
@@ -1136,6 +1480,7 @@ def main(argv=None, return_result=False):
                 result['hook_paths'] = hook_paths(vault)
             except Exception as exc:
                 result['hook_paths'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            result['tracked_machine_files'] = tracked_machine_files(vault)
             # Information only; a split or container-bound state root never raises the status.
             try:
                 result['state_location'] = state_location(vault, state)
@@ -1191,6 +1536,9 @@ def main(argv=None, return_result=False):
             except Exception as exc:  # information only; never hides the rest of doctor
                 result['instruction_references'] = {'status': 'unavailable', 'error': type(exc).__name__}
             result['jev'] = jev_status(state)
+            if result['jev'].get('automatic_model_calls') and result['preferences'].get('context_mode') != 'turn':
+                result['jev']['context_mode'] = result['preferences'].get('context_mode')
+                result['jev'] = jev_advice(result['jev'])
             result['automatic_model_calls'] = result['jev'].get('automatic_model_calls', False)
             health = result['hook-health.json'] or {}
             gaps_info = result['receipt-gaps.json']
@@ -1212,7 +1560,9 @@ def main(argv=None, return_result=False):
             # Entries beside the skills that this vault never owned. Information only.
             result['skill_unmanaged'] = health.get('sync', {}).get('skill_unmanaged', [])
             from beyin_v3_projections import is_receipt_view_conflict
-            result['receipt_view_conflicts'] = [c for c in health.get('sync', {}).get('conflicts', []) if is_receipt_view_conflict(c)]
+            view_sync = health.get('sync', {})
+            result['receipt_view_conflicts'] = [c for c in view_sync.get('conflicts', []) + view_sync.get('warnings', [])
+                                                if is_receipt_view_conflict(c)]
             try:
                 result['task_completion'] = load_sync().reader(store).completion_health()
             except Exception as exc:
@@ -1349,6 +1699,25 @@ def main(argv=None, return_result=False):
             if any(entry['status'] == 'compacted' for entry in result['files'].values()):
                 # Index the shorter sources and the private archive before anyone reads them.
                 result['sync'] = {'status': load_sync()(vault, state).sync().get('status')}
+        elif args.command == "chat-trace":
+            _ensure_scripts_path()
+            import beyin_v3_chat_trace as chat_trace
+            if args.action == 'write':
+                if not args.harness or not args.session or (args.text is None and args.file is None):
+                    raise ValueError('write requires --harness, --session and --text or --file')
+                text = args.text
+                if args.file is not None:
+                    if args.file == '-':
+                        text = sys.stdin.read(4097)
+                    else:
+                        with Path(args.file).open(encoding='utf-8') as handle:
+                            text = handle.read(4097)
+                result = chat_trace.write(vault, state, args.harness, args.session, text)
+            elif args.harness or args.session or args.text is not None or args.file is not None:
+                raise ValueError('summary arguments are only valid with chat-trace write')
+            else:
+                result = (chat_trace.settings(state) if args.action == 'status' else
+                          chat_trace.configure(state, args.action == 'on'))
         elif args.command in ("sync", "recover-views"):
             recover = getattr(args, "recover_views", False) or args.command == "recover-views"
             result = sync.sync(full=getattr(args, "full", False), recover_views=recover)
@@ -1378,9 +1747,61 @@ def main(argv=None, return_result=False):
             _ensure_scripts_path()
             import beyin_v3_triage as triage_module
             result = triage_module.triage(vault, state=state, stale_days=args.stale_days, digest_days=args.digest_days)
+        elif args.command == "audit":
+            _ensure_scripts_path()
+            import beyin_v3_audit as audit_module
+            result = audit_module.audit_memory(
+                vault,
+                state=state,
+                target_file=args.target,
+                threshold=args.threshold,
+                min_shared=args.min_shared,
+                limit=args.limit,
+            )
         elif args.command == "ingest":
             payload = read_json(args.file)
-            result = [store.ingest(record) for record in payload] if isinstance(payload, list) else store.ingest(payload)
+            if not isinstance(payload, list):
+                result = store.ingest(payload)
+            else:
+                # Each record commits in its own transaction, so a batch used to stop at the
+                # first bad item with the earlier ones already stored and nothing saying so.
+                # Validate the whole batch before the first write and keep the failing index.
+                validated = []
+                for index, record in enumerate(payload):
+                    try:
+                        validated.append(store._validate(record))
+                    except Exception as exc:
+                        exc.batch_ingest = {"failed_index": index, "written_ids": []}
+                        raise
+                # A duplicate id in the list, or one already stored with a different payload,
+                # used to commit the earlier items before ingest raised. Refuse the batch first.
+                seen = {}
+                for index, record in enumerate(validated):
+                    previous = seen.get(record["id"])
+                    if previous is not None and engine._json(previous) != engine._json(record):
+                        exc = engine.RevisionConflict("existing id; use update_task with expected revision")
+                        exc.batch_ingest = {"failed_index": index, "written_ids": []}
+                        raise exc
+                    seen[record["id"]] = record
+                with store._connect() as db:
+                    for index, record in enumerate(validated):
+                        old = db.execute("SELECT payload FROM records WHERE id=?", (record["id"],)).fetchone()
+                        if old and old[0] != engine._json(record):
+                            exc = engine.RevisionConflict("existing id; use update_task with expected revision")
+                            exc.batch_ingest = {"failed_index": index, "written_ids": []}
+                            raise exc
+                result = []
+                for index, record in enumerate(payload):
+                    try:
+                        result.append(store.ingest(record))
+                    except Exception as exc:
+                        exc.batch_ingest = {"failed_index": index,
+                                            "written_ids": [item["id"] for item in result]}
+                        raise
+        elif args.command == "note-read":
+            result = sync.note_read(args.source)
+        elif args.command == "note-edit":
+            result = sync.note_edit(read_json(args.file))
         elif args.command == "note-create":
             payload = read_json(args.file)
             result = sync.note_create(payload['source'], payload['text'], payload.get('metadata'))
@@ -1454,10 +1875,14 @@ def main(argv=None, return_result=False):
                 payload = {"event_id": args.event_id, "summary": summary, "refs": args.ref}
                 if args.session is not None:
                     payload["session"] = args.session
+                elif os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID"):
+                    payload["session"] = hashlib.sha256((os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")).encode("utf-8")).hexdigest()[:24]
                 if args.link:
                     payload["links"] = args.link
             else:
                 payload = read_json(args.file if args.file is not None else "-")
+                if "session" not in payload and (os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")):
+                    payload["session"] = hashlib.sha256((os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")).encode("utf-8")).hexdigest()[:24]
             result = sync.receipt(payload["event_id"], payload["summary"],
                                           payload["refs"], args.harness, session=payload.get('session'),
                                           links=payload.get('links'))
@@ -1474,10 +1899,32 @@ def main(argv=None, return_result=False):
                 print(json.dumps({'source_sync': {'status': 'degraded', 'warnings': warnings[:20],
                                                   'warning_count': len(warnings), 'truncated': len(warnings) > 20}},
                                  ensure_ascii=True), file=sys.stderr)
+        elif args.command == "learn":
+            _ensure_scripts_path()
+            from beyin_v3_learning import stage_candidate, list_candidates, resolve_candidates
+            env_session = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")
+            sess = args.session or (hashlib.sha256(env_session.encode("utf-8")).hexdigest()[:24]
+                                    if env_session else "cli")
+            if getattr(args, "all", False):
+                target_sess = None
+            else:
+                target_sess = sess
+            if args.resolve:
+                count = resolve_candidates(state, session=target_sess, target_status=args.resolve)
+                result = {"status": "succeeded", "resolved_count": count, "session": target_sess, "target_status": args.resolve}
+            elif args.candidate:
+                result = stage_candidate(state, sess, args.candidate, source=args.source, scope=args.scope or "global")
+            elif args.list:
+                list_sess = None if getattr(args, "all", False) else (args.session or None)
+                result = {"candidates": list_candidates(state, session=list_sess, scope=args.scope)}
+            else:
+                raise ValueError("one of --candidate, --list, or --resolve is required")
         else:
             payload = read_json(args.file)
             result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])
-        if args.command in SOURCE_WRITE_COMMANDS:
+        if (args.command in SOURCE_WRITE_COMMANDS
+                and (args.command != "note-edit" or result.get('status') == 'written')
+                and os.environ.get("CLAUDE_CODE_SESSION_ID")):
             mark_session_edit(state)
         if return_result:
             return result, 0
@@ -1486,12 +1933,28 @@ def main(argv=None, return_result=False):
     except Exception as exc:
         # No traceback or raw input dump: callers retain their local source files.
         error = {"error": type(exc).__name__, "message": str(exc)}
+        # A record that raised after validating a batch still reports which index failed and
+        # what was already written; the error name and message keep their existing shape.
+        batch = getattr(exc, "batch_ingest", None)
+        if isinstance(batch, dict):
+            error.update(batch)
+        code = 1
+        if isinstance(exc, ArgumentParsingError):
+            error["error"] = "SystemExit"
+            code = 2
+        if args.command in NOTE_JSON_COMMANDS:
+            from beyin_v3_notes import NoteConflict, NotePartialWrite
+            code = 2 if isinstance(exc, NoteConflict) else 1
+            error['status'] = 'conflict' if code == 2 else 'error'
+            if isinstance(exc, NotePartialWrite):
+                error.update(exc.details)
         if isinstance(exc, ValueError) and str(exc) in ERROR_HINTS:
             error["hint"] = ERROR_HINTS[str(exc)]
         if return_result:
-            return error, 1
-        print(json.dumps(error, ensure_ascii=True), file=sys.stderr)
-        return 1
+            return error, code
+        print(json.dumps(error, ensure_ascii=True),
+              file=sys.stdout if args.command in NOTE_JSON_COMMANDS else sys.stderr)
+        return code
 
 
 if __name__ == "__main__":

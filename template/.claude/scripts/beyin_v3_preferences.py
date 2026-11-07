@@ -1,5 +1,6 @@
 """User-owned, portable controls for local checks and automatic context. No models."""
 from contextlib import closing
+import errno
 import json
 import os
 from pathlib import Path
@@ -42,6 +43,44 @@ def read(vault):
     return validate(json.loads(path.read_text(encoding='utf-8')) if path.exists() else {})
 
 
+def _daily_layout_path(vault):
+    # Vault-owned like exclusions: all machines must project to the same paths.
+    # Separate from the old strict schema so older releases can still read it.
+    path = Path(vault) / '.beyin-daily-layout.json'
+    if path.is_symlink():
+        raise ValueError('Daily layout must be a regular vault-local file')
+    return path
+
+
+def read_daily_layout(vault):
+    path = _daily_layout_path(vault)
+    if not path.exists():
+        return 'v3'
+    value = json.loads(path.read_text(encoding='utf-8'))
+    if (not isinstance(value, dict) or set(value) != {'schema', 'daily_layout'} or
+            type(value['schema']) is not int or value['schema'] != 1 or
+            value['daily_layout'] not in ('flat', 'v3')):
+        raise ValueError('Invalid daily layout; expected schema 1 and daily_layout flat or v3')
+    return value['daily_layout']
+
+
+def save_daily_layout(vault, layout):
+    read_daily_layout(vault)  # never overwrite malformed user settings
+    if layout not in ('flat', 'v3'):
+        raise ValueError('daily_layout must be flat or v3')
+    path = _daily_layout_path(vault)
+    fd, temporary = tempfile.mkstemp(prefix='.beyin-daily-layout-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as out:
+            json.dump({'schema': 1, 'daily_layout': layout}, out, indent=2)
+            out.write('\n'); out.flush(); os.fsync(out.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return layout
+
+
 def save(vault, changes, profile=None):
     # Validate the existing file too: malformed user settings must not be overwritten.
     current = read(vault)
@@ -62,24 +101,78 @@ def save(vault, changes, profile=None):
     return result
 
 
-def claim_check(state, settings, event, now=None):
+# The cadence record is a rate limiter, not the turn's data: when it cannot be written right
+# now, that turn simply runs no automatic check. Only these refusals are skipped -- another
+# client holds the lock, the state file or directory is unwritable or unopenable, the filesystem
+# is read-only, the disk is full, a permission is missing. Every other failure stays visible, so
+# a damaged cadence schema is never hidden behind a silent skip (#417 keeps its notice).
+_REFUSED_SQLITE_CODES = frozenset((
+    3,   # SQLITE_PERM: access permission denied
+    5,   # SQLITE_BUSY: another client holds the cadence lock
+    6,   # SQLITE_LOCKED: the cadence table is locked
+    8,   # SQLITE_READONLY: attempt to write a readonly database
+    13,  # SQLITE_FULL: database or disk is full
+    14,  # SQLITE_CANTOPEN: unable to open database file
+))
+_REFUSED_ERRNOS = frozenset(code for code in (
+    errno.EACCES, errno.EPERM, errno.EROFS, errno.ENOSPC,
+    getattr(errno, 'EDQUOT', None)) if code is not None)
+
+# Why a check did not run: the user's interval has not elapsed, or the record could not be
+# written. They need different notices -- a refusal that repeats must not read as a preference.
+SKIP_INTERVAL = 'interval'
+SKIP_REFUSED = 'refused'
+
+
+def _cadence_write_refused(exc):
+    if isinstance(exc, OSError):
+        # A sandboxed or read-only runtime directory refuses mkdir before SQLite is reached.
+        return exc.errno in _REFUSED_ERRNOS
+    # Extended result codes keep the primary code in the low byte; getattr keeps a build
+    # without sqlite_errorcode on the visible-error path instead of guessing.
+    code = getattr(exc, 'sqlite_errorcode', None)
+    return code is not None and (code & 0xFF) in _REFUSED_SQLITE_CODES
+
+
+def claim_check(state, settings, event, now=None, skip_reason=None):
     """Atomically rate-limit automatic launches, across clients, not manual CLI reads.
 
     A new session always refreshes. The interval is a minimum between subsequent
     event-triggered checks, never a timer or an always-on service.
+
+    A lock held by another client or a state directory that cannot be written skips this
+    turn's automatic check instead of failing: the turn still reads the previous index, and
+    no hook error replaces its context. Only refusals skip; any other SQLite error still
+    surfaces, and #417 keeps its notice for a worker that genuinely failed.
+
+    `skip_reason` is an optional list the caller passes to tell the two skips apart: it
+    receives `SKIP_INTERVAL` or `SKIP_REFUSED`, and stays empty when the check runs. A
+    refusal that keeps repeating is a broken record, not a chosen interval, and the turn
+    has to say so.
     """
-    if not settings['auto_sync']:
+    def skip(reason):
+        if skip_reason is not None:
+            skip_reason.append(reason)
         return False
+
+    if not settings['auto_sync']:
+        return skip(SKIP_INTERVAL)
     if not settings['interval_minutes']:
         return True
     now = time.time() if now is None else now
-    state = Path(state); state.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(state / 'check-cadence.sqlite3', timeout=1)) as db, db:
-        db.execute('CREATE TABLE IF NOT EXISTS cadence (id INTEGER PRIMARY KEY, started REAL)')
-        db.execute('BEGIN IMMEDIATE')
-        row = db.execute('SELECT started FROM cadence WHERE id=1').fetchone()
-        retry = (state / 'hook-error.json').exists()
-        if event != 'SessionStart' and not retry and row and 0 <= now-row[0] < settings['interval_minutes']*60:
-            return False
-        db.execute('INSERT OR REPLACE INTO cadence VALUES (1, ?)', (now,))
+    state = Path(state)
+    try:
+        state.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(state / 'check-cadence.sqlite3', timeout=1)) as db, db:
+            db.execute('CREATE TABLE IF NOT EXISTS cadence (id INTEGER PRIMARY KEY, started REAL)')
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT started FROM cadence WHERE id=1').fetchone()
+            retry = (state / 'hook-error.json').exists()
+            if event != 'SessionStart' and not retry and row and 0 <= now-row[0] < settings['interval_minutes']*60:
+                return skip(SKIP_INTERVAL)
+            db.execute('INSERT OR REPLACE INTO cadence VALUES (1, ?)', (now,))
+    except (OSError, sqlite3.OperationalError) as exc:
+        if not _cadence_write_refused(exc):
+            raise
+        return skip(SKIP_REFUSED)
     return True

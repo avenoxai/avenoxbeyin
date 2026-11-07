@@ -360,8 +360,9 @@ class EscapeHookTest(unittest.TestCase):
     def hooks(self):
         user = types.SimpleNamespace(**{name: Mock() for name in (
             'SetWindowsHookExW', 'CallNextHookEx', 'UnhookWindowsHookEx', 'GetForegroundWindow',
-            'SetWinEventHook', 'UnhookWinEvent')})
+            'SetWinEventHook', 'UnhookWinEvent', 'GetAsyncKeyState')})
         user.GetForegroundWindow.return_value = 42
+        user.GetAsyncKeyState.return_value = 0
         user.SetWindowsHookExW.return_value = 100
         user.CallNextHookEx.return_value = 7
         kernel = types.SimpleNamespace(GetModuleHandleW=Mock(return_value=200))
@@ -377,7 +378,7 @@ class EscapeHookTest(unittest.TestCase):
     def test_escape_is_consumed_once_and_the_hook_is_released(self):
         with self.hooks() as (user, root, dismiss, stop):
             callback = user.SetWindowsHookExW.call_args.args[1]
-            key = C.c_uint32(27)
+            key = (C.c_uint32 * 6)(27, 0, 0, 0, 0, 0)
             self.assertEqual(callback(0, 0x100, C.addressof(key)), 1)
             check = root.after.call_args.args[1]
             check()
@@ -389,7 +390,7 @@ class EscapeHookTest(unittest.TestCase):
         with self.hooks() as (user, root, dismiss, stop):
             callback = user.SetWindowsHookExW.call_args.args[1]
             user.GetForegroundWindow.return_value = 77
-            key = C.c_uint32(27)
+            key = (C.c_uint32 * 6)(27, 0, 0, 0, 0, 0)
             self.assertEqual(callback(0, 0x100, C.addressof(key)), 7)
             root.after.call_args.args[1]()
             dismiss.assert_called_once_with()
@@ -398,7 +399,7 @@ class EscapeHookTest(unittest.TestCase):
         with self.hooks() as (user, root, dismiss, stop):
             callback = user.SetWindowsHookExW.call_args.args[1]
             user.GetForegroundWindow.return_value = 99
-            key = C.c_uint32(27)
+            key = (C.c_uint32 * 6)(27, 0, 0, 0, 0, 0)
             self.assertEqual(callback(0, 0x100, C.addressof(key)), 7)
             root.after.call_args.args[1]()
             dismiss.assert_not_called()
@@ -406,9 +407,9 @@ class EscapeHookTest(unittest.TestCase):
     def test_other_keys_and_negative_hook_codes_pass_through(self):
         with self.hooks() as (user, root, dismiss, stop):
             callback = user.SetWindowsHookExW.call_args.args[1]
-            key = C.c_uint32(65)
+            key = (C.c_uint32 * 6)(65, 0, 0, 0, 0, 0)
             self.assertEqual(callback(0, 0x100, C.addressof(key)), 7)
-            key.value = 27
+            key[0] = 27
             self.assertEqual(callback(-1, 0x100, C.addressof(key)), 7)
             dismiss.assert_not_called()
 

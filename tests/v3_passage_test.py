@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Passage-level strict context (#83): synthetic local vaults only, no network, no model."""
+import hashlib
 import importlib.util
 import json
 import os
@@ -99,6 +100,88 @@ class SplitTest(unittest.TestCase):
 
 
 class PassageContextTest(Vault):
+    def test_a_question_naming_the_note_gets_the_section_that_answers_it(self):
+        # Every passage carries the title, so a question in the title's words matches all of
+        # them alike; the short update section used to win on size alone.
+        filler = 'Satır satır kayıt tutulur, sütunlar sabit kalır. ' * 20
+        text = ('# Zirkon Takvimi ve Kredi Planı\n\n## Güncelleme\n\nTabloya satır ekle.\n\n'
+                '## Kayıtlar\n\n' + filler + '\n\n'
+                '## Amaç\n\nZirkon takvimi kredi planı için tutulur: aylık sınır kırk kredi.\n')
+        self.ingest('takvim', text, 'notes/zirkon-takvimi.md', title='Zirkon Takvimi ve Kredi Planı')
+        # The passage route itself: MemoryStore.context_for would fall back to notes on an error.
+        records = passage.context_for(self.store, 'claude', 'zirkon takvimi kredi planı', budget_chars=5000)['records']
+        self.assertEqual([r['source'] for r in records], ['notes/zirkon-takvimi.md'])
+        self.assertIn('aylık sınır kırk kredi', records[0]['text'])
+        self.assertIn('[…]', records[0]['text'])
+        self.assertTrue(records[0]['text_truncated'])
+
+    def test_short_root_second_passage_preserves_due_ranking(self):
+        text = ('# Zirkon\n\n## Özet\n\nZirkon boy kısa.\n\n'
+                '## Ölçüm\n\nBoy: 180 cm; güncel ölçüm. ' + 'Ayrıntılı kayıt. ' * 30 + '\n')
+        for ident, due, updated in [('a-due', '2020-01-01', '2026-01-01'),
+                                    ('z-future', '2099-01-01', '2026-10-01')]:
+            self.ingest(ident, text, 'tasks/' + ident + '.md', kind='task', status='active',
+                        title='Zirkon', due_at=due, updated_at=updated)
+        context = passage.context_for(self.store, 'claude', 'zirkon boyum', limit=1, budget_chars=5000)
+        self.assertEqual([r['id'] for r in context['records']], ['a-due'])
+        self.assertIn('180 cm', context['records'][0]['text'])
+        self.assertIn('a-due', context.wider)
+        self.assertLessEqual(context['used_chars'], 5000)
+
+    def test_a_second_passage_never_cuts_a_lower_source_short(self):
+        filler = 'Satır satır kayıt tutulur, sütunlar sabit kalır. ' * 12
+        for index in range(5):
+            name = 'Zirkon Takvimi Kredi %d' % index
+            self.ingest('t%d' % index, '# %s\n\n## Özet\n\nZirkon takvimi kredi özeti %d.\n\n## Kayıtlar\n\n%s\n\n'
+                        '## Amaç\n\nZirkon takvimi kredi planı: sınır %d.\n' % (name, index, filler, index),
+                        'notes/t%d.md' % index, title=name)
+        query = 'zirkon takvimi kredi planı'
+        for budget in (1500, 2500, 5000):
+            with self.subTest(budget=budget):
+                with patch.object(passage, '_runner_up', lambda *args: None):
+                    alone = {r['id']: r['text'] for r in passage.context_for(self.store, 'claude', query,
+                                                                             budget_chars=budget)['records']}
+                both = passage.context_for(self.store, 'claude', query, budget_chars=budget)
+                self.assertLessEqual(both['used_chars'], budget)
+                self.assertEqual(sorted(alone), sorted(r['id'] for r in both['records']))
+                for record in both['records']:
+                    # Each source keeps whole the passage it had without second passages.
+                    self.assertIn(alone[record['id']].split('\n\n', 1)[-1], record['text'])
+                    self.assertGreaterEqual(len(record['text']), len(alone[record['id']]))
+
+    def test_a_smaller_envelope_drops_second_passages_before_cutting_a_source(self):
+        filler = 'Satır satır kayıt tutulur, sütunlar sabit kalır. ' * 12
+        for index in range(5):
+            name = 'Zirkon Takvimi Kredi %d' % index
+            self.ingest('t%d' % index, '# %s\n\n## Özet\n\nZirkon takvimi kredi özeti %d.\n\n## Kayıtlar\n\n%s\n\n'
+                        '## Amaç\n\nZirkon takvimi kredi planı: sınır %d.\n' % (name, index, filler, index),
+                        'notes/t%d.md' % index, title=name)
+        context = passage.context_for(self.store, 'claude', 'zirkon takvimi kredi planı', budget_chars=5000)
+        self.assertTrue(all('[…]' in r['text'] for r in context['records']))  # room for every second passage
+        primary = {r['id']: r['text'] for r in context.sources}
+        narrow = runtime.PackedContext(context)
+        narrow.sources = context.sources  # the same context without second passages
+        prefix = 'Receipt session=x\n'
+        for budget in (1200, 1800, 3000):
+            with self.subTest(budget=budget):
+                shown = json.loads(runtime.render_context(context, budget, prefix=prefix)[0][len(prefix):])['records']
+                alone = json.loads(runtime.render_context(narrow, budget, prefix=prefix)[0][len(prefix):])['records']
+                self.assertEqual([r['id'] for r in shown], [r['id'] for r in alone])
+                for record, without in zip(shown, alone):
+                    self.assertGreaterEqual(len(record['text']), len(without['text']))
+                    if not without.get('text_truncated') or without['text'] == primary[without['id']]:
+                        self.assertIn(primary[record['id']].split('\n\n', 1)[-1], record['text'])
+
+    def test_excerpt_joins_overlapping_windows_and_marks_gaps(self):
+        record = {'text': 'aaaa bbbb cccc dddd eeee'}
+        span = lambda head, start, end: (record, head, start, end, '')
+        self.assertEqual(passage._excerpt(record, [span('H', 10, 24), span('H', 0, 9)]),
+                         'H\n\naaaa bbbb\n\ncccc dddd eeee')  # only whitespace between: no gap
+        self.assertFalse(passage._partial(record, [span('H', 10, 24), span('H', 0, 9)]))
+        self.assertEqual(passage._excerpt(record, [span('H', 0, 14), span('H', 10, 24)]), 'H\n\naaaa bbbb cccc dddd eeee')
+        self.assertEqual(passage._excerpt(record, [span('H', 0, 4), span('H', 15, 24)]), 'H\n\naaaa\n\n[…]\n\ndddd eeee')
+        self.assertTrue(passage._partial(record, [span('H', 0, 4), span('H', 15, 24)]))
+
     def test_status_gate_and_human_supersedes_references_apply_to_note_and_passage_reads(self):
         self.ingest('old', 'Zirkon kovası eski karar.', 'knowledge/route-v1.md', status='superseded')
         self.ingest('current', 'Zirkon kovası güncel karar.', 'knowledge/route-v2.md',
@@ -267,6 +350,89 @@ class PassageContextTest(Vault):
             self.assertNotIn(marker, records[0]['text'])
 
 
+class DedupeWiderTest(Vault):
+    """Narrow #530 regression: dedupe must retain packer's existing wider views."""
+
+    def setUp(self):
+        super().setUp()
+        import beyin_v3_dedupe
+        self.dedupe = beyin_v3_dedupe
+        self.dedupe.save_settings(self.store.state_dir, True)
+        for index in range(2):
+            name = 'Zirkon Takvimi Kredi %d' % index
+            filler = 'Satır satır kayıt tutulur, sütunlar sabit kalır. ' * 12
+            self.ingest('wide%d' % index,
+                        '# %s\n\n## Özet\n\nZirkon takvimi kredi özeti %d.\n\n## Kayıtlar\n\n%s\n\n'
+                        '## Amaç\n\nZirkon takvimi kredi planı: sınır %d.\n' % (name, index, filler, index),
+                        'notes/wide%d.md' % index, title=name)
+        self.context = self.strict('zirkon takvimi kredi planı', budget_chars=5000)
+        self.assertEqual(len(self.context['records']), 2)
+        self.assertEqual(set(self.context.wider), {'wide0', 'wide1'})
+        self.old, self.new = self.context['records']
+        self.dedupe.record_delivered(self.store.state_dir, 'claude', 'wider-session', [self.old])
+        self.assertTrue(self.dedupe._session_file(self.store.state_dir, 'claude', 'wider-session').is_file())
+
+    def filtered(self, context=None):
+        return self.dedupe.drop_delivered(self.store.state_dir, 'claude', 'wider-session',
+                                         self.context if context is None else context)
+
+    def test_real_passage_dedupe_render_retains_second_passage_within_budget(self):
+        kept, duplicates = self.filtered()
+        self.assertEqual([r['id'] for r in duplicates], [self.old['id']])
+        prefix = 'Receipt session=synthetic\n'
+        wire, delivered = runtime.render_context(kept, 5000, prefix=prefix)
+        shown = json.loads(wire[len(prefix):])
+        self.assertEqual([r['id'] for r in shown['records']], [self.new['id']])
+        self.assertIn('[…]', shown['records'][0]['text'])
+        self.assertEqual(shown['records'][0]['text'], self.context.wider[self.new['id']]['text'])
+        self.assertEqual(delivered['records'][0]['text'], shown['records'][0]['text'])
+        self.assertEqual(set(kept.wider), {self.new['id']})
+        self.assertIsNot(kept.wider, self.context.wider)
+        serialized = json.loads(json.dumps(kept))
+        self.assertNotIn('wider', serialized)
+        self.assertNotIn('sources', serialized)
+        self.assertEqual([r['id'] for r in kept.sources], [self.new['id']])
+        self.assertNotIn(self.old['source'], wire)
+        self.assertNotIn('wider', shown)
+        self.assertNotIn('sources', shown)
+        self.assertNotIn('source_sha256', wire)
+        for budget in (5000, 1800, 900, 100, 0):
+            with self.subTest(budget=budget):
+                text, projection = runtime.render_context(kept, budget, prefix=prefix)
+                self.assertLessEqual(len(text), budget)
+                self.assertNotIn(self.old['source'], text)
+                self.assertTrue(all(r['id'] == self.new['id'] for r in projection['records']))
+                if text:
+                    json.loads(text[len(prefix):])
+
+    def test_repeated_and_all_filtered_do_not_retain_removed_wider_records(self):
+        kept, _ = self.filtered()
+        self.assertEqual(set(kept.wider), {self.new['id']})
+        repeated, duplicates = self.filtered(kept)
+        self.assertIs(repeated, kept)
+        self.assertEqual(duplicates, [])
+        self.assertEqual(set(repeated.wider), {self.new['id']})
+        self.dedupe.record_delivered(self.store.state_dir, 'claude', 'wider-session', [self.new])
+        empty, duplicates = self.filtered()
+        self.assertEqual(len(duplicates), 2)
+        self.assertEqual(empty.wider, {})
+        self.assertEqual(empty.sources, ())
+        wire, delivered = runtime.render_context(empty, 5000)
+        self.assertEqual(delivered['records'], [])
+        self.assertNotIn('notes/wide', wire)
+        # Cloning/filtering cannot mutate the caller's process-local metadata.
+        self.assertEqual(set(self.context.wider), {'wide0', 'wide1'})
+
+    def test_plain_dict_compatibility_without_process_local_metadata(self):
+        ordinary = dict(self.context)
+        kept, duplicates = self.filtered(ordinary)
+        self.assertIs(type(kept), dict)
+        self.assertEqual([r['id'] for r in kept['records']], [self.new['id']])
+        self.assertEqual([r['id'] for r in duplicates], [self.old['id']])
+        self.assertFalse(hasattr(kept, 'wider'))
+        self.assertEqual(len(ordinary['records']), 2)
+
+
 class ConfigAndCacheTest(Vault):
     def test_configured_floor_and_exclusions(self):
         self.ingest('arch', 'Zirkon kovası yedekleme arşiv kaydı.', '📦 900-Archive/eski.md')
@@ -308,6 +474,24 @@ class ConfigAndCacheTest(Vault):
         blob['records'] = {key: [['sahte', 0, 5, 'zirkon kova yedekleme']] for key in blob['records']}
         cache.write_text(json.dumps(blob), encoding='utf-8')
         self.assertEqual(self.strict('yedekleme zirkon kovası hangisiydi'), first)
+
+    def test_cache_from_an_older_stemmer_is_rebuilt(self):
+        # 3.11.0 wrote its own stems ("kurulmas") under a probe the #430 rules leave intact.
+        old_probe = 'Kütüphanesindeki notlarımızı güncellediler; running tests quickly İstanbul ŞEHİR 2026'
+        old_params = [passage.BLOCK_TARGET, passage.BLOCK_OVERLAP,
+                      hashlib.sha256(' '.join(sorted(runtime._tokens(old_probe))).encode()).hexdigest()[:16]]
+        self.ingest('mem0', 'Mem0 kurulmasın; yerel hafıza yeterli.', 'knowledge/mem0.md')
+        self.assertEqual(self.sources('Mem0 kurulmalı mı'), ['knowledge/mem0.md'])
+        cache = self.store.state_dir / passage.CACHE_NAME
+        blob = json.loads(cache.read_text(encoding='utf-8'))
+        blob['params'] = old_params
+        blob['records'] = {key: [[head, start, end, ' '.join('kurulmas' if t == 'kurul' else t for t in tokens.split()),
+                                  head_only]
+                                 for head, start, end, tokens, head_only in entries]
+                           for key, entries in blob['records'].items()}
+        blob.pop('pool', None)
+        cache.write_text(json.dumps(blob), encoding='utf-8')
+        self.assertEqual(self.sources('Mem0 kurulmalı mı'), ['knowledge/mem0.md'])
 
     def test_changed_record_is_reindexed(self):
         self.ingest('a', 'Zirkon kovası için karar.', 'knowledge/a.md')

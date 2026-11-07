@@ -14,7 +14,13 @@ import math
 
 # metadata row: the folded directory names the last sync kept out of the index, as a JSON list.
 EXCLUDED_DIRS_ROW = 'index_excluded_dirs'
+# metadata row: the sources the last sync could not read or parse, as a JSON list.
+UNREADABLE_SOURCES_ROW = 'index_unreadable_sources'
 RECEIPT_VIEW_SOURCES_ROW = 'receipt_view_sources'
+# Shown in place of a summary whose receipt refers to a private or untrusted source: removing the
+# ref alone does not anonymize the summary, which usually describes that source.
+WITHHELD_SUMMARY = '[summary withheld: the receipt refers to a private or untrusted source]'
+RECEIPT_VIEW_RECEIPT_SUFFIX = '.md.view-provenance.json'
 
 
 def _record_excluded_dirs(engine, db):
@@ -26,64 +32,106 @@ def _record_excluded_dirs(engine, db):
     is committed together with the record deletions (or re-indexing) the list caused, so it
     always describes the records the same reader sees. A release without the row ignores it.
     """
-    keys = getattr(engine, 'excluded_dir_keys', None)
-    if keys is None:
+    _record_names(db, EXCLUDED_DIRS_ROW, getattr(engine, 'excluded_dir_keys', None))
+
+
+def _record_unreadable_sources(engine, db):
+    """Store the sources this sync's scan could not read or parse, in the same transaction.
+
+    Such a source has no record, so its last known visibility is gone with it: a private note
+    whose frontmatter breaks loses its record on the next sync. The receipt readers withhold
+    these paths like private ones until a sync indexes them again.
+    """
+    _record_names(db, UNREADABLE_SOURCES_ROW, getattr(engine, 'unreadable_sources', None))
+
+
+def _record_names(db, key, names):
+    if names is None:
         return  # no scan ran on this engine; the stored row still describes the index
-    stored = db.execute('SELECT value FROM metadata WHERE key=?', (EXCLUDED_DIRS_ROW,)).fetchone()
-    value = json.dumps(sorted(keys), ensure_ascii=False) if keys else None
+    stored = db.execute('SELECT value FROM metadata WHERE key=?', (key,)).fetchone()
+    value = json.dumps(sorted(names), ensure_ascii=False) if names else None
     if value is None:
         if stored:
-            db.execute('DELETE FROM metadata WHERE key=?', (EXCLUDED_DIRS_ROW,))
+            db.execute('DELETE FROM metadata WHERE key=?', (key,))
     elif not stored or stored[0] != value:
-        db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)', (EXCLUDED_DIRS_ROW, value))
+        db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)', (key, value))
 
 
-def _excluded_dir_keys(db):
+def _stored_names(db, key):
     try:
-        stored = db.execute('SELECT value FROM metadata WHERE key=?', (EXCLUDED_DIRS_ROW,)).fetchone()
+        stored = db.execute('SELECT value FROM metadata WHERE key=?', (key,)).fetchone()
         value = json.loads(stored[0]) if stored else []
     except (sqlite3.OperationalError, ValueError):  # a bare receipts-only database has no metadata
         return frozenset()
-    return frozenset(key for key in value if isinstance(key, str)) if isinstance(value, list) else frozenset()
+    return frozenset(name for name in value if isinstance(name, str)) if isinstance(value, list) else frozenset()
+
+
+def _excluded_dir_keys(db):
+    return _stored_names(db, EXCLUDED_DIRS_ROW)
 
 
 def _hidden_ref_sources(db, refs):
     """Sources that default internal context never shows: indexed records behind the _eligible
-    visibility/trust gate, and every path under a directory the last sync kept out of the index.
+    visibility/trust gate, every path under a directory the last sync kept out of the index, and
+    every source the last sync could not read or parse.
 
     A path under an excluded directory has no record, so nothing says whether it is private.
     Excluding a directory must not turn a withheld ref into a shown one, so such a path is
-    withheld like a private one, whatever the file says.
+    withheld like a private one, whatever the file says. An unreadable source is the same:
+    breaking a private note's metadata must not open the receipts that describe it.
     """
     refs = sorted(set(refs))
     from beyin_v3_hygiene import sensitive_source
+    from beyin_v3_index import dir_key
+
+    def ref_key(ref):
+        # Same fold as excluded directory names: NFC, Turkish i, not str.casefold() alone.
+        return '/'.join(dir_key(part) for part in ref.replace('\\', '/').split('/'))
+
     hidden = {ref for ref in refs if sensitive_source(ref)}
     # View provenance survives removal of its indexed privacy/trust metadata.
     # All claimed paths and proven aliases are withheld, including in fresh state.
     try:
         row = db.execute('SELECT value FROM metadata WHERE key=?', (RECEIPT_VIEW_SOURCES_ROW,)).fetchone()
-        hidden.update(set(refs).intersection(json.loads(row[0]) if row else []))
+        claimed = {ref_key(source) for source in (json.loads(row[0]) if row else [])}
+        hidden.update(ref for ref in refs if ref_key(ref) in claimed)
     except sqlite3.OperationalError:  # receipts-only reader
         pass
+    # Folded like the record lookup below: another spelling of an unreadable source is withheld too.
+    unreadable = {ref_key(name) for name in _stored_names(db, UNREADABLE_SOURCES_ROW)}
+    hidden.update(ref for ref in refs if ref_key(ref) in unreadable)
     excluded = _excluded_dir_keys(db)
     if excluded:
-        from beyin_v3_index import dir_key
         hidden.update(ref for ref in refs
                       if any(dir_key(part) in excluded for part in ref.replace('\\', '/').split('/')[:-1]))
     for start in range(0, len(refs), 500):
         chunk = refs[start:start + 500]
         try:
-            rows = db.execute('SELECT r.payload FROM markdown_sources m JOIN records r ON r.id = m.id WHERE m.source IN (' +
+            rows = db.execute('SELECT m.source, r.payload FROM markdown_sources m JOIN records r ON r.id = m.id WHERE m.source IN (' +
                               ','.join('?' * len(chunk)) + ')', chunk).fetchall()
         except sqlite3.OperationalError:  # a bare receipts-only database has no source index
             return hidden
-        for (payload,) in rows:
+        # Old receipts may spell the same file differently. Keep exact matches on the
+        # existing SQL path; only unresolved refs need the Unicode casefold lookup.
+        aliases = defaultdict(set)
+        for ref in set(chunk) - {source for source, _ in rows} - hidden:
+            aliases[ref_key(ref)].add(ref)
+        if aliases:
+            # Folded in Python, not with a registered SQL function: SQLite refuses to create
+            # one while a caller still has a statement open on this connection.
+            matched = [source for (source,) in db.execute('SELECT source FROM markdown_sources')
+                       if ref_key(source) in aliases]
+            for begin in range(0, len(matched), 500):
+                part = matched[begin:begin + 500]
+                folded = db.execute('SELECT m.source, r.payload FROM markdown_sources m JOIN records r ON r.id = m.id '
+                                    'WHERE m.source IN (' + ','.join('?' * len(part)) + ')', part).fetchall()
+                rows.extend((ref, payload) for source, payload in folded for ref in aliases[ref_key(source)])
+        for source, payload in rows:
             record = json.loads(payload)
             if (record.get('visibility', 'internal') not in ('public', 'internal') or record.get('trust') == 'untrusted' or
                     record.get('trusted') is False or record.get('status') == 'untrusted' or record.get('kind') == 'untrusted'):
-                hidden.add(record.get('source'))
+                hidden.add(source)
     return hidden
-
 
 def _vault_file(vault, relative):
     try:
@@ -124,12 +172,29 @@ def latest_receipts(db, vault, sessions=None):
         instant = _receipt_instant(event.get('created_at'))
         if instant is not None:
             candidates.append((instant, event['event_id'], event))
-    for _, ident, event in sorted(candidates, key=lambda item: item[:2], reverse=True):
-        source = 'receipts/' + hashlib.sha256(ident.encode()).hexdigest() + '.md'
-        refs = [ref for ref in event.get('refs') or [] if isinstance(ref, str)] if isinstance(event.get('refs'), list) else []
-        if (not (vault / source).is_symlink() and _vault_file(vault, source) and
-                not _hidden_ref_sources(db, [source, *refs])):
-            yield source, event
+    candidates.sort(key=lambda item: item[:2], reverse=True)
+    position, batch_size = 0, 1
+    while position < len(candidates):
+        end = min(position + batch_size, len(candidates))
+        readable = []
+        for index in range(position, end):
+            _, ident, event = candidates[index]
+            source = 'receipts/' + hashlib.sha256(ident.encode()).hexdigest() + '.md'
+            refs = [ref for ref in event.get('refs') or [] if isinstance(ref, str)] if isinstance(event.get('refs'), list) else []
+            if not (vault / source).is_symlink() and _vault_file(vault, source):
+                readable.append((index, source, event, [source, *refs]))
+        hidden = _hidden_ref_sources(db, [ref for *_, refs in readable for ref in refs])
+        for index, source, event, refs in readable:
+            if not hidden.intersection(refs):
+                position, batch_size = index + 1, 1
+                yield source, event
+                # A caller may change privacy/index/source state while the generator
+                # is suspended. Never reuse this batch's decisions after a yield.
+                break
+        else:
+            # Keep the newest-public fast path small; amortize alias scans only
+            # after a withheld/missing candidate. No cache survives this invocation.
+            position, batch_size = end, 64
 
 
 def _bound_day(bound, zone):
@@ -228,7 +293,10 @@ def recent_receipts(db, days=7, limit=20, today=None, vault=None, since=None, un
                 missing += 1
             else:
                 kept.append(ref)
-        item = {'created_at': stamp.isoformat(), 'summary': event['summary'], 'source': source, 'refs': kept}
+        item = {'created_at': stamp.isoformat(), 'summary': WITHHELD_SUMMARY if private else event['summary'],
+                'source': source, 'refs': kept}
+        if private:
+            item['summary_withheld'] = True
         if isinstance(event.get('links'), list) and event['links']:
             item['links'] = [link for link in event['links'] if isinstance(link, str)]
         if day is not None:
@@ -376,6 +444,9 @@ def _latest_receipts(db):
     return latest
 
 
+EDIT_OBSERVING_HARNESSES = frozenset({'claude', 'codex', 'kiro', 'opencode', 'omp'})
+
+
 def _coverage_threshold(at, turn_at, edit_at):
     """Earliest receipt time that closes a checkpoint.
 
@@ -395,21 +466,32 @@ def receipt_coverage(db, now=None, state=None):
     _checkpoint_schema(db, state=state)
     latest = _latest_receipts(db)
     windows = {
-        'all_time': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0},
-        'last_7d': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0},
-        'last_30d': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0},
+        'all_time': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0, 'missing_no_observed_edit': 0, 'without_prompt': 0, 'without_prompt_with_receipt': 0},
+        'last_7d': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0, 'missing_no_observed_edit': 0, 'without_prompt': 0, 'without_prompt_with_receipt': 0},
+        'last_30d': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0, 'missing_no_observed_edit': 0, 'without_prompt': 0, 'without_prompt_with_receipt': 0},
     }
     for row in db.execute('SELECT harness,session,at,turn_at,project,project_id,prompt_at,edit_at FROM receipt_checkpoints'):
         if not row[2] or row[2] < row[3]:
             continue
         # Only count sessions that saw a user prompt: UserPromptSubmit, or a SessionStart carrying the first prompt (#78)
-        if not row[6]:
-            continue
         chk_at = row[2]
+        active = (('all_time', True), ('last_30d', chk_at >= thirty_days), ('last_7d', chk_at >= seven_days))
+        if not row[6]:
+            # Still kept out of the ratio, but counted, receipts included: an unexplained
+            # small total reads as missing data. Any session without a prompt marker lands
+            # here: every session outside the vault (the global bridge installs no
+            # UserPromptSubmit), and vault sessions recorded before the marker existed or
+            # closed before a prompt was observed.
+            has_receipt = (row[0], row[1]) in latest
+            for w_name, w_active in active:
+                if w_active:
+                    windows[w_name]['without_prompt'] += 1
+                    windows[w_name]['without_prompt_with_receipt'] += has_receipt
+            continue
         threshold = _coverage_threshold(row[2], row[3], row[7])
         matched = latest.get((row[0], row[1]), float('-inf')) >= threshold
-        is_no_edit = not bool(row[7])
-        for w_name, w_active in (('all_time', True), ('last_30d', chk_at >= thirty_days), ('last_7d', chk_at >= seven_days)):
+        is_no_edit = row[0] in EDIT_OBSERVING_HARNESSES and not bool(row[7])
+        for w_name, w_active in active:
             if w_active:
                 windows[w_name]['total'] += 1
                 if is_no_edit:
@@ -418,6 +500,8 @@ def receipt_coverage(db, now=None, state=None):
                     windows[w_name]['covered'] += 1
                 else:
                     windows[w_name]['missing'] += 1
+                    if is_no_edit:
+                        windows[w_name]['missing_no_observed_edit'] += 1
 
     return {
         'ratio': round(windows['all_time']['covered'] / windows['all_time']['total'], 3) if windows['all_time']['total'] else None,
@@ -425,12 +509,18 @@ def receipt_coverage(db, now=None, state=None):
         'total': windows['all_time']['total'],
         'missing': windows['all_time']['missing'],
         'no_observed_edit': windows['all_time']['no_observed_edit'],
+        'without_prompt': windows['all_time']['without_prompt'],
+        'without_prompt_with_receipt': windows['all_time']['without_prompt_with_receipt'],
+        'missing_no_observed_edit': windows['all_time']['missing_no_observed_edit'],
         'last_7d': {
             'ratio': round(windows['last_7d']['covered'] / windows['last_7d']['total'], 3) if windows['last_7d']['total'] else None,
             'covered': windows['last_7d']['covered'],
             'total': windows['last_7d']['total'],
             'missing': windows['last_7d']['missing'],
             'no_observed_edit': windows['last_7d']['no_observed_edit'],
+            'without_prompt': windows['last_7d']['without_prompt'],
+            'without_prompt_with_receipt': windows['last_7d']['without_prompt_with_receipt'],
+            'missing_no_observed_edit': windows['last_7d']['missing_no_observed_edit'],
         },
         'last_30d': {
             'ratio': round(windows['last_30d']['covered'] / windows['last_30d']['total'], 3) if windows['last_30d']['total'] else None,
@@ -438,6 +528,9 @@ def receipt_coverage(db, now=None, state=None):
             'total': windows['last_30d']['total'],
             'missing': windows['last_30d']['missing'],
             'no_observed_edit': windows['last_30d']['no_observed_edit'],
+            'without_prompt': windows['last_30d']['without_prompt'],
+            'without_prompt_with_receipt': windows['last_30d']['without_prompt_with_receipt'],
+            'missing_no_observed_edit': windows['last_30d']['missing_no_observed_edit'],
         }
     }
 
@@ -453,12 +546,22 @@ def refresh_gaps(engine, db):
         threshold = _coverage_threshold(row[2], row[3], row[6])
         matched = latest.get((row[0], row[1]), float('-inf')) >= threshold
         if not matched:
-            gaps.append({'harness': row[0], 'session': row[1], 'checkpoint_at': row[2], 'turn_at': row[3], 'scope': 'session_only' if row[0] == 'antigravity' else 'turn' if row[3] else 'terminal_only'})
+            gap_item = {
+                'harness': row[0],
+                'session': row[1],
+                'checkpoint_at': row[2],
+                'turn_at': row[3],
+                'scope': 'session_only' if row[0] == 'antigravity' else 'turn' if row[3] else 'terminal_only'
+            }
+            if row[0] in EDIT_OBSERVING_HARNESSES and not row[6]:
+                gap_item['no_observed_edit'] = True
             if row[4] and row[5]:
-                gaps[-1].update(project=row[4], project_id=row[5])
+                gap_item.update(project=row[4], project_id=row[5])
+            gaps.append(gap_item)
     coverage = receipt_coverage(db, now=time.time(), state=engine.state)
     atomic(engine.state/'receipt-gaps.json', json.dumps({
         'potential_missing_receipts': len(gaps),
+        'no_observed_edit': sum(1 for item in gaps if item.get('no_observed_edit')),
         'receipt_coverage': coverage,
         'checkpoints': gaps,
         'scope_limits': {'antigravity': 'session_only; later per-turn boundaries unsupported', 'missing_prompt_event': 'terminal_only; receipt attribution may be incomplete'},
@@ -493,15 +596,47 @@ RECEIPT_VIEW_REASONS = frozenset((
 ))
 
 
-def is_receipt_view_source(source):
+def is_receipt_view_source(source, *, proven=False):
+    """Legacy reserved paths, or a flat path with independent ownership evidence.
+
+    A flat filename alone is never evidence: ordinary human daily notes use it too.
+    Callers may prove ownership with tracking rows, generated metadata or an archive.
+    """
     return isinstance(source, str) and (source == 'knowledge/v3/outcomes.md' or
-        re.fullmatch(r'daily/v3/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md', source) is not None)
+        re.fullmatch(r'daily/v3/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md', source) is not None or
+        (proven and re.fullmatch(r'daily/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md', source) is not None))
+
+
+def _receipt_view_table(relative):
+    # Older engines reject flat paths in receipt_views during every sync.
+    return ('receipt_flat_views' if re.fullmatch(r'daily/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md', relative)
+            else 'receipt_views')
+
+
+def receipt_view_rows(db):
+    """Read both ownership tables, including before the first projection."""
+    rows = {}
+    for table in ('receipt_views', 'receipt_flat_views'):
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+            rows.update(db.execute(f'SELECT path, hash FROM {table}'))
+    return sorted(rows.items())
+
+
+def _prepare_receipt_views(db):
+    for table in ('receipt_views', 'receipt_flat_views'):
+        db.execute(f'CREATE TABLE IF NOT EXISTS {table}(path TEXT PRIMARY KEY, hash TEXT NOT NULL)')
+    # Preserve ownership from the initial flat-layout implementation, including
+    # edited views whose original hash is required for safe recovery.
+    for relative, digest in db.execute('SELECT path, hash FROM receipt_views').fetchall():
+        if _receipt_view_table(relative) == 'receipt_flat_views':
+            db.execute('INSERT OR IGNORE INTO receipt_flat_views VALUES (?,?)', (relative, digest))
+            db.execute('DELETE FROM receipt_views WHERE path=?', (relative,))
 
 
 def is_receipt_view_conflict(item):
     # Both provenance and diagnosis are required. A source conflict must never
     # become writable merely because its name falls under a generated directory.
-    return (isinstance(item, dict) and is_receipt_view_source(item.get('source')) and
+    return (isinstance(item, dict) and is_receipt_view_source(item.get('source'), proven=True) and
             item.get('reason') in RECEIPT_VIEW_REASONS)
 
 
@@ -574,7 +709,7 @@ def archived_receipt_view_aliases(engine, warnings):
     also accepted; unrelated equal-content files at other paths are not.
     """
     aliases = set()
-    for root in (engine.root / 'knowledge/v3', engine.root / 'daily/v3'):
+    for root in (engine.root / 'knowledge/v3', engine.root / 'daily/v3', engine.root / 'daily'):
         archive_dir = root / '.archive'
         if archive_dir.is_symlink() or not archive_dir.is_dir():
             continue
@@ -594,8 +729,8 @@ def archived_receipt_view_aliases(engine, warnings):
                 archive = sidecar.with_name(sidecar.name[:-len('.provenance.json')])
                 if (not isinstance(data, dict) or data.get('schema') != 1 or
                         data.get('archive') != archive.name or
-                        not is_receipt_view_source(data.get('view')) or
-                        data['view'].split('/')[0:2] != list(root.relative_to(engine.root).parts) or
+                        not is_receipt_view_source(data.get('view'), proven=True) or
+                        Path(data['view']).parent != root.relative_to(engine.root) or
                         not isinstance(data.get('aliases'), list) or archive.is_symlink()):
                     raise ValueError('invalid receipt view provenance')
                 engine._path(archive.relative_to(engine.root).as_posix(), existing=True)
@@ -640,16 +775,35 @@ def receipt_day(created_at, zone=None):
         return None
 
 
-def _receipt_view_contents(engine, db, warnings=None):
-    """Desired views from immutable receipts, without writing files or tracking state."""
+def _receipt_link(source, event_id):
+    """Wikilink to a receipt, shown by its event_id instead of the hash file name (#514).
+
+    Characters that would end or split an Obsidian link become spaces; an id with nothing
+    readable left keeps the bare link.
+    """
+    alias = ' '.join(re.sub(r'[\[\]|#^]', ' ', event_id).split())[:80].strip()
+    return f'[[{source}|{alias}]]' if alias else f'[[{source}]]'
+
+
+def _event_refs(event):
+    refs = event.get('refs')
+    return [ref for ref in refs if isinstance(ref, str)] if isinstance(refs, list) else []
+
+
+def _receipt_view_contents(engine, db, warnings=None, *, include_human_daily=False):
+    """Render receipts without side effects; include_human_daily is for comparison only."""
     _hash, _, render = engine.projection_helpers()
+    from beyin_v3_preferences import read_daily_layout
+    layout = read_daily_layout(engine.root)
+    tracked = {row[0] for row in receipt_view_rows(db)}
     migration = engine.state/'v2-migration.json'
     previous = json.loads(migration.read_text(encoding='utf-8')) if migration.exists() else {}
     historical = set(previous.get('historical_receipts', []))
     zone = _local_zone()
     grouped = defaultdict(list)
-    for row in db.execute('SELECT payload FROM receipts ORDER BY id'):
-        event = json.loads(row[0])
+    events = [json.loads(row[0]) for row in db.execute('SELECT payload FROM receipts ORDER BY id')]
+    hidden = _hidden_ref_sources(db, [ref for event in events for ref in _event_refs(event)])
+    for event in events:
         source = 'receipts/' + _hash(event['event_id']) + '.md'
         if source in historical or not event.get('created_at'):
             continue
@@ -659,21 +813,113 @@ def _receipt_view_contents(engine, db, warnings=None):
             if warnings is not None:
                 warnings.append({'source': source, 'reason': 'unreadable receipt created_at; omitted from daily/v3'})
             continue
-        grouped[day].append((_receipt_instant(event['created_at']), event['created_at'], source, event['summary']))
+        summary = WITHHELD_SUMMARY if hidden.intersection(_event_refs(event)) else event['summary']
+        grouped[day].append((_receipt_instant(event['created_at']), event['created_at'], source, summary,
+                             event['event_id']))
     desired = {}
     outcomes = []
     for day, items in sorted(grouped.items()):
         entries = []
-        for _, at, source, summary in sorted(items):
-            entries.append(f'## {at}\n\n{summary}\n\nSource: [[{source}]]\n')
-            outcomes.append(f'- {day}: {summary}\n  Source: [[{source}]]\n')
-        desired[f'daily/v3/{day}.md'] = render({'generated': True, 'kind': 'receipt-index'}, '# Recorded outcomes\n\nAgent-authored claims, not independently verified facts.\n\n'+'\n'.join(entries))
+        for _, at, source, summary, event_id in sorted(items):
+            link = _receipt_link(source, event_id)
+            entries.append(f'## {at}\n\n{summary}\n\nSource: {link}\n')
+            outcomes.append(f'- {day}: {summary}\n  Source: {link}\n')
+        relative = f'daily/{day}.md' if layout == 'flat' else f'daily/v3/{day}.md'
+        # Omit human notes before sync claims desired paths as view provenance.
+        # Outcomes were collected above and remain available in the shared index.
+        if include_human_daily or layout != 'flat' or not _human_daily(engine, relative, tracked, warnings):
+            desired[relative] = render({'generated': True, 'kind': 'receipt-index'}, '# Recorded outcomes\n\nAgent-authored claims, not independently verified facts.\n\n'+'\n'.join(entries))
     if outcomes:
         desired['knowledge/v3/outcomes.md'] = render({'generated': True, 'kind': 'receipt-index'}, '# Outcome source index\n\nThis index links semantic receipts. It is not an automatic knowledge compiler.\n\n'+''.join(outcomes))
     return desired
 
 
-def quarantine_receipt_view_history(db, sources):
+def _human_daily(engine, relative, tracked, warnings=None):
+    """Unowned flat notes without receipt-index metadata win, including during recovery."""
+    if not relative.startswith('daily/') or relative.startswith('daily/v3/'):
+        return False
+    try:
+        # Path proof must happen even for tracked paths. A symlink or an
+        # unreadable human daily is a skipped source, never a failed vault sync.
+        path = engine._path(relative)
+        if relative in tracked or not path.exists():
+            return False
+        from beyin_v3_sync import parse
+        try:
+            metadata = parse(path.read_text(encoding='utf-8'))[0]
+            return metadata.get('generated') is not True or metadata.get('kind') != 'receipt-index'
+        except (ValueError, UnicodeError):
+            return True
+    except (ValueError, OSError) as exc:
+        issue = {'source': relative, 'reason': str(exc)}
+        if warnings is not None and issue not in warnings:
+            warnings.append(issue)
+        return True
+
+
+def _durable_receipt_quarantine(engine, db, sources, warnings):
+    """Keep per-event exclusion evidence beside immutable receipts, across state loss.
+
+    An event id is immutable. A marker hides only that id, not every future
+    receipt referring to a human daily that reuses the former view's path.
+    Independent, deterministic markers merge across machines without a shared
+    read/modify/write manifest. They never authorize writes to a view or note.
+    """
+    _hash, atomic, _ = engine.projection_helpers()
+    try:
+        directory = engine._path('receipts')
+        names = set(os.listdir(directory)) if directory.exists() else set()
+    except (ValueError, OSError) as exc:
+        warnings.append({'source': 'receipts', 'reason': 'receipt quarantine provenance unavailable: ' + str(exc)})
+        return False
+    withheld = _withheld_view_receipts(db)
+    durable = True
+    checked_marker = False
+    for ident, payload in db.execute('SELECT id,payload FROM receipts').fetchall():
+        refs = json.loads(payload).get('refs', [])
+        proven = isinstance(refs, list) and any(isinstance(ref, str) and
+                     (ref in sources or is_receipt_view_source(ref)) for ref in refs)
+        digest = _hash(ident)
+        name = digest + RECEIPT_VIEW_RECEIPT_SUFFIX
+        if not proven and ident not in withheld and name not in names:
+            continue
+        # An unreadable marker remains fail-closed for this id alone. Its
+        # warning also prevents destroying the remaining live view evidence.
+        db.execute('INSERT OR IGNORE INTO receipt_view_receipts VALUES (?)', (ident,))
+        relative = 'receipts/' + name
+        expected = {'schema': 1, 'kind': 'receipt-view-quarantine', 'event_id_sha256': digest}
+        try:
+            path = engine._path(relative)
+            if name in names or path.exists():
+                with path.open('rb') as handle:
+                    raw = handle.read(4097)
+                data = json.loads(raw) if len(raw) <= 4096 else None
+                if data != expected or type(data.get('schema')) is not int:
+                    raise ValueError('invalid receipt quarantine marker')
+            else:
+                atomic(path, json.dumps(expected, ensure_ascii=True, sort_keys=True) + '\n')
+            checked_marker = True
+        except (ValueError, OSError, UnicodeError) as exc:
+            warnings.append({'source': relative, 'reason': 'receipt quarantine provenance unavailable: ' + str(exc)})
+            durable = False
+    # atomic's best-effort directory barrier is insufficient before a view
+    # can be unlinked. Batch the required barriers after all markers, including
+    # receipts/ itself if created here. Windows has no directory fsync API.
+    if checked_marker and os.name != 'nt':
+        try:
+            for parent in (directory, engine.root):
+                descriptor = os.open(parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+        except OSError as exc:
+            warnings.append({'source': 'receipts', 'reason': 'receipt quarantine provenance not durable: ' + str(exc)})
+            durable = False
+    return durable
+
+
+def quarantine_receipt_view_history(engine, db, sources, warnings):
     """Withhold snapshots through this sync for proven views, without rewriting audit bytes.
 
     A per-source event cutoff survives view retirement, but does not ban a future
@@ -682,16 +928,12 @@ def quarantine_receipt_view_history(db, sources):
     # Receipt summaries that referred to a claimed view must not become public
     # merely because that view is retired or an ordinary note reuses its path.
     # Canonical view paths are also recognizable from immutable receipt refs
-    # after a database reset, when prior tracking rows no longer exist. Keep
-    # this provenance by immutable event id without rewriting receipt files.
+    # after a database reset, when prior tracking rows no longer exist. Flat
+    # paths require sources evidence; their names alone also fit human notes.
     db.execute('CREATE TABLE IF NOT EXISTS receipt_view_receipts(id TEXT PRIMARY KEY)')
-    for ident, payload in db.execute('SELECT id,payload FROM receipts').fetchall():
-        refs = json.loads(payload).get('refs', [])
-        if isinstance(refs, list) and any(isinstance(ref, str) and
-                                          (ref in sources or is_receipt_view_source(ref)) for ref in refs):
-            db.execute('INSERT OR IGNORE INTO receipt_view_receipts VALUES (?)', (ident,))
+    durable = _durable_receipt_quarantine(engine, db, sources, warnings)
     if not sources:
-        return
+        return durable
     db.execute('CREATE TABLE IF NOT EXISTS receipt_view_history('
                'source TEXT PRIMARY KEY, through_sequence INTEGER NOT NULL)')
     sequence = db.execute('SELECT COALESCE(MAX(sequence), 0) FROM events').fetchone()[0]
@@ -699,17 +941,68 @@ def quarantine_receipt_view_history(db, sources):
                    'ON CONFLICT(source) DO UPDATE SET through_sequence=excluded.through_sequence '
                    'WHERE receipt_view_history.through_sequence < excluded.through_sequence',
                    [(source, sequence) for source in sorted(sources)])
+    return durable
 
 
-def project_receipts(engine, db, warnings=None, recover_views=False, recovered=None, desired=None):
+def _adopt_stale_receipt_views(engine, db, desired, _hash):
+    """Recover stale ownership without calling possibly edited bytes engine-authored."""
+    discovered = dict(getattr(engine, 'discovered_receipt_views', {}))
+    tracked = {row[0] for row in receipt_view_rows(db)}
+    # A state built by the original flat-layout code may already have saved
+    # its orphan as an alias. Such paths bypass _scan's metadata parsing; prove
+    # the header here as well, without treating all alias paths as owned views.
+    for relative in getattr(engine, 'receipt_view_sources', ()):
+        if (relative in desired or relative in tracked or relative in discovered or
+                not is_receipt_view_source(relative, proven=True)):
+            continue
+        try:
+            from beyin_v3_sync import parse
+            raw = engine._path(relative, existing=True).read_bytes()
+            metadata = parse(raw.decode('utf-8'))[0]
+            if metadata.get('generated') is True and metadata.get('kind') == 'receipt-index':
+                discovered[relative] = _hash(raw)
+        except (ValueError, OSError, UnicodeError):
+            continue  # the scan already reported unsafe paths; no new ownership
+    comparison_views = None
+    for relative, observed_hash in discovered.items():
+        if relative in desired:
+            continue
+        # Metadata proves an orphan belongs to receipt projections; it does
+        # not prove its present bytes were never edited. Only an exact match
+        # to the opposite layout's deterministic output permits clean removal.
+        alternate = ('daily/' + relative[len('daily/v3/'):] if relative.startswith('daily/v3/')
+                     else 'daily/v3/' + relative[len('daily/'):] if relative.startswith('daily/') else None)
+        expected = desired.get(alternate)
+        if expected is None and alternate is not None:
+            # A human-owned target is absent from the write plan, but its
+            # deterministic receipt bytes can still prove the old view unchanged.
+            if comparison_views is None:
+                comparison_views = _receipt_view_contents(engine, db, include_human_daily=True)
+            expected = comparison_views.get(alternate)
+        owned_hash = observed_hash if expected is not None and observed_hash == _hash(expected) else ''
+        db.execute(f'INSERT OR IGNORE INTO {_receipt_view_table(relative)} VALUES (?,?)', (relative, owned_hash))
+
+
+def project_receipts(engine, db, warnings=None, recover_views=False, recovered=None, desired=None,
+                     allow_view_writes=True):
     _hash, atomic, _ = engine.projection_helpers()
     _record_excluded_dirs(engine, db)
-    db.execute('CREATE TABLE IF NOT EXISTS receipt_views(path TEXT PRIMARY KEY, hash TEXT NOT NULL)')
+    _record_unreadable_sources(engine, db)
+    _prepare_receipt_views(db)
+    if not allow_view_writes:
+        # Indexing and context gates can still commit. Keep the last live
+        # provenance until the marker can be saved, then retry on the next sync.
+        refresh_gaps(engine, db)
+        return []
     if desired is None:
         desired = _receipt_view_contents(engine, db, warnings)
+    _adopt_stale_receipt_views(engine, db, desired, _hash)
     conflicts = []
-    tracked_views = dict(db.execute('SELECT path, hash FROM receipt_views'))
+    tracked_views = dict(receipt_view_rows(db))
     for relative, content in desired.items():
+        # A note may have appeared since the desired view plan was built.
+        if _human_daily(engine, relative, tracked_views, warnings):
+            continue
         path = engine._path(relative)
         old = _hash(path.read_bytes()) if path.exists() else None
         desired_hash = _hash(content)
@@ -722,7 +1015,7 @@ def project_receipts(engine, db, warnings=None, recover_views=False, recovered=N
                 except (OSError, ValueError):
                     conflicts.append({'source': relative, 'reason': 'receipt view recovery failed; preserved'})
                     continue
-                db.execute('INSERT OR REPLACE INTO receipt_views VALUES (?,?)', (relative, desired_hash))
+                db.execute(f'INSERT OR REPLACE INTO {_receipt_view_table(relative)} VALUES (?,?)', (relative, desired_hash))
                 if recovered is not None:
                     recovered.append({'source': relative, 'archive': archive_path.relative_to(engine.root).as_posix(),
                                       'status': 'recovered'})
@@ -737,7 +1030,7 @@ def project_receipts(engine, db, warnings=None, recover_views=False, recovered=N
                 continue
             atomic(path, content)
         if tracked != desired_hash:
-            db.execute('INSERT OR REPLACE INTO receipt_views VALUES (?,?)', (relative, desired_hash))
+            db.execute(f'INSERT OR REPLACE INTO {_receipt_view_table(relative)} VALUES (?,?)', (relative, desired_hash))
     conflicts.extend(_retire_stale_views(engine, db, desired, _hash, recover_views=recover_views, recovered=recovered))
     refresh_gaps(engine, db)
     return conflicts
@@ -750,10 +1043,10 @@ def _retire_stale_views(engine, db, desired, _hash, recover_views=False, recover
     file is never touched and stays a visible conflict until the person moves or deletes it.
     """
     conflicts = []
-    for relative, tracked in db.execute('SELECT path, hash FROM receipt_views ORDER BY path').fetchall():
+    for relative, tracked in receipt_view_rows(db):
         if relative in desired:
             continue
-        if not is_receipt_view_source(relative):
+        if not is_receipt_view_source(relative, proven=True):
             conflicts.append({'source': relative, 'reason': 'unexpected receipt view path; preserved'})
             continue
         try:
@@ -763,7 +1056,7 @@ def _retire_stale_views(engine, db, desired, _hash, recover_views=False, recover
             conflicts.append({'source': relative, 'reason': 'stale receipt view unreadable; preserved'})
             continue
         if current is None and not path.exists():
-            db.execute('DELETE FROM receipt_views WHERE path=?', (relative,))
+            db.execute(f'DELETE FROM {_receipt_view_table(relative)} WHERE path=?', (relative,))
             continue
         if current != tracked:
             if recover_views:
@@ -773,7 +1066,7 @@ def _retire_stale_views(engine, db, desired, _hash, recover_views=False, recover
                 except (OSError, ValueError):
                     conflicts.append({'source': relative, 'reason': 'receipt view recovery failed; preserved'})
                     continue
-                db.execute('DELETE FROM receipt_views WHERE path=?', (relative,))
+                db.execute(f'DELETE FROM {_receipt_view_table(relative)} WHERE path=?', (relative,))
                 if recovered is not None:
                     recovered.append({'source': relative, 'archive': archive_path.relative_to(engine.root).as_posix(),
                                       'status': 'archived_and_retired'})
@@ -787,7 +1080,7 @@ def _retire_stale_views(engine, db, desired, _hash, recover_views=False, recover
         except OSError:
             conflicts.append({'source': relative, 'reason': 'stale receipt view could not be removed'})
             continue
-        db.execute('DELETE FROM receipt_views WHERE path=?', (relative,))
+        db.execute(f'DELETE FROM {_receipt_view_table(relative)} WHERE path=?', (relative,))
     return conflicts
 
 
