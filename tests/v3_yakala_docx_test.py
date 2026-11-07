@@ -79,7 +79,7 @@ class YakalaDocxTest(unittest.TestCase):
     def test_archive_limits_and_unsupported_content(self):
         bomb = document('<w:p><w:r><w:t>safe</w:t></w:r></w:p>',
                         {'word/media/bomb.bin': b'x' * (8 * 1024 * 1024 + 1)})
-        self.assertEqual(extract_docx(bomb)['issues'], ['archive_resource_limit'])
+        self.assertEqual(extract_docx(bomb)['issues'], ['archive_compression_limit'])
         partial = document('<w:p><w:r><w:t>Visible</w:t></w:r><w:r><w:drawing/></w:r></w:p>')
         result = extract_docx(partial)
         self.assertEqual(result['state'], 'partial')
@@ -138,6 +138,56 @@ class YakalaDocxTest(unittest.TestCase):
         compressed_size = int.from_bytes(raw[local + 18:local + 22], 'little')
         raw[data_offset + compressed_size // 2] ^= 0xff
         self.assertEqual(extract_docx(bytes(raw))['state'], 'failed')
+
+
+class DocxContentTest(unittest.TestCase):
+    def test_declared_total_size_is_bounded_without_decompressing(self):
+        from beyin_v3_docx import MAX_ARCHIVE
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, 'w', compression=zipfile.ZIP_STORED) as archive:
+            archive.writestr('word/document.xml',
+                f'<w:document xmlns:w="{W}"><w:body><w:p><w:r><w:t>safe</w:t></w:r></w:p></w:body></w:document>')
+            for index in range(3):
+                archive.writestr(f'word/media/image{index}.bin', b'y' * 1024)
+        raw = bytearray(stream.getvalue())
+        offset = raw.find(b'PK\x01\x02')
+        while offset >= 0:  # central directory: declared uncompressed size at +24
+            name = bytes(raw[offset + 46:offset + 46 + int.from_bytes(raw[offset + 28:offset + 30], 'little')])
+            if name.startswith(b'word/media/'):
+                raw[offset + 24:offset + 28] = (MAX_ARCHIVE // 3 + 1).to_bytes(4, 'little')
+            offset = raw.find(b'PK\x01\x02', offset + 4)
+        with patch.object(zipfile.ZipFile, 'open', side_effect=AssertionError('member opened')):
+            self.assertEqual(extract_docx(bytes(raw))['issues'], ['archive_resource_limit'])
+
+    def test_large_embedded_photo_does_not_hide_the_text(self):
+        # Photos barely compress: 9 MiB of media must not cost the document its text.
+        photo = bytes(range(256)) * (9 * 4096)
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr('word/document.xml',
+                f'<w:document xmlns:w="{W}"><w:body><w:p><w:r><w:t>Fotoğraflı rapor</w:t></w:r></w:p>'
+                '<w:p><w:r><w:drawing/></w:r></w:p></w:body></w:document>')
+            archive.writestr('word/media/image1.jpeg', photo, compress_type=zipfile.ZIP_STORED)
+        result = extract_docx(stream.getvalue())
+        self.assertEqual(result['text'], 'Fotoğraflı rapor')
+        self.assertEqual(result['state'], 'partial')
+        self.assertEqual(result['issues'], ['additional_content', 'unsupported_content'])
+
+    def test_tracked_move_source_is_not_duplicated(self):
+        result = extract_docx(document(
+            '<w:p><w:moveFrom w:id="1"><w:r><w:t>Taşınan paragraf</w:t></w:r></w:moveFrom></w:p>'
+            '<w:p><w:r><w:t>Arada</w:t></w:r></w:p>'
+            '<w:p><w:moveTo w:id="2"><w:r><w:t>Taşınan paragraf</w:t></w:r></w:moveTo></w:p>'))
+        self.assertEqual(result['text'], 'Arada\n\nTaşınan paragraf')
+        self.assertEqual(result['state'], 'partial')
+        self.assertIn('unsupported_content', result['issues'])
+
+    def test_turkish_text_is_returned_in_nfc(self):
+        decomposed = 'S\u0327ifre, Mu\u0308s\u0327teri, Ars\u0327iv, I\u0307stanbul'
+        result = extract_docx(document('<w:p><w:r><w:t>' + decomposed + '</w:t></w:r></w:p>'
+            '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Gu\u0308n</w:t></w:r></w:p></w:tc></w:tr></w:tbl>'))
+        self.assertEqual(result['state'], 'ready')
+        self.assertEqual(result['text'], 'Şifre, Müşteri, Arşiv, İstanbul\n\nGün')
 
 
 class CopiedCliDocxTest(unittest.TestCase):

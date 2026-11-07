@@ -3,6 +3,7 @@
 import io
 from pathlib import PurePosixPath
 import struct
+import unicodedata
 import xml.etree.ElementTree as ET
 import zipfile
 import zlib
@@ -10,7 +11,9 @@ import zlib
 
 W = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
 MAX_SOURCE = 32 * 1024 * 1024
-MAX_ARCHIVE = 8 * 1024 * 1024
+# Declared total of every member. Only word/document.xml is decompressed (MAX_XML), so this
+# bounds metadata, not memory; embedded photos barely compress and stay within twice the source.
+MAX_ARCHIVE = 2 * MAX_SOURCE
 MAX_XML = 2 * 1024 * 1024
 MAX_TEXT = 1024 * 1024
 MAX_CENTRAL_DIRECTORY = 256 * 1024
@@ -89,7 +92,7 @@ def extract_docx(raw):
                 raise ValueError('document_body_missing')
             unsupported = {'drawing', 'pict', 'object', 'altChunk', 'txbxContent',
                            'footnoteReference', 'endnoteReference', 'commentReference',
-                           'fldChar', 'instrText', 'ins', 'del', 'sdt', 'sym'}
+                           'fldChar', 'instrText', 'ins', 'del', 'moveFrom', 'moveTo', 'sdt', 'sym'}
             for node in root.iter():
                 if node.tag.rsplit('}', 1)[-1] in unsupported:
                     issues.add('unsupported_content')
@@ -103,7 +106,8 @@ def extract_docx(raw):
                 def walk(item, depth=0):
                     if depth > 64:
                         raise ValueError('xml_depth_limit')
-                    if item.tag in (W + 'del', W + 'txbxContent', W + 'drawing', W + 'pict'):
+                    # A tracked move keeps its old copy in moveFrom as ordinary w:t runs.
+                    if item.tag in (W + 'del', W + 'moveFrom', W + 'txbxContent', W + 'drawing', W + 'pict'):
                         return
                     if item.tag == W + 't':
                         pieces.append(item.text or '')
@@ -135,6 +139,7 @@ def extract_docx(raw):
                     issues.add('unsupported_body_block')
                     continue
                 for line in lines:
+                    line = unicodedata.normalize('NFC', line)
                     if line:
                         size += len(line) + (2 if blocks else 0)
                         if size > MAX_TEXT:
