@@ -864,13 +864,15 @@ def main():
                                              project=project, rules_project=rules_project, loaded=loaded)
                     if client_rebudget(args.harness, limit, notice + text) is not None:
                         # Protected sections can change the Unicode ratio after a
-                        # render. Bound further work by bisecting integer budgets:
-                        # at most limit.bit_length() renders, not one per character.
-                        # Keep a measured fitting rendering, never trim its tail to
-                        # make the rules/handoff disappear at the client guard.
-                        low, high, fitting = 0, limit, ''
-                        while high - low > 1:
-                            trial = (low + high) // 2
+                        # render. Bound further work: step down from the cap in doubling
+                        # steps (the overflow is usually small), then bisect to within a
+                        # few characters, and stop at half the hook budget. Keep a
+                        # measured fitting rendering, never trim its tail to make the
+                        # rules/handoff disappear at the client guard.
+                        low, high, fitting, step = 0, limit, '', 64
+                        while high - low > 16 and time.monotonic() - started < HOOK_BUDGET / 2:
+                            trial = (low + high) // 2 if fitting else max(low + 1, high - step)
+                            step *= 2
                             candidate = companion_context(store, max(0, trial - len(notice)), session, args.harness,
                                                           query, receipt, warning, project=project,
                                                           rules_project=rules_project, loaded=loaded)
