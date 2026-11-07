@@ -261,10 +261,18 @@ class CompletenessTest(unittest.TestCase):
     def test_slow_source_cannot_hold_isle_past_the_check_budget(self):
         import socket
         import urllib.request
-        html = source().encode()
+        html, seen = source().encode(), []
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
+                seen.append(self.path)
+                if self.path.startswith('/hop/'):  # each redirect is quick enough alone, the chain is not
+                    time.sleep(0.4)
+                    hop = int(self.path.rsplit('/', 1)[1])
+                    self.send_response(302)
+                    self.send_header('Location', f'/hop/{hop + 1}' if hop < 6 else '/slow')
+                    self.end_headers()
+                    return
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.end_headers()
@@ -310,6 +318,12 @@ class CompletenessTest(unittest.TestCase):
             self.assertLess(time.monotonic() - started, 2.5)
             self.assertNotIn('uyari', info)  # an unfinished read is unknown, not evidence either way
             self.assertIn(HEADINGS[-1], y.via_stdlib(card['meta']['url']))  # the fallback keeps its own limits
+            seen.clear()
+            started = time.monotonic()
+            self.assertIsNone(y._fetch_html(card['meta']['url'].replace('/slow', '/hop/0'), complete=True,
+                                            budget=y.CHECK_BUDGET))
+            self.assertLess(time.monotonic() - started, 2)
+            self.assertLess(len(seen), 5)  # no further redirect is followed once the budget is spent
 
     # Second report on #600: Defuddle 0.19.4 removes every class token ending in ":hidden", so a
     # Tailwind note box with "empty:hidden" (visible whenever it has content) vanishes even though
