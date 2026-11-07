@@ -1,6 +1,6 @@
 ---
 name: beyin
-description: Vault içindeki bilgiyi bul, not ve görevleri güncelle, tamamlanan çalışmayı kaynaklarıyla kaydet. Hatırlama, not alma, proje/görev takibi ve beyin oturumu kapanışında kullan.
+description: Obsidian beyin kasasında bilgi arar, not ve görevleri günceller, biten işi kaynaklarıyla kaydeder. Tetik - "hatırla", "kasada ara", "bunu not al", "notu güncelle", "görev ekle", "proje durumu", "oturumu kasaya yaz"; kendiliğinden - beyin klasöründe anlamlı bir iş biterken. Kullanma - sağlık kontrolü (beyin-doktor), sürüm güncelleme (beyin-guncelle), eski sohbet arşivini topluca içe aktarma (kasada varsa gecmis-import).
 ---
 
 # Beyin

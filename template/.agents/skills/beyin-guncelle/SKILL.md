@@ -1,6 +1,6 @@
 ---
 name: beyin-guncelle
-description: Mevcut beyin kurulumunu yeni resmi sürüme güncelle, sürümü kontrol et veya başarısız yükseltmeden geri dön. Beynimi güncelle, yeni sürüm var mı ve rollback isteklerinde kullan.
+description: Beyin kurulumunu yeni resmi sürüme günceller, sürümü kontrol eder veya başarısız yükseltmeden geri döner. Tetik - "beynimi güncelle", "yeni sürüm var mı", "beyin sürümü", "rollback", "güncellemeyi geri al", "/beyin-guncelle". Kullanma - arıza teşhisi (beyin-doktor), not alma (beyin).
 ---
 
 # Beyni güncelle
