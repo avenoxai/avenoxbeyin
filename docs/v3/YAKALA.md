@@ -1079,19 +1079,23 @@ Bu ozellik yalniz acik CLI talimatiyla calisir. Duz Enter, SessionStart bildirim
 `liste`, `ajan-devam` veya gelen kutusuna yeni kart eklenmesi toplu gonderim yapmaz.
 `ajan-toplu` varsayilan olarak onizlemedir; is kaydi olusturmaz, ayar degistirmez,
 ag kullanmaz ve bir ajan sureci acmaz. Gonderim icin ajan ayarinin `claude` veya
-`codex` olmasi ve ayni komutta `--gonder` bulunmasi gerekir. Yeni surumu kurduktan
-sonra eski dinleyici kopyasini da guncellemek icin normal `yakala kur` akisini kullan.
+`codex` olmasi, ayni komutta `--gonder` bulunmasi ve onizlemenin `plan` degerinin
+`--plan` ile verilmesi gerekir. Onizleme gorulmeden toplu gonderim yapilmaz. Yeni
+surumu kurduktan sonra eski dinleyici kopyasini da guncellemek icin normal
+`yakala kur` akisini kullan.
 
 ```text
 py -3 beyin.py yakala ajan claude
 py -3 beyin.py yakala ajan-toplu --neden --limit 5
-py -3 beyin.py yakala ajan-toplu --neden --limit 5 --gonder
+py -3 beyin.py yakala ajan-toplu --neden --limit 5 --gonder --plan PLAN
 ```
 
 Ilk komut mevcut ajan ayarini acar. Ikinci komut kart kimliklerini, her karta
-verilecek TAM istegi, ag modunu ve bos kuyruk kapasitesini gosterir. Ucuncu komut,
-o anda filtreye uyan en eski bes karta acik gonderim izni verir. Sonradan gelen
-kartlar bu toplu isin parcasi olmaz. Basarili gonderim bir `batch_id` dondurur;
+verilecek TAM istegi, ag modunu, bos kuyruk kapasitesini ve `plan` degerini gosterir.
+Ucuncu komut, onizlemede gorulen kartlara ve isteklere acik gonderim izni verir.
+`--plan` olmadan `--gonder` hata verir ve hicbir is olusturmaz. Onizlemeden sonra
+kart, istek, filtre sonucu veya ajan ayari degistiyse plan tutmaz ve gonderim
+reddedilir; yeni onizleme gerekir. Sonradan gelen kartlar bu toplu isin parcasi olmaz. Basarili gonderim bir `batch_id` dondurur;
 bu yalniz kuyruga kabul anlamina gelir, islerin tamamlandigi anlamina gelmez.
 
 ### Secim ve istek kaynagi
@@ -1111,8 +1115,8 @@ kullanir; `KART_ID` ve `KART_ID.md` ayni kart olarak denetlenir.
 | `--tur youtube` | `kaynak_turu` alanina gore filtreler; birden cok kez verilebilir |
 | `--alan instagram.com` | URL'nin tam sunucu adina gore filtreler; `www.` ve `m.` normalizasyonu vardir |
 | `--limit 5` | En eski bes adayi secer; varsayilan 10, izin verilen aralik 1 ile 32 |
-| `--gonder` | Bu cagrida secilen kartlari kalici kuyruga gonderir |
-| `--plan OZET` | Onizlemedeki 64 karakterli plan ozetini dogrular; secim, kart veya ayar degismisse reddeder |
+| `--gonder` | Onizlenen kartlari kalici kuyruga gonderir; `--plan` zorunludur |
+| `--plan OZET` | Onizlemedeki 64 karakterli plan ozeti; secim, kart veya ayar degismisse gonderimi reddeder |
 | `--json` | Onizleme, toplu kimlik ve durumlari makine tarafindan okunabilir JSON olarak dondurur |
 
 `--neden` ve `--istek` birbirini dislar; birini acikca secmek zorunludur.
@@ -1124,17 +1128,17 @@ istiyorsan `--istek` ver veya kartin Neden bolumunu duzenle.
 
 ```text
 py -3 beyin.py yakala ajan-toplu --alan instagram.com --istek "Bu kaynagi incele ve kaynakli bir not yaz" --limit 3
-py -3 beyin.py yakala ajan-toplu KART_ID_1 KART_ID_2 --neden --gonder
-py -3 beyin.py yakala ajan-toplu --tur youtube --tur makale --istek "Ana bulgulari ozetle" --limit 4 --gonder --json
+py -3 beyin.py yakala ajan-toplu KART_ID_1 KART_ID_2 --neden
+py -3 beyin.py yakala ajan-toplu KART_ID_1 KART_ID_2 --neden --gonder --plan PLAN
+py -3 beyin.py yakala ajan-toplu --tur youtube --tur makale --istek "Ana bulgulari ozetle" --limit 4 --gonder --plan PLAN --json
 ```
 
 Filtreler kesisir; alan adi eslesmesi alt dize veya rastgele alt alan eslesmesi
 degildir. Mevcut kart turu siniflandirmasinda Instagram ve TikTok linkleri
-`makale` olabilir; bu kaynaklar icin `--alan` kullan. Onizleme ile gonderim
-arasindaki secimi sabitlemek icin onizlemenin `plan` degerini kopyalayip ayni
-seceneklere `--gonder --plan DEGER` ekle. Bu ozet yetkilendirme anahtari degildir;
-kart/istek/ayar degisikligini fark eden bir tutarlilik denetimidir. `--plan`
-verilmezse gonderim anindaki guncel secim kullanilir.
+`makale` olabilir; bu kaynaklar icin `--alan` kullan. Gonderimde onizlemenin
+`plan` degerini kopyalayip ayni seceneklere `--gonder --plan DEGER` ekle. Bu ozet
+yetkilendirme anahtari degildir; onizlemenin gorulmesini ve kart/istek/ayar
+degisikliginin fark edilmesini saglayan bir tutarlilik denetimidir.
 
 Gecerli saat dilimli `yakalandi` degeri olan kartlar gercek yakalanma zamanina,
 esitlikte kart kimligine gore siralanir. Eksik veya gecersiz zaman damgalari sona

@@ -24,6 +24,11 @@ class BatchFiles(base_tests.AgentFiles):
         return yakala.enqueue_agent_batch(self.vault, self.state, **options)
 
     def submit(self, **options):
+        # Sending needs the plan of a preview the user saw (maintainer decision for #414).
+        # A test that checks a stale or changed plan passes its own value explicitly.
+        if 'expected_plan' not in options:
+            preview = dict(options)
+            options['expected_plan'] = self.bulk(**preview)['plan']
         return self.bulk(send=True, **options)
 
     def members(self, result):
@@ -135,6 +140,19 @@ class BatchPreviewTest(BatchFiles):
         with self.assertRaisesRegex(ValueError, 'plani degisti'):
             self.submit(expected_plan=current['plan'])
         self.no_submissions()
+
+    def test_send_without_a_preview_plan_writes_nothing(self):
+        self.configure()
+        _, card = self.card(why='Bu kaynagi incele.')
+        before = card['path'].read_bytes()
+        with self.assertRaisesRegex(ValueError, 'once onizleme'):
+            yakala.enqueue_agent_batch(self.vault, self.state, request=None, use_why=True, send=True)
+        with self.assertRaisesRegex(ValueError, 'once onizleme'):
+            yakala.main(['--json', 'ajan-toplu', '--neden', '--gonder'], vault=self.vault, state=self.state)
+        self.assertEqual(card['path'].read_bytes(), before)
+        self.no_submissions()
+        preview = self.cli(['ajan-toplu', '--neden', '--json'])
+        self.assertIn('--plan ' + preview['plan'], preview['ipucu'])
 
     def test_damaged_job_is_a_read_only_capacity_warning_and_blocks_new_batch(self):
         self.configure()

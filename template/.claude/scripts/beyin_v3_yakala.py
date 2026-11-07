@@ -11983,7 +11983,8 @@ def _agent_batch_plan(vault, state, ids=(), request=None, use_why=False, kinds=(
             'bos_yer': max(0, config['max_queue'] - count), 'atlanan': excluded, 'kayit_sorunlari': job_errors,
             'gonderilebilir': bool(rows) and config['client'] != 'kapali' and not job_errors and
                               not any(row['hata'] for row in rows) and count + len(rows) <= config['max_queue'],
-            'kartlar': rows, 'ipucu': 'Onizleme is baslatmaz. Gondermek icin ayni komuta --gonder ekle.'}
+            'kartlar': rows, 'ipucu': ('Onizleme is baslatmaz. Kartlari ve istekleri inceledikten sonra gondermek icin '
+                                       'ayni komuta --gonder --plan ' + digest + ' ekle.')}
     return plan, chosen, jobs, config
 
 
@@ -12074,6 +12075,11 @@ def enqueue_agent_batch(vault, state, ids=(), request=None, use_why=False, kinds
                                        not re.fullmatch(r'[a-f0-9]{64}', expected_plan)):
         raise ValueError('Onizleme plan kimligi gecersiz.')
     options = dict(ids=ids, request=request, use_why=use_why, kinds=kinds, domains=domains, limit=limit)
+    if send and expected_plan is None:
+        # Maintainer decision for #414: a batch send names the preview the user saw. Without it,
+        # a typo in filters or a card captured meanwhile could reach the model unseen.
+        raise ValueError('Toplu gonderim once onizleme ister: ayni secenekleri --gonder olmadan calistir, '
+                         'kartlari ve istekleri incele, sonra --gonder --plan <plan> ver. Hicbir is gonderilmedi.')
     if not send:
         return _agent_batch_plan(vault, state, **options)[0]
     with _AgentFileLock(_agent_root(state) / 'queue.lock'), _WindowsCommitLock(vault):
@@ -12397,8 +12403,9 @@ def main(argv=None, vault=None, state=None):
     batch.add_argument('--tur', action='append', default=[], help='Kaynak turu; birden cok kez verilebilir')
     batch.add_argument('--alan', action='append', default=[], help='Tam alan adi, ornek: instagram.com')
     batch.add_argument('--limit', type=int, default=10, help='En eski kac kart (varsayilan 10, en fazla 32)')
-    batch.add_argument('--gonder', action='store_true', help='Bu komutta secilen kartlari kalici kuyruga gonder')
-    batch.add_argument('--plan', help='Onizlemedeki 64 karakterli plan; degisirse gonderim reddedilir')
+    batch.add_argument('--gonder', action='store_true',
+                       help='Onizlenen kartlari kalici kuyruga gonder; --plan gerekir')
+    batch.add_argument('--plan', help='Onizlemedeki 64 karakterli plan; --gonder icin zorunlu, degisirse gonderim reddedilir')
     for name, description in (('ajan-toplu-durum', 'Toplu islerin gercek calisma sonucunu ve ozetini goster'),
                               ('ajan-toplu-iptal', 'Yalniz bu toplu isin baslamamis kuyruk uyelerini geri al')):
         batch_action = command_parser(name, help=description)
