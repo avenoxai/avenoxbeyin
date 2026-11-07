@@ -187,6 +187,34 @@ class KnowledgeLintTest(unittest.TestCase):
         self.assertNotIn('a.md', result['orphans'])
         self.assertNotIn('knowledge/kavramlar/temel.md', result['orphans'])
 
+    def test_attachments_resolve_by_name_and_dotted_note_names_stay_notes(self):
+        for source, text in [('notlar/rapor.md', '![[diyagram.png]] [[belge.pdf]] ![[yok.png]] [[Sürüm v1.2]] '
+                                                  '![[../ekler/diyagram.png]] [[diagram.png]]'),
+                             ('notlar/Sürüm v1.2.md', '# Sürüm'), ('notlar/Sürüm v1.md', '# Eski'),
+                             ('diagram.md', '# Not, resim değil')]:
+            path = self.vault / source
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding='utf-8')
+        for attachment in ('ekler/diyagram.png', 'dosyalar/belge.pdf', 'gizli/diagram.png'):
+            path = self.vault / attachment
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'\x89PNG')
+        result = linter.lint_vault(self.vault)
+        self.assertEqual(sorted(link['raw'] for link in result['broken_links']),
+                         ['![[yok.png]]', '[[diagram.png]]'])
+        self.assertNotIn('notlar/Sürüm v1.2.md', result['orphans'])
+        self.assertIn('notlar/Sürüm v1.md', result['orphans'])
+        self.assertIn('diagram.md', result['orphans'])
+
+    def test_links_and_headings_inside_code_are_ignored(self):
+        (self.vault / 'script.md').write_text('# Kurulum\n```bash\n# Install\nif [[ -f x ]]; then echo; fi\n```\n',
+                                              encoding='utf-8')
+        (self.vault / 'a.md').write_text('Kod `[[ -n "$x" ]]` ve [[script#Kurulum]] ama [[script#Install]]\n'
+                                         '~~~\n[[yok]]\n~~~\n', encoding='utf-8')
+        result = linter.lint_vault(self.vault)
+        self.assertEqual([link['raw'] for link in result['broken_links']], ['[[script#Install]]'])
+        self.assertEqual(result['total_links_count'], 2)
+
     def test_folder_lint_counts_external_backlinks_and_missing_embeds(self):
         (self.vault / 'knowledge').mkdir()
         (self.vault / 'knowledge/a.md').write_text('# Present\n![[missing]]\n[[#Absent]]', encoding='utf-8')

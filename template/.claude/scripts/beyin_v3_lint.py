@@ -33,7 +33,10 @@ MOC_START_MARKER = "<!-- beyin-moc:start -->"
 MOC_END_MARKER = "<!-- beyin-moc:end -->"
 
 # A heading line; [ \t] instead of \s so a lone "#" never joins the next line into a heading.
-HEADING_PATTERN = re.compile(r"^#{1,6}[ \t]+(.+)$", re.MULTILINE)
+HEADING_PATTERN = re.compile(r"#{1,6}[ \t]+(.+)")
+# Obsidian ignores links and headings inside fenced code and inline code spans.
+FENCE_PATTERN = re.compile(r" {0,3}(`{3,}|~{3,})")
+INLINE_CODE_PATTERN = re.compile(r"`[^`\r\n]*`")
 
 ARCHIVE_DIR_NAMES = ("arsiv", "archive", "archives")
 
@@ -45,6 +48,31 @@ def _norm_key(text):
     return unicodedata.normalize("NFC", text.replace("\\", "/")).strip().casefold()
 
 
+def _lines_outside_code(text):
+    """(line number, line) pairs outside fenced code; inline code spans are blanked."""
+    fence = None
+    for line_idx, line in enumerate(text.splitlines(), 1):
+        opener = FENCE_PATTERN.match(line)
+        if fence is not None:
+            if (opener and opener.group(1)[0] == fence[0] and len(opener.group(1)) >= len(fence)
+                    and not line[opener.end():].strip()):
+                fence = None
+            continue
+        if opener:
+            fence = opener.group(1)
+            continue
+        yield line_idx, INLINE_CODE_PATTERN.sub(lambda match: " " * len(match.group(0)), line)
+
+
+def _headings(text):
+    headings = set()
+    for _, line in _lines_outside_code(text):
+        match = HEADING_PATTERN.fullmatch(line)
+        if match:
+            headings.add(_norm_key(match.group(1).strip().rstrip("#").strip()))
+    return headings
+
+
 def extract_wikilinks(text):
     """Extract all wikilinks from markdown text safely.
 
@@ -54,8 +82,7 @@ def extract_wikilinks(text):
         return []
 
     results = []
-    lines = text.splitlines()
-    for line_idx, line in enumerate(lines, 1):
+    for line_idx, line in _lines_outside_code(text):
         for match in WIKILINK_PATTERN.finditer(line):
             raw_inside = match.group(1).strip()
             is_embed = match.group(0).startswith("!")
@@ -89,16 +116,21 @@ def extract_wikilinks(text):
     return results
 
 
-def _eligible_note(vault_root, path):
+def _withheld_path(relative):
+    """A path inside a sensitive or archive folder never enters the lint or MOC index."""
     from beyin_v3 import sensitive_fold, sensitive_source
+    # sensitive_fold keeps Turkish case rules: "ARŞİV" and NFD "Arşiv" both fold to "arsiv".
+    return sensitive_source(relative) or any(sensitive_fold(part) in ARCHIVE_DIR_NAMES
+                                             for part in Path(relative).parts[:-1])
+
+
+def _eligible_note(vault_root, path):
     from beyin_v3_sync import parse
     try:
         relative = path.relative_to(vault_root).as_posix()
         if path.is_symlink() or not path.resolve().is_relative_to(vault_root.resolve()):
             return False
-        # sensitive_fold keeps Turkish case rules: "ARŞİV" and NFD "Arşiv" both fold to "arsiv".
-        if sensitive_source(relative) or any(sensitive_fold(part) in ARCHIVE_DIR_NAMES
-                                              for part in Path(relative).parts[:-1]):
+        if _withheld_path(relative):
             return False
         metadata, _ = parse(path.read_text(encoding='utf-8-sig'))
         return metadata.get('visibility') != 'private' and metadata.get('status') != 'archived'
@@ -111,10 +143,11 @@ def build_vault_index(vault_root, target_folder=None):
     vault_root = Path(vault_root)
     start_dir = (vault_root / target_folder) if target_folder else vault_root
     if not start_dir.exists():
-        return {"by_rel": {}, "by_basename": {}}
+        return {"by_rel": {}, "by_basename": {}, "attachments": {}}
 
     files_by_rel = {}
     files_by_basename = defaultdict(list)
+    attachments = defaultdict(list)
 
     for root, dirs, files in os.walk(start_dir):
         # Prune excluded dirs
@@ -125,11 +158,20 @@ def build_vault_index(vault_root, target_folder=None):
             and not (Path(root) / d).is_symlink()
         ]
         for f in files:
-            if not f.lower().endswith(".md") or f.startswith("."):
+            if f.startswith("."):
+                continue
+            full_path = Path(root) / f
+            if not f.lower().endswith(".md"):
+                # Images, PDFs and other attachments: Obsidian finds them by name anywhere.
+                try:
+                    rel_path = full_path.relative_to(vault_root).as_posix()
+                except ValueError:
+                    continue
+                if not full_path.is_symlink() and not _withheld_path(rel_path):
+                    attachments[_norm_key(f)].append(rel_path)
                 continue
             if f.casefold() in EXCLUDED_FILE_NAMES:
                 continue
-            full_path = Path(root) / f
             try:
                 rel_path = full_path.relative_to(vault_root).as_posix()
             except ValueError:
@@ -147,7 +189,22 @@ def build_vault_index(vault_root, target_folder=None):
     return {
         "by_rel": files_by_rel,
         "by_basename": dict(files_by_basename),
+        "attachments": dict(attachments),
     }
+
+
+def _attachment_exists(vault_index, target, source_file=None):
+    """Resolve a non-note target from the index only; nothing outside the vault is probed."""
+    norm = target.replace("\\", "/").strip().strip("/")
+    candidates = vault_index.get("attachments", {}).get(_norm_key(posixpath.basename(norm)), [])
+    if not candidates or "/" not in norm:
+        return bool(candidates)
+    keys = {_norm_key(path) for path in candidates}
+    if norm.startswith(("./", "../")):
+        parent = posixpath.dirname(source_file or "")
+        return _norm_key(posixpath.normpath(posixpath.join(parent, norm))) in keys
+    suffix = "/" + _norm_key(norm)
+    return any(("/" + key).endswith(suffix) for key in keys)
 
 
 def resolve_wikilink(vault_root, link_target, source_file=None, vault_index=None):
@@ -170,7 +227,9 @@ def resolve_wikilink(vault_root, link_target, source_file=None, vault_index=None
     norm_target = link_target.replace("\\", "/").strip().strip("/")
     target_has_ext = norm_target.lower().endswith(".md")
     target_with_ext = norm_target if target_has_ext else f"{norm_target}.md"
-    target_stem = Path(norm_target).stem
+    # Only ".md" is a note extension: "Sürüm v1.2" is the note "Sürüm v1.2.md" and
+    # "diagram.png" is never the note "diagram.md".
+    target_stem = posixpath.basename(target_with_ext)[:-3]
 
     # 2. Check exact relative path from vault root
     k_ext = _norm_key(target_with_ext)
@@ -241,27 +300,24 @@ def lint_vault(vault_root, folder=None):
             all_extracted_count += len(links)
 
         for link in links:
-            # Skip non-markdown media embeds unless checking file existence
-            if link["is_embed"] and Path(link["file_target"]).suffix and not link["file_target"].lower().endswith(".md"):
-                if "." in link["file_target"]:
-                    embed_path = vault_root / link["file_target"]
-                    if not embed_path.exists() and not (full_path.parent / link["file_target"]).exists():
-                        broken_links.append({
-                            "source": rel_path,
-                            "line": link["line"],
-                            "target": link["file_target"],
-                            "raw": link["raw"],
-                            "type": "embed",
-                        })
+            res = resolve_wikilink(vault_root, link["file_target"], source_file=rel_path, vault_index=vault_index)
+            # An attachment (image, PDF) unless a note itself has a dotted name ("Sürüm v1.2").
+            if (not res["exists"] and Path(link["file_target"]).suffix
+                    and not link["file_target"].lower().endswith(".md")):
+                if not _attachment_exists(vault_index, link["file_target"], rel_path):
+                    broken_links.append({
+                        "source": rel_path,
+                        "line": link["line"],
+                        "target": link["file_target"],
+                        "raw": link["raw"],
+                        "type": "embed" if link["is_embed"] else "wikilink",
+                    })
                 continue
 
-            res = resolve_wikilink(vault_root, link["file_target"], source_file=rel_path, vault_index=vault_index)
             if res['exists'] and link['heading']:
                 try:
                     target_text = (vault_root / res['resolved_path']).read_text(encoding='utf-8-sig')
-                    headings = {_norm_key(match.group(1).strip().rstrip('#').strip())
-                                for match in HEADING_PATTERN.finditer(target_text)}
-                    if _norm_key(link['heading']) not in headings:
+                    if _norm_key(link['heading']) not in _headings(target_text):
                         res = {'exists': False, 'resolved_path': None}
                 except (OSError, UnicodeError):
                     res = {'exists': False, 'resolved_path': None}
