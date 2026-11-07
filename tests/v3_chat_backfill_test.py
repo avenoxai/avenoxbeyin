@@ -251,6 +251,82 @@ class BackfillTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'kaydetme'):
             self.backfill.write(self.vault, self.state, self.s5, 'Sentetik özet.')
 
+    def assert_refused(self, session, message):
+        for call in (lambda: self.backfill.show(self.vault, self.state, session),
+                     lambda: self.backfill.write(self.vault, self.state, session, 'Sentetik özet.'),
+                     lambda: self.backfill.skip(self.vault, self.state, session)):
+            with self.assertRaisesRegex(ValueError, message):
+                call()
+
+    def test_opt_out_inside_an_unread_long_line_still_excludes_the_session(self):
+        # A pasted screenshot makes the message line longer than MAX_LINE; its [kaydetme] still counts.
+        image = {'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/png', 'data': 'QUJD' * 3000}}
+        pasted = Transcript('a1a1a1a1-aaaa-4aaa-8aaa-0000000000a1', self.vault, '2026-09-03')
+        pasted.user('Müşteri arşivi için Şifre kuralını konuşalım.').assistant('Tamam.')
+        pasted.add('user', [image, {'type': 'text', 'text': '[KAYDETME] bu ekrandaki müşteri bilgisi gizli'}])
+        pasted.assistant('Anlaşıldı.')
+        # The marker also counts when it is split across two reads of the same long line.
+        split = Transcript('a2a2a2a2-aaaa-4aaa-8aaa-0000000000a2', self.vault, '2026-09-04')
+        split.user('Kısa ve normal bir soru.')
+        prefix = b'{"type":"user","message":{"role":"user","content":"'
+        padding = 4096 + 1 - 4 - len(prefix)  # the first read ends inside the marker
+        split.raw((prefix + b'x' * padding).decode() + '[kaydetme] gizli' + 'y' * 5000 + '"}}')
+        sessions = [h(pasted.save(self.folder, self.base + 20).stem), h(split.save(self.folder, self.base + 30).stem)]
+        self.enable()
+        with patch.object(self.backfill, 'MAX_LINE', 4096):
+            plan = self.plan()
+            self.assertEqual([item['session'] for item in plan['pending']], [self.s1, self.s5])
+            self.assertEqual(plan['counts']['suppressed'], 3)
+            for session in sessions:
+                with self.subTest(session=session):
+                    self.assert_refused(session, 'kaydetme')
+        self.assertFalse((self.vault / 'knowledge').exists())
+        self.assertFalse((self.state / self.backfill.LEDGER).exists())
+
+    def test_session_past_the_scan_limit_is_never_offered(self):
+        big = Transcript('b1b1b1b1-aaaa-4aaa-8aaa-0000000000b1', self.vault, '2026-09-06')
+        big.user('Büyük oturumun ilk sorusu.').assistant('Yanıt.')
+        for _ in range(40):
+            big.user('Ara mesaj ' + 'k' * 200)
+        big.user('[kaydetme] okuma sınırından sonra')
+        session = h(big.save(self.folder, self.base + 40).stem)
+        self.enable()
+        with patch.object(self.backfill, 'MAX_SCAN_BYTES', 8192):
+            plan = self.plan()
+            self.assertNotIn(session, [item['session'] for item in plan['pending']])
+            self.assertGreaterEqual(plan['counts']['too_large'], 1)
+            # show/write read the file themselves; a scan that stops early must refuse, not show a part.
+            self.assert_refused(session, 'scan limit')
+        self.assertFalse((self.vault / 'knowledge').exists())
+
+    def test_slash_command_arguments_count_as_typed_text(self):
+        command = Transcript('c1c1c1c1-aaaa-4aaa-8aaa-0000000000c1', self.vault, '2026-09-07')
+        command.user('<command-message>review</command-message>\n<command-name>/review</command-name>\n'
+                     '<command-args>[kaydetme] gizli proje</command-args>')
+        command.user('Gizli proje detayı konuşuldu.')
+        quoted = Transcript('c2c2c2c2-aaaa-4aaa-8aaa-0000000000c2', self.vault, '2026-09-08')
+        # A reminder block the client injects is not typed text; quoting the marker there is no opt-out.
+        quoted.user('<system-reminder>Belge: [kaydetme] yazılırsa iz tutulmaz.</system-reminder>\nAçık soru.')
+        sessions = [h(command.save(self.folder, self.base + 60).stem), h(quoted.save(self.folder, self.base + 70).stem)]
+        self.enable()
+        plan = self.plan()
+        self.assertEqual([item['session'] for item in plan['pending']], [self.s1, sessions[1], self.s5])
+        self.assertEqual(plan['counts']['suppressed'], 2)
+        self.assert_refused(sessions[0], 'kaydetme')
+        self.assertEqual([m['text'] for m in self.backfill.show(self.vault, self.state, sessions[1])['messages']],
+                         ['Açık soru.'])
+
+    def test_receipt_reminder_opt_out_blocks_backfill_while_chat_trace_was_off(self):
+        from beyin_v3_hook import receipt_reminder
+        # Older sessions ran with chat trace off; the receipt reminder hook still marked [kaydetme].
+        receipt_reminder({'session_id': self.latest.stem, 'prompt': 'Bu oturum [kaydetme]'},
+                         self.state, 'claude', 'UserPromptSubmit', vault=self.vault)
+        self.assertFalse((self.state / 'chat-trace-sessions').exists())
+        plan = self.plan()
+        self.assertEqual(([item['session'] for item in plan['pending']], plan['counts']['suppressed']), ([self.s1], 2))
+        self.enable()
+        self.assert_refused(self.s5, 'kaydetme')
+
     def test_explicitly_chosen_folder_is_read_without_vault_cwd_check(self):
         folder = self.config / 'projects' / '-synthetic-code-repo'
         repo = Transcript('77777777-aaaa-4aaa-8aaa-000000000007', self.root / 'code repo', '2026-08-30')
