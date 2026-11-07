@@ -1298,28 +1298,20 @@ class SyncEngine:
             raise ValueError('new semantic notes belong under notes/ or knowledge/')
         self._refuse_excluded(source)
         metadata = dict(metadata or {})
-        if idempotency_key is None and 'idempotency_key' in metadata:
-            idempotency_key = metadata.pop('idempotency_key')
-        if evidence_refs is None and 'evidence_refs' in metadata:
-            evidence_refs = metadata.get('evidence_refs')
-        if idempotency_key is not None:
-            if not isinstance(idempotency_key, str) or not idempotency_key.strip():
-                raise ValueError('idempotency_key must be a nonempty string')
-            if not re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', idempotency_key):
-                raise ValueError('idempotency_key contains invalid characters')
-        if evidence_refs is not None:
-            if isinstance(evidence_refs, str):
-                evidence_refs = [evidence_refs]
-            if not isinstance(evidence_refs, list) or not all(isinstance(r, str) and r.strip() for r in evidence_refs):
-                raise ValueError('evidence_refs must be a list of nonempty strings')
-            metadata['evidence_refs'] = evidence_refs
-        for field in ('project', 'kind', 'status', 'updated_at', 'evidence_refs'):
+        from beyin_v3_notes import check_idempotency_key, evidence_refs as note_evidence_refs
+        # The key and refs may also arrive in metadata; the key never reaches frontmatter.
+        for field, value in (('idempotency_key', idempotency_key), ('evidence_refs', evidence_refs)):
+            if value is not None and metadata.get(field, value) != value:
+                raise ValueError(field + ' given twice with different values')
+        idempotency_key = check_idempotency_key(metadata.pop('idempotency_key', idempotency_key))
+        refs = note_evidence_refs(self, metadata.pop('evidence_refs', evidence_refs), existing=False)
+        if refs:
+            metadata['evidence_refs'] = refs
+        for field in ('project', 'kind', 'status', 'updated_at'):
             if metadata.get(field) is None:
                 metadata.pop(field, None)
-            elif field in metadata and field != 'evidence_refs' and not isinstance(metadata[field], str):
+            elif field in metadata and not isinstance(metadata[field], str):
                 raise ValueError(field + ' must be a string')
-            elif field == 'evidence_refs' and not isinstance(metadata['evidence_refs'], list):
-                raise ValueError('evidence_refs must be a list')
         if 'id' in metadata and (not isinstance(metadata['id'], str) or not metadata['id'].strip()):
             raise ValueError('record id must be nonempty text')
         if 'facts' in metadata and not isinstance(metadata['facts'], dict):
@@ -1339,9 +1331,10 @@ class SyncEngine:
             raise ValueError('use task-create for new tasks')
         if metadata.get('generated') or metadata.get('kind') == 'receipt':
             raise ValueError('managed note kinds require their dedicated command')
-        from beyin_v3_notes import _request_digest
-        request_fingerprint = _request_digest({'operation': 'note-create', 'source': source,
-                                               'text': text, 'metadata': metadata})
+        from beyin_v3_notes import (_idempotency_path, _journal_idempotency, _replay_idempotency,
+                                    _request_digest, _seal_idempotency)
+        fingerprint = _request_digest({'operation': 'note-create', 'source': source,
+                                       'text': text, 'metadata': metadata})
         text, redacted = self._protect(text)
         metadata, meta_redacted = self._protect_metadata(metadata)
         redacted += meta_redacted
@@ -1352,22 +1345,19 @@ class SyncEngine:
             self._refuse_excluded(source)
             path = self._path(source)
             idempotency_file = None
-            from beyin_v3_notes import (_idempotency_path, _request_digest,
-                                        _replay_idempotency, _save_idempotency)
-            fingerprint = request_fingerprint
-            if idempotency_key:
+            journal = {'status': 'succeeded', 'source': source, 'sha256': _hash(intended)}
+            if idempotency_key is not None:
                 idempotency_file = _idempotency_path(folder, idempotency_key)
-                replay = _replay_idempotency(self, idempotency_file, source, fingerprint, path)
+                replay = _replay_idempotency(self, idempotency_file, source, fingerprint, path, refs)
                 if replay is not None:
                     return replay
+            note_evidence_refs(self, refs, source)
             with self.store._connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 if path.exists():
                     raise ValueError('source exists; preserve and edit deliberately')
                 if idempotency_file:
-                    _save_idempotency(idempotency_file,
-                        {'status': 'succeeded', 'source': source, 'sha256': _hash(intended),
-                         **({'evidence_refs': evidence_refs} if evidence_refs else {})}, fingerprint)
+                    _journal_idempotency(idempotency_file, journal, fingerprint, 'pending')
                 self._intent(source, None, intended, 'note')
             result = self.sync()
             record_id = metadata.get('id', 'md-' + _hash(source)[:24])
@@ -1386,8 +1376,10 @@ class SyncEngine:
                                'warnings': result['warnings'], 'conflicts': result['conflicts'],
                                'source_sync': {'status': result['status'], 'warnings': result['warnings'],
                                                'conflicts': result['conflicts']}}
-            if evidence_refs:
-                created_details['evidence_refs'] = evidence_refs
+            if idempotency_file:
+                _seal_idempotency(idempotency_file, journal, fingerprint, created_details)
+            if refs:
+                created_details['evidence_refs'] = refs
             return created_details
 
     def task_create(self, source, text, metadata):
