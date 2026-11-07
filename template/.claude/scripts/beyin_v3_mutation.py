@@ -348,9 +348,18 @@ def isolate_conflict(vault: str | Path, mutation: dict, sync_engine=None) -> str
 
 
 def _created_note(engine, payload):
-    """The bytes SyncEngine.note_create writes for this payload."""
+    """The bytes SyncEngine.note_create writes for this payload, or None if it would refuse it."""
     from beyin_v3_sync import render
+    from beyin_v3_notes import evidence_refs
     metadata = dict(payload.get('metadata') or {})
+    # As note_create: the retry key never reaches frontmatter and evidence is stored canonically.
+    metadata.pop('idempotency_key', None)
+    try:
+        refs = evidence_refs(engine, metadata.pop('evidence_refs', None), existing=False)
+    except ValueError:
+        return None  # note_create refuses these refs, so an existing file is not this mutation's
+    if refs:
+        metadata['evidence_refs'] = refs
     for field in ('project', 'kind', 'status', 'updated_at'):
         if metadata.get(field) is None:
             metadata.pop(field, None)

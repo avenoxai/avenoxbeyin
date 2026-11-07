@@ -563,6 +563,30 @@ class MutationQueueTest(unittest.TestCase):
         self.assertEqual(path.read_bytes(), written)
         self.assertFalse(list(path.parent.glob('*.sync-conflict-*.md')))
 
+    def test_crash_after_note_create_with_retry_key_or_evidence_is_reconciled(self):
+        # note_create drops a metadata idempotency_key and stores evidence_refs canonically (#443);
+        # the replay's byte prediction must match, or an interrupted create becomes a conflict copy.
+        (self.vault / 'notes').mkdir(exist_ok=True)
+        (self.vault / 'notes/ev.md').write_text('evidence\n', encoding='utf-8')
+        for name, metadata in (('key', {'idempotency_key': 'retry-1'}),
+                               ('refs', {'evidence_refs': ['notes/./ev.md']}),
+                               ('both', {'idempotency_key': 'retry-2', 'evidence_refs': ['notes/ev.md'], 'title': 'T'})):
+            with self.subTest(name=name):
+                source = 'notes/created-' + name + '.md'
+                mutation.enqueue_mutation(self.state, 'note_create', source, {'text': 'body', 'metadata': metadata})
+                self.sync.note_create(source, 'body', dict(metadata))  # written, queue not yet acknowledged
+                written = (self.vault / source).read_bytes()
+                result = mutation.replay_mutations(self.vault, self.state, self.sync)
+                self.assertEqual((result['applied'], result['conflicts'], result['failed']), (1, 0, 0), result)
+                self.assertEqual((self.vault / source).read_bytes(), written)
+        self.assertFalse(list((self.vault / 'notes').glob('*.sync-conflict-*.md')))
+        # A different note at the same source is still isolated as a conflict.
+        mutation.enqueue_mutation(self.state, 'note_create', 'notes/other.md',
+                                  {'text': 'body', 'metadata': {'idempotency_key': 'retry-3'}})
+        (self.vault / 'notes/other.md').write_text('someone else\n', encoding='utf-8')
+        result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertEqual((result['applied'], result['conflicts']), (0, 1), result)
+
     def test_each_mutation_is_acknowledged_before_the_next_one(self):
         from unittest.mock import patch
         for name in ('first', 'second'):
