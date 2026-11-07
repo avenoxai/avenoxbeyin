@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +41,11 @@ NEGATIVES = (
     ('burun', 'burn'), ('tren', 'trendi'), ('açık', 'açıklamasını'),
     # #430 these imperative stems stay distinct: a command in a prompt is not a topic.
     ('göster', 'göstermek'), ('çalıştır', 'çalıştırıyor'), ('değiştir', 'değiştirir'),
+    ('çalış', 'çalışıyor'), ('göster', 'gösterdi'), ('çalıştır', 'çalışır'),
+    # #430 a negation keeps its own stem (the audit pairs the two), and so does the noun.
+    ('çalışıyor', 'çalışmıyor'), ('çalışıyor', 'çalışma'),
+    # #430 the suffix that reaches a short vowel-loss form decides: devrim, karne and Emre stay.
+    ('devri', 'devrim'), ('karnı', 'karne'), ('emri', 'Emre'),
 )
 
 # Issue #430: one verb, one stem. Each group must fold onto a single token.
@@ -48,6 +54,17 @@ VERB_GROUPS = (
      'kurulacağı', 'kurulması', 'kurulmak', 'kuruluyor'),
     ('yapılmalı', 'yapılır', 'yapıldı', 'yapılmış', 'yapılacak', 'yapılması'),
     ('kullanılır', 'kullanılmalı', 'kullanıldı', 'kullanılması', 'kullanılıyor'),
+    ('kuruluyor', 'kuruluyordu', 'kurulur'),
+)
+
+# Issue #430: active verbs on other consonants fold onto the past tense stem ("çalıştı").
+ACTIVE_VERB_GROUPS = (
+    ('çalışır', 'çalıştı', 'çalışıyor', 'çalışıyorlar', 'çalışıyordu', 'çalışmalı',
+     'çalışmasın', 'çalışacak', 'çalışacağı', 'çalışmış', 'çalışmak', 'çalışmaktan', 'ÇALIŞIYOR'),
+    ('gönderir', 'gönderdi', 'gönderiyor', 'göndermeli', 'gönderecek', 'göndermek'),
+    ('değişir', 'değişti', 'değişiyor', 'değişmeli', 'değişecek'),
+    ('anlatır', 'anlattı', 'anlatıyor', 'anlatmalı'),
+    ('kaydediyor', 'kaydetti', 'kaydetmeli', 'kaydedecek'),
 )
 
 # Issue #430: roots that lose their last vowel before a vowel suffix.
@@ -55,6 +72,9 @@ VOWEL_LOSS = (
     ('şehir', 'şehri'), ('fikir', 'fikri'), ('beyin', 'beyni'), ('metin', 'metninde'),
     ('isim', 'ismini'), ('akıl', 'aklına'), ('kayıt', 'kaydı'), ('kısım', 'kısmı'),
     ('vakit', 'vakti'), ('ağız', 'ağzı'), ('oğul', 'oğlu'), ('ömür', 'ömrü'),
+    ('devir', 'devri'), ('devir', 'devrinde'), ('devir', 'devrine'), ('burun', 'burnu'),
+    ('burun', 'burnundan'), ('karın', 'karnı'), ('karın', 'karnını'), ('emir', 'emri'),
+    ('emir', 'emrini'),
 )
 
 # The verb rules must not reach these: m-final nouns take -a/-e, and loanwords ending in
@@ -66,6 +86,9 @@ GUARDS = (
     # A folded i/u cannot reveal fronting, so older vowels must not veto suffixes.
     ('tarih', 'tarihte'), ('hakim', 'hakime'), ('kalori', 'kaloriler'), ('kabul', 'kabulde'),
     ('claude', 'claudenin'), ('claude', 'claudeye'), ('claude', 'claudede'),
+    # #430 active verb rules: loanwords, nouns, copulas and causatives keep their stem.
+    ('analist', 'analisti'), ('checklist', 'checklisti'), ('anormal', 'anormali'),
+    ('teşekkür', 'teşekkürler'), ('çalıştır', 'çalıştırın'),
 )
 
 # A possessive on a three-letter root stays on the word, because _stem keeps four letters.
@@ -126,6 +149,44 @@ class TurkishStemTest(unittest.TestCase):
         for group in VERB_GROUPS:
             with self.subTest(verb=group[0]):
                 self.assertEqual(len({self.stem(word) for word in group}), 1)
+
+    def test_active_verb_forms_fold_onto_the_past_tense_stem(self):
+        for group in ACTIVE_VERB_GROUPS:
+            with self.subTest(verb=group[0]):
+                self.assertEqual(len({self.stem(word) for word in group}), 1)
+        self.assertEqual(self.stem('çalışıyor'), self.stem('çalıştı'))
+
+    def test_verb_rules_leave_copulas_and_bare_stems_spelled_as_written(self):
+        # A copula (-dir) and a causative imperative end like an aorist but are not one.
+        for word, stem in (('kalitedir', 'kalitedir'), ('önemlidir', 'onemlidir'),
+                           ('çalıştır', 'calistir'), ('değiştir', 'degistir'), ('çalış', 'calis')):
+            with self.subTest(word=word):
+                self.assertEqual(self.stem(word), stem)
+
+    def test_hyphenated_name_keeps_its_parts_and_its_joined_spelling(self):
+        tokens = self.module._tokens
+        self.assertEqual(tokens('claude-mem'), {'claude', 'mem'} | tokens('claudemem'))
+        self.assertLessEqual(tokens('eposta'), tokens('e-posta'))
+        self.assertLessEqual(tokens('eposta'), tokens('E\u2011POSTA'))  # non-breaking hyphen
+        self.assertLessEqual(tokens('claudemem'), tokens("Claude-Mem'i"))
+        # A date or numeric range is not a name, and a dash between spaces joins nothing.
+        self.assertEqual(tokens('2026-10-19'), {'2026', '10', '19'})
+        self.assertEqual(tokens('kurulum - claude'), {'kurul', 'claude'})
+
+    def test_hyphen_in_a_note_keeps_tokenizing_linear(self):
+        # A match may only start at a word start: from inside a long unhyphenated run the
+        # compound pattern backtracks once per position (minutes for this note).
+        text = 'claude-mem ' + 'a' * 60000 + ' ' + '-'.join(['ab'] * 20000)
+        started = time.monotonic()
+        tokens = self.module._tokens(text)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(tokens, {'claude', 'mem', 'claudemem', 'a' * 60000, 'ab'})
+
+    def test_hyphenated_title_still_matches_a_query_without_the_hyphen(self):
+        record = {'title': 'claude-mem kurulumu', 'source': 'notes/x.md'}
+        terms = self.module._tokens('claude mem kurulumu')
+        self.assertEqual(self.module._name_match_score(record, terms), 3)
+        self.assertEqual(self.module._name_match_score(record, self.module._tokens('claude-mem kurulumu')), 3)
 
     def test_vowel_loss_forms_fold_onto_the_root(self):
         for root, inflected in VOWEL_LOSS:
@@ -264,6 +325,57 @@ class TurkishVerbIssueTest(VaultTestCase):
             self.store.STRICT_PASSAGES = passages
             with self.subTest(passages=passages):
                 self.assertEqual(self.context('şu testleri çalıştır ve sonucu göster'), [])
+
+
+class TurkishActiveVerbIssueTest(VaultTestCase):
+    """Issue #430: active verbs, devir/devri and hyphenated names in strict context."""
+
+    def setUp(self):
+        super().setUp()
+        self.ingest('zirkon', 'Zirkon yedekleme servisi her gece çalışır.', 'knowledge/zirkon.md')
+        self.ingest('kobalt', 'Kobalt kuyruğu dün gece çalıştı, sonra kapatıldı.', 'knowledge/kobalt.md')
+        self.ingest('devir', 'Nikel deposunun devri 12 Mart tarihinde tamamlandı.', 'knowledge/nikel.md')
+        self.ingest('devre', 'Lehim istasyonu: devre kartı ve havya ayarları.', 'notes/lehim.md')
+        self.ingest('mem', 'claude-mem eklentisi kurulmasın; yerel hafıza yeterli.', 'knowledge/hafiza-eklentisi.md')
+        self.ingest('eposta', 'Eposta ayarları: giden sunucu ve imza.', 'knowledge/smtp.md')
+        self.ingest('claude', 'Claude Code rehberi: araç çalıştırma ve bellek ayarları burada saklanır.',
+                    'knowledge/claude.md')
+        self.ingest('mutfak', 'Mutfak alışverişi: elma, ekmek, zeytinyağı.', 'notes/mutfak.md')
+
+    def context(self, query):
+        return [record['id'] for record in
+                self.store.context_for('claude', query, strict=True, budget_chars=2000)['records']]
+
+    def test_another_conjugation_of_an_active_verb_is_found(self):
+        for passages in (True, False):
+            self.store.STRICT_PASSAGES = passages
+            with self.subTest(passages=passages):
+                self.assertEqual(self.context('Zirkon çalışıyor mu?'), ['zirkon'])
+                self.assertEqual(self.context('zirkon çalıştı mı'), ['zirkon'])
+                self.assertEqual(self.context('Kobalt çalışır mı?'), ['kobalt'])
+                self.assertEqual(self.context('kobalt çalışmalı'), ['kobalt'])
+
+    def test_vowel_loss_finds_devir_but_not_devre(self):
+        for passages in (True, False):
+            self.store.STRICT_PASSAGES = passages
+            with self.subTest(passages=passages):
+                self.assertEqual(self.context('nikel devir'), ['devir'])
+                self.assertEqual(self.context('lehim devir'), [])
+
+    def test_hyphenated_name_meets_its_joined_spelling(self):
+        for passages in (True, False):
+            self.store.STRICT_PASSAGES = passages
+            with self.subTest(passages=passages):
+                self.assertEqual(self.context('claudemem kurulmalı mı?'), ['mem'])
+                self.assertEqual(self.context('claude-mem kurulmalı mı?')[0], 'mem')
+                self.assertEqual(self.context('e-posta ayarları'), ['eposta'])
+
+    def test_imperative_prompt_stays_silent(self):
+        for passages in (True, False):
+            self.store.STRICT_PASSAGES = passages
+            with self.subTest(passages=passages):
+                self.assertEqual(self.context('şu testleri çalıştır ve sonucu göster'), [])
+                self.assertEqual(self.context('çalış'), [])
 
 
 class TurkishShortRootTest(VaultTestCase):

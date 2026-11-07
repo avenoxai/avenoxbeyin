@@ -549,6 +549,7 @@ def record_scope(record, scopes):
 # "not" against "notlar". Every token is replaced by ONE canonical stem, with the same
 # function on the query and the document side. Replacement, not expansion: the score stays
 # "how many query words matched", which STRICT_MIN_SHARED and the idf weight depend on.
+# A hyphenated name is the one exception (_COMPOUND): its parts were two tokens already.
 # Input reaches the stemmer already ASCII folded, so the table is written folded too.
 _VOWELS = frozenset("aeiou")
 _VOICELESS = frozenset("cfhkpst")
@@ -560,11 +561,21 @@ _VOICELESS = frozenset("cfhkpst")
 _SUFFIXES = (
     # Verb endings (#430) peel only after l or n, which cover passive/reflexive forms:
     # kurulmali, kurulmasin, kurulur, kurulmus and kuruldu all reach "kurul". This is a
-    # conservative spelling heuristic, not a voice classifier. Other stems stay alone:
-    # imperative prompts (goster, calistir) would match every note that uses the verb.
+    # conservative spelling heuristic, not a voice classifier.
     ("masin", 4, "ln"), ("mesin", 4, "ln"), ("mali", 5, "ln"), ("meli", 5, "ln"),
-    ("iyor", 4, "ln"), ("uyor", 4, "ln"),
+    ("iyordu", 4, "ln"), ("uyordu", 4, "ln"), ("iyor", 4, "ln"), ("uyor", 4, "ln"),
     ("acak", 4, "ln"), ("ecek", 4, "ln"), ("acag", 4, "ln"), ("eceg", 4, "ln"),
+    # Other consonant stems (#430): calisiyor, calisir, calismali, calisacak, calismis and
+    # calismak reach the past tense stem "calist", which "calisti" already peels to. The
+    # bare stem stays apart, so an imperative prompt (goster, calistir) still matches no
+    # conjugation of its verb in a note. m stays out: calismiyor is the negation, and the
+    # audit pairs it against calisiyor. The aorist needs a vowel before one consonant
+    # other than d: calistir (causative) and kalitedir (copula) are not calis+ir or kalited+ir.
+    ("iyordu", 4, "verb"), ("uyordu", 4, "verb"), ("iyor", 4, "verb"), ("uyor", 4, "verb"),
+    ("masin", 4, "verb"), ("mesin", 4, "verb"), ("mali", 5, "verb"), ("meli", 5, "verb"),
+    ("acak", 4, "verb"), ("ecek", 4, "verb"), ("acag", 4, "verb"), ("eceg", 4, "verb"),
+    ("mak", 4, "verb"), ("mek", 4, "verb"), ("mis", 4, "verb"), ("mus", 4, "verb"),
+    ("ir", 5, "aorist"), ("ur", 5, "aorist"),
     ("imiz", 4, "consonant"), ("umuz", 4, "consonant"), ("iniz", 4, "consonant"), ("unuz", 4, "consonant"),
     ("nden", 5, "vowel"), ("ndan", 5, "vowel"),
     ("ten", 4, "voiceless"), ("tan", 4, "voiceless"), ("den", 4, "voiced"), ("dan", 4, "voiced"),
@@ -594,9 +605,8 @@ _SUFFIXES_BY_LAST = {
 
 # Vowel loss (#430): a few roots drop their last vowel before a vowel suffix, so peeling
 # "metni" stops at "metn" while "metin" stays whole. The peeled short form is mapped back
-# to the root, on both sides. Forms that are often another word stay out: devre and
-# devreye (circuit, activation) for devir, resmi (official) for resim, karne for karin,
-# English burn for burun, the name Emre for emir, and al-in (take) for alin.
+# to the root, on both sides. Forms that are often another word stay out: resmi (official)
+# for resim, emre (the name Emre) for emir, and al-in (take) for alin.
 _VOWEL_LOSS = {
     "sehr": "sehir", "fikr": "fikir", "beyn": "beyin", "metn": "metin", "kism": "kisim",
     "hukm": "hukum", "nehr": "nehir", "zihn": "zihin", "vakt": "vakit", "nesl": "nesil",
@@ -606,7 +616,16 @@ _VOWEL_LOSS = {
     # A three-letter loss stops above the stem floor, so each surviving form is listed.
     "ismi": "isim", "ismin": "isim", "isme": "isim", "akli": "akil", "aklin": "akil",
     "akla": "akil", "agzi": "agiz", "agzin": "agiz", "agza": "agiz", "oglu": "ogul",
-    "oglun": "ogul", "omru": "omur", "omrun": "omur",
+    "oglun": "ogul", "omru": "omur", "omrun": "omur", "emri": "emir", "emrin": "emir",
+}
+# These short forms are also another word, which the suffix that reached them tells apart:
+# devri and devrinde come from devir, devre and devreye (circuit, activation) end in e and
+# devrim (revolution) in im; burnu and burnundan come from burun, while English burn takes
+# no suffix; karni comes from karin, karne (report card) ends in e.
+_VOWEL_LOSS_AFTER = {
+    "devr": ("devir", frozenset(("i", "in", "iniz"))),
+    "burn": ("burun", frozenset(("u", "un", "um", "umuz", "unuz"))),
+    "karn": ("karin", frozenset(("i", "in", "im", "imiz", "iniz"))),
 }
 
 
@@ -624,6 +643,10 @@ def _attaches(stem, gate):
         return previous in "ln"
     if gate == "passive":
         return previous in "ln" and stem[-2] in "iu"
+    if gate == "verb":
+        return previous not in _VOWELS and previous not in "lnm"
+    if gate == "aorist":
+        return previous not in _VOWELS and previous not in "lnmd" and stem[-2] in _VOWELS
     return True
 
 
@@ -640,6 +663,7 @@ def _harmonizes(stem, suffix):
 
 @functools.lru_cache(maxsize=16384)
 def _stem(word):
+    last = ""
     # Words under 5 characters are already stems; peeling them merges unrelated roots.
     while len(word) >= 5:
         # Claude ends in the spelling of a Turkish locative suffix. Preserve the
@@ -653,11 +677,19 @@ def _stem(word):
             stem = word[:-len(suffix)]
             if len(stem) < floor or not _attaches(stem, gate) or not _harmonizes(stem, suffix):
                 continue
-            word = stem
+            if gate in ("verb", "aorist"):
+                # The past tense stem: t after a voiceless consonant, d otherwise. A d before
+                # a vowel suffix is a softened t (kaydediyor, kaydetti).
+                if stem[-1] == "d" and suffix[0] in _VOWELS:
+                    stem = stem[:-1] + "t"
+                return stem + ("t" if stem[-1] in _VOICELESS else "d")
+            word, last = stem, suffix
             break
         else:
             break
     word = _VOWEL_LOSS.get(word, word)
+    if word in _VOWEL_LOSS_AFTER and last in _VOWEL_LOSS_AFTER[word][1]:
+        word = _VOWEL_LOSS_AFTER[word][0]
     # Consonant softening: kitap/kitabi and ornek/ornegi (soft g is already folded to g).
     # A b or g after a vowel goes back to p or k on every stem, peeled or not, so both
     # sides agree. d is left alone: past tense stems like "dened" would land on "denet".
@@ -692,11 +724,26 @@ def _short_root(stem):
     return None
 
 
+# A hyphenated name (#430) keeps its parts and also counts once as the joined word, so
+# claude-mem meets claudemem and e-posta meets eposta. Every other token is one stem per
+# word; the parts were already two. NFKD has turned the other hyphen forms into these two.
+# All-digit compounds stay parts: a date or range is not a name, and neither is a joined
+# chain longer than any name. The lookbehind starts a match only at a word start; without
+# it a long unhyphenated run backtracks quadratically.
+_COMPOUND = re.compile("(?<![a-z0-9])[a-z0-9]+(?:[-\u2010][a-z0-9]+)+")
+
+
 def _token_counts(text):
     """Stem -> occurrence count; the keys are exactly _tokens(text)."""
     text = unicodedata.normalize("NFKD", str(text).casefold())
     text = "".join(c for c in text if not unicodedata.combining(c)).replace("ı", "i")
-    return Counter(_stem(word) for word in re.findall(r"[a-z0-9]+", text))
+    counts = Counter(_stem(word) for word in re.findall(r"[a-z0-9]+", text))
+    if "-" in text or "\u2010" in text:
+        for compound in _COMPOUND.findall(text):
+            joined = compound.replace("-", "").replace("\u2010", "")
+            if len(joined) <= 64 and not joined.isdigit():
+                counts[_stem(joined)] += 1
+    return counts
 
 
 def _tokens(text):
@@ -864,7 +911,8 @@ def _name_match_score(record, terms):
         return 0
     best_score = 0
     for cand in _name_candidates(record):
-        cand_tokens = _tokens(cand) - STOPWORDS
+        # Parts only: a joined hyphenated name must not demand that the query hyphenate too.
+        cand_tokens = _tokens(cand.translate(_NAME_SEPARATORS)) - STOPWORDS
         meaningful = {t for t in cand_tokens if len(t) >= 2}
         if meaningful and meaningful - NAME_GENERIC_TERMS and meaningful.issubset(terms):
             if len(meaningful) > best_score:

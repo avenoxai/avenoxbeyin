@@ -493,6 +493,25 @@ class ConfigAndCacheTest(Vault):
         cache.write_text(json.dumps(blob), encoding='utf-8')
         self.assertEqual(self.sources('Mem0 kurulmalı mı'), ['knowledge/mem0.md'])
 
+    def test_cache_from_the_3_12_stemmer_is_rebuilt(self):
+        # 3.12.0 kept "calisir" whole under a probe the active verb rule (#430) leaves intact.
+        probe = 'Kütüphanesindeki notlarımızı güncellediler; running tests quickly İstanbul ŞEHİR 2026 kurulmalı metni claude'
+        old_params = [passage.BLOCK_TARGET, passage.BLOCK_OVERLAP,
+                      hashlib.sha256(' '.join(sorted(runtime._tokens(probe))).encode()).hexdigest()[:16]]
+        self.assertNotEqual(old_params, passage._PARAMS)
+        self.ingest('zirkon', 'Zirkon servisi her gece çalışır.', 'knowledge/zirkon.md')
+        self.assertEqual(self.sources('zirkon çalışıyor mu'), ['knowledge/zirkon.md'])
+        cache = self.store.state_dir / passage.CACHE_NAME
+        blob = json.loads(cache.read_text(encoding='utf-8'))
+        blob['params'] = old_params
+        blob['records'] = {key: [[head, start, end, ' '.join('calisir' if t == 'calist' else t for t in tokens.split()),
+                                  head_only]
+                                 for head, start, end, tokens, head_only in entries]
+                           for key, entries in blob['records'].items()}
+        blob.pop('pool', None)
+        cache.write_text(json.dumps(blob), encoding='utf-8')
+        self.assertEqual(self.sources('zirkon çalışıyor mu'), ['knowledge/zirkon.md'])
+
     def test_changed_record_is_reindexed(self):
         self.ingest('a', 'Zirkon kovası için karar.', 'knowledge/a.md')
         self.assertEqual(self.sources('kobalt deposu'), [])
