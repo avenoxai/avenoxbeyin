@@ -54,7 +54,7 @@ class LegacySyncEngine(subject.SyncEngine):
                 try:
                     self._path(relative, existing=True)
                     raw = path.read_bytes()
-                    text = raw.decode('utf-8')
+                    text = subject.decode_utf8(raw)  # #543: the engine's named UTF-8 reason.
                     if _has_conflict_markers(text):
                         raise ValueError('unresolved git conflict markers; resolve the merge before sync')
                     metadata, body = parse(text)
