@@ -1213,6 +1213,8 @@ def extract(vault, card, found, allow_audio=True, info=None):
     url, kind = meta.get('url'), meta.get('kaynak_turu') or kind_of(meta.get('url'))
     if url:
         _safe_source_url(url)  # Cards can also be edited, clipped or synced.
+        if kind == 'youtube' and kind_of(url) != 'youtube':
+            kind = kind_of(url)  # an edited field never hands another site to yt-dlp's generic extractor
     clipped = _section(body, 'Icerik') or _section(body, 'İçerik')
     if clipped and len(clipped) > 200 and kind != 'youtube':
         return clipped, 'web-clipper', None
@@ -1270,7 +1272,7 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
     results = []
     for card in targets:
         expected = card['path'].read_bytes()
-        meta, body = _parse_card_text(expected.decode('utf-8').replace('\r\n', '\n'))
+        meta, body = _parse_card_text(expected.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n'))
         card = dict(card, meta=meta, body=body)
         raw_write = None
         if meta.get('durum') in AGENT_CARD_BUSY:
@@ -2147,10 +2149,17 @@ def _post_title(post, article, link=''):
     link = re.sub(r'\s+', ' ', link or '').strip()
     handle = re.match(r'^https://x\.com/([A-Za-z0-9_]{1,15})/status/', post or '')
     if handle and link:
+        at = text.find(link)
         mention = re.search(r'@' + re.escape(handle.group(1)) + r'(?![A-Za-z0-9_])', text, re.I)
-        # A display name or handle can itself contain the timestamp (for example @abc2h).
-        # Keep the existing fallback for accessibility text that omits the handle entirely.
-        at = text.find(link, mention.end() if mention else 0)
+        if mention:
+            # The header reads "@handle · <time>", and a name or handle can itself contain the time
+            # (for example @abc2h), so the time right after the handle splits. A time after the name
+            # (never at the very start) but before the mention means the header omits the handle and
+            # the body mentions it, so the first time still splits, as without any mention.
+            after = text.find(link, mention.end())
+            header = after >= 0 and not text[mention.end():after].strip(' ·')
+            if header or not 0 < at < mention.start():
+                at = after
         if at >= 0:
             body = text[at + len(link):].strip()
             text = '@%s: %s' % (handle.group(1), body) if body else '@' + handle.group(1)
@@ -3320,12 +3329,12 @@ def windows_sources(context, clip, fresh, image=None, shot=None):
     """Pure source decisions. All alternatives survive, even when another is initially selected."""
     sources = []
 
-    def add(kind, value, label, on, key, title=None, picture=None):
+    def add(kind, value, label, on, key, title=None, picture=None, clipboard=False):
         if kind == 'url' and value and any(source['kind'] == 'url' and canonical(source['value']) == canonical(value)
                                           for source in sources):
             return
         if value:
-            sources.append(dict(kind=kind, value=value, label=label, on=bool(on), key=key, title=title, image=picture))
+            sources.append(dict(kind=kind, value=value, label=label, on=bool(on), key=key, title=title, image=picture, clipboard=clipboard))
     copied_url = tab_url(clip) if re.match(r'^https?://', clip, re.I) else None
     hovered, page = context.get('url_imlec'), context.get('url')
     # A link read from the browser is what the key was pressed for: it wins over anything on the
@@ -3350,8 +3359,11 @@ def windows_sources(context, clip, fresh, image=None, shot=None):
                                     (shot, 'Pencere görüntüsü', False, 'w')):
         if picture:
             add('file', picture['path'], label, on, key, picture=picture)
+    clipboard_files = bool(context.get('dosyalar_pano'))
+    files_on = clipboard_leads if clipboard_files else True
     for index, path in enumerate(context.get('dosyalar') or []):
-        add('file', path, Path(path).name, True, str(index + 1) if index < 9 else '')
+        add('file', path, Path(path).name, files_on, str(index + 1) if index < 9 else '',
+            clipboard=clipboard_files)
     for source in sources:
         source['clipboard'] = source.get('clipboard', False) or source['key'] in ('p', 'm', 'g')
     return sources
@@ -3526,6 +3538,24 @@ def _escape_scope(front, source, popup):
     if not front or front == popup:
         return None
     return 'consume' if source and front == source else 'pass'
+
+
+def _win_escape_modified(event):
+    """Whether an Esc that reached the popup carries Shift, Ctrl, Alt or Win: the hook's rule for Tk.
+
+    Tk on Windows reports Shift 0x1, Control 0x4 and Alt 0x20000 in event.state; Caps 0x2, Num 0x8
+    and Scroll Lock 0x20 are lock states, so a plain Esc with them still cancels. Tk leaves the
+    Windows key out of event.state; GetKeyState reads it as of this key message on the GUI thread.
+    """
+    if getattr(event, 'state', 0) & 0x20005:
+        return True
+    try:
+        import ctypes
+        user32 = ctypes.WinDLL('user32')
+        user32.GetKeyState.argtypes, user32.GetKeyState.restype = [ctypes.c_int], ctypes.c_short
+        return any(user32.GetKeyState(key) & 0x8000 for key in (0x5B, 0x5C))  # VK_LWIN, VK_RWIN
+    except (AttributeError, OSError):
+        return False
 
 
 def _win_escape_guard(root, popup, source, dismiss):
@@ -4449,6 +4479,25 @@ def _win_clipboard_payload(limit=IMAGE_LIMIT, tries=6, snapshot=False):
             before = _clipboard_sequence()
             raw = take(13)
             found['text'] = raw.decode('utf-16le', 'replace').split('\0', 1)[0] if raw else ''
+            if user32.IsClipboardFormatAvailable(15):  # CF_HDROP
+                handle = user32.GetClipboardData(15)
+                if handle:
+                    shell32 = ctypes.WinDLL('shell32')
+                    shell32.DragQueryFileW.argtypes = [wintypes.HANDLE, wintypes.UINT, wintypes.LPWSTR, wintypes.UINT]
+                    shell32.DragQueryFileW.restype = wintypes.UINT
+                    count = shell32.DragQueryFileW(handle, 0xFFFFFFFF, None, 0)
+                    files = []
+                    for i in range(min(count, 20)):
+                        length = shell32.DragQueryFileW(handle, i, None, 0)
+                        buf = ctypes.create_unicode_buffer(length + 1)
+                        shell32.DragQueryFileW(handle, i, buf, length + 1)
+                        try:
+                            if buf.value and Path(buf.value).is_file():
+                                files.append(buf.value)
+                        except (OSError, ValueError):
+                            pass
+                    if files:
+                        found['dosyalar'] = files
         for name in ('PNG', 'image/png'):  # what the Snipping Tool, browsers and Office put next to the bitmap
             found['png'] = found['png'] or take(user32.RegisterClipboardFormatW(name))
         if not (found['png'] and png_info(found['png'])):
@@ -5058,7 +5107,11 @@ def popup(vault, context=None, state=None, root=None, session=None):
         root.destroy()
         return 'break'
 
-    root.bind('<Escape>', dismiss if windows else lambda _e: close())
+    def escape(event):
+        # Tk's <Escape> matches any modifier state; like the hook, only a plain Esc cancels.
+        return None if _win_escape_modified(event) else dismiss(event)
+
+    root.bind('<Escape>', escape if windows else lambda _e: close())
     if windows:
         root.protocol('WM_DELETE_WINDOW', dismiss)
         close_label = canvas.create_text(W - pad, 33, text='×', anchor='e', fill=P['muted'], font=_font(20))
@@ -6213,10 +6266,21 @@ class _JsonPipe:
         self.write_thread.start()
 
     def _read(self):
+        import errno
         import queue
+        retries = 0
         try:
             while not self.stopping.is_set():
-                line = self.reader.readline(WIN_MESSAGE_LIMIT + 1)
+                try:
+                    line = self.reader.readline(WIN_MESSAGE_LIMIT + 1)
+                except OSError as exc:
+                    if exc.errno not in (errno.EINTR, errno.EAGAIN, errno.EWOULDBLOCK) or retries >= 3:
+                        break
+                    retries += 1
+                    self.stopping.wait(0.01)
+                    continue
+                retries = 0
+                # A blocking pipe returns empty bytes only at EOF, never for a delayed packet.
                 if not line or len(line) > WIN_MESSAGE_LIMIT or not line.endswith(b'\n'):
                     break
                 message = json.loads(line)
@@ -6660,6 +6724,10 @@ def _collect_windows(context, vault, state, cancel=None):
         context = windows_enrich(context, cancel)
         if cancel and cancel.is_set():
             return None
+        copied_files = [p for p in payload.get('dosyalar', []) if not (image and snip_path(p))]
+        if copied_files and not context.get('dosyalar'):
+            context['dosyalar'] = copied_files
+            context['dosyalar_pano'] = True
         shot = window_image(context, cancel=cancel)
         sources = windows_sources(context, clip, fresh, image, shot)
         success = True
@@ -6874,6 +6942,35 @@ def _links_skills(skills):
 
 def _state_path(state):
     return Path(state) / STATE_FILE
+
+
+def _mac_path():
+    """Predictable, sanitized PATH for LaunchAgent: active Python dir, Homebrew, and POSIX system bins."""
+    ordered = []
+    py_dir = str(Path(sys.executable).parent)
+    defaults = [py_dir, '/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin']
+    for p in defaults:
+        if p and p not in ordered:
+            ordered.append(p)
+    return ':'.join(ordered)
+
+
+def _bootstrap_with_retry(domain, agent, retries=5, delay=0.2):
+    """Call `launchctl bootstrap` with backoff retries when launchd returns EIO (5).
+
+    When a previously running LaunchAgent is booted out, launchd teardown can be
+    asynchronous. A rapid bootstrap call immediately afterwards may fail with
+    EIO (5) until the previous job completely unbinds.
+    """
+    import time
+    for attempt in range(retries):
+        proc = subprocess.run(['launchctl', 'bootstrap', domain, str(agent)], capture_output=True)
+        if proc.returncode == 0:
+            return proc
+        if proc.returncode != 5 or attempt == retries - 1:
+            raise subprocess.CalledProcessError(proc.returncode, proc.args,
+                                                output=proc.stdout, stderr=proc.stderr)
+        time.sleep(delay * (attempt + 1))
 
 
 def _launch_agent():
@@ -7249,7 +7346,7 @@ def install(vault, state, hotkey=True, spec=None, folder_spec=None):
                  'ProgramArguments': [sys.executable, str(runner), 'dinle', '--vault', str(vault),
                                       '--keycode', str(keycode), '--mods', str(modifiers)],
                  'ProcessType': 'Interactive', 'StandardErrorPath': str(state / 'yakala' / 'dinleyici.log'),
-                 'EnvironmentVariables': {'PATH': os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin'),
+                 'EnvironmentVariables': {'PATH': _mac_path(),
                                           'LANG': 'en_US.UTF-8'}}
         agent = _launch_agent()
         previous = _agent_vault()
@@ -7259,7 +7356,7 @@ def install(vault, state, hotkey=True, spec=None, folder_spec=None):
         domain = 'gui/' + str(os.getuid())
         subprocess.run(['launchctl', 'bootout', domain + '/' + LAUNCH_LABEL], capture_output=True)
         agent.write_bytes(plistlib.dumps(plist))
-        subprocess.run(['launchctl', 'bootstrap', domain, str(agent)], check=True, capture_output=True)
+        _bootstrap_with_retry(domain, agent)
         done['kisayol'] = label
         done['kisayol_calisiyor'] = _listener_ok()
     elif hotkey and sys.platform.startswith('linux'):
@@ -10851,6 +10948,11 @@ def main(argv=None, vault=None, state=None):
         if getattr(args, 'hazir', False):
             result = warm_popup(vault, state, getattr(args, 'instance', None))
             if os.name == 'nt':
+                # The IPC reader is a daemon thread blocked on stdin; normal interpreter shutdown
+                # waits 1 s for that BufferedReader lock and then aborts the process
+                # (Fatal Python error: _enter_buffered_busy). DONE is already flushed by pipe.finish().
+                if argv is None:
+                    os._exit(0)
                 return 0  # protocol endpoint, not a second JSON CLI response
         else:
             context = json.loads(args.baglam) if getattr(args, 'baglam', None) else gather_context()

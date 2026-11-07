@@ -49,6 +49,20 @@ class ContinuityTest(unittest.TestCase):
         return dict(project=project, refs=[{k: row[k] for k in ('id', 'revision', 'source_sha256')}
                                          for row in records])
 
+    def test_rendered_turn_anchors_the_topic_although_the_envelope_is_slim(self):
+        # The hook remembers the delivered projection of render_context, not the envelope text:
+        # the envelope leaves revision and source_sha256 out, the projection must keep them.
+        target = self.note('target', text='Quartz deployment rollback procedure. ' * 40)
+        context = self.store.retrieve('Quartz deployment rollback', project='demo', budget_chars=1500)
+        text, delivered = runtime.render_context(context, 1500)
+        self.assertNotIn('source_sha256', json.loads(text)['records'][0])
+        continuity.remember(self.store, 'claude', 'session', 'Quartz deployment rollback', delivered, now=100)
+        saved = json.loads(continuity._path(self.store, 'claude', 'session').read_text(encoding='utf-8'))
+        self.assertEqual(saved['refs'], [{k: target[k] for k in ('id', 'revision', 'source_sha256')}])
+        # A second render of the projection keeps the identities too.
+        _text, again = runtime.render_context(delivered, 1500)
+        self.assertEqual(again['records'][0]['source_sha256'], target['source_sha256'])
+
     def test_concrete_anchor_followup_skips_current_and_source_reads(self):
         target = self.note('target')
         self.note('unrelated')

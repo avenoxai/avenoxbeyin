@@ -22,9 +22,9 @@ TURKISH = ('Kullanıcının doğrudan söylediği tercih, karar ve olgu çıkar�
            'istenmesini beklemeden kaydedilir.')
 # #375: "record it promptly" is about timing; the target of a correction is chosen first.
 SCOPE_ENGLISH = ('Promptly is about timing, not target: a correction that belongs to one project or area goes to '
-                 '`projects/<project>/Kurallar.md`, leaving at most a one-line pointer in Kurallar.md.')
+                 '`Kurallar.md` in the existing project folder (`🏰 300-Projects/<project>/` in the official template, or legacy `projects/<project>/`; do not create a second folder for the same project), leaving at most a one-line pointer in Kurallar.md.')
 SCOPE_TURKISH = ('Beklemeden kaydetmek hedefi değiştirmez: tek bir projeye ya da alana ait düzeltme '
-                 '`projects/<proje>/Kurallar.md` dosyasına gider, Kurallar.md\'de en çok bir satırlık işaretçi kalır; '
+                 '`mevcut-proje-klasörü/Kurallar.md` (resmî şablonda `🏰 300-Projects/<proje>/Kurallar.md`, eski kasalarda `projects/<proje>/Kurallar.md`; aynı proje için ikinci klasör açma) dosyasına gider, Kurallar.md\'de en çok bir satırlık işaretçi kalır; '
                  'yalnız her işte geçerli kural Kurallar.md\'ye tam metin girer.')
 CLAUSES = (ENGLISH, TURKISH, SCOPE_ENGLISH, SCOPE_TURKISH)
 NOTE = '\nKullanıcının kendi notu: bu paragraf blok dışında ve korunmalı.\n'
@@ -170,17 +170,19 @@ class InstructionBlockTest(unittest.TestCase):
         import beyin_v3_companion as companion
         skill = ' '.join((ROOT / 'template/.agents/skills/beyin/SKILL.md').read_text(encoding='utf-8').split())
         self.assertIn('ama önce hedefini seç', skill)
-        self.assertIn('`projects/<proje>/Kurallar.md` dosyasına yaz', skill)
-        # Documented only as the hook implements it: the folders it scans, and that the filter
-        # needs a client that sends the active project, which Claude Code does not (#288).
+        self.assertIn('`mevcut-proje-klasörü/Kurallar.md` (resmî şablonda `🏰 300-Projects/<proje>/Kurallar.md`, eski kasalarda `projects/<proje>/Kurallar.md`; aynı proje için ikinci klasör açma) dosyasına yaz', skill)
+        # Document actual folder discovery and local project resolution (#456/#475).
         source = (ROOT / 'template/.claude/scripts/beyin_v3_companion.py').read_text(encoding='utf-8')
         folders = ast.literal_eval(re.search(r'for folder in (\([^)]*\))', source)[1])
         for folder in folders:
             self.assertIn('`' + folder + '/`', skill)
-        self.assertIn('yalnız istemci kancaya etkin proje adını gönderdiğinde', skill)
-        self.assertIn('Claude Code bugün proje adı göndermez', skill)
+        self.assertIn('çalışma dizininden veya sorguda geçen tek bir bilinen projeden', skill)
+        self.assertIn('belirsiz eşleşmede proje seçmez', skill)
+        self.assertIn('arama kapsamını değiştirmez', skill)
         # The pointer the skill shows is a rule the hook really scopes.
         pointer = re.search(r'`(- \[kapsam: <proje>\][^`]*)`', skill)[1].replace('<proje>', 'alpha')
+        self.assertIn('mevcut-proje-klasörü/Kurallar.md', pointer)
+        self.assertIn('`🏰 300-Projects/`', skill)
         self.assertEqual(companion.rule_scopes(pointer), {'alpha'})
         self.assertEqual(companion.filter_scoped_rules(pointer, 'alpha'), pointer)
         self.assertEqual(companion.filter_scoped_rules(pointer, None), pointer)
@@ -440,6 +442,28 @@ class InstructionBlockTest(unittest.TestCase):
             hook.write_bytes(edited)
             self.assertIn('Reinstall conflict: managed file changed ' + names[0], self.install_conflict())
             self.assertEqual(hook.read_bytes(), edited)
+
+    def test_generated_block_mandates_note_read_and_note_edit_for_human_notes(self):
+        """#465: AGENTS.md closing protocol must instruct note-read and note-edit for existing human notes."""
+        self.seed('CLAUDE.md', CLAUDE)
+        self.install()
+        for name in ('AGENTS.md', 'CLAUDE.md'):
+            with self.subTest(file=name):
+                block = self.block(name)
+                self.assertIn('var olan insan notlarını `note-read` ile oku, `note-edit` ile düzenle', block)
+                self.assertIn('Read and edit existing human notes with `note-read` and `note-edit`.', block)
+        router = (ROOT / 'template/CLAUDE.md').read_text(encoding='utf-8')
+        self.assertIn('var olan insan notlarını `note-read` ile oku, `note-edit` ile düzenle', router)
+
+    def test_closing_protocol_indexes_concepts_before_final_receipt(self):
+        self.seed('CLAUDE.md', CLAUDE)
+        self.install()
+        texts = [self.block(name) for name in ('AGENTS.md', 'CLAUDE.md')]
+        texts.append((ROOT / 'template/CLAUDE.md').read_text(encoding='utf-8'))
+        for text in texts:
+            self.assertIn('Kavram yazınca `knowledge/index.md` kaydını tek satırla güncelle', text)
+            self.assertIn('gerçek ilişki varsa `knowledge/connections/`', text)
+            self.assertIn('receipt en son, kart ve Threads düzenlemelerinden sonra', text)
 
 if __name__ == '__main__':
     unittest.main()

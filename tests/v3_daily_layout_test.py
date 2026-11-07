@@ -70,10 +70,10 @@ class DailyLayoutTest(unittest.TestCase):
         self.assertEqual(self.engine.sync()['status'], 'succeeded')
         header = '---\n{\n  "generated": true,\n  "kind": "receipt-index"\n}\n---\n'
         expected = (header + '# Recorded outcomes\n\nAgent-authored claims, not independently verified facts.\n\n'
-                    + '## ' + self.stamp + '\n\nRecorded result.\n\nSource: [[' + source + ']]\n')
+                    + '## ' + self.stamp + '\n\nRecorded result.\n\nSource: [[' + source + '|seed]]\n')
         outcomes = (header + '# Outcome source index\n\nThis index links semantic receipts. '
                     'It is not an automatic knowledge compiler.\n\n- 2026-09-28: Recorded result.\n'
-                    '  Source: [[' + source + ']]\n')
+                    '  Source: [[' + source + '|seed]]\n')
         self.assertEqual(self.daily('v3').read_bytes(), expected.encode())
         self.assertEqual((self.vault / 'knowledge/v3/outcomes.md').read_bytes(), outcomes.encode())
         self.assertFalse(self.daily('flat').exists())
@@ -81,6 +81,29 @@ class DailyLayoutTest(unittest.TestCase):
         preferences.save_daily_layout(self.vault, 'v3')
         self.engine.sync()
         self.assertEqual(self.daily('v3').read_bytes(), before)
+
+    def test_receipt_link_alias_cannot_break_the_wikilink(self):
+        source = 'receipts/' + 'a' * 64 + '.md'
+        self.assertEqual(projections._receipt_link(source, 'update-check-2026-10-16'),
+                         '[[' + source + '|update-check-2026-10-16]]')
+        self.assertEqual(projections._receipt_link(source, 'a|b]]c#d^e\n[[x'),
+                         '[[' + source + '|a b c d e x]]')
+        self.assertEqual(projections._receipt_link(source, ' ||[] '), '[[' + source + ']]')
+        self.assertEqual(len(projections._receipt_link(source, 'x' * 200)), len('[[' + source + '|]]') + 80)
+
+    def test_views_written_by_older_engines_take_the_alias_without_conflict(self):
+        source = self.receipt()
+        self.assertEqual(self.engine.sync()['status'], 'succeeded')
+        relative = self.daily('v3').relative_to(self.vault).as_posix()
+        # Bytes an engine before #514 wrote and tracked: bare hash link.
+        old = self.daily('v3').read_bytes().replace(('|seed]]').encode(), b']]')
+        self.daily('v3').write_bytes(old)
+        with self.engine.store._connect() as db:
+            db.execute('UPDATE receipt_views SET hash=? WHERE path=?', (hashlib.sha256(old).hexdigest(), relative))
+        result = self.engine.sync()
+        self.assertEqual(result['status'], 'succeeded')
+        self.assertEqual(result.get('conflicts', []), [])
+        self.assertIn(('[[' + source + '|seed]]').encode(), self.daily('v3').read_bytes())
 
     def test_flat_tracking_is_invisible_to_older_engines(self):
         preferences.save_daily_layout(self.vault, 'flat')

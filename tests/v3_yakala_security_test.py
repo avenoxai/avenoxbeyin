@@ -350,6 +350,23 @@ class YakalaSecurityTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 yakala.via_audio('--version', {'yt_dlp': 'yt-dlp', 'whisper': 'whisper'}, self.root)
 
+    def test_edited_card_kind_cannot_send_another_site_to_yt_dlp(self):
+        """`kaynak_turu` is card text: only a YouTube address opens yt-dlp, never its generic extractor."""
+        public = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('8.8.8.8', 443))]
+        helpers = {'npx': None, 'yt_dlp': 'yt-dlp', 'whisper': None, 'pdftotext': None, 'ffmpeg': None}
+        for url, opens in (('https://www.youtube.com/watch?v=abc', True), ('https://video.example.com/izle', False)):
+            card = yakala.find_card(self.vault, yakala.capture(self.vault, url=url)['id'])
+            card['meta']['kaynak_turu'] = 'youtube'
+            calls = []
+
+            def run(command, *args, **kwargs):
+                calls.append(Path(command[0]).name)
+                return 1, '', ''
+            with self.subTest(url=url), patch.object(socket, 'getaddrinfo', return_value=public), \
+                    patch.object(yakala, '_run', side_effect=run), patch.object(yakala, 'via_stdlib', return_value=None):
+                yakala.extract(self.vault, card, helpers, allow_audio=False, info={})
+                self.assertEqual('yt-dlp' in calls, opens, calls)
+
     def test_vault_path_traversal_absolute_path_and_symlink(self):
         secret = self.root / 'private.txt'
         secret.write_text('never import this secret', encoding='utf-8')
@@ -620,9 +637,13 @@ class YakalaSecurityTest(unittest.TestCase):
         calls = ((yakala.via_defuddle, ('https://example.com/x', {'npx': 'npx'})),
                  (yakala.youtube_tracks, ('https://example.com/x', {'yt_dlp': 'yt-dlp'}, self.root)),
                  (yakala.via_audio, ('https://example.com/x', {'yt_dlp': 'yt-dlp', 'whisper': 'whisper'}, self.root)))
+        # Proxy inheritance is offline: keep the real public-address validation,
+        # but supply deterministic DNS rather than requiring external resolution.
+        public = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('8.8.8.8', 443))]
         with patch.dict(os.environ, self.PROXIES):
             for function, args in calls:
-                with self.subTest(function=function.__name__):
+                with self.subTest(function=function.__name__), \
+                        patch.object(socket, 'getaddrinfo', return_value=public) as dns:
                     if os.name == 'nt' and sys.platform == 'win32':
                         with patch.object(yakala, '_windows_run', return_value=(0, '', '')) as run:
                             function(*args)
@@ -631,6 +652,7 @@ class YakalaSecurityTest(unittest.TestCase):
                         with patch('subprocess.run', side_effect=subprocess.TimeoutExpired(cmd='cmd', timeout=1)) as run:
                             function(*args)
                         env = run.call_args.kwargs['env']
+                    dns.assert_called_once_with('example.com', 443, type=socket.SOCK_STREAM)
                     if os.name == 'nt':
                         # Windows environment names are case-insensitive: os.environ folds
                         # http_proxy and HTTP_PROXY into one upper-case key.
@@ -648,6 +670,13 @@ class YakalaSecurityTest(unittest.TestCase):
         empty = [handler for handler in build.call_args.args
                  if isinstance(handler, urllib.request.ProxyHandler) and handler.proxies == {}]
         self.assertEqual(empty, [])
+
+    def test_extra_urls_keep_public_only_validation(self):
+        for value in ('http://127.0.0.1/internal-ref', 'file:///secret',
+                      'https://user:pass@example.com/', '-option'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                yakala.capture(self.vault, url='https://example.com', extra_urls=[value])
+        self.assertEqual(yakala.cards(self.vault), [])
 
 if __name__ == '__main__':
     unittest.main()

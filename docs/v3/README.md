@@ -6,6 +6,8 @@ V3'te Markdown kaynak, SQLite yerel indeks, Codex/Claude Code/Antigravity, [Herm
 
 [Yeni kullanıcı başlangıcı](../../README.md) · [Ajanla kurulum](../../SETUP-V3.md) · [Güncelleme/geri alma](UPDATE.md) · [Birden çok makine](MULTI-MACHINE.md) · [Kaynak şeması](MARKDOWN.md) · [Runtime](RUNTIME.md)
 
+Geliştiriciler için: [kaynak ve dağıtım sınırları envanteri](MODULE-BOUNDARIES.md).
+
 ## Kullanıcı paketi
 
 Kurucu ortak motoru, `beyin`, `beyin-doktor`, `beyin-guncelle` skill'lerini, kurulu `beyin.py` girişini ve işletim sistemine uygun güncelleme kısayolunu dağıtır. Paket ZIP olarak açılıp kullanılabilir; Git gerekmez. Kurulu vault kaynak repo klasöründen bağımsız çalışır.
