@@ -327,6 +327,41 @@ class BackfillTest(unittest.TestCase):
         self.enable()
         self.assert_refused(self.s5, 'kaydetme')
 
+    def test_private_keys_and_literals_cut_by_the_limit_are_hidden_whole(self):
+        import base64
+        import random
+        rng = random.Random(599)
+
+        def pem(label, size):
+            body = base64.b64encode(bytes(rng.randrange(256) for _ in range(size))).decode()
+            lines = '\n'.join(body[i:i + 64] for i in range(0, len(body), 64))
+            return body, '-----BEGIN %s-----\n%s\n-----END %s-----' % (label, lines, label)
+
+        rsa, rsa_block = pem('PRIVATE KEY', 2350)            # ~3,200 characters: END lies past the old margin
+        huge, huge_block = pem('RSA PRIVATE KEY', 12_000)    # END lies past any margin
+        pgp, pgp_block = pem('PGP PRIVATE KEY BLOCK', 600)   # not covered by the shared patterns at all
+        literal = ''.join(rng.choice('ABCDEFGHJKLMNPQRSTUVWXYZ23456789') for _ in range(1000))
+        self.state.mkdir()
+        (self.state / 'secret-patterns.txt').write_text(literal + '\n', encoding='utf-8')
+        keys = Transcript('d1d1d1d1-aaaa-4aaa-8aaa-0000000000d1', self.vault, '2026-09-09')
+        keys.user('Bu anahtarı sunucuya koy:\n' + rsa_block)
+        keys.user('İkinci anahtar: ' + huge_block + '\nSonrası da gizli kalmalı.')
+        keys.user('PGP: ' + pgp_block + '\nBu satır görünür.')
+        keys.user('Özel değer ' + 'p' * 1400 + literal)       # starts before the 1,500-character cut
+        session = h(keys.save(self.folder, self.base + 80).stem)
+        self.enable()
+        result = self.backfill.show(self.vault, self.state, session)
+        digest = ''.join(m['text'] for m in result['messages']).replace('\n', '')
+        for secret in (rsa, huge, pgp, literal):
+            chunks = [secret[i:i + 24] for i in range(0, len(secret) - 24, 24)]
+            self.assertEqual([chunk for chunk in chunks if chunk in digest], [])
+        texts = [m['text'] for m in result['messages']]
+        self.assertTrue(texts[0].startswith('Bu anahtarı sunucuya koy:\n[REDACTED]'))
+        self.assertIn('Bu satır görünür.', texts[2])
+        self.assertGreaterEqual(result['redacted'], 4)
+        with self.assertRaisesRegex(ValueError, 'secret-like value'):
+            self.backfill.write(self.vault, self.state, session, 'Anahtar -----BEGIN PGP PRIVATE KEY BLOCK----- verildi.')
+
     def test_explicitly_chosen_folder_is_read_without_vault_cwd_check(self):
         folder = self.config / 'projects' / '-synthetic-code-repo'
         repo = Transcript('77777777-aaaa-4aaa-8aaa-000000000007', self.root / 'code repo', '2026-08-30')
