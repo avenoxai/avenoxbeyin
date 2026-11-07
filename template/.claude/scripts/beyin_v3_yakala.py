@@ -10001,11 +10001,20 @@ def _agent_read_note(path, own=False):
     return text
 
 
+_AGENT_SEARCH_FOLD = {0x130: 'i', 0x131: 'i'}  # İ and ı meet I/i; the user may type either
+
+
+def _agent_search_fold(text):
+    """Turkish-aware and length-preserving: casefold() turns İ into two code points, which
+    both missed 'istanbul' in 'İstanbul' and shifted the snippet away from the match."""
+    return text.translate(_AGENT_SEARCH_FOLD).lower()
+
+
 def _agent_note_search(vault, query, state=None):
     """Bound the scan itself, not just its answer; os.walk never follows a symlink/junction."""
     if not isinstance(query, str) or not 2 <= len(query.strip()) <= 200:
         raise ValueError('Search query must contain 2 to 200 characters.')
-    needle, matches, scanned, byte_count = query.casefold().strip(), [], 0, 0
+    needle, matches, scanned, byte_count = _agent_search_fold(query.strip()), [], 0, 0
     vault = Path(vault).resolve()
     store_cache = {}
     for directory, folders, files in os.walk(vault, followlinks=False):
@@ -10034,8 +10043,8 @@ def _agent_note_search(vault, query, state=None):
             except (OSError, ValueError, UnicodeError):
                 continue
             byte_count += len(text.encode('utf-8'))
-            at = text.casefold().find(needle)
-            if at >= 0 or needle in name.casefold():
+            at = _agent_search_fold(text).find(needle)
+            if at >= 0 or needle in _agent_search_fold(name):
                 matches.append({'path': path.relative_to(vault).as_posix(),
                                 'snippet': text[max(0, at - 80):max(0, at - 80) + 300]})
                 if len(matches) == 30:
