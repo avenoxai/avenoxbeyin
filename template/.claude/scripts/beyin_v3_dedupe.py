@@ -177,9 +177,10 @@ def filter_novel(state, harness, session, records, now=None):
 def drop_delivered(state, harness, session, context, now=None):
     """Return (context without held-back records, duplicates).
 
-    The returned context keeps the same type, unclipped `sources`, and the `wider`, `extensions` and
-    `evidence` attributes of kept records (beyin_v3.PackedContext), so render_context repacks them from the originals and hands the
-    budget of the held-back records to the new ones instead of re-clipping earlier clips.
+    The returned context keeps the same type, unclipped `sources`, and the `wider`, `extensions`
+    and `evidence` attributes of kept records (beyin_v3.PackedContext), so render_context repacks
+    them from the originals and hands the budget of the held-back records to the new ones instead
+    of re-clipping earlier clips.
     """
     records = list(context.get('records') or [])
     novel, duplicates = filter_novel(state, harness, session, records, now=now)
