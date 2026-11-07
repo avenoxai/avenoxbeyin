@@ -1413,13 +1413,14 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
                     for i in topics:
                         minimum[i] = min(needs[i], available - sum(minimum))
                 else:
-                    # Then every source first keeps what the proportional split gives it,
-                    # capped at its protected part or its floor (identity, handoff, topics),
-                    # so none of them shows less than that split did where it mattered. The
-                    # room left goes to the remaining rules, then the newest handoff card,
-                    # then the topic overview.
-                    minimum = [base[i] if name == 'Kurallar.md' else min(base[i], max(needs[i], lengths[i]))
-                               for i, (_, _, name) in enumerate(parts)]
+                    # Then the rules and the handoff keep what the proportional split gives
+                    # them, older parallel-session cards included; the other sources keep it
+                    # up to their protected part or floor (identity, topic overview). None of
+                    # them shows less than that split did where it mattered. The room left
+                    # goes to the remaining rules, then the newest handoff card, then the
+                    # topic overview.
+                    minimum = [base[i] if name in ('Kurallar.md', 'Last-Session.md') else
+                               min(base[i], max(needs[i], lengths[i])) for i, (_, _, name) in enumerate(parts)]
                     for wanted in ('Kurallar.md', 'Last-Session.md', 'Threads.md'):
                         for i, (_, body, name) in enumerate(parts):
                             if name == wanted:
