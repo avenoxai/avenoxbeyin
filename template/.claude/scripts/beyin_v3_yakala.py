@@ -1560,7 +1560,8 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
         entry = {'id': card['id'], 'kart': card['path'].relative_to(vault).as_posix(),
                  'kaynak_turu': meta.get('kaynak_turu'), 'baslik': meta.get('baslik'),
                  'neden': _section(body, 'Neden'), 'url': meta.get('url')}
-        extras, local = _extra_urls(meta.get('url'), _stored_list(meta.get('ek_urller')) +
+        primary = meta.get('url') if isinstance(meta.get('url'), str) else None  # an edited card must not stop the queue
+        extras, local = _extra_urls(primary, _stored_list(meta.get('ek_urller')) +
                                     _stored_list(meta.get('ek_urller_yerel')), stored=True)
         if extras:
             entry['ek_urller'] = extras

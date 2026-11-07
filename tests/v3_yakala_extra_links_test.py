@@ -92,6 +92,18 @@ class LocalExtraLinkTest(unittest.TestCase):
             entry = yakala.process(self.vault, [first['id']])['kartlar'][0]
         self.assertNotIn('ek_urller', entry)  # a mapping is no list of addresses: nothing is handed on
 
+    def test_an_edited_url_field_does_not_stop_the_queue(self):
+        broken = yakala.capture(self.vault, url='https://example.com/bozuk', extra_urls=['http://10.0.0.9/x'])
+        note = yakala.capture(self.vault, text='Bağımsız not')
+        path = self.vault / broken['path']
+        meta, body = yakala.read_card(path)
+        meta['url'] = ['https://example.com/bozuk']
+        yakala.write_card(path, meta, body)
+        with patch.object(yakala, 'tools', return_value=NO_TOOLS):
+            entries = yakala.process(self.vault, [broken['id'], note['id']])['kartlar']
+        self.assertEqual([entry['durum'] for entry in entries], ['hata', 'cikarildi'])
+        self.assertEqual(entries[0]['ek_urller_yerel'], ['http://10.0.0.9/x'])
+
     def test_primary_url_stays_public_only(self):
         for url in ('http://127.0.0.1/doc', 'http://intranet/rapor'):
             with self.subTest(url=url), self.assertRaises(ValueError):
