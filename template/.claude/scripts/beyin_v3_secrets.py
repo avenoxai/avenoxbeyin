@@ -20,9 +20,17 @@ import unicodedata
 import sqlite3
 
 
+# Match whole assignment names, including ASCII environment prefixes such as
+# TYPESAFE_ or DB_. Keep the outer boundary and require the secret name at the
+# end: API_KEY_COUNT and tokenizer settings are not credential assignments.
+_SECRET_NAME = (r"(?a:(?:[a-z_][a-z0-9_]*_|_)?)"
+                r"(?:api[_ -]?key|access[_ -]?token|token|secret|password|passwd)")
+
+
 BUILTIN_PATTERNS = (
-    re.compile(r"(?i)(?<=[?&])(?:api[_ -]?key|access[_ -]?token|token|secret|password|passwd)=[^&\s]{8,}"),
-    re.compile(r"""(?i)(?<![a-zA-Z0-9_])(?:\\{0,8}["\']?(?:api[_ -]?key|access[_ -]?token|token|secret|password|passwd)\\{0,8}["\']?)\s*[:=]\s*(?:\\{0,8}["\']\S{8,}\\{0,8}["\']|[^"\'\s,;][^\s,;]{7,})"""),
+    re.compile(r"(?i)(?<=[?&])" + _SECRET_NAME + r"=[^&\s]{8,}"),
+    re.compile(r"""(?i)(?<![a-zA-Z0-9_])(?:\\{0,8}["\']?""" + _SECRET_NAME +
+               r"""\\{0,8}["\']?)\s*[:=]\s*(?:\\{0,8}["\']\S{8,}\\{0,8}["\']|[^"\'\s,;][^\s,;]{7,})"""),
     re.compile(r"(?<=://)[^/\s?#:]*:[^/\s?#]*(?=@[^/\s?#@]+)"),
     re.compile(r"\bgh(?:p|o|u|s|r)_[A-Za-z0-9]{20,255}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,255}\b"),
