@@ -74,7 +74,9 @@ class OpeningPriorityTest(unittest.TestCase):
                     self.assertIn(self.statuses[i], text)
                     self.assertIn(self.steps[i], text)
                 self.assertIn(self.card, text)
-                self.assertNotIn('OLDER_CARD', text)
+                # Older cards are optional detail: never ahead of the newest card.
+                if 'OLDER_CARD' in text:
+                    self.assertLess(text.index(self.card), text.index('OLDER_CARD'))
                 self.assertNotIn('CLOSED_CANARY', text)
                 self.assertFalse(report['Kurallar.md']['clipped'])
                 self.assertTrue(report['Kurallar.md']['reasons_omitted'])

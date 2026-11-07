@@ -61,6 +61,11 @@ bilgi haritası, receipt ve sorgu sonuçları kalan alanı kullanır. Bu çekird
 önce sığan kurallar korunur, konu ayrıntısının payı bütün başlıklara dağıtılır. Kuralların
 kendisi de sığmıyorsa sınırlı paylar ve açık kırpma işaretleri geçerlidir; keyfi uzunluktaki
 kuralların her sonlu bütçeye tam sığacağı söylenmez. Kaynak dosyalar bu işlemde değiştirilmez.
+Bu çekirdek bir tabandır, tavan değildir: kalan alan önce bütün kaynaklara paylaşılır. Böylece
+paralel oturumların daha eski devir kartları ve konu kartlarının tamamı sığdıkça gelir; en
+üstteki kart her zaman tam ve önce gelir, kesilen devir ayrıntısı `[truncated: read source]`
+işaretiyle biter. Konu kartları ya tam ya kısa görünümleriyle gelir; tam kartın kullanamadığı
+alan öbür kaynaklara geri döner.
 
 `Threads.md` içindeki `###` başlıklarının her biri kısa görünümde korunur. `**Status:**` /
 `**Durum:**` ile `**Next step:**` / `**Sonraki adım:**` paragrafları varsa bunlar, devam
@@ -73,6 +78,10 @@ sığamayacak kadar küçük bütçelerde bütün başlıkların görünmesi gar
 Bu seçim anlamsal bir özet değildir; etiketsiz veya farklı ifadeli bir sonraki adımı
 bulacağı garanti edilmez. Kısa görünüm ayrıntı ve etiketsiz adımlar için kaynağa yönlendirir.
 Kapalı konular ve kod çitlerindeki örnek başlıklar bu görünümün parçası değildir.
+Kısa görünüm de sığmadığında bütün başlıklar korunur; alan dosyadaki sırayla konulara en az
+80 karakterlik dilimler halinde verilir, sonrakiler yalnız başlıklarıyla gelir ve bölüm
+`[Thread overview clipped; read source]` işaretiyle biter. Yüzlerce konuda her başlığa bir iki
+karakter düşüp anlamsız parçalar oluşmaz.
 
 Claude/Codex açılışında yeniden üretim, istemcinin UTF-16/UTF-8 ölçüsüne sığana kadar
 küçülen bütçeyle tekrarlanır. Hook'un ayrı bildirimleri de karakter bütçesinden düşülür;

@@ -580,6 +580,9 @@ def ends(text, budget):
     return head + f'\n[truncated: {what} omitted here; read source]\n' + closing
 
 
+CLIP_MARKER = '\n[truncated: read source]\n'
+
+
 def clip(text, budget, tail=False, both=False):
     budget = max(0, budget)
     if len(text) <= budget:
@@ -588,7 +591,7 @@ def clip(text, budget, tail=False, both=False):
         kept = ends(text, budget)
         if kept:
             return kept
-    marker = '\n[truncated: read source]\n'
+    marker = CLIP_MARKER
     if budget <= len(marker):
         return marker.strip()[:budget]
     keep = budget - len(marker)
@@ -611,12 +614,18 @@ def headings(text, level):
     return found
 
 
-def latest_handoff(text):
-    """The top handoff card, without older parallel sessions; the source stays intact."""
+def handoff_card(text):
+    """The top dated handoff card (with any preamble above it), or None without one."""
     starts = headings(text, 2)
     if starts and stamp(text[starts[0]:].split('\n', 1)[0]):
         return text[:starts[1] if len(starts) > 1 else len(text)].rstrip() + '\n'
-    return text
+    return None
+
+
+def latest_handoff(text):
+    """The top handoff card, without older parallel sessions; the source stays intact."""
+    card = handoff_card(text)
+    return text if card is None else card
 
 
 THREAD_FIELD = re.compile(
@@ -629,6 +638,9 @@ THREAD_ACTION = re.compile(
     r'\bhat[ıi]rlat|\bremind\b|\bsorulacak\b)')
 
 
+THREAD_OVERVIEW_MARKER = '\n[Thread overview: history omitted; read source for details and unlabelled next steps]\n'
+
+
 def thread_overview(text, brief=False):
     """Source-verbatim overview of every active heading, never an inferred next step.
 
@@ -637,9 +649,40 @@ def thread_overview(text, brief=False):
     The marker makes the missing history and the need to read the source explicit.
     Unstructured notes retain the existing clipping behavior.
     """
+    split = thread_cards(text, brief)
+    if split is None:
+        return text
+    prefix, cards = split
+    return prefix + '\n\n'.join(summary for _, summary in cards) + THREAD_OVERVIEW_MARKER
+
+
+def thread_view(text, budget, brief=False):
+    """Threads.md within budget: the whole excerpt when it fits, otherwise every topic's
+    overview, with whole topic cards in source order wherever they still fit. Below the
+    overview the room is shared across all topic headings (clip_threads)."""
+    if len(text) <= budget:
+        return text
+    split = thread_cards(text, brief)
+    if split is None:
+        return clip(text, budget)
+    prefix, cards = split
+    chosen = [summary for _, summary in cards]
+    size = len(prefix) + len('\n\n'.join(chosen)) + len(THREAD_OVERVIEW_MARKER)
+    if size > budget:
+        return clip_threads(prefix + '\n\n'.join(chosen) + THREAD_OVERVIEW_MARKER, budget)
+    for i, (card, summary) in enumerate(cards):
+        if card != summary and size + len(card) - len(summary) <= budget:
+            chosen[i] = card
+            size += len(card) - len(summary)
+    whole = all(card == shown for (card, _), shown in zip(cards, chosen))
+    return prefix + '\n\n'.join(chosen) + ('\n' if whole else THREAD_OVERVIEW_MARKER)
+
+
+def thread_cards(text, brief=False):
+    """(text before the first topic, [(whole card, overview card)]) or None without topics."""
     starts = headings(text, 3)
     if not starts:
-        return text
+        return None
     cards = []
     for i, start in enumerate(starts):
         card = text[start:starts[i + 1] if i + 1 < len(starts) else len(text)].strip()
@@ -664,9 +707,11 @@ def thread_overview(text, brief=False):
                 explicit = [s for s in actions if re.match(r'(?i)^(?:a[çc][ıi]k:|kalan:|next:|ilk ad[ıi]m)', s)]
                 actions = (explicit or actions)[:1]
             selected = sentences[:1] + actions
-        cards.append(title + '\n' + '\n'.join(dict.fromkeys(selected)))
-    return (text[:starts[0]] + '\n\n'.join(cards) +
-            '\n[Thread overview: history omitted; read source for details and unlabelled next steps]\n')
+        cards.append((card, title + '\n' + '\n'.join(dict.fromkeys(selected))))
+    return text[:starts[0]], cards
+
+
+THREAD_SLICE = 80
 
 
 def clip_threads(text, budget):
@@ -686,7 +731,10 @@ def clip_threads(text, budget):
     room = budget - len(fixed)
     result = text[:starts[0]]
     for i, (title, body) in enumerate(cards):
-        allowance = min(len(body) + 1, room // (len(cards) - i))
+        # An equal share of a character or two per topic is noise. Topics in source order
+        # get at least THREAD_SLICE each; the ones after keep their heading only.
+        sharing = max(1, min(len(cards) - i, room // THREAD_SLICE))
+        allowance = min(len(body) + 1, room // sharing)
         result += title
         if len(body) + 1 <= allowance:
             result += body + '\n'
@@ -904,26 +952,23 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
     if fixed > budget:
         return clip(header + notice + 'Read companion files: ' + ', '.join(r['source'] for r in records), budget)
 
-    def priority_body(body, name):
+    # Priority (#528): the complete rules (reasons dropped first), every open topic's
+    # overview and the newest dated handoff card are the protected core. need() is the
+    # room that core takes in each source; the rest of a source is optional detail that
+    # water-fills like any other section, so a roomy opening still shows older handoff
+    # cards and whole topic cards instead of leaving the budget unused.
+    def core_need(body, name, brief):
         if name == 'Kurallar.md':
-            return without_reasons(body)
-        if name == 'Threads.md':
-            return thread_overview(body)
-        if name == 'Last-Session.md':
-            return latest_handoff(body)
-        return body
+            return len(without_reasons(body))
+        if name == 'Threads.md' and headings(body, 3):
+            return len(thread_overview(body, brief=brief))
+        if name == 'Last-Session.md' and (card := handoff_card(body)) is not None:
+            # A head clip ends with CLIP_MARKER: the card arrives whole with room for it.
+            return min(len(body), len(card) + len(CLIP_MARKER))
+        return min(80, len(body))
 
-    def required(parts):
-        return [len(body) if name == 'Kurallar.md' or
-                (name == 'Threads.md' and headings(body, 3)) or
-                (name == 'Last-Session.md' and headings(body, 2) and
-                 stamp(body[headings(body, 2)[0]:].split('\n', 1)[0])) else min(80, len(body))
-                for _, body, name in parts]
-
-    priority_parts = [(label, priority_body(body, name), name) for label, body, name in sections]
-    if fixed + sum(required(priority_parts)) > budget:
-        priority_parts = [(label, thread_overview(sections[i][1], brief=True) if name == 'Threads.md' else body, name)
-                          for i, (label, body, name) in enumerate(priority_parts)]
+    brief = fixed + sum(core_need(body, name, False) for _, body, name in sections) > budget
+    needs = [core_need(body, name, brief) for _, body, name in sections]
 
     def share(available, parts, protect=False):
         # Rules and the handoff get a floor first: an even split leaves the two continuity
@@ -935,7 +980,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         lengths = [min(len(body), int(available * FLOORS.get(name, 0) / counts[name]))
                    for _, body, name in parts]
         if protect:
-            minimum = required(parts)
+            minimum = [len(body) if name == 'Kurallar.md' else needs[i] for i, (_, body, name) in enumerate(parts)]
             if sum(minimum) > available:
                 # A long overview must not force otherwise affordable rules back
                 # into proportional clipping. Keep every rule before body detail.
@@ -949,11 +994,11 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
                         if sum(minimum) + titles_size - minimum[i] <= available:
                             minimum[i] = titles_size
                 for i, (_, body, name) in enumerate(parts):
-                    if name == 'Last-Session.md' and sum(minimum) + len(body) - minimum[i] <= available:
-                        minimum[i] = len(body)
+                    if name == 'Last-Session.md' and sum(minimum) + needs[i] - minimum[i] <= available:
+                        minimum[i] = max(minimum[i], needs[i])
                 for i, (_, body, name) in enumerate(parts):
                     if name == 'Threads.md':
-                        minimum[i] += max(0, min(available - sum(minimum), len(body) - minimum[i]))
+                        minimum[i] += max(0, min(available - sum(minimum), needs[i] - minimum[i]))
             if sum(minimum) <= available:
                 preferred = [max(floor, need) for floor, need in zip(lengths, minimum)]
                 lengths = preferred if sum(preferred) <= available else minimum
@@ -974,27 +1019,38 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
                      for label, body, name in parts]
             lengths = share(available, parts)
         if sum(len(body) for _, body, _ in parts) > available:
-            parts = [(label, body if name == 'Kurallar.md' else priority_parts[i][1], name)
-                     for i, (label, body, name) in enumerate(parts)]
+            if sum(len(body) if name == 'Kurallar.md' else needs[i]
+                   for i, (_, body, name) in enumerate(parts)) > available:
+                # Reasons go before the protected overview and handoff do.
+                parts = [(label, without_reasons(sections[i][1]) if name == 'Kurallar.md' else body, name)
+                         for i, (label, body, name) in enumerate(parts)]
             lengths = share(available, parts, protect=True)
+            for i, (label, body, name) in enumerate(parts):
+                if name == 'Threads.md' and lengths[i] < len(body):
+                    # Topic cards go in whole or as their overview: room a whole card
+                    # cannot use goes back to the other sources instead of being lost.
+                    view = thread_view(body, lengths[i], brief)
+                    if needs[i] <= len(view) < lengths[i]:
+                        parts = parts[:i] + [(label, view, name)] + parts[i + 1:]
+                        lengths = share(available, parts, protect=True)
         h = header if header_text is None else header_text
         rendered, rules = h + notice, None
         for i, (label, body, name) in enumerate(parts):
             if name == 'Kurallar.md' and i < len(records):  # project rule files come after the records
                 rules = {'chars': len(sections[i][1]), 'share': lengths[i], 'clipped': lengths[i] < len(body),
                          'reasons_omitted': body != sections[i][1]}
-            rendered += label + (clip_threads(body, lengths[i]) if name == 'Threads.md' else
+            rendered += label + (thread_view(body, lengths[i], brief) if name == 'Threads.md' else
                                  clip(body, lengths[i], both=name == 'Kurallar.md',
                                       tail=name == 'Kurallar.md' or (name == 'Journal.md' and not re.search(r'(?m)^## ', body))))
         return rendered, rules
 
     needed = sum(len(body) for _, body, _ in sections)
-    # Reserve the complete rules, thread overview and newest handoff before maps,
-    # receipts or retrieval. If even this core cannot fit, bounded fair shares and
-    # explicit omission markers still apply; no finite budget can fit arbitrary rules.
-    core_size = fixed + sum(required(priority_parts))
-    rules_size = fixed + sum(len(body) if name == 'Kurallar.md' else min(80, len(body))
-                             for _, body, name in priority_parts)
+    # Reserve the protected core before maps, receipts or retrieval. If even this core
+    # cannot fit, bounded fair shares and explicit omission markers still apply; no
+    # finite budget can fit arbitrary rules.
+    core_size = fixed + sum(needs)
+    rules_size = fixed + sum(len(without_reasons(body)) if name == 'Kurallar.md' else min(80, len(body))
+                             for _, body, name in sections)
     if core_size > budget and rules_size <= budget:
         core_size = budget
     available = max(0, max(int(budget * .83), core_size if core_size <= budget else 0) - fixed)
