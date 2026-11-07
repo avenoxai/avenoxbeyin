@@ -30,7 +30,7 @@ import tempfile
 import time
 import unicodedata
 
-from beyin_v3 import HARNESSES, STOPWORDS, _allowed_statuses, _json, _name_match_score, _status_allowed, _strict_terms, _tokens, pack_context
+from beyin_v3 import HARNESSES, STOPWORDS, _allowed_statuses, _json, _name_match_score, _query_roots, _status_allowed, _strict_terms, _tokens, pack_context, pack_widened
 
 # #83 chose 0.15 on one 263-note Turkish vault without a coverage cap. With the cap, on a
 # second 1,285-note vault 0.20 is the lowest floor that keeps everyday and agent-command
@@ -47,7 +47,7 @@ BLOCK_OVERLAP = 200
 DEFAULT_EXCLUDE = ("daily/", "receipts/")
 CONFIG_NAME = "retrieval.json"
 CACHE_NAME = "passages.json"
-CACHE_VERSION = 1
+CACHE_VERSION = 2  # 2: each passage also stores its head-only tokens
 CACHE_MAX_BYTES = 64 * 1024 * 1024
 MAX_EXCLUDES = 64
 # Tokenising budget per call for records the cache does not know yet. At least one record
@@ -217,17 +217,27 @@ def _key(record):
 
 
 def _passages(record):
+    """[head, start, end, tokens, head-only tokens] per passage.
+
+    The head-only tokens come from the title, heading and tags but not from the passage body,
+    so search can tell a body match from a match every passage of the note shares.
+    """
     meta = _meta(record)
     text = record["text"]
-    out = [[head, start, end, " ".join(sorted(_tokens(head + " " + text[start:end]) | meta))]
-           for head, start, end in split_blocks(text)]
-    return out or [["", 0, 0, " ".join(sorted(meta))]]  # a title/facts-only record stays findable
+    out = []
+    for head, start, end in split_blocks(text):
+        body = _tokens(text[start:end])
+        out.append([head, start, end, " ".join(sorted(_tokens(head + " " + text[start:end]) | meta)),
+                    " ".join(sorted((_tokens(head) | meta) - body))])
+    meta = " ".join(sorted(meta))
+    return out or [["", 0, 0, meta, meta]]  # a title/facts-only record stays findable
 
 
 def _valid(entry, text):
     return isinstance(entry, list) and bool(entry) and all(
-        isinstance(item, list) and len(item) == 4 and isinstance(item[0], str) and isinstance(item[3], str)
-        and type(item[1]) is int and type(item[2]) is int and 0 <= item[1] <= item[2] <= len(text)
+        isinstance(item, list) and len(item) == 5 and isinstance(item[0], str) and isinstance(item[3], str)
+        and isinstance(item[4], str) and type(item[1]) is int and type(item[2]) is int
+        and 0 <= item[1] <= item[2] <= len(text)
         for item in entry)
 
 
@@ -275,13 +285,15 @@ def _write_cache(path, blob):
 
 
 class Index:
-    def __init__(self, passages, block_df, source_df, sources):
+    def __init__(self, passages, block_df, source_df, sources, head_only=None):
         # [(record, head, start, end, " token token ... ")]: tokens stay one padded string,
         # so matching a query is a few substring probes instead of a set per passage.
         self.passages = passages
         self.block_df = block_df
         self.source_df = source_df
         self.sources = sources
+        # Padded head-only tokens per passage, in the same order (see _passages).
+        self.head_only = head_only if head_only is not None else [" "] * len(passages)
 
 
 def build(state_dir, pool, write=True, deadline=None):
@@ -308,7 +320,7 @@ def build(state_dir, pool, write=True, deadline=None):
     if complete and not reuse:
         for entry in fresh.values():
             seen = set()
-            for _head, _start, _end, tokens in entry:
+            for _head, _start, _end, tokens, _head_only in entry:
                 split = tokens.split()
                 seen.update(split)
                 for token in split:
@@ -327,8 +339,9 @@ def build(state_dir, pool, write=True, deadline=None):
     if not complete:
         raise IndexPending(f"passage index pending: {len(fresh)}/{len(keys)} records")
     passages = [(record, head, start, end, " " + tokens + " ")
-                for key, record in zip(keys, pool) for head, start, end, tokens in fresh[key]]
-    return Index(passages, block_df, source_df, len(pool))
+                for key, record in zip(keys, pool) for head, start, end, tokens, _head_only in fresh[key]]
+    head_only = [" " + only + " " for key in keys for _h, _s, _e, _t, only in fresh[key]]
+    return Index(passages, block_df, source_df, len(pool), head_only)
 
 
 def _weight(shared, frequency, total, size):
@@ -337,8 +350,13 @@ def _weight(shared, frequency, total, size):
     return weight / idf_max / math.log(10 + size)
 
 
-def search(index, terms, limit=5, floor=FLOOR, min_shared=MIN_SHARED):
-    """Best admitted passage per source, ranked. Returns [(rank weight, passage), ...]."""
+def search(index, terms, limit=5, floor=FLOOR, min_shared=MIN_SHARED, ignored=STOPWORDS,
+           rank_adjustments=None, with_runner_up=False):
+    """Best admitted passage per source, ranked. Returns [(rank weight, passage), ...].
+
+    ignored: stems a query root may not become (the caller's stopwords and project words).
+    with_runner_up: [(rank weight, passage, second passage or None), ...] instead.
+    """
     terms = _strict_terms(terms)
     if not terms:
         return []
@@ -348,10 +366,14 @@ def search(index, terms, limit=5, floor=FLOOR, min_shared=MIN_SHARED):
     sources_total = max(1, index.sources)
     wanted = min(len(terms), COVERAGE_CAP)
     probes = [(term, " " + term + " ") for term in sorted(terms)]
+    # A term may also match a shorter root; shared then holds the root, so its own idf weighs it.
+    roots = [(" " + term + " ", root, " " + root + " ") for term, root in
+             sorted(_query_roots(terms, lambda token: index.source_df.get(token, 0), ignored).items())]
     best = {}
     for passage in index.passages:
         tokens = passage[4]
         shared = [term for term, probe in probes if probe in tokens]
+        shared += [root for term_probe, root, probe in roots if term_probe not in tokens and probe in tokens]
         if len(shared) < min_shared:
             continue
         size = tokens.count(" ") - 1
@@ -363,13 +385,49 @@ def search(index, terms, limit=5, floor=FLOOR, min_shared=MIN_SHARED):
         name_score = _name_match_score(record, terms)
         if name_score > 0:
             rank += 10.0 * name_score
+        if rank_adjustments:
+            rank += rank_adjustments.get(record["id"], 0.0)
         current = best.get(record["id"])
         if current is None or rank > current[0]:
             best[record["id"]] = (rank, passage)
     ranked = list(best.values())
     ranked.sort(key=lambda item: (item[1][0].get("updated_at", ""), item[1][0]["id"]), reverse=True)
     ranked.sort(key=lambda item: -item[0])
-    return ranked[:limit]
+    ranked = ranked[:limit]
+    if not with_runner_up:
+        return ranked
+    chosen = {passage[0]["id"]: passage for _rank, passage in ranked}
+    siblings = {}
+    for passage, head_only in zip(index.passages, index.head_only):
+        if passage[0]["id"] in chosen and passage is not chosen[passage[0]["id"]]:
+            siblings.setdefault(passage[0]["id"], []).append((passage, head_only))
+    return [(rank, passage, _runner_up(siblings.get(passage[0]["id"], ()), probes, index.block_df,
+                                       passages_total, roots))
+            for rank, passage in ranked]
+
+
+def _runner_up(siblings, probes, frequency, total, roots=()):
+    """The other passage of a delivered source whose own text matches the query best, or None.
+
+    Every passage of a note carries the note's title, heading and tags, so a question that names
+    the note matches all of them alike: the size factor then admits and ranks the short sections,
+    and a long section holding the answer never passes the floor. Words found only in a passage's
+    title, heading or tags (its head_only tokens) do not count here, so the body decides.
+    """
+    best, best_score = None, (0, 0.0)
+    for passage, head_only in siblings:
+        tokens = passage[4]
+        body = [term for term, probe in probes if probe in tokens and probe not in head_only]
+        # Use the same query-only root expansion as admission, while still requiring
+        # the matched root in the body rather than title/heading metadata.
+        body += [root for term_probe, root, probe in roots
+                 if term_probe not in tokens and probe in tokens and probe not in head_only]
+        if not body:
+            continue
+        score = (len(body), sum(math.log((total + 1) / (frequency.get(token, 0) + 1)) + 1 for token in body))
+        if score > best_score:
+            best, best_score = passage, score
+    return best
 
 
 def pool(store, eligible, statuses=None, exclude=DEFAULT_EXCLUDE, superseded=None):
@@ -389,7 +447,7 @@ def pool(store, eligible, statuses=None, exclude=DEFAULT_EXCLUDE, superseded=Non
 
 
 def context_for(store, harness, query, project=None, audience="internal", statuses=None, limit=5,
-                budget_chars=8000, strict=True):
+                budget_chars=8000, strict=True, today=None):
     """Strict per-turn context from passages. Same result shape as MemoryStore.retrieve."""
     if harness not in HARNESSES:
         raise ValueError("unsupported harness")
@@ -409,13 +467,50 @@ def context_for(store, harness, query, project=None, audience="internal", status
                   deadline=time.monotonic() + BUILD_SECONDS)
     if candidates and not index.passages:
         raise RuntimeError("passage index is empty")  # a failure, not an answer: caller falls back
-    terms = _strict_terms(_tokens(query) - STOPWORDS - _tokens(project or ""))
+    ignored = STOPWORDS | _tokens(project or "")
+    terms = _strict_terms(_tokens(query) - ignored)
     if not terms:
         return pack_context([], limit, budget_chars, stale_count)
-    records = []
-    for _rank, (record, head, start, end, _tokens_) in search(index, terms, limit, config["floor"]):
-        body = record["text"][start:end]
-        excerpt = head + "\n\n" + body if head else body
+    from beyin_v3 import is_due_task, _is_closed_task
+    adjustments = {r["id"]: (store.DUE_STRICT_BONUS if is_due_task(r, today) else
+                   -store.CLOSED_TASK_PENALTY if statuses is None and _is_closed_task(r) else 0.0)
+                   for r in candidates}
+    records, wider = [], {}
+    for _rank, first, second in search(index, terms, limit, config["floor"], ignored=ignored,
+                                     rank_adjustments=adjustments, with_runner_up=True):
+        record = first[0]
         # Only text and text_truncated change, so advisor signatures still match the index.
-        records.append(dict(record, text=excerpt, text_truncated=body != record["text"]))
-    return pack_context(records, limit, budget_chars, stale_count)
+        records.append(dict(record, text=_excerpt(record, [first]), text_truncated=_partial(record, [first])))
+        if second is not None:
+            # A second passage may answer what the first one only names; it only takes room the
+            # first passages of every source left over (pack_widened), at each later pack too.
+            wider[record["id"]] = dict(record, text=_excerpt(record, [first, second]),
+                                       text_truncated=_partial(record, [first, second]))
+    return pack_widened(records, wider, limit, budget_chars, stale_count)
+
+
+def _excerpt(record, passages):
+    """The passages of one record in note order, each under its heading, a gap marked between."""
+    parts, last_head, last_end = [], None, None
+    for _record, head, start, end, _tokens_ in sorted(passages, key=lambda p: p[2]):
+        if last_end is not None and start <= last_end:  # overlapping windows read as one span
+            parts[-1] += record["text"][last_end:max(end, last_end)]
+            last_end = max(end, last_end)
+            continue
+        if last_end is not None and record["text"][last_end:start].strip():
+            parts.append("[…]")
+        if head and head != last_head:
+            parts.append(head)
+        parts.append(record["text"][start:end])
+        last_head, last_end = head, end
+    return "\n\n".join(part for part in parts if part)
+
+
+def _partial(record, passages):
+    """Whether the passages leave part of the record's text out."""
+    covered, text = 0, record["text"]
+    for _record, _head, start, end, _tokens_ in sorted(passages, key=lambda p: p[2]):
+        if text[covered:start].strip():
+            return True
+        covered = max(covered, end)
+    return bool(text[covered:].strip())

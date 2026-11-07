@@ -1032,6 +1032,31 @@ class CompactionRaceTest(unittest.TestCase):
         self.assertEqual(report['over_limit'], ['Last-Session.md'])
         self.assertIn('Memory hygiene: Last-Session.md is', companion_module.hygiene_notice(report))
 
+    def test_hygiene_notice_reports_clipped_rules_and_handoff_files(self):
+        report = companion_module.hygiene(self.vault, self.state)
+        # 1. Rules alone clipped (#461)
+        rules_clipped = {'chars': 10303, 'share': 3496, 'clipped': True}
+        notice_rules = companion_module.hygiene_notice(None, rules=rules_clipped)
+        self.assertEqual(
+            notice_rules,
+            'Memory hygiene: Kurallar.md opens clipped (fit ceiling 3496 of 10303 chars). '
+            'Shorten each rule to one line and move reasons to a detail note; '
+            'move project rules to projects/<proje>/Kurallar.md.\n'
+        )
+        # 2. Both handoff file over limit and rules clipped
+        notice_both = companion_module.hygiene_notice(report, rules=rules_clipped)
+        self.assertIn('Memory hygiene: Last-Session.md is', notice_both)
+        self.assertIn('companion-compact', notice_both)
+        self.assertIn('Memory hygiene: Kurallar.md opens clipped (fit ceiling 3496 of 10303 chars).', notice_both)
+        self.assertEqual(notice_both.count('Memory hygiene: '), 2)
+        # 3. Rules not clipped
+        rules_ok = {'chars': 2928, 'share': 3496, 'clipped': False}
+        notice_ok = companion_module.hygiene_notice(None, rules=rules_ok)
+        self.assertEqual(notice_ok, '')
+        notice_handoff_only = companion_module.hygiene_notice(report, rules=rules_ok)
+        self.assertEqual(notice_handoff_only.count('Memory hygiene: '), 1)
+        self.assertNotIn('Kurallar.md', notice_handoff_only)
+
     def test_single_line_code_blocks_dont_swallow_subsequent_headings(self):
         """Code block on a single line '```code```' shouldn't leave parser in fence state."""
         lines = [
