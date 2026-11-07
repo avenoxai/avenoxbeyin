@@ -563,9 +563,20 @@ olarak çözümlenemezse kart hata notuyla kalır, sıradaki kartlar işlenmeye 
 Python HTTP yolu bağlanırken adı yeniden çözer, her cevabı aynı kapıdan geçirir ve soketi denetlenen
 IP adresine açar (TLS yine asıl sunucu adını doğrular). Denetimden sonra değişen bir DNS cevabı
 (rebinding) bu yolu yerel adrese yönlendiremez. Sistemde proxy ayarlıysa hedefi proxy çözer; bu bağlama
-proxy'nin kendisine uygulanmaz. Defuddle ve yt-dlp adı kendileri yeniden çözer ve kendi yönlendirmelerini
-izler; bu iki yardımcı için ağ çıkışı izolasyonu yoktur. yt-dlp yalnız YouTube adresiyle çalışır: kartın
-`kaynak_turu` alanı elle `youtube` yapılsa da başka bir site yt-dlp'ye verilmez, adres türüne göre işlenir.
+proxy'nin kendisine uygulanmaz.
+
+Defuddle ve yt-dlp her çalıştığında `isle` yalnız `127.0.0.1` üzerinde dinleyen kısa ömürlü bir
+koruma proxy'si açar ve onu yardımcının tek proxy'si yapar (`ALL_PROXY`). Yardımcının açtığı her
+bağlantı, yönlendirmelerin her adımı dahil, hedef adını bu proxy'ye söyler; proxy aynı kapıyla adresi
+denetler ve soketi denetlenen IP adresine açar. Herkese açık bir sayfanın yerel adrese yönlendirmesi
+ya da sonradan değişen DNS cevabı yardımcıyı yerel ağa ulaştıramaz; kart "yerel veya özel bir ağ
+adresine yönlendirdi" notuyla hata olur. HTTPS bağlantısı proxy içinde uçtan uca şifreli kalır.
+`NO_PROXY` listesi yardımcıya geçmez (npm kendi kayıt deposu için `npm_config_noproxy` ile korur).
+Sınırlar: ortamda (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`) ya da yt-dlp için işletim sisteminde
+proxy ayarlıysa yardımcı o proxy'yi kullanır ve hedefi o proxy çözer. Defuddle'ın YouTube, Reddit ve
+X okuyucuları o sitelerin sabit adreslerine kendi bağlantısını açar; bu istekler koruma proxy'sinden
+geçmez. yt-dlp yalnız YouTube adresiyle çalışır: kartın `kaynak_turu` alanı elle `youtube` yapılsa da
+başka bir site yt-dlp'ye verilmez, adres türüne göre işlenir.
 Ham kaynak metni güvenilmeyen veri olarak işaretlenir;
 metnin içindeki rol değişikliği, komut çalıştırma ve dosya silme istekleri talimat sayılmaz.
 

@@ -34,9 +34,12 @@ Yakalama ağa çıkmaz; bu PR'daki mevcut davranış gereği yerel/intranet URL'
 reddedilir. Önceden alınmış Web Clipper içeriği ağ bağlantısı ve DNS sorgusu olmadan işlenir,
 ancak kartın URL'si aynı sözdizimi/IP kontrolünden geçer.
 
-DNS kontrolü ile yardımcının bağlantısı arasında DNS cevabı değişebilir (TOCTOU / rebinding).
-Harici Defuddle/yt-dlp süreçlerinin yönlendirmeleri de bu kontrolü atlayabilir.
-Bu kalan sınırlar için ayrı ağ izolasyonu gerekir.
+Defuddle ve yt-dlp artık `127.0.0.1` üzerindeki kısa ömürlü bir koruma proxy'si üzerinden çıkar:
+her bağlantı ve yönlendirme adımı aynı adres kapısından geçer, soket denetlenen IP adresine açılır.
+DNS kontrolü ile bağlantı arasında değişen cevap (rebinding) ve yerel adrese yönlendirme yardımcıyı
+yerel ağa ulaştıramaz. Kullanıcının kendi ayarladığı proxy varsa hedefi o proxy çözer; Defuddle'ın
+YouTube, Reddit ve X okuyucularının o sitelerin sabit adreslerine açtığı istekler koruma
+proxy'sinden geçmez. Ayrıntı: [YAKALA.md](YAKALA.md) > Kaynak güvenliği.
 
 Dosya kartı yalnız kendi `dosyalar/` klasöründeki yakalanmış dosyaları okur; vault içindeki kasa
 türü klasörler, `.obsidian/` ve başka notlar `## Dosyalar` bağıyla `.ham/` içine kopyalanamaz.

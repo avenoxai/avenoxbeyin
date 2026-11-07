@@ -99,7 +99,8 @@ def _public_answers(host, port):
 def _safe_network_url(url):
     """Reject private DNS answers before extraction helpers and stdlib retrieval (including redirects).
 
-    Note: helper subprocesses resolve again themselves; only the stdlib path pins the checked address.
+    The connections themselves are pinned to a checked address: the stdlib path by _public_opener,
+    Defuddle and yt-dlp by _EgressGuard.
     """
     _safe_source_url(url)
     parsed = urlparse(url)
@@ -147,6 +148,222 @@ def _public_opener(*handlers):
             return self.do_open(pinned(http.client.HTTPSConnection, request), request, context=self._context, **extra)
 
     return build_opener(PublicHTTP(), PublicHTTPS(), *handlers)
+
+
+# ---------------------------------------------------------------- helper egress guard
+
+# Defuddle and yt-dlp fetch by themselves. Without a guard they follow a public page's redirect to
+# a local address and resolve its name again after our check (#299). Each helper run therefore gets
+# a loopback proxy as its only proxy: every connection it opens, every redirect hop included, names
+# its target here and goes through the same public-address gate as the stdlib path, dialled to the
+# checked IP. A proxy the user configured is kept instead; then that proxy resolves the target.
+_PROXY_VARIABLES = ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY')
+_HOP_HEADERS = frozenset(('connection', 'proxy-connection', 'keep-alive', 'proxy-authorization', 'te',
+                          'trailer', 'transfer-encoding', 'upgrade', 'host'))
+_HELPER_NETWORK = threading.local()
+
+
+def _user_proxy(system):
+    """A proxy the user set: the environment (what Defuddle reads) and, for a urllib-based helper
+    such as yt-dlp (`system`), the OS proxy settings as well."""
+    if any(key.upper() in _PROXY_VARIABLES and str(value).strip() for key, value in os.environ.items()):
+        return True
+    if system:
+        import urllib.request
+        try:
+            return bool({'http', 'https', 'all'} & set(urllib.request.getproxies()))
+        except Exception:  # unreadable OS settings: no proxy known, the guard stays
+            return False
+    return False
+
+
+def _guarded_env(env, proxy):
+    """The guard as the helper's only proxy. A NO_PROXY list (often localhost,127.0.0.1) would let the
+    helper go around it; npm keeps that list for its own registry requests through npm_config_noproxy.
+    npm ignores ALL_PROXY, so npx still reaches its registry as before."""
+    bypass = next((value for key, value in env.items() if key.upper() == 'NO_PROXY' and value.strip()), None)
+    env = {key: value for key, value in env.items() if key.upper() not in _PROXY_VARIABLES + ('NO_PROXY',)}
+    if bypass and not any(key.lower() == 'npm_config_noproxy' for key in env):
+        env['npm_config_noproxy'] = bypass
+    env['ALL_PROXY'] = proxy
+    return env
+
+
+def _socket_end(sock, how=socket.SHUT_RDWR):
+    try:
+        sock.shutdown(how)
+    except OSError:
+        pass
+
+
+def _proxy_head(sock, limit=65536):
+    data = b''
+    while b'\r\n\r\n' not in data:
+        if len(data) > limit:
+            raise ValueError('Yakala proxy istegi cok uzun.')
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise ValueError('Yakala proxy istegi yarim kaldi.')
+        data += chunk
+    head, _, rest = data.partition(b'\r\n\r\n')
+    return head.decode('latin-1'), rest
+
+
+def _proxy_reply(code, reason):
+    text = 'Yakala: ' + reason
+    return ('HTTP/1.1 %d %s\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s'
+            % (code, {403: 'Forbidden', 502: 'Bad Gateway'}[code], len(text), text)).encode('ascii')
+
+
+class _EgressGuard:
+    """Loopback proxy for one helper run: CONNECT tunnels (TLS stays end to end) and plain HTTP
+    GET/HEAD, one request per connection. Nothing reaches a local or private address."""
+
+    def __init__(self):
+        import socketserver
+        guard = self
+        self.blocked, self.sockets, self.lock, self.closed = [], set(), threading.Lock(), False
+
+        class Handler(socketserver.BaseRequestHandler):
+            def handle(self):
+                guard._serve(self.request)
+
+        class Server(socketserver.ThreadingTCPServer):
+            daemon_threads, block_on_close = True, False  # close() ends live relays; never wait on them
+
+        self.server = Server(('127.0.0.1', 0), Handler)
+        self.url = 'http://127.0.0.1:%d' % self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': 0.05},
+                                       name='yakala-egress', daemon=True)
+        self.thread.start()
+
+    def _track(self, sock, keep=True):
+        with self.lock:
+            if keep and not self.closed:
+                self.sockets.add(sock)
+                return
+            self.sockets.discard(sock)
+        if keep:  # opened after close(): end it now
+            _socket_end(sock)
+
+    def _open(self, head):
+        """(socket to the checked public address, bytes that start the stream there)."""
+        lines = head.split('\r\n')
+        request = lines[0].split(' ')
+        if len(request) != 3 or not request[2].startswith('HTTP/1.'):
+            raise ValueError('Yakala proxy istegi gecersiz.')
+        method, target = request[:2]
+        if method == 'CONNECT':
+            if not re.fullmatch(r'(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\]):[0-9]{1,5}', target):
+                raise ValueError('Yakala proxy hedefi gecersiz: ' + target[:200])
+            url = 'https://' + target + '/'
+        elif method in ('GET', 'HEAD') and target[:7].lower() == 'http://':
+            url = target
+        else:
+            raise ValueError('Yakala proxy yalniz CONNECT ve HTTP GET/HEAD iletir.')
+        try:
+            _safe_source_url(url)
+            parsed = urlparse(url)
+            upstream = _public_connection((parsed.hostname, parsed.port or 80), 30)
+        except ValueError as exc:
+            if isinstance(exc.__cause__, OSError):  # the name did not resolve: no address was refused
+                raise OSError(str(exc)) from exc
+            with self.lock:
+                self.blocked.append(url)
+            raise
+        if method == 'CONNECT':
+            return upstream, None
+        path = (parsed.path or '/') + ('?' + parsed.query if parsed.query else '')
+        headers = [line for line in lines[1:] if line and line.split(':', 1)[0].strip().lower() not in _HOP_HEADERS]
+        start = '\r\n'.join([method + ' ' + path + ' HTTP/1.1', 'Host: ' + parsed.netloc, *headers, 'Connection: close', '', ''])
+        return upstream, start.encode('latin-1')
+
+    def _serve(self, client):
+        upstream = None
+        self._track(client)
+        try:
+            client.settimeout(30)
+            head, rest = _proxy_head(client)
+            try:
+                upstream, start = self._open(head)
+            except ValueError:
+                client.sendall(_proxy_reply(403, 'yerel veya ozel ag adresine baglanilmaz.'))
+                return
+            except OSError:
+                client.sendall(_proxy_reply(502, 'hedefe baglanilamadi.'))
+                return
+            self._track(upstream)
+            if start is None:
+                client.sendall(b'HTTP/1.1 200 Connection established\r\n\r\n')
+                start = b''
+            upstream.sendall(start + rest)
+            client.settimeout(None)
+            upstream.settimeout(None)
+            self._relay(client, upstream)
+        except (OSError, ValueError):
+            pass
+        finally:
+            for sock in (client, upstream):
+                if sock is not None:
+                    self._track(sock, keep=False)
+                    _socket_end(sock)
+                    sock.close()
+
+    @staticmethod
+    def _relay(client, upstream):
+        """Both ways. The target's end of stream ends the helper's; a helper that hangs up ends both."""
+        def back():
+            try:
+                while True:
+                    data = upstream.recv(65536)
+                    if not data:
+                        break
+                    client.sendall(data)
+            except OSError:
+                pass
+            finally:
+                _socket_end(client, socket.SHUT_WR)
+        reader = threading.Thread(target=back, name='yakala-egress-relay', daemon=True)
+        reader.start()
+        try:
+            while True:
+                data = client.recv(65536)
+                if not data:
+                    break
+                upstream.sendall(data)
+        except OSError:
+            pass
+        finally:
+            _socket_end(upstream)
+            reader.join(5)
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+        with self.lock:
+            self.closed, live = True, list(self.sockets)
+        for sock in live:
+            _socket_end(sock)
+        self.thread.join(1)
+
+
+class _HelperNetwork:
+    """`with _HelperNetwork(system):` around one helper run. `_run` hands a helper started inside
+    it a fresh _EgressGuard as its only proxy, unless the user configured one (_user_proxy)."""
+
+    def __init__(self, system=False):
+        self.system, self.guard, self.outer = system, None, None
+
+    def __enter__(self):
+        self.outer = getattr(_HELPER_NETWORK, 'guard', None)
+        self.guard = None if _user_proxy(self.system) else _EgressGuard()
+        _HELPER_NETWORK.guard = self.guard
+        return self.guard
+
+    def __exit__(self, *_):
+        _HELPER_NETWORK.guard = self.outer
+        if self.guard is not None:
+            self.guard.close()
 
 
 # ---------------------------------------------------------------- cards
@@ -752,6 +969,9 @@ def _run(command, timeout, cwd=None):
     if os.name == 'nt':
         command = _windows_safe_command(command)
     env = dict(os.environ, PYTHONIOENCODING='utf-8', NO_COLOR='1')
+    guard = getattr(_HELPER_NETWORK, 'guard', None)
+    if guard is not None:  # a network helper inside `with _HelperNetwork()`
+        env = _guarded_env(env, guard.url)
     if os.name == 'nt' and sys.platform == 'win32':
         return _windows_run(command, timeout, cwd, env)
     result = subprocess.run(command, capture_output=True, timeout=timeout, cwd=cwd, env=env,
@@ -872,8 +1092,11 @@ def via_defuddle(url, found, info=None, lang=None):
         return None
     _safe_network_url(url)
     try:
-        code, out, _ = _run([found['npx'], '-y', DEFUDDLE, 'parse', '--json', '--markdown']
-                            + (['--lang', lang] if lang else []) + ['--', url], timeout=180)
+        with _HelperNetwork() as guard:  # Defuddle reads ALL_PROXY for the page and each redirect
+            code, out, _ = _run([found['npx'], '-y', DEFUDDLE, 'parse', '--json', '--markdown']
+                                + (['--lang', lang] if lang else []) + ['--', url], timeout=180)
+        if info is not None and guard is not None and guard.blocked:
+            info['ag_engeli'] = True
         data = json.loads(out) if code == 0 else {}
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return None
@@ -951,7 +1174,8 @@ def youtube_tracks(url, found, workdir):
         return None
     _safe_network_url(url)
     try:
-        _, out, _ = _run([found['yt_dlp'], '--skip-download', '--no-playlist', '-J', '--', url], timeout=180)
+        with _HelperNetwork(system=True):
+            _, out, _ = _run([found['yt_dlp'], '--skip-download', '--no-playlist', '-J', '--', url], timeout=180)
         data = json.loads(out)
         if isinstance(data, dict) and isinstance(data.get('entries'), list):  # a playlist address: its first video
             data = data['entries'][0] if data['entries'] else None
@@ -989,7 +1213,8 @@ def via_subtitles(found, workdir, track, automatic):
                '--write-auto-subs' if automatic else '--write-subs', '--sub-langs', track, '--sub-format', 'vtt',
                '-o', str(Path(workdir) / 'sub.%(ext)s')]
     try:
-        _run(command, timeout=120)
+        with _HelperNetwork(system=True):
+            _run(command, timeout=120)
         text = vtt_text((Path(workdir) / ('sub.' + track + '.vtt')).read_text(encoding='utf-8', errors='replace'))
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -1032,7 +1257,8 @@ def via_audio(url, found, workdir, lang=None, problems=None):
     _safe_network_url(url)
     audio = Path(workdir) / 'ses'
     try:
-        _run([found['yt_dlp'], '-f', 'bestaudio/best', '--no-playlist', '-o', str(audio) + '.%(ext)s', '--', url], timeout=900)
+        with _HelperNetwork(system=True):
+            _run([found['yt_dlp'], '-f', 'bestaudio/best', '--no-playlist', '-o', str(audio) + '.%(ext)s', '--', url], timeout=900)
         files = sorted(Path(workdir).glob('ses.*'))
         if not files:
             return None
@@ -1291,12 +1517,15 @@ def extract(vault, card, found, allow_audio=True, info=None):
         return None, 'ajan-okusun', 'Dosyayi ajan dogrudan okusun (gorsel, PDF ya da ikili dosya).'
     if url:
         _safe_network_url(url)  # before npx/yt-dlp can make the first request
+        info = {} if info is None else info
         text = via_defuddle(url, found, info)
         if text:
             return text, 'defuddle', None
         text = via_stdlib(url)
         if text:
             return text, 'http', None
+        if info.get('ag_engeli'):
+            return None, None, 'Sayfa yerel veya ozel bir ag adresine yonlendirdi; Yakala o adrese baglanmadi.'
         return None, None, 'Sayfa alinamadi (giris gerekebilir); Web Clipper ile sayfa acikken yakala.'
     return _section(body, 'Secim') or None, 'metin', None
 
