@@ -147,6 +147,33 @@ def sync_copy_lines(result):
     return lines
 
 
+def supersedes_lines(issues, count):
+    """Present existing sync/doctor findings only; do not guess or remember a target."""
+    issues = issues or []
+    count = max(count or 0, len(issues))
+    if not count:
+        return []
+
+    def field(value):
+        text = plain_text(value)
+        return text[:157] + '...' if len(text) > 160 else text
+
+    reasons = {'ambiguous supersedes reference': 'birden fazla notla eslesiyor',
+               'unresolved supersedes reference': 'hedef bulunamadi',
+               'supersedes reference points to the note itself': 'notun kendisine isaret ediyor',
+               'supersedes reference is part of a cycle': 'dongunun parcasi'}
+    lines = ['Supersedes uyarisi: ' + str(count) + ' referans su anda hicbir notu emekli etmiyor; '
+             'daha once emekli edilen notlar yeniden baglama girebilir.']
+    for issue in issues[:3]:
+        reason = issue.get('reason')
+        lines.append('  - ' + field(issue.get('source')) + ' -> ' + field(issue.get('value')) +
+                     ' (' + field(reasons.get(reason, reason)) + ')')
+    if count > min(3, len(issues)):
+        lines.append('+' + str(count - min(3, len(issues))) + ' referans daha.')
+    lines.append('Hedefi ve yonu kontrol et; dogru notu acik id veya tam vault yoluyla belirt. Ayrinti: --json.')
+    return lines
+
+
 def index_exclusion_lines(report, pruned=False):
     """Lines for the user's index exclusions (state/index.json); shared by doctor, sync and preferences."""
     if not isinstance(report, dict):
@@ -477,6 +504,8 @@ def human_result(result, command, installed_version=None):
             more = references['dead_count'] - min(3, len(references['dead']))
             lines.append('Talimat ve skill dosyalarinda kirik baglanti (bilgi): ' + shown +
                          (' ve ' + str(more) + ' tane daha' if more > 0 else '') + '.')
+        supersedes = result.get('supersedes') or {}
+        lines += supersedes_lines(supersedes.get('dead'), supersedes.get('dead_count'))
         boundary_report = result.get('boundary') or {}
         boundary_lines = {
             'parent_obsidian_index': 'Kok siniri (bilgi): ust klasorde de bir .obsidian var; Obsidian ust klasoru acip bu vault\'u alt klasor sayabilir.',
@@ -705,7 +734,8 @@ def human_result(result, command, installed_version=None):
                     recovered_lines.append('  - ' + plain_text(item['source']) + ' -> ' + plain_text(item['archive']))
                 message = '\n'.join([message] + recovered_lines)
             message = '\n'.join([message] + index_exclusion_lines(result.get('index_exclusions'), pruned=True) +
-                                (sync_copy_lines(result) if command == 'sync' else []))
+                                (sync_copy_lines(result) if command == 'sync' else []) +
+                                supersedes_lines(result.get('supersedes_issues'), result.get('supersedes_issue_count')))
     if result.get('trust_review_required'):
         message += '\n' + trust_review_line(result.get('trust_review_files'))
     if result.get('view_conflicts'):
