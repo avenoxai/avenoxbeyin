@@ -417,6 +417,28 @@ class ShellEditUnitTest(unittest.TestCase):
             log.write_text(log.read_text(encoding='utf-8'), encoding='utf-8')
             self.assertIsNone(self.module.shell_edit({'transcript_path': str(log), 'cwd': str(vault)}, vault, None))
 
+    def test_receipt_views_match_case_insensitively_and_git_bash_drive_paths_map_on_windows(self):
+        # A case-insensitive volume keeps the typed case in resolve(): `Daily/V3/...` is the sync's view.
+        with tempfile.TemporaryDirectory(prefix='v3-shell-case-') as folder:
+            probe = self.module._Probe(Path(folder), None)
+            for relative in ('Daily/V3/2026-11-07.md', 'KNOWLEDGE/v3/Outcomes.md', 'Daily/2026-11-07.md'):
+                self.assertTrue(probe.generated(relative), relative)
+            self.assertFalse(probe.generated('Notlar/Daily/V3/2026-11-07.md'))
+            probe.views = {'daily/2026-11-07.md'}
+            self.assertTrue(probe.generated('DAILY/2026-11-07.md'))
+            self.assertFalse(probe.generated('Daily/2026-11-06.md'))
+        msys = self.module.msys_drive
+        self.assertEqual(msys('/c/Users/x/Kasa Ölçüm/notes/a.md'), 'C:/Users/x/Kasa Ölçüm/notes/a.md')
+        self.assertEqual(msys('/cygdrive/d/v/a.md'), 'D:/v/a.md')
+        self.assertEqual(msys('/c'), 'C:/')
+        for text in ('/home/x/a.md', '/cd/a.md', 'c/a.md', 'notes/a.md'):
+            self.assertEqual(msys(text), text)
+        if os.name == 'nt':
+            base = Path('D:/w')
+            self.assertEqual(list(self.module._paths('/c/v/a.md', [base])), [Path('C:/v/a.md')])
+            # PowerShell reads /c/v as a folder on the current drive, not as drive C.
+            self.assertEqual(list(self.module._paths('/c/v/a.md', [base], powershell=True)), [base / '/c/v/a.md'])
+
     def test_tail_bound_keeps_the_latest_commands(self):
         with tempfile.TemporaryDirectory(prefix='v3-shell-tail-') as folder:
             root = Path(folder).resolve()

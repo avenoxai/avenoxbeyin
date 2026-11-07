@@ -45,6 +45,13 @@ _FLAT_DAILY = re.compile(r'daily/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md')
 # A directory change inside the same command: its relative names are tried from there as well.
 _CHANGE_DIR = re.compile(r'(?:^|[;&|(\n])\s*(?:cd|pushd|Set-Location|sl)\s+("[^"\n]+"|\'[^\'\n]+\'|[^\s;&|()<>]+)', re.I)
 MAX_DIRS = 4
+# Git Bash and Cygwin name C:\x as /c/x or /cygdrive/c/x; Python's Windows paths do not.
+_MSYS_DRIVE = re.compile(r'^/(?:cygdrive/)?([A-Za-z])(?:/|$)')
+
+
+def msys_drive(text):
+    """A Git Bash or Cygwin drive path as a Windows drive path; anything else unchanged."""
+    return _MSYS_DRIVE.sub(lambda match: match.group(1).upper() + ':/', text, count=1)
 
 
 def _stamp(value):
@@ -218,15 +225,20 @@ class _Probe:
         return '/'.join(unicodedata.normalize('NFC', part) for part in parts)
 
     def generated(self, relative):
-        """Receipt views the sync rewrites for any session's receipt are not this session's edit."""
+        """Receipt views the sync rewrites for any session's receipt are not this session's edit.
+
+        Compared case-insensitively too: on a case-insensitive volume resolve() keeps the typed
+        case, so `Daily/V3/...` is the same view file. On a case-sensitive one this only skips.
+        """
         from beyin_v3_projections import is_receipt_view_source
-        if is_receipt_view_source(relative):
+        folded = relative.casefold()
+        if is_receipt_view_source(relative) or is_receipt_view_source(folded):
             return True
-        if not _FLAT_DAILY.fullmatch(relative):
+        if not _FLAT_DAILY.fullmatch(folded):
             return False
         if self.views is None:
             self.views = self._view_rows()
-        return self.views is True or relative in self.views
+        return self.views is True or relative in self.views or folded in self.views
 
     def _view_rows(self):
         import sqlite3
@@ -291,7 +303,9 @@ class _Probe:
         return key if key == self.key or key.startswith(self.key + '/') else None
 
 
-def _paths(token, bases):
+def _paths(token, bases, powershell=False):
+    if os.name == 'nt' and not powershell:
+        token = msys_drive(token)
     variants = [token]
     for form in ('NFC', 'NFD'):
         other = unicodedata.normalize(form, token)
@@ -329,13 +343,15 @@ def shell_edit(payload, vault, state=None):
                 folder = match.group(1).strip('\'"')
                 if not folder or '$' in folder or '`' in folder or folder.startswith('~'):
                     continue
+                if os.name == 'nt' and not powershell:
+                    folder = msys_drive(folder)
                 for base in list(bases):
                     if len(bases) < limit and base / folder not in bases:
                         bases.append(base / folder)
             hits = []
             seen = set()
             for token in markdown_tokens(command, powershell=powershell):
-                for path in _paths(token, bases):
+                for path in _paths(token, bases, powershell):
                     for concrete in probe.expand(path):
                         if concrete in seen:
                             continue
