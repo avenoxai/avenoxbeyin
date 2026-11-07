@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Project-local lifecycle adapter; persists metadata, never transcript text."""
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -16,6 +17,21 @@ import uuid
 EVENTS = {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "PreCompact", "SessionEnd"}
 HOOK_BUDGET = 3.8  # seconds; installed POSIX hooks are killed at 5
 SYNC_WAIT = 1.5  # seconds the prompt hook waits for the source sync before reading the last index
+# A client that sandboxes its hook commands (a workspace-write profile, a read-only home) can read
+# the vault and the index the previous sync committed, but not the runtime state. Both refusals
+# below therefore keep the turn's context: it comes from that index with one line saying why it will
+# not be refreshed. A state that never had an index keeps the #417 failure notice instead.
+STATE_WRITE_REFUSED_NOTE = (
+    "V3 state folder is not writable in this client (sandbox or permissions); automatic sync cannot run "
+    "here, so this context comes from the previous index. Refresh it by running `beyin.py sync` from a "
+    "client that can write state.\n")
+WORKER_SPAWN_REFUSED_NOTE = (
+    "V3 could not start its sync worker in this client (sandbox or permissions); automatic sync cannot "
+    "run here, so this context comes from the previous index. Refresh it by running `beyin.py sync` from "
+    "a client that can write state.\n")
+# Refusals that mean "this client may not write here", not "the sync failed": the existing index is
+# still readable afterwards. A full disk or an I/O error has its own failure path (#417).
+PERMISSION_REFUSALS = frozenset({errno.EPERM, errno.EACCES, errno.EROFS})
 RECEIPT_REMINDER = (
     "Files were edited in this session but no receipt was written after the edits. If the work is done, write one now: "
     'python3 beyin.py receipt --harness {harness} --session {session} --event-id EVENT_ID --summary "Work result" --ref PATH. '
@@ -38,6 +54,8 @@ NO_LEARNING_CHALLENGE_REMINDER = (
 )
 HARNESS_SYNTHETIC_PROMPT_PREFIXES = (
     "<task-notification>",
+    # Claude Desktop linked-session completion/status notifications (#566).
+    "<system-reminder>",
     "Another Claude session sent a message:",
     "<agent-message",
     "<local-command-caveat>",
@@ -113,6 +131,19 @@ def atomic(path, data):
         out.flush()
         os.fsync(out.fileno())
     _safe_replace(temporary, path)
+
+
+def permission_refused(exc):
+    """True when a state write or a worker spawn was refused for lack of permission.
+
+    On POSIX these are EPERM, EACCES and EROFS; Windows reports a protected volume as
+    ERROR_WRITE_PROTECT, which a win32 wrapper can raise with errno unset.
+    """
+    if not isinstance(exc, OSError):
+        return False
+    if getattr(exc, "winerror", None) in (5, 19):  # ERROR_ACCESS_DENIED, ERROR_WRITE_PROTECT
+        return True
+    return exc.errno in PERMISSION_REFUSALS
 
 
 def record_error(state, exc):
@@ -314,11 +345,49 @@ def _edits_knowledge(vault, payload):
     return False
 
 
+def _edits_only_outside_vault(vault, payload):
+    """Only suppress when every identified editor path is known to be outside.
+
+    Keep the historical reminder for pathless/unsupported events, malformed paths,
+    and relative paths without an absolute payload cwd. No file contents are read.
+    """
+    from beyin_v3_hygiene import edited_paths
+    tool_input = payload.get("tool_input")
+    if vault is None or not isinstance(tool_input, dict):
+        return False
+    cwd = payload.get("cwd")
+    has_cwd = isinstance(cwd, str) and bool(cwd.strip()) and Path(cwd).is_absolute()
+    for key in ("file_path", "path", "notebook_path"):
+        if key in tool_input:
+            value = tool_input[key]
+            if not isinstance(value, str) or not value.strip() or "\0" in value:
+                return False
+            if not has_cwd and not Path(value.strip()).is_absolute():
+                return False
+    if "command" in tool_input:
+        command = tool_input["command"]
+        if (not isinstance(command, str) or "*** Begin Patch" not in command
+                or "*** End Patch" not in command or not has_cwd or "\0" in command):
+            return False
+        headers = ("*** Add File: ", "*** Update File: ", "*** Move to: ", "*** Delete File: ")
+        for line in command.splitlines():
+            if line.startswith("***") and line not in ("*** Begin Patch", "*** End Patch", "*** End of File"):
+                if not line.startswith(headers) or not line.partition(": ")[2].strip():
+                    return False
+    try:
+        root = Path(vault).resolve()
+        paths = edited_paths(payload, limit=None, include_deleted=True)
+        return bool(paths) and all(not path.resolve().is_relative_to(root) for path in paths)
+    except (ValueError, OSError, RuntimeError):
+        return False
+
+
 def receipt_reminder(payload, state, harness, event, vault=None):
     """Track edits per session and return a one-time Stop block, or None.
 
     Installed PostToolUse hooks match Edit|Write|apply_patch|MultiEdit|NotebookEdit for Claude and
-    Codex, so that event marks the session as edited without reading transcripts.
+    Codex. Known vault-external edits do not mark the session; unknown/pathless
+    events retain the legacy reminder behavior without reading transcripts.
     Stop then looks for a receipt of this harness and session in the runtime store.
     If a receipt declared learnings but no note under knowledge/ was touched,
     Stop reminds once to distill into knowledge/concepts/.
@@ -338,13 +407,16 @@ def receipt_reminder(payload, state, harness, event, vault=None):
         if done.exists() and kdone.exists():
             return None
         if event == "UserPromptSubmit":
-            if "[kaydetme]" in prompt_text(payload):
+            # Quoted worker output is data, not the user's instruction to opt out.
+            if not is_synthetic_prompt(payload) and "[kaydetme]" in prompt_text(payload):
                 folder.mkdir(parents=True, exist_ok=True)
                 done.touch()
                 kdone.touch()
                 edited.unlink(missing_ok=True)
             return None
         if event == "PostToolUse":
+            if _edits_only_outside_vault(vault, payload):
+                return None
             if not edited.exists():
                 atomic(edited, {"at": time.time()})
             if vault is not None and _edits_knowledge(vault, payload):
@@ -512,7 +584,7 @@ def main():
     if state == vault or vault in state.parents:
         raise ValueError("Runtime state must be outside vault")
     os.umask(0o077)
-    from beyin_v3_preferences import read, claim_check
+    from beyin_v3_preferences import read, claim_check, SKIP_REFUSED
     if args.worker or args.drain_queue:
         if args.worker and not read(vault)['auto_sync']:
             print(json.dumps({'processed': 0, 'failed': 0, 'paused': True}))
@@ -523,6 +595,7 @@ def main():
             raise SystemExit(1)
         return
     notice = ''
+    sync_note = ''  # set when a client refuses the state write or the sync worker spawn
     try:
         # A payload cut at the read limit is not JSON: the handler below answers "{}" and
         # records the error for doctor instead of silently dropping the turn.
@@ -610,7 +683,14 @@ def main():
         if not settings['auto_sync']:
             print(json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == 'antigravity' else '{}'))
             return
-        enqueue_event(vault, state, payload, args.harness)
+        try:
+            enqueue_event(vault, state, payload, args.harness)
+        except OSError as exc:
+            if not permission_refused(exc):
+                raise
+            # The queued checkpoint is metadata; the turn's context is not. The vault stays readable
+            # under the same sandbox, so only the write is lost here.
+            sync_note = STATE_WRITE_REFUSED_NOTE
         command = [sys.executable, str(Path(__file__).resolve()), "--vault", str(vault),
                    "--state", str(state), "--harness", args.harness, "--worker"]
         options = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
@@ -620,11 +700,27 @@ def main():
         else:
             options["start_new_session"] = True
         disabled = os.environ.get("BEYIN_V3_NO_SPAWN") == "1"
-        due = False if disabled else claim_check(state, settings, event)
-        process = subprocess.Popen(command, **options) if due else None
+        cadence_skip = []
+        # A refused queue write also prevents claiming the cadence database.
+        due = False if disabled or sync_note else claim_check(state, settings, event, skip_reason=cadence_skip)
+        refused = SKIP_REFUSED in cadence_skip
+        skip_notice = ('V3 automatic check skipped: the cadence record could not be written (locked or read-only)'
+                       if refused else 'V3 automatic check deferred by your interval preference')
+        skip_hint = ' Run beyin.py doctor if this repeats.' if refused else ''
+        process = None
+        if due:
+            try:
+                process = subprocess.Popen(command, **options)
+            except OSError as exc:
+                if not permission_refused(exc):
+                    raise
+                sync_note, due = WORKER_SPAWN_REFUSED_NOTE, False
         # After enqueue, so reminder bookkeeping can never cost the queued checkpoint.
         # The global bridge (--metadata-only) discards stdout, so it keeps no reminder state.
-        reminder = None if args.metadata_only else receipt_reminder(payload, state, args.harness, event, vault=vault)
+        # A refused state write stops the main body before this bookkeeping, so its Stop answers {}
+        # (#417); an earlier edit marker must not reopen that path as a block in a state this client
+        # cannot write. The writable path keeps its reminder untouched.
+        reminder = None if args.metadata_only or sync_note else receipt_reminder(payload, state, args.harness, event, vault=vault)
         if not args.metadata_only and event == 'UserPromptSubmit' and (state / 'chat-trace.json').is_file():
             try:
                 from beyin_v3_chat_trace import hint
@@ -636,7 +732,7 @@ def main():
             print(json.dumps(reminder) if reminder else (json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == 'antigravity' else '{}')))
             return
         if event in ("SessionStart", "UserPromptSubmit"):
-            deferred = not due and not disabled
+            deferred = not due and not disabled and not sync_note
             pending = False
             try:
                 if process is not None:
@@ -649,20 +745,24 @@ def main():
             # markdown_sources table, which the sync worker creates and every reader tolerates
             # missing, so the foreground skips importing the sync engine.
             from beyin_v3 import MemoryStore
-            if pending or deferred:
-                # A sync slower than SYNC_WAIT keeps running in the background, or an interval preference
-                # defers source synchronization. Retrieval reads the index the previous sync committed,
-                # read-only so it never contends for the worker's write lock; only a store that does
-                # not exist yet injects nothing. A sync that outgrows SQLite's page cache holds the
-                # exclusive lock until it commits; waiting the store's default 10 s would outlive the
-                # client's 5 s hook limit.
+            if pending or deferred or sync_note:
+                # A sync slower than SYNC_WAIT keeps running in the background, an interval preference
+                # defers source synchronization, or a sandboxed client cannot write the state at all.
+                # Retrieval reads only the index the previous sync committed, read-only so it never
+                # contends for the worker's write lock; only a store that does not exist yet injects
+                # nothing. A sync that outgrows SQLite's page cache holds the exclusive lock until it
+                # commits; waiting the store's default 10 s would outlive the client's 5 s hook limit.
                 try:
                     store = MemoryStore(state, vault, read_only=True,
                                         busy_timeout=max(0.1, HOOK_BUDGET - 1.0 - (time.monotonic() - started)))
                 except ValueError:
-                    msg = ("V3 source sync is pending. Verify current Markdown sources before using prior context."
-                           if pending else
-                           "V3 automatic check deferred by your interval preference. Read current sources or use beyin.py context for fresh information.")
+                    if pending:
+                        msg = "V3 source sync is pending. Verify current Markdown sources before using prior context."
+                    elif sync_note:
+                        msg = ("V3 source sync failed: automatic sync cannot run in this client and no index is "
+                               "readable yet. Run the local CLI doctor and verify current Markdown sources.")
+                    else:
+                        msg = skip_notice + ". Read current sources or use beyin.py context for fresh information." + skip_hint
                     print(json.dumps(output_context(args.harness, event, notice + msg)))
                     return
             else:
@@ -674,11 +774,14 @@ def main():
             if pending:
                 warning = ('V3 source sync is still running; this context comes from the previous index. '
                            'Verify current Markdown sources before relying on it.\n')
+            elif sync_note:
+                warning = sync_note
             elif deferred:
-                warning = ('V3 automatic check deferred by your interval preference; this context comes from the previous index. '
-                           'Read current sources or use beyin.py context for fresh information.\n')
+                warning = (skip_notice + '; this context comes from the previous index. '
+                           'Read current sources or use beyin.py context for fresh information.' + skip_hint + '\n')
             else:
                 warning = ''
+            coverage = ''
             health = state / "hook-health.json"
             if health.exists():
                 sync = json.loads(health.read_text(encoding="utf-8")).get("sync", {})
@@ -698,8 +801,27 @@ def main():
                         detail = f'{recent} in the last 7 days ({no_edits} without observed edits)'
                     else:
                         detail = f'{recent} in the last 7 days'
-                    warning += (f'Prior checkpoints may lack structured receipts ({detail}); '
+                    coverage = (f'Prior checkpoints may lack structured receipts ({detail}); '
                                 'check Last-Session/Threads and current sources for unfinished work.\n')
+            topic_session = payload.get('session_id', 'unknown')
+            dedupe_enabled = (state / 'context-dedupe.json').is_file() or os.environ.get('BEYIN_V3_CONTEXT_DEDUPE') == '1'
+            # The coverage notice is a session fact like the receipt: said once, again when its count changes.
+            if coverage and dedupe_enabled:
+                try:
+                    from beyin_v3_dedupe import notice_delivered
+                    if notice_delivered(state, args.harness, topic_session, coverage):
+                        coverage = ''
+                except Exception:
+                    pass
+            warning += coverage
+
+            def remember_notice(shown):
+                if coverage and dedupe_enabled and coverage.strip() in shown:
+                    try:
+                        from beyin_v3_dedupe import record_delivered
+                        record_delivered(state, args.harness, topic_session, [], notice=coverage)
+                    except Exception:
+                        pass
             from beyin_v3_companion import (context as companion_context, relevant, opening_budget, client_budget,
                                             client_rebudget, fit_client)
             # Both budgets stop below a client's own cut-off; past it the client files the text away (#175).
@@ -759,7 +881,6 @@ def main():
                     context = {"records": []}
                 inherited = False
                 from beyin_v3_continuity import resolve, remember
-                topic_session = payload.get('session_id', 'unknown')
                 try:
                     context, inherited = resolve(store, args.harness, topic_session, query, context,
                                                  budget_chars=limit, project=project)
@@ -776,7 +897,6 @@ def main():
                                                    timeout_cap=min(2.0, remaining), project=project)
                         except Exception:
                             pass  # an advisor failure must never cost the local context
-                dedupe_enabled = (state / 'context-dedupe.json').is_file() or os.environ.get('BEYIN_V3_CONTEXT_DEDUPE') == '1'
                 duplicates = []
                 suffix = receipt
                 if dedupe_enabled and context.get("records"):
@@ -819,9 +939,12 @@ def main():
                     pass
                 if not delivered.get("records") and not receipt_only:
                     diagnostic = fit_client(args.harness, (notice + warning)[:limit])
+                    remember_notice(diagnostic)
                     print(json.dumps(output_context(args.harness, event, diagnostic)) if diagnostic else "{}")
                     return
-            output = output_context(args.harness, event, fit_client(args.harness, (notice + text)[:limit]))
+            shown = fit_client(args.harness, (notice + text)[:limit])
+            remember_notice(shown)
+            output = output_context(args.harness, event, shown)
             print(json.dumps(output))
         else:
             print(json.dumps(reminder) if reminder else (json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == "antigravity" else "{}")))
@@ -831,7 +954,9 @@ def main():
             # worker is not failing, so keep the pending/deferred notice and record no hook error.
             msg = ("V3 source sync is pending. Verify current Markdown sources before using prior context."
                    if locals().get("pending") is True else
-                   "V3 automatic check deferred by your interval preference. Read current sources or use beyin.py context for fresh information.")
+                   (locals().get("skip_notice") or 'V3 automatic check deferred by your interval preference') +
+                   ". Read current sources or use beyin.py context for fresh information." +
+                   str(locals().get("skip_hint") or ''))
             print(json.dumps(output_context(args.harness, event, notice + msg)))
             return
         record_error(state, exc)

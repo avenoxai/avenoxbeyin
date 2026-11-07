@@ -559,10 +559,13 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
             continue
         path = vault / name
         if path.exists() and name not in manifest['files']:
-            if not stock_legacy_runner(name, digest(path.read_bytes()), expected):
-                raise ValueError('Customized legacy runner requires review ' + name)
             stub = RETIRED_STUB + (b'raise SystemExit(0)\n' if name.endswith('.py') else b'exit 0\n')
             if name.endswith('.sh'): stub = b'#!/bin/sh\n' + stub
+            current = path.read_bytes()
+            # The stub itself is no customization: another machine's install retired it and a
+            # synced vault brought it here, where this machine has no record of it.
+            if not line_endings_only(stub, current) and not stock_legacy_runner(name, digest(current), expected):
+                raise ValueError('Customized legacy runner requires review ' + name)
             add(name, stub)
     for source in sorted((ROOT / "template/.claude/scripts").glob("beyin_v3*.py")):
         add(".claude/scripts/" + source.name, source.read_bytes())
