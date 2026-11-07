@@ -56,6 +56,11 @@ updater → ZIP → installer zinciri kanıtlanmadan yapılacak bir dosya taşı
   kamusal imza ve yan modül yükleme sözleşmelerini korur. Yalnız yeniden export
   etmek, eski `patch.object(original_module, ...)` çağrılarının helper içindeki
   global çözümlemesini aynı tutmayabilir; ilgili patch noktası ayrıca sınanmalı.
+- [`tests/v3_yakala_standalone_cli_test.py`](../../tests/v3_yakala_standalone_cli_test.py)
+  yalnız kopyalanmış tek dosyayı izole Python süreçlerinde çalıştırır: çevrimdışı
+  metin yakalama → listeleme → işleme → bitirme ve vault yokken salt okunur
+  yardım/boş listeleme. GUI, listener, yerel platform kabulü veya dağıtım
+  mimarisi kararı için kanıt değildir.
 - Mevcut keşif `python -m unittest discover -s tests -p "v3_*test.py"`;
   test alt dizinine taşıma keşfi değiştirebilir. V3, release ve Jev workflow
   path filtreleri de dosya taşımasıyla birlikte değerlendirilmelidir.
