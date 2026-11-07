@@ -163,10 +163,17 @@ evidence that a fact is false. `--audience internal` includes internal and publi
 records but excludes records marked `visibility: private`. Internal records may
 still be sensitive; use synthetic inputs for public demonstrations.
 
-A `--json` error object is written as UTF-8 with its real characters
-(`Erişim engellendi`, not `\u015f` escapes), also through a piped Windows console;
-decode it as UTF-8. A settings file that is not valid JSON (`.beyin-runtime.json`,
-`.beyin-preferences.json`) is named in the error message.
+Error objects of the CLI and of `beyin.py` itself (a `--json` command failure,
+usage errors, `note-read` / `note-edit` errors) and the `history` source-sync
+warning on stderr are written as UTF-8 with their real characters
+(`Erişim engellendi`, not `\u015f` escapes), also through a piped Windows console.
+Decode error output as UTF-8 (for example `subprocess.run(..., encoding="utf-8")`),
+not with the Windows ANSI code page. Control, bidi and other invisible characters
+stay escaped, and success JSON is unchanged (ASCII). `beyin.py yakala --json`
+keeps its own rule: real characters only on a stream that is already UTF-8.
+A settings file that is not valid JSON (`.beyin-runtime.json`,
+`.beyin-preferences.json`, `.beyin-daily-layout.json`) is named in the error
+message, also by the lifecycle bridge and the Hermes plugin.
 
 This release establishes local source-backed retrieval and state semantics.
 It does not establish broad natural-language intelligence, installed lifecycle
