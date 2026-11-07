@@ -560,9 +560,12 @@ def loose_ranking(store, query, project=None, limit=32):
         return []
     _scope, index, adjustments = memo
     ignored = STOPWORDS | _tokens(project or "")
-    terms = _strict_terms(_tokens(query) - ignored)
+    # The strict pass's query terms (#430): a hyphenated name's joined stem only stands in for
+    # a missing part, so one hyphenated word never weighs as two terms in this order either.
+    terms, compounds = _query_compounds(query, _strict_terms(_tokens(query) - ignored))
     return [passage[0]["id"] for _rank, passage in
-            search(index, terms, limit, floor=0.0, min_shared=1, ignored=ignored, rank_adjustments=adjustments)]
+            search(index, terms, limit, floor=0.0, min_shared=1, ignored=ignored, rank_adjustments=adjustments,
+                   compounds=compounds)]
 
 
 def _excerpt(record, passages):

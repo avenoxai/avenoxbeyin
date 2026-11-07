@@ -333,6 +333,20 @@ class AutoContextTest(unittest.TestCase):
         # An index built for another project scope is not reused.
         self.assertEqual(passage.loose_ranking(self.store, query, project='other'), [])
 
+    def test_the_passage_order_reads_hyphenated_names_like_the_strict_pass(self):
+        # #430 with #533: the loose order ranks with the strict pass's query terms, so the
+        # joined stem of a hyphenated name stands in for its part and is never a term of its own.
+        self.record('plugin', 'The claude-mem plugin keeps session notes between runs.')
+        query = 'where does claude-mem keep the session notes'
+        with patch.object(passage, 'search', wraps=passage.search) as spy:
+            self.local(query)
+            self.assertTrue(passage.loose_ranking(self.store, query))
+        (strict_args, strict_kw), (loose_args, loose_kw) = [(c.args, c.kwargs) for c in spy.call_args_list]
+        self.assertTrue(strict_kw.get('compounds'))
+        self.assertEqual(loose_kw.get('compounds'), strict_kw['compounds'])
+        self.assertEqual(set(loose_args[1]), set(strict_args[1]))
+        self.assertNotIn(runtime._stem('claudemem'), set(loose_args[1]))
+
     def test_a_pending_index_leaves_the_word_order_alone(self):
         query = self.long_note_vault()
         self.local(query)
