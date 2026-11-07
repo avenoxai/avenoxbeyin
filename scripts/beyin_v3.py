@@ -949,6 +949,21 @@ def read_json(filename: str):
                              + "; nothing was written, send standard UTF-8 (lone surrogates and CESU-8 are rejected)") from exc
 
 
+def note_request(filename, args):
+    """--idempotency-key/--evidence-ref fill the JSON request; a differing duplicate is refused."""
+    payload = read_json(filename)
+    if not isinstance(payload, dict):
+        raise ValueError(args.command + " payload must be a JSON object")
+    for field in ("idempotency_key", "evidence_refs"):
+        value = getattr(args, field, None)
+        if value is None:
+            continue
+        if payload.get(field, value) != value:
+            raise ValueError(field + " given in the request and on the command line with different values")
+        payload[field] = value
+    return payload
+
+
 def load_skills():
     _ensure_scripts_path()
     import beyin_v3_skills
@@ -1116,12 +1131,16 @@ def parser(note_namespace=None, is_json=False):
     ingest.add_argument("--file", default="-", help="JSON input path, or - for stdin")
     note = sub.add_parser("note-create", help="Create a semantic Markdown source without overwriting")
     note.add_argument("--file", default="-", help="JSON {source, text, metadata}")
+    note.add_argument("--idempotency-key", help="Optional retry key (1-128 of A-Z a-z 0-9 _ -), bound to this exact request")
+    note.add_argument("--evidence-ref", action="append", dest="evidence_refs", help="Existing vault source path backing the note; repeatable")
     note_read = sub.add_parser("note-read", help="Read a human Markdown source and its byte SHA-256")
     note_read.add_argument("source")
     note_read.add_argument("--must-exist", action="store_true",
                            help="Report a missing source as an error (exit 1) instead of exists: false")
     note_edit = sub.add_parser("note-edit", help="Edit a human Markdown source with an expected SHA-256")
     note_edit.add_argument("--file", default="-", help="JSON {source, expected_sha256, edits} or new content; - for stdin")
+    note_edit.add_argument("--idempotency-key", help="Optional retry key (1-128 of A-Z a-z 0-9 _ -), bound to this exact request")
+    note_edit.add_argument("--evidence-ref", action="append", dest="evidence_refs", help="Existing vault source path backing the edit; repeatable")
     task = sub.add_parser("task-create", help="Create and verify an explicit new task")
     task.add_argument("--file", default="-", help="JSON {source: tasks/name.md, text, metadata: {id,status,owner}}")
     context = sub.add_parser("context", help="Retrieve source-backed shared context")
@@ -1884,10 +1903,12 @@ def main(argv=None, return_result=False):
                 # The documented note error: status error, exit 1. Exit 2 stays "conflict".
                 raise FileNotFoundError('note not found: ' + result['source'])
         elif args.command == "note-edit":
-            result = sync.note_edit(read_json(args.file))
+            result = sync.note_edit(note_request(args.file, args))
         elif args.command == "note-create":
-            payload = read_json(args.file)
-            result = sync.note_create(payload['source'], payload['text'], payload.get('metadata'))
+            payload = note_request(args.file, args)
+            result = sync.note_create(payload['source'], payload['text'], payload.get('metadata'),
+                                      idempotency_key=payload.get('idempotency_key'),
+                                      evidence_refs=payload.get('evidence_refs'))
         elif args.command == "task-create":
             payload = read_json(args.file)
             result = sync.task_create(payload['source'], payload['text'], payload['metadata'])
