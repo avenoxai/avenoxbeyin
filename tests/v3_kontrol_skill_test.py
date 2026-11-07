@@ -1,9 +1,9 @@
 """beyin-kontrol (#589): a read-only memory audit skill the user starts by name.
 
 The skill ships inside the checksum-listed installer, because released updaters accept only the
-three older starter SKILL.md members. These tests pin the package shape, the install of the
-mirrored files, a user's own same-named skill, and the read-only promise of the commands the
-skill tells the agent to run.
+three older starter SKILL.md members. These tests pin the package shape, the install and rollback
+of the mirrored files, a user's own same-named skill, and the read-only promise of the commands
+the skill tells the agent to run.
 """
 import importlib.util
 import json
@@ -19,6 +19,7 @@ from v3_package_helpers import ROOT, build_package, inherited_env, run_python, s
 
 SKILL = ROOT / 'template/.agents/skills/beyin-kontrol/SKILL.md'
 ROOTS = ('.agents', '.claude', '.kiro')
+STARTERS = ('beyin', 'beyin-doktor', 'beyin-guncelle', 'beyin-kontrol')
 # beyin_v3_update.allowed() as released up to 3.12.0. Those updaters install every later
 # release, so a package member outside this list would stop them before the new installer runs.
 RELEASED_ALLOWLIST = re.compile(r'scripts/(?:install_v3|beyin_v3|beyin_entry)\.py|'
@@ -123,6 +124,42 @@ class KontrolSkillInstallTest(unittest.TestCase):
             self.assertFalse(any('beyin-kontrol' in name for name in self.manifest()['files']))
         self.assertEqual(self.beyin('skill-sync')['conflicts'], [])
         self.assertEqual(own.read_bytes(), before)
+
+    def test_rollback_past_the_install_that_added_skills_leaves_no_empty_skill_folder(self):
+        # The earlier install has no skills, like a release before beyin-kontrol; the next one
+        # adds them, skill sync records them, and rollback removes them again.
+        self.install('--exclude-component', 'skills')
+        for name in STARTERS:
+            self.assertFalse((self.vault / '.agents/skills' / name).exists(), name)
+        self.install('--include-component', 'skills')
+        self.assertEqual(self.beyin('skill-sync')['synced'], list(STARTERS))
+        keep = self.vault / '.claude/skills/beyin-doktor/NOTLARIM.md'
+        keep.write_text('Kullanıcının kendi dosyası.\n', encoding='utf-8')
+        self.assertEqual(self.beyin('rollback')['status'], 'rolled_back')
+        for name in STARTERS:
+            for root in ROOTS:
+                folder = self.vault / root / 'skills' / name
+                self.assertFalse((folder / 'SKILL.md').exists(), folder)
+                if folder != keep.parent:
+                    self.assertFalse(folder.exists(), folder)
+        self.assertEqual(keep.read_text(encoding='utf-8'), 'Kullanıcının kendi dosyası.\n')
+        conflicts = self.beyin('skill-sync')['conflicts']
+        # The folder that still holds the user's file stays theirs to resolve; no other skill is.
+        self.assertEqual(conflicts, ['beyin-doktor'])
+
+    def test_excluding_skills_after_sync_leaves_no_empty_skill_folder(self):
+        self.install()
+        self.assertEqual(self.beyin('skill-sync')['conflicts'], [])
+        result = self.install('--exclude-component', 'skills')
+        self.assertEqual(len(result['removed']), len(STARTERS) * len(ROOTS))
+        for name in STARTERS:
+            for root in ROOTS:
+                self.assertFalse((self.vault / root / 'skills' / name).exists(), (root, name))
+        self.assertEqual(self.beyin('skill-sync')['conflicts'], [])
+        self.install('--include-component', 'skills')
+        for path in self.skill_paths():
+            self.assertEqual(path.read_bytes(), SKILL.read_bytes())
+        self.assertEqual(self.beyin('skill-sync')['conflicts'], [])
 
     def test_collection_commands_named_by_the_skill_do_not_write_the_vault(self):
         self.install()
