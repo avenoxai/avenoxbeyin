@@ -1223,6 +1223,7 @@ def extract(vault, card, found, allow_audio=True, info=None):
     if kind == 'dosya':
         parts = []
         document_issues = []
+        read_docx = False
         vault_root = Path(vault).resolve()
         for link in re.findall(r'\[\[([^\]]+)\]\]', _section(body, 'Dosyalar')):
             path = _safe_vault_file(vault_root, link)
@@ -1242,12 +1243,19 @@ def extract(vault, card, found, allow_audio=True, info=None):
                     continue
                 with path.open('rb') as source:
                     result = reader.extract_docx(source.read(reader.MAX_SOURCE + 1))
+                read_docx = True
                 if result['text']:
                     parts.append('## ' + path.name + '\n\n' + result['text'])
                 if result['state'] != 'ready':
                     document_issues.append(path.name + ': ' + ', '.join(result['issues']))
         if parts:
-            return '\n\n'.join(parts), 'dosya', '; '.join(document_issues) or None
+            note = None
+            if document_issues:
+                note = ('; '.join(document_issues) +
+                        '; cikarilan metin eksik olabilir, kalan icerik icin dosyayi ajan incelesin.')
+            if read_docx and info is not None:
+                info['uyari'] = note  # kept on the card like a video caveat; a clean rerun clears it
+            return '\n\n'.join(parts), 'dosya', note
         if document_issues:
             return None, 'ajan-okusun', '; '.join(document_issues) + '; dosyayi ajan dogrudan incelesin.'
         return None, 'ajan-okusun', 'Dosyayi ajan dogrudan okusun (gorsel, PDF ya da ikili dosya).'
@@ -1323,7 +1331,7 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
                                             'Tam metin ham dosyaya tasindi: `' + raw.relative_to(vault).as_posix() + '`')
                 meta.update(durum='cikarildi', yontem=method, ham=raw.relative_to(vault).as_posix())
                 meta.pop('hata', None)
-                for key in ('dil', 'altyazi', 'uyari'):  # only the video path reports these; a rerun replaces its own
+                for key in ('dil', 'altyazi', 'uyari'):  # video and DOCX paths report these; a rerun replaces its own
                     if key in info:
                         meta.pop(key, None)
                         if info[key]:

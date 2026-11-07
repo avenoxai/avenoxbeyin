@@ -76,6 +76,25 @@ class YakalaDocxTest(unittest.TestCase):
         self.assertEqual(result['kartlar'][0]['yontem'], 'ajan-okusun')
         self.assertIn('no_extractable_text', result['kartlar'][0]['not'])
 
+    def test_partial_text_keeps_its_warning_on_the_card_until_a_clean_rerun(self):
+        raw = document('<w:p><w:r><w:t>Görünen metin</w:t></w:r><w:r><w:drawing/></w:r></w:p>',
+                       {'word/media/image1.png': b'fake image'})
+        _, info, card_id = self.capture_and_extract(raw)
+        self.assertIn('unsupported_content', info['uyari'])
+        with patch.object(yakala, 'tools', return_value={}):
+            row = yakala.process(self.vault, [card_id])['kartlar'][0]
+        self.assertEqual((row['durum'], row['yontem']), ('cikarildi', 'dosya'))
+        self.assertIn('eksik olabilir', row['not'])
+        card = yakala.find_card(self.vault, card_id)
+        self.assertIn('öğrenim.docx: additional_content, unsupported_content', card['meta']['uyari'])
+        self.assertIn('Görünen metin', (self.vault / row['ham']).read_text(encoding='utf-8'))
+        copy = self.vault / card['body'].split('[[', 1)[1].split(']]', 1)[0]
+        copy.write_bytes(document('<w:p><w:r><w:t>Tam metin</w:t></w:r></w:p>'))
+        with patch.object(yakala, 'tools', return_value={}):
+            row = yakala.process(self.vault, [card_id])['kartlar'][0]
+        self.assertNotIn('not', row)
+        self.assertNotIn('uyari', yakala.find_card(self.vault, card_id)['meta'])
+
     def test_archive_limits_and_unsupported_content(self):
         bomb = document('<w:p><w:r><w:t>safe</w:t></w:r></w:p>',
                         {'word/media/bomb.bin': b'x' * (8 * 1024 * 1024 + 1)})
