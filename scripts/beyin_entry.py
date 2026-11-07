@@ -673,8 +673,9 @@ def print_error(error):
             sys.stderr.reconfigure(encoding='utf-8')
         except (OSError, ValueError):
             pass
-    # Bidi and other format controls, line separators and lone surrogates stay escaped.
-    text = ''.join(json.dumps(ch)[1:-1] if unicodedata.category(ch) in ('Cf', 'Cs', 'Zl', 'Zp') else ch
+    # Control characters (DEL, C1), bidi and other format controls, line separators and lone
+    # surrogates stay escaped.
+    text = ''.join(json.dumps(ch)[1:-1] if unicodedata.category(ch) in ('Cc', 'Cf', 'Cs', 'Zl', 'Zp') else ch
                    for ch in json.dumps(error, ensure_ascii=False))
     try:
         print(text, file=sys.stderr)

@@ -8,6 +8,7 @@ from contextlib import closing
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -96,25 +97,77 @@ class SourceCliErrorTest(unittest.TestCase):
                         self.assertNotIn(escaped(text), raw)
                         self.assertIn(text, json.loads(raw.decode('utf-8'))['message'])
 
+    def degraded_vault(self):
+        """One good record and one unparseable source in a Turkish folder: sync is degraded and
+        names that source in its warnings."""
+        (self.vault / 'ok.md').write_text('---\n{"id":"ok-1","kind":"fact","status":"active"}\n---\nfine\n',
+                                          encoding='utf-8')
+        (self.vault / 'Görüşmeler').mkdir()
+        (self.vault / 'Görüşmeler' / 'Şema.md').write_text('---\n{"id": bad\n---\nbroken\n', encoding='utf-8')
+        return 'Görüşmeler/Şema.md'
+
+    def test_history_degraded_warning_keeps_real_characters(self):
+        # The second site the report names (3.12.0 beyin_v3_cli.py:1766): the history command's
+        # source_sync warning on stderr carries vault paths a person reads.
+        source = self.degraded_vault()
+        for encoding in ('cp1252', 'ascii'):
+            with self.subTest(encoding=encoding):
+                done = self.run_cli('history', 'ok-1', encoding=encoding)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIn(source.encode('utf-8'), done.stderr)
+                self.assertNotIn(escaped(source), done.stderr)
+                warning = json.loads(done.stderr.decode('utf-8'))['source_sync']
+                self.assertEqual((warning['status'], warning['warning_count']), ('degraded', 1))
+                self.assertEqual(warning['warnings'][0]['source'], source)
+                # The stdout contract is unchanged: an ASCII JSON list.
+                self.assertIsInstance(json.loads(done.stdout.decode('ascii')), list)
+
+    def test_embedded_history_warning_uses_the_callers_stream_as_it_is(self):
+        # beyin.py runs history in human mode through main(return_result=True): the warning still
+        # goes to the caller's stderr, which keeps its encoding. Real characters only where that
+        # stream already writes UTF-8; a legacy code page gets the escaped (ASCII) form.
+        source = self.degraded_vault()
+        cli = load_cli()
+        for encoding, expected in (('utf-8', source.encode('utf-8')), ('cp1252', escaped(source))):
+            with self.subTest(encoding=encoding):
+                with closing(io.TextIOWrapper(io.BytesIO(), encoding=encoding, errors='replace')) as stdout, \
+                     closing(io.TextIOWrapper(io.BytesIO(), encoding=encoding, errors='replace')) as stderr:
+                    with patch.object(sys, 'stdout', stdout), patch.object(sys, 'stderr', stderr), \
+                         patch.object(sys, 'stdin', io.StringIO()), \
+                         patch.dict(os.environ, BEYIN_V3_NO_SPAWN='1', BEYIN_UPDATES_OFF='1'):
+                        result, code = cli.main(['--vault', str(self.vault), '--state', str(self.state),
+                                                 'history', 'ok-1'], return_result=True)
+                        stderr.flush()
+                    self.assertEqual(code, 0, result)
+                    self.assertIsInstance(result, list)
+                    self.assertEqual((stdout.encoding, stderr.encoding, stderr.errors), (encoding, encoding, 'replace'))
+                    self.assertEqual(stdout.buffer.getvalue(), b'')
+                    raw = stderr.buffer.getvalue()
+                    self.assertIn(expected, raw)
+                    self.assertEqual(json.loads(raw.decode('utf-8'))['source_sync']['warnings'][0]['source'], source)
+
     def test_hidden_and_reordering_characters_stay_escaped(self):
-        # Turkish letters print as they are; a bidi override, a line separator or a lone
-        # surrogate would hide or reorder text, or break UTF-8, so it stays escaped.
+        # Turkish letters print as they are; a bidi override, a line separator, a control
+        # character a terminal acts on (DEL, the C1 range with the 8-bit CSI) or a lone surrogate
+        # would hide or reorder text, drive the terminal, or break UTF-8, so it stays escaped.
         value = {'message': 'Erişim \N{RIGHT-TO-LEFT OVERRIDE}engellendi\N{LINE SEPARATOR}'
-                            ' \ud800 \U000e0001 \U0001f600'}
+                            ' \ud800 \U000e0001 \U0001f600 \x7f \x85 \x9b'}
         text = load_cli().readable_json(value)
         self.assertEqual(json.loads(text), value)
         self.assertIn('Erişim', text)
         self.assertIn('\U0001f600', text)
-        for hidden in ('\\u202e', '\\u2028', '\\ud800', '\\udb40\\udc01'):
+        for hidden in ('\\u202e', '\\u2028', '\\ud800', '\\udb40\\udc01', '\\u007f', '\\u0085', '\\u009b'):
             self.assertIn(hidden, text)
+        self.assertFalse(any(0x7f <= ord(ch) <= 0x9f for ch in text), text)
         text.encode('utf-8')  # never a lone surrogate on the stream
         # argparse names an unknown option without repr(), so the raw character reaches the JSON.
-        option = '--a\N{RIGHT-TO-LEFT OVERRIDE}b'
-        done = self.run_cli('note-read', 'x.md', option, encoding='cp1252')
-        self.assertEqual(done.returncode, 64, done.stdout + done.stderr)
-        self.assertNotIn(option.encode('utf-8'), done.stdout)
-        self.assertIn(b'--a\\u202eb', done.stdout)
-        self.assertEqual(json.loads(done.stdout)['message'], 'unrecognized arguments: ' + option)
+        for option, shown in (('--a\N{RIGHT-TO-LEFT OVERRIDE}b', b'--a\\u202eb'), ('--a\x9bb\x7fc', b'--a\\u009bb\\u007fc')):
+            with self.subTest(option=ascii(option)):
+                done = self.run_cli('note-read', 'x.md', option, encoding='cp1252')
+                self.assertEqual(done.returncode, 64, done.stdout + done.stderr)
+                self.assertNotIn(option.encode('utf-8'), done.stdout)
+                self.assertIn(shown, done.stdout)
+                self.assertEqual(json.loads(done.stdout)['message'], 'unrecognized arguments: ' + option)
 
     def test_embedded_error_returns_the_result_and_leaves_caller_streams_alone(self):
         cli = load_cli()
@@ -233,6 +286,13 @@ class InstalledEntryErrorTest(unittest.TestCase):
                 self.assertIn(text.encode('utf-8'), done.stderr)
                 self.assertNotIn(escaped(text), done.stderr)
                 self.assertIn(text, json.loads(done.stderr.decode('utf-8'))['message'])
+        # The entry point's own print_error escapes control characters a terminal acts on (C1, DEL).
+        option = '--a\x9bb\x7fc'
+        done = self.run_entry('--json', 'update', option, encoding='cp1252')
+        self.assertEqual(done.returncode, 2, done.stderr)
+        self.assertNotIn(option.encode('utf-8'), done.stderr)
+        self.assertIn(b'--a\\u009bb\\u007fc', done.stderr)
+        self.assertIn(option, json.loads(done.stderr.decode('utf-8'))['message'])
 
 
 if __name__ == '__main__':
