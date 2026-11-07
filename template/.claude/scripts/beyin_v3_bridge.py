@@ -265,6 +265,11 @@ def global_opencode_plugin_path(home=None):
     return config / 'opencode/plugins/beyin-v3-bridge.js'
 
 
+def global_opencode_settings_path(home=None):
+    """The bridge command and roots, beside (not inside) the folder OpenCode imports plugins from."""
+    return global_opencode_plugin_path(home=home).parent.parent / 'beyin-v3-bridge.json'
+
+
 def _gemini_md_path(path):
     text = str(path)
     # Markdown paths need native backslashes; keep quotes/control characters on one data line.
@@ -391,21 +396,39 @@ def remove_gemini_md(home=None):
 
 
 OPENCODE_MARKER = '// beyin-v3-bridge: installer-owned, removed by --uninstall'
+OPENCODE_MANAGED = 'beyin-v3-bridge'
 
 OPENCODE_PLUGIN = r'''// beyin-v3-bridge: installer-owned, removed by --uninstall.
 // OpenCode loads this global plugin in every directory; the bridge itself stays
 // silent inside a vault and outside the project roots it was installed for.
 import { execFile } from "node:child_process"
+import { readFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
 
-const PYTHON = __PYTHON__
-const COMMAND = __COMMAND__
-const TIMEOUT = __TIMEOUT__
+// A running OpenCode service keeps an imported plugin module until it restarts, so the
+// interpreter, bridge command and project roots live in a managed file read on every
+// event: a reinstall with other roots or an uninstall applies to the next event.
+const SETTINGS = fileURLToPath(new URL("../beyin-v3-bridge.json", import.meta.url))
+const TIMEOUT = process.platform === "win32" ? 20000 : 6000
+
+function settings() {
+  try {
+    const data = JSON.parse(readFileSync(SETTINGS, "utf8"))
+    const valid = data?.managed_by === "beyin-v3-bridge" && typeof data.python === "string" && data.python &&
+      Array.isArray(data.command) && data.command.length && data.command.every((value) => typeof value === "string")
+    return valid ? data : null
+  } catch {
+    return null
+  }
+}
 
 function runBridge(payload) {
-  // Fail open: a missing interpreter, timeout or invalid output means no context.
+  // Fail open: missing settings or interpreter, timeout or invalid output means no context.
+  const bridge = settings()
+  if (!bridge) return Promise.resolve("")
   return new Promise((resolve) => {
     try {
-      const child = execFile(PYTHON, COMMAND, { timeout: TIMEOUT, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
+      const child = execFile(bridge.python, bridge.command, { timeout: TIMEOUT, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
         env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONDONTWRITEBYTECODE: "1" } },
         (error, stdout) => {
           try {
@@ -570,16 +593,35 @@ export default { id: "beyin-v3-bridge", server: BeyinV3, setup }
 '''
 
 
-def opencode_plugin_content(vault, state, roots, events, context_chars):
+def opencode_plugin_content():
+    """The same module for every install; what changes per install is in the settings file."""
+    return OPENCODE_PLUGIN
+
+
+def opencode_settings_content(vault, state, roots, events, context_chars):
     command = [str(Path(__file__).resolve()), '--vault', str(vault),
                '--state', str(state), '--harness', 'opencode', '--context-chars', str(context_chars)]
     for root in roots:
         command.extend(['--project-root', str(root)])
     for event in events:
         command.extend(['--event', event])
-    return (OPENCODE_PLUGIN.replace('__PYTHON__', json.dumps(sys.executable))
-            .replace('__COMMAND__', json.dumps(command, ensure_ascii=False))
-            .replace('__TIMEOUT__', '20000' if os.name == 'nt' else '6000'))
+    return json.dumps({'managed_by': OPENCODE_MANAGED, 'schema': 1, 'python': sys.executable, 'command': command},
+                      indent=2, ensure_ascii=False) + '\n'
+
+
+def _managed_opencode_file(path):
+    """Only files this bridge wrote are replaced or removed; anything else at the path is preserved."""
+    try:
+        text = path.read_text(encoding='utf-8')
+    except (OSError, ValueError):
+        return False
+    if path.suffix == '.js':
+        return OPENCODE_MARKER in text
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return False
+    return isinstance(data, dict) and data.get('managed_by') == OPENCODE_MANAGED
 
 
 def install_bridge(vault, state, harness, roots, events=None, context_chars=1500, home=None):
@@ -595,16 +637,19 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
     events = list(dict.fromkeys(events or EVENTS))
     if harness == 'opencode':
         target = global_opencode_plugin_path(home=home)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        content = opencode_plugin_content(vault, state, roots, events, context_chars).encode('utf-8')
-        if target.is_file():
-            if target.read_bytes() != content:
-                if OPENCODE_MARKER not in target.read_text(encoding='utf-8', errors='replace'):
-                    raise ValueError('Global plugin exists and is not managed; preserved')
-                _backup_file(target)
-                target.write_bytes(content)
-        else:
-            target.write_bytes(content)
+        settings_path = global_opencode_settings_path(home=home)
+        files = [(settings_path, opencode_settings_content(vault, state, roots, events, context_chars)),
+                 (target, opencode_plugin_content())]
+        # Check both paths before writing either: a user file at one of them is never replaced.
+        for path, _ in files:
+            if (path.exists() or path.is_symlink()) and not (path.is_file() and _managed_opencode_file(path)):
+                raise ValueError(f'{path.name} exists and is not managed; preserved')
+        from beyin_v3_sync import atomic
+        # Settings first: a plugin a running service already imported reads them on the next event.
+        for path, text in files:
+            if not path.is_file() or path.read_bytes() != text.encode('utf-8'):
+                _backup_file(path)
+                atomic(path, text)
         return {
             'status': 'installed',
             'harness': harness,
@@ -684,9 +729,11 @@ def uninstall_bridge(harness, home=None):
     target = global_hook_path(harness, home=home)
     removed_count = 0
     if harness == 'opencode':
-        if target.is_file() and OPENCODE_MARKER in target.read_text(encoding='utf-8', errors='replace'):
-            target.unlink()
-            removed_count = 1
+        # Settings first: a plugin module a running service keeps in memory then has nothing to run.
+        for path in (global_opencode_settings_path(home=home), target):
+            if path.is_file() and not path.is_symlink() and _managed_opencode_file(path):
+                path.unlink()
+                removed_count += 1
         return {
             'status': 'uninstalled',
             'harness': harness,
@@ -815,8 +862,10 @@ def _main(argv=None):
 
         if args.print_config:
             if args.harness == 'opencode':
-                print(json.dumps({'plugin': str(global_opencode_plugin_path()),
-                                  'content': opencode_plugin_content(vault, state, roots, events, args.context_chars)},
+                print(json.dumps({'plugin': str(global_opencode_plugin_path()), 'content': opencode_plugin_content(),
+                                  'settings': str(global_opencode_settings_path()),
+                                  'settings_content': opencode_settings_content(vault, state, roots, events,
+                                                                                args.context_chars)},
                                  indent=2, ensure_ascii=False))
                 return 0
             command = [sys.executable, str(Path(__file__).resolve()), '--vault', str(vault),

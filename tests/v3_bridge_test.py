@@ -127,6 +127,45 @@ console.log(JSON.stringify(result))
 process.exit(0)
 """
 
+# One imported module, as in a running OpenCode service that never re-imports a changed
+# plugin file: a reinstall with other roots and an uninstall must still apply to it.
+OPENCODE_RESCOPE_DRIVER = r"""
+import { copyFileSync, unlinkSync } from "node:fs"
+import { pathToFileURL } from "node:url"
+const [plugin, settings, narrowed, project, other] = process.argv.slice(1)
+const folders = { "scope-a": project, "scope-b": project, "scope-c": other, "scope-d": other }
+const hooks = {}
+const register = (domain) => async (name, callback) => {
+  hooks[`${domain}.${name}`] = callback
+  return { dispose: async () => {} }
+}
+async function* subscribe({ signal } = {}) {
+  await new Promise((resolve) => signal?.addEventListener("abort", resolve))
+}
+const ctx = {
+  session: { hook: register("session"),
+    get: async ({ sessionID }) => ({ id: sessionID, projectID: "global", location: { directory: folders[sessionID] } }) },
+  event: { subscribe },
+  location: { directory: other },
+}
+const cleanup = await (await import(pathToFileURL(plugin).href)).default.setup(ctx)
+const open = async (sessionID) => {
+  await hooks["session.prompt"]({ sessionID, messageID: "msg", prompt: { text: "hi", files: [] }, delivery: "steer" })
+  const event = { sessionID, agent: "build", model: {}, system: [], messages: [], options: {}, tools: {} }
+  await hooks["session.context"](event)
+  return event.system.length
+}
+const result = { a: await open("scope-a") }
+copyFileSync(narrowed, settings)
+result.b = await open("scope-b")
+result.c = await open("scope-c")
+unlinkSync(settings)
+result.d = await open("scope-d")
+await cleanup()
+console.log(JSON.stringify(result))
+process.exit(0)
+"""
+
 
 class BridgeTest(unittest.TestCase):
     def cleanup_tmp(self):
@@ -925,7 +964,9 @@ class BridgeTest(unittest.TestCase):
 
     def test_bridge_install_and_uninstall_opencode_global_plugin(self):
         target = bridge.global_opencode_plugin_path(home=self.home)
+        settings = bridge.global_opencode_settings_path(home=self.home)
         self.assertEqual(target, self.home / '.config/opencode/plugins/beyin-v3-bridge.js')
+        self.assertEqual(settings, self.home / '.config/opencode/beyin-v3-bridge.json')
         self.assertFalse(target.exists())
 
         res = bridge.install_bridge(self.vault, self.state, 'opencode', [self.project], home=self.home)
@@ -933,13 +974,23 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(res['hook_file'], str(target))
         text = target.read_text(encoding='utf-8')
         self.assertIn(bridge.OPENCODE_MARKER, text)
-        self.assertIn(str(self.vault), text)
-        self.assertIn(str(self.project), text)
-        self.assertIn(str(self.state), text)
+        # The module is the same for every install; paths and roots live in the settings file.
+        self.assertEqual(text, bridge.opencode_plugin_content())
+        self.assertNotIn(str(self.vault), text)
+        data = json.loads(settings.read_text(encoding='utf-8'))
+        self.assertEqual(data['managed_by'], 'beyin-v3-bridge')
+        self.assertEqual(data['python'], sys.executable)
+        command = data['command']
+        self.assertEqual(Path(command[0]).name, 'beyin_v3_bridge.py')
+        self.assertEqual(command[command.index('--vault') + 1], str(self.vault.resolve()))
+        self.assertEqual(command[command.index('--state') + 1], str(self.state.resolve()))
+        self.assertEqual(command[command.index('--harness') + 1], 'opencode')
+        self.assertEqual(command[command.index('--project-root') + 1], str(self.project.resolve()))
 
         # Idempotent install: same bytes, no extra backup.
         bridge.install_bridge(self.vault, self.state, 'opencode', [self.project], home=self.home)
         self.assertFalse(target.with_name(target.name + '.bak').exists())
+        self.assertFalse(settings.with_name(settings.name + '.bak').exists())
 
         # Reinstall after an edit backs the file up and rewrites the managed plugin.
         target.write_text(text + '\n// local edit\n', encoding='utf-8')
@@ -947,20 +998,39 @@ class BridgeTest(unittest.TestCase):
         self.assertTrue(target.with_name(target.name + '.bak').is_file())
         self.assertNotIn('// local edit', target.read_text(encoding='utf-8'))
 
-        # A user file at the managed path is never replaced or deleted.
+        # Other roots change only the settings, with a backup of the previous ones.
+        other = self.root / 'Projects' / 'Other'; other.mkdir()
+        bridge.install_bridge(self.vault, self.state, 'opencode', [other], home=self.home)
+        self.assertEqual(target.read_text(encoding='utf-8'), text)
+        self.assertIn(str(other.resolve()), json.loads(settings.read_text(encoding='utf-8'))['command'])
+        self.assertTrue(settings.with_name(settings.name + '.bak').is_file())
+
+        # A user file at either managed path is never replaced or deleted; nothing is written.
         target.unlink()
         target.write_text('export default {}\n', encoding='utf-8')
+        before = settings.read_bytes()
         with self.assertRaises(ValueError):
             bridge.install_bridge(self.vault, self.state, 'opencode', [self.project], home=self.home)
         self.assertEqual(target.read_text(encoding='utf-8'), 'export default {}\n')
-        self.assertEqual(bridge.uninstall_bridge('opencode', home=self.home)['removed_count'], 0)
-        self.assertTrue(target.is_file())
-
-        # A managed plugin is removed by uninstall.
-        target.unlink()
-        bridge.install_bridge(self.vault, self.state, 'opencode', [self.project], home=self.home)
+        self.assertEqual(settings.read_bytes(), before)
+        # Uninstall removes only the managed settings file and keeps the user's plugin.
         self.assertEqual(bridge.uninstall_bridge('opencode', home=self.home)['removed_count'], 1)
+        self.assertTrue(target.is_file())
+        self.assertFalse(settings.exists())
+        target.unlink()
+        settings.write_text('{"user": true}\n', encoding='utf-8')
+        with self.assertRaises(ValueError):
+            bridge.install_bridge(self.vault, self.state, 'opencode', [self.project], home=self.home)
         self.assertFalse(target.exists())
+        self.assertEqual(bridge.uninstall_bridge('opencode', home=self.home)['removed_count'], 0)
+        self.assertEqual(settings.read_text(encoding='utf-8'), '{"user": true}\n')
+
+        # A managed plugin and its settings are removed by uninstall.
+        settings.unlink()
+        bridge.install_bridge(self.vault, self.state, 'opencode', [self.project], home=self.home)
+        self.assertEqual(bridge.uninstall_bridge('opencode', home=self.home)['removed_count'], 2)
+        self.assertFalse(target.exists())
+        self.assertFalse(settings.exists())
 
     @unittest.skipUnless(shutil.which('node'), 'node is required to execute the OpenCode plugin')
     def test_opencode_bridge_plugin_injects_only_for_allowed_projects(self):
@@ -1000,6 +1070,24 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout.strip().splitlines()[-1]), {'lost-1': [], 'lost-2': []})
         self.assertEqual(self.queued(), [])
         self.assertFalse((self.state / 'hook-done').exists() and any((self.state / 'hook-done').iterdir()))
+
+    @unittest.skipUnless(shutil.which('node'), 'node is required to execute the OpenCode plugin')
+    def test_opencode_bridge_scope_changes_apply_to_an_imported_plugin(self):
+        target = bridge.global_opencode_plugin_path(home=self.home)
+        settings = bridge.global_opencode_settings_path(home=self.home)
+        other = self.root / 'Other Projects' / 'İkinci'; other.mkdir(parents=True)
+        bridge.install_bridge(self.vault, self.state, 'opencode', [self.root / 'Projects'], home=self.home)
+        narrowed = self.root / 'narrowed.json'
+        narrowed.write_text(bridge.opencode_settings_content(self.vault.resolve(), self.state.resolve(),
+                                                             [other.resolve()], bridge.EVENTS, 1500), encoding='utf-8')
+        result = subprocess.run([shutil.which('node'), '--input-type=module', '-e', OPENCODE_RESCOPE_DRIVER,
+                                 str(target), str(settings), str(narrowed), str(self.project), str(other)],
+                                capture_output=True, text=True, encoding='utf-8', env=self.env,
+                                cwd=self.root, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # a: installed root; b: same root after narrowing; c: the new root; d: after the settings are removed.
+        self.assertEqual(json.loads(result.stdout.strip().splitlines()[-1]), {'a': 1, 'b': 0, 'c': 1, 'd': 0})
+        self.assertEqual(sorted(event['project'] for event in self.queued()), sorted([self.project.name, other.name]))
 
 
 if __name__ == '__main__':
