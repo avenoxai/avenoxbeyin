@@ -5,12 +5,14 @@ backlink graph analysis, and human-friendly MOC (Maps of Content) generation.
 Pure stdlib, zero external dependencies.
 """
 from collections import defaultdict
-from datetime import datetime, timezone
-import json
+import codecs
+import hashlib
 import os
 import posixpath
 from pathlib import Path
 import re
+import stat
+import tempfile
 import unicodedata
 
 # ReDoS-safe wikilink pattern: bounded character class prevents catastrophic backtracking.
@@ -29,6 +31,11 @@ EXCLUDED_FILE_NAMES = {
 
 MOC_START_MARKER = "<!-- beyin-moc:start -->"
 MOC_END_MARKER = "<!-- beyin-moc:end -->"
+
+# A heading line; [ \t] instead of \s so a lone "#" never joins the next line into a heading.
+HEADING_PATTERN = re.compile(r"^#{1,6}[ \t]+(.+)$", re.MULTILINE)
+
+ARCHIVE_DIR_NAMES = ("arsiv", "archive", "archives")
 
 
 def _norm_key(text):
@@ -83,13 +90,14 @@ def extract_wikilinks(text):
 
 
 def _eligible_note(vault_root, path):
-    from beyin_v3 import sensitive_source
+    from beyin_v3 import sensitive_fold, sensitive_source
     from beyin_v3_sync import parse
     try:
         relative = path.relative_to(vault_root).as_posix()
         if path.is_symlink() or not path.resolve().is_relative_to(vault_root.resolve()):
             return False
-        if sensitive_source(relative) or any(_norm_key(part) in ('arşiv', 'arsiv', 'archive', 'archives')
+        # sensitive_fold keeps Turkish case rules: "ARŞİV" and NFD "Arşiv" both fold to "arsiv".
+        if sensitive_source(relative) or any(sensitive_fold(part) in ARCHIVE_DIR_NAMES
                                               for part in Path(relative).parts[:-1]):
             return False
         metadata, _ = parse(path.read_text(encoding='utf-8-sig'))
@@ -203,6 +211,7 @@ def lint_vault(vault_root, folder=None):
         target_files = [f for f in all_files if _norm_key(f).startswith(norm_folder + "/") or _norm_key(f) == norm_folder]
     else:
         target_files = all_files
+    target_set = set(target_files)
 
     broken_links = []
     outgoing_links = defaultdict(set)
@@ -217,7 +226,7 @@ def lint_vault(vault_root, folder=None):
             continue
 
         links = extract_wikilinks(content)
-        if rel_path in target_files:
+        if rel_path in target_set:
             all_extracted_count += len(links)
 
         for link in links:
@@ -240,7 +249,7 @@ def lint_vault(vault_root, folder=None):
                 try:
                     target_text = (vault_root / res['resolved_path']).read_text(encoding='utf-8-sig')
                     headings = {_norm_key(match.group(1).strip().rstrip('#').strip())
-                                for match in re.finditer(r'^#{1,6}\s+(.+)$', target_text, re.MULTILINE)}
+                                for match in HEADING_PATTERN.finditer(target_text)}
                     if _norm_key(link['heading']) not in headings:
                         res = {'exists': False, 'resolved_path': None}
                 except (OSError, UnicodeError):
@@ -258,7 +267,7 @@ def lint_vault(vault_root, folder=None):
                     "type": "wikilink",
                 })
 
-    broken_links = [link for link in broken_links if link["source"] in target_files]
+    broken_links = [link for link in broken_links if link["source"] in target_set]
 
     # Identify orphans (no incoming and no outgoing)
     orphans = []
@@ -321,6 +330,105 @@ def extract_note_title(full_path):
     return Path(full_path).stem
 
 
+class MocConflict(ValueError):
+    """The MOC file changed outside this command; nothing of the user's text was replaced."""
+
+
+def _link_title(title, fallback):
+    # "]]", "[[" or "|" inside a title would end or split the generated wikilink.
+    cleaned = " ".join(re.sub(r"[\[\]|]", " ", title).split())
+    return cleaned or fallback
+
+
+def _plain_folder_parts(vault_root, folder_path):
+    relative = folder_path.relative_to(vault_root)
+    for part in relative.parts:
+        if part.startswith(".") or part.casefold() in EXCLUDED_DIR_NAMES:
+            raise ValueError("MOC folder must be a regular note folder")
+
+
+def _moc_name(moc_filename):
+    name = moc_filename if isinstance(moc_filename, str) else ""
+    if (not name or name != name.strip() or "/" in name or "\\" in name or name.startswith(".")
+            or not name.casefold().endswith(".md")):
+        raise ValueError("MOC file must be a plain .md file name inside the target folder")
+    return name
+
+
+def _snapshot(path):
+    """(bytes, identity) of a regular file, None when absent. identity = hash, mtime, size, inode."""
+    try:
+        before = os.stat(path, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("MOC output must be a regular file")
+    with open(path, "rb") as handle:
+        data = handle.read()
+    return data, (hashlib.sha256(data).hexdigest(), before.st_mtime_ns, before.st_size, before.st_ino)
+
+
+def _rename(source, destination):
+    from beyin_v3_sync import _safe_replace
+    _safe_replace(source, destination)
+
+
+def _write_temporary(directory, data):
+    fd, temporary = tempfile.mkstemp(prefix=".beyin-moc-", suffix=".tmp", dir=directory)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return temporary
+
+
+def _replace_if_unchanged(path, data, expected):
+    """Replace path with data only while it still matches the snapshot the new text came from.
+
+    Obsidian does not take Beyin's lock, so the bytes, mtime, size and inode are checked
+    again right before the rename. On POSIX the old file stays open across the rename: an
+    in-place save that lands in the remaining window is detected and its bytes put back.
+    """
+    temporary = _write_temporary(path.parent, data)
+    held = None
+    try:
+        if os.name != "nt":  # Windows cannot rename over a file this process holds open.
+            try:
+                held = os.open(path, os.O_RDONLY)
+            except FileNotFoundError:
+                raise MocConflict("MOC changed during update; nothing was replaced, rerun moc") from None
+        current = _snapshot(path)
+        if current is None or current[1] != expected or (held is not None and os.fstat(held).st_ino != expected[3]):
+            raise MocConflict("MOC changed during update; nothing was replaced, rerun moc")
+        _rename(temporary, path)
+        if held is not None:
+            after = os.fstat(held)
+            os.lseek(held, 0, os.SEEK_SET)
+            chunks = []
+            while True:
+                chunk = os.read(held, 1 << 16)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            user = b"".join(chunks)
+            if (after.st_mtime_ns, after.st_size, hashlib.sha256(user).hexdigest()) != (expected[1], expected[2], expected[0]):
+                restored = _snapshot(path)
+                if restored is not None and restored[0] == data:
+                    back = _write_temporary(path.parent, user)
+                    try:
+                        _rename(back, path)
+                    finally:
+                        if os.path.exists(back):
+                            os.unlink(back)
+                    raise MocConflict("MOC changed while it was being replaced; the edit was restored, rerun moc")
+                raise MocConflict("MOC changed while it was being replaced; the newest file was kept, rerun moc")
+    finally:
+        if held is not None:
+            os.close(held)
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def generate_moc(vault_root, target_folder="knowledge", moc_filename="MOC.md"):
     from types import SimpleNamespace
     from beyin_v3_notes import locked
@@ -331,17 +439,19 @@ def generate_moc(vault_root, target_folder="knowledge", moc_filename="MOC.md"):
 def _generate_moc(vault_root, target_folder="knowledge", moc_filename="MOC.md"):
     """Generate or update an Obsidian Map of Content (MOC) note.
 
-    Preserves user handwritten content outside markers. Pure stdlib.
+    Only a file this command created, or one carrying exactly one marker pair, is
+    rewritten, and only between the markers; user text outside them is kept byte for byte.
     """
     vault_root = Path(vault_root).resolve()
     folder_path = (vault_root / target_folder).resolve()
     if not folder_path.is_relative_to(vault_root):
         raise ValueError("MOC folder must remain inside the vault")
-    if not folder_path.exists():
+    if not folder_path.is_dir():
         raise ValueError(f"target folder not found in vault: {target_folder}")
+    _plain_folder_parts(vault_root, folder_path)
 
-    moc_path = (folder_path / moc_filename).resolve()
-    if not moc_path.is_relative_to(vault_root):
+    moc_path = folder_path / _moc_name(moc_filename)
+    if not moc_path.resolve().is_relative_to(vault_root):
         raise ValueError("MOC output must remain inside the vault")
     moc_rel = moc_path.relative_to(vault_root).as_posix()
 
@@ -353,14 +463,14 @@ def _generate_moc(vault_root, target_folder="knowledge", moc_filename="MOC.md"):
             if not f.lower().endswith(".md") or f.startswith("."):
                 continue
             f_path = Path(root) / f
-            if f_path.resolve() == moc_path.resolve():
+            if f_path == moc_path or f_path.resolve() == moc_path.resolve():
                 continue
             if not _eligible_note(vault_root, f_path):
                 continue
 
             rel_to_vault = f_path.relative_to(vault_root).as_posix()
             rel_to_folder = f_path.relative_to(folder_path).as_posix()
-            title = extract_note_title(f_path)
+            title = _link_title(extract_note_title(f_path), f_path.stem)
 
             category = Path(rel_to_folder).parent.as_posix()
             if category == ".":
@@ -393,22 +503,29 @@ def _generate_moc(vault_root, target_folder="knowledge", moc_filename="MOC.md"):
     generated_lines.append(f"{MOC_END_MARKER}")
     generated_block = "\n".join(generated_lines).strip()
 
-    # Preserve the exact snapshot while generating the replacement.
-    original_bytes = moc_path.read_bytes() if moc_path.exists() else None
-    if original_bytes is not None:
-        existing_text = moc_path.read_text(encoding="utf-8-sig")
-        if MOC_START_MARKER in existing_text and MOC_END_MARKER in existing_text:
-            # Replace only the generated block
-            pattern = re.compile(
-                re.escape(MOC_START_MARKER) + r".*?" + re.escape(MOC_END_MARKER),
-                re.DOTALL
-            )
-            new_text = pattern.sub(lambda _: generated_block, existing_text)
-            action_status = "updated"
+    snapshot = _snapshot(moc_path)
+    if snapshot is not None:
+        original, identity = snapshot
+        bom = codecs.BOM_UTF8 if original.startswith(codecs.BOM_UTF8) else b""
+        try:
+            existing_text = original[len(bom):].decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError(f"{moc_rel} is not UTF-8 text; it was left unchanged") from None
+        start = existing_text.find(MOC_START_MARKER)
+        end = existing_text.find(MOC_END_MARKER)
+        if (existing_text.count(MOC_START_MARKER) != 1 or existing_text.count(MOC_END_MARKER) != 1
+                or end < start):
+            raise ValueError(f"{moc_rel} has no single {MOC_START_MARKER} ... {MOC_END_MARKER} pair; "
+                             "only that generated block is ever rewritten. Add the pair where the index "
+                             "should go, or choose another --file")
+        newline = "\r\n" if "\r\n" in existing_text else "\n"
+        new_text = (existing_text[:start] + generated_block.replace("\n", newline)
+                    + existing_text[end + len(MOC_END_MARKER):])
+        if new_text == existing_text:
+            action_status = "unchanged"
         else:
-            # Append generated block to existing content, keeping user text intact
-            new_text = existing_text.rstrip() + "\n\n## Otomatik Dizin\n\n" + generated_block + "\n"
-            action_status = "appended"
+            _replace_if_unchanged(moc_path, bom + new_text.encode("utf-8"), identity)
+            action_status = "updated"
     else:
         # Create fresh MOC file
         folder_display = target_folder.replace("-", " ").title()
@@ -420,22 +537,13 @@ Bu not, `{target_folder}` altındaki notların navigasyon ve içerik haritasıd�
 
 {generated_block}
 """
+        try:
+            # Exclusive create: a file an editor created after the absence check is never replaced.
+            with moc_path.open("x", encoding="utf-8", newline="") as output:
+                output.write(new_text)
+        except FileExistsError:
+            raise MocConflict("MOC file appeared during update; nothing was replaced, rerun moc") from None
         action_status = "created"
-
-    # Write file safely
-    moc_path.parent.mkdir(parents=True, exist_ok=True)
-    from beyin_v3_sync import atomic
-    current_bytes = moc_path.read_bytes() if moc_path.exists() else None
-    if current_bytes != original_bytes:
-        raise ValueError('MOC source changed; reread and retry')
-    if not moc_path.resolve().is_relative_to(vault_root):
-        raise ValueError('MOC output must remain inside the vault')
-    if original_bytes is None:
-        # Do not replace a user file created after the absence check.
-        with moc_path.open('x', encoding='utf-8') as output:
-            output.write(new_text)
-    else:
-        atomic(moc_path, new_text)
 
     return {
         "status": action_status,

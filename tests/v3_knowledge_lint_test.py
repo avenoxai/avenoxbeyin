@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "template/.claude/scripts"))
 
 import beyin_v3 as runtime
 import beyin_v3_lint as linter
+from v3_package_helpers import inherited_env
 
 CLI_SPEC = importlib.util.spec_from_file_location("beyin_cli", ROOT / "scripts/beyin_v3.py")
 cli = importlib.util.module_from_spec(CLI_SPEC)
@@ -29,24 +30,127 @@ class KnowledgeLintTest(unittest.TestCase):
         self.state = Path(self.tmp.name) / "state"
         self.state.mkdir()
 
+    def _owned_moc(self, extra=''):
+        (self.vault / 'knowledge').mkdir(exist_ok=True)
+        (self.vault / 'knowledge/a.md').write_text('# A', encoding='utf-8')
+        target = self.vault / 'knowledge/MOC.md'
+        target.write_text('Handwritten text\n' + linter.MOC_START_MARKER + '\nold\n' + linter.MOC_END_MARKER + '\n' + extra,
+                          encoding='utf-8')
+        return target
+
     def test_moc_refuses_concurrent_edit_after_snapshot(self):
+        # Obsidian does not take the vault lock: it saves after the snapshot, while the
+        # replacement is being prepared. The last check before the rename must see it.
+        target = self._owned_moc()
+        original_mkstemp = tempfile.mkstemp
+        def editor_saves(*args, **kwargs):
+            with open(target, 'a', encoding='utf-8') as handle:
+                handle.write('Concurrent user text\n')
+            return original_mkstemp(*args, **kwargs)
+        with patch.object(tempfile, 'mkstemp', editor_saves):
+            with self.assertRaisesRegex(ValueError, 'changed'):
+                linter.generate_moc(self.vault)
+        text = target.read_text(encoding='utf-8')
+        self.assertIn('Concurrent user text', text)
+        self.assertIn('\nold\n', text)
+        self.assertEqual([p.name for p in target.parent.iterdir() if p.name.startswith('.beyin')], [])
+
+    @unittest.skipIf(os.name == 'nt', 'Windows cannot rename over an open file; only the pre-rename check applies')
+    def test_moc_restores_in_place_save_inside_replace_window(self):
+        target = self._owned_moc()
+        original_replace = os.replace
+        def editor_saves_then_rename(source, destination, *args, **kwargs):
+            if Path(destination).resolve() == target.resolve():
+                with open(target, 'a', encoding='utf-8') as handle:
+                    handle.write('Window edit\n')
+            return original_replace(source, destination, *args, **kwargs)
+        with patch.object(os, 'replace', editor_saves_then_rename):
+            with self.assertRaisesRegex(ValueError, 'restored'):
+                linter.generate_moc(self.vault)
+        self.assertIn('Window edit', target.read_text(encoding='utf-8'))
+        self.assertEqual([p.name for p in target.parent.iterdir() if p.name.startswith('.beyin')], [])
+
+    def test_moc_never_rewrites_a_file_without_one_marker_pair(self):
         (self.vault / 'knowledge').mkdir()
         (self.vault / 'knowledge/a.md').write_text('# A', encoding='utf-8')
         target = self.vault / 'knowledge/MOC.md'
-        target.write_text('Handwritten text', encoding='utf-8')
-        original_read = Path.read_text
-        changed = False
-        def edit_after_read(path, *args, **kwargs):
-            nonlocal changed
-            result = original_read(path, *args, **kwargs)
-            if path.resolve() == target.resolve() and not changed:
-                changed = True
-                path.write_text(result + '\nConcurrent user text', encoding='utf-8')
-            return result
-        with patch.object(Path, 'read_text', edit_after_read):
-            with self.assertRaisesRegex(ValueError, 'changed'):
-                linter.generate_moc(self.vault)
-        self.assertIn('Concurrent user text', target.read_text())
+        start, end = linter.MOC_START_MARKER, linter.MOC_END_MARKER
+        for text in ('# Elle yazılmış harita\n- [[a]]\n',
+                     f'{start}\nx\n{end}\n{start}\ny\n{end}\n',
+                     f'{end}\nters\n{start}\n'):
+            with self.subTest(text=text):
+                target.write_text(text, encoding='utf-8')
+                before = target.read_bytes()
+                with self.assertRaisesRegex(ValueError, 'pair'):
+                    linter.generate_moc(self.vault)
+                self.assertEqual(target.read_bytes(), before)
+
+    def test_moc_without_changes_does_not_touch_the_file(self):
+        target = self._owned_moc()
+        self.assertEqual(linter.generate_moc(self.vault)['status'], 'updated')
+        before = os.stat(target)
+        self.assertEqual(linter.generate_moc(self.vault)['status'], 'unchanged')
+        after = os.stat(target)
+        self.assertEqual((before.st_ino, before.st_mtime_ns), (after.st_ino, after.st_mtime_ns))
+
+    def test_moc_keeps_bom_and_crlf_outside_the_block(self):
+        target = self._owned_moc()
+        head = '\ufeff# Başlık\r\nKullanıcı metni\r\n'.encode('utf-8')
+        tail = '\r\nSon satır\r\n'.encode('utf-8')
+        block = (linter.MOC_START_MARKER + '\r\nold\r\n' + linter.MOC_END_MARKER).encode('utf-8')
+        target.write_bytes(head + block + tail)
+        linter.generate_moc(self.vault)
+        data = target.read_bytes()
+        self.assertTrue(data.startswith(head))
+        self.assertTrue(data.endswith(tail))
+        self.assertIn(b'knowledge/a.md', data)
+        self.assertNotIn(b'\n', data.replace(b'\r\n', b''))
+
+    def test_moc_file_is_a_plain_markdown_name_in_a_regular_folder(self):
+        (self.vault / 'knowledge').mkdir()
+        (self.vault / 'projects/app').mkdir(parents=True)
+        rules = self.vault / 'projects/app/Kurallar.md'
+        rules.write_text('# Kurallar\n', encoding='utf-8')
+        for name in ('../projects/app/Kurallar.md', 'sub/MOC.md', 'MOC.txt', '.MOC.md', ' MOC.md'):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    linter.generate_moc(self.vault, 'knowledge', name)
+        (self.vault / '.claude').mkdir()
+        with self.assertRaises(ValueError):
+            linter.generate_moc(self.vault, '.claude')
+        self.assertEqual(rules.read_text(encoding='utf-8'), '# Kurallar\n')
+        self.assertFalse((self.vault / '.claude/MOC.md').exists())
+
+    def test_moc_link_titles_cannot_break_wikilinks(self):
+        (self.vault / 'knowledge').mkdir()
+        (self.vault / 'knowledge/plan.md').write_text('# [Taslak] Plan | v2 ]]\n', encoding='utf-8')
+        linter.generate_moc(self.vault)
+        links = linter.extract_wikilinks((self.vault / 'knowledge/MOC.md').read_text(encoding='utf-8'))
+        self.assertEqual([(link['file_target'], link['display']) for link in links],
+                         [('knowledge/plan.md', 'Taslak Plan v2')])
+
+    def test_heading_link_needs_the_heading_on_one_line(self):
+        (self.vault / 'b.md').write_text('#\nMissing\n## Var Olan\n', encoding='utf-8')
+        (self.vault / 'a.md').write_text('[[b#Missing]] [[b#Var Olan]]', encoding='utf-8')
+        result = linter.lint_vault(self.vault)
+        self.assertEqual([link['raw'] for link in result['broken_links']], ['[[b#Missing]]'])
+
+    def test_turkish_uppercase_archive_folder_is_skipped(self):
+        for source in ('knowledge/ARŞİV/eski.md', 'knowledge/Arşiv/eski2.md', 'knowledge/güncel.md'):
+            path = self.vault / source
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('# ' + Path(source).stem, encoding='utf-8')
+        linter.generate_moc(self.vault)
+        text = (self.vault / 'knowledge/MOC.md').read_text(encoding='utf-8')
+        self.assertIn('güncel', text)
+        self.assertNotIn('eski', text)
+
+    def test_wikilink_scan_stays_linear_on_adversarial_lines(self):
+        import time
+        for line in ('[[' + 'a' * 200000, '[[a' * 70000, '[[' + 'a|' * 100000, '![[' * 70000):
+            started = time.monotonic()
+            linter.extract_wikilinks(line + '\n' + line)
+            self.assertLess(time.monotonic() - started, 5)
 
     def test_moc_omits_sensitive_archived_and_private_notes(self):
         for source, text in [('knowledge/public.md', '# Public'),
@@ -267,6 +371,7 @@ And another link on line 8: [[Components/Auth]].
             capture_output=True,
             text=True,
             check=True,
+            env=inherited_env(),
         )
         parsed = json.loads(proc.stdout)
         self.assertEqual(parsed["status"], "created")
