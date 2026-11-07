@@ -549,7 +549,8 @@ def record_scope(record, scopes):
 # "not" against "notlar". Every token is replaced by ONE canonical stem, with the same
 # function on the query and the document side. Replacement, not expansion: the score stays
 # "how many query words matched", which STRICT_MIN_SHARED and the idf weight depend on.
-# A hyphenated name is the one exception (_COMPOUND): its parts were two tokens already.
+# A hyphenated name is the one exception (_COMPOUND): a note also counts its joined
+# spelling, and a query uses that spelling only in place of a missing part (_query_compounds).
 # Input reaches the stemmer already ASCII folded, so the table is written folded too.
 _VOWELS = frozenset("aeiou")
 _VOICELESS = frozenset("cfhkpst")
@@ -725,24 +726,46 @@ def _short_root(stem):
 
 
 # A hyphenated name (#430) keeps its parts and also counts once as the joined word, so
-# claude-mem meets claudemem and e-posta meets eposta. Every other token is one stem per
-# word; the parts were already two. NFKD has turned the other hyphen forms into these two.
-# All-digit compounds stay parts: a date or range is not a name, and neither is a joined
-# chain longer than any name. The lookbehind starts a match only at a word start; without
-# it a long unhyphenated run backtracks quadratically.
-_COMPOUND = re.compile("(?<![a-z0-9])[a-z0-9]+(?:[-\u2010][a-z0-9]+)+")
+# claude-mem meets claudemem and e-posta meets eposta. NFKD has turned the other hyphen
+# forms into these two. All-digit compounds stay parts: a date or range is not a name, and
+# neither is a joined chain longer than any name. The scan starts at a hyphen, which few
+# characters are; a pattern tried at every word start costs as much as reading the words.
+_HYPHEN = re.compile("[-\u2010](?=[a-z0-9])")
+_WORD_END = re.compile("[a-z0-9]+\\Z")
+_COMPOUND = re.compile("[a-z0-9]+(?:[-\u2010][a-z0-9]+)+")
+
+
+def _fold(text):
+    """The casefolded, accent-free text that _token_counts reads words from."""
+    text = unicodedata.normalize("NFKD", str(text).casefold())
+    return "".join(c for c in text if not unicodedata.combining(c)).replace("ı", "i")
+
+
+def _compounds(text):
+    """(joined spelling, parts) of every hyphenated name in folded text."""
+    end = 0
+    for hyphen in _HYPHEN.finditer(text):
+        at = hyphen.start()
+        if at < end or not text[at - 1:at].isalnum():
+            continue  # inside the previous name, or a dash that follows a space
+        # A joined name has at most 64 characters, so its first part starts within reach.
+        word = _WORD_END.search(text, max(end, at - 65), at)
+        if word is None:
+            continue
+        compound = _COMPOUND.match(text, word.start())
+        end = compound.end()
+        parts = compound.group().replace("\u2010", "-").split("-")
+        joined = "".join(parts)
+        if len(joined) <= 64 and not joined.isdigit():
+            yield joined, parts
 
 
 def _token_counts(text):
     """Stem -> occurrence count; the keys are exactly _tokens(text)."""
-    text = unicodedata.normalize("NFKD", str(text).casefold())
-    text = "".join(c for c in text if not unicodedata.combining(c)).replace("ı", "i")
+    text = _fold(text)
     counts = Counter(_stem(word) for word in re.findall(r"[a-z0-9]+", text))
-    if "-" in text or "\u2010" in text:
-        for compound in _COMPOUND.findall(text):
-            joined = compound.replace("-", "").replace("\u2010", "")
-            if len(joined) <= 64 and not joined.isdigit():
-                counts[_stem(joined)] += 1
+    for joined, _parts in _compounds(text):
+        counts[_stem(joined)] += 1
     return counts
 
 
@@ -861,14 +884,47 @@ def _query_roots(terms, frequency, ignored=frozenset()):
     return alternatives
 
 
-def _fold_query_roots(term_counts, terms, ignored):
-    """Count each note's _query_roots occurrences under the query term, in place."""
+def _query_compounds(query, terms):
+    """(terms, {term: joined stem}): a query's hyphenated names as alternatives (#430).
+
+    A note counts a hyphenated name joined as well (_token_counts). In a query the joined
+    stem is no term of its own: it stands in for the name's first part that is still a term,
+    in a note without that part, so claude-mem still meets claudemem. A hyphenated word then
+    never counts for more terms than its remaining parts: "e-posta" shares one term with a
+    note about an e-posta, not posta and eposta, and one word cannot pass the two-term gate.
+    Parts that were all dropped (stopwords, single letters, short numbers) leave nothing.
+    """
+    text = _fold(query)
+    compounds = list(_compounds(text))
+    if not compounds:
+        return terms, {}
+    written = {_stem(word) for word in re.findall(r"[a-z0-9]+", text)}
+    terms, alternatives = set(terms), {}
+    for joined, parts in compounds:
+        joined = _stem(joined)
+        if joined in written or joined not in terms:
+            continue  # also written whole, already handled, or ignored like a project word
+        terms.discard(joined)
+        part = next((part for part in map(_stem, parts) if part in terms and part not in alternatives), None)
+        if part is not None:
+            alternatives[part] = joined
+    return terms, alternatives
+
+
+def _fold_query_roots(term_counts, terms, ignored, compounds=None):
+    """Count each note's _query_roots occurrences under the query term, in place.
+
+    compounds (_query_compounds) fold the same way where neither the term nor its root is in the note.
+    """
     term_counts = list(term_counts)
     alternatives = _query_roots(terms, lambda token: sum(1 for counts in term_counts if token in counts), ignored)
     for counts in term_counts:
         for term, root in alternatives.items():
             if root in counts:
                 counts[term] += counts.pop(root)
+        for term, joined in (compounds or {}).items():
+            if term not in counts and joined in counts:
+                counts[term] = counts.pop(joined)
 
 
 # Conventional Unicode hyphens/dashes and compatibility forms of ASCII hyphen.
@@ -1567,11 +1623,13 @@ class MemoryStore:
         terms = query_tokens - STOPWORDS - project_tokens
         scoped_listing = project is not None and bool(query_tokens & project_tokens) and not (query_tokens - STOPWORDS - project_tokens)
         if strict:
-            terms = _strict_terms(terms)
+            terms, compounds = _query_compounds(query, _strict_terms(terms))
             if not terms and not scoped_listing and not snapshot:
                 if candidate_only:
                     return []
                 return pack_context([], limit, budget_chars, stale_count)
+        else:
+            terms, compounds = _query_compounds(query, terms)
         ranked = []
         vocabularies = {}
         term_counts = {}
@@ -1605,7 +1663,7 @@ class MemoryStore:
                 name_scores[record["id"]] = name_score
             scanned.append(record)
         # Root use is counted over every scanned note, so the counts are final only after the scan.
-        _fold_query_roots(term_counts.values(), terms, STOPWORDS | project_tokens)
+        _fold_query_roots(term_counts.values(), terms, STOPWORDS | project_tokens, compounds)
         for record in scanned:
             vocabulary = set(term_counts[record["id"]])
             vocabularies[record["id"]] = vocabulary

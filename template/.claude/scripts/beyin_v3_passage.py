@@ -30,7 +30,7 @@ import tempfile
 import time
 import unicodedata
 
-from beyin_v3 import HARNESSES, STOPWORDS, _allowed_statuses, _json, _name_match_score, _query_roots, _status_allowed, _strict_terms, _tokens, pack_context, pack_widened
+from beyin_v3 import HARNESSES, STOPWORDS, _allowed_statuses, _json, _name_match_score, _query_compounds, _query_roots, _status_allowed, _strict_terms, _tokens, pack_context, pack_widened
 
 # #83 chose 0.15 on one 263-note Turkish vault without a coverage cap. With the cap, on a
 # second 1,285-note vault 0.20 is the lowest floor that keeps everyday and agent-command
@@ -353,11 +353,12 @@ def _weight(shared, frequency, total, size):
 
 
 def search(index, terms, limit=5, floor=FLOOR, min_shared=MIN_SHARED, ignored=STOPWORDS,
-           rank_adjustments=None, with_runner_up=False):
+           rank_adjustments=None, with_runner_up=False, compounds=None):
     """Best admitted passage per source, ranked. Returns [(rank weight, passage), ...].
 
     ignored: stems a query root may not become (the caller's stopwords and project words).
     with_runner_up: [(rank weight, passage, second passage or None), ...] instead.
+    compounds: {term: joined stem} from _query_compounds, used like a root.
     """
     terms = _strict_terms(terms)
     if not terms:
@@ -369,13 +370,19 @@ def search(index, terms, limit=5, floor=FLOOR, min_shared=MIN_SHARED, ignored=ST
     wanted = min(len(terms), COVERAGE_CAP)
     probes = [(term, " " + term + " ") for term in sorted(terms)]
     # A term may also match a shorter root; shared then holds the root, so its own idf weighs it.
-    roots = [(" " + term + " ", root, " " + root + " ") for term, root in
-             sorted(_query_roots(terms, lambda token: index.source_df.get(token, 0), ignored).items())]
+    root_of = _query_roots(terms, lambda token: index.source_df.get(token, 0), ignored)
+    roots = [(" " + term + " ", root, " " + root + " ") for term, root in sorted(root_of.items())]
+    # A hyphenated name's joined stem stands in for its part like a root, never beside one.
+    joined = [(" " + term + " ", " " + root_of.get(term, term) + " ", stem, " " + stem + " ")
+              for term, stem in sorted((compounds or {}).items()) if term in terms]
     best = {}
     for passage in index.passages:
         tokens = passage[4]
         shared = [term for term, probe in probes if probe in tokens]
         shared += [root for term_probe, root, probe in roots if term_probe not in tokens and probe in tokens]
+        if joined:
+            shared += [stem for term_probe, root_probe, stem, probe in joined
+                       if term_probe not in tokens and root_probe not in tokens and probe in tokens]
         if len(shared) < min_shared:
             continue
         size = tokens.count(" ") - 1
@@ -404,11 +411,11 @@ def search(index, terms, limit=5, floor=FLOOR, min_shared=MIN_SHARED, ignored=ST
         if passage[0]["id"] in chosen and passage is not chosen[passage[0]["id"]]:
             siblings.setdefault(passage[0]["id"], []).append((passage, head_only))
     return [(rank, passage, _runner_up(siblings.get(passage[0]["id"], ()), probes, index.block_df,
-                                       passages_total, roots))
+                                       passages_total, roots, joined))
             for rank, passage in ranked]
 
 
-def _runner_up(siblings, probes, frequency, total, roots=()):
+def _runner_up(siblings, probes, frequency, total, roots=(), joined=()):
     """The other passage of a delivered source whose own text matches the query best, or None.
 
     Every passage of a note carries the note's title, heading and tags, so a question that names
@@ -424,6 +431,8 @@ def _runner_up(siblings, probes, frequency, total, roots=()):
         # the matched root in the body rather than title/heading metadata.
         body += [root for term_probe, root, probe in roots
                  if term_probe not in tokens and probe in tokens and probe not in head_only]
+        body += [stem for term_probe, root_probe, stem, probe in joined
+                 if term_probe not in tokens and root_probe not in tokens and probe in tokens and probe not in head_only]
         if not body:
             continue
         score = (len(body), sum(math.log((total + 1) / (frequency.get(token, 0) + 1)) + 1 for token in body))
@@ -470,7 +479,7 @@ def context_for(store, harness, query, project=None, audience="internal", status
     if candidates and not index.passages:
         raise RuntimeError("passage index is empty")  # a failure, not an answer: caller falls back
     ignored = STOPWORDS | _tokens(project or "")
-    terms = _strict_terms(_tokens(query) - ignored)
+    terms, compounds = _query_compounds(query, _strict_terms(_tokens(query) - ignored))
     if not terms:
         return pack_context([], limit, budget_chars, stale_count)
     from beyin_v3 import is_due_task, _is_closed_task
@@ -479,7 +488,8 @@ def context_for(store, harness, query, project=None, audience="internal", status
                    for r in candidates}
     records, wider = [], {}
     for _rank, first, second in search(index, terms, limit, config["floor"], ignored=ignored,
-                                     rank_adjustments=adjustments, with_runner_up=True):
+                                     rank_adjustments=adjustments, with_runner_up=True,
+                                     compounds=compounds):
         record = first[0]
         # Only text and text_truncated change, so advisor signatures still match the index.
         records.append(dict(record, text=_excerpt(record, [first]), text_truncated=_partial(record, [first])))
