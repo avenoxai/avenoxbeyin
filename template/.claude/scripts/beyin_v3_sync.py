@@ -952,12 +952,11 @@ class SyncEngine:
         if not isinstance(refs, list) or not refs or any(
                 not isinstance(ref, str) or not ref or Path(ref).is_absolute() or '..' in Path(ref).parts for ref in refs):
             raise ValueError('missing or invalid refs')
-        # The generated wrapper's line ending identifies its final separator.
-        # A legacy LF wrapper around a summary ending in CR has a CRLF tail;
-        # removing both bytes would lose that summary's final CR on state reset.
-        first_line = text.splitlines(keepends=True)[0]
-        ending = '\r\n' if first_line.endswith('\r\n') else '\r' if first_line.endswith('\r') else '\n'
-        summary = body[:-len(ending)] if body.endswith(ending) else body[:-1] if body.endswith(('\n', '\r')) else body
+        # The released reading, byte for byte: drop only the writer's final LF.
+        # A CRLF checkout (core.autocrlf) keeps a trailing CR here, exactly as
+        # V3.12 and older index it, so a row indexed by this engine still matches
+        # their exact comparison after a rollback; replays tolerate that one CR.
+        summary = body[:-1] if body.endswith('\n') else body
         # A legacy summary ending in CR fused with the writer's final LF. An
         # existing row disambiguates it; never rewrite that immutable payload.
         if expected_summary is not None and _receipt_lf(body) == _receipt_lf(expected_summary + '\n'):

@@ -286,7 +286,33 @@ class ReceiptNewlineIdentityTest(unittest.TestCase):
                 self.assertIn(b'event id collision', result.stderr)
         self.assert_clean(self.cli('sync', '--full'))
 
-    WITHHELD = b'[summary withheld: the receipt refers to a private or untrusted source]'
+    def test_crlf_checkout_indexes_like_the_released_reader(self):
+        # Rollback keeps memory.sqlite3, and V3.12 compares a source's reading
+        # with its indexed row byte for byte. A CRLF checkout (core.autocrlf)
+        # pulled from another device must be indexed exactly as V3.12 reads it:
+        # only the final LF dropped, so a trailing CR stays.
+        sources = {}
+        for event, summary in (('r1', 'İlk satır\nİkinci satır'), ('r0', 'Tek satır özet')):
+            sources[event] = self.vault / self.receipt(event, summary)['source']
+        for source in sources.values():
+            source.write_bytes(source.read_bytes().replace(b'\n', b'\r\n'))
+        with closing(sqlite3.connect(self.state / 'memory.sqlite3')) as db:
+            db.execute('DELETE FROM receipts')
+            db.execute("DELETE FROM metadata WHERE key='receipt_scan_signature'")
+            db.commit()
+        before = {event: source.read_bytes() for event, source in sources.items()}
+        self.assert_clean(self.cli('sync', '--full'))
+        self.assertEqual(self.saved('r1')['summary'], 'İlk satır\r\nİkinci satır\r')
+        self.assertEqual(self.saved('r0')['summary'], 'Tek satır özet\r')
+        indexed = {event: self.saved(event) for event in sources}
+        self.receipt('r1', 'İlk satır\nİkinci satır', harness='codex')
+        self.receipt('r0', 'Tek satır özet\r\n')
+        self.assert_clean(self.cli('sync', '--full'))
+        for event, source in sources.items():
+            self.assertEqual(source.read_bytes(), before[event])
+            self.assertEqual(self.saved(event), indexed[event])
+
+    WITHHELD =b'[summary withheld: the receipt refers to a private or untrusted source]'
 
     def seed_released(self, ref='notes/a.md'):
         """Recreate a V3.12.0 view: hash-named links, an unwithheld CRLF summary, LF wrapper."""
