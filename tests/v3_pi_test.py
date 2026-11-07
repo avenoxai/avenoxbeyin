@@ -455,7 +455,7 @@ class PiHarnessTest(unittest.TestCase):
         flags = {'beyin-project-root': str(project.parent)}
         result = self.drive(steps, cwd=project, flags=flags)
         text = result['outputs'][1]['message']['content']
-        self.assertIn('Optional Beyin bridge.', text)
+        self.assertIn('Beyin bridge active.', text)  # bootstrap text of #500 (PR #505)
         self.assertIn('harness=pi', text)
         self.assertNotIn('notes/klima.md', text)
         self.assertNotIn('PRIVATE_PI_SENTINEL', text)
