@@ -2,12 +2,16 @@
 import importlib.util
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
 from v3_package_helpers import install, isolated_env, run_python, snapshot
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
+import beyin_v3 as runtime  # noqa: E402
+
 SPEC = importlib.util.spec_from_file_location('supersedes_entry', ROOT / 'scripts/beyin_entry.py')
 entry = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(entry)
@@ -71,6 +75,32 @@ class HumanSupersedesTest(unittest.TestCase):
                               'reason': 'unresolved supersedes reference'}])
         result.update(records=[], abstained=True)
         self.assertNotIn('Supersedes uyarisi', entry.human_result(result, 'context'))
+
+
+class StatelessResolutionLimitsTest(unittest.TestCase):
+    """The limits MARKDOWN.md documents for a bare file-name reference: each sync recomputes the
+    match from the current index, so a later same-named note changes it; an id or full path does not."""
+    OLD = {'id': 'n-old', 'source': 'notes/plan.md', 'text': 'old'}
+    OTHER = {'id': 'n-other', 'source': 'archive/plan.md', 'text': 'unrelated'}
+    ROOT_NOTE = {'id': 'n-root', 'source': 'plan.md', 'text': 'unrelated root'}
+
+    def replacement(self, reference):
+        return {'id': 'n-new', 'source': 'notes/plan-v2.md', 'text': 'new', 'supersedes': [reference]}
+
+    def test_bare_name_follows_the_current_index_and_explicit_targets_do_not(self):
+        bare = self.replacement('plan.md')
+        self.assertEqual(runtime.resolve_supersedes([self.OLD, bare]), ({'n-old'}, []))
+        # Another folder: ambiguous, reported by sync/doctor, and nothing is retired.
+        retired, dead = runtime.resolve_supersedes([self.OLD, bare, self.OTHER])
+        self.assertEqual(retired, set())
+        self.assertEqual([issue['reason'] for issue in dead], ['ambiguous supersedes reference'])
+        # Vault root: the bare value is the new note's exact path, so it is retired instead and
+        # there is nothing to report. The documentation names this limit.
+        self.assertEqual(runtime.resolve_supersedes([self.OLD, bare, self.ROOT_NOTE]), ({'n-root'}, []))
+        for reference in ('n-old', 'notes/plan.md', 'notes/plan', '[[notes/plan]]'):
+            with self.subTest(reference=reference):
+                records = [self.OLD, self.replacement(reference), self.OTHER, self.ROOT_NOTE]
+                self.assertEqual(runtime.resolve_supersedes(records), ({'n-old'}, []))
 
 
 class InstalledSupersedesDiagnosticsTest(unittest.TestCase):
