@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "template/.claude/scripts"))
 import beyin_v3 as runtime
 import beyin_v3_projects as projects
 import beyin_v3_workspaces as workspaces
+from v3_package_helpers import inherited_env
 
 CLI_SPEC = importlib.util.spec_from_file_location("beyin_cli", ROOT / "scripts/beyin_v3.py")
 cli = importlib.util.module_from_spec(CLI_SPEC)
@@ -44,10 +45,10 @@ class WorkspacesTest(unittest.TestCase):
         workspaces.disconnect_source(self.vault, 'one', 'team')
         data = json.loads(path.read_text())
         self.assertEqual(data['folders'], {})
-        self.assertEqual(data['workspaces']['one']['sources'], [])
+        self.assertEqual(workspaces.read_workspaces(self.vault)['one']['sources'], [])
 
     def test_concurrent_creates_preserve_both_workspaces(self):
-        original_save = workspaces._save_project_scopes
+        original_save = workspaces._save_registry
         first_entered = threading.Event()
         errors = []
         def delayed_save(vault, data):
@@ -60,7 +61,7 @@ class WorkspacesTest(unittest.TestCase):
                 workspaces.create_workspace(self.vault, name)
             except Exception as exc:
                 errors.append(exc)
-        with patch.object(workspaces, '_save_project_scopes', delayed_save):
+        with patch.object(workspaces, '_save_registry', delayed_save):
             first = threading.Thread(target=create, args=('one',))
             second = threading.Thread(target=create, args=('two',))
             first.start()
@@ -82,9 +83,57 @@ class WorkspacesTest(unittest.TestCase):
         (self.vault / 'team').mkdir()
         workspaces.create_workspace(self.vault, 'one', sources=['team'])
         projects.manage(self.vault, 'add', folder='team', project='two')
-        workspaces.disconnect_source(self.vault, 'one', 'team')
+        # The folder now belongs to two; one has nothing to disconnect.
+        with self.assertRaisesRegex(ValueError, 'not connected'):
+            workspaces.disconnect_source(self.vault, 'one', 'team')
         data = json.loads((self.vault / projects.PROJECT_SCOPES_FILE).read_text())
         self.assertEqual(data['folders'], {'team': 'two'})
+        self.assertEqual(workspaces.read_workspaces(self.vault)['one']['sources'], [])
+
+    def test_scope_file_keeps_the_format_older_releases_read(self):
+        # An update rollback restores a reader that accepts only folders and shared_unscoped.
+        for folder in ('team', 'docs', 'extra'):
+            (self.vault / folder).mkdir()
+        workspaces.create_workspace(self.vault, 'one', name='One', kind='software', sources=['team'])
+        workspaces.connect_source(self.vault, 'one', 'docs')
+        workspaces.archive_workspace(self.vault, 'one')
+        workspaces.unarchive_workspace(self.vault, 'one')
+        workspaces.create_workspace(self.vault, 'two', sources=['extra'])
+        scopes = json.loads((self.vault / projects.PROJECT_SCOPES_FILE).read_text(encoding='utf-8'))
+        self.assertEqual(set(scopes), {'folders', 'shared_unscoped'})
+        self.assertEqual(scopes['folders'], {'team': 'one', 'docs': 'one', 'extra': 'two'})
+        self.assertEqual(dict(projects.read_project_scopes(self.vault)['folders']),
+                         {'team': 'one', 'docs': 'one', 'extra': 'two'})
+        registry = json.loads((self.vault / workspaces.WORKSPACES_FILE).read_text(encoding='utf-8'))
+        self.assertEqual(registry['schema_version'], workspaces.REGISTRY_SCHEMA_VERSION)
+        self.assertEqual(registry['workspaces']['one']['kind'], 'software')
+        self.assertNotIn('sources', registry['workspaces']['one'])
+
+    def test_sources_follow_scope_edits_made_without_the_registry(self):
+        # project-scope add/remove (or an older release after rollback) only edits folders.
+        for folder in ('team', 'later'):
+            (self.vault / folder).mkdir()
+        workspaces.create_workspace(self.vault, 'one', kind='research', sources=['team'])
+        projects.manage(self.vault, 'remove', folder='team')
+        projects.manage(self.vault, 'add', folder='later', project='one')
+        view = workspaces.read_workspaces(self.vault)['one']
+        self.assertEqual(view['sources'], ['later'])
+        self.assertEqual(view['kind'], 'research')
+        self.assertTrue(view['registered'])
+        projects.manage(self.vault, 'add', folder='team', project='fresh')
+        fresh = workspaces.read_workspaces(self.vault)['fresh']
+        self.assertEqual((fresh['sources'], fresh['registered']), (['team'], False))
+
+    def test_registry_from_newer_release_or_invalid_is_not_rewritten(self):
+        path = self.vault / workspaces.WORKSPACES_FILE
+        for raw in (json.dumps({'schema_version': 2, 'workspaces': {}}), '{broken',
+                    json.dumps({'schema_version': 1, 'workspaces': []}),
+                    json.dumps({'schema_version': 1, 'workspaces': {'x': {'note_roots': 'notes/x'}}})):
+            with self.subTest(raw=raw):
+                path.write_text(raw, encoding='utf-8')
+                with self.assertRaises(ValueError):
+                    workspaces.create_workspace(self.vault, 'new')
+                self.assertEqual(path.read_text(encoding='utf-8'), raw)
 
     def test_invalid_manifest_is_rejected_without_rewriting_bytes(self):
         path = self.vault / projects.PROJECT_SCOPES_FILE
@@ -128,10 +177,10 @@ class WorkspacesTest(unittest.TestCase):
         self.assertEqual(ws["lifecycle"], "active")
         self.assertEqual(ws["sources"], [])
 
-        # Check saved manifest
-        scopes_path = self.vault / projects.PROJECT_SCOPES_FILE
-        saved = json.loads(scopes_path.read_text(encoding="utf-8"))
-        self.assertEqual(saved["schema_version"], 2)
+        # Metadata goes to the registry; a workspace without sources never touches the scope file.
+        self.assertFalse((self.vault / projects.PROJECT_SCOPES_FILE).exists())
+        saved = json.loads((self.vault / workspaces.WORKSPACES_FILE).read_text(encoding="utf-8"))
+        self.assertEqual(saved["schema_version"], 1)
         self.assertIn("ai-lab", saved["workspaces"])
 
     def test_create_workspace_validation(self):
@@ -189,7 +238,7 @@ class WorkspacesTest(unittest.TestCase):
 
         # Manifest check
         manifest = json.loads((self.vault / projects.PROJECT_SCOPES_FILE).read_text(encoding="utf-8"))
-        self.assertEqual(manifest["workspaces"]["app-ws"]["sources"], ["projects/app"])
+        self.assertEqual(workspaces.read_workspaces(self.vault)["app-ws"]["sources"], ["projects/app"])
         self.assertNotIn("projects/docs", manifest["folders"])
 
     def test_connect_source_collision_rejection(self):
@@ -303,6 +352,7 @@ class WorkspacesTest(unittest.TestCase):
             capture_output=True,
             text=True,
             check=True,
+            env=inherited_env(),
         )
         parsed = json.loads(proc.stdout)
         self.assertEqual(parsed["status"], "ok")

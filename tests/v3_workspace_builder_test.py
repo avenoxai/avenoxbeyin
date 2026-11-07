@@ -8,7 +8,6 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "template/.claude/scripts"))
@@ -16,6 +15,7 @@ sys.path.insert(0, str(ROOT / "template/.claude/scripts"))
 import beyin_v3 as runtime
 import beyin_v3_projects as projects
 import beyin_v3_workspaces as workspaces
+from v3_package_helpers import inherited_env
 
 CLI_SPEC = importlib.util.spec_from_file_location("beyin_cli", ROOT / "scripts/beyin_v3.py")
 cli = importlib.util.module_from_spec(CLI_SPEC)
@@ -50,6 +50,111 @@ class WorkspaceBuilderTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 workspaces.provision_workspace(self.vault, 'alpha')
         self.assertIn('beta', workspaces.read_workspaces(self.vault))
+        self.assertNotIn('alpha', workspaces.read_workspaces(self.vault))
+
+    def test_failed_provision_rolls_back_despite_external_scope_edit(self):
+        # An editor that does not take the vault lock changes the scope file mid-provision.
+        scopes = self.vault / projects.PROJECT_SCOPES_FILE
+        def external_edit(vault, workspace_id):
+            data = json.loads(scopes.read_text(encoding='utf-8'))
+            data['shared_unscoped'] = True
+            scopes.write_text(json.dumps(data), encoding='utf-8')
+            raise RuntimeError('verification failed')
+        with patch.object(workspaces, 'inspect_workspace', external_edit):
+            with self.assertRaises(workspaces.WorkspaceProvisionError) as caught:
+                workspaces.provision_workspace(self.vault, 'alpha')
+        report = caught.exception.workspace_reconciliation
+        self.assertEqual((report['rollback'], report['registry']), ('complete', 'removed'))
+        self.assertEqual(sorted(report['unbound_folders']), ['notes/alpha', 'projects/alpha'])
+        self.assertNotIn('alpha', workspaces.read_workspaces(self.vault))
+        self.assertEqual(json.loads(scopes.read_text(encoding='utf-8')), {'folders': {}, 'shared_unscoped': True})
+        self.assertFalse((self.vault / 'projects/alpha').exists())
+        # Nothing is left behind: the same command now succeeds.
+        self.assertEqual(workspaces.provision_workspace(self.vault, 'alpha')['status'], 'provisioned')
+
+    def test_rollback_keeps_template_edited_during_provision(self):
+        rules = self.vault / 'projects/alpha/Kurallar.md'
+        def user_edit(vault, workspace_id):
+            rules.write_text('# Kendi kurallarım\n- Şifre notları Arşiv dışında\n', encoding='utf-8')
+            raise RuntimeError('verification failed')
+        with patch.object(workspaces, 'inspect_workspace', user_edit):
+            with self.assertRaises(workspaces.WorkspaceProvisionError) as caught:
+                workspaces.provision_workspace(self.vault, 'alpha')
+        report = caught.exception.workspace_reconciliation
+        self.assertEqual(report['preserved_files'], ['projects/alpha/Kurallar.md'])
+        self.assertEqual(report['removed_files'], ['projects/alpha/MOC.md'])
+        self.assertIn('Şifre notları', rules.read_text(encoding='utf-8'))
+
+    def test_incomplete_rollback_keeps_a_failed_record_that_provision_resumes(self):
+        scopes = self.vault / projects.PROJECT_SCOPES_FILE
+        saved = {}
+        def break_scope_file(vault, workspace_id):
+            saved['bytes'] = scopes.read_bytes()
+            scopes.write_text('{', encoding='utf-8')  # an external editor mid-save
+            raise RuntimeError('verification failed')
+        with patch.object(workspaces, 'inspect_workspace', break_scope_file):
+            with self.assertRaises(workspaces.WorkspaceProvisionError) as caught:
+                workspaces.provision_workspace(self.vault, 'alpha')
+        report = caught.exception.workspace_reconciliation
+        self.assertEqual(report['rollback'], 'incomplete')
+        self.assertEqual(report['registry'], 'kept_failed')
+        self.assertIn('beyin.py workspace provision alpha', report['recovery'])
+        self.assertIn('resume with: beyin.py workspace provision alpha', str(caught.exception))
+        self.assertEqual(scopes.read_text(encoding='utf-8'), '{')  # never overwritten
+        registry = json.loads((self.vault / workspaces.WORKSPACES_FILE).read_text(encoding='utf-8'))
+        self.assertEqual(registry['workspaces']['alpha']['provision']['status'], 'failed')
+        # The user repairs the scope file; the same command resumes the recorded workspace.
+        scopes.write_bytes(saved['bytes'])
+        with self.assertRaisesRegex(ValueError, 'already exists'):
+            workspaces.create_workspace(self.vault, 'alpha')
+        result = workspaces.provision_workspace(self.vault, 'alpha')
+        self.assertEqual((result['status'], result['verified'], result.get('resumed')), ('provisioned', True, True))
+        info = workspaces.inspect_workspace(self.vault, 'alpha')
+        self.assertEqual(info['provision']['status'], 'complete')
+        self.assertTrue(info['rules_exist'])
+        with self.assertRaisesRegex(ValueError, 'already exists'):
+            workspaces.provision_workspace(self.vault, 'alpha')
+
+    def test_interrupted_provision_stays_visible_and_resumable(self):
+        with patch.object(workspaces, '_bind', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                workspaces.provision_workspace(self.vault, 'alpha')
+        info = workspaces.inspect_workspace(self.vault, 'alpha')
+        self.assertEqual(info['provision']['status'], 'pending')
+        self.assertNotIn('token', info['provision'])
+        result = workspaces.provision_workspace(self.vault, 'alpha')
+        self.assertTrue(result['resumed'])
+        self.assertEqual({item['status'] for item in result['files']}, {'preserved'})
+        self.assertEqual(sorted(result['workspace']['sources']), ['notes/alpha', 'projects/alpha'])
+
+    def test_provision_refuses_folder_owned_by_another_project_before_writing(self):
+        (self.vault / 'projects/alpha').mkdir(parents=True)
+        projects.manage(self.vault, 'add', folder='projects/alpha', project='beta')
+        with self.assertRaisesRegex(ValueError, 'already assigned to workspace beta'):
+            workspaces.provision_workspace(self.vault, 'alpha')
+        self.assertFalse((self.vault / workspaces.WORKSPACES_FILE).exists())
+        self.assertFalse((self.vault / 'notes').exists())
+
+    def test_provisioned_moc_carries_the_block_moc_may_regenerate(self):
+        import beyin_v3_lint as linter
+        workspaces.provision_workspace(self.vault, 'alpha', name='Alfa')
+        (self.vault / 'projects/alpha/Karar.md').write_text('# Karar kaydı\n', encoding='utf-8')
+        result = linter.generate_moc(self.vault, 'projects/alpha')
+        self.assertEqual(result['status'], 'updated')
+        text = (self.vault / 'projects/alpha/MOC.md').read_text(encoding='utf-8')
+        self.assertIn('[[projects/alpha/Kurallar|Çalışma Alanı Kuralları]]', text)
+        self.assertIn('[[projects/alpha/Karar.md|Karar kaydı]]', text)
+
+    def test_cli_failed_provision_reports_reconciliation(self):
+        def fail(vault, workspace_id):
+            raise RuntimeError('verification failed')
+        with patch.object(workspaces, 'inspect_workspace', fail):
+            result, code = cli.main(['--vault', str(self.vault), '--state', str(self.state / 'fresh'),
+                                     'workspace', 'provision', 'alpha'], return_result=True)
+        self.assertEqual(code, 1)
+        self.assertEqual(result['error'], 'WorkspaceProvisionError')
+        self.assertEqual(result['reconciliation']['rollback'], 'complete')
+        self.assertFalse((self.state / 'fresh').exists())
 
     def test_provision_rejects_symlink_outside_vault(self):
         outside = self.vault.parent / 'outside'
@@ -169,11 +274,11 @@ class WorkspaceBuilderTest(unittest.TestCase):
 
     def test_provision_atomic_rollback_on_failure(self):
         manifest_path = self.vault / projects.PROJECT_SCOPES_FILE
-        initial_manifest = {"schema_version": 2, "workspaces": {}, "folders": {}, "shared_unscoped": False}
+        initial_manifest = {"folders": {}, "shared_unscoped": False}
         manifest_path.write_text(json.dumps(initial_manifest), encoding="utf-8")
 
-        # Simulate unexpected failure during create_workspace registration
-        with patch("beyin_v3_workspaces.create_workspace", side_effect=RuntimeError("Simulated registration failure")):
+        # Simulate unexpected failure while binding the workspace folders
+        with patch("beyin_v3_workspaces._bind", side_effect=RuntimeError("Simulated registration failure")):
             with self.assertRaisesRegex(RuntimeError, "Simulated registration failure"):
                 workspaces.provision_workspace(self.vault, "fail-ws", kind="software")
 
@@ -186,9 +291,11 @@ class WorkspaceBuilderTest(unittest.TestCase):
         self.assertFalse((self.vault / "projects/fail-ws").exists())
         self.assertFalse((self.vault / "notes/fail-ws").exists())
 
-        # 3. Manifest must be restored exactly
+        # 3. Manifest must be restored exactly and the pending record removed
         restored = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(restored, initial_manifest)
+        self.assertNotIn("fail-ws", workspaces.read_workspaces(self.vault))
+        self.assertFalse((self.vault / "projects").exists())
 
     def test_cli_plan_and_provision_end_to_end(self):
         # 1. CLI plan via cli.main
@@ -235,6 +342,7 @@ class WorkspaceBuilderTest(unittest.TestCase):
             capture_output=True,
             text=True,
             check=True,
+            env=inherited_env(),
         )
         parsed = json.loads(proc.stdout)
         self.assertEqual(parsed["status"], "provisioned")
@@ -253,6 +361,7 @@ class WorkspaceBuilderTest(unittest.TestCase):
             capture_output=True,
             text=True,
             check=True,
+            env=inherited_env(),
         )
         parsed_insp = json.loads(proc_insp.stdout)
         self.assertEqual(parsed_insp["id"], "cli-builder-ws")

@@ -1980,6 +1980,10 @@ def main(argv=None, return_result=False):
         batch = getattr(exc, "batch_ingest", None)
         if isinstance(batch, dict):
             error.update(batch)
+        # A failed workspace provision names what its rollback removed and anything it had to keep.
+        reconciliation = getattr(exc, "workspace_reconciliation", None)
+        if isinstance(reconciliation, dict):
+            error["reconciliation"] = reconciliation
         code = 1
         if isinstance(exc, ArgumentParsingError):
             error["error"] = "SystemExit"
