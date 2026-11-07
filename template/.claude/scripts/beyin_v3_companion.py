@@ -1,4 +1,5 @@
 """User-owned companion bootstrap and compact, source-verified session context."""
+import bisect
 import json
 import os
 from pathlib import Path
@@ -226,16 +227,308 @@ def fit_client(harness, text):
 
 
 # Instruction files a client itself loads in full at session start, from the working
-# directory up to the vault root (#610). Claude Code expands their @path imports: relative
-# to the importing file, at most four hops, never inside code spans, fenced blocks or
-# comments; a space is written "\ " and a quoted path is not imported. An import that
-# resolves outside the working directory waits for the user's one-time approval, so only
-# imports inside it count here. Clients without a known import syntax keep every source.
+# directory up to the vault root (#610). Clients without a known import syntax keep
+# every source.
 INSTRUCTION_FILES = {'claude': ('CLAUDE.md', '.claude/CLAUDE.md', 'CLAUDE.local.md')}
-IMPORT = re.compile(r'(?<!\S)@((?:\\ |\S)+)')
+# Claude Code's own @import rule (checked against the 2.1 client): an "@" at the start of a
+# Markdown text run or after white space (JavaScript's \s); the path runs to the next white
+# space or backslash, "\ " is a space, "#" starts a fragment, and only a path starting with
+# "./", "~/", "/" or one of A-Z a-z 0-9 . _ - is imported, relative to the importing file,
+# at most four hops deep. Frontmatter, code, HTML blocks, comments and link targets are not
+# scanned. An import resolving outside the working directory waits for the user's one-time
+# approval, so only imports inside it count here. Wherever the Markdown is ambiguous the
+# scan counts nothing: a repeated source costs room, a dropped one costs the rules.
+JS_SPACE = '\t\n\v\f\r    -     　﻿'
+JS_SPACE_CHARS = ''.join(chr(c) for c in (9, 10, 11, 12, 13, 32, 0xa0, 0x1680, *range(0x2000, 0x200b),
+                                          0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff))
+IMPORT = re.compile('(?<![^' + JS_SPACE + '])@((?:[^' + JS_SPACE + '\\\\]|\\\\ )+)')
+IMPORT_START = re.compile(r'~/|/.|[A-Za-z0-9._-]', re.S)
+# Characters that start other inline Markdown (tags, links, code, emphasis) can end the
+# client's text run inside the path; \x00 marks text this scan left out.
+IMPORT_UNSURE = re.compile(r'[\x00<>\[\]`*]|(?<![^\W_])_|_(?![^\W_])')
+IMPORT_TYPES = ('', '.md', '.txt', '.text')  # read as text by the client, by extension
+IMPORT_SIZE = 4 * 1024 * 1024  # bytes: the client skips a larger instruction file
 IMPORT_HOPS = 4
 IMPORT_FILES = 64
 IMPORT_READ = 200000
+IMPORT_TOTAL = 400000  # characters read across all instruction files per session start
+FRONTMATTER = re.compile(r'---\s*\n[\s\S]*?---\s*\n?')  # the client's own pattern
+MD_QUOTE = re.compile(r' {0,3}> ?')
+MD_ITEM = re.compile(r'([-*+]|(\d{1,9})[.)])(?=[ \t]|$)([ \t]*)')
+MD_BREAK = re.compile(r'[-_*=](?:[ \t]*[-_*=])*[ \t]*$')  # thematic breaks, setext underlines
+MD_HEADING = re.compile(r'#{1,6}(?:[ \t]|$)')
+MD_FENCE = re.compile(r'(`{3,}|~{3,})(.*)$')
+MD_HTML = re.compile(r'<[A-Za-z/!?]')
+MD_HTML_ENDS = ((re.compile(r'(?i)<(?:script|pre|style|textarea)(?:[\s>]|$)'),
+                 re.compile(r'(?i)</(?:script|pre|style|textarea)>')),
+                (re.compile(r'<!\[CDATA\['), re.compile(r'\]\]>')),
+                (re.compile(r'<\?'), re.compile(r'\?>')),
+                (re.compile(r'<![A-Za-z]'), re.compile(r'>')))
+MD_DEFINITION = re.compile(r'\[[^\]\n]+\]:')
+# A GFM table delimiter row. The 2.1 client lexes without GFM, an older one with it, where
+# table cells are not scanned: a run holding a table counts no import.
+MD_TABLE = re.compile(r'(?m)^[ \t>]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$')
+MD_TAGS = (re.compile(r'''<[A-Za-z/!](?:[^<>"']|"[^"]*"|'[^']*')*>'''), re.compile(r'<[A-Za-z/!?][^<>]*>'))
+
+
+def _columns(text):
+    """Leading indentation in columns, a tab reaching the next multiple of four."""
+    width = 0
+    for char in text:
+        if char == ' ':
+            width += 1
+        elif char == '\t':
+            width += 4 - width % 4
+        else:
+            break
+    return width
+
+
+def _markdown_text(text):
+    """[(run, block)]: the Markdown paragraph and heading text of an instruction file, where
+    the client looks for @imports. Runs are separated by blank lines; a block is one
+    paragraph, heading or list item line with its continuation lines.
+
+    A line-level subset of CommonMark: frontmatter, fenced and indented code, HTML blocks,
+    block comments, link definitions and thematic breaks are left out. Where a construct is
+    unclear (an indented line, an unclosed fence) the line is left out too."""
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    if text.startswith('﻿'):
+        text = text[1:]
+    if text.startswith('---') and text.find('---', 3) >= 0 and (front := FRONTMATTER.match(text)):
+        text = text[front.end():]
+    blocks, block = [], []
+    state = {'run': 0}
+
+    def close():
+        if block:
+            blocks.append((state['run'], '\n'.join(block)))
+            block.clear()
+
+    fence = html = None
+    comment = False
+    prev, depth, stack = 'blank', 0, []
+    for line in text.split('\n'):
+        if comment:
+            end = line.find('-->')
+            if end >= 0:
+                # The client strips the comment and still reads the rest of this line.
+                comment = False
+                blocks.append((state['run'], line[end + 3:]))
+                prev = 'other'
+            continue
+        rest, level = line, 0
+        while quote := MD_QUOTE.match(rest):
+            rest, level = rest[quote.end():], level + 1
+        width, inner = _columns(rest), rest.lstrip(' \t')
+        if fence is not None:
+            mark = MD_FENCE.match(inner)
+            if mark and mark[1][0] == fence[0] and len(mark[1]) >= fence[1] and not mark[2].strip() \
+                    and fence[2] <= width <= fence[2] + 3:
+                fence, prev = None, 'other'
+            elif mark and width < fence[2]:
+                fence = (mark[1][0], len(mark[1]), width)  # unclear nesting: stay in code
+            continue
+        if html is not None:
+            if html == 'blank':
+                if inner:
+                    continue
+                html = None
+            else:
+                if html.search(line):
+                    html, prev = None, 'other'
+                continue
+        if not inner:
+            close()
+            state['run'] += 1
+            prev = 'blank'
+            continue
+        if level != depth:
+            # Another quote level is another container: no paragraph to continue.
+            close()
+            depth, stack, prev = level, [], 'blank'
+        if prev != 'para':
+            while stack and stack[-1] > width:
+                stack.pop()
+        if width >= (stack[-1] if stack else 0) + 4:
+            if prev == 'para':
+                block.append(line)  # a paragraph continues: indented code cannot interrupt it
+            else:
+                close()
+                prev = 'code'
+            continue
+        item = MD_ITEM.match(inner)
+        content = inner
+        if MD_BREAK.match(inner):
+            close()
+            prev = 'other'
+            continue
+        if item:
+            after = inner[item.end():]
+            real = prev != 'para' or (after and (item[2] is None or int(item[2]) == 1))
+            if not real:
+                block.append(line)
+                continue
+            close()
+            while stack and stack[-1] > width:
+                stack.pop()
+            spaces = _columns(item[3]) if after else 0
+            marker = width + len(item[1])
+            stack.append(marker + (spaces if 1 <= spaces <= 4 else 1))
+            if not after:
+                prev = 'empty'
+                continue
+            if spaces > 4:
+                prev = 'code'  # an item that opens with indented code
+                continue
+            content = after
+        if (mark := MD_FENCE.match(content)) and not (mark[1][0] == '`' and '`' in mark[2]):
+            close()
+            fence = (mark[1][0], len(mark[1]), stack[-1] if item else width)
+            prev = 'other'
+            continue
+        if MD_HTML.match(content):
+            close()
+            prev = 'other'
+            if content.startswith('<!--'):
+                end = content.find('-->', 4)
+                if end < 0:
+                    comment = True
+                else:
+                    blocks.append((state['run'], content[end + 3:]))
+                continue
+            for start, finish in MD_HTML_ENDS:
+                if begin := start.match(content):
+                    if not finish.search(content, begin.end()):
+                        html = finish
+                    break
+            else:
+                html = 'blank'
+            continue
+        if not item and prev != 'para' and MD_DEFINITION.match(content):
+            close()
+            prev = 'other'
+            continue
+        if item or prev != 'para':
+            close()
+        block.append(line)
+        if MD_HEADING.match(content):
+            close()
+            prev = 'other'
+        else:
+            prev = 'para'
+    close()
+    return blocks
+
+
+def _between(block, opener, closer):
+    """[(start, end)] of opener ... closer, left to right; an unclosed one runs to the end."""
+    found, at = [], block.find(opener)
+    while at >= 0:
+        close = block.find(closer, at + len(opener))
+        if opener == '<!--' and block.startswith(('>', '->'), at + 4):
+            close = block.find('>', at + 4) - len(closer) + 1  # <!--> and <!---> are whole
+        end = len(block) if close < 0 else close + len(closer)
+        found.append((at, end))
+        at = block.find(opener, end) if close >= 0 else -1
+    return found
+
+
+def _visible(block):
+    """The block with every non-text inline span (code, HTML, comments, link targets,
+    images) replaced by \\x00, newlines kept, and whether a construct was unclear: then
+    everything from that point is hidden as well. Linear in the block, whatever it holds."""
+    poison = len(block)
+    spans, runs = [], list(re.finditer('`+', block))
+    i = 0
+    while i < len(runs):
+        opener = runs[i]
+        if opener.start() and block[opener.start() - 1] == '\\':
+            poison = opener.start()  # an escaped backtick: pairing unclear
+            break
+        closer = next((j for j in range(i + 1, len(runs)) if len(runs[j][0]) == len(opener[0])), None)
+        if closer is None:
+            poison = opener.start()  # a lone backtick may pair outside this block
+            break
+        spans.append((opener.start(), runs[closer].end()))
+        i = closer + 1
+    highs = [high for _, high in spans]
+
+    def overlapping(start, end):
+        # Code spans are sorted and disjoint: those meeting [start, end).
+        index = bisect.bisect_right(highs, start)
+        while index < len(spans) and spans[index][0] < end:
+            yield spans[index]
+            index += 1
+
+    comments = _between(block, '<!--', '-->')
+    if comments and comments[-1][1] == len(block) and not block.endswith('-->'):
+        poison = min(poison, comments[-1][0])  # an unclosed comment runs on
+    regions = comments + _between(block, '<![CDATA[', ']]>') + _between(block, '<?', '?>')
+    regions += [(match.start(), match.end()) for pattern in MD_TAGS for match in pattern.finditer(block)]
+    for start, end in regions:
+        for low, high in overlapping(start, end):
+            # HTML inside a code span is code; any other overlap leaves precedence unclear.
+            if not (low < start and end <= high):
+                poison = min(poison, low, start)
+    regions.extend(spans)
+    # Link targets and titles, up to the next ")"; a quote left open there may hide a ")".
+    closes = [match.start() for match in re.finditer(r'\)', block)]
+    quotes = {quote: [0] for quote in '"\''}
+    for char in block:
+        for quote, counts in quotes.items():
+            counts.append(counts[-1] + (char == quote))
+    for match in re.finditer(r'\]\(', block):
+        index = bisect.bisect_left(closes, match.end())
+        end = closes[index] + 1 if index < len(closes) else len(block)
+        regions.append((match.start(), end))
+        if index == len(closes) or any((counts[end] - counts[match.end()]) % 2 for counts in quotes.values()):
+            poison = min(poison, match.start())
+    # Image text, up to its target (or its "]" without one).
+    targets = [match.start() for match in re.finditer(r'\]\(', block)]
+    brackets = [match.start() for match in re.finditer(r'\]', block)]
+    for match in re.finditer(r'!\[', block):
+        index = bisect.bisect_left(targets, match.end())
+        if index == len(targets):
+            index = bisect.bisect_left(brackets, match.end())
+            end = brackets[index] + 1 if index < len(brackets) else len(block)
+        else:
+            end = targets[index] + 1
+        regions.append((match.start(), end))
+    delta = [0] * (len(block) + 1)
+    for start, end in regions:  # a difference array: overlapping regions stay linear
+        delta[start] += 1
+        delta[min(end, len(block))] -= 1
+    shown, depth = [], 0
+    for index, char in enumerate(block):
+        depth += delta[index]
+        shown.append('\n' if char == '\n' else '\x00' if depth > 0 or index >= poison else char)
+    return ''.join(shown), poison < len(block)
+
+
+def claude_import_paths(text):
+    """The @import paths Claude Code reads from one instruction file's text, a conservative
+    subset of its own parser: with the fragment cut and "\\ " unescaped, in file order."""
+    found, runs = [], {}
+    for run, block in _markdown_text(text):
+        runs.setdefault(run, []).append(block)
+    for blocks in runs.values():
+        if not any('@' in block for block in blocks):
+            continue
+        if any('|' in row and MD_TABLE.fullmatch(row) for block in blocks for row in block.split('\n')):
+            continue
+        for block in blocks:
+            shown, poison = _visible(block)
+            for match in IMPORT.finditer(shown):
+                target = match[1].split('#', 1)[0].replace('\\ ', ' ')
+                if not target or not IMPORT_START.match(target) or IMPORT_UNSURE.search(target):
+                    continue
+                target = target.strip(JS_SPACE_CHARS)
+                if target and target not in found:
+                    found.append(target)
+            if poison:
+                break  # a paragraph never crosses a blank line, but can cross these blocks
+    return found
 
 
 def file_key(path):
@@ -271,38 +564,39 @@ def client_imports(vault, harness, cwd):
         cwd = Path(cwd).resolve(strict=True)
         if not cwd.is_dir() or not _within(cwd, vault):
             return {}
-        from beyin_v3_references import _blank_code
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
         return {}
     queue = [(Path(*cwd.parts[:depth]) / name, 0, None)
              for depth in range(len(cwd.parts), len(vault.parts) - 1, -1) for name in names]
-    loaded, read = {}, set()
+    loaded, read, budget = {}, set(), IMPORT_TOTAL
     for index, (path, hop, origin) in enumerate(queue):
         if len(read) >= IMPORT_FILES or index >= IMPORT_FILES * 8:
             break  # bounded work at every SessionStart, whatever the files say
         key = file_key(path)
         try:
             real = path.resolve(strict=True)
-            if key is None or not real.is_file():
-                continue
+            if key is None or not real.is_file() or real.stat().st_size > IMPORT_SIZE:
+                continue  # the client skips an instruction file over its size limit
         except (OSError, RuntimeError, ValueError):
             continue
+        if any(os.path.splitext(name)[1].lower() not in IMPORT_TYPES for name in (path.name, real.name)):
+            continue  # not read as text
         if hop and not (_within(path, cwd) and _within(real, cwd)):
             continue  # an external import needs an approval this hook cannot see
         origin = origin or path.relative_to(Path(*cwd.parts[:len(vault.parts)])).as_posix()
         loaded.setdefault(key, origin)
-        if hop >= IMPORT_HOPS or key in read or not _within(real, vault):
+        if hop >= IMPORT_HOPS or key in read or not _within(real, vault) or budget <= 0:
             continue
         read.add(key)
         try:
             with open(real, encoding='utf-8', errors='replace') as source:
-                text = _blank_code(source.read(IMPORT_READ))
+                text = source.read(min(IMPORT_READ, budget) + 1)
         except (OSError, ValueError):
             continue
-        for match in IMPORT.finditer(text):
-            target = match[1].replace('\\ ', ' ')
-            if target[0] in '"\'':
-                continue
+        if len(text) > min(IMPORT_READ, budget):
+            text = text[:text.rfind('\n', 0, min(IMPORT_READ, budget)) + 1]  # never a cut path
+        budget -= len(text)
+        for target in claude_import_paths(text):
             if target.startswith('~/'):
                 candidate = Path(os.path.expanduser('~')) / target[2:]
             elif Path(target).is_absolute():

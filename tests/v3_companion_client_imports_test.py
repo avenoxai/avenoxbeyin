@@ -84,21 +84,56 @@ class ClientImportsTest(unittest.TestCase):
 
     def test_import_syntax_follows_claude_code(self):
         self.seed()
+        escaped = DIRECTORY.replace(' ', chr(92) + ' ')
         cases = {
-            'escaped space': (f'@{DIRECTORY.replace(" ", chr(92) + " ")}/Kurallar.md\n', True),
-            'inline in prose': (f'Kurallar: @./{DIRECTORY.replace(" ", chr(92) + " ")}/Kurallar.md burada.\n', True),
-            'unescaped space ends the path': (f'@{DIRECTORY}/Kurallar.md\n', False),
+            # Claude Code imports a path only when it starts with ./ ~/ / or [A-Za-z0-9._-]:
+            # the default folder starts with an emoji, so a bare path is not imported.
+            'escaped space, emoji first': (f'@{escaped}/Kurallar.md\n', False),
+            'escaped space after ./': (f'@./{escaped}/Kurallar.md\n', True),
+            'inline in prose': (f'Kurallar: @./{escaped}/Kurallar.md burada.\n', True),
+            'list item': (f'- Kurallar: @./{escaped}/Kurallar.md\n', True),
+            'fragment is cut': (f'@./{escaped}/Kurallar.md#Genel\n', True),
+            'table without a delimiter row is prose': (f'| Kurallar | @./{escaped}/Kurallar.md |\n', True),
+            'table cell (older clients skip it)': (f'| Kurallar | @./{escaped}/Kurallar.md |\n|---|---|\n', False),
+            'unescaped space ends the path': (f'@./{DIRECTORY}/Kurallar.md\n', False),
+            'backslash ends the path': (f'@.\\{escaped}\\Kurallar.md\n', False),
             'quoted path': (f'@"{DIRECTORY}/Kurallar.md"\n', False),
-            'code span': (f'`@{DIRECTORY.replace(" ", chr(92) + " ")}/Kurallar.md`\n', False),
-            'fenced block': (f'```\n@{DIRECTORY.replace(" ", chr(92) + " ")}/Kurallar.md\n```\n', False),
-            'html comment': (f'<!-- @{DIRECTORY.replace(" ", chr(92) + " ")}/Kurallar.md -->\n', False),
-            'not an import': (f'mail me@{DIRECTORY.replace(" ", chr(92) + " ")}/Kurallar.md\n', False),
+            'code span': (f'`@./{escaped}/Kurallar.md`\n', False),
+            'code span over two lines': (f'Bkz. `kural\n@./{escaped}/Kurallar.md` dosyası\n', False),
+            'fenced block': (f'```\n@./{escaped}/Kurallar.md\n```\n', False),
+            'indented code': (f'Örnek:\n\n    @./{escaped}/Kurallar.md\n', False),
+            'html comment': (f'<!-- @./{escaped}/Kurallar.md -->\n', False),
+            'html block': (f'<details>\n@./{escaped}/Kurallar.md\n</details>\n', False),
+            'link title': (f'[Kurallar](x.md "bkz @./{escaped}/Kurallar.md") burada\n', False),
+            'not an import': (f'mail me@./{escaped}/Kurallar.md\n', False),
             'missing file': ('@.claude/yok.md\n', False),
         }
         for name, (text, expected) in cases.items():
             with self.subTest(name):
                 self.write('CLAUDE.md', '# Vault\n' + text)
                 self.assertEqual(self.rules_path() in self.imports(), expected)
+        with self.subTest('frontmatter'):
+            self.write('CLAUDE.md', f'---\nkurallar: @./{escaped}/Kurallar.md\n---\n# Vault\n')
+            self.assertNotIn(self.rules_path(), self.imports())
+
+    def test_turkish_first_letter_is_not_imported_bare(self):
+        self.seed()
+        self.write('Şablonlar/Kurallar.md', '- Şablon kuralı.\n')
+        self.write('CLAUDE.md', '@Şablonlar/Kurallar.md\n')
+        self.assertNotIn('Şablonlar/Kurallar.md', self.imports())
+        self.write('CLAUDE.md', '@./Şablonlar/Kurallar.md\n')
+        self.assertIn('Şablonlar/Kurallar.md', self.imports())
+
+    def test_oversized_and_non_text_files_do_not_count(self):
+        self.seed()
+        escaped = DIRECTORY.replace(' ', chr(92) + ' ')
+        self.write('CLAUDE.md', f'@./{escaped}/Kurallar.md\n')
+        self.assertIn(self.rules_path(), self.imports())
+        with patch.object(companion, 'IMPORT_SIZE', 100):  # the client skips a larger file
+            self.assertNotIn(self.rules_path(), self.imports())
+        self.write('notes.pdf', f'@./{escaped}/Kurallar.md\n')
+        self.write('CLAUDE.md', '@./notes.pdf\n')
+        self.assertNotIn(self.rules_path(), self.imports())
 
     def test_other_instruction_files_and_nested_imports_up_to_four_hops(self):
         self.seed()
@@ -124,8 +159,8 @@ class ClientImportsTest(unittest.TestCase):
     def test_external_imports_and_other_clients_do_not_count(self):
         self.seed()
         escaped = DIRECTORY.replace(' ', '\\ ')
-        self.write('CLAUDE.md', f'@{escaped}/Kurallar.md\n')
-        self.write('AGENTS.md', f'@{escaped}/Core.md\n')
+        self.write('CLAUDE.md', f'@./{escaped}/Kurallar.md\n')
+        self.write('AGENTS.md', f'@./{escaped}/Core.md\n')
         project = self.vault / 'projects/Alfa'
         project.mkdir(parents=True)
         # Launched in a subfolder, the vault CLAUDE.md still loads but its import resolves
@@ -150,7 +185,7 @@ class ClientImportsTest(unittest.TestCase):
     def test_opening_replaces_imported_sources_with_a_pointer(self):
         self.seed()
         escaped = DIRECTORY.replace(' ', '\\ ')
-        self.write('CLAUDE.md', f'@{escaped}/Kurallar.md\n@{escaped}/Core.md\n')
+        self.write('CLAUDE.md', f'@./{escaped}/Kurallar.md\n@./{escaped}/Core.md\n')
         loaded = companion.client_imports(self.vault, 'claude', self.vault)
         report = {}
         text = companion.context(self.store, 7500, 's' * 24, 'claude', report=report, loaded=loaded)
@@ -207,9 +242,26 @@ class ClientImportsTest(unittest.TestCase):
         self.assertIn(self.rules[0], elsewhere)
         self.assertNotIn(POINTER, elsewhere)
 
+    def test_session_start_keeps_rules_claude_code_does_not_import(self):
+        # Review repro: a bare path into the default folder starts with an emoji, so
+        # Claude Code imports nothing; the opening must still carry the rules.
+        self.seed()
+        escaped = DIRECTORY.replace(' ', chr(92) + ' ')
+        for line in (f'@{escaped}/Kurallar.md', f'| Kurallar | @{escaped}/Kurallar.md |',
+                     f'Bkz. `@./{escaped}/Kurallar.md`'):
+            with self.subTest(line):
+                self.write('CLAUDE.md', '# Vault\n' + line + '\n')
+                text = self.run_hook(self.vault)
+                self.assertIn(self.rules[0], text)
+                self.assertNotIn(POINTER, text)
+        self.write('CLAUDE.md', f'# Vault\n@./{escaped}/Kurallar.md\n')
+        text = self.run_hook(self.vault)
+        self.assertNotIn(self.rules[0], text)
+        self.assertIn(POINTER, text)
+
     def test_doctor_rules_opening_reports_imported_rules(self):
         self.seed()
-        self.write('CLAUDE.md', f'@{DIRECTORY.replace(" ", chr(92) + " ")}/Kurallar.md\n')
+        self.write('CLAUDE.md', f'@./{DIRECTORY.replace(" ", chr(92) + " ")}/Kurallar.md\n')
         rules = companion.rules_opening(self.store, 5000)
         self.assertTrue(rules['imported'])
         self.assertFalse(rules['clipped'])

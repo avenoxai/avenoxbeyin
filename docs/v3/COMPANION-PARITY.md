@@ -87,15 +87,27 @@ karakter düşüp anlamsız parçalar oluşmaz.
 ikinci, kırpılmış bir kopya olarak tekrar etmez ([#610](https://github.com/avenoxai/avenoxbeyin/issues/610)).
 Bugün yalnız Claude Code için tanımlıdır: oturum kasa kökünde ya da kasa içindeki bir klasörde
 başladıysa, çalışma klasöründen kasa köküne kadar her klasördeki `CLAUDE.md`, `.claude/CLAUDE.md`
-ve `CLAUDE.local.md` ile bunların `@yol` içe aktarmaları (içe aktaran dosyaya göre göreli, en
-çok dört adım; kod aralığı, kod bloğu ve yorum içindekiler sayılmaz; boşluk `\ ` ile yazılır,
-tırnaklı yol içe aktarılmaz) okunur. Çalışma klasörünün dışına çıkan içe aktarma Claude Code'da
-kullanıcı onayı beklediği için sayılmaz; kasa dışında başlayan oturum, Codex ve öbür istemciler
-bütün kaynakları almaya devam eder. Eşleşen bölümün etiketi kalır, gövdesi
-`[Loaded in full by CLAUDE.md @import; not repeated here]` işaretçisine iner ve açılan alan
-konulara ve devir kartlarına gider. Yalnız kasa içindeki dosyalar okunur, hiçbir şey yazılmaz;
-doğrulanamayan bir yol tekrar edilir, düşürülmez. `doctor` içindeki `companion_rules_opening`
-içe aktarılan `Kurallar.md` için `imported: true` döner ve kırpma bildirmez.
+ve `CLAUDE.local.md` ile bunların `@yol` içe aktarmaları okunur. Sayım Claude Code'un kendi
+kuralının temkinli bir alt kümesidir: `@` satır başında ya da boşluktan sonra gelir; yol sonraki
+boşlukta ya da ters bölüde biter, boşluk `\ ` ile yazılır, `#` sonrası bölüm adıdır. Yol
+`./`, `~/`, `/` ya da `A-Z a-z 0-9 . _ -` karakterlerinden biriyle başlamalıdır; emoji ya da
+Türkçe harfle başlayan bir klasör (varsayılan `🔮 850-Companion` dahil) için `@./🔮\ 850-Companion/Kurallar.md`
+yazılır, `@🔮\ 850-Companion/Kurallar.md` Claude Code'da içe aktarılmaz ve sayılmaz. Yol içe
+aktaran dosyaya göre görelidir, en çok dört adım izlenir; 4 MiB'den büyük ya da metin olarak
+okunmayan uzantılı dosya sayılmaz. Frontmatter, kod aralığı, kod bloğu, girintili kod, HTML
+bloğu ve yorumu, bağlantı hedefi ve başlığı, görsel metni ve tablo içindekiler sayılmaz
+(tabloyu yeni Claude Code okur, eskisi okumaz). Belirsiz Markdown'da (kapanmamış ters tırnak ya
+da yorum, kalın yazı içindeki `**@yol**`, `[@yol](...)` bağlantı metni) hiçbir içe aktarma
+sayılmaz; bunları Claude Code yükleyebilir, o zaman kaynak açılışta ikinci kez görünür ama
+kaybolmaz. Çalışma klasörünün dışına çıkan içe aktarma Claude Code'da kullanıcı onayı beklediği
+için sayılmaz; kasa dışında başlayan oturum, Codex ve öbür istemciler (`AGENTS.md`, `GEMINI.md`)
+bütün kaynakları almaya devam eder; `.claude/rules/` klasörü de okunmaz. Eşleşen bölümün etiketi
+kalır, gövdesi `[Loaded in full by CLAUDE.md @import; not repeated here]` işaretçisine iner ve
+açılan alan konulara ve devir kartlarına gider. Yalnız kasa içindeki dosyalar okunur, hiçbir şey
+yazılmaz; doğrulanamayan bir yol tekrar edilir, düşürülmez. `doctor` içindeki
+`companion_rules_opening` kasa kökünde başlayan bir oturumu varsayar ve içe aktarılan
+`Kurallar.md` için `imported: true` döner, kırpma bildirmez; başka bir klasörde başlayan oturumun
+açılışı farklı olabilir.
 
 Claude/Codex açılışında yeniden üretim, istemcinin UTF-16/UTF-8 ölçüsüne sığana kadar
 küçülen bütçeyle tekrarlanır. Hook'un ayrı bildirimleri de karakter bütçesinden düşülür;
