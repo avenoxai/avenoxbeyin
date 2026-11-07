@@ -150,12 +150,17 @@ class Core:
         self.engine = self.cli.load_engine()
         import beyin_v3_sync
         self.statuses = tuple(beyin_v3_sync.TASK_STATUSES)
+        self.started_version = self.version()
 
     def version(self):
         try:
             return (self.vault / '.beyin-version').read_text(encoding='utf-8').strip()[:40] or None
         except OSError:
             return None
+
+    def runtime_changed(self):
+        """An update or rollback replaced the vault's code while this process holds the old one."""
+        return self.version() != self.started_version
 
     def run(self, *arguments):
         """One CLI command in this process, exactly as `beyin.py <command>` would run it."""
@@ -415,6 +420,15 @@ class Handler(BaseHTTPRequestHandler):
                             return known
         return None
 
+    def _runtime_changed(self):
+        """Never serve the CLI and engine of one version against another version's files."""
+        if not self.server.core.runtime_changed():
+            return False
+        self._fail(409, 'Beyin güncellendi ya da geri alındı; web görünümü kapanıyor. '
+                        'Yeniden açmak için: beyin.py web ac')
+        self.server.stop_soon()
+        return True
+
     def _bearer(self):
         value = self.headers.get('Authorization', '')
         return value.startswith('Bearer ') and hmac.compare_digest(value[7:].encode(), self.server.token.encode())
@@ -455,6 +469,8 @@ class Handler(BaseHTTPRequestHandler):
         session = self._session()
         if not (session or self._bearer()):
             self._fail(401, 'Oturum yok; beyin.py web ac ile yeniden aç')
+            return
+        if self._runtime_changed():
             return
         if session:  # `web durum` from a terminal is not use of the page
             self.server.touch()
@@ -539,6 +555,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/kapat':
             self._json(200, {'durum': 'kapaniyor'})
             self.server.stop_soon()
+            return
+        if self._runtime_changed():
             return
         core = self.server.core
         routes = {'/api/gorev': core.create_task, '/api/gorev/durum': core.set_status,

@@ -319,6 +319,32 @@ class WebWriteTest(WebFixture):
         self.assertEqual(status, 200)
 
 
+class WebRuntimeChangeTest(WebFixture):
+    def test_an_update_or_rollback_under_a_running_server_stops_it_before_any_write(self):
+        cookie, csrf = self.login()
+        self.assertEqual(self.get_json('/api/gorevler', cookie)[0], 200)
+        tasks = sorted(path.name for path in (self.vault / 'tasks').iterdir())
+        # `beyin.py update` and `beyin.py rollback` both rewrite the version stamp.
+        (self.vault / '.beyin-version').write_text('9.9.9\n', encoding='utf-8')
+        response, body = self.request('POST', '/api/gorev', self.write_headers(cookie, csrf),
+                                      {'baslik': 'Sürüm değişince', 'sorumlu': 'ben'})
+        self.assertEqual(response.status, 409, body)
+        self.assertIn('beyin.py web ac', json.loads(body)['mesaj'])
+        self.assertEqual(sorted(path.name for path in (self.vault / 'tasks').iterdir()), tasks)
+        self.thread.join(timeout=10)
+        self.assertFalse(self.thread.is_alive())  # the server shut itself down
+
+    def test_reads_stop_too_and_an_unchanged_stamp_keeps_serving(self):
+        (self.vault / '.beyin-version').write_text('', encoding='utf-8')  # empty reads as no version
+        cookie, _ = self.login()
+        self.assertEqual(self.get_json('/api/gorevler', cookie)[0], 200)
+        (self.vault / '.beyin-version').write_text('3.12.0\n', encoding='utf-8')
+        status, data = self.get_json('/api/gorevler', cookie)
+        self.assertEqual(status, 409, data)
+        self.thread.join(timeout=10)
+        self.assertFalse(self.thread.is_alive())
+
+
 class WebReadOnlyTest(WebFixture):
     read_only = True
 
