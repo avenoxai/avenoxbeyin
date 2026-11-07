@@ -701,6 +701,15 @@ def knowledge_map(store):
     return records[0] if records else None  # records keep the requested order: a card comes first
 
 
+def _is_file(path):
+    """is_file() that answers False instead of raising: Python 3.11-3.13 raise PermissionError
+    for a file in an unreadable directory, and a notice line must never cost the session its context."""
+    try:
+        return path.is_file()
+    except (OSError, ValueError):
+        return False
+
+
 def context(store, budget, session, harness, query='', receipt='', warning='', project=None, report=None,
             rules_project=None):
     """Budget actual displayed text, not repeated JSON metadata; never cut a record header.
@@ -727,9 +736,11 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
     records = snapshot['records']
     notice = ''
     missing = snapshot['missing_sources']
-    if IDENTITY & {Path(r['source']).name for r in records}:
+    kept = {name for name in IDENTITY if _is_file(target / name)}
+    if kept:
         # Core.md and Soul.md are alternatives: setup creates Core.md, a V2 vault keeps Soul.md.
-        missing = [name for name in missing if name not in IDENTITY]
+        # Drop only the one the vault does not keep; a kept one that is excluded stays listed.
+        missing = [name for name in missing if name in kept or name not in IDENTITY]
     if missing:
         notice += 'Missing/unavailable companion sources: ' + ', '.join(missing) + '.\n'
     if snapshot['stale_excluded']:
@@ -817,6 +828,12 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
     fixed = len(header) + len(notice) + sum(len(label) for label, _, _ in sections)
     if fixed > budget:
         return clip(header + notice + 'Read companion files: ' + ', '.join(r['source'] for r in records), budget)
+    floors = dict(FLOORS)
+    opened = {name for _, _, name in sections}
+    if 'Soul.md' in opened and 'Core.md' not in opened:
+        # The identity floor belongs to the identity that opens (#591): a V2 vault that keeps
+        # only Soul.md gives it Core.md's floor. Beside Core.md it stays a style note (#316).
+        floors['Soul.md'] = floors.pop('Core.md')
 
     def share(available, parts):
         # Rules and the handoff get a floor first: an even split leaves the two continuity
@@ -825,7 +842,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         # A floor belongs to a category, not each source: global and project rules
         # share the rules floor. Repeating it can reserve more than available.
         counts = {name: sum(item[2] == name for item in parts) for _, _, name in parts}
-        lengths = [min(len(body), int(available * FLOORS.get(name, 0) / counts[name]))
+        lengths = [min(len(body), int(available * floors.get(name, 0) / counts[name]))
                    for _, body, name in parts]
         spare = available - sum(lengths)
         while spare > 0 and any(lengths[i] < len(item[1]) for i, item in enumerate(parts)):
