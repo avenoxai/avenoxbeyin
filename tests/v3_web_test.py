@@ -323,6 +323,22 @@ class WebWriteTest(WebFixture):
                                        '--file', str(self.request_file())], return_result=True)[1], 0)
         self.assertEqual(len(list((self.state / 'receipt-reminders').glob('*.edited'))), 1)
 
+    def test_a_write_from_the_page_is_not_the_launching_pi_sessions_edit(self):
+        # Pi's shell tool exports PI_SESSION_ID, which the CLI also marks (#212 with Pi, PR #385).
+        cookie, csrf = self.login()
+        with patch.dict(os.environ, {'PI_SESSION_ID': 'pi-oturumu-1'}):
+            os.environ.pop('CLAUDE_CODE_SESSION_ID', None)
+            response, body = self.request('POST', '/api/gorev', self.write_headers(cookie, csrf),
+                                          {'baslik': 'Sayfadan Pi görevi', 'sorumlu': 'ben'})
+            self.assertEqual(response.status, 200, body)
+            self.assertEqual(os.environ.get('PI_SESSION_ID'), 'pi-oturumu-1')
+        self.assertEqual(list((self.state / 'receipt-reminders').glob('*.edited')), [])
+        with patch.dict(os.environ, {'PI_SESSION_ID': 'pi-oturumu-1'}):
+            os.environ.pop('CLAUDE_CODE_SESSION_ID', None)
+            self.assertEqual(CLI.main(['--vault', str(self.vault), '--state', str(self.state), 'task-create',
+                                       '--file', str(self.request_file())], return_result=True)[1], 0)
+        self.assertEqual(len(list((self.state / 'receipt-reminders').glob('*.edited'))), 1)
+
     def request_file(self):
         path = self.state / 'cli-istek.json'
         path.write_text(json.dumps({'source': 'tasks/cli-gorev.md', 'text': 'CLI görevi.',

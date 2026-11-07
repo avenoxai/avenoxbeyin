@@ -45,6 +45,8 @@ MAX_RECORD_CHARS = 20000
 SEARCH_LIMIT = 20
 RECEIPT_DAYS = 14
 RECEIPT_LIMIT = 30
+# Agent shells export these to subprocesses; the CLI marks that session's edit with them (#212).
+SESSION_VARIABLES = ('CLAUDE_CODE_SESSION_ID', 'PI_SESSION_ID')
 RUNNING = 'running.json'
 
 SECURITY_HEADERS = (
@@ -165,18 +167,18 @@ class Core:
     def run(self, *arguments):
         """One CLI command in this process, exactly as `beyin.py <command>` would run it.
 
-        A server started from a Claude Code Bash tool inherits CLAUDE_CODE_SESSION_ID, and the CLI
-        would mark a write from this page as that agent session's edit (the Stop receipt reminder,
-        #212). The page is a person's, not the session's, so the variable is out of view meanwhile;
-        the server is single-threaded, so no other command sees the gap.
+        A server started from a Claude Code or Pi shell tool inherits CLAUDE_CODE_SESSION_ID or
+        PI_SESSION_ID, and the CLI would mark a write from this page as that agent session's edit
+        (the Stop receipt reminder, #212). The page is a person's, not the session's, so both
+        variables are out of view meanwhile; the server is single-threaded, so no other command
+        sees the gap.
         """
-        session = os.environ.pop('CLAUDE_CODE_SESSION_ID', None)
+        sessions = {name: os.environ.pop(name) for name in SESSION_VARIABLES if name in os.environ}
         try:
             result, code = self.cli.main(['--vault', str(self.vault), '--state', str(self.state), *arguments],
                                          return_result=True)
         finally:
-            if session is not None:
-                os.environ['CLAUDE_CODE_SESSION_ID'] = session
+            os.environ.update(sessions)
         if code:
             error = result if isinstance(result, dict) else {}
             name, message = str(error.get('error') or ''), str(error.get('message') or 'işlem tamamlanamadı')
