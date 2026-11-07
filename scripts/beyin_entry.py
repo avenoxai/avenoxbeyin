@@ -353,6 +353,19 @@ def human_result(result, command, installed_version=None):
             lines.append('Sinir ayari okunamadi; hicbir sey tasinmadi.' if result.get('limits_file') == 'invalid'
                          else 'Birden fazla companion klasoru var; hicbir sey tasinmadi.')
         return '\n'.join(lines + ['Hicbir metin silinmedi; model cagrilmadi.'])
+    if command == 'mutation-queue':
+        if isinstance(result.get('enabled'), bool):
+            return ('Cevrimdisi mutasyon kuyrugu: ' + ('acik' if result['enabled'] else 'kapali (acmak icin: beyin.py mutation-queue --enable)') +
+                    '; ' + str(result.get('pending_count', 0)) + ' bekleyen, ' + str(result.get('conflict_count', 0)) +
+                    ' cakisma, ' + str(result.get('failed_count', 0)) + ' basarisiz.')
+        if 'replayed' in result:
+            return ('Kuyruk yeniden oynatildi: ' + str(result.get('applied', 0)) + ' uygulandi, ' +
+                    str(result.get('conflicts', 0)) + ' cakisma, ' + str(result.get('failed', 0)) + ' basarisiz.')
+        if 'pruned' in result:
+            return 'Kuyruktan ' + str(result['pruned']) + ' kayit temizlendi; ' + str(result.get('remaining', 0)) + ' kayit kaldi.'
+        if result.get('mutation_id'):
+            return ('Kuyruk kaydi ' + plain_text(result['mutation_id']) + ': ' + plain_text(result.get('status', '')) +
+                    (' (zaten kuyrukta)' if result.get('duplicate') else '') + '.')
     if command == 'doctor':
         labels = {'never_seen': 'Henuz gercek istemci oturumu gozlenmedi.',
                   'observed_metadata': 'Oturum olaylari gozleniyor.',

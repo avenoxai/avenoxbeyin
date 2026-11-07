@@ -220,7 +220,9 @@ def _enqueue_mutation(
 
     queue_file = _queue_path(state_dir)
     line = json.dumps(mutation, ensure_ascii=False) + "\n"
-    with open(queue_file, "a", encoding="utf-8", newline="") as f:
+    # Queued payloads hold note text: owner-only from the first append, like the rewritten file.
+    fd = os.open(queue_file, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8", newline="") as f:
         f.write(line)
         f.flush()
         try:
@@ -603,7 +605,7 @@ def resolve(state, mutation_id, retry=False):
         if retry:
             item["error"] = None  # a conflict copy from the earlier attempt stays listed in conflict_path
         _save_all_mutations(state, mutations)
-        return item
+        return {key: item.get(key) for key in ("mutation_id", "status", "action", "source", "conflict_path")}
 
 
 def status(state: str | Path) -> dict:

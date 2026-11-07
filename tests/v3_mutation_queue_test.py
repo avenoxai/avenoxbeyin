@@ -623,6 +623,13 @@ class MutationQueueTest(unittest.TestCase):
                 self.assertNotIn(machine_id.encode(), path.read_bytes(), path)
         self.assertNotIn(machine_id, json.dumps(mutation.doctor(self.state)))
 
+    @unittest.skipIf(os.name == 'nt', 'POSIX permission bits')
+    def test_queue_file_is_owner_only_from_the_first_append(self):
+        import stat
+        mutation.enqueue_mutation(self.state, 'note_create', 'notes/private-text.md', {'text': 'private text'})
+        for name in (mutation.MUTATION_QUEUE_FILE, mutation.DEVICE_FILE, mutation.SETTINGS_FILE):
+            self.assertEqual(stat.S_IMODE((self.state / name).stat().st_mode), 0o600, name)
+
     def test_identity_is_stable_after_presence_appears(self):
         first = mutation.get_machine_id(self.state)
         (self.state / mutation.PRESENCE_DEVICE_FILE).write_text(
@@ -637,6 +644,25 @@ class MutationQueueTest(unittest.TestCase):
             mutation.replay_mutations(self.vault, self.state, self.sync)
         self.assertIn(self.state / mutation.MUTATION_QUEUE_FILE, [Path(call.args[1]) for call in safe.call_args_list])
         self.assertFalse(list(self.state.glob('.mqueue-*')))
+
+    def test_human_output_names_the_switch_and_counts(self):
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        try:
+            import beyin_entry
+        finally:
+            sys.path.remove(str(ROOT / 'scripts'))
+        off = beyin_entry.human_result(mutation.status(self.tmp / 'absent-state'), 'mutation-queue')
+        self.assertIn('kapali (acmak icin: beyin.py mutation-queue --enable)', off)
+        item = mutation.enqueue_mutation(self.state, 'task_update', 'tasks/missing.md',
+            {'id': 'missing', 'expected_revision': 1, 'changes': {'status': 'active'}})
+        mutation.replay_mutations(self.vault, self.state, self.sync)
+        dismissed = beyin_entry.human_result(mutation.resolve(self.state, item['mutation_id']), 'mutation-queue')
+        self.assertEqual(dismissed, 'Kuyruk kaydi ' + item['mutation_id'] + ': dismissed.')
+        lines = beyin_entry.human_result({'status': 'observed_metadata', 'mutation_queue': mutation.doctor(self.state)},
+                                         'doctor').splitlines()
+        self.assertIn('Cevrimdisi mutasyon kuyrugu: acik (0 bekleyen, 0 cakisma, 0 basarisiz)', lines)
+        quiet = beyin_entry.human_result({'status': 'observed_metadata', 'mutation_queue': {'enabled': False}}, 'doctor')
+        self.assertNotIn('kuyrug', quiet)
 
     # Input checks and review exits.
 
