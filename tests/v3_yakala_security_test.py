@@ -298,7 +298,7 @@ class YakalaSecurityTest(unittest.TestCase):
                 patch.object(yakala, '_fetch_html', return_value=None) as check:
             self.assertEqual(yakala.extract(self.vault, card, {'npx': 'npx'})[:2], ('article text', 'defuddle'))
         self.assertEqual(order, ['dns', 'helper'])
-        check.assert_called_once_with(url, complete=True)
+        check.assert_called_once_with(url, complete=True, budget=yakala.CHECK_BUDGET)
         card['body'] = '## Icerik\n\n' + 'Already clipped content. ' * 20
         with patch.object(socket, 'getaddrinfo', side_effect=AssertionError('clipping must stay offline')):
             self.assertEqual(yakala.extract(self.vault, card, self.no_tools)[1], 'web-clipper')
