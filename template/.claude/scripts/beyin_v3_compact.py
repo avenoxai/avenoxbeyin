@@ -11,7 +11,7 @@ Decision lines (`**Karar:**`, `**Karar (Ad):**`, `**Decision:**`) in the moved t
 copied, verbatim and once each, to Kararlar.md beside the companion files with the heading of
 the card they came from, so a decision stays in plain sight after its card is archived.
 """
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from datetime import datetime, timezone
 import errno
 import os
@@ -23,6 +23,7 @@ import time
 import unicodedata
 
 from beyin_v3_companion import LIMITS, directory, read_limits
+from beyin_v3_notes import NoteConflict, vault_locked
 
 LINE = re.compile(r'[^\n]*\n|[^\n]+$')
 HEADING = re.compile(r'(#{1,6})[ \t]')
@@ -54,6 +55,8 @@ ADDED_HISTORY = {'Last-Session.md': '## Önceki oturumlar', 'Threads.md': '## Ka
 ARCHIVE_DIRECTORY = 'Arşiv'
 POINTER = 'Arşivlenen metin: `{}`'
 BACKUP = '{} karakter tam metin yedeği (needs_rewrite)'
+BACKUP_LOOKBACK_MONTHS = 12
+BACKUP_LOOKBACK_BYTES = 8 * 1024 * 1024
 POINTER_LINE = re.compile(r'Arşivlenen metin: `[^`\n]+`[ \t]*\r?\n?$')
 LOCK_NAME = '.beyin-compact.lock'
 DECISIONS = 'Kararlar.md'
@@ -369,6 +372,39 @@ def _inside(path, vault):
         raise ValueError('companion archive escapes vault')
 
 
+def _previous_backup(target, vault, name, now, backup):
+    """Find a complete, byte-equivalent snapshot without an unbounded archive scan.
+
+    This is only for an unchanged file with nothing left to move. Missing, unsafe,
+    unreadable or over-budget archives are cache misses: a new complete backup is
+    safer than claiming a copy that has not been verified. No state index survives
+    deletion or external editing of the actual archive.
+    """
+    remaining = BACKUP_LOOKBACK_BYTES
+    month_number = now.year * 12 + now.month - 1
+    marker = BACKUP.format(len(backup))
+    for offset in range(1, BACKUP_LOOKBACK_MONTHS + 1):
+        year, month = divmod(month_number - offset, 12)
+        candidate = target / ARCHIVE_DIRECTORY / f'{Path(name).stem}-{year:04d}-{month + 1:02d}.md'
+        try:
+            _inside(candidate, vault)
+            if not candidate.is_file() or candidate.stat().st_size > remaining:
+                continue
+            with candidate.open('rb') as handle:
+                raw = handle.read(remaining + 1)
+            remaining -= len(raw)
+            if remaining < 0:
+                break
+            archived = raw.decode('utf-8')
+        except (OSError, UnicodeError, ValueError):
+            continue
+        # Bind the full payload to its backup heading; finding the text elsewhere
+        # in moved history or a bare marker is not enough to identify a snapshot.
+        if any(marker + newline + newline + backup in archived for newline in ('\n', '\r\n')):
+            return candidate.relative_to(vault).as_posix()
+    return None
+
+
 @contextmanager
 def _compact_lock(target, timeout=10.0, step=0.1):
     """Serialize writers that share one canonical companion directory.
@@ -445,13 +481,23 @@ def compact(vault, state, dry_run=False, now=None):
     if not target.is_dir():
         return {'status': 'within_limit', 'directory': target.relative_to(vault).as_posix(), 'files': {},
                 'dry_run': False, 'limits_file': 'ok', 'deleted_chars': 0, 'model_calls': False}
-    try:
-        with _compact_lock(target):
-            return _compact_files(vault, target, configured, dry_run=False, now=now)
-    except TimeoutError as exc:
-        return {'status': 'conflict', 'reason': str(exc), 'files': {}}
-    except _LockError as exc:
-        return {'status': 'needs_attention', 'reason': str(exc), 'files': {}}
+    with ExitStack() as guard:
+        # Plan reads, archive append, decision ledger and live replacement are one
+        # critical section shared with note-edit/create and note journal recovery.
+        # Retain the inner lock for compatibility with already-running compactors.
+        try:
+            guard.enter_context(vault_locked(vault))
+        except NoteConflict as exc:
+            return {'status': 'conflict', 'reason': str(exc), 'files': {}}
+        except (OSError, ValueError) as exc:
+            return {'status': 'needs_attention', 'reason': 'cannot acquire note lock: ' + str(exc), 'files': {}}
+        try:
+            with _compact_lock(target):
+                return _compact_files(vault, target, configured, dry_run=False, now=now)
+        except TimeoutError as exc:
+            return {'status': 'conflict', 'reason': str(exc), 'files': {}}
+        except _LockError as exc:
+            return {'status': 'needs_attention', 'reason': str(exc), 'files': {}}
 
 
 def _compact_files(vault, target, configured, dry_run=False, now=None):
@@ -526,9 +572,19 @@ def _compact_files(vault, target, configured, dry_run=False, now=None):
             if existing is not None and marker in existing and backup in existing:
                 report.update(backup='exists')  # an unchanged file is not copied again
             else:
-                added.append(newline + heading + marker + newline + newline + backup +
-                             ('' if backup.endswith('\n') else newline))
-                report.update(backup='written')
+                previous_backup = _previous_backup(target, vault, name, now, backup) if result is None else None
+                if previous_backup is not None:
+                    # Nothing is written below, so the live check under `if added` never runs;
+                    # an older snapshot only covers the file if the scan did not race an edit.
+                    if (path.read_bytes() if path.exists() else None) != raw:
+                        files[name] = dict(report, status='conflict',
+                                           reason='file changed during compaction; nothing moved, retry')
+                        continue
+                    report.update(backup='exists', archive=previous_backup)
+                else:
+                    added.append(newline + heading + marker + newline + newline + backup +
+                                 ('' if backup.endswith('\n') else newline))
+                    report.update(backup='written')
         if added:
             if existing is None:
                 existing = newline.join([
@@ -555,7 +611,10 @@ def _compact_files(vault, target, configured, dry_run=False, now=None):
                 # A concurrent caller that already committed its own archive is never reverted.
                 if archive.exists() and archive.read_bytes() == archive_written.encode('utf-8'):
                     if previous is None:
-                        archive.unlink(missing_ok=True)
+                        try:
+                            archive.unlink(missing_ok=True)
+                        except OSError:
+                            pass
                     else:
                         _write(archive, previous.decode('utf-8'))
                 report.pop('backup', None)

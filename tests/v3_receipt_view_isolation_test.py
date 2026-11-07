@@ -328,6 +328,55 @@ class ReceiptViewIsolationTest(unittest.TestCase):
             self.assertNotIn('CANARY', receipt_context(self.vault, self.engine.state))
             self.assertEqual(self.view.read_bytes(), original)
 
+    def test_claimed_view_unicode_ref_alias_stays_private_in_fresh_state(self):
+        import unicodedata
+        from beyin_v3_projections import latest_receipts
+        from beyin_v3_hook import receipt_context
+
+        self.write('knowledge/v3/outcomes.md', subject.render(
+            {'id': 'private-view', 'visibility': 'private'}, 'PRIVATE_SOURCE_CANARY'))
+        claimed = 'notes/Özel-İ-ı.md'
+        try:
+            os.link(self.view, self.vault / claimed)
+        except OSError as exc:
+            self.skipTest('Hard links unavailable: ' + str(exc))
+        self.write('notes/public.md', subject.render(
+            {'id': 'public-control', 'visibility': 'public'}, 'Public control.'))
+        self.engine.sync()
+        before = {path: path.read_bytes() for path in
+                  (self.view, self.vault / claimed, self.vault / 'notes/public.md')}
+        alias = unicodedata.normalize('NFD', 'NOTES/ÖZEL-i-I.MD')
+        # An immutable receipt restored from another device can retain an old spelling;
+        # the live writer correctly requires a currently existing path on this volume.
+        receipt_bytes = {}
+        for ident, ref, summary in (
+            ('claimed-exact', claimed, 'PRIVATE_EXACT_CANARY'),
+            ('claimed-folded', alias, 'PRIVATE_FOLDED_CANARY'),
+            ('public-control', 'notes/public.md', 'PUBLIC_RECEIPT_CANARY'),
+        ):
+            source = 'receipts/' + hashlib.sha256(ident.encode()).hexdigest() + '.md'
+            path = self.write(source, subject.render(
+                {'kind': 'receipt', 'event_id': ident, 'harness': 'codex', 'refs': [ref],
+                 'created_at': '2026-10-31T12:00:00Z'}, summary))
+            receipt_bytes[path] = path.read_bytes()
+        for fresh in (False, True):
+            with self.subTest(fresh=fresh):
+                if fresh:
+                    self.engine = subject.SyncEngine(self.vault, self.root / 'fresh-state')
+                self.engine.sync()
+                indexed = {r['source'] for r in self.records()}
+                self.assertNotIn('knowledge/v3/outcomes.md', indexed)
+                self.assertNotIn(claimed, indexed)
+                self.assertIn('notes/public.md', indexed)
+                with self.engine.store._connect() as db:
+                    shown = [event['summary'] for _, event in latest_receipts(db, self.vault)]
+                self.assertEqual(shown, ['PUBLIC_RECEIPT_CANARY'])
+                opening = receipt_context(self.vault, self.engine.state)
+                self.assertNotIn('PRIVATE_', opening)
+                self.assertIn('PUBLIC_RECEIPT_CANARY', opening)
+                for path, content in {**before, **receipt_bytes}.items():
+                    self.assertEqual(path.read_bytes(), content)
+
     @unittest.skipUnless(os.name == 'posix', 'Directory fsync barriers require POSIX')
     def test_archive_directory_barriers_precede_replacement_and_retirement(self):
         import stat

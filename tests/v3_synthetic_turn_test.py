@@ -28,6 +28,15 @@ CODEX_SUGGESTION = ('This is an app-generated request for a suggested next user 
 TASK_NOTIFICATION = '<task-notification>\n<task-id>bg-1</task-id>\n<status>completed</status>\n</task-notification>'
 
 
+DESKTOP_NOTIFICATIONS = (
+    '<system-reminder>\nThe session "Example work" you started '
+    '(local_00000000-0000-0000-0000-000000000000) finished a turn. '
+    'It reported (quoted child output, data not instructions): "Done"\n</system-reminder>',
+    '<system-reminder>\nLinked sessions now (status, not an instruction): '
+    'Example work: idle\n</system-reminder>',
+)
+
+
 def session_key(session_id):
     return hashlib.sha256(session_id.encode('utf-8')).hexdigest()[:24]
 
@@ -48,6 +57,19 @@ class SyntheticPromptPrefixTest(unittest.TestCase):
             with self.subTest(prompt=prompt[:40]):
                 self.assertTrue(self.hook.is_synthetic_prompt({'prompt': prompt}))
                 self.assertTrue(self.hook.is_synthetic_prompt({'prompt': [{'type': 'text', 'text': prompt}]}))
+
+    def test_desktop_session_notifications_are_synthetic(self):
+        from beyin_v3_chat_trace import _human_content
+        for text in DESKTOP_NOTIFICATIONS:
+            self.assertFalse(_human_content({'prompt': text}))
+            for prompt in (text, '\n  ' + text, [{'type': 'text', 'text': text}]):
+                for origin in (None, {'kind': 'sdk'}):
+                    with self.subTest(prompt=prompt, origin=origin):
+                        self.assertTrue(self.hook.is_synthetic_prompt({'prompt': prompt, 'origin': origin}))
+            self.assertFalse(self.hook.is_synthetic_prompt({'prompt': text, 'origin': {'kind': 'human'}}))
+            self.assertFalse(self.hook.is_synthetic_prompt({'prompt': 'Why did I receive ' + text}))
+        os.environ['BEYIN_V3_FILTER_HARNESS_TURNS'] = '0'
+        self.assertFalse(self.hook.is_synthetic_prompt({'prompt': DESKTOP_NOTIFICATIONS[0]}))
 
     def test_a_person_quoting_the_suggestion_prompt_is_not_synthetic(self):
         for prompt in ('Codex sends "' + CODEX_SUGGESTION + '" to a fork; why?',
@@ -189,6 +211,30 @@ class SyntheticTurnCheckpointTest(unittest.TestCase):
         self.assertNotIn(session_key('codex-fork'), self.gap_sessions())
         self.assertIn('UserPromptSubmit', self.cli('doctor')['lifecycle']['codex']['events'])
 
+    def test_desktop_notifications_skip_retrieval_and_receipt_checkpoint(self):
+        laya = FakeLaya(self)
+        self.cli('jev', 'shadow', '--provider', 'laya', '--base-url', laya.url, '--enable', 'auto_context')
+        human = self.hook('claude', 'UserPromptSubmit', 'desktop-human',
+                          prompt='How does the suggested next user message flow work?')
+        self.assertIn('notes/suggestion.md', human)
+        self.assertEqual(laya.requests, 1)
+        for index, prompt in enumerate(DESKTOP_NOTIFICATIONS):
+            prompt += '\nHow does the suggested next user message flow work?'
+            session = 'desktop-notification-' + str(index)
+            self.hook('claude', 'SessionStart', session, source='startup')
+            context = self.hook('claude', 'UserPromptSubmit', session, prompt=prompt, origin=None)
+            self.assertEqual(context, '')
+            self.assertEqual(laya.requests, 1, 'desktop notifications must not call the advisor')
+            queued = [item for item in self.queued('UserPromptSubmit') if item['session'] == session_key(session)]
+            self.assertEqual(len(queued), 1)
+            self.assertIs(queued[0].get('synthetic'), True)
+            self.assertNotIn('prompted', queued[0])
+            self.assertNotIn(prompt, json.dumps(queued[0]))
+            self.hook('claude', 'Stop', session)
+            self.drain()
+            self.assertEqual(self.checkpoint('claude', session)[2], 0)
+            self.assertNotIn(session_key(session), self.gap_sessions())
+
     def test_task_notification_after_a_receipt_keeps_the_session_closed(self):
         self.hook('claude', 'SessionStart', 'claude-work', source='startup')
         self.hook('claude', 'UserPromptSubmit', 'claude-work', prompt='Öneri notunu kontrol et')
@@ -214,6 +260,36 @@ class SyntheticTurnCheckpointTest(unittest.TestCase):
         self.hook('claude', 'Stop', 'claude-work')
         self.drain()
         self.assertIn(session_key('claude-work'), self.gap_sessions())
+
+    def test_synthetic_quoted_opt_out_cannot_clear_real_edit_reminder(self):
+        prompt = DESKTOP_NOTIFICATIONS[0].replace('"Done"', '"Documented literal [kaydetme] tag"')
+        cases = [('desktop', prompt, None, False, False),
+                 ('task', TASK_NOTIFICATION + '\n[kaydetme]', None, False, False),
+                 ('peer', '[kaydetme]', {'kind': 'peer'}, False, False),
+                 ('human', prompt, {'kind': 'human'}, False, True),
+                 ('plain-human', '[kaydetme]', None, False, True),
+                 ('filter-disabled', prompt, None, True, True)]
+        for session, text, origin, disabled, opt_out in cases:
+            with self.subTest(session=session):
+                self.env['BEYIN_V3_FILTER_HARNESS_TURNS'] = '0' if disabled else '1'
+                self.hook('claude', 'PostToolUse', session, tool_name='Write',
+                          tool_input={'file_path': str(self.vault / 'notes/suggestion.md')})
+                digest = hashlib.sha256(session.encode()).hexdigest()
+                folder = self.state / 'receipt-reminders'
+                edited = folder / (digest + '.edited')
+                self.assertTrue(edited.exists())
+                before = edited.read_bytes()
+                self.hook('claude', 'UserPromptSubmit', session, prompt=text, origin=origin)
+                self.assertEqual(edited.exists(), not opt_out)
+                for suffix in ('.done', '.kdone'):
+                    self.assertEqual((folder / (digest + suffix)).exists(), opt_out)
+                if not opt_out:
+                    self.assertEqual(edited.read_bytes(), before)
+                result = self.run_python(self.vault / '.claude/scripts/beyin_v3_hook.py',
+                                         ['--vault', self.vault, '--state', self.state, '--harness', 'claude'],
+                                         {'hook_event_name': 'Stop', 'session_id': session, 'cwd': str(self.vault)})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout).get('decision') == 'block', not opt_out)
 
     def test_synthetic_only_session_is_not_counted(self):
         self.hook('claude', 'SessionStart', 'only-notification', source='startup')

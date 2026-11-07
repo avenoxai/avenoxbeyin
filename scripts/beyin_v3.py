@@ -64,6 +64,18 @@ def _is_absolute_cross_platform(raw: str) -> bool:
     return bool(re.match(r"^([A-Za-z]:[/\\]|[/\\])", raw))
 
 
+def _resolve_state_path(pinned: Path) -> Path:
+    """Validate a pin even when non-strict realpath suppresses invalid-path errors."""
+    if "\0" in str(pinned):
+        raise ValueError("embedded null character in state path")
+    resolved = Path(pinned).expanduser().resolve()
+    try:
+        resolved.stat()
+    except FileNotFoundError:
+        pass  # A valid state directory may not have been created yet.
+    return resolved
+
+
 def resolve_state(vault: Path, pinned: Path) -> Path:
     """Resolve a foreign OS/user's conventional default; preserve custom and local pins."""
     expected = default_state(vault).resolve()
@@ -72,7 +84,7 @@ def resolve_state(vault: Path, pinned: Path) -> Path:
         return expected
     if _in_package_container(raw):
         try:
-            resolved = Path(pinned).expanduser().resolve()
+            resolved = _resolve_state_path(pinned)
             if _is_absolute_cross_platform(str(resolved)):
                 return resolved
         except (OSError, ValueError, RuntimeError):
@@ -89,7 +101,7 @@ def resolve_state(vault: Path, pinned: Path) -> Path:
     if conventional and portable.rsplit("/", 1)[0].casefold() != local_parent:
         return expected
     try:
-        resolved = Path(pinned).expanduser().resolve()
+        resolved = _resolve_state_path(pinned)
     except (OSError, ValueError, RuntimeError):
         return expected
 
@@ -185,7 +197,7 @@ def state_location(vault: Path, state: Path, windows=None) -> dict:
     if pinned is None:
         return report
     try:
-        resolved = Path(pinned).expanduser().resolve()
+        resolved = _resolve_state_path(pinned)
     except (OSError, ValueError, RuntimeError):
         report.update(pinned_state=pinned, installed_at_pinned_state=False)
         report["warnings"].append(
@@ -362,6 +374,69 @@ def jev_advice(result):
 
 HOOK_FILES = (".claude/settings.local.json", ".codex/hooks.json", ".agents/hooks.json",
               ".kiro/hooks/beyin-v3.json")
+
+
+# Fixed machine-local installation paths only, not all managed files/user scripts.
+MACHINE_LOCAL_FILES = tuple(sorted(set(HOOK_FILES + (
+    '.beyin-runtime.json', 'Beyni Guncelle.cmd', '.codex/config.toml', '.claude/hermes-plugin/__init__.py',
+    '.opencode/plugins/beyin-v3.js', '.omp/hooks/pre/beyin-v3.ts',
+    '.claude/scripts/compile.py', '.claude/scripts/flush.py',
+) + tuple('.claude/hooks/' + name + suffix
+          for name in ('session-start', 'session-end', 'pre-compact', 'prompt-counter')
+          for suffix in ('.sh', '.ps1')))))
+
+
+def tracked_machine_files(vault: Path) -> dict:
+    """Advisory only: query the local Git index, never source contents, remotes or Git writes.
+
+    Sparse checkouts/indexes are explicitly unavailable rather than expanded (which
+    could lazily fetch objects). Fixed literals exclude same-name directory children.
+    Each command has a two-second timeout; no raw Git stderr reaches the report.
+    """
+    report = {'status': 'ok', 'tracked': [], 'coverage': 'fixed_machine_local_installation_paths'}
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith('GIT_')}
+    env.update(GIT_OPTIONAL_LOCKS='0', GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+               GIT_TERMINAL_PROMPT='0', GIT_NO_LAZY_FETCH='1', GIT_ALLOW_PROTOCOL='', LC_ALL='C')
+    command = ['git', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-C', str(vault)]
+
+    def run(*args):
+        return subprocess.run(command + list(args), env=env, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2)
+
+    try:
+        inside = run('rev-parse', '--is-inside-work-tree')
+        if inside.returncode:
+            reason = ('not_git_repository' if b'not a git repository' in inside.stderr.lower() else 'git_error')
+            return dict(report, status='skipped' if reason == 'not_git_repository' else 'unavailable', reason=reason)
+        if inside.stdout.strip() != b'true':
+            return dict(report, status='skipped', reason='not_worktree')
+        # Checking both flags also covers an index awaiting sparse expansion after a
+        # configuration change. --bool produces only a bounded boolean, not config text.
+        for key in ('core.sparseCheckout', 'index.sparse'):
+            sparse = run('config', '--bool', '--get', key)
+            if sparse.returncode not in (0, 1):
+                return dict(report, status='unavailable', reason='git_config_error')
+            if sparse.returncode == 0 and sparse.stdout.strip() != b'false':
+                return dict(report, status='unavailable', reason='sparse_checkout_or_index')
+        pathspecs = [':(literal)' + name for name in MACHINE_LOCAL_FILES]
+        pathspecs += [':(exclude,glob)' + name + '/**' for name in MACHINE_LOCAL_FILES]
+        indexed = run('ls-files', '--cached', '--sparse', '-z', '--', *pathspecs)
+        if indexed.returncode:
+            return dict(report, status='unavailable', reason='git_index_error')
+        # Output has only fixed paths (at most three conflict stages per path).
+        limit = 3 * sum(len(name.encode('utf-8')) + 1 for name in MACHINE_LOCAL_FILES)
+        if len(indexed.stdout) > limit:
+            return dict(report, status='unavailable', reason='unexpected_index_output')
+        names = {name.decode('utf-8') for name in indexed.stdout.split(b'\0') if name}
+        if not names.issubset(MACHINE_LOCAL_FILES):
+            return dict(report, status='unavailable', reason='unexpected_index_output')
+        return dict(report, status='warning' if names else 'ok', tracked=sorted(names))
+    except FileNotFoundError:
+        return dict(report, status='skipped', reason='git_unavailable')
+    except subprocess.TimeoutExpired:
+        return dict(report, status='unavailable', reason='git_timeout')
+    except (OSError, UnicodeError, ValueError):
+        return dict(report, status='unavailable', reason='git_error')
 
 
 def _hook_arguments(command: str) -> list:
@@ -900,18 +975,25 @@ def recap_bounds_inverted(since, until):
     return first > last
 
 
-def parser(note_namespace=None):
+class ArgumentParsingError(Exception):
+    pass
+
+
+def parser(note_namespace=None, is_json=False):
     class ResultParser(argparse.ArgumentParser):
         def error(self, message):
             # argparse assigns the root command before parsing the subparser.
             # The shared namespace also covers unknown options reported by root.
             if getattr(note_namespace, 'command', None) in NOTE_JSON_COMMANDS:
                 raise NoteUsageError(message)
+            if is_json:
+                raise ArgumentParsingError(message)
             super().error(message)
 
     root = ResultParser(description=__doc__)
     root.add_argument("--vault", required=True, type=Path, help="Existing vault directory")
     root.add_argument("--state", type=Path, help="Local state directory outside the vault")
+    root.add_argument("--json", action="store_true", help="Format output as JSON")
     sub = root.add_subparsers(dest="command", required=True)
     sub.add_parser("init", help="Initialize local state; installs no hooks or services")
     sync_parser = sub.add_parser("sync", help="Reconcile Markdown sources into local state")
@@ -938,8 +1020,8 @@ def parser(note_namespace=None):
                        help="Explicit range end, inclusive: YYYY-MM-DD covers that whole local day; without "
                             "--since there is no lower bound")
     recap.set_defaults(usage_error=recap.error)  # cross-flag checks in main() report with recap's own usage
-    triage = sub.add_parser("triage", help="Vault digestion report: inbox items, stale tasks, and weekly knowledge summary")
-    triage.add_argument("--stale-days", type=int, default=14, help="Days of inactivity before an open task is considered stale (default: 14)")
+    triage = sub.add_parser("triage", help="Vault digestion report: inbox items, stale tasks/threads, and weekly knowledge summary")
+    triage.add_argument("--stale-days", type=int, default=14, help="Age threshold for open tasks and Threads ISO date mentions (default: 14)")
     triage.add_argument("--digest-days", type=int, default=7, help="Days to look back for knowledge notes and outcomes (default: 7)")
     audit_parser = sub.add_parser("audit", help="Advisory memory auditor: detect near-duplicates, staleness, and contradictions")
     audit_parser.add_argument("target", nargs="?", default=None, help="Specific markdown note to audit against vault memory (optional)")
@@ -996,6 +1078,13 @@ def parser(note_namespace=None):
                           help="Reset Hermes platform overrides to defaults")
     compact = sub.add_parser("companion-compact", help="Move older Last-Session/Threads entries verbatim into a private archive; deletes nothing")
     compact.add_argument("--dry-run", action="store_true", help="Report what would move without writing")
+    trace = sub.add_parser("chat-trace", help="Opt-in short conversation checkpoints; never saves transcripts")
+    trace.add_argument("action", choices=("status", "on", "off", "write"))
+    trace.add_argument("--harness", choices=("claude", "codex"))
+    trace.add_argument("--session", help="The 24-character Receipt session value shown by the hook")
+    trace_text = trace.add_mutually_exclusive_group()
+    trace_text.add_argument("--text", help="Explicit short summary; dated paragraph must fit 450 characters")
+    trace_text.add_argument("--file", help="UTF-8 summary file, or - for stdin")
     skill = sub.add_parser("skill-import", help="Import one explicitly chosen skill directory")
     skill.add_argument("--source", type=Path, required=True)
     skill.add_argument("--name")
@@ -1076,6 +1165,9 @@ def parser(note_namespace=None):
     learn.add_argument("--scope", default=None, help="Scope of the learning: global or project name")
     learn.add_argument("--session", default="", help="Session ID associated with candidate")
     learn.add_argument("--list", action="store_true", help="List active candidate learnings")
+    learn.add_argument("--resolve", choices=("distilled", "discarded"), default=None,
+                       help="Resolve candidates for session as distilled or discarded")
+    learn.add_argument("--all", action="store_true", help="When resolving or listing, apply across all sessions")
     ws = sub.add_parser("workspace", help="Unified workspace registry management (RFC #368 P0-C)")
     ws.add_argument("action", choices=["list", "create", "inspect", "connect", "disconnect", "archive", "unarchive", "plan", "provision"],
                     nargs="?", default="list",
@@ -1100,38 +1192,46 @@ def parser(note_namespace=None):
 def main(argv=None, return_result=False):
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8-sig")
+    args_list = list(sys.argv[1:] if argv is None else argv)
     args = argparse.Namespace()
-    argument_parser = parser(note_namespace=args)
+    argument_parser = parser(note_namespace=args, is_json="--json" in args_list)
     try:
-        args = argument_parser.parse_args(argv, namespace=args)
+        args = argument_parser.parse_args(args_list, namespace=args)
+        receipt_flags = args.command == "receipt" and any(
+            getattr(args, name) is not None for name in ("event_id", "summary", "summary_file", "ref", "link", "session"))
+        if receipt_flags:
+            if not return_result:
+                for stream in (sys.stdout, sys.stderr):
+                    if hasattr(stream, "reconfigure"):
+                        stream.reconfigure(encoding="utf-8")
+            if args.file is not None:
+                argument_parser.error("--file cannot be combined with receipt flags")
+            if args.event_id is None:
+                argument_parser.error("--event-id is required in flag mode")
+            if args.summary is not None and args.summary_file is not None:
+                argument_parser.error("use exactly one of --summary and --summary-file")
+            if args.summary is None and args.summary_file is None:
+                argument_parser.error("--summary or --summary-file is required in flag mode")
+            if not args.ref:
+                argument_parser.error("--ref is required in flag mode (at least one)")
+        if args.command == "recap":
+            # Usage errors, raised before any state is opened or synced.
+            if args.days is not None and (args.since is not None or args.until is not None):
+                args.usage_error("argument --days: not allowed with argument --since/--until")
+            if args.since is not None and args.until is not None and recap_bounds_inverted(args.since, args.until):
+                args.usage_error("argument --since: must not be after --until")
+    except ArgumentParsingError as exc:
+        error = {"error": "SystemExit", "message": str(exc)}
+        if return_result:
+            return error, 2
+        print(json.dumps(error, ensure_ascii=True), file=sys.stderr)
+        return 2
     except NoteUsageError as exc:
         result = {'status': 'usage_error', 'error': type(exc).__name__, 'message': str(exc)}
         if return_result:
             return result, 64
         print(json.dumps(result, ensure_ascii=True))
         return 64
-    receipt_flags = args.command == "receipt" and any(
-        getattr(args, name) is not None for name in ("event_id", "summary", "summary_file", "ref", "link", "session"))
-    if receipt_flags:
-        for stream in (sys.stdout, sys.stderr):
-            if hasattr(stream, "reconfigure"):
-                stream.reconfigure(encoding="utf-8")
-        if args.file is not None:
-            argument_parser.error("--file cannot be combined with receipt flags")
-        if args.event_id is None:
-            argument_parser.error("--event-id is required in flag mode")
-        if args.summary is not None and args.summary_file is not None:
-            argument_parser.error("use exactly one of --summary and --summary-file")
-        if args.summary is None and args.summary_file is None:
-            argument_parser.error("--summary or --summary-file is required in flag mode")
-        if not args.ref:
-            argument_parser.error("--ref is required in flag mode (at least one)")
-    if args.command == "recap":
-        # Usage errors, raised before any state is opened or synced.
-        if args.days is not None and (args.since is not None or args.until is not None):
-            args.usage_error("argument --days: not allowed with argument --since/--until")
-        if args.since is not None and args.until is not None and recap_bounds_inverted(args.since, args.until):
-            args.usage_error("argument --since: must not be after --until")
     try:
         vault = args.vault.expanduser().resolve()
         if not vault.is_dir():
@@ -1147,7 +1247,7 @@ def main(argv=None, return_result=False):
         if read_only_context and args.jev:
             raise ValueError("context --no-sync cannot be combined with --jev")
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
-        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "workspace", "lint", "moc") else None
+        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "workspace", "lint", "moc") else None
         store = engine.MemoryStore(state, vault, read_only=read_only_context) if engine else None
         sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
         if args.command == "bridge":
@@ -1398,6 +1498,7 @@ def main(argv=None, return_result=False):
                 result['hook_paths'] = hook_paths(vault)
             except Exception as exc:
                 result['hook_paths'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            result['tracked_machine_files'] = tracked_machine_files(vault)
             # Information only; a split or container-bound state root never raises the status.
             try:
                 result['state_location'] = state_location(vault, state)
@@ -1616,6 +1717,25 @@ def main(argv=None, return_result=False):
             if any(entry['status'] == 'compacted' for entry in result['files'].values()):
                 # Index the shorter sources and the private archive before anyone reads them.
                 result['sync'] = {'status': load_sync()(vault, state).sync().get('status')}
+        elif args.command == "chat-trace":
+            _ensure_scripts_path()
+            import beyin_v3_chat_trace as chat_trace
+            if args.action == 'write':
+                if not args.harness or not args.session or (args.text is None and args.file is None):
+                    raise ValueError('write requires --harness, --session and --text or --file')
+                text = args.text
+                if args.file is not None:
+                    if args.file == '-':
+                        text = sys.stdin.read(4097)
+                    else:
+                        with Path(args.file).open(encoding='utf-8') as handle:
+                            text = handle.read(4097)
+                result = chat_trace.write(vault, state, args.harness, args.session, text)
+            elif args.harness or args.session or args.text is not None or args.file is not None:
+                raise ValueError('summary arguments are only valid with chat-trace write')
+            else:
+                result = (chat_trace.settings(state) if args.action == 'status' else
+                          chat_trace.configure(state, args.action == 'on'))
         elif args.command in ("sync", "recover-views"):
             recover = getattr(args, "recover_views", False) or args.command == "recover-views"
             result = sync.sync(full=getattr(args, "full", False), recover_views=recover)
@@ -1658,7 +1778,44 @@ def main(argv=None, return_result=False):
             )
         elif args.command == "ingest":
             payload = read_json(args.file)
-            result = [store.ingest(record) for record in payload] if isinstance(payload, list) else store.ingest(payload)
+            if not isinstance(payload, list):
+                result = store.ingest(payload)
+            else:
+                # Each record commits in its own transaction, so a batch used to stop at the
+                # first bad item with the earlier ones already stored and nothing saying so.
+                # Validate the whole batch before the first write and keep the failing index.
+                validated = []
+                for index, record in enumerate(payload):
+                    try:
+                        validated.append(store._validate(record))
+                    except Exception as exc:
+                        exc.batch_ingest = {"failed_index": index, "written_ids": []}
+                        raise
+                # A duplicate id in the list, or one already stored with a different payload,
+                # used to commit the earlier items before ingest raised. Refuse the batch first.
+                seen = {}
+                for index, record in enumerate(validated):
+                    previous = seen.get(record["id"])
+                    if previous is not None and engine._json(previous) != engine._json(record):
+                        exc = engine.RevisionConflict("existing id; use update_task with expected revision")
+                        exc.batch_ingest = {"failed_index": index, "written_ids": []}
+                        raise exc
+                    seen[record["id"]] = record
+                with store._connect() as db:
+                    for index, record in enumerate(validated):
+                        old = db.execute("SELECT payload FROM records WHERE id=?", (record["id"],)).fetchone()
+                        if old and old[0] != engine._json(record):
+                            exc = engine.RevisionConflict("existing id; use update_task with expected revision")
+                            exc.batch_ingest = {"failed_index": index, "written_ids": []}
+                            raise exc
+                result = []
+                for index, record in enumerate(payload):
+                    try:
+                        result.append(store.ingest(record))
+                    except Exception as exc:
+                        exc.batch_ingest = {"failed_index": index,
+                                            "written_ids": [item["id"] for item in result]}
+                        raise
         elif args.command == "note-read":
             result = sync.note_read(args.source)
         elif args.command == "note-edit":
@@ -1736,10 +1893,14 @@ def main(argv=None, return_result=False):
                 payload = {"event_id": args.event_id, "summary": summary, "refs": args.ref}
                 if args.session is not None:
                     payload["session"] = args.session
+                elif os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID"):
+                    payload["session"] = hashlib.sha256((os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")).encode("utf-8")).hexdigest()[:24]
                 if args.link:
                     payload["links"] = args.link
             else:
                 payload = read_json(args.file if args.file is not None else "-")
+                if "session" not in payload and (os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")):
+                    payload["session"] = hashlib.sha256((os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")).encode("utf-8")).hexdigest()[:24]
             result = sync.receipt(payload["event_id"], payload["summary"],
                                           payload["refs"], args.harness, session=payload.get('session'),
                                           links=payload.get('links'))
@@ -1758,14 +1919,24 @@ def main(argv=None, return_result=False):
                                  ensure_ascii=True), file=sys.stderr)
         elif args.command == "learn":
             _ensure_scripts_path()
-            from beyin_v3_learning import stage_candidate, list_candidates
-            sess = args.session or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID") or "cli"
-            if args.candidate:
+            from beyin_v3_learning import stage_candidate, list_candidates, resolve_candidates
+            env_session = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("BEYIN_V3_SESSION_ID")
+            sess = args.session or (hashlib.sha256(env_session.encode("utf-8")).hexdigest()[:24]
+                                    if env_session else "cli")
+            if getattr(args, "all", False):
+                target_sess = None
+            else:
+                target_sess = sess
+            if args.resolve:
+                count = resolve_candidates(state, session=target_sess, target_status=args.resolve)
+                result = {"status": "succeeded", "resolved_count": count, "session": target_sess, "target_status": args.resolve}
+            elif args.candidate:
                 result = stage_candidate(state, sess, args.candidate, source=args.source, scope=args.scope or "global")
             elif args.list:
-                result = {"candidates": list_candidates(state, session=args.session or None, scope=args.scope)}
+                list_sess = None if getattr(args, "all", False) else (args.session or None)
+                result = {"candidates": list_candidates(state, session=list_sess, scope=args.scope)}
             else:
-                raise ValueError("either --candidate or --list is required")
+                raise ValueError("one of --candidate, --list, or --resolve is required")
         elif args.command == "workspace":
             _ensure_scripts_path()
             import beyin_v3_workspaces as workspaces
@@ -1804,7 +1975,15 @@ def main(argv=None, return_result=False):
     except Exception as exc:
         # No traceback or raw input dump: callers retain their local source files.
         error = {"error": type(exc).__name__, "message": str(exc)}
+        # A record that raised after validating a batch still reports which index failed and
+        # what was already written; the error name and message keep their existing shape.
+        batch = getattr(exc, "batch_ingest", None)
+        if isinstance(batch, dict):
+            error.update(batch)
         code = 1
+        if isinstance(exc, ArgumentParsingError):
+            error["error"] = "SystemExit"
+            code = 2
         if args.command in NOTE_JSON_COMMANDS:
             from beyin_v3_notes import NoteConflict, NotePartialWrite
             code = 2 if isinstance(exc, NoteConflict) else 1

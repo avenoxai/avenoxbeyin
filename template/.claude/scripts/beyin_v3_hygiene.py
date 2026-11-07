@@ -187,11 +187,10 @@ def save_inbox_settings(state, changes):
             out.write('\n'); out.flush(); os.fsync(out.fileno())
         os.replace(temporary, state / INBOX_SETTINGS_FILE)
     finally:
-        if os.path.exists(temporary):
-            try:
-                os.unlink(temporary)
-            except OSError:
-                pass
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
     return result
 
 
@@ -226,11 +225,10 @@ def save_settings(state, changes):
             out.write('\n'); out.flush(); os.fsync(out.fileno())
         os.replace(temporary, state / SETTINGS_FILE)
     finally:
-        if os.path.exists(temporary):
-            try:
-                os.unlink(temporary)
-            except OSError:
-                pass
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
     return result
 
 
@@ -357,11 +355,12 @@ def _shallow_newest(folder, cutoff=None):
     return newest
 
 
-def edited_paths(payload):
+def edited_paths(payload, limit=5, include_deleted=False):
     """Vault candidates from one PostToolUse payload: Claude file_path/path, Codex apply_patch headers.
 
     Codex reports apply_patch as tool_input.command with the patch text; its file
-    headers are relative to the session cwd. At most five paths, in order.
+    headers are relative to the session cwd. At most `limit` paths when bounded, in order.
+    Deleted paths are opt-in: they prove an edit, but not a surviving knowledge note.
     """
     tool_input = payload.get('tool_input')
     if not isinstance(tool_input, dict):
@@ -371,6 +370,8 @@ def edited_paths(payload):
     command = tool_input.get('command')
     if isinstance(command, str) and '*** Begin Patch' in command:
         found += PATCH_PATHS.findall(command)
+        if include_deleted:
+            found += re.findall(r'(?m)^\*\*\* Delete File: (.+?)\s*$', command)
     cwd = payload.get('cwd')
     base = Path(cwd) if isinstance(cwd, str) and cwd.strip() and Path(cwd).is_absolute() else None
     paths = []
@@ -382,7 +383,7 @@ def edited_paths(payload):
             path = base / path
         if path not in paths:
             paths.append(path)
-    return paths[:5]
+    return paths[:limit] if limit is not None else paths
 
 
 def _vault_relative(vault, path):
@@ -555,7 +556,7 @@ def touch_log(state, vault, payload):
         return
     companions = companion_names(vault, state)
     rows = []
-    for path in edited_paths(payload):
+    for path in edited_paths(payload, limit=None):
         relative = _vault_relative(vault, path)
         if relative is None or '/' not in relative or _excluded(relative, companions):
             continue  # a root-level file has no folder to promote
@@ -747,18 +748,23 @@ def _inbox_folder(name, configured):
 
 def _capture_time(path):
     """When a note was captured: a valid frontmatter `created` date, else the file mtime; None for a
-    processed yakala card (`tur: yakala`, `durum: islendi`), which no longer waits.
+    processed yakala card (`tur: yakala`, `durum: islendi`), or index note (`type: index` / `Inbox.md`),
+    which no longer waits (#469).
 
     A clone, a sync client or a restore rewrites mtimes, so a week-old capture would read as new;
     the note's own date survives that. A missing or malformed date falls back to the mtime.
     """
+    if fold(path.stem) in ('inbox', 'index', 'gelenkutusu'):
+        return None
     modified = path.stat().st_mtime
     try:
         with path.open(encoding='utf-8', errors='replace') as handle:
             head = handle.read(4096)
     except OSError:
         return modified
-    values = _front_values(head, ('created', 'tur', 'durum', 'yakalandi'))
+    values = _front_values(head, ('created', 'tur', 'durum', 'yakalandi', 'type', 'kind'))
+    if values.get('type') == 'index' or values.get('kind') == 'index' or values.get('tur') == 'indeks':
+        return None
     if values.get('tur') == 'yakala' and values.get('durum') == 'islendi':
         return None  # a capture card the agent already processed is no longer waiting
     created = values.get('created') or (values.get('yakalandi', '') if values.get('tur') == 'yakala' else '')

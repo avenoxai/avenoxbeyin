@@ -47,6 +47,10 @@ class EntryStdoutContractTest(unittest.TestCase):
                     self.assertEqual(code, 2, stderr)
                     self.assertEqual(stdout, b'')
                     self.assertIn(message, stderr)
+                    if mode == '--json':
+                        error = json.loads(stderr)
+                        self.assertEqual(error['error'], 'SystemExit')
+                        self.assertEqual(error['message'], message)
         self.assertEqual((snapshot(self.vault), snapshot(self.state)), before)
 
     def test_failed_command_exits_1_with_the_error_on_stderr_and_an_empty_stdout(self):

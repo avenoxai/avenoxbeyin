@@ -142,7 +142,7 @@ def validate_package(package):
             if PurePosixPath(name).is_absolute() or '..' in PurePosixPath(name).parts or '\\' in name or stat.S_ISLNK(entry.external_attr >> 16):
                 raise ValueError('unsafe archive entry')
         manifest = json.loads(archive.read('manifest.json'))
-        if manifest.get('schema') != 1 or manifest.get('runtime_schema', 1) != 1 or not isinstance(manifest.get('files'), dict):
+        if not isinstance(manifest, dict) or manifest.get('schema') != 1 or manifest.get('runtime_schema', 1) != 1 or not isinstance(manifest.get('files'), dict):
             raise ValueError('unsupported package schema')
         version(manifest.get('version'))
         if manifest.get('migrations', []) not in ([], ['v2-cutover']):

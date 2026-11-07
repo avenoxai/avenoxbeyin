@@ -15,8 +15,11 @@ BUILDER = ROOT / 'scripts/build_v3_release.py'
 
 def windows_runtime_env():
     """Variables Windows needs even in a cleared test environment. Without SYSTEMROOT,
-    ssl.SSLContext() fails on Python 3.14 (OpenSSL 3.5): '[SSL] unknown error (0xa080024)'."""
-    return {key: os.environ[key] for key in ('SYSTEMROOT', 'WINDIR') if key in os.environ}
+    ssl.SSLContext() fails on Python 3.14 (OpenSSL 3.5): '[SSL] unknown error (0xa080024)'.
+    Without SystemDrive and ProgramData, Windows COM/Shell runtimes leak literal '%SystemDrive%'
+    directories into cwd when resolving shell caches."""
+    keys = ('SYSTEMROOT', 'WINDIR', 'SystemDrive', 'ProgramData', 'SYSTEMDRIVE', 'PROGRAMDATA')
+    return {key: os.environ[key] for key in keys if key in os.environ}
 
 
 # Every BEYIN_* variable is a user setting or a hook flag (BEYIN_V3_SKIP, BEYIN_JEV_DISABLE,

@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from v3_package_helpers import install, isolated_env, run_python
 from v3_transaction_root_test import link_directory
@@ -21,6 +22,10 @@ ROOT = Path(os.environ.get("BEYIN_TEST_REPO", Path(__file__).resolve().parents[1
 SPEC = importlib.util.spec_from_file_location("beyin_v3_cli_under_test", ROOT / "scripts/beyin_v3.py")
 CLI = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CLI)
+CORE_SPEC = importlib.util.spec_from_file_location(
+    "state_location_core_under_test", ROOT / "template/.claude/scripts/beyin_v3.py")
+CORE = importlib.util.module_from_spec(CORE_SPEC)
+CORE_SPEC.loader.exec_module(CORE)
 
 SEP = chr(92)
 CONTAINER = "C:" + SEP + "Users" + SEP + "ada" + SEP + "AppData" + SEP + "Local" + SEP + "Packages" + SEP + "Client_pzs8sxrjxfjjc" + SEP + "LocalCache" + SEP + "Local" + SEP + "beyin-v3" + SEP + "ab12"
@@ -191,6 +196,43 @@ class StateLocationTest(unittest.TestCase):
         self.assertEqual(report["pinned_state"], invalid)
         self.assertIn("invalid_state_path", self.codes(report))
         self.assertFalse(report["installed_at_pinned_state"])
+
+    def test_invalid_pin_falls_back_even_when_resolve_accepts_it(self):
+        # Windows 3.13 non-strict realpath can return a NUL-containing path unchanged.
+        invalid = self.state / "bad\0state"
+        self.pin(str(invalid))
+        original = Path.resolve
+
+        def nonstrict(path, *args, **kwargs):
+            return path if path == invalid else original(path, *args, **kwargs)
+
+        for resolve in (CLI.resolve_state, CORE.resolve_state):
+            with self.subTest(resolve=resolve.__module__), \
+                    patch.object(Path, "resolve", nonstrict), \
+                    patch.dict(os.environ, isolated_env(self.state.parent / "home"), clear=True):
+                expected = CLI.default_state(self.vault).resolve()
+                self.assertEqual(resolve(self.vault, invalid), expected)
+                report = self.report()
+                self.assertEqual(self.codes(report), ["invalid_state_path"])
+                self.assertIsNone(report["pinned_resolves_here_to"])
+
+    def test_invalid_pin_stat_error_is_reported_but_missing_state_is_allowed(self):
+        candidate = self.state / "not-created"
+        self.pin(str(candidate))
+        original = Path.stat
+
+        def invalid_stat(path, *args, **kwargs):
+            if path == candidate:
+                raise OSError(22, "invalid state path")
+            return original(path, *args, **kwargs)
+
+        for resolve in (CLI.resolve_state, CORE.resolve_state):
+            with self.subTest(resolve=resolve.__module__), \
+                    patch.dict(os.environ, isolated_env(self.state.parent / "home"), clear=True):
+                self.assertEqual(resolve(self.vault, candidate), candidate.resolve())
+                with patch.object(Path, "stat", invalid_stat):
+                    self.assertEqual(resolve(self.vault, candidate), CLI.default_state(self.vault).resolve())
+                    self.assertEqual(self.codes(self.report()), ["invalid_state_path"])
 
     def test_installed_doctor_and_hook_keep_the_invalid_pin_fallback(self):
         home = self.state.parent / "home"
