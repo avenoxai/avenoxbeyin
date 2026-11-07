@@ -157,6 +157,17 @@ def _receipt_lf(text):
     return text.replace('\r\n', '\n').replace('\r', '\n')
 
 
+def _receipt_same_summary(indexed, summary):
+    """Replay identity against an indexed summary, ignoring CRLF/CR/LF spelling.
+
+    V3.12 and older read a CRLF checkout (core.autocrlf) by dropping only the
+    final LF, so the index kept a trailing CR no writer sent. That one final
+    CR may be absent from a replay; any other text difference still conflicts.
+    """
+    summary = _receipt_lf(summary)
+    return _receipt_lf(indexed) == summary or (indexed.endswith('\r') and _receipt_lf(indexed[:-1]) == summary)
+
+
 def _json(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -1175,7 +1186,8 @@ class MemoryStore:
             old = db.execute("SELECT payload FROM receipts WHERE id=?", (event_id,)).fetchone()
             if old:
                 previous = json.loads(old[0])
-                if (_receipt_lf(previous["summary"]), previous["refs"], previous.get("links")) != (summary, event["refs"], event.get("links")):
+                if (not _receipt_same_summary(previous["summary"], summary) or
+                        (previous["refs"], previous.get("links")) != (event["refs"], event.get("links"))):
                     raise ReceiptConflict("event_id reused with different payload")
                 event = previous
             db.execute("INSERT OR IGNORE INTO receipts VALUES (?,?)", (event_id, payload))

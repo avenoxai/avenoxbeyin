@@ -265,6 +265,27 @@ class ReceiptNewlineIdentityTest(unittest.TestCase):
             self.assertIn(b'Flat result', view.read_bytes())
         self.assert_clean(self.cli('sync', '--full'))
 
+    def test_released_reader_trailing_cr_replays_as_same_receipt(self):
+        # V3.12 read a CRLF checkout (core.autocrlf) by dropping only the final LF.
+        first = self.receipt(summary='İlk satır\nİkinci satır')
+        source = self.vault / first['source']
+        source.write_bytes(source.read_bytes().replace(b'\n', b'\r\n'))
+        with closing(sqlite3.connect(self.state / 'memory.sqlite3')) as db:
+            old = self.saved()
+            old['summary'] = 'İlk satır\r\nİkinci satır\r'
+            db.execute('UPDATE receipts SET payload=? WHERE id=?', (json.dumps(old), 'r1'))
+            db.commit()
+        indexed, before = self.saved(), source.read_bytes()
+        self.receipt(summary='İlk satır\nİkinci satır', harness='codex')
+        self.receipt(summary='İlk satır\r\nİkinci satır\r\n')
+        self.assertEqual(source.read_bytes(), before)
+        self.assertEqual(self.saved(), indexed)
+        for summary in ('İlk satır\nİkinci satır.', 'İlk satır\nİkinci satır\n\n', 'İlk satır\nİkinci satır '):
+            with self.subTest(summary=summary):
+                result = self.cli('receipt', payload={'event_id': 'r1', 'summary': summary, 'refs': ['notes/a.md']}, ok=False)
+                self.assertIn(b'event id collision', result.stderr)
+        self.assert_clean(self.cli('sync', '--full'))
+
     WITHHELD = b'[summary withheld: the receipt refers to a private or untrusted source]'
 
     def seed_released(self, ref='notes/a.md'):

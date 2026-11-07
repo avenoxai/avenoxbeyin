@@ -20,7 +20,7 @@ _MODULE_DIR = str(Path(__file__).resolve().parent)
 if _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
-from beyin_v3 import (HARNESSES, MAX_RECEIPT_LINKS, REJECTED_AT, RETIRED_STATUSES, MemoryStore, ReceiptConflict, RevisionConflict, _json, _receipt_lf,
+from beyin_v3 import (HARNESSES, MAX_RECEIPT_LINKS, REJECTED_AT, RETIRED_STATUSES, MemoryStore, ReceiptConflict, RevisionConflict, _json, _receipt_lf, _receipt_same_summary,
                       _path_redirected, _plain_link, _rejected_inference, _status_word, rejected_dependents, resolve_supersedes)
 from beyin_v3_index import applied_keys, dir_key, exclusions as index_exclusions, prune as prune_excluded
 from beyin_v3_hygiene import sensitive_excluded, sensitive_source
@@ -924,7 +924,8 @@ class SyncEngine:
                     row = db.execute('SELECT payload FROM receipts WHERE id=?', (event['event_id'],)).fetchone()
                     if row:
                         previous = json.loads(row[0])
-                        if (_receipt_lf(previous['summary']), previous['refs'], previous.get('links')) != (_receipt_lf(event['summary']), event['refs'], event.get('links')):
+                        if (not _receipt_same_summary(previous['summary'], event['summary']) or
+                                (previous['refs'], previous.get('links')) != (event['refs'], event.get('links'))):
                             raise ReceiptConflict('event id collision during recovery')
                     db.execute('INSERT OR IGNORE INTO receipts VALUES (?,?)', (event['event_id'], _json(event)))
                 completed.append(entry)
@@ -1479,7 +1480,7 @@ class SyncEngine:
                 row = (_json(old),)
             if row:
                 old = json.loads(row[0])
-                if _receipt_lf(old['summary']) != summary or old['refs'] != refs or old.get('links', []) != links:
+                if not _receipt_same_summary(old['summary'], summary) or old['refs'] != refs or old.get('links', []) != links:
                     raise ReceiptConflict('event id collision')
                 event = old
                 summary = old['summary']  # Preserve legacy source bytes and first-writer attribution.

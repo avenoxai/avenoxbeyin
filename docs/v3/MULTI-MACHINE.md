@@ -367,6 +367,7 @@ Bu kontrol [#205](https://github.com/avenoxai/avenoxbeyin/issues/205) için ekle
 Git for Windows varsayılanı `core.autocrlf=true`, `.gitattributes` ile sabitlenmeyen
 receipt dosyalarını CRLF olarak çıkarabilir. Güncel motor yeni özetleri LF ile yazar,
 CRLF/CR/LF farkını aynı receipt kabul eder ve eski kaynak dosyayı yeniden yazmaz.
+3.12.0 ve öncesinin CRLF çıkışını okurken indekste bıraktığı son CR de aynı receipt sayılır.
 Gerçek özet, refs veya links değişiklikleri hâlâ çakışmadır. Eski istemcilerde
 satır sonu farkı `event id collision` hatasına yol açabilir.
 
