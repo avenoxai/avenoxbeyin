@@ -870,7 +870,10 @@ def main():
                                 low, fitting = trial, candidate
                             else:
                                 high = trial
-                        limit, text = low, fitting
+                        if low:
+                            # Without any fitting trial (a notice alone over the cap) the
+                            # last render stays and the client guard trims it, as before.
+                            limit, text = low, fitting
             else:
                 # Per-turn automatic context is strict: only meaningful lexical matches are
                 # injected, and an empty match injects nothing at all instead of a receipt
