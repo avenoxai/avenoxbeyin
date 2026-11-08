@@ -73,6 +73,42 @@ class AutoContextTest(unittest.TestCase):
         path = self.state / 'jev-calls.jsonl'
         return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()] if path.exists() else []
 
+    def test_nullable_titles_are_empty_bounded_and_do_not_mutate_records(self):
+        for i, title in enumerate((None, '', 'Başlık ' * 40, 123)):
+            with self.subTest(title=title):
+                ident = 'nullable-' + str(i)
+                source = ident + '.md'
+                text = 'Quartz deploy steps: push to main, the site server pulls.'
+                (self.vault / source).write_text(text, encoding='utf-8')
+                record = dict(id=ident, title=title, text='Quartz deploy steps: push to main, the site server pulls.',
+                              source=source)
+                self.store.ingest(record)
+                self.config()
+                calls = []
+                def transport(url, body, key, timeout):
+                    calls.append(body)
+                    return {'answers': {q: {'type': 'noul', 'noul': 0.9}
+                                        for q in body['questions']}}
+                self.filtered(transport=transport)
+                notes = list(calls[-1]['state']['notes'].values())
+                self.assertIn(str(title or '')[:160], [n['title'] for n in notes])
+                self.assertNotIn('None', [n['title'] for n in notes])
+                indexed = {r['id']: r for r in self.store.candidates(QUERY)}
+                self.assertEqual(indexed[ident]['title'], title)
+
+    def test_missing_title_is_empty_in_auto_card(self):
+        text = 'Quartz deploy the site with no explicit title.'
+        (self.vault / 'missing.md').write_text(text, encoding='utf-8')
+        self.store.ingest(dict(id='missing', text=text, source='missing.md'))
+        self.config()
+        calls = []
+        def transport(url, body, key, timeout):
+            calls.append(body)
+            return {'answers': {q: {'type': 'noul', 'noul': 0.9} for q in body['questions']}}
+        self.filtered(transport=transport)
+        notes = list(calls[-1]['state']['notes'].values())
+        self.assertEqual(sum(n['title'] == '' for n in notes), 1)
+
     def test_strict_matcher_misses_the_one_word_match(self):
         self.assertEqual(sorted(self.ids(self.local())), ['deploy', 'pricing'])
 
