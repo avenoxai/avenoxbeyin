@@ -1,7 +1,7 @@
-"""#610: companion files Claude Code already loads through CLAUDE.md @imports are not repeated.
+"""Import references do not prove client delivery or permit dropping companion context.
 
-Real temporary files only. A path the hook cannot verify as loaded keeps its source in the
-opening: a duplicate is cheaper than a lost rule.
+Real temporary files only; no Claude process or live instruction-loading claim. The parser
+remains a diagnostic helper, while openings keep their normal source and budget gates.
 """
 import io
 import json
@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 from v3_package_helpers import inherited_env
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get('BEYIN_TEST_REPO', Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
 import beyin_v3 as runtime
 import beyin_v3_companion as companion
@@ -72,7 +72,7 @@ class ClientImportsTest(unittest.TestCase):
     def rules_path(self):
         return f'{DIRECTORY}/Kurallar.md'
 
-    def test_symlinked_imports_from_the_issue_are_loaded(self):
+    def test_symlinked_imports_from_the_issue_are_detected(self):
         self.seed()
         self.link('.claude/core.md', f'../{DIRECTORY}/Core.md')
         self.link('.claude/kurallar.md', f'../{DIRECTORY}/Kurallar.md')
@@ -182,55 +182,56 @@ class ClientImportsTest(unittest.TestCase):
         self.assertIn('projects/Alfa/Kurallar.md', self.imports(cwd=self.vault / 'projects/Alfa'))
         self.assertNotIn('projects/Alfa/Kurallar.md', self.imports())
 
-    def test_opening_replaces_imported_sources_with_a_pointer(self):
+    def test_import_candidates_cannot_replace_source_text_or_change_allocation(self):
         self.seed()
-        escaped = DIRECTORY.replace(' ', '\\ ')
+        escaped = DIRECTORY.replace(' ', chr(92) + ' ')
         self.write('CLAUDE.md', f'@./{escaped}/Kurallar.md\n@./{escaped}/Core.md\n')
         loaded = companion.client_imports(self.vault, 'claude', self.vault)
-        report = {}
-        text = companion.context(self.store, 7500, 's' * 24, 'claude', report=report, loaded=loaded)
-        self.assertLessEqual(len(text), 7500)
-        for rule in self.rules:
-            self.assertNotIn(rule, text)
-        self.assertNotIn('CORE_CANARY', text)
-        self.assertIn(f'[{self.rules_path()}]\n[Loaded in full by CLAUDE.md {POINTER}', text)
-        self.assertIn(f'[{DIRECTORY}/Core.md]\n[Loaded in full by CLAUDE.md {POINTER}', text)
-        self.assertNotIn('opens clipped', text)
-        self.assertEqual(report['Kurallar.md']['imported'], True)
-        self.assertFalse(report['Kurallar.md']['clipped'])
-        # The room the second copy took goes to the open topics and the handoff.
-        without = companion.context(self.store, 7500, 's' * 24, 'claude')
-        shown = sum(f'ADIM_{i}' in text for i in range(14))
-        self.assertEqual(shown, 14)
-        self.assertGreater(len([i for i in range(14) if f'Konu {i}\n**Durum:** DURUM_{i} hazır.\n**Sonraki adım:**'
-                                f' ADIM_{i} çalıştır.\n\nGeçmiş' in text]),
-                           len([i for i in range(14) if f'ADIM_{i} çalıştır.\n\nGeçmiş' in without]))
-        self.assertIn('KART_B', text)
+        self.assertIn(companion.file_key(self.vault / self.rules_path()), loaded)
+        originals = {p: p.read_bytes() for p in self.vault.rglob('*.md')}
+        for harness in ('claude', 'codex', 'hermes', 'antigravity', 'opencode', 'omp', 'kiro', 'pi'):
+            for budget in (0, 1, 200, 1000, 5000, 7500, 9500, 24000):
+                with self.subTest(harness=harness, budget=budget):
+                    report, baseline_report = {}, {}
+                    text = companion.context(self.store, budget, 's' * 24, harness,
+                                             report=report, loaded=loaded)
+                    baseline = companion.context(self.store, budget, 's' * 24, harness,
+                                                 report=baseline_report)
+                    self.assertEqual(text, baseline)
+                    self.assertEqual(report, baseline_report)
+                    self.assertLessEqual(len(text), budget)
+                    self.assertNotIn('Loaded in full', text)
+                    self.assertNotIn('imported', report.get('Kurallar.md', {}))
+                    if budget >= 7500:
+                        for rule in self.rules:
+                            self.assertIn(rule, text)
+                        self.assertIn('CORE_CANARY', text)
+        self.assertEqual({p: p.read_bytes() for p in originals}, originals)
 
-    def run_hook(self, cwd, harness='claude'):
-        payload = dict(hook_event_name='SessionStart', session_id='imports-' + harness, cwd=str(cwd))
+    def run_hook(self, cwd, harness='claude', event='SessionStart', **extra):
+        payload = dict(hook_event_name=event, session_id='imports-' + harness, cwd=str(cwd), **extra)
         output = io.StringIO()
         argv = ['hook', '--vault', str(self.vault), '--state', str(self.store.state_dir), '--harness', harness]
         with patch.object(sys, 'argv', argv), patch.object(sys, 'stdin', io.StringIO(json.dumps(payload))), \
                 patch.object(sys, 'stdout', output), \
                 patch.dict(os.environ, inherited_env(BEYIN_V3_NO_SPAWN='1', BEYIN_UPDATES_OFF='1'), clear=True):
             hook.main()
-        text = json.loads(output.getvalue())['hookSpecificOutput']['additionalContext']
+        result = json.loads(output.getvalue())
+        text = (result['injectSteps'][0]['ephemeralMessage'] if harness == 'antigravity' else
+                result['hookSpecificOutput']['additionalContext'])
         cap = companion.CLIENT_TEXT_LIMITS.get(harness)
         if cap:
             self.assertLessEqual(companion.client_size(harness, text), cap[0])
         return text
 
-    def test_session_start_hook_skips_imported_rules_only_where_claude_loads_them(self):
+    def test_session_start_keeps_sources_even_with_valid_import_aliases(self):
         self.seed()
         companion.save_context(self.store.state_dir, 9500)
         self.link('.claude/kurallar.md', f'../{DIRECTORY}/Kurallar.md')
         self.write('CLAUDE.md', '# Vault\n@.claude/kurallar.md\n')
         text = self.run_hook(self.vault)
-        self.assertNotIn(self.rules[0], text)
-        self.assertIn(POINTER, text)
-        for i in range(14):
-            self.assertIn(f'ADIM_{i}', text)
+        self.assertIn(self.rules[0], text)
+        self.assertNotIn(POINTER, text)
         # Codex does not read CLAUDE.md: its opening keeps the rules.
         codex = self.run_hook(self.vault, harness='codex')
         self.assertIn(self.rules[0], codex)
@@ -256,17 +257,83 @@ class ClientImportsTest(unittest.TestCase):
                 self.assertNotIn(POINTER, text)
         self.write('CLAUDE.md', f'# Vault\n@./{escaped}/Kurallar.md\n')
         text = self.run_hook(self.vault)
-        self.assertNotIn(self.rules[0], text)
-        self.assertIn(POINTER, text)
+        self.assertIn(self.rules[0], text)
+        self.assertNotIn(POINTER, text)
 
-    def test_doctor_rules_opening_reports_imported_rules(self):
+    def test_doctor_reports_actual_allocation_not_inferred_import_delivery(self):
+        self.seed()
+        baseline = companion.rules_opening(self.store, 1000)
+        self.assertTrue(baseline['clipped'])
+        self.write('CLAUDE.md', f'@./{DIRECTORY.replace(" ", chr(92) + " ")}/Kurallar.md\n')
+        rules = companion.rules_opening(self.store, 1000)
+        self.assertEqual(rules, baseline)
+        self.assertNotIn('imported', rules)
+
+    def test_claude_excludes_do_not_suppress_independently_available_rules(self):
         self.seed()
         self.write('CLAUDE.md', f'@./{DIRECTORY.replace(" ", chr(92) + " ")}/Kurallar.md\n')
-        rules = companion.rules_opening(self.store, 5000)
-        self.assertTrue(rules['imported'])
-        self.assertFalse(rules['clipped'])
-        (self.vault / 'CLAUDE.md').write_text('# no imports\n', encoding='utf-8')
-        self.assertNotIn('imported', companion.rules_opening(self.store, 5000))
+        # The documented Claude setting excludes this instruction file, not the
+        # independently indexed companion source. No live Claude loading is asserted.
+        for settings in ('settings.json', 'settings.local.json'):
+            with self.subTest(settings=settings):
+                self.write('.claude/' + settings,
+                           json.dumps({'claudeMdExcludes': [str(self.vault / 'CLAUDE.md')]}))
+                text = self.run_hook(self.vault)
+                self.assertIn(self.rules[0], text)
+                self.assertNotIn(POINTER, text)
+                self.assertNotIn('imported', companion.rules_opening(self.store, 5000))
+
+    def test_all_clients_keep_sources_at_start_resume_compact_and_continuity(self):
+        self.seed()
+        companion.save_context(self.store.state_dir, 9500)
+        self.write('CLAUDE.md', f'@./{DIRECTORY.replace(" ", chr(92) + " ")}/Kurallar.md\n')
+        for harness in ('claude', 'codex', 'hermes', 'antigravity', 'opencode', 'omp', 'kiro', 'pi'):
+            for source in ('startup', 'resume', 'compact'):
+                with self.subTest(harness=harness, source=source):
+                    text = self.run_hook(self.vault, harness, source=source)
+                    self.assertIn(self.rules[0], text)
+                    self.assertNotIn(POINTER, text)
+            with self.subTest(harness=harness, event='UserPromptSubmit'):
+                text = self.run_hook(self.vault, harness, event='UserPromptSubmit',
+                                     prompt='Where did we leave off?')
+                self.assertIn(self.rules[0], text)
+                self.assertNotIn(POINTER, text)
+
+    def test_opening_and_doctor_do_not_scan_unverified_client_imports(self):
+        self.seed()
+        with patch.object(companion, 'client_imports', side_effect=AssertionError('not load evidence')) as scan:
+            self.assertIn(self.rules[0], self.run_hook(self.vault))
+            self.assertIn(self.rules[0], self.run_hook(self.vault, event='UserPromptSubmit',
+                                                    prompt='Where did we leave off?'))
+            self.assertNotIn('imported', companion.rules_opening(self.store, 5000))
+            scan.assert_not_called()
+
+    def test_import_candidates_do_not_bypass_privacy_trust_or_freshness(self):
+        self.seed()
+        for filename, fields in (('Core.md', {'visibility': 'private'}),
+                                 ('Soul.md', {'trust': 'untrusted'})):
+            source = f'{DIRECTORY}/{filename}'
+            text = filename.upper() + '_HIDDEN_CANARY'
+            path = self.vault / source
+            path.write_text('---\n' + json.dumps(fields) + '\n---\n' + text, encoding='utf-8')
+            with self.store._connect() as db:
+                db.execute('DELETE FROM records WHERE id=?', (source,))
+            self.store.ingest(dict(id=source, source=source, text=text, kind='note', status='active',
+                                   updated_at='2026-11-01T00:00:00Z', **fields))
+        (self.vault / DIRECTORY / 'Last-Session.md').write_text('CHANGED_HANDOFF_CANARY')
+        escaped = DIRECTORY.replace(' ', chr(92) + ' ')
+        self.write('CLAUDE.md', ''.join(f'@./{escaped}/{name}\n' for name in companion.NAMES))
+        loaded = companion.client_imports(self.vault, 'claude', self.vault)
+        for harness in ('claude', 'codex', 'hermes', 'antigravity', 'opencode', 'omp', 'kiro', 'pi'):
+            with self.subTest(harness=harness):
+                text = companion.context(self.store, 9500, 's' * 24, harness, loaded=loaded)
+                for canary in ('CORE.MD_HIDDEN_CANARY', 'SOUL.MD_HIDDEN_CANARY',
+                               'CHANGED_HANDOFF_CANARY', 'KART_A', 'KART_B'):
+                    self.assertNotIn(canary, text)
+                self.assertIn(self.rules[0], text)
+                self.assertNotIn(POINTER, text)
+                self.assertIn('Missing/unavailable companion sources', text)
+                self.assertIn('Changed companion sources excluded', text)
 
 
 if __name__ == '__main__':
