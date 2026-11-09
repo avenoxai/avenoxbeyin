@@ -1696,6 +1696,16 @@ def _write_raw(path, text, encoding='utf-8', newline='\n'):
         path.write_text(text, encoding=encoding, newline=newline)
 
 
+def _extracted_unicode(text):
+    """Keep Unicode scalars; combine adjacent UTF-16 pairs and visibly replace lone halves.
+
+    Do not guess where a Markdown marker belonged between separated surrogate halves.
+    """
+    if not isinstance(text, str) or not re.search(r'[\ud800-\udfff]', text):
+        return text
+    return text.encode('utf-16-le', 'surrogatepass').decode('utf-16-le', 'replace')
+
+
 def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
     vault = Path(vault)
     found = tools()
@@ -1715,7 +1725,15 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
             info = {}
             text, method, note = extract(vault, card, found, allow_audio, info)
         except Exception as exc:  # one broken source must not stop the queue
-            text, method, note, info = None, None, type(exc).__name__ + ': ' + str(exc)[:200], {}
+            text, method, note, info = None, None, type(exc).__name__ + ': ' + _extracted_unicode(str(exc))[:200], {}
+        cleaned = _extracted_unicode(text)
+        clean_info = {key: _extracted_unicode(value) for key, value in info.items()}
+        clean_note = _extracted_unicode(note)
+        if cleaned != text or clean_info != info or clean_note != note:
+            notice = 'Kaynakta gecersiz Unicode bulundu; eslesmeyen karakterler � ile degistirildi.'
+            clean_info['uyari'] = ' '.join(filter(None, (clean_info.get('uyari'), notice)))
+            clean_note = ' '.join(filter(None, (clean_note, notice)))
+        text, info, note = cleaned, clean_info, clean_note
         entry = {'id': card['id'], 'kart': card['path'].relative_to(vault).as_posix(),
                  'kaynak_turu': meta.get('kaynak_turu'), 'baslik': meta.get('baslik'),
                  'neden': _section(body, 'Neden'), 'url': meta.get('url')}
@@ -1753,7 +1771,7 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
                                             'Tam metin ham dosyaya tasindi: `' + raw.relative_to(vault).as_posix() + '`')
                 meta.update(durum='cikarildi', yontem=method, ham=raw.relative_to(vault).as_posix())
                 meta.pop('hata', None)
-                for key in ('dil', 'altyazi', 'uyari'):  # only the video path reports these; a rerun replaces its own
+                for key in ('dil', 'altyazi', 'uyari'):  # extraction warnings/language; a rerun replaces its own
                     if key in info:
                         meta.pop(key, None)
                         if info[key]:
