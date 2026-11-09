@@ -950,7 +950,18 @@ def rules_opening(store, budget, receipt=''):
     The hook's own code path with a session id of the same length, so the numbers are the
     hook's. While the rules are clipped, share is the largest rule text (without its reasons
     when reasons_omitted) that would arrive whole beside the other companion files as they
-    are now. None without a rules section."""
+    are now. A stale marker when eligible rules were excluded; None otherwise."""
     report = {}
     context(store, budget, '0' * 24, 'claude', receipt=receipt, report=report)
-    return report.get('Kurallar.md')
+    rules = report.get('Kurallar.md')
+    if rules is not None:
+        return rules
+    target = directory(store.vault_root)
+    if target is not None:
+        # Use the same privacy, trust and freshness gates; never infer rules from
+        # other stale companions or read excluded content into the diagnostic.
+        snapshot = store.source_snapshot(['Kurallar.md'], budget_chars=0,
+                                         source_directory=target.relative_to(store.vault_root).as_posix())
+        if snapshot['stale_excluded']:
+            return {'stale': True}
+    return None
