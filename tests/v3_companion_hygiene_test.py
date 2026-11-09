@@ -525,6 +525,8 @@ class HygieneCliTest(unittest.TestCase):
         for text in (skill, installer, router, starter):
             text = ' '.join(text.split())
             self.assertIn(heading, text)
+            self.assertIn('kartı yazdığın turdaki hook bağlamının `now=`', text)
+            self.assertIn('yerel sistem saatini oku, tahmin etme', text)
             self.assertIn('kendi kartını', text)
         for text in (skill, installer, router):
             text = ' '.join(text.split())
