@@ -56,15 +56,21 @@ class NoteReviewTest(unittest.TestCase):
         # Different state directories must still share the same vault-local lock.
         # A short child timeout makes this deterministic without scheduler sleeps.
         code = '''import json, sys
-from beyin_v3_sync import SyncEngine
-import beyin_v3_notes as notes
-engine = SyncEngine(sys.argv[1], sys.argv[2])
-original = notes.locked
-notes.locked = lambda engine: original(engine, timeout=0.1)
+import beyin_v3_sync as sync
+engine = sync.SyncEngine(sys.argv[1], sys.argv[2])
+original = sync.note_locked
+lock_calls = 0
+def bounded(engine):
+    global lock_calls
+    lock_calls += 1
+    return original(engine, timeout=0.1)
+# note_create calls the imported alias, not notes.locked dynamically.
+sync.note_locked = bounded
 try:
     result = engine.note_create('notes/new.md', 'competing writer')
 except Exception as exc:
     result = {'error': type(exc).__name__}
+result['lock_calls'] = lock_calls
 print(json.dumps(result))
 '''
         env = dict(self.env, PYTHONPATH=str(ROOT / 'template/.claude/scripts'))
@@ -73,7 +79,7 @@ print(json.dumps(result))
                                     str(Path(self.temp.name) / 'other-state')],
                                    text=True, capture_output=True, env=env, timeout=20)
         self.assertEqual(child.returncode, 0, child.stderr)
-        self.assertEqual(json.loads(child.stdout), {'error': 'NoteConflict'})
+        self.assertEqual(json.loads(child.stdout), {'error': 'NoteConflict', 'lock_calls': 1})
         self.assertFalse((self.vault / 'notes/new.md').exists())
         self.engine.note_edit({'source': 'notes/new.md', 'expected_sha256': None,
                                'content': 'note-edit writer'})
