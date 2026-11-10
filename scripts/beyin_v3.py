@@ -2136,7 +2136,7 @@ def main(argv=None, return_result=False):
             else:
                 target_sess = sess
             if args.resolve:
-                count = resolve_candidates(state, session=target_sess, target_status=args.resolve)
+                count = resolve_candidates(state, session=target_sess, target_status=args.resolve, strict=True)
                 result = {"status": "succeeded", "resolved_count": count, "session": target_sess, "target_status": args.resolve}
             elif args.candidate:
                 result = stage_candidate(state, sess, args.candidate, source=args.source, scope=args.scope or "global")

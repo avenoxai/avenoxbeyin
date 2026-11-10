@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import posixpath
+import stat
 import time
 import unicodedata
 
@@ -212,10 +213,24 @@ def has_candidates(state: Path, session: str | None = None, scope: str | None = 
 
 
 def resolve_candidates(state: Path, session: str | None = None, target_status: str = "distilled",
-                       sources: list[str] | None = None) -> int:
-    """Mark all candidates of a session (or all sessions if session is None) as distilled or discarded."""
+                       sources: list[str] | None = None, *, strict: bool = False) -> int:
+    """Mark candidates distilled or discarded; explicit CLI requests opt into IO errors.
+
+    The default remains best effort for receipt bookkeeping and existing callers.
+    """
     ledger = Path(state) / LEARNING_STATE_FILE
-    if not ledger.is_file():
+    if strict:
+        # is_file suppresses more IO errors on newer Python versions. An explicit
+        # request must distinguish an absent/nonregular ledger from an unreadable one.
+        try:
+            regular = stat.S_ISREG(ledger.stat().st_mode)
+        except (FileNotFoundError, NotADirectoryError):
+            return 0
+        except OSError as exc:
+            raise OSError('learning candidate resolution failed') from exc
+        if not regular:
+            return 0
+    elif not ledger.is_file():
         return 0
     records = []
     count = 0
@@ -251,6 +266,9 @@ def resolve_candidates(state: Path, session: str | None = None, target_status: s
                 out.flush()
                 os.fsync(out.fileno())
             os.replace(temp, ledger)
-    except OSError:
+    except OSError as exc:
+        if strict:
+            # Exception messages can contain private paths or ledger contents.
+            raise OSError('learning candidate resolution failed') from exc
         return 0
     return count
