@@ -1064,6 +1064,24 @@ def thread_view(text, budget, brief=False):
     return prefix + '\n\n'.join(chosen) + ('\n' if whole else THREAD_OVERVIEW_MARKER)
 
 
+def thread_prose(text):
+    """Overview input without fenced examples; full topic cards keep their source text."""
+    lines, fence = [], None
+    for line in text.splitlines(keepends=True):
+        match = FENCE.match(line)
+        if fence:
+            if (match and match[1][0] == fence[0] and len(match[1]) >= len(fence)
+                    and not line[match.end():].strip()):
+                fence = None
+                lines.append('\n')
+        elif match:
+            fence = match[1]
+            lines.append('\n')  # do not join paragraphs on opposite sides of an example
+        else:
+            lines.append(line)
+    return ''.join(lines)
+
+
 def thread_cards(text, brief=False):
     """(text before the first topic, [(whole card, overview card)]) or None without topics."""
     starts = headings(text, 3)
@@ -1073,6 +1091,7 @@ def thread_cards(text, brief=False):
     for i, start in enumerate(starts):
         card = text[start:starts[i + 1] if i + 1 < len(starts) else len(text)].strip()
         title, _, body = card.partition('\n')
+        body = thread_prose(body)
         # A field can also follow another field without a blank line. Keep wrapped
         # lines with their field, rather than mistaking them for an older update.
         fields = re.split(r'\n(?=[ \t]*(?:[-*+] )?(?:\*\*[^*\n]+\*\*|(?:Status|Durum|Next|Sonraki|Sıradaki)\b))', body,
