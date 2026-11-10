@@ -488,6 +488,14 @@ Replay kuralları:
   `receipt` aynı `event_id` için motorun kendi idempotens kuralına uyar.
 - `task_update` çakışmasında kopya açılmaz; kayıt `conflict` olarak incelemeye kalır.
 
+Replay sonundaki indeks eşitlemesi tamamlanmazsa uygulanan mutasyonlar `applied` kalır;
+yeniden kuyruğa eklenmez. JSON çıktısındaki `source_sync`, `degraded` / `conflict` durumunda
+en çok 20 uyarı ve 20 çakışma ile toplam sayılarını; istisnada `error` durumu ve hata türünü
+bildirir. İnsan çıktısı da uyarır. Bu tanı kuyruk dosyasına kaydedilmez. `status: succeeded`,
+`applied` / `failed` sayıları ve çıkış kodu kuyruğun uygulama sonucudur; indeksin tamamen
+güncellendiğini göstermez. Sorunu görmek ve indeksi yenilemek için `python3 beyin.py sync`
+çalıştır; bekleyen kayıt yokken `--replay` tekrar eşitleme yapmaz.
+
 **Kesinti ve uzlaştırma.** Her mutasyonun sonucu, sıradakine geçmeden kuyruğa yazılır. Süreç
 bir mutasyonu uyguladıktan sonra ama bu onayı yazmadan ölürse kayıt `pending` kalır. Sonraki
 `--replay` yeniden yazmadan önce hedefin bu mutasyonu zaten taşıyıp taşımadığına bakar:

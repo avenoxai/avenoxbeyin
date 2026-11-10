@@ -430,7 +430,7 @@ def _replay_mutations(vault: str | Path, state: str | Path, sync_engine=None) ->
         sync_engine = beyin_v3_sync.SyncEngine(vpath, state_dir)
 
     from beyin_v3_notes import source_path, NoteConflict
-    from beyin_v3_sync import parse, ReceiptConflict, RevisionConflict
+    from beyin_v3_sync import parse, ReceiptConflict, RevisionConflict, SyncEngine
 
     applied_count = 0
     conflict_count = 0
@@ -563,13 +563,7 @@ def _replay_mutations(vault: str | Path, state: str | Path, sync_engine=None) ->
         _ack(state_dir, mut)
         processed.append(mut)
 
-    if applied_count > 0:
-        try:
-            sync_engine.sync()
-        except Exception:
-            pass
-
-    return {
+    result = {
         "status": "succeeded",
         "total": len(all_mutations),
         "replayed": len(processed),
@@ -578,6 +572,17 @@ def _replay_mutations(vault: str | Path, state: str | Path, sync_engine=None) ->
         "failed": failed_count,
         "mutations": processed,
     }
+    if applied_count > 0:
+        try:
+            SyncEngine._write_diagnostics(result, sync_engine.sync())
+        except Exception as exc:
+            # The writes were acknowledged already. Report index failure without retrying
+            # those writes or retaining whole-vault diagnostics in the mutation queue.
+            result['source_sync'] = {
+                'status': 'error', 'error': type(exc).__name__,
+                'hint': 'Applied mutations remain applied; run beyin.py sync to diagnose and refresh the source index.',
+            }
+    return result
 
 
 def clear_applied(state: str | Path) -> dict:
