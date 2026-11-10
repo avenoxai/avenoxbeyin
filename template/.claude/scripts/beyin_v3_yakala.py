@@ -1659,6 +1659,7 @@ def extract(vault, card, found, allow_audio=True, info=None):
         return _section(body, 'Secim') or body, 'metin', None
     if kind == 'dosya':
         parts = []
+        warnings = []
         vault_root = Path(vault).resolve()
         for link in re.findall(r'\[\[([^\]]+)\]\]', _section(body, 'Dosyalar')):
             path = _card_file(vault_root, card, link)
@@ -1669,11 +1670,17 @@ def extract(vault, card, found, allow_audio=True, info=None):
                     code, out, _ = _run([found['pdftotext'], '-layout', str(path), '-'], timeout=120)
                     if code == 0 and out.strip():
                         parts.append('## ' + path.name + '\n\n' + out)
+                        continue
                 except (OSError, subprocess.TimeoutExpired):
                     pass
+            if path.suffix.lower() == '.pdf':
+                warnings.append(f'{path.name}: PDF metni çıkarılamadı')
+        note = 'İçerik çıkarılamayan dosyalar: ' + '; '.join(warnings) + '. Dosyaları ajan doğrudan incelemeli.' if warnings else None
+        if info is not None:
+            info['uyari'] = note
         if parts:
-            return '\n\n'.join(parts), 'dosya', None
-        return None, 'ajan-okusun', 'Dosyayi ajan dogrudan okusun (gorsel, PDF ya da ikili dosya).'
+            return '\n\n'.join(parts), 'dosya', note
+        return None, 'ajan-okusun', note or 'Dosyayi ajan dogrudan okusun (gorsel, PDF ya da ikili dosya).'
     if url:
         _safe_network_url(url)  # before npx/yt-dlp can make the first request
         info = {} if info is None else info
@@ -1762,6 +1769,12 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
                 entry.update({key: info[key] for key in ('dil', 'altyazi') if info.get(key)})
             elif method == 'ajan-okusun':
                 meta.update(durum='cikarildi', yontem=method)
+                if meta.get('kaynak_turu') == 'dosya':
+                    meta.pop('ham', None)
+                    meta.pop('hata', None)
+                    meta.pop('uyari', None)
+                    if info.get('uyari'):
+                        meta['uyari'] = info['uyari']
                 entry.update(durum='cikarildi', yontem=method)
             else:
                 meta.update(durum='hata', hata=note or 'icerik alinamadi')

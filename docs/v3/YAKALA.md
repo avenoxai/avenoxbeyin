@@ -527,6 +527,9 @@ Hiçbiri zorunlu değil; varsa işleme genişler, yoksa elde olanla devam edilir
   Whisper hiç metin üretmezse kartta Whisper'ın kendi son hata satırı yazar.
 - **pdftotext** (Poppler): PDF metni.
 
+Görüntü tabanlı PDF'den metin çıkmazsa dosya adı işlem sonucunda ve kartın uyarısında gösterilir.
+Diğer eklerden çıkarılan metin korunur; OCR yapılmaz.
+
 Windows'ta bu araçlar bir `.cmd`/`.bat` sarmalayici olarak kuruluysa, argumanlar komut
 yorumlayicidan (cmd.exe) gecmeden dogrudan calistirilir; bu mumkun degilse o arac atlanir ve
 elde olanla devam edilir.
