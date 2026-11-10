@@ -325,15 +325,15 @@ junction yolları reddedilir.
 
 ## Vault'u başka klasöre ya da hesaba taşımak
 
-Hook dosyaları kurulumun mutlak yollarını taşır (Python, `beyin_v3_hook.py`, `--vault`,
+Vault içindeki hook dosyaları kurulumun mutlak yollarını taşır (Python, `beyin_v3_hook.py`, `--vault`,
 `--state`). Kurulu bir vault başka bir klasöre ya da başka bir Windows hesabına taşınınca
 (`C:\Users\<eski>\...`) her yaşam döngüsü hook'u genel bir hatayla düşer. `doctor` bunu
 `hook_paths: stale` ve `needs_attention` olarak gösterir; her satır dosyayı, olayı ve eski
 yolu (`hook_script_missing`, `other_vault`, `python_missing`) verir ([#204](https://github.com/avenoxai/avenoxbeyin/issues/204)).
 
 Çözüm, kurucuyu bu makinede yeni vault yoluyla yeniden çalıştırmaktır. Eski state klasörünü
-(ya da kopyasını) `--state` ile ver; kurulum kaydı oradadır ve kurucu yolları taşıyan bütün
-dosyaları yeniden üretir. State'teki indeks (`memory.sqlite3`) de kurulduğu vault yoluna
+(ya da kopyasını) `--state` ile ver; kurulum kaydı oradadır ve kurucu yolları taşıyan
+yönetilen vault içi dosyaları yeniden üretir. State'teki indeks (`memory.sqlite3`) de kurulduğu vault yoluna
 bağlıdır ve başka bir yoldaki vault'a açılmaz. Vault taşındıysa bu bağı `--rebind-state`
 açıkça yeni yola çeker ([#593](https://github.com/avenoxai/avenoxbeyin/issues/593)):
 
@@ -344,6 +344,14 @@ py -3 scripts/install_v3.py --vault "C:\Users\<yeni>\Beynim" --state "<eski stat
 macOS ve Linux'ta aynı komut `python3 scripts/install_v3.py --vault "/yeni/yol/Beynim" --state
 "<eski state klasörü>" --rebind-state` biçimindedir. Eski state yolu vault'taki
 `.beyin-runtime.json` dosyasının `state` alanındadır.
+
+**Genel köprü kurduysan ayrı olarak yenile:** `--rebind-state` genel istemci ayarlarını
+ve bu ayarlardaki eski vault yolunu değiştirmez. Yeni vault klasöründe, köprü kurduğun
+her harness için önceki `bridge --install` komutunu yeniden çalıştır; bütün
+`--project-root`, özel `--event` ve `--context-chars` seçimlerini koru.
+`doctor` çıktısında `hook_paths: ok` olması genel köprünün yeni yolu kullandığını
+kanıtlamaz; bu kontrol yalnız vault içindeki hook'lara bakar.
+[Genel köprüyü taşıma sonrası doğrulama](GLOBAL-BRIDGE.md#vaultun-yeri-değiştiğinde).
 
 Bayrak verilmezse ve indeks başka bir yola bağlıysa kurucu hiçbir dosyayı değiştirmeden durur,
 eski ve yeni yolu gösterip bayrağı önerir. Taşınan vault'ta `beyin.py update` de aynı hatayla
