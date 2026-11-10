@@ -761,10 +761,14 @@ def main(argv=None):
     argv = [arg for arg in argv if arg not in ('--human', '--json')]
     if human:
         # A piped or redirected Windows console uses a legacy code page (cp1252 has no s-cedilla);
-        # an unencodable character must print as '?' instead of failing the whole command.
+        # write redirected human output as UTF-8 so stored text and paths survive intact.
+        # Keep the interactive terminal's encoding and replacement behavior.
         for stream in (sys.stdout, sys.stderr):
             if hasattr(stream, 'reconfigure'):
-                stream.reconfigure(errors='replace')
+                if stream.isatty():
+                    stream.reconfigure(errors='replace')
+                else:
+                    stream.reconfigure(encoding='utf-8', errors='replace')
     command = argv[0] if argv else 'doctor'
     if command in ('note-read', 'note-edit'):
         human = False  # These commands have a JSON contract, including on a terminal.
