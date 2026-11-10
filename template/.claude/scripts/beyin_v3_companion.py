@@ -990,7 +990,8 @@ def headings(text, level):
     for line in text.splitlines(keepends=True):
         match = FENCE.match(line)
         if fence:
-            if match and match[1][0] == fence[0] and len(match[1]) >= len(fence):
+            if (match and match[1][0] == fence[0] and len(match[1]) >= len(fence)
+                    and not line[match.end():].strip()):
                 fence = None
         elif match:
             fence = match[1]
