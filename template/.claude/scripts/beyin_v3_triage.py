@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path, PureWindowsPath
 import re
-import sys
 import time
 
 try:

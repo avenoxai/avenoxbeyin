@@ -37,7 +37,13 @@ import unicodedata
 _MODULE_DIR = str(Path(__file__).resolve().parent)
 if _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
-from beyin_v3 import SENSITIVE_WORDS, sensitive_fold as fold, sensitive_excluded, sensitive_source
+# Compatibility exports used by the sync/bridge/projection modules and Yakala checks.
+from beyin_v3 import (
+    SENSITIVE_WORDS as SENSITIVE_WORDS,
+    sensitive_fold as fold,
+    sensitive_excluded,
+    sensitive_source as sensitive_source,
+)
 
 # Companion memory files grow by design and are compacted by the
 # companion-compact protocol, so they are fully exempt from every scan here
