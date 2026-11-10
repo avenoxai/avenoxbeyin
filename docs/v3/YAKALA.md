@@ -483,6 +483,8 @@ python3 beyin.py yakala kur --klasor "Notlar/Yakala"
 | Mail | Seçili metin; tamamı için ajanın Gmail/Outlook bağlantısı |
 | PDF, metin dosyası | `pdftotext` ya da doğrudan okuma; görselleri ajan açar |
 
+Metin ekleri UTF-8 olarak okunur; BOM çıkarılır. Kodlaması bozuk ek ham metne alınmaz, dosya adı kartta uyarı olarak gösterilir.
+
 Ham metin kart klasörünün içinde `.ham/` altında durur. Nokta ile başlayan klasör olduğu için
 aramaya ve Obsidian'a karışmaz. `.ham/` ve yakalanan dosyaların durduğu `dosyalar/`, içlerine yazılan
 `.gitignore` ile kart klasörü hangisi olursa olsun depoya da girmez.
