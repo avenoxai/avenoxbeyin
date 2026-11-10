@@ -40,7 +40,7 @@ def serve(test, reply):
             pass
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True).start()
     test.addCleanup(server.server_close)
     test.addCleanup(server.shutdown)
     return 'http://127.0.0.1:%d' % server.server_address[1], hits

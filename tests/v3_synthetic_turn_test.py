@@ -104,7 +104,7 @@ class FakeLaya:
             do_GET = do_POST
 
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True).start()
         test.addCleanup(self.server.server_close)
         test.addCleanup(self.server.shutdown)
         self.url = 'http://127.0.0.1:%d' % self.server.server_address[1]
