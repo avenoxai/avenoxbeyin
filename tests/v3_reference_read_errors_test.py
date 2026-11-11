@@ -36,10 +36,21 @@ class ReferenceReadErrorsTest(unittest.TestCase):
                 {'file': 'AGENTS.md', 'line': 2, 'target': 'Missing note'}], 'truncated': False})
 
     def test_io_failure_after_a_valid_file_does_not_return_partial_success(self):
-        good, failed = self.vault / 'AGENTS.md', self.vault / 'CLAUDE.md'
+        self.assert_io_failure_after_valid_file(self.vault)
+
+    def test_io_failure_after_a_valid_file_through_directory_alias(self):
+        alias = self.vault.parent / 'vault-alias'
+        try:
+            alias.symlink_to(self.vault, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest('directory symlinks unavailable: ' + type(exc).__name__)
+        self.assert_io_failure_after_valid_file(alias)
+
+    def assert_io_failure_after_valid_file(self, vault):
+        good, failed = vault / 'AGENTS.md', vault / 'CLAUDE.md'
         good.write_text('[[Missing note]]\n', encoding='utf-8')
         failed.write_text('[[Other missing note]]\n', encoding='utf-8')
-        before = snapshot(self.vault)
+        before = snapshot(vault)
         original_read = Path.read_text
         injected = []
 
@@ -49,12 +60,15 @@ class ReferenceReadErrorsTest(unittest.TestCase):
                 raise OSError('private-path-and-content-canary')
             return original_read(path, *args, **kwargs)
 
-        with patch.object(references, 'instruction_files', return_value=[good, failed]), \
+        # Real discovery receives the resolved vault; preserve that path spelling in
+        # this ordered fixture too (macOS /var and /private/var can name one folder).
+        with patch.object(references, 'instruction_files',
+                          side_effect=lambda root: [root / 'AGENTS.md', root / 'CLAUDE.md']), \
                 patch.object(Path, 'read_text', read):
             with self.assertRaises(OSError):
-                references.check(self.vault)
+                references.check(vault)
         self.assertEqual(len(injected), 1)
-        self.assertEqual(snapshot(self.vault), before)
+        self.assertEqual(snapshot(vault), before)
 
 
 class InstalledReferenceReadErrorsTest(unittest.TestCase):
