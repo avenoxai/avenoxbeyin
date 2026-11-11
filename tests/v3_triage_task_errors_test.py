@@ -20,7 +20,7 @@ class TaskScanErrorsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='triage-task-errors-')
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()
         self.vault, self.state = self.root / 'vault', self.root / 'state'
         self.vault.mkdir()
         self.state.mkdir()
@@ -186,6 +186,35 @@ class TaskScanErrorsTest(unittest.TestCase):
             report = self.scan()
         self.assertEqual(report['open_count'], 0)
         self.assertNotIn('status', report)
+
+
+class TaskFixturePathTest(unittest.TestCase):
+    def test_fault_injections_work_under_a_symlinked_temporary_directory(self):
+        with tempfile.TemporaryDirectory(prefix='triage-fixture-path-') as temporary:
+            root = Path(temporary).resolve()
+            real = root / 'real'
+            real.mkdir()
+            alias = root / 'alias'
+            try:
+                alias.symlink_to(real, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest('symlink fixture unavailable: ' + str(exc))
+            cases = (
+                'test_body_read_error_does_not_look_like_an_empty_scan',
+                'test_date_read_error_does_not_label_task_undated',
+                'test_discovery_stat_and_resolve_errors_are_visible',
+                'test_frontmatter_read_error_keeps_readable_tasks',
+                'test_root_discovery_failure_is_visible',
+            )
+            # macOS can return /var paths while the scanner resolves /private/var.
+            # Re-run the unchanged fault-injection assertions through a real alias.
+            with patch.object(tempfile, 'tempdir', str(alias)):
+                result = unittest.TestResult()
+                unittest.TestSuite(TaskScanErrorsTest(name) for name in cases).run(result)
+            self.assertEqual(result.testsRun, len(cases))
+            self.assertEqual(result.skipped, [])
+            self.assertEqual(result.errors, [], result.errors)
+            self.assertEqual(result.failures, [], result.failures)
 
 
 @unittest.skipUnless(os.name == 'posix', 'POSIX permission fixture')
