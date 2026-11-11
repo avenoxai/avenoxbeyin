@@ -322,6 +322,13 @@ Client references: [Codex hooks](https://learn.chatgpt.com/docs/hooks) and
 ## Read-only triage of open topics
 
 Run `python3 beyin.py triage --stale-days 14` (add `--human` for readable output).
+Inbox read failures are diagnostic: invalid `state/inbox-report.json` settings stop the
+inbox scan instead of falling back to automatic folder discovery. An unavailable scan
+has `inbox.status: unavailable`; missing or unreadable inbox folders mark the count
+`partial`. Human output labels these counts incomplete and shows the error code.
+Other triage sections still run, and the command retains its normal exit behavior.
+Healthy inbox JSON is unchanged. Neither settings nor notes are repaired or rewritten.
+
 The additive `threads` section reports stale and undated `###` topics in the
 configured/discovered companion `Threads.md`, alongside the existing task report.
 Topics under active sections (Active/Open/Aktif/Açık) or the top-level title are

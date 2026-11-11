@@ -232,6 +232,22 @@ def _find_top_matching_dirs(vault: Path, matcher, extra_exact: tuple[str, ...] =
     return matched
 
 
+def _inbox_error_code(value):
+    """Only diagnostic codes, never exception text or source paths."""
+    codes = ('PermissionError', 'FileNotFoundError', 'NotADirectoryError', 'IsADirectoryError',
+             'OSError', 'UnicodeDecodeError', 'ValueError', 'TypeError', 'RuntimeError',
+             'ImportError', 'RecursionError', 'not_found')
+    return value if value in codes else 'scan_error'
+
+
+def _inbox_unavailable(reason, error=None):
+    report = {'count': 0, 'oldest_days': None, 'attention': True, 'folders': [],
+              'status': 'unavailable', 'reason': reason}
+    if error is not None:
+        report['error'] = _inbox_error_code(error)
+    return report
+
+
 def scan_inbox(vault: Path, now: float, state: Path | None = None) -> dict:
     """Scan inbox items using the unified hygiene inbox report (#253).
 
@@ -244,10 +260,12 @@ def scan_inbox(vault: Path, now: float, state: Path | None = None) -> dict:
     if state is not None:
         try:
             cfg, valid = read_inbox_settings(state)
-            if valid and cfg.get('folders'):
+            if not valid:
+                return _inbox_unavailable('inbox_settings_invalid')
+            if cfg.get('folders'):
                 folders = cfg['folders']
-        except Exception:
-            folders = None
+        except Exception as exc:
+            return _inbox_unavailable('inbox_settings_unreadable', type(exc).__name__)
 
     try:
         rep = inbox_report(vault, state=state, now=now, folders=folders)
@@ -261,21 +279,23 @@ def scan_inbox(vault: Path, now: float, state: Path | None = None) -> dict:
                     oldest_days = od
 
         has_yakala = any((vault / p / 'SKILL.md').is_file() for p in ('.agents/skills/beyin-yakala', '.claude/skills/beyin-yakala', '.kiro/skills/beyin-yakala'))
-        return {
+        result = {
             'count': total_notes,
             'oldest_days': oldest_days,
             'attention': rep.get('attention', False),
             'folders': folder_rows,
             'has_yakala': has_yakala,
         }
+        if rep.get('error') or any('error' in row for row in folder_rows):
+            result.update(status='partial' if folder_rows else 'unavailable',
+                          reason='inbox_scan_failed', attention=True)
+            if rep.get('error'):
+                result['error'] = _inbox_error_code(rep['error'])
+            result['folders'] = [dict(row, error=_inbox_error_code(row['error']))
+                                 if 'error' in row else row for row in folder_rows]
+        return result
     except Exception as exc:
-        return {
-            'count': 0,
-            'oldest_days': None,
-            'attention': False,
-            'folders': [],
-            'error': str(exc),
-        }
+        return _inbox_unavailable('inbox_scan_failed', type(exc).__name__)
 
 
 def _scan_keys(vault, state):
@@ -893,14 +913,28 @@ def format_human(report: dict) -> str:
     lines = ['=== Ikinci Beyin Sindirim ve Durum Raporu (Triage) ===\n']
     inbox = report.get('inbox', {})
     lines.append('[Gelen Kutusu / Yakalananlar]')
-    lines.append(f"  Bekleyen kaynak: {inbox.get('count', 0)}")
+    if inbox.get('status') == 'unavailable':
+        reason = inbox.get('reason', 'inbox_scan_failed')
+        detail = 'inbox-report.json: ' if reason.startswith('inbox_settings_') else ''
+        lines.append('  Taranamadi: ' + detail + _strip_terminal_controls(reason))
+        if inbox.get('error'):
+            lines.append('  Hata: ' + _inbox_error_code(inbox['error']))
+    elif inbox.get('status') == 'partial':
+        lines.append(f"  Taranabilen bekleyen kaynak: {inbox.get('count', 0)} (eksik tarama)")
+        if inbox.get('error'):
+            lines.append('  Hata: ' + _inbox_error_code(inbox['error']))
+    else:
+        lines.append(f"  Bekleyen kaynak: {inbox.get('count', 0)}")
     folders = inbox.get('folders', [])
     if folders:
         for f in folders:
-            fn = f.get('folder', '')
+            fn = _strip_terminal_controls(f.get('folder', ''))
             cnt = f.get('notes', 0)
             od = f.get('oldest_days')
-            if od is not None:
+            if 'error' in f:
+                detail = f'{cnt} not sayilabildi; tarama eksik' if cnt else 'Taranamadi'
+                lines.append(f"  - {fn}: {detail} ({_inbox_error_code(f['error'])})")
+            elif od is not None:
                 lines.append(f"  - {fn}: {cnt} not (en eski: {od} gun once)")
             else:
                 lines.append(f"  - {fn}: {cnt} not")
