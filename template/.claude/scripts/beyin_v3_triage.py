@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path, PureWindowsPath
 import re
+import stat
 import sys
 import time
 
@@ -54,10 +55,16 @@ EXTENDED_TERMINAL_STATUSES = frozenset(TERMINAL_STATUSES | {'completed', 'tamaml
 DATE_PATTERN = re.compile(r'(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?')
 
 
-def _is_safe_file(path: Path) -> bool:
+def _is_safe_file(path: Path, onerror=None) -> bool:
     name = path.name
     if name.startswith('.') or name.endswith('~') or name == '.gitkeep':
         return False
+    if onerror is not None:
+        try:
+            return stat.S_ISREG(path.lstat().st_mode)
+        except OSError as exc:
+            onerror(exc)
+            return False
     return path.is_file() and not path.is_symlink()
 
 
@@ -137,7 +144,7 @@ def _parse_timestamp(val: str) -> float | None:
         return None
 
 
-def _note_frontmatter_timestamp(path: Path, front_keys: tuple[str, ...]) -> float | None:
+def _note_frontmatter_timestamp(path: Path, front_keys: tuple[str, ...], onerror=None) -> float | None:
     """Timestamp from frontmatter keys, prioritizing explicit metadata for sync immunity."""
     try:
         with path.open(encoding='utf-8', errors='replace') as handle:
@@ -149,6 +156,9 @@ def _note_frontmatter_timestamp(path: Path, front_keys: tuple[str, ...]) -> floa
                 ts = _parse_timestamp(raw)
                 if ts is not None:
                     return ts
+    except OSError as exc:
+        if onerror is not None:
+            onerror(exc)
     except Exception:
         pass
     return None
@@ -204,31 +214,45 @@ def _path_key(path: Path) -> tuple:
             return (str(path).lower(),)
 
 
-def _find_top_matching_dirs(vault: Path, matcher, extra_exact: tuple[str, ...] = ()) -> list[Path]:
+def _find_top_matching_dirs(vault: Path, matcher, extra_exact: tuple[str, ...] = (), onerror=None) -> list[Path]:
     vault = Path(vault).resolve()
     matched = []
     seen = set()
     try:
         entries = sorted(vault.iterdir())
-    except OSError:
+    except OSError as exc:
+        if onerror is not None:
+            onerror(exc)
         return []
 
     for entry in entries:
-        if not entry.is_dir() or entry.is_symlink():
-            continue
         name = entry.name
         if name.startswith('.') or sensitive_excluded(name) or name in CODE_DIRS:
             continue
         folded = fold(name)
-        if matcher(name, folded) or folded in extra_exact:
+        matches = matcher(name, folded) or folded in extra_exact
+        if onerror is not None and not matches:
+            continue
+        try:
+            is_directory = (stat.S_ISDIR(entry.lstat().st_mode) if onerror is not None
+                            else entry.is_dir() and not entry.is_symlink())
+            if not is_directory:
+                continue
+        except OSError as exc:
+            if onerror is None:
+                raise
+            onerror(exc)
+            continue
+        if matches:
             try:
                 resolved = entry.resolve()
                 key = _path_key(resolved)
                 if key not in seen:
                     seen.add(key)
                     matched.append(resolved)
-            except OSError:
-                pass
+            except OSError as exc:
+                if onerror is not None:
+                    onerror(exc)
     return matched
 
 
@@ -325,13 +349,13 @@ def _scan_front_values(path, keys):
     return None
 
 
-def _scan_allowed(path, vault, excluded):
+def _scan_allowed(path, vault, excluded, onerror=None):
     from beyin_v3_index import dir_key
     try:
         parts = path.relative_to(vault).parts[:-1]
         if any(sensitive_excluded(part) or dir_key(part) in excluded for part in parts):
             return False
-        if not _is_safe_file(path):
+        if not _is_safe_file(path, onerror=onerror):
             return False
         values = _scan_front_values(path, ('visibility', 'trust', 'trusted', 'status', 'kind'))
         if values is None:
@@ -346,7 +370,11 @@ def _scan_allowed(path, vault, excluded):
         if values.get('status') == 'untrusted' or values.get('kind') == 'untrusted':
             return False
         return True
-    except (ValueError, OSError):
+    except OSError as exc:
+        if onerror is not None:
+            onerror(exc)
+        return False
+    except ValueError:
         return False
 
 
@@ -358,6 +386,7 @@ def scan_stale_tasks(vault: Path, now: float, stale_days: int = 14, state: Path 
     undated (age_days: None) rather than inventing an age from file mtime.
     Open tasks include active, waiting, and blocked tasks.
     """
+    from beyin_v3_index import dir_key
     vault = Path(vault).resolve()
     excluded = _scan_keys(vault, state)
     open_tasks = []
@@ -367,38 +396,61 @@ def scan_stale_tasks(vault: Path, now: float, stale_days: int = 14, state: Path 
     task_folders = []
     seen_files = set()
 
-    def is_task_dir(name: str, folded: str) -> bool:
-        return 'task' in folded or 'gorev' in folded
+    # Only exception classes leave this scanner: unreadable source names or raw
+    # filesystem messages may contain private information.
+    errors = []
 
-    for folder in _find_top_matching_dirs(vault, is_task_dir, extra_exact=('tasks', '500-tasks', 'gorevler')):
+    def scan_error(exc):
+        errors.append(type(exc).__name__)
+
+    def is_task_dir(name: str, folded: str) -> bool:
+        return dir_key(name) not in excluded and ('task' in folded or 'gorev' in folded)
+
+    for folder in _find_top_matching_dirs(vault, is_task_dir, onerror=scan_error):
         try:
             res = folder.resolve()
             key = _path_key(res)
             if key not in seen_dirs:
                 seen_dirs.add(key)
                 task_folders.append(res)
-        except OSError:
-            pass
+        except OSError as exc:
+            scan_error(exc)
 
     for starter in ('tasks', '500-Tasks', 'Görevler', '✅ 500-Tasks'):
+        if dir_key(starter) in excluded:
+            continue
         f = vault / starter
-        if f.is_dir() and not f.is_symlink():
-            try:
+        try:
+            if stat.S_ISDIR(f.lstat().st_mode):
                 res = f.resolve()
                 key = _path_key(res)
                 if key not in seen_dirs:
                     seen_dirs.add(key)
                     task_folders.append(res)
-            except OSError:
-                pass
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            scan_error(exc)
 
     for folder in task_folders:
-        for root, dirs, files in os.walk(folder):
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in CODE_DIRS
-                       and not sensitive_excluded(d) and not (Path(root) / d).is_symlink()]
+        if dir_key(folder.name) in excluded:
+            continue
+        for root, dirs, files in os.walk(folder, onerror=scan_error):
+            readable_dirs = []
+            for name in dirs:
+                if (name.startswith('.') or name in CODE_DIRS or sensitive_excluded(name)
+                        or dir_key(name) in excluded):
+                    continue
+                try:
+                    if stat.S_ISDIR((Path(root) / name).lstat().st_mode):
+                        readable_dirs.append(name)
+                except OSError as exc:
+                    scan_error(exc)
+            dirs[:] = readable_dirs
             for f in files:
                 file_path = Path(root) / f
-                if not _scan_allowed(file_path, vault, excluded) or file_path.suffix.lower() != '.md':
+                if file_path.suffix.lower() != '.md' or not _scan_allowed(
+                        file_path, vault, excluded, onerror=scan_error):
                     continue
 
                 f_key = _path_key(file_path)
@@ -408,7 +460,8 @@ def scan_stale_tasks(vault: Path, now: float, stale_days: int = 14, state: Path 
 
                 try:
                     text = file_path.read_text(encoding='utf-8', errors='replace')
-                except OSError:
+                except OSError as exc:
+                    scan_error(exc)
                     continue
 
                 status_val = _front_values(text[:4096], ('status', 'durum'), fold_values=True)
@@ -443,10 +496,14 @@ def scan_stale_tasks(vault: Path, now: float, stale_days: int = 14, state: Path 
 
                 # Date priority: frontmatter ONLY (sync immunity).
                 # Follow core invariant (beyin_v3.py:639): "file mtime is not a date: synced vaults rewrite it".
+                errors_before_date = len(errors)
                 ts = _note_frontmatter_timestamp(
                     file_path,
-                    ('updated_at', 'updated', 'modified', 'last_modified', 'date_modified', 'created_at', 'created', 'date', 'tarih')
+                    ('updated_at', 'updated', 'modified', 'last_modified', 'date_modified', 'created_at', 'created', 'date', 'tarih'),
+                    onerror=scan_error,
                 )
+                if len(errors) != errors_before_date:
+                    continue
 
                 try:
                     rel = file_path.relative_to(vault).as_posix()
@@ -476,7 +533,7 @@ def scan_stale_tasks(vault: Path, now: float, stale_days: int = 14, state: Path 
                         stale_tasks.append(task_info)
 
     stale_tasks.sort(key=lambda x: x['age_days'], reverse=True)
-    return {
+    report = {
         'open_count': len(open_tasks),
         'stale_count': len(stale_tasks),
         'undated_count': len(undated_tasks),
@@ -484,6 +541,9 @@ def scan_stale_tasks(vault: Path, now: float, stale_days: int = 14, state: Path 
         'stale_tasks': stale_tasks,
         'undated_tasks': undated_tasks,
     }
+    if errors:
+        report.update(status='partial', reason='task_scan_incomplete', errors=sorted(set(errors)))
+    return report
 
 
 def _threads_source(vault, state):
@@ -809,6 +869,8 @@ def scan_companion(vault: Path, state: Path | None = None, now: float | None = N
 
 def generate_recommendations(inbox: dict, tasks: dict, digest: dict, companion: dict, vault: Path | None = None, has_yakala: bool | None = None, threads: dict | None = None) -> list[str]:
     recs = []
+    if tasks.get('status') == 'partial':
+        recs.append('Gorev taramasi eksik; sayilar yalniz okunabilen kaynaklari kapsiyor. Dosya/klasor erisimini kontrol edip triage komutunu yeniden calistirin.')
     if inbox.get('count', 0) > 0:
         yakala_ready = has_yakala if has_yakala is not None else inbox.get('has_yakala', False)
         if not yakala_ready and vault is not None:
@@ -913,7 +975,11 @@ def format_human(report: dict) -> str:
     undated_count = tasks.get('undated_count', 0)
     stale_thresh = tasks.get('stale_days_threshold', 14)
     lines.append(f"[Hareketsiz Gorevler] (>{stale_thresh} gun)")
-    summary_parts = [f"Acik gorev: {tasks.get('open_count', 0)}", f"Hareketsiz: {stale_count}"]
+    if tasks.get('status') == 'partial':
+        lines.append('  Gorev taramasi eksik; sayilar yalniz okunabilen kaynaklari kapsiyor.')
+        summary_parts = [f"Taranabilen acik gorev: {tasks.get('open_count', 0)}", f"Hareketsiz: {stale_count}"]
+    else:
+        summary_parts = [f"Acik gorev: {tasks.get('open_count', 0)}", f"Hareketsiz: {stale_count}"]
     if undated_count > 0:
         summary_parts.append(f"Tarihsiz: {undated_count}")
     lines.append('  ' + ', '.join(summary_parts))

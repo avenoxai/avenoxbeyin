@@ -339,3 +339,13 @@ opening-context budgets. Private/untrusted or excluded sources and symlinks are
 not scanned. An ambiguous identity, invalid directory marker, or unsafe/unreadable
 source is reported as `status: unavailable` with a reason, not a successful empty
 scan; a missing `Threads.md` reports `status: absent`.
+
+If task discovery, directory traversal, or reading an eligible task fails, the
+`tasks` section adds `status: partial`, `reason: task_scan_incomplete`, and an
+`errors` list of exception class names. Counts and rows cover only the tasks that
+could be read; they do not prove that no other open or stale task exists. Human
+output and recommendations also mark the incomplete scan. Failed paths and raw
+filesystem messages are not included. Intentionally excluded sources are not
+errors, and successful task reports retain their previous fields. The report
+remains read-only and the CLI keeps exit code 0 so other readable sections remain
+available; check the section status before treating task totals as complete.
