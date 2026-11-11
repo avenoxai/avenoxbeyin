@@ -131,3 +131,16 @@ POSIX'te özgün görünüm değiştirilmeden önce arşiv dosyası, arşiv dizi
 `fsync` bariyerlerinden geçer; bariyer hatası kurtarmayı durdurur. Bu sıra güç kesintisi
 veya uzak dosya sistemi için mutlak kalıcılık garantisi değildir. Windows'ta dizin
 `fsync` desteği bulunmadığından aynı kalıcılık iddiası yapılmaz.
+
+## Memory audit read errors
+
+An explicit `beyin.py audit` fails with exit 1 and `audit source scan failed` when a
+candidate note cannot be read or directory enumeration reports an I/O error. It
+does not return partial findings as a complete audit or call the memory balanced.
+The error includes no raw filesystem message or source contents. Check local file
+and directory access, then rerun the audit. User notes are not modified.
+
+Healthy report fields, excluded directories, private/untrusted/generated/retired
+note filtering, and the existing skip behavior for invalid frontmatter are
+unchanged. The lower-level `scan_audit_candidates` helper keeps its best-effort
+default; the explicit audit uses its keyword-only `strict=True` option.
