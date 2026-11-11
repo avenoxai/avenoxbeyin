@@ -1101,7 +1101,31 @@ class SyncEngine:
     def sync(self, full=False, recover_views=False):
         """Index the vault. `full` reads every source: no stored stat signature is taken on trust."""
         with ExitStack() as note_locks:
-            return self._sync(full, recover_views, note_locks)
+            result = self._sync(full, recover_views, note_locks)
+        if not getattr(self, '_homepage_busy', False):
+            self._refresh_homepages(result)
+        return result
+
+    def _refresh_homepages(self, result):
+        if getattr(self, '_homepage_busy', False):
+            return
+        self._homepage_busy = True
+        try:
+            if _MODULE_DIR not in sys.path:
+                sys.path.insert(0, _MODULE_DIR)
+            from beyin_v3_homepages import reconcile
+            try:
+                outcome = reconcile(self)
+            except (OSError, ValueError, NoteConflict, sqlite3.Error) as exc:
+                # Source writes have already succeeded; refresh issues must not undo that result.
+                outcome = {'updated': 0, 'conflicts': [], 'warnings': [{'reason': str(exc)}]}
+            if outcome['updated'] or outcome['conflicts'] or outcome['warnings']:
+                result['workspace_homepages'] = outcome
+                if outcome['conflicts'] or outcome['warnings']:
+                    if result.get('status') == 'succeeded':
+                        result['status'] = 'degraded'
+        finally:
+            self._homepage_busy = False
 
     def _sync(self, full, recover_views, note_locks):
         # Serialize recovery, source scan and projection across local processes.
@@ -1370,7 +1394,16 @@ class SyncEngine:
     def note_edit(self, request):
         if _MODULE_DIR not in sys.path:
             sys.path.insert(0, _MODULE_DIR)
-        return note_apply_edits(self, request)
+        previous = getattr(self, '_homepage_busy', False)
+        self._homepage_busy = True
+        try:
+            result = note_apply_edits(self, request)
+        finally:
+            self._homepage_busy = previous
+        if not previous:
+            self._refresh_homepages(result)
+            result['sha256'] = self.note_read(request['source'])['sha256']
+        return result
 
     def note_create(self, source, text, metadata=None, idempotency_key=None, evidence_refs=None):
         if _MODULE_DIR not in sys.path:

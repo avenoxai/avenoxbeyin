@@ -45,6 +45,16 @@ Kullanıcı "son günlerde ne yaptık" gibi yakın dönem sorusu sorarsa `python
 
 ## Not ve görev yazma
 
+### Seçilen bilgilerden Workspace ana sayfası
+
+Kullanıcı bir ana sayfa istediğinde mevcut esas notları ve gösterilecek tek satırlık `facts` bilgilerini birlikte seçin. Yeni sayfa mı, kullanıcının seçtiği mevcut insan notuna ekleme mi istediğini belirleyin. Mevcut sayfa için önce `note-read` çalıştırıp dönen `sha256` değerini kullanın; yeni sayfada değer `null` olur. Seçilen kaynaklar aynı projede ve görünürlükte olmalıdır. Kaynakların hiçbirinde proje adı yoksa `project:null` yazın; sırf bağlamak için esas notların projesini değiştirmeyin.
+
+```json
+{"source":"notes/Başvurularım.md","expected_sha256":null,"title":"Başvurularım","project":"basvurular","selections":[{"source":"notes/Başvuru-Akşam.md","fields":[{"field":"facts.gorusme_tarihi","label":"Görüşme tarihi","editable":true}]}]}
+```
+
+İsteği geçici UTF-8 JSON dosyasına yazıp `python3 beyin.py homepage-create --file ISTEK_JSON` çalıştırın. Kaynak kimliği, değer ve gizli işaretleri isteğe eklemeyin; komut bunları güncel nottan okur. `written` ve `unchanged` başarılı sonuçtur. Çakışmada sayfayı ve kaynağı yeniden okuyup kullanıcının seçimini koruyarak yeni istek hazırlayın. Sayfadaki kişisel yazıyı silmeyin.
+
 Kullanıcının seçtiği klasörü ve mevcut dosyaları koru. **Yeni görev için `task-create` kullan; görevi `note-create` ile oluşturma.** Geçici UTF-8 JSON dosyası hazırla ve `python3 beyin.py task-create --file TASK_JSON` çalıştır. Windows'ta `py -3 beyin.py task-create --file TASK_JSON` eşdeğerdir.
 
 ```json
