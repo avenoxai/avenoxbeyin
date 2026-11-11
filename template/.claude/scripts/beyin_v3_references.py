@@ -197,14 +197,12 @@ def _link_dead(vault, source, target, index):
 
 
 def check(vault):
+    """Report complete link findings; doctor reports read/decode errors as unavailable."""
     vault = Path(vault).resolve()
     files = instruction_files(vault)
     dead, index = [], None
     for source in files:
-        try:
-            text = _blank_code(source.read_text(encoding='utf-8-sig'))
-        except (OSError, UnicodeError):
-            continue
+        text = _blank_code(source.read_text(encoding='utf-8-sig'))
         for number, line in enumerate(text.splitlines(), 1):
             wikis, links = list(WIKI.finditer(line)), list(LINK.finditer(line))
             if (wikis or links) and index is None:
