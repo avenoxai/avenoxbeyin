@@ -416,9 +416,10 @@ def scan_stale_tasks(vault: Path, now: float, stale_days: int = 14, state: Path 
                 if not status:
                     status = 'open'
 
+                live_lines = list(_unfenced_thread_lines(text.splitlines()))
                 # Check markdown content for status / checkboxes if not terminal from frontmatter
                 if status not in EXTENDED_TERMINAL_STATUSES:
-                    for line in text.splitlines():
+                    for line in live_lines:
                         m = re.match(r'(?i)^status:\s*([a-zA-Z_-]+)', line.strip())
                         if m:
                             st = m.group(1).lower()
@@ -433,7 +434,7 @@ def scan_stale_tasks(vault: Path, now: float, stale_days: int = 14, state: Path 
                 raw_title_val = _front_values(text[:4096], ('title', 'baslik'), fold_values=False)
                 title = raw_title_val.get('title') or raw_title_val.get('baslik') or ''
                 if not title:
-                    for line in text.splitlines():
+                    for line in live_lines:
                         sline = line.strip()
                         if sline.startswith('#'):
                             title = sline.lstrip('#').strip()
