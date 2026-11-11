@@ -5,6 +5,13 @@ kullanıcının düzenlediği Markdown ana sayfasına bağlar. Kurulum bir alan 
 seçtirmez. Görüşme tarihi metin, tarifteki porsiyon sayısı sayı olabilir.
 Yeni servis veya otomatik model çağrısı yoktur.
 
+[Sentetik kullanım örnekleri](examples/workspace-homepages/README.md), Kariyer
+akışının kurulmasını ve iki yönde düzenlenmesini; genel Dersler sayfasında ise
+kaynak, ödev dosyası, doğrulanmış teslim, plan ve kişisel not ayrımını gösterir.
+İkincisi normal not yazıcılarını kullanır; olmayan `facts` değerleri üretilmez.
+Çalıştırılabilir örnekler CLI kabulüdür. Hazır konuşma taslağı, bağımsız bir
+ajanın konuşmayı yorumlayıp kurulum yaptığı uçtan uca kabul değildir.
+
 Kullanıcı mevcut notları ve onlardan göstermek istediği bilgileri seçer. Ajan
 seçimi aşağıdaki JSON isteğine yazar ve `python3 beyin.py homepage-create --file
 ISTEK.json` çalıştırır. Yeni sayfa için `expected_sha256` `null` olur. Mevcut
@@ -18,8 +25,9 @@ Komut her değeri ve kayıt kimliğini güncel esas nottan okur; istek içinde
 kimlik, önceki değer veya gizli sayfa işareti verilmez. İşlem `written` veya
 değişiklik gerekmiyorsa `unchanged` döner. Aynı isteği yeniden çalıştırmak,
 arada kişisel açıklama değişmiş olsa da sayfayı tekrar yazmaz. Başka seçimle
-yeniden kurma isteği çakışma verir. Mevcut sayfadaki yazılar korunur; seçilen
-bilgiler yeni bir bölümde görünür. Ana sayfanın frontmatter'ında
+yeniden kurma isteği çakışma verir. Mevcut sayfanın başlığı ve yazıları önde
+korunur; seçilen bilgiler gövdenin sonuna yeni bir bölüm olarak eklenir. Yeni
+sayfa istenen başlıkla açılır. Ana sayfanın frontmatter'ında
 `workspace_homepage: true` açıkça seçilir.
 Proje adı taşımayan mevcut notlar için `project:null` açıkça verilir; farklı
 proje veya görünürlükteki notlar aynı sayfaya bağlanmaz. Komut ana sayfayı
@@ -28,11 +36,30 @@ Biçimi geçersiz istek eşitlemeyi başlatmadan reddedilir. Geçerli isteğin
 eşitlemesi, önceki işlemlerden kalan toparlamayı da tamamlayabilir.
 Sayfadaki kaynak bağlantısı, etiket, satır düzeni ve kişisel not hücrenin dışında
 kalır. Kaynak bağlantısı, ana sayfaya göre göreli ve özel karakterleri kodlanmış
-Markdown yoludur. Örnek görünen satır:
+Markdown yoludur. Her kaynak, anlaşılır başlığıyla bir kez gösterilir; seçilen
+bilgileri ayrı satırlarda, kişisel notu ayrı paragrafta yer alır. Kaynak başlığı
+önce notun `title` özelliğinden, yoksa gövdenin ilk satırındaki H1 başlığından,
+o da yoksa dosya adından alınır. Örnek okuma görünümü (hücre yorumları gizli):
 
 ```markdown
-- [Başvuru-Akşam](Ba%C5%9Fvuru-Ak%C5%9Fam.md) · Görüşme (düzenlenebilir): 12 Kasım · Kişisel not: adresi sor
+# Başvurularım
+
+## Seçilen bilgiler
+
+Düzenlenebilir değerleri bu notta değiştirebilirsin; değişiklikler olağan eşitlemede esas kayda işlenir. Kişisel notların yalnız bu sayfada kalır.
+
+### [Akşam başvurusu](Ba%C5%9Fvuru-Ak%C5%9Fam.md)
+
+- **Görüşme tarihi:** 12 Kasım _(düzenlenebilir)_
+- **Başvuru numarası:** 482 _(salt okunur)_
+
+**Kişisel notum:** adresi sor
 ```
+
+Başlık ve etiketlerdeki Markdown özel işaretleri düz metin olarak gösterilir.
+Bu düzen standart Markdown kullanır; ayrı tema, eklenti veya web uygulaması
+gerektirmez. Önceden oluşturulmuş sayfalar aynı isteğin tekrarında yeniden
+biçimlendirilmez; kullanıcının seçtiği mevcut düzen korunur.
 
 Hücre, değerin hemen çevresindeki HTML yorumlarında kaynak yolu, okunan kayıt
 kimliği, bilgi adı, önceki ortak değer ve düzenleme seçimini saklar. Kullanıcı
@@ -63,3 +90,27 @@ içeriği korunur. Eşitleme olmayan salt dosya açma olayı tetikleyici değild
 Obsidian'da değiştirme sonrası olağan eşitleme gerekir. Gerçek editörün eşzamanlı
 yazımı mevcut `note-edit` SHA kontrolünün sınırlarına tabidir; çok dosyalı atomik
 bir işlem iddiası yoktur.
+
+## Açık inceleme bulguları
+
+Son standart incelemesindeki aşağıdaki hatalar henüz düzeltilmedi. Mevcut
+başarılı test kapsamı bu açıkları kapatan bir güvenlik kabulü değildir.
+
+- **P1 · Güven işaretleri:** Ana sayfa kapısı yalnız `trust: untrusted`
+  denetliyor. Depodaki diğer güvenilmeyen kayıt işaretleri (`trusted: false`,
+  `status: untrusted`, `kind: untrusted`) hem kaynakta hem sayfada aynı biçimde
+  reddedilmeli. Mevcut denetim bu değerlerle kabul veriyor; güvenilmeyen bilgi
+  güvenilir sayfaya taşınabilir.
+- **P1 · Etkin proje kapsamı:** Ana sayfa ile kaynağın yalnız `project`
+  metadata'sı karşılaştırılıyor. Metadata'sı boş iki not, klasör eşlemelerinde
+  farklı projelere ait olabilir. Oluşturma, tekrar ve yenileme mevcut
+  `record_scope` kuralını, engellenmiş klasörler dahil, kullanmalı.
+- **P2 · Anahtarlı yazma tekrarı:** Düzenlenebilir ana sayfada `idempotency_key`
+  içeren bir `note-edit` sonrası aynı istek arada kullanıcı yazımı olmadan
+  çakışabiliyor. Sayfanın hücre tabanı yenilenirken son hash sonuçta değişiyor,
+  tamamlanma kaydı önceki hash'te kalıyor. Son doğrulanmış hash kaydedilmeli;
+  gerçek araya giren kullanıcı düzenlemeleri yine korunmalı.
+
+İlk iki bulgu kapıların kaynak incelemesi ve doğrudan denetimiyle, son bulgu
+sentetik tekrar deneyiyle saptandı. Sonraki düzeltme bu üç davranış için
+RED/GREEN regresyon testleriyle yapılmalıdır.

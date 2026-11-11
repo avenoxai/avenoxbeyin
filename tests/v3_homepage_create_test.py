@@ -13,7 +13,8 @@ from urllib.parse import unquote
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
 from beyin_v3_homepages import create as create_homepage
-from beyin_v3_sync import SyncEngine
+from beyin_v3_homepages import CELL, CREATION
+from beyin_v3_sync import SyncEngine, parse, render
 from v3_package_helpers import install, isolated_env
 
 
@@ -33,12 +34,12 @@ class HomepageCreateTest(unittest.TestCase):
         self.assertEqual(installed.returncode, 0, installed.stderr.decode(errors='replace'))
         self.run_cli('sync', ok=True)
 
-    def note(self, name, title, date, address, **metadata):
+    def note(self, name, heading, date, address, **metadata):
         path = self.vault / 'notes' / (name + '.md')
         front = {'id': name, 'kind': 'note', 'project': 'kariyer',
                  'facts': {'gorusme': date, 'adres': address}, **metadata}
         path.write_text('---\n' + json.dumps(front, ensure_ascii=False) +
-                        '\n---\n# ' + title + '\nÖzgün davet: [PDF](davet.pdf)\n', encoding='utf-8')
+                        '\n---\n# ' + heading + '\nÖzgün davet: [PDF](davet.pdf)\n', encoding='utf-8')
         return path
 
     def run_cli(self, *args, ok=False):
@@ -110,7 +111,10 @@ class HomepageCreateTest(unittest.TestCase):
         result = self.create(self.request())
         self.assertEqual(result['status'], 'written')
         text = self.home().read_text(encoding='utf-8')
-        self.assertIn('Başvurularım', text)
+        self.assertTrue(parse(text)[1].startswith('# Başvurularım\n\n## Seçilen bilgiler\n'))
+        self.assertEqual(text.count('### [Akşam başvurusu](aksam.md)'), 1)
+        self.assertEqual(text.count('### [Gündüz başvurusu](gunduz.md)'), 1)
+        self.assertEqual(text.count('**Kişisel notum:**'), 2)
         self.assertIn('aksam', text)
         self.assertIn('gunduz', text)
         self.assertEqual(text.count('-->12 Kasım<!--'), 2)
@@ -132,7 +136,9 @@ class HomepageCreateTest(unittest.TestCase):
         original = self.home().read_bytes()
         request = self.request(expected_sha256=hashlib.sha256(original).hexdigest())
         self.assertEqual(self.create(request)['status'], 'written')
-        self.assertIn('Kişisel not: yol süresini sor.', self.home().read_text(encoding='utf-8'))
+        attached = self.home().read_bytes()
+        self.assertTrue(parse(attached.decode('utf-8'))[1].startswith(original.decode('utf-8')))
+        self.assertLess(attached.index(b'# Ba'), attached.index(b'## Se'))
         self.home().write_text(self.home().read_text(encoding='utf-8').replace(
             'yol süresini sor', 'adresi ve giriş kapısını sor'), encoding='utf-8')
         self.edit_source('aksam', '12 Kasım', '13 Kasım')
@@ -142,6 +148,68 @@ class HomepageCreateTest(unittest.TestCase):
         changed = self.request(selections=[request['selections'][0]],
                                expected_sha256=request['expected_sha256'])
         self.rejected(changed)
+        self.assertEqual(before, self.snapshot())
+
+    def test_existing_frontmatter_crlf_bom_body_and_no_final_newline_stay_before_selection(self):
+        body = '# Başvurularım\r\n\r\nGiriş: [belge](davet.pdf).\r\n\r\n## Benim bölümüm\r\nSon kullanıcı notu.'
+        original = ('\ufeff---\r\nproject: kariyer\r\ntitle: Başvurularım\r\ncustom: sakla\r\n---\r\n' + body).encode('utf-8')
+        self.home().write_bytes(original)
+        request = self.request(expected_sha256=hashlib.sha256(original).hexdigest())
+        self.create(request)
+        attached = self.home().read_bytes()
+        self.assertTrue(attached.startswith(b'\xef\xbb\xbf'))
+        metadata, actual_body = parse(attached.decode('utf-8'))
+        self.assertEqual(metadata['custom'], 'sakla')
+        self.assertTrue(actual_body.startswith(body + '\r\n\r\n## Seçilen bilgiler\r\n'))
+        self.assertEqual(actual_body.count('# Başvurularım'), 1)
+        self.assertIn('Giriş: [belge](davet.pdf).\r\n', actual_body)
+        before = self.snapshot()
+        self.assertEqual(self.create(request)['status'], 'unchanged')
+        self.assertEqual(before, self.snapshot())
+
+    def test_empty_and_bom_only_existing_note_can_receive_selection(self):
+        for original in (b'', b'\xef\xbb\xbf'):
+            with self.subTest(original=original):
+                self.home().write_bytes(original)
+                request = self.request(expected_sha256=hashlib.sha256(original).hexdigest())
+                self.create(request)
+                attached = self.home().read_bytes()
+                metadata, body = parse(attached.decode('utf-8'))
+                self.assertTrue(metadata['workspace_homepage'])
+                self.assertTrue(body.lstrip().startswith('## Seçilen bilgiler'))
+                self.assertEqual(attached.count(b'\xef\xbb\xbf'), bool(original))
+
+    def test_source_groups_multiple_fields_literal_titles_labels_and_readonly(self):
+        self.note('aksam', 'Gövde başlığı', '12 Kasım', 'Eski adres',
+                  title='Akşam [yeni] *özel* _seçim_ \\ iz # <b>')
+        request = self.request(selections=[self.request()['selections'][0],
+            self.request()['selections'][1], {'source': 'notes/aksam.md', 'fields': [
+                {'field': 'facts.adres', 'label': 'Adres *etiket* _özel_ [x] <b> | posta', 'editable': False}]}])
+        self.create(request)
+        text = self.home().read_text(encoding='utf-8')
+        self.assertEqual(text.count('](aksam.md)'), 1)
+        self.assertEqual(text.count('**Kişisel notum:**'), 2)
+        evening, daylight = text.split('### [Gündüz başvurusu]', 1)
+        self.assertIn('12 Kasım<!-- /beyin-field --> _(düzenlenebilir)_', evening)
+        self.assertIn('Eski adres<!-- /beyin-field --> _(salt okunur)_', evening)
+        self.assertNotIn('Eski adres', daylight)
+        self.assertIn('### [Akşam &#91;yeni&#93; &#42;özel&#42; &#95;seçim&#95; &#92; iz &#35; &lt;b&gt;](aksam.md)', text)
+        self.assertIn('- **Adres &#42;etiket&#42; &#95;özel&#95; &#91;x&#93; &lt;b&gt; &#124; posta:** ', text)
+        self.assertNotIn('Gövde başlığı', text)
+        self.assertNotIn('<b>', text)
+
+    def test_old_line_layout_is_not_reformatted_on_repeat(self):
+        request = self.request()
+        self.create(request)
+        text = self.home().read_text(encoding='utf-8')
+        metadata, _ = parse(text)
+        cells = [match[0] for match in CELL.finditer(text)]
+        legacy = render(metadata, '\n## Seçilen bilgiler\n\n' + CREATION.search(text)[0] + '\n' +
+            '- [aksam](aksam.md) · Görüşme tarihi (düzenlenebilir): ' + cells[0] + ' · Kişisel notum: adresi sor\n' +
+            '- [gunduz](gunduz.md) · Görüşme tarihi (düzenlenebilir): ' + cells[1] + '\n# Başvurularım\n')
+        self.home().write_bytes(legacy.encode('utf-8'))
+        before = self.snapshot()
+        self.assertEqual(self.create(request)['status'], 'unchanged')
         self.assertEqual(before, self.snapshot())
 
     def test_same_basename_paths_and_implicit_source_id(self):

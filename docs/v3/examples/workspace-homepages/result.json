@@ -1,0 +1,23 @@
+{
+  "status": "passed",
+  "checks": [
+    "public homepage-create without prepared cells",
+    "source edit refreshes the correct row",
+    "homepage note-edit writes the correct source",
+    "other record and original invitation preserved",
+    "byte and mtime preserving replay",
+    "installed-runtime interruption after source write",
+    "latest personal note preserved on recovery without source rewrite",
+    "field-local conflict while another row advances",
+    "explicit source-value choice converges",
+    "homepage-create replay preserves user layout",
+    "general lessons navigation through note-create/note-edit",
+    "no invented facts, tasks, deadlines, progress, or study choice",
+    "latest lessons note, originals, and no-write replay preserved",
+    "all original Markdown links resolve"
+  ],
+  "data": "independently authored fiction",
+  "real_obsidian_gui": false,
+  "conversational_agent_e2e": false,
+  "exported_links": "passed"
+}

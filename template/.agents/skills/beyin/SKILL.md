@@ -45,7 +45,11 @@ Kullanıcı "son günlerde ne yaptık" gibi yakın dönem sorusu sorarsa `python
 
 ## Not ve görev yazma
 
-### Seçilen bilgilerden Workspace ana sayfası
+### Amaca uygun Workspace ana sayfası
+
+Kullanıcı bir çalışma alanı istediğinde önce anlattığı amacı ve izin verdiği mevcut dosya düzenini esas alın. Gösterilecek kayıtları, kaynak bağlantılarını, takip edilecek bilgileri, planı ve kişisel not bölümlerini bu amaca göre önerin; sabit bir konu, kayıt türü veya bölüm şablonu dayatmayın. Kullanıcının yapacağı işi, tarihleri veya ilerlemeyi uydurmayın; dosyanın varlığı açık görev anlamına gelmez. Yalnız dosya adlarını görme izni varsa içerikleri açmayın. Amaç taslak için yeterliyse taslağı gösterin; yalnız taslağı değiştirecek bir belirsizlik varsa soru sorun. Kullanıcının onayladığı düzeni normal `note-create`/`note-edit` ile kurun, asıllara göreli bağlantı verin. Yeni gerçek görev için `task-create` kullanın. Seçilmiş yapılandırılmış bilgi yoksa sırf `homepage-create` kullanmak için `facts` üretmeyin; sıradan Markdown ana sayfası yeterlidir.
+
+### Seçilmiş bilgileri esas kayda bağlama
 
 Kullanıcı bir ana sayfa istediğinde mevcut esas notları ve gösterilecek tek satırlık `facts` bilgilerini birlikte seçin. Yeni sayfa mı, kullanıcının seçtiği mevcut insan notuna ekleme mi istediğini belirleyin. Mevcut sayfa için önce `note-read` çalıştırıp dönen `sha256` değerini kullanın; yeni sayfada değer `null` olur. Seçilen kaynaklar aynı projede ve görünürlükte olmalıdır. Kaynakların hiçbirinde proje adı yoksa `project:null` yazın; sırf bağlamak için esas notların projesini değiştirmeyin.
 
@@ -54,6 +58,8 @@ Kullanıcı bir ana sayfa istediğinde mevcut esas notları ve gösterilecek tek
 ```
 
 İsteği geçici UTF-8 JSON dosyasına yazıp `python3 beyin.py homepage-create --file ISTEK_JSON` çalıştırın. Kaynak kimliği, değer ve gizli işaretleri isteğe eklemeyin; komut bunları güncel nottan okur. `written` ve `unchanged` başarılı sonuçtur. Çakışmada sayfayı ve kaynağı yeniden okuyup kullanıcının seçimini koruyarak yeni istek hazırlayın. Sayfadaki kişisel yazıyı silmeyin.
+
+Oluşan sayfada mevcut başlık ve gövde önde, her esas kayıt bağlı bir alt başlıkta, her bilgi ayrı maddede görünür. Düzenlenebilir değer esas kayda, kişisel not yalnız sayfaya aittir. Normal `note-edit`/`sync` iki yönü uzlaştırır; dosyayı yalnız açmak eşitleme değildir. Aynı bilginin iki farklı değeri için kullanıcıya yalnız ilgili çakışmayı ve seçenekleri sunun; seçimini o bilgiye uygulayın. Yeniden oluşturma mevcut sayfanın düzenini değiştirmez. CLI kabulü veya hazırlanmış bir taslak, otomatik konuşmalı kurulumun uçtan uca sınandığı anlamına gelmez.
 
 Kullanıcının seçtiği klasörü ve mevcut dosyaları koru. **Yeni görev için `task-create` kullan; görevi `note-create` ile oluşturma.** Geçici UTF-8 JSON dosyası hazırla ve `python3 beyin.py task-create --file TASK_JSON` çalıştır. Windows'ta `py -3 beyin.py task-create --file TASK_JSON` eşdeğerdir.
 

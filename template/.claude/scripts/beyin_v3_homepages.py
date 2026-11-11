@@ -30,6 +30,21 @@ def _display(value):
     return displayed
 
 
+def _markdown_text(value):
+    """Keep generated headings and labels literal inside Markdown formatting."""
+    escapes = {ord(character): '&#' + str(ord(character)) + ';' for character in '\\`*_[]#|'}
+    return html.escape(value, quote=False).translate(escapes)
+
+
+def _source_title(source, metadata, body):
+    title = metadata.get('title')
+    if isinstance(title, str) and title.strip() and not any(c in title for c in '\r\n'):
+        return title.strip()
+    first = next((line.strip() for line in body.splitlines() if line.strip()), '')
+    heading = re.fullmatch(r'# +(.+?)(?: +#+)?', first)
+    return heading[1] if heading else source.rsplit('/', 1)[-1][:-3]
+
+
 def cell(source, record_id, field, value, *, editable=False):
     """Render one selected fact; place its source link and personal note outside it."""
     binding = dict(source=source, record_id=record_id, field=field, base=value, editable=editable)
@@ -85,7 +100,7 @@ def _validate_request(engine, request):
         raise ValueError('new homepage requires a title and explicit project (or null)')
     for key in ('title', 'project'):
         if key in request and not (key == 'project' and request[key] is None) and (
-                not isinstance(request[key], str) or not request[key].strip() or '\n' in request[key]):
+                not isinstance(request[key], str) or not request[key].strip() or any(c in request[key] for c in '\r\n')):
             raise ValueError(key + ' must be one nonempty line')
     keys = set()
     for selection in selections:
@@ -104,8 +119,8 @@ def _validate_request(engine, request):
             field, label, editable = selected['field'], selected['label'], selected['editable']
             if not isinstance(field, str) or not field.startswith('facts.') or not field[6:] or any(c in field for c in '\r\n'):
                 raise ValueError('select an existing facts.<name> field')
-            if not isinstance(label, str) or not label.strip() or any(c in label for c in '\r\n|'):
-                raise ValueError('field label must be one nonempty table-safe line')
+            if not isinstance(label, str) or not label.strip() or any(c in label for c in '\r\n'):
+                raise ValueError('field label must be one nonempty line')
             if type(editable) is not bool:
                 raise ValueError('editable must be true or false')
             key = (source, field)
@@ -196,7 +211,7 @@ def _create_locked(engine, request):
     home['workspace_homepage'] = True
     with engine.store._connect() as db:
         indexed = {row[0]: row[1] for row in db.execute('SELECT source,id FROM markdown_sources')}
-    rows = []
+    groups = {}
     for selection in selections:
         source = selection['source']
         if source == page or source not in indexed:
@@ -204,35 +219,40 @@ def _create_locked(engine, request):
         snapshot = engine.note_read(source)
         if not snapshot['exists']:
             raise ValueError('selected source is missing')
-        metadata, _ = parse(snapshot['content'])
+        metadata, source_body = parse(snapshot['content'])
         record_id = _source_id(source, metadata)
         if record_id != indexed[source] or not _eligible(home, metadata):
             raise ValueError('selected source identity or scope changed')
+        if source not in groups:
+            relative = posixpath.relpath(source, posixpath.dirname(page) or '.')
+            link = quote(relative, safe='/')
+            groups[source] = ['### [' + _markdown_text(_source_title(source, metadata, source_body)) + '](' + link + ')', '']
         fields = selection['fields']
         for selected in fields:
             field, label, editable = selected['field'], selected['label'], selected['editable']
             value = _fact(metadata, field)
-            relative = posixpath.relpath(source, posixpath.dirname(page) or '.')
-            link = quote(relative, safe='/')
-            link_label = source.rsplit('/', 1)[-1][:-3].replace('\\', '\\\\').replace('[', '\\[').replace(']', '\\]')
-            rows.append('- [' + link_label + '](' + link + ') · ' +
-                        html.escape(label, quote=False) +
-                        (' (düzenlenebilir)' if editable else ' (salt okunur)') + ': ' +
-                        cell(source, record_id, field, value, editable=editable))
-    section = '\n## Seçilen bilgiler\n\n' + CREATION.pattern.replace('([0-9a-f]{64})', fingerprint) + '\n' + '\n'.join(rows) + '\n'
+            groups[source].append('- **' + _markdown_text(label) + ':** ' +
+                                  cell(source, record_id, field, value, editable=editable) +
+                                  (' _(düzenlenebilir)_' if editable else ' _(salt okunur)_'))
+    blocks = ['\n'.join(lines) + '\n\n**Kişisel notum:**\n' for lines in groups.values()]
+    section = ('## Seçilen bilgiler\n\n'
+               'Düzenlenebilir değerleri bu notta değiştirebilirsin; değişiklikler olağan '
+               'eşitlemede esas kayda işlenir. Kişisel notların yalnız bu sayfada kalır.\n\n' +
+               CREATION.pattern.replace('([0-9a-f]{64})', fingerprint) + '\n\n' + '\n'.join(blocks))
     if target['exists']:
-        old_header = target['content'][:-len(body)] if body else target['content']
-        if old_header:
-            new_header = render(home, '')
-            if old_header.startswith('\ufeff'):
-                new_header = '\ufeff' + new_header
-            replacement = new_header + section
-            return engine.note_edit({'source': page, 'expected_sha256': expected,
-                                     'edits': [{'old': old_header, 'new': replacement}]})
+        newline = '\r\n' if '\r\n' in target['content'] else '\n'
+        new_header = render(home, '')
+        if target['content'].startswith('\ufeff'):
+            new_header = '\ufeff' + new_header
+            if body.startswith('\ufeff'):
+                body = body[1:]
+        # Keep the human body byte for byte, then append the new section. A
+        # single SHA-checked anchor also handles an empty or header-only note.
+        separator = newline * (0 if body.endswith(newline * 2) else 1 if body.endswith(newline) else 2)
         return engine.note_edit({'source': page, 'expected_sha256': expected,
-                                 'edits': [{'old': target['content'], 'new': render(home, section + target['content'])}]})
+                                 'edits': [{'old': target['content'], 'new': new_header + body + separator + section.replace('\n', newline)}]})
     return engine.note_edit({'source': page, 'expected_sha256': None,
-                             'content': render(home, section)})
+                             'content': render(home, '# ' + _markdown_text(request['title']) + '\n\n' + section)})
 
 
 def _edit(engine, snapshot, old, new):
