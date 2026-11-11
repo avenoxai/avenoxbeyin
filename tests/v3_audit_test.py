@@ -417,6 +417,64 @@ class MemoryAuditorTest(unittest.TestCase):
                 self.assertEqual(len(findings), 1)
                 self.assertEqual(findings[0]['type'], 'near_duplicate')
 
+    def test_timestamp_parser_preserves_offsets_and_fractional_seconds(self):
+        expected = datetime(2026, 11, 11, 7, 0, 0, 250000, tzinfo=timezone.utc).timestamp()
+        for stamp in ('2026-11-11T07:00:00.250000Z', '2026-11-11T10:00:00.25+03:00',
+                      '2026-11-11 01:30:00.25-05:30', '2026-11-11T07:00:00.25'):
+            with self.subTest(stamp=stamp):
+                self.assertEqual(audit_module.parse_date_to_timestamp(stamp), expected)
+        midnight = datetime(2026, 11, 11, tzinfo=timezone.utc).timestamp()
+        for stamp in ('2026-11-11', '2026-11-11 00:00', '2026-11-11T00:00',
+                      '2026-11-11 00:00:00', '2026-11-11T00:00:00'):
+            with self.subTest(stamp=stamp):
+                self.assertEqual(audit_module.parse_date_to_timestamp(stamp), midnight)
+
+    def test_invalid_timestamp_suffix_does_not_establish_chronology(self):
+        for stamp in ('2026-11-11T07:00:00invalid', '2026-11-11T07:00:00+25:00',
+                      '2026-11-11T07:00:00+03:99', '2026-11-11T07:00:00.',
+                      '2026-02-30', '2026-11-11T25:00:00Z', '', None, 20261111):
+            with self.subTest(stamp=stamp):
+                self.assertIsNone(audit_module.parse_date_to_timestamp(stamp))
+
+    def _dated_pair(self, first, second, key='updated_at'):
+        for name, stamp, status in (('a', first, 'failed'), ('b', second, 'passed')):
+            (self.knowledge / (name + '.md')).write_text(
+                f'---\ntitle: Kuyruk\n{key}: {stamp}\nstatus: {status}\n---\n' + self.SHARED,
+                encoding='utf-8')
+
+    def test_offsets_order_actual_notes_and_installed_cli_by_instant(self):
+        self._dated_pair('2026-11-11T10:00:00+03:00', '2026-11-11T08:00:00Z')
+        before = {p.name: p.read_bytes() for p in self.knowledge.glob('*.md')}
+        direct = audit_module.audit_memory(self.vault, state=self.state)
+        result, code = self._cli_result(['audit'])
+        self.assertEqual(code, 0)
+        for report in (direct, result):
+            finding = report['findings'][0]
+            self.assertEqual(finding['older_note'], 'knowledge/a.md')
+            self.assertEqual(finding['newer_note'], 'knowledge/b.md')
+            self.assertEqual(finding['conflict']['direction'], 'negative_to_positive')
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.knowledge.glob('*.md')})
+
+    def test_equal_instants_with_different_offsets_are_not_status_changes(self):
+        for key in ('created', 'updated_at', 'modified'):
+            with self.subTest(key=key):
+                self._dated_pair('2026-11-11T10:00:00+03:00', '2026-11-11T07:00:00Z', key)
+                finding = audit_module.audit_memory(self.vault, state=self.state)['findings'][0]
+                self.assertEqual(finding['type'], 'near_duplicate')
+                self.assertNotIn('conflict', finding)
+
+    def test_fractional_seconds_establish_real_chronology(self):
+        self._dated_pair('2026-11-11T07:00:00.100Z', '2026-11-11T07:00:00.900Z')
+        finding = audit_module.audit_memory(self.vault, state=self.state)['findings'][0]
+        self.assertEqual(finding['type'], 'status_contradiction')
+        self.assertEqual(finding['conflict']['direction'], 'negative_to_positive')
+
+    def test_invalid_date_tail_is_unknown_not_a_status_change(self):
+        self._dated_pair('2026-11-11T07:00:00invalid', '2026-11-11T08:00:00Z')
+        finding = audit_module.audit_memory(self.vault, state=self.state)['findings'][0]
+        self.assertEqual(finding['type'], 'near_duplicate')
+        self.assertNotIn('conflict', finding)
+
     def test_asymmetric_size_notes_do_not_produce_false_duplicate_or_body_conflict(self):
         """Asymmetric pair (large document vs tiny note) must not be flagged as near-duplicate
 

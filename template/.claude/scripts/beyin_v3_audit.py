@@ -162,22 +162,18 @@ def _candidate(path: Path, rel_path: str, meta: dict, body: str) -> dict:
 
 
 def parse_date_to_timestamp(val: str | None) -> float | None:
-    if not val or not isinstance(val, str):
+    """Compare whole ISO dates/timestamps; timezone-free values retain the UTC default."""
+    if not isinstance(val, str):
         return None
     val_str = val.strip()
-    for fmt in (
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%d %H:%M",
-        "%Y-%m-%dT%H:%M",
-        "%Y-%m-%d",
-    ):
-        try:
-            dt = datetime.strptime(val_str[:19].replace('T', ' '), fmt[:len(val_str[:19].replace('T', ' '))])
-            return dt.replace(tzinfo=timezone.utc).timestamp()
-        except ValueError:
-            pass
-    return None
+    if not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[T ][0-9]{2}:[0-9]{2}'
+                        r'(?::[0-9]{2}(?:\.[0-9]+)?)?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])?)?', val_str):
+        return None
+    try:
+        dt = datetime.fromisoformat(val_str.replace('Z', '+00:00'))
+        return (dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt).timestamp()
+    except (ValueError, OverflowError):
+        return None
 
 
 def _index_excluded_predicate(state: Path | None, vault: Path):

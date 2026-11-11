@@ -84,6 +84,18 @@ with tempfile.TemporaryDirectory(prefix="beyin-v3-smoke-") as temporary:
     print("Synthetic CLI smoke passed; no hooks installed.")
 ```
 
+## Read-only memory audit
+
+`python3 beyin.py audit --human` compares eligible notes for overlap and possible
+status contradictions without editing them. `audit knowledge/note.md` limits the
+comparison to one note. Findings are advice, not independently verified facts.
+
+Chronology comes from each note's own creation/update metadata, never file mtime.
+ISO dates and timezone-free timestamps use UTC; timestamps with `Z` or a signed
+`HH:MM` offset are compared as instants, retaining fractional seconds. Equal or
+unknown dates do not establish a status change. Invalid date values, including
+unrecognized trailing text, do not establish chronology.
+
 ## JSON input and retrieval
 
 `ingest`, `receipt`, and `task-update` accept `--file input.json`; omitting the
