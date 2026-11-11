@@ -169,14 +169,27 @@ def _created_at(item: dict) -> float | None:
 
 
 def list_candidates(state: Path, session: str | None = None, status: str = "candidate", scope: str | None = None,
-                    since: float | None = None) -> list[dict]:
+                    since: float | None = None, *, strict: bool = False) -> list[dict]:
     """Read learning candidates matching session, status, and scope.
+
+    Explicit CLI reads opt into IO errors; hook callers remain best effort.
 
     `since` (epoch seconds) keeps only candidates staged at or after that moment. A "cli"
     candidate carries no session, so without it one old entry would match every later session.
     """
     ledger = Path(state) / LEARNING_STATE_FILE
-    if not ledger.is_file():
+    if strict:
+        # is_file suppresses more IO errors on newer Python versions. Keep absent
+        # and nonregular ledgers empty without hiding explicit read failures.
+        try:
+            regular = stat.S_ISREG(ledger.stat().st_mode)
+        except (FileNotFoundError, NotADirectoryError):
+            return []
+        except OSError as exc:
+            raise OSError('learning candidate listing failed') from exc
+        if not regular:
+            return []
+    elif not ledger.is_file():
         return []
     target_sess = _normalize_session(session) if session else None
     results = []
@@ -201,7 +214,9 @@ def list_candidates(state: Path, session: str | None = None, status: str = "cand
                     results.append(item)
                 except Exception:
                     continue
-    except OSError:
+    except OSError as exc:
+        if strict:
+            raise OSError('learning candidate listing failed') from exc
         return []
     return results
 

@@ -2142,7 +2142,7 @@ def main(argv=None, return_result=False):
                 result = stage_candidate(state, sess, args.candidate, source=args.source, scope=args.scope or "global")
             elif args.list:
                 list_sess = None if getattr(args, "all", False) else (args.session or None)
-                result = {"candidates": list_candidates(state, session=list_sess, scope=args.scope)}
+                result = {"candidates": list_candidates(state, session=list_sess, scope=args.scope, strict=True)}
             else:
                 raise ValueError("one of --candidate, --list, or --resolve is required")
         else:
