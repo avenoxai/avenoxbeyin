@@ -58,14 +58,15 @@ class HomepageTest(unittest.TestCase):
 
     def source_edit(self, field, value, *, name='aksam', cli=False):
         path = self.vault/('notes/'+name+'.md')
-        raw = path.read_text(encoding='utf-8')
+        raw_bytes = path.read_bytes()
+        raw = raw_bytes.decode('utf-8')
         metadata, body = parse(raw)
         metadata['facts'][field] = value
         new = render(metadata, body)
         if cli:
             request = Path(self.tmp.name)/'edit.json'
             request.write_text(json.dumps(dict(source=path.relative_to(self.vault).as_posix(),
-                expected_sha256=hashlib.sha256(raw.encode()).hexdigest(), edits=[dict(old=raw, new=new)])), encoding='utf-8')
+                expected_sha256=hashlib.sha256(raw_bytes).hexdigest(), edits=[dict(old=raw, new=new)])), encoding='utf-8')
             return self.cli('note-edit', '--file', str(request))
         path.write_text(new, encoding='utf-8')
 

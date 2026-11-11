@@ -93,9 +93,10 @@ class HomepageCreateTest(unittest.TestCase):
 
     def edit_source(self, name, old, new):
         path = self.vault / 'notes' / (name + '.md')
-        raw = path.read_text(encoding='utf-8')
+        raw_bytes = path.read_bytes()
+        raw = raw_bytes.decode('utf-8')
         req = {'source': path.relative_to(self.vault).as_posix(),
-               'expected_sha256': hashlib.sha256(raw.encode()).hexdigest(),
+               'expected_sha256': hashlib.sha256(raw_bytes).hexdigest(),
                'edits': [{'old': old, 'new': new}]}
         edit = Path(self.tmp.name) / 'edit.json'
         edit.write_text(json.dumps(req, ensure_ascii=False), encoding='utf-8')
@@ -156,7 +157,8 @@ class HomepageCreateTest(unittest.TestCase):
             for folder in ('aksam', 'gunduz')])
         self.create(req)
         self.assertEqual(self.linked_sources(), {
-            self.vault / 'notes/aksam/ilan.md', self.vault / 'notes/gunduz/ilan.md'})
+            (self.vault / 'notes/aksam/ilan.md').resolve(),
+            (self.vault / 'notes/gunduz/ilan.md').resolve()})
         text = self.home().read_text(encoding='utf-8')
         self.home().write_text(text.replace('-->12 Kasım<!--', '-->15 Kasım<!--', 1), encoding='utf-8')
         self.run_cli('sync', ok=True)
@@ -176,7 +178,7 @@ class HomepageCreateTest(unittest.TestCase):
         request = self.request(selections=[{'source': source.relative_to(self.vault).as_posix(),
             'fields': [{'field': 'facts.gorusme', 'label': 'Görüşme', 'editable': True}]}])
         self.create(request)
-        self.assertEqual(self.linked_sources(), {source})
+        self.assertEqual(self.linked_sources(), {source.resolve()})
         text = self.home().read_text(encoding='utf-8')
         self.assertIn('%23', text)
         self.assertIn('%5D', text)
