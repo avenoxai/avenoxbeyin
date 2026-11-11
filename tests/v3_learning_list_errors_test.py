@@ -70,6 +70,20 @@ class LearningListErrorsTest(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout), {'candidates': [self.record]})
 
     def test_embedded_cli_returns_sanitized_error_without_printing(self):
+        self.check_embedded_cli_read_error()
+
+    def test_embedded_cli_read_error_through_state_alias(self):
+        # macOS temporary paths can use /var while the CLI resolves /private/var.
+        alias = self.root / 'state-alias'
+        try:
+            alias.symlink_to(self.state, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest('directory symlink creation is unavailable')
+        self.state = alias
+        self.ledger = alias / learning.LEARNING_STATE_FILE
+        self.check_embedded_cli_read_error()
+
+    def check_embedded_cli_read_error(self):
         vault = self.root / 'vault'
         vault.mkdir()
         env = isolated_env(self.root / 'home')
@@ -80,9 +94,12 @@ class LearningListErrorsTest(unittest.TestCase):
         spec.loader.exec_module(cli)
         stdout, stderr = io.StringIO(), io.StringIO()
         original_open = open
+        ledger = self.ledger.resolve()
+        blocked_reads = []
 
         def unreadable(path, *args, **kwargs):
-            if Path(path) == self.ledger:
+            if Path(path).resolve() == ledger:
+                blocked_reads.append(path)
                 raise PermissionError(13, 'Private candidate canary', str(self.ledger))
             return original_open(path, *args, **kwargs)
 
@@ -90,6 +107,7 @@ class LearningListErrorsTest(unittest.TestCase):
             with patch('builtins.open', side_effect=unreadable):
                 result, code = cli.main(['--vault', str(vault), '--state', str(self.state),
                                          'learn', '--list'], return_result=True)
+        self.assertEqual(len(blocked_reads), 1)
         self.assertEqual(code, 1)
         self.assertEqual(result, {'error': 'OSError', 'message': 'learning candidate listing failed'})
         self.assertEqual((stdout.getvalue(), stderr.getvalue()), ('', ''))
