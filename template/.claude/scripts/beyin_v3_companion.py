@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import re
+import stat
 import sys
 import unicodedata
 
@@ -23,18 +24,32 @@ STARTERS = {
 }
 
 
-def directory(vault):
-    """Reuse one existing local identity directory; never guess between identities."""
+def directory(vault, *, strict=False):
+    """Reuse one existing local identity directory; never guess between identities.
+
+    Strict discovery lets read-only diagnostics report inaccessible candidates instead
+    of relying on pathlib predicates that suppress inspection errors on newer Python.
+    Other callers retain their existing best-effort behavior.
+    """
+    def is_type(path, kind):
+        if not strict:
+            return getattr(path, 'is_' + kind)()
+        try:
+            mode = path.stat(follow_symlinks=kind != 'symlink').st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+        return {'dir': stat.S_ISDIR, 'file': stat.S_ISREG, 'symlink': stat.S_ISLNK}[kind](mode)
+
     vault = Path(vault).resolve()
     candidates = []
     named = []
     for path in vault.iterdir():
-        if (path.name.startswith('.') or path.is_symlink() or not path.is_dir() or
+        if (path.name.startswith('.') or is_type(path, 'symlink') or not is_type(path, 'dir') or
                 re.search(r'(?i)(archive|arşiv|arsiv)', path.name)):
             continue
         if path.name == DEFAULT_DIRECTORY or path.name.casefold().endswith(('companion', 'echo')):
             named.append(path)
-        elif any((path / name).is_file() for name in ('Core.md', 'Soul.md')):
+        elif any(is_type(path / name, 'file') for name in ('Core.md', 'Soul.md')):
             candidates.append(path)
     candidates = named or candidates
     if len(candidates) > 1:

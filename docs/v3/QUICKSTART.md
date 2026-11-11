@@ -255,7 +255,8 @@ and `[text](path)` links that resolve to nothing inside the vault, and lists the
 with file and line under `instruction_references`. Code blocks, inline code,
 URLs and links that leave the vault are skipped. It is information only: it
 makes no model call, writes nothing and does not change the doctor status.
-If reading or decoding a discovered instruction file fails, the report is
+If discovering instruction files, building the visible note-path index, or
+reading or decoding an instruction file fails, the report is
 `status: unavailable` with only the exception type, rather than a successful
 partial link count. Human output also says the check could not complete;
 the file contents and raw error message are not printed.
