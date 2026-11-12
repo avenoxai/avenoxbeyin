@@ -4,7 +4,7 @@ Claude Code, Codex, Google Antigravity veya Kiro ile kullanabileceğin yerel iki
 
 Python **3.11 veya üzeri** yeterli. Git, pip, Mem0 hesabı, API anahtarı veya sürekli açık sunucu gerekmez. Kullandığın AI istemcisinin kendi kurulumu ve hesabı ayrı olarak gerekir.
 
-> **V3.12.0:** Yakala birden çok bağlantıyı ve isteğe bağlı pencere görüntüsünü birlikte kaydediyor; Windows dinleyicisi geçici hatalardan toparlanıyor, tarayıcı adres okuma desteği genişliyor. Aynı makinedeki ajanlar için hash kontrollü `note-read` / `note-edit`, yerel hafıza denetimi (`audit`), öğrenim adayları (`learn`) ve isteğe bağlı düz günlük düzeni geldi. Mevcut kurulumda vault içinde `python3 beyin.py update` çalıştır; yakala kullanıyorsan ardından bir kez `python3 beyin.py yakala kur`. [Sürüm notları](docs/v3/releases/3.12.0.md) · [Yakala](docs/v3/YAKALA.md) · [Güncelleme rehberi](docs/v3/UPDATE.md).
+> **V3.13.0:** Yakala kartları isteğe bağlı olarak Claude Code ya da Codex ajanına devredilebiliyor (Ctrl+Enter, önizlemeli toplu gönderim, açık izinle müzik tanıma), Word belgelerinden metin çıkarılıyor. Pi istemcisi, OpenCode global köprüsü, isteğe bağlı yerel web görünümü (`web ac`), çalışma alanı komutları (`workspace`, `lint`, `moc`) ve salt okunur `beyin-kontrol` skill'i geldi; açılış bağlamı bütün kuralları, açık konuları ve en yeni devir kartını önce ayırıyor, yerel indeks sınırlı olay geçmişiyle büyümüyor. Mevcut kurulumda vault içinde `python3 beyin.py update` çalıştır; yakala kullanıyorsan ardından bir kez `python3 beyin.py yakala kur`. [Sürüm notları](docs/v3/releases/3.13.0.md) · [Yakala](docs/v3/YAKALA.md) · [Güncelleme rehberi](docs/v3/UPDATE.md).
 
 ## En kolay kurulum: bir klasör, bir mesaj
 
