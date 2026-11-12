@@ -470,6 +470,9 @@ def human_result(result, command, installed_version=None):
                          ' karakter) en fazla ' + str(rules_opening['share']) + ' karakterini tam gosterir, aradaki kurallar atlanir' +
                          (' (gerekceler de cikarildi)' if rules_opening.get('reasons_omitted') else '') +
                          '. Kurallari kisa tut; uzun gerekceyi ve ayrintiyi ayri bir nota (or. Kurallar-Detay.md) tasi.')
+        elif rules_opening.get('status') == 'stale':
+            lines.append('Kurallar.md degisti ancak sync calistirilmamis (bilgi): kayitli kurallar guncel degil. '
+                         'python3 beyin.py sync calistirin, sonra tekrar doctor calistirin.')
         references = result.get('instruction_references') or {}
         if references.get('dead_count'):
             shown = ', '.join(entry['file'] + ':' + str(entry['line']) + ' -> ' + entry['target']

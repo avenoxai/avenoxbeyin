@@ -11,7 +11,7 @@ FLOORS = {'Kurallar.md': .4, 'Last-Session.md': .15, 'Threads.md': .12, 'Core.md
 # Hygiene limits in characters for the two handoff files that are meant to be rewritten,
 # not appended to (#96). Rules, identity and the Journal accumulate by design and are only
 # measured. 0 turns a limit off; beyin.py preferences changes them.
-LIMITS = {'Last-Session.md': 3000, 'Threads.md': 8000}
+LIMITS = {'Last-Session.md': 3000, 'Threads.md': 8000, 'Kurallar.md': 4000}
 LIMIT_RANGE = (1000, 200000)
 DEFAULT_DIRECTORY = '🔮 850-Companion'
 STARTERS = {
@@ -931,6 +931,8 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         text, rules = regained, regained_rules
     if report is not None and rules:
         report['Kurallar.md'] = rules
+        if snapshot['stale_excluded']:
+            report['_stale_excluded'] = True
     if rules and rules.get('clipped'):
         rules_line = hygiene_notice(None, rules=rules)
         full_header = (hygiene_line + rules_line + warning + f'Receipt session={session}; choose --harness for the current client.\n'
@@ -953,4 +955,4 @@ def rules_opening(store, budget, receipt=''):
     are now. None without a rules section."""
     report = {}
     context(store, budget, '0' * 24, 'claude', receipt=receipt, report=report)
-    return report.get('Kurallar.md')
+    return report.get('Kurallar.md'), bool(report.get('_stale_excluded'))
