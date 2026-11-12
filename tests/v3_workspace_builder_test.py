@@ -142,7 +142,8 @@ class WorkspaceBuilderTest(unittest.TestCase):
             raise RuntimeError('verification failed')
         with patch.object(workspaces, 'inspect_workspace', break_scope_file):
             with self.assertRaises(workspaces.WorkspaceProvisionError) as caught:
-                workspaces.provision_workspace(self.vault, 'alpha')
+                workspaces.provision_workspace(self.vault, 'alpha', name='Research Lab', kind='research',
+                                               sources=['papers'], rules='- Cite sources')
         report = caught.exception.workspace_reconciliation
         self.assertEqual(report['rollback'], 'incomplete')
         self.assertEqual(report['registry'], 'kept_failed')
@@ -159,6 +160,9 @@ class WorkspaceBuilderTest(unittest.TestCase):
         self.assertEqual((result['status'], result['verified'], result.get('resumed')), ('provisioned', True, True))
         info = workspaces.inspect_workspace(self.vault, 'alpha')
         self.assertEqual(info['provision']['status'], 'complete')
+        self.assertEqual((info['name'], info['kind']), ('Research Lab', 'research'))
+        self.assertIn('papers', info['sources'])
+        self.assertIn('Cite sources', (self.vault / info['rules_file']).read_text(encoding='utf-8'))
         self.assertTrue(info['rules_exist'])
         with self.assertRaisesRegex(ValueError, 'already exists'):
             workspaces.provision_workspace(self.vault, 'alpha')
@@ -174,6 +178,111 @@ class WorkspaceBuilderTest(unittest.TestCase):
         self.assertTrue(result['resumed'])
         self.assertEqual({item['status'] for item in result['files']}, {'preserved'})
         self.assertEqual(sorted(result['workspace']['sources']), ['notes/alpha', 'projects/alpha'])
+
+    def test_custom_plan_survives_interruptions_at_each_provision_phase(self):
+        for phase in ('_make_dirs', '_bind', '_finish_provision'):
+            with self.subTest(phase=phase):
+                vault = self.vault / phase
+                vault.mkdir()
+                options = dict(name='Research Lab', kind='research', sources=['papers'],
+                               description='Original research', rules='- Preserve citations')
+                with patch.object(workspaces, phase, side_effect=KeyboardInterrupt):
+                    with self.assertRaises(KeyboardInterrupt):
+                        workspaces.provision_workspace(vault, 'alpha', **options)
+                # Later vault structure changes must not change the original scaffold path.
+                (vault / '🏰 300-Projects').mkdir()
+                result = workspaces.manage(vault, 'provision', 'alpha')
+                self.assertTrue(result['verified'])
+                self.assertTrue(result['resumed'])
+                self.assertEqual(result['workspace']['name'], 'Research Lab')
+                self.assertEqual(result['workspace']['kind'], 'research')
+                self.assertEqual(sorted(result['workspace']['sources']),
+                                 ['notes/alpha', 'papers', 'projects/alpha'])
+                rules = (vault / 'projects/alpha/Kurallar.md').read_text(encoding='utf-8')
+                self.assertIn('Original research', rules)
+                self.assertIn('Preserve citations', rules)
+                self.assertIn('Research Lab', rules)
+                self.assertIn('research', rules)
+                self.assertIn('papers', rules)
+                self.assertFalse((vault / '🏰 300-Projects/alpha').exists())
+
+    def test_failed_resume_keeps_custom_plan_and_user_content(self):
+        with patch.object(workspaces, '_make_dirs', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                workspaces.provision_workspace(self.vault, 'alpha', name='Research Lab',
+                                               kind='research', sources=['papers'], rules='- Cite sources')
+        with patch.object(workspaces, '_bind', side_effect=RuntimeError('binding failed')):
+            with self.assertRaises(workspaces.WorkspaceProvisionError):
+                workspaces.provision_workspace(self.vault, 'alpha')
+        self.assertEqual(workspaces.inspect_workspace(self.vault, 'alpha')['provision']['status'], 'failed')
+        rules = self.vault / 'projects/alpha/Kurallar.md'
+        rules.parent.mkdir(parents=True)
+        rules.write_text('# User edited rules\n', encoding='utf-8')
+        result = workspaces.provision_workspace(self.vault, 'alpha')
+        self.assertEqual(result['workspace']['name'], 'Research Lab')
+        self.assertEqual(result['workspace']['kind'], 'research')
+        self.assertIn('papers', result['workspace']['sources'])
+        self.assertEqual(rules.read_text(encoding='utf-8'), '# User edited rules\n')
+        self.assertIn('Research Lab', (rules.parent / 'MOC.md').read_text(encoding='utf-8'))
+
+    def test_resume_rejects_conflicting_options_without_mutation(self):
+        options = dict(name='Research Lab', kind='research', sources=['papers'],
+                       description='Original research', rules='- Cite sources')
+        with patch.object(workspaces, '_bind', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                workspaces.provision_workspace(self.vault, 'alpha', **options)
+        def snapshot():
+            return {p.relative_to(self.vault).as_posix(): p.read_bytes()
+                    for p in self.vault.rglob('*') if p.is_file()}
+        before = snapshot()
+        for changed in (dict(name='Other'), dict(kind='general'), dict(sources=['other']),
+                        dict(description='Other'), dict(rules='- Other')):
+            with self.subTest(changed=changed):
+                with self.assertRaisesRegex(ValueError, 'conflict with the saved plan'):
+                    workspaces.provision_workspace(self.vault, 'alpha', **changed)
+                self.assertEqual(snapshot(), before)
+        self.assertTrue(workspaces.provision_workspace(self.vault, 'alpha', **options)['verified'])
+
+    def test_resume_revalidates_saved_paths_and_refuses_missing_plan(self):
+        with patch.object(workspaces, '_bind', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                workspaces.provision_workspace(self.vault, 'alpha', sources=['papers'])
+        registry_path = self.vault / workspaces.WORKSPACES_FILE
+        original = json.loads(registry_path.read_text(encoding='utf-8'))
+        for field, value in (('project_parent', '../outside'), ('sources', ['../outside']),
+                             ('project_parent', str(self.vault.parent / 'outside'))):
+            with self.subTest(field=field, value=value):
+                registry = json.loads(json.dumps(original))
+                registry['workspaces']['alpha']['provision']['plan'][field] = value
+                registry_path.write_text(json.dumps(registry), encoding='utf-8')
+                before = registry_path.read_bytes()
+                with self.assertRaisesRegex(ValueError, 'vault-relative'):
+                    workspaces.provision_workspace(self.vault, 'alpha')
+                self.assertEqual(registry_path.read_bytes(), before)
+                self.assertFalse((self.vault.parent / 'outside').exists())
+        del original['workspaces']['alpha']['provision']['plan']
+        registry_path.write_text(json.dumps(original), encoding='utf-8')
+        before = registry_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'without a valid saved plan'):
+            workspaces.provision_workspace(self.vault, 'alpha')
+        self.assertEqual(registry_path.read_bytes(), before)
+
+    def test_resume_rejects_saved_source_replaced_by_external_symlink(self):
+        with patch.object(workspaces, '_make_dirs', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                workspaces.provision_workspace(self.vault, 'alpha', sources=['papers'])
+        outside = self.vault.parent / 'outside'
+        outside.mkdir()
+        try:
+            (self.vault / 'papers').symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest('symlink creation unavailable')
+        registry_path = self.vault / workspaces.WORKSPACES_FILE
+        before = registry_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'remain inside the vault'):
+            workspaces.provision_workspace(self.vault, 'alpha')
+        self.assertEqual(registry_path.read_bytes(), before)
+        self.assertEqual(list(outside.iterdir()), [])
 
     def test_provision_refuses_folder_owned_by_another_project_before_writing(self):
         (self.vault / 'projects/alpha').mkdir(parents=True)
