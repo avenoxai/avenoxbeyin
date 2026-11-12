@@ -226,3 +226,16 @@ veya uzak dosya sistemi için mutlak kalıcılık garantisi değildir. Windows't
 Açık bir `learn --resolve distilled|discarded` isteğinde aday defterinin varlığını denetleme veya mevcut defteri okuma, kilitleme ya da yazma işlemi bir G/Ç hatasıyla başarısız olursa komut çıkış 1 verir. JSON hatası, özel dosya yolu veya defter içeriği yerine sabit `learning candidate resolution failed` mesajını taşır. Başarılı sonuçlandırma, hatasız tamamlanan eşleşmesiz istek ve defterin bulunmaması mevcut sonuçlarını ve çıkış 0 davranışını korur. Eşleşme bulunmasa da mevcut yeniden yazma adımı çalışır; bu adımın G/Ç hatası da çıkış 1 verir. Receipt'in otomatik aday takibi isteğe bağlı kalır; sonuçlandırma hatası kalıcı receipt'i geri almaz veya başarısız saymaz. Defter biçimi ve yazma/tekrar davranışı değişmez.
 
 Açık `learn --list` isteği de mevcut aday defterinin denetimi veya okunması G/Ç hatasıyla başarısız olduğunda çıkış 1 ve özel yol/içerik içermeyen sabit `learning candidate listing failed` mesajı verir. Bulunmayan veya normal dosya olmayan defter boş liste olarak kalır. Başarılı filtreleme, bozuk satırların atlanması ve hook aday kontrollerinin mevcut en iyi çaba davranışı değişmez.
+
+## Memory audit read errors
+
+An explicit `beyin.py audit` fails with exit 1 and `audit source scan failed` when a
+candidate note cannot be read or directory enumeration reports an I/O error. It
+does not return partial findings as a complete audit or call the memory balanced.
+The error includes no raw filesystem message or source contents. Check local file
+and directory access, then rerun the audit. User notes are not modified.
+
+Healthy report fields, excluded directories, private/untrusted/generated/retired
+note filtering, and the existing skip behavior for invalid frontmatter are
+unchanged. The lower-level `scan_audit_candidates` helper keeps its best-effort
+default; the explicit audit uses its keyword-only `strict=True` option.

@@ -95,7 +95,12 @@ def parse_frontmatter_and_body(text: str) -> tuple[dict, str]:
     return meta, body.strip()
 
 
-def _auditable(path: Path, rel_path: str) -> tuple[dict, str] | None:
+def _scan_error(_error):
+    """An incomplete explicit audit is not a healthy report; never expose raw file errors."""
+    raise OSError('audit source scan failed') from None
+
+
+def _auditable(path: Path, rel_path: str, *, strict: bool = False) -> tuple[dict, str] | None:
     """(metadata, body) when a note may appear in the report, else None.
 
     The context boundary, not a looser copy of it: no symlink (the folder check would name
@@ -106,7 +111,11 @@ def _auditable(path: Path, rel_path: str) -> tuple[dict, str] | None:
         return None
     try:
         meta, body = parse_frontmatter_and_body(path.read_text(encoding='utf-8', errors='replace'))
-    except (OSError, ValueError):
+    except OSError as exc:
+        if strict:
+            _scan_error(exc)
+        return None
+    except ValueError:
         return None
     if meta.get('visibility', 'internal') not in ('public', 'internal') or not _trusted_record(meta):
         return None
@@ -184,13 +193,13 @@ def _index_excluded_predicate(state: Path | None, vault: Path):
     return lambda name: dir_key(name) in keys
 
 
-def scan_audit_candidates(vault: Path, state: Path | None = None) -> list[dict]:
-    """Scan auditable markdown notes from the vault while enforcing safety and boundary rules."""
+def scan_audit_candidates(vault: Path, state: Path | None = None, *, strict: bool = False) -> list[dict]:
+    """Scan eligible notes; strict reads report incomplete file reads or directory enumeration."""
     vault = Path(vault).resolve()
     candidates = []
     is_index_excluded = _index_excluded_predicate(state, vault)
 
-    for root_str, dirs, files in os.walk(vault):
+    for root_str, dirs, files in os.walk(vault, onerror=_scan_error if strict else None):
         root_path = Path(root_str)
         # Prune system/excluded directories
         pruned_dirs = []
@@ -213,7 +222,7 @@ def scan_audit_candidates(vault: Path, state: Path | None = None) -> list[dict]:
             except ValueError:
                 rel_path = full_path.as_posix()
 
-            checked = _auditable(full_path, rel_path)
+            checked = _auditable(full_path, rel_path, strict=strict)
             if checked is None:
                 continue
             candidates.append(_candidate(full_path, rel_path, *checked))
@@ -397,7 +406,7 @@ def audit_memory(
     if limit < 0:
         raise ValueError("limit must be nonnegative")
 
-    candidates = scan_audit_candidates(vault, state=state)
+    candidates = scan_audit_candidates(vault, state=state, strict=True)
     target_rel = None
     target_candidate = None
 
@@ -424,7 +433,7 @@ def audit_memory(
         if target_candidate is None:
             # A folder the scan skips by name (daily/, archive/) may still be audited on request,
             # but never a note the context itself would not show.
-            checked = _auditable(given, target_rel)
+            checked = _auditable(given, target_rel, strict=True)
             if checked is None:
                 raise ValueError("audit target is private, untrusted, retired, generated, a symlink or unreadable")
             target_candidate = _candidate(target_path, target_rel, *checked)
