@@ -497,9 +497,9 @@ class WebLifecycleTest(unittest.TestCase):
 
     def test_a_legacy_windows_code_page_never_fails_the_command(self):
         # A piped or redirected Windows stdout writes cp1252 (no ı or ş); agent shells always pipe.
-        def legacy(*argv):
+        def legacy(*argv, newline=None):
             buffer = io.BytesIO()
-            stream = io.TextIOWrapper(buffer, encoding='cp1252', errors='strict')
+            stream = io.TextIOWrapper(buffer, encoding='cp1252', errors='strict', newline=newline)
             with patch('sys.stdout', stream):
                 try:
                     code = web.main(list(argv), vault=self.vault, state=self.state, cli=CLI)
@@ -508,8 +508,13 @@ class WebLifecycleTest(unittest.TestCase):
                 stream.flush()
             return code, buffer.getvalue()
 
-        code, output = legacy('durum')
-        self.assertEqual((code, output.decode('cp1252')), (0, 'Web görünümü çal??m?yor.\n'))
+        # Check the native default plus both line endings on every platform. Encoding
+        # fallback must preserve the stream's newline policy, not force POSIX bytes.
+        for newline in (None, '\n', '\r\n'):
+            with self.subTest(newline=newline):
+                code, output = legacy('durum', newline=newline)
+                self.assertEqual((code, output.decode('cp1252')),
+                                 (0, 'Web görünümü çal??m?yor.' + (newline or os.linesep)))
         code, output = legacy('--help')
         self.assertEqual(code, 0)
         self.assertIn('?ste?e ba?l? yerel web görünümü', output.decode('cp1252'))

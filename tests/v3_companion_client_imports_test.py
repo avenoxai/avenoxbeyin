@@ -45,9 +45,12 @@ class ClientImportsTest(unittest.TestCase):
         path = self.vault / link
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            os.symlink(target, path)
+            # Windows stores relative symlink targets verbatim: use native separators.
+            os.symlink(Path(target), path)
         except (OSError, NotImplementedError):
             self.skipTest('symbolic links unavailable')
+        self.assertTrue(path.is_symlink())
+        self.assertEqual(path.resolve(strict=True), (path.parent / target).resolve(strict=True))
 
     def seed(self):
         self.rules = [f'- Kural {i}: Şifre ve Müşteri ayrıntısını koru, sentetik talimat {i}.' for i in range(30)]
