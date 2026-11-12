@@ -262,7 +262,7 @@ def _view(workspace_id, entry, folders, registered):
     view["sources"] = [_scope_path(folder) for folder, project in folders.items() if project == workspace_id]
     view["registered"] = registered
     if isinstance(view.get("provision"), dict):
-        view["provision"] = {key: value for key, value in view["provision"].items() if key != "token"}
+        view["provision"] = {key: value for key, value in view["provision"].items() if key not in ("token", "plan")}
     return view
 
 
@@ -438,7 +438,7 @@ def plan_workspace(vault_root, workspace_id, kind="general", name=None, descript
     return _plan(vault_root, workspace_id, kind, name, description, sources, rules)
 
 
-def _plan(vault_root, workspace_id, kind="general", name=None, description=None, sources=None, rules=None, resume=False):
+def _plan(vault_root, workspace_id, kind="general", name=None, description=None, sources=None, rules=None, resume=False, project_parent=None):
     workspace_id = _validate_id(workspace_id)
     _validate_kind(kind)
 
@@ -449,7 +449,8 @@ def _plan(vault_root, workspace_id, kind="general", name=None, description=None,
     desc = description.strip() if isinstance(description, str) and description.strip() else f"{display_name} çalışma alanı"
 
     # Default folders
-    default_project_dir = f"{_project_parent(vault_root)}/{workspace_id}"
+    parent = _scope_path(project_parent) if project_parent is not None else _project_parent(vault_root)
+    default_project_dir = f"{parent}/{workspace_id}"
     default_note_dir = f"notes/{workspace_id}"
 
     source_list = []
@@ -628,7 +629,8 @@ def _compensate(root, workspace_id, token, resumed, created_dirs, created_files,
             report["errors"].append(f"{WORKSPACES_FILE}: record changed during provisioning")
         elif resumed or report["errors"] or report["kept_bindings"]:
             # Leftovers stay attached to a visible, resumable record instead of an anonymous binding.
-            entry["provision"] = {"status": "failed", "failed_at": _now(), "error": str(error)[:300]}
+            entry["provision"] = {"status": "failed", "failed_at": _now(), "error": str(error)[:300],
+                                  "plan": entry["provision"]["plan"]}
             _save_registry(root, registry)
             report["registry"] = "kept_failed"
         else:
@@ -647,7 +649,7 @@ def _compensate(root, workspace_id, token, resumed, created_dirs, created_files,
 
 
 @_serialized_write
-def provision_workspace(vault_root, workspace_id, kind="general", name=None, description=None, sources=None, rules=None, dry_run=False):
+def provision_workspace(vault_root, workspace_id, kind=None, name=None, description=None, sources=None, rules=None, dry_run=False):
     """Provision a workspace with compensating rollback, template scaffolding and verification (RFC #368 P0-D).
 
     A registry record marked ``provision.status: pending`` is written before the first
@@ -655,15 +657,40 @@ def provision_workspace(vault_root, workspace_id, kind="general", name=None, des
     are undone (unchanged files it created, empty directories it created, bindings that
     still name the workspace, its own pending record); concurrent changes by others are
     kept. Anything left behind is reported in ``workspace_reconciliation`` and the record
-    stays ``failed``; running the same provision command again resumes it.
+    stays ``failed``. The validated planner inputs survive both states, so the ID-only
+    recovery command resumes the original request; conflicting options fail before writing.
+    Older interrupted records without saved inputs fail closed because their original
+    source folders and custom rules cannot be recovered reliably.
     """
     vault_root = Path(vault_root)
     workspace_id = _validate_id(workspace_id)
     previous = _read_registry(vault_root)[0]["workspaces"].get(workspace_id)
     resume = (isinstance(previous, dict)
               and (previous.get("provision") or {}).get("status") in RESUMABLE_PROVISION_STATES)
-    plan = _plan(vault_root, workspace_id, kind=kind, name=name, description=description,
-                 sources=sources, rules=rules, resume=resume)
+    requested = dict(kind=kind, name=name, description=description, sources=sources, rules=rules)
+    if resume:
+        # Persist planner inputs, never arbitrary output paths/content instructions. Rebuild
+        # through the same validation used by a fresh request, including containment below.
+        saved = previous["provision"].get("plan")
+        fields = {"kind", "name", "description", "sources", "rules", "project_parent"}
+        if (not isinstance(saved, dict) or set(saved) != fields
+                or not all(isinstance(saved[key], str) for key in fields - {"sources", "rules"})
+                or (saved["rules"] is not None and not isinstance(saved["rules"], str))
+                or not isinstance(saved["sources"], list) or not saved["sources"]
+                or not all(isinstance(source, str) for source in saved["sources"])):
+            raise ValueError("workspace provision cannot resume without a valid saved plan; inspect the workspace registry")
+        plan = _plan(vault_root, workspace_id, **saved, resume=True)
+        candidate = dict(saved)
+        candidate.update({key: value for key, value in requested.items() if value is not None})
+        if _plan(vault_root, workspace_id, **candidate, resume=True) != plan:
+            raise ValueError("workspace provision options conflict with the saved plan; resume with the workspace ID only")
+    else:
+        plan = _plan(vault_root, workspace_id, **dict(requested, kind=kind if kind is not None else "general"))
+        saved = {
+            "kind": plan["kind"], "name": plan["name"], "description": plan["description"],
+            "sources": plan["sources"], "rules": rules if isinstance(rules, str) else None,
+            "project_parent": Path(plan["rules_file"]).parent.parent.as_posix(),
+        }
     if dry_run:
         result = {"status": "dry_run", "action": "provision", "plan": plan}
         if resume:
@@ -700,7 +727,7 @@ def provision_workspace(vault_root, workspace_id, kind="general", name=None, des
         "note_roots": plan["note_roots"],
         "memory_policy": plan["memory_policy"],
         "updated_at": now,
-        "provision": {"status": "pending", "token": token, "started_at": now},
+        "provision": {"status": "pending", "token": token, "started_at": now, "plan": saved},
     })
     registry["workspaces"][workspace_id] = entry
     _save_registry(root, registry)
@@ -837,7 +864,7 @@ def manage(
         return provision_workspace(
             vault_root,
             workspace_id,
-            kind=(kind or "general"),
+            kind=kind,
             name=name,
             description=description,
             sources=sources,
