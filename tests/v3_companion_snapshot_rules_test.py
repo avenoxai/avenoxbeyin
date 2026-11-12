@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from v3_package_helpers import inherited_env
+from v3_package_helpers import inherited_env, without_hook_clock
 
 ROOT = Path(os.environ.get('BEYIN_TEST_REPO', Path(__file__).resolve().parents[1]))
 COMPANION = '🔮 850-Companion'
@@ -147,7 +147,8 @@ class SnapshotTest(unittest.TestCase):
         self.write('Kurallar.md', rules_file(45600)[0])
         report = {}
         text = companion.context(self.store, 5000, '0' * 24, 'claude', report=report)
-        self.assertEqual(text, companion.context(self.store, 5000, '0' * 24, 'claude'))
+        self.assertEqual(without_hook_clock(text),
+                         without_hook_clock(companion.context(self.store, 5000, '0' * 24, 'claude')))
         rules = report['Kurallar.md']
         self.assertTrue(rules['clipped'])
         self.assertEqual(rules['chars'], len(rules_file(45600)[0]))

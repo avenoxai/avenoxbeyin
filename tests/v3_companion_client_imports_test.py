@@ -185,6 +185,10 @@ class ClientImportsTest(unittest.TestCase):
         self.assertIn('projects/Alfa/Kurallar.md', self.imports(cwd=self.vault / 'projects/Alfa'))
         self.assertNotIn('projects/Alfa/Kurallar.md', self.imports())
 
+    # Tiny budgets may truncate the receipt header, so keep its full real-sized
+    # input deterministic instead of stripping output after budget allocation.
+    @patch.object(companion, 'receipt_header',
+                  lambda session: f'Receipt session={session}; now=2026-11-12 15:18 +0000; ')
     def test_import_candidates_cannot_replace_source_text_or_change_allocation(self):
         self.seed()
         escaped = DIRECTORY.replace(' ', chr(92) + ' ')
