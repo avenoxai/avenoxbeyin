@@ -80,6 +80,58 @@ class StandaloneCliTest(unittest.TestCase):
         self.assertEqual(list(self.runner.parent.glob('*.py')), [self.runner])
         self.assertEqual(self.runner.read_bytes(), SOURCE.read_bytes())
 
+    def test_file_card_keeps_valid_utf8_and_warns_about_invalid_attachment(self):
+        bad = self.root / 'bozuk.txt'
+        plain = self.root / 'duz.txt'
+        bom = self.root / 'bom.txt'
+        bad.write_bytes(b'GIZLI-BOZUK-\xff-ICERIK')
+        plain.write_bytes('Düz geçerli içerik'.encode('utf-8'))
+        bom.write_bytes(b'\xef\xbb\xbf' + 'BOM geçerli içerik'.encode('utf-8'))
+
+        captured = self.command('ekle', str(bad), str(plain), str(bom))
+        row = self.command('isle', captured['id'], '--ses-yok')['kartlar'][0]
+        card = (self.vault / captured['path']).read_text(encoding='utf-8')
+        raw = (self.vault / row['ham']).read_text(encoding='utf-8')
+
+        self.assertEqual(row['durum'], 'cikarildi')
+        self.assertIn('bozuk.txt: okunamadı (UTF-8)', row['not'])
+        self.assertIn('bozuk.txt: okunamadı (UTF-8)', card)
+        self.assertIn('Düz geçerli içerik', raw)
+        self.assertIn('BOM geçerli içerik', raw)
+        self.assertNotIn('\ufeff', raw)
+        self.assertNotIn('GIZLI-BOZUK', raw)
+        self.assertNotIn('\ufffd', raw)
+
+        copied_bad = next(self.vault.rglob('bozuk.txt'))
+        copied_bad.write_text('Düzeltilmiş içerik', encoding='utf-8')
+        retried = self.command('isle', captured['id'], '--tekrar', '--ses-yok')['kartlar'][0]
+        self.assertNotIn('not', retried)
+        self.assertNotIn('uyari:', (self.vault / captured['path']).read_text(encoding='utf-8'))
+        self.assertIn('Düzeltilmiş içerik', (self.vault / retried['ham']).read_text(encoding='utf-8'))
+
+    def test_file_card_with_only_invalid_utf8_warns_without_stale_raw_reference(self):
+        source = self.root / 'tek.txt'
+        source.write_text('İlk geçerli içerik', encoding='utf-8')
+        captured = self.command('ekle', str(source))
+        first = self.command('isle', captured['id'], '--ses-yok')['kartlar'][0]
+        self.assertIn('ham', first)
+
+        copied = next(self.vault.rglob('tek.txt'))
+        copied.write_bytes(b'BOZUK-\xff-ICERIK')
+        row = self.command('isle', captured['id'], '--tekrar', '--ses-yok')['kartlar'][0]
+        card = (self.vault / captured['path']).read_text(encoding='utf-8')
+        self.assertEqual((row['durum'], row['yontem']), ('cikarildi', 'ajan-okusun'))
+        self.assertIn('tek.txt: okunamadı (UTF-8)', row['not'])
+        self.assertIn('tek.txt: okunamadı (UTF-8)', card)
+        self.assertNotIn('ham:', card)
+        self.assertNotIn('BOZUK', (self.vault / first['ham']).read_text(encoding='utf-8'))
+
+        copied.write_text('Tekrar geçerli içerik', encoding='utf-8')
+        retried = self.command('isle', captured['id'], '--tekrar', '--ses-yok')['kartlar'][0]
+        self.assertNotIn('not', retried)
+        self.assertNotIn('uyari:', (self.vault / captured['path']).read_text(encoding='utf-8'))
+        self.assertIn('Tekrar geçerli içerik', (self.vault / retried['ham']).read_text(encoding='utf-8'))
+
     def test_copied_cli_help_and_empty_listing_do_not_require_available_vault(self):
         missing = self.root / 'not-mounted'
         before = self.snapshot(self.root)

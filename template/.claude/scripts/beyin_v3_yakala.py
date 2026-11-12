@@ -1903,12 +1903,17 @@ def extract(vault, card, found, allow_audio=True, info=None):
     if kind == 'dosya':
         parts = []
         document_issues = []
-        read_docx = False
+        warnings = []
         vault_root = Path(vault).resolve()
         for link in re.findall(r'\[\[([^\]]+)\]\]', _section(body, 'Dosyalar')):
             path = _card_file(vault_root, card, link)
             if path.suffix.lower() in ('.md', '.txt', '.csv', '.json', '.html', '.srt', '.vtt'):
-                parts.append('## ' + path.name + '\n\n' + path.read_text(encoding='utf-8', errors='replace'))
+                try:
+                    content = path.read_text(encoding='utf-8-sig')
+                except UnicodeDecodeError:
+                    warnings.append(f'{path.name}: okunamadı (UTF-8)')
+                else:
+                    parts.append('## ' + path.name + '\n\n' + content)
             elif path.suffix.lower() == '.pdf' and found['pdftotext']:
                 try:
                     code, out, _ = _run([found['pdftotext'], '-layout', str(path), '-'], timeout=120)
@@ -1923,22 +1928,19 @@ def extract(vault, card, found, allow_audio=True, info=None):
                     continue
                 with path.open('rb') as source:
                     result = reader.extract_docx(source.read(reader.MAX_SOURCE + 1))
-                read_docx = True
                 if result['text']:
                     parts.append('## ' + path.name + '\n\n' + result['text'])
                 if result['state'] != 'ready':
                     document_issues.append(path.name + ': ' + ', '.join(result['issues']))
-        if parts:
-            note = None
-            if document_issues:
-                note = ('; '.join(document_issues) +
-                        '; cikarilan metin eksik olabilir, kalan icerik icin dosyayi ajan incelesin.')
-            if read_docx and info is not None:
-                info['uyari'] = note  # kept on the card like a video caveat; a clean rerun clears it
-            return '\n\n'.join(parts), 'dosya', note
+        note = 'İçerik çıkarılamayan dosyalar: ' + '; '.join(warnings) + '. Dosyaları ajan doğrudan incelemeli.' if warnings else None
         if document_issues:
-            return None, 'ajan-okusun', '; '.join(document_issues) + '; dosyayi ajan dogrudan incelesin.'
-        return None, 'ajan-okusun', 'Dosyayi ajan dogrudan okusun (gorsel, PDF ya da ikili dosya).'
+            detail = '; '.join(document_issues) + '; cikarilan metin eksik olabilir, kalan icerik icin dosyayi ajan incelesin.'
+            note = ' '.join(filter(None, (note, detail)))
+        if info is not None:
+            info['uyari'] = note
+        if parts:
+            return '\n\n'.join(parts), 'dosya', note
+        return None, 'ajan-okusun', note or 'Dosyayi ajan dogrudan okusun (gorsel, PDF ya da ikili dosya).'
     if url:
         _safe_network_url(url)  # before npx/yt-dlp can make the first request
         info = {} if info is None else info
@@ -2060,6 +2062,12 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
                     note = meta['uyari']  # an unavailable check does not silently hide an earlier warning
             elif method == 'ajan-okusun':
                 meta.update(durum='cikarildi', yontem=method)
+                if meta.get('kaynak_turu') == 'dosya':
+                    meta.pop('ham', None)
+                    meta.pop('hata', None)
+                    meta.pop('uyari', None)
+                    if info.get('uyari'):
+                        meta['uyari'] = info['uyari']
                 entry.update(durum='cikarildi', yontem=method)
             else:
                 meta.update(durum='hata', hata=note or 'icerik alinamadi')
