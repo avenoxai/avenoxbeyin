@@ -247,7 +247,7 @@ class Core:
         store = self.store()
         record = self._row(store, ident) if isinstance(ident, str) and ident else None
         eligible, _ = store._eligible('internal', records=[record]) if record else ([], 0)
-        if not eligible:
+        if not eligible or record['id'] in store._superseded_ids():
             raise WebError(404, 'Kayıt bulunamadı ya da bu görünümde gösterilmiyor')
         text = str(eligible[0].get('text') or '')
         return {'id': record['id'], 'baslik': _title(record), 'kaynak': record.get('source'),

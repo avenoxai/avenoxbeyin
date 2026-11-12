@@ -263,6 +263,51 @@ class WebPrivacyTest(WebFixture):
         self.assertEqual(response.status, 404)
         self.assertIn('status": "active"', (self.vault / 'tasks/gizli-gorev.md').read_text(encoding='utf-8'))
 
+    def test_record_detail_rechecks_supersession_after_search_result_was_displayed(self):
+        cookie, _ = self.login()
+        self.write('notes/old.md', '---\nid: old\ntitle: Zirkon old rule\n---\nZirkon obsolete instruction.\n')
+        self.core.run('sync')
+        status, found = self.get_json('/api/ara?q=Zirkon', cookie)
+        self.assertEqual((status, [r['id'] for r in found['sonuclar']]), (200, ['old']))
+        status, record = self.get_json('/api/kayit?id=old', cookie)
+        self.assertEqual(status, 200)
+        self.assertIn('obsolete instruction', record['metin'])
+
+        self.write('notes/new.md', '---\nid: new\ntitle: Zirkon current rule\nsupersedes: [old]\n'
+                   '---\nZirkon current instruction.\n')
+        self.core.run('sync')
+        status, found = self.get_json('/api/ara?q=Zirkon', cookie)
+        self.assertEqual((status, [r['id'] for r in found['sonuclar']]), (200, ['new']))
+        status, record = self.get_json('/api/kayit?id=old', cookie)
+        self.assertEqual(status, 404)
+        self.assertNotIn('metin', record)
+        self.assertNotIn('obsolete instruction', json.dumps(record))
+        status, record = self.get_json('/api/kayit?id=new', cookie)
+        self.assertEqual(status, 200)
+        self.assertIn('current instruction', record['metin'])
+
+    def test_record_detail_uses_canonical_private_and_untrusted_superseder_gates(self):
+        cookie, _ = self.login()
+        for name, metadata, retired in (('private', 'visibility: private', True),
+                                        ('untrusted', 'trust: untrusted', False)):
+            with self.subTest(replacement=name):
+                old, new = name + '-old', name + '-new'
+                self.write('notes/' + old + '.md', f'---\nid: {old}\n---\nZirkon {old} instruction.\n')
+                self.write('notes/' + new + '.md', f'---\nid: {new}\n{metadata}\nsupersedes: [{old}]\n'
+                           f'---\nHIDDENREPLACEMENT {new} instruction.\n')
+                self.core.run('sync')
+                status, record = self.get_json('/api/kayit?id=' + old, cookie)
+                self.assertEqual(status, 404 if retired else 200)
+                if retired:
+                    self.assertNotIn('metin', record)
+                else:
+                    self.assertIn(old + ' instruction', record['metin'])
+                self.assertNotIn('HIDDENREPLACEMENT', json.dumps(record))
+                status, record = self.get_json('/api/kayit?id=' + new, cookie)
+                self.assertEqual(status, 404)
+                self.assertNotIn('metin', record)
+                self.assertNotIn('HIDDENREPLACEMENT', json.dumps(record))
+
     def test_a_note_made_private_after_indexing_is_withheld_until_and_after_sync(self):
         cookie, _ = self.login()
         self.write('notes/acik.md', f'---\ntitle: Açık not\nvisibility: private\n---\nHerkese açık {PUBLIC} içerik.\n')
