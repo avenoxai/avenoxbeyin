@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from v3_package_helpers import inherited_env
+from v3_package_helpers import inherited_env, without_hook_clock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
@@ -87,7 +87,8 @@ class OpeningBoundsTest(unittest.TestCase):
         results = []
         for harness in ('claude', 'codex'):
             text = self.run_hook(harness)
-            self.assertEqual(text, self.run_hook(harness), 'the same sources render the same opening')
+            self.assertEqual(without_hook_clock(text), without_hook_clock(self.run_hook(harness)),
+                             'the same sources render the same opening')
             self.assertIn('KURAL_0000', text)
             self.assertIn('KART_A', text)
             self.assertNotIn('KAPALI_CANARY', text)

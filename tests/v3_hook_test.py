@@ -18,7 +18,7 @@ import unittest
 from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from v3_package_helpers import clean_environ, inherited_env, isolated_path
+from v3_package_helpers import clean_environ, inherited_env, isolated_path, without_hook_clock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
@@ -262,7 +262,25 @@ class HookInstallerTest(unittest.TestCase):
             contexts.append(response['hookSpecificOutput']['additionalContext'])
             self.assertIn('Synthetic Reviewer', contexts[-1])
             self.assertIn('notes/task.md', contexts[-1])
-        self.assertEqual(contexts[0], contexts[1])
+        self.assertEqual(without_hook_clock(contexts[0]), without_hook_clock(contexts[1]))
+
+    def test_cross_client_context_comparison_survives_minute_rollover(self):
+        # Keep real subprocess hooks/source delivery; advance only the observed clock
+        # field to reproduce a CI boundary without waiting for wall time.
+        invoke = self.invoke
+        moments = iter(('2026-11-12 15:18 +0000', '2026-11-12 15:19 +0000'))
+        def across_minute(*args, **kwargs):
+            response = invoke(*args, **kwargs)
+            output = response['hookSpecificOutput']
+            output['additionalContext'], changed = re.subn(
+                r'(?m)^(Receipt session=[0-9a-f]{24}; now=)\d{4}-\d{2}-\d{2} '
+                r'\d{2}:\d{2} [+-]\d{4}(; )',
+                lambda match: match[1] + next(moments) + match[2],
+                output['additionalContext'], count=1)
+            self.assertEqual(changed, 1)
+            return response
+        with patch.object(self, 'invoke', side_effect=across_minute):
+            self.test_codex_claude_stdin_contexts_equal()
 
     def test_restart_context_includes_receipt_as_historical_evidence(self):
         engine = self.seed()
