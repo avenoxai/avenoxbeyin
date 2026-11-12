@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from v3_package_helpers import inherited_env
+from v3_package_helpers import inherited_env, without_hook_clock
 
 ROOT = Path(__file__).resolve().parents[1]
 NODE = shutil.which('node')
@@ -225,7 +225,7 @@ class OpenCodeHarnessTest(unittest.TestCase):
             result = self.hook(harness, {'hook_event_name': 'UserPromptSubmit', 'session_id': 'same', 'prompt': 'klima kargo'})
             self.assertEqual(result.returncode, 0, result.stderr)
             outputs[harness] = json.loads(result.stdout)['hookSpecificOutput']['additionalContext']
-        self.assertEqual(outputs['claude'], outputs['opencode'], 'Harness selection must not change retrieval semantics')
+        self.assertEqual(without_hook_clock(outputs['claude']), without_hook_clock(outputs['opencode']), 'Harness selection must not change retrieval semantics')
 
     def test_receipt_and_doctor_accept_opencode_harness(self):
         receipt = json.dumps({'event_id': 'opencode-receipt-1', 'summary': 'OpenCode köprüsü doğrulandı.', 'refs': ['notes/klima.md']})

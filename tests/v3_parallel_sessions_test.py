@@ -10,7 +10,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from v3_package_helpers import inherited_env
+from v3_package_helpers import inherited_env, without_hook_clock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
@@ -163,6 +163,10 @@ class ParallelSessionsTest(unittest.TestCase):
             outputs = [self.hook('UserPromptSubmit', 'off-a'), self.hook('UserPromptSubmit', 'off-b'),
                        self.hook('SessionStart', 'off-h', harness='hermes', prompt='merhaba'),
                        self.hook('SessionEnd', 'off-a', prompt=None)]
+            for output in outputs:
+                specific = output.get('hookSpecificOutput', {})
+                if 'additionalContext' in specific:
+                    specific['additionalContext'] = without_hook_clock(specific['additionalContext'])
             return [json.dumps(output, sort_keys=True) for output in outputs]
         self.assertEqual(self.cli('preferences')['parallel_sessions'], 'off')
         default = scenario()
