@@ -28,8 +28,9 @@ if ($LASTEXITCODE -ne 0 -or $version -notmatch 'pdftotext version 26\.09\.0') {
 }
 # Set this process and subsequent workflow steps, ahead of Git's bundled Xpdf.
 $env:PATH = $bin + [IO.Path]::PathSeparator + $env:PATH
-if ((Get-Command pdftotext -CommandType Application).Source -ne $executable) {
-    throw "Pinned Poppler did not take precedence on PATH: $((Get-Command pdftotext -CommandType Application).Source) != $executable"
+$resolvedExecutable = (Get-Command pdftotext -CommandType Application | Select-Object -First 1).Source
+if ($resolvedExecutable -ne $executable) {
+    throw "Pinned Poppler did not take precedence on PATH: $resolvedExecutable != $executable"
 }
 Add-Content -LiteralPath $env:GITHUB_PATH -Value $bin -Encoding utf8
 Write-Host "Verified Poppler 26.09.0 ($actualSha256): $executable"
