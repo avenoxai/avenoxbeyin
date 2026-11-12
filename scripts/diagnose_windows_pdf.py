@@ -50,3 +50,32 @@ for profile in ('inherited','isolated_missing','isolated_created'):
    run(label+'/direct',[shutil.which('pdftotext') or 'pdftotext','-layout',str(path),'-'],env)
    run(label+'/installed_run',[sys.executable,'-c',WRAPPER,str(f.vault/'.claude/scripts'),str(path)],env)
  finally:f.doCleanups()
+
+# Repeated paired launches distinguish Xpdf failures from the suspended job launcher.
+f=PdfWarningCliTest();f.setUp()
+try:
+ path=f.vault/'📥 000-Inbox/Yakala/dosyalar/searchable.pdf';path.parent.mkdir(parents=True,exist_ok=True);write_pdf(path,text=True)
+ STRESS=r'''
+import collections,json,subprocess,sys,time
+sys.path.insert(0,sys.argv[1])
+import beyin_v3_yakala as y
+command=[y.tools()['pdftotext'],'-layout',sys.argv[2],'-']
+counts=collections.Counter()
+for attempt in range(40):
+ for mode in ('direct','no_window','installed_job'):
+  started=time.monotonic()
+  try:
+   if mode=='installed_job':code,out,err=y._run(command,timeout=3)
+   else:
+    p=subprocess.run(command,capture_output=True,timeout=3,creationflags=y.NO_WINDOW if mode=='no_window' else 0)
+    code,out,err=p.returncode,p.stdout.decode('utf-8','replace'),p.stderr.decode('utf-8','replace')
+   ok=code==0 and 'Searchable PDF words' in out
+   counts[mode+('/ok' if ok else '/failed')]+=1
+   if not ok:print(json.dumps({'attempt':attempt,'mode':mode,'code':code,'stdout':out,'stderr':err,'elapsed':time.monotonic()-started}),flush=True)
+  except BaseException as e:
+   counts[mode+'/exception']+=1
+   print(json.dumps({'attempt':attempt,'mode':mode,'exception':repr(e),'elapsed':time.monotonic()-started}),flush=True)
+print(json.dumps({'paired_counts':dict(counts),'command':command}),flush=True)
+'''
+ run('paired_stress',[sys.executable,'-c',STRESS,str(f.vault/'.claude/scripts'),str(path)],f.env,timeout=240)
+finally:f.doCleanups()
