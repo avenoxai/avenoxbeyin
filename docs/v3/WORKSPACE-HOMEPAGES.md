@@ -18,7 +18,7 @@ ISTEK.json` çalıştırır. Yeni sayfa için `expected_sha256` `null` olur. Mev
 insan notuna eklemek için önce `note-read` ile alınan SHA-256 değeri verilir.
 
 ```json
-{"source":"notes/Başvurularım.md","expected_sha256":null,"title":"Başvurularım","project":"basvurular","selections":[{"source":"notes/Başvuru-Akşam.md","fields":[{"field":"facts.gorusme_tarihi","label":"Görüşme tarihi","editable":true}]}]}
+{"source":"notes/Kariyer/Ana Sayfa.md","expected_sha256":null,"title":"Kariyerim","project":"kariyer","selections":[{"source":"notes/Kariyer/Aksam.md","fields":[{"field":"facts.gorusme","label":"Görüşme tarihi","editable":true}]},{"source":"notes/Kariyer/Gunduz.md","fields":[{"field":"facts.gorusme","label":"Görüşme tarihi","editable":true}]}]}
 ```
 
 Komut her değeri ve kayıt kimliğini güncel esas nottan okur; istek içinde
@@ -30,8 +30,10 @@ korunur; seçilen bilgiler gövdenin sonuna yeni bir bölüm olarak eklenir. Yen
 sayfa istenen başlıkla açılır. Ana sayfanın frontmatter'ında
 `workspace_homepage: true` açıkça seçilir.
 Proje adı taşımayan mevcut notlar için `project:null` açıkça verilir; farklı
-proje veya görünürlükteki notlar aynı sayfaya bağlanmaz. Komut ana sayfayı
-oluşturmadan önce kaynakları güncel dizine alır; ayrıca `sync` çalıştırmak gerekmez.
+`project` metadata'sına veya görünürlüğe sahip notlar aynı sayfaya bağlanmaz.
+Klasörlerden gelen etkin proje kapsamına ilişkin açık eksik aşağıda belirtilmiştir.
+Komut ana sayfayı oluşturmadan önce kaynakları güncel dizine alır; ayrıca
+`sync` çalıştırmak gerekmez.
 Biçimi geçersiz istek eşitlemeyi başlatmadan reddedilir. Geçerli isteğin
 eşitlemesi, önceki işlemlerden kalan toparlamayı da tamamlayabilir.
 Sayfadaki kaynak bağlantısı, etiket, satır düzeni ve kişisel not hücrenin dışında
@@ -42,19 +44,30 @@ bilgileri ayrı satırlarda, kişisel notu ayrı paragrafta yer alır. Kaynak ba
 o da yoksa dosya adından alınır. Örnek okuma görünümü (hücre yorumları gizli):
 
 ```markdown
-# Başvurularım
+# Kariyerim
 
 ## Seçilen bilgiler
 
 Düzenlenebilir değerleri bu notta değiştirebilirsin; değişiklikler olağan eşitlemede esas kayda işlenir. Kişisel notların yalnız bu sayfada kalır.
 
-### [Akşam başvurusu](Ba%C5%9Fvuru-Ak%C5%9Fam.md)
+### [Mavi Pusula — Akşam](Aksam.md)
 
-- **Görüşme tarihi:** 12 Kasım _(düzenlenebilir)_
-- **Başvuru numarası:** 482 _(salt okunur)_
+- **Görüşme tarihi:** 6 Nisan 2099 _(düzenlenebilir)_
 
-**Kişisel notum:** adresi sor
+**Kişisel notum:** yol süresini ve adresi sor
+
+### [Mavi Pusula — Gündüz](Gunduz.md)
+
+- **Görüşme tarihi:** 6 Nisan 2099 _(düzenlenebilir)_
+
+**Kişisel notum:**
 ```
+
+Bu görünümde kişisel not normal `note-edit` ile eklenmiştir. Salt okunur bilgi
+göstermek için seçimde `editable:false` kullanılır; örnekte iki tarih de
+düzenlenebilir seçilmiştir. [Adım adım örnek](examples/workspace-homepages/README.md),
+esas notta 6→7 Nisan, sayfada 7→9 Nisan değişikliğini; kesinti, son kişisel not,
+dar çakışma ve yazmasız tekrarı ayrı anlık görünümlerle gösterir.
 
 Başlık ve etiketlerdeki Markdown özel işaretleri düz metin olarak gösterilir.
 Bu düzen standart Markdown kullanır; ayrı tema, eklenti veya web uygulaması
@@ -82,8 +95,9 @@ Tekrar eşitleme değişmemiş Markdown dosyalarını yazmaz.
 
 İlk adayın sınırları: yalnız mevcut tek satırlık skaler `facts` değerleri ve
 insan notları; görevler, listeler ve nesneler ayrı yazıcı davranışı gerektirir.
-Sayfa ve kayıt aynı proje ve görünürlükte olmalı; güvenilmeyen veya üretilmiş
-kayıt, değişmiş kimlik ve indeks dışı hedef yazılmaz. Salt okunur hücrenin elle
+Sayfa ve kayıt aynı `project` metadata'sını ve görünürlüğü taşımalı; üretilmiş
+kayıt, değişmiş kimlik ve indeks dışı hedef yazılmaz. Güven denetiminin bazı
+işaretleri eksiktir; aşağıdaki açık bulgulara bakın. Salt okunur hücrenin elle
 değiştirilmesi kaynak yazımı doğurmaz. Normal not yazımı, esas kayda geri yazarken
 frontmatter'ı mevcut JSON biçimine çevirebilir; gövde ve diğer bilgilerin
 içeriği korunur. Eşitleme olmayan salt dosya açma olayı tetikleyici değildir.
@@ -93,7 +107,7 @@ bir işlem iddiası yoktur.
 
 ## Açık inceleme bulguları
 
-Son standart incelemesindeki aşağıdaki hatalar henüz düzeltilmedi. Mevcut
+Bu sürümde aşağıdaki hatalar henüz düzeltilmedi. Mevcut
 başarılı test kapsamı bu açıkları kapatan bir güvenlik kabulü değildir.
 
 - **P1 · Güven işaretleri:** Ana sayfa kapısı yalnız `trust: untrusted`
@@ -110,7 +124,3 @@ başarılı test kapsamı bu açıkları kapatan bir güvenlik kabulü değildir
   çakışabiliyor. Sayfanın hücre tabanı yenilenirken son hash sonuçta değişiyor,
   tamamlanma kaydı önceki hash'te kalıyor. Son doğrulanmış hash kaydedilmeli;
   gerçek araya giren kullanıcı düzenlemeleri yine korunmalı.
-
-İlk iki bulgu kapıların kaynak incelemesi ve doğrudan denetimiyle, son bulgu
-sentetik tekrar deneyiyle saptandı. Sonraki düzeltme bu üç davranış için
-RED/GREEN regresyon testleriyle yapılmalıdır.
