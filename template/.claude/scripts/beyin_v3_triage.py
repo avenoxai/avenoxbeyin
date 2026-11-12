@@ -537,12 +537,11 @@ def _threads_source(vault, state):
         return None, 'unavailable_source'
 
 
-def _thread_topics(text):
-    """Yield ### topics in active containers, excluding fenced examples/history."""
-    from beyin_v3_compact import FENCE, _frontmatter_end
-    lines = text.splitlines()
-    active, fence, title, body = True, None, None, []
-    for line in lines[_frontmatter_end(lines):]:
+def _unfenced_thread_lines(lines):
+    """Yield thread source lines outside fenced examples, with strict closers."""
+    from beyin_v3_compact import FENCE
+    fence = None
+    for line in lines:
         if fence:
             if re.fullmatch(r' {0,3}' + re.escape(fence[0]) + '{' + str(len(fence)) + r',}[ \t]*', line):
                 fence = None
@@ -551,6 +550,15 @@ def _thread_topics(text):
         if opened and not (opened[1][0] == '`' and '`' in line[opened.end():]):
             fence = opened[1]
             continue
+        yield line
+
+
+def _thread_topics(text):
+    """Yield ### topics in active containers, excluding fenced examples/history."""
+    from beyin_v3_compact import _frontmatter_end
+    lines = text.splitlines()
+    active, title, body = True, None, []
+    for line in _unfenced_thread_lines(lines[_frontmatter_end(lines):]):
         heading = re.match(r'^(#{1,6})[ \t]+(\S.*?)[ \t]*$', line)
         if heading and len(heading[1]) <= 3:
             if title is not None:
@@ -758,7 +766,8 @@ def scan_companion(vault: Path, state: Path | None = None, now: float | None = N
         if _is_safe_file(threads_file):
             try:
                 text = threads_file.read_text(encoding='utf-8', errors='replace')
-                lines = text.splitlines()
+                lines = list(_unfenced_thread_lines(text.splitlines()))
+                text = '\n'.join(lines)
                 in_active = False
                 has_active_section = False
                 active_lines = []
