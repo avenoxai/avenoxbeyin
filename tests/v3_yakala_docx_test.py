@@ -64,6 +64,31 @@ class YakalaDocxTest(unittest.TestCase):
         self.assertIn('Sonuç 82', stored)
         self.assertEqual((self.vault / 'öğrenim.docx').read_bytes(), raw)
 
+    def test_mixed_attachments_preserve_docx_text_and_each_failure_warning(self):
+        docx = self.vault / 'rapor.docx'
+        docx.write_bytes(document('<w:p><w:r><w:t>Belge metni</w:t></w:r>'
+                                 '<w:r><w:drawing/></w:r></w:p>'))
+        invalid = self.vault / 'bozuk.txt'
+        invalid.write_bytes(b'PRIVATE_INVALID_\xff')
+        valid = self.vault / 'gecerli.txt'
+        valid.write_bytes('Şifre, Müşteri, Arşiv\r\nİkinci satır'.encode('utf-8'))
+        pdf = self.vault / 'taranmis.pdf'
+        pdf.write_bytes(b'%PDF-1.4\n')
+        captured = yakala.capture(self.vault, files=[docx, invalid, valid, pdf])
+        with patch.object(yakala, 'tools', return_value={'pdftotext': None}):
+            row = yakala.process(self.vault, [captured['id']])['kartlar'][0]
+        self.assertEqual(row['durum'], 'cikarildi')
+        stored = (self.vault / row['ham']).read_text(encoding='utf-8')
+        self.assertIn('Belge metni', stored)
+        self.assertIn('Şifre, Müşteri, Arşiv\nİkinci satır', stored)
+        self.assertNotIn('PRIVATE_INVALID', stored)
+        self.assertNotIn('\ufffd', stored)
+        warning = yakala.find_card(self.vault, captured['id'])['meta']['uyari']
+        for expected in ('rapor.docx', 'unsupported_content', 'bozuk.txt: okunamadı (UTF-8)',
+                         'taranmis.pdf: PDF metni çıkarılamadı'):
+            self.assertIn(expected, warning)
+            self.assertIn(expected, row['not'])
+
     def test_image_only_document_keeps_agent_review_fallback(self):
         raw = document('<w:p><w:r><w:drawing/></w:r></w:p>',
                        {'word/media/image1.png': b'fake image'})

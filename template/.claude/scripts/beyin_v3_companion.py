@@ -1,7 +1,5 @@
 """User-owned companion bootstrap and compact, source-verified session context."""
 import bisect
-
-
 from datetime import datetime
 import json
 import os

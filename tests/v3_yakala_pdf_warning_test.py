@@ -56,7 +56,9 @@ class PdfWarningCliTest(unittest.TestCase):
         self.vault, self.state = root / 'vault', root / 'state'
         self.vault.mkdir()
         self.env = inherited_env(BEYIN_V3_NO_SPAWN='1', PYTHONDONTWRITEBYTECODE='1', PYTHONIOENCODING='utf-8',
-                                 HOME=str(root / 'home'), APPDATA=str(root / 'appdata'))
+                                 HOME=str(root / 'home'), USERPROFILE=str(root / 'home'),
+                                 APPDATA=str(root / 'appdata'), LOCALAPPDATA=str(root / 'localappdata'),
+                                 XDG_STATE_HOME=str(root / 'xdg'))
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/install_v3.py'), '--vault', str(self.vault),
                                  '--state', str(self.state)], capture_output=True, text=True, encoding='utf-8',
                                 env=self.env, timeout=120)
