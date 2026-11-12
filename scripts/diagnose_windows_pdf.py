@@ -55,6 +55,7 @@ for profile in ('inherited','isolated_missing','isolated_created'):
 f=PdfWarningCliTest();f.setUp()
 try:
  path=f.vault/'📥 000-Inbox/Yakala/dosyalar/searchable.pdf';path.parent.mkdir(parents=True,exist_ok=True);write_pdf(path,text=True)
+ source=f.vault.parent/'searchable.pdf';write_pdf(source,text=True)
  STRESS=r'''
 import collections,json,subprocess,sys,time
 sys.path.insert(0,sys.argv[1])
@@ -62,7 +63,8 @@ import beyin_v3_yakala as y
 command=[y.tools()['pdftotext'],'-layout',sys.argv[2],'-']
 counts=collections.Counter()
 for attempt in range(40):
- for mode in ('direct','no_window','installed_job'):
+ for mode in ('ascii_direct','captured_direct'):
+  command[2]=sys.argv[3] if mode=='ascii_direct' else sys.argv[2]
   started=time.monotonic()
   try:
    if mode=='installed_job':code,out,err=y._run(command,timeout=3)
@@ -77,5 +79,5 @@ for attempt in range(40):
    print(json.dumps({'attempt':attempt,'mode':mode,'exception':repr(e),'elapsed':time.monotonic()-started}),flush=True)
 print(json.dumps({'paired_counts':dict(counts),'command':command}),flush=True)
 '''
- run('paired_stress',[sys.executable,'-c',STRESS,str(f.vault/'.claude/scripts'),str(path)],f.env,timeout=240)
+ run('paired_stress',[sys.executable,'-c',STRESS,str(f.vault/'.claude/scripts'),str(path),str(source)],f.env,timeout=240)
 finally:f.doCleanups()
