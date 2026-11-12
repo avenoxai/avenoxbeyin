@@ -105,6 +105,38 @@ alındı ve 10 Ekim 2026'da aynı sürümle Windows 11'de gerçek bir oturumda d
 denenmedi. CLI simülasyonu gerçek Desktop hook teslimi kanıtı değildir;
 kurulumdan sonra her istemcide aşağıdaki geri okumayı yapın.
 
+## Vault'un yeri değiştiğinde
+
+Vault'u başka klasöre ya da kullanıcı hesabına taşıdıysan önce
+[taşıma ve state bağını yenileme adımlarını](MULTI-MACHINE.md#vaultu-başka-klasöre-ya-da-hesaba-taşımak)
+tamamla. Vault kurulumu ve `--rebind-state`, genel istemci ayarlarındaki köprü
+komutlarını yeniden yazmaz. Genel komutlar eski `beyin_v3_bridge.py` ve `--vault`
+yolunu çağırmaya devam eder ([#618](https://github.com/avenoxai/avenoxbeyin/issues/618)).
+
+- Otomatik köprü kurduğun her harness için **yeni vault klasöründe** önceki
+  `bridge --install` komutunu yeniden çalıştır. Önceden seçtiğin bütün `--project-root`
+  köklerini, özel `--event` listesini ve `--context-chars` bütçesini aynı komutta koru;
+  yalnız tekrar verdiğin kökler kapsama alınır, olay ve bütçe verilmezse varsayılanları
+  kullanılır. İstemcinin kullandığı hesap ve varsa özel `CLAUDE_CONFIG_DIR` /
+  `CODEX_HOME` ile çalıştır. İlgili genel ayarda
+  Beyin köprü handler'ları yenilenir, ilgisiz ayarlar korunur. Antigravity'nin
+  `GEMINI.md` köprü işaretçisi de yeni vault yoluyla güncellenir.
+- Elle kurduysan aynı kapsam, olay ve bütçe seçenekleriyle yeni konumdan
+  `--print-config` çıktısını üret ve genel ayarda yalnız eski Beyin köprü
+  handler'larını değiştir. Dosyanın tamamını ezme.
+- Claude, Codex ve Antigravity için kayıtlı komutların yeni vault yolundan üretilen
+  `--print-config` çıktısıyla eşleştiğini kontrol et. Gerekli istemci hook güven
+  incelemesini tamamla ve yeni oturum aç. `SessionStart` bağlamı açıksa izin verilen
+  vault dışı bir projede köprünün verdiği `Beyin CLI` yolunun yeni vault'u
+  gösterdiğini de doğrula.
+  `doctor` içindeki `hook_paths: ok` yalnız vault içi hook'ları denetler; genel
+  köprünün doğru yere baktığı anlamına gelmez.
+
+Pi kullanıyorsan kişisel ayar veya takma addaki `-e` extension yolunu yeni vault'a
+yönelt; proje kapsamı, olay ve bütçe seçimlerini koru. Pi için hook JSON üretilmez.
+
+Genel ayarlar kullanıcıya aittir ve vault güncellemesinin rollback kapsamına girmez.
+
 ## Kapsam ve ayrı bütçe
 
 - `SessionStart`, `Stop`, `PreCompact`, `SessionEnd` iletilir. `UserPromptSubmit`
