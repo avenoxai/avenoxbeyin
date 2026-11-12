@@ -83,6 +83,8 @@ sığamayacak kadar küçük bütçelerde bütün başlıkların görünmesi gar
 Bu seçim anlamsal bir özet değildir; etiketsiz veya farklı ifadeli bir sonraki adımı
 bulacağı garanti edilmez. Kısa görünüm ayrıntı ve etiketsiz adımlar için kaynağa yönlendirir.
 Kapalı konular ve kod çitlerindeki örnek başlıklar bu görünümün parçası değildir.
+Kod çitlerinin içindeki örnek durum/sonraki adım alanları ve bekleyen iş cümleleri de kısa
+görünüme alınmaz; alan yetip tam konu kartı gösterildiğinde kod örnekleri aynen korunur.
 Kısa görünüm de sığmadığında bütün başlıklar korunur; alan dosyadaki sırayla konulara en az
 80 karakterlik dilimler halinde verilir, sonrakiler yalnız başlıklarıyla gelir ve bölüm
 `[Thread overview clipped; read source]` işaretiyle biter. Yüzlerce konuda her başlığa bir iki
