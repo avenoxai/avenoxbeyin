@@ -1919,6 +1919,7 @@ def extract(vault, card, found, allow_audio=True, info=None):
                     code, out, _ = _run([found['pdftotext'], '-layout', str(path), '-'], timeout=120)
                     if code == 0 and out.strip():
                         parts.append('## ' + path.name + '\n\n' + out)
+                        continue
                 except (OSError, subprocess.TimeoutExpired):
                     pass
             elif path.suffix.lower() == '.docx':
@@ -1932,6 +1933,8 @@ def extract(vault, card, found, allow_audio=True, info=None):
                     parts.append('## ' + path.name + '\n\n' + result['text'])
                 if result['state'] != 'ready':
                     document_issues.append(path.name + ': ' + ', '.join(result['issues']))
+            if path.suffix.lower() == '.pdf':
+                warnings.append(f'{path.name}: PDF metni çıkarılamadı')
         note = 'İçerik çıkarılamayan dosyalar: ' + '; '.join(warnings) + '. Dosyaları ajan doğrudan incelemeli.' if warnings else None
         if document_issues:
             detail = '; '.join(document_issues) + '; cikarilan metin eksik olabilir, kalan icerik icin dosyayi ajan incelesin.'
