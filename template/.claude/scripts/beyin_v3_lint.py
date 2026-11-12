@@ -214,7 +214,37 @@ def build_vault_index(vault_root, target_folder=None):
         "by_rel": files_by_rel,
         "by_basename": dict(files_by_basename),
         "attachments": dict(attachments),
+        "receipts": _receipt_targets(vault_root),
     }
+
+
+def _receipt_targets(vault_root):
+    """Receipt files a generated view may link to by their exact vault path.
+
+    Receipts stay out of the scan (they are engine records, not notes to lint), but the
+    daily and outcomes views link every entry as [[receipts/<sha256>.md]]: those links
+    resolve when the file exists. Only names are listed; no receipt is read here.
+    """
+    receipts = Path(vault_root) / "receipts"
+    if receipts.is_symlink() or not receipts.is_dir():
+        return {}
+    targets = {}
+    try:
+        entries = list(os.scandir(receipts))
+    except OSError:
+        return {}
+    for entry in entries:
+        name = entry.name
+        if name.startswith(".") or not name.lower().endswith(".md"):
+            continue
+        try:
+            if entry.is_symlink() or not entry.is_file():
+                continue
+        except OSError:
+            continue
+        rel_path = "receipts/" + name
+        targets[_norm_key(rel_path)] = rel_path
+    return targets
 
 
 def _attachment_exists(vault_index, target, source_file=None):
@@ -259,6 +289,9 @@ def resolve_wikilink(vault_root, link_target, source_file=None, vault_index=None
     k_ext = _norm_key(target_with_ext)
     if k_ext in by_rel:
         return {"exists": True, "resolved_path": by_rel[k_ext]}
+    receipts = vault_index.get("receipts", {})
+    if k_ext in receipts:
+        return {"exists": True, "resolved_path": receipts[k_ext]}
 
     # 3. Check relative to source_file parent folder if source_file provided ("./x" from a root note too)
     if source_file:
