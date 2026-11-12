@@ -577,6 +577,69 @@ def hook_paths(vault: Path) -> dict:
     return result
 
 
+def global_bridge_paths(vault: Path, state: Path) -> dict | None:
+    """Read only global bridge paths owned by this state, without executing commands.
+
+    A different vault may legitimately own the user's global bridge. Inspect only
+    commands explicitly bound to this state; absent or invalid settings stay optional.
+    """
+    from beyin_v3_bridge import global_hook_path
+    here, owner = vault.resolve(), state.resolve()
+    expected = (here / '.claude/scripts/beyin_v3_bridge.py').resolve()
+    stale, checked = [], 0
+    for harness in ('claude', 'codex', 'antigravity'):
+        try:
+            data = json.loads(global_hook_path(harness).read_text(encoding='utf-8'))
+        except (OSError, ValueError, UnicodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        events = data.get('beyin-v3-bridge' if harness == 'antigravity' else 'hooks', {})
+        for event, groups in events.items() if isinstance(events, dict) else ():
+            for group in groups if isinstance(groups, list) else ():
+                if not isinstance(group, dict):
+                    continue
+                handlers = group.get('hooks', [group])
+                for handler in handlers if isinstance(handlers, list) else ():
+                    if not isinstance(handler, dict):
+                        continue
+                    command = (handler.get('commandWindows', handler.get('command'))
+                               if sys.platform == 'win32' else handler.get('command'))
+                    if not isinstance(command, str):
+                        continue
+                    arguments = _hook_arguments(command)
+                    script = next((arg for arg in arguments
+                                   if arg.replace('\\', '/').endswith('/beyin_v3_bridge.py')), None)
+                    if script is None:
+                        continue
+                    values = {}
+                    for flag in ('--state', '--vault'):
+                        if arguments.count(flag) == 1 and arguments.index(flag) < len(arguments) - 1:
+                            values[flag] = arguments[arguments.index(flag) + 1]
+                    if len(values) != 2:
+                        continue
+                    try:
+                        if not Path(values['--state']).is_absolute() or Path(values['--state']).resolve() != owner:
+                            continue
+                        same_vault = Path(values['--vault']).resolve() == here
+                        same_script = Path(script).resolve() == expected
+                    except (OSError, ValueError, RuntimeError):
+                        continue
+                    checked += 1
+                    for reason, same in (('other_vault', same_vault), ('other_script', same_script)):
+                        entry = {'harness': harness, 'event': event, 'reason': reason}
+                        if not same and entry not in stale:
+                            stale.append(entry)
+    if not checked:
+        return None
+    result = {'status': 'stale' if stale else 'ok', 'checked': checked}
+    if stale:
+        result['stale'] = stale
+        result['hint'] = ('From this vault, reinstall each affected global bridge with the original '
+                          '--project-root, --event and --context-chars choices. Global settings were not changed.')
+    return result
+
+
 def _hook_commands(argv):
     """Build POSIX and Windows command strings for hook invocations."""
     import base64
@@ -1642,6 +1705,12 @@ def main(argv=None, return_result=False):
                 result['hook_paths'] = hook_paths(vault)
             except Exception as exc:
                 result['hook_paths'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            try:  # optional global bridge belongs to the user, never reconcile it automatically
+                bridge_paths = global_bridge_paths(vault, state)
+                if bridge_paths is not None:
+                    result['global_bridge_paths'] = bridge_paths
+            except Exception as exc:
+                result['global_bridge_paths'] = {'status': 'unavailable', 'error': type(exc).__name__}
             result['tracked_machine_files'] = tracked_machine_files(vault)
             # Information only; a split or container-bound state root never raises the status.
             try:
