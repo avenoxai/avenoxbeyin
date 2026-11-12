@@ -77,8 +77,9 @@ jobs:
   verify:
     needs: build
     runs-on: ${{ matrix.os }}
-    # Allow the full Windows suite and package lifecycle to finish on slower runners.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 40 || 15 }}
+    # Keep the complete 3859-test suite and ZIP lifecycle on slower native runners.
+    # The 15-minute Linux budget timed out during the suite in run 43239032499.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 30 }}
     strategy:
       fail-fast: false
       matrix:
