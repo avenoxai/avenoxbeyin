@@ -1,171 +1,25 @@
-name: Verified V3 release package
-
+name: Temporary Windows status diagnostic
 on:
-  pull_request:
-    paths:
-      - 'VERSION'
-      - 'scripts/*v3*.py'
-      - 'scripts/setup_v3_poppler.ps1'
-      - 'scripts/download_v3_release_baselines.sh'
-      - 'scripts/beyin_entry.py'
-      - 'template/.claude/scripts/beyin_v3*.py'
-      - 'template/.agents/skills/**'
-      - 'tests/v3_*.py'
-      - 'tests/release_baseline_download_test.py'
-      - '.github/workflows/release.yml'
   workflow_dispatch:
-    inputs:
-      publish:
-        description: Publish the tested package as the latest stable release
-        type: boolean
-        default: false
-
 permissions:
   contents: read
-
-concurrency:
-  group: v3-release-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.version.outputs.value }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.11'
-      - name: Test baseline download failure handling
-        run: python tests/release_baseline_download_test.py
-      - id: version
-        name: Validate release version
-        run: |
-          python - <<'PY'
-          import os, re
-          from pathlib import Path
-          version = Path('VERSION').read_text().strip()
-          assert re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', version)
-          assert Path('docs/v3/releases/' + version + '.md').is_file()
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write('value=' + version + '\n')
-          PY
-      - name: Build once and download the released baseline
-        env:
-          VERSION: ${{ steps.version.outputs.value }}
-          PYTHONDONTWRITEBYTECODE: '1'
-        run: |
-          python scripts/build_v3_release.py --version "$VERSION" --output "dist/beyin-v3-$VERSION.zip"
-          bash scripts/download_v3_release_baselines.sh
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: cad7953d6eccea96db0096279b259a14c441e728
-          path: intermediate-baseline
-          persist-credentials: false
-      - name: Build the actual post-3.0.2 main installation baseline (issue 73)
-        run: python intermediate-baseline/scripts/build_v3_release.py --version 3.0.2 --output baseline/cad7953-3.0.2.zip
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: v3-release-bundle
-          path: |
-            dist/*
-            baseline/*
-          if-no-files-found: error
-
-  verify:
-    needs: build
-    runs-on: ${{ matrix.os }}
-    # Allow the complete test suite and downstream checks on slower native runners.
-    # The 15-minute Linux budget timed out during the suite in run 43239032499.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 30 }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ['3.11', '3.13']
+  diagnose:
+    runs-on: windows-latest
+    timeout-minutes: 15
     env:
       PYTHONDONTWRITEBYTECODE: '1'
       PYTHONIOENCODING: utf-8
       BEYIN_V3_NO_SPAWN: '1'
-      VERSION: ${{ needs.build.outputs.version }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: ${{ matrix.python }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: v3-release-bundle
-      - name: Install pinned Windows PDF extractor
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/setup_v3_poppler.ps1
-      - name: Offline contracts
-        run: python -m unittest discover -s tests -p "v3_*test.py"
-      - name: Retrieval gates
-        run: python scripts/evaluate_v3.py
-      - name: Exact ZIP installation, released and intermediate upgrades, rollback and recovery
-        shell: bash
-        run: |
-          set -euo pipefail
-          python scripts/verify_v3_release.py --package "dist/beyin-v3-$VERSION.zip" --baseline baseline/beyin-v3-3.0.2.zip
-          python scripts/verify_v3_release.py --package "dist/beyin-v3-$VERSION.zip" --baseline baseline/beyin-v3-3.1.0.zip
-          python scripts/verify_v3_release.py --package "dist/beyin-v3-$VERSION.zip" --baseline baseline/cad7953-3.0.2.zip
-
-  publish:
-    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
-    needs: [build, verify]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      VERSION: ${{ needs.build.outputs.version }}
-      PYTHONDONTWRITEBYTECODE: '1'
-      BEYIN_V3_NO_SPAWN: '1'
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.11'
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: v3-release-bundle
-      - name: Publish the verified bytes without replacing a release
-        run: |
-          set -euo pipefail
-          if gh release view "v$VERSION" >/dev/null 2>&1; then
-            echo 'Release already exists; refusing to overwrite it.' >&2
-            exit 1
-          fi
-          gh release create "v$VERSION" "dist/beyin-v3-$VERSION.zip" "dist/beyin-v3-$VERSION.zip.sha256" --target "$GITHUB_SHA" --title "AvenoxBeyin v$VERSION" --notes-file "docs/v3/releases/$VERSION.md" --draft
-          gh release edit "v$VERSION" --draft=false --latest
-      - name: Download published assets and verify again
-        run: |
-          set -euo pipefail
-          gh release download "v$VERSION" --pattern 'beyin-v3-*.zip*' --dir published
-          cmp "dist/beyin-v3-$VERSION.zip" "published/beyin-v3-$VERSION.zip"
-          python scripts/verify_v3_release.py --package "published/beyin-v3-$VERSION.zip" --baseline baseline/beyin-v3-3.0.2.zip
-          python scripts/verify_v3_release.py --package "published/beyin-v3-$VERSION.zip" --baseline baseline/beyin-v3-3.1.0.zip
-          python scripts/verify_v3_release.py --package "published/beyin-v3-$VERSION.zip" --baseline baseline/cad7953-3.0.2.zip
-          python - <<'PY'
-          import os, sys, tempfile
-          from pathlib import Path
-          sys.path.insert(0, 'template/.claude/scripts')
-          import beyin_v3_releases as r
-          import beyin_v3_update as u
-          metadata, _ = r.fetch_metadata()
-          assert metadata['version'] == os.environ['VERSION']
-          with tempfile.TemporaryDirectory() as folder:
-              package, version = u._download(folder)
-              assert version == os.environ['VERSION']
-              assert package.read_bytes() == Path('dist/beyin-v3-' + version + '.zip').read_bytes()
-          print('Published latest release and external digest verified.')
-          PY
+      - name: Install pinned Poppler
+        shell: pwsh
+        run: ./scripts/setup_v3_poppler.ps1
+      - name: Repeated actual installed capture lifecycle and native Windows module
+        run: python -u scripts/diagnose_windows_status.py
