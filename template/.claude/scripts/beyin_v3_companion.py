@@ -226,9 +226,9 @@ def fit_client(harness, text):
     return text
 
 
-# Instruction files a client itself loads in full at session start, from the working
-# directory up to the vault root (#610). Clients without a known import syntax keep
-# every source.
+# Instruction filenames for diagnostic import discovery (#610), from the working
+# directory up to the vault root. File references are not evidence that a particular
+# client session loaded them; they must not suppress companion source text.
 INSTRUCTION_FILES = {'claude': ('CLAUDE.md', '.claude/CLAUDE.md', 'CLAUDE.local.md')}
 # Claude Code's own @import rule (checked against the 2.1 client): an "@" at the start of a
 # Markdown text run or after white space (JavaScript's \s); the path runs to the next white
@@ -550,12 +550,12 @@ def _within(path, root):
 
 
 def client_imports(vault, harness, cwd):
-    """{file key: instruction file} for files the client already loads in full: its
-    instruction files from cwd up to the vault root and their @path imports (#610).
+    """Diagnostic {file key: instruction file} candidates from local @path references.
 
-    Empty for a client without a known import syntax and for a session outside the vault,
-    whose opening keeps every companion source. Reads only files inside the vault; a path
-    it cannot verify counts as not loaded, so a source is repeated rather than lost."""
+    This parser does not observe client delivery or evaluate effective client settings,
+    including claudeMdExcludes. Its results must not justify omitting source text or
+    claiming that it was loaded. Empty for an unknown harness or a cwd outside the vault;
+    only files inside the vault are read."""
     names = INSTRUCTION_FILES.get(harness)
     if not names or cwd is None:
         return {}
@@ -1283,8 +1283,8 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
     A dict passed as report receives the companion Kurallar.md share of the returned text
     (#374); doctor reads it, the hooks pass nothing. project scopes rules and retrieval;
     rules_project, the project found from the working directory, scopes the rules alone (#288).
-    loaded (client_imports) names files the client already loads in full: their sections
-    become a one-line pointer instead of a second, clipped copy (#610)."""
+    loaded is accepted for caller compatibility but ignored: filesystem import candidates
+    do not establish client delivery, so every source keeps its normal gates and budget."""
     if not (isinstance(rules_project, str) and rules_project.strip()):
         rules_project = project
     target = directory(store.vault_root)
@@ -1393,16 +1393,6 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
                     person_count += 1
         except (ValueError, OSError):
             pass
-    imported_rules = None
-    for i, (label, body, name) in enumerate(sections):
-        origin = loaded.get(file_key(store.vault_root / label[2:-2])) if loaded else None
-        if origin:
-            # The client shows this file whole already (#610); a second, clipped copy only
-            # takes room from the threads and the handoff. The label still names the source.
-            if name == 'Kurallar.md' and i < len(records):
-                imported_rules = {'chars': len(body), 'share': len(body), 'clipped': False,
-                                  'reasons_omitted': False, 'imported': True}
-            sections[i] = (label, f'[Loaded in full by {origin} @import; not repeated here]\n', 'imported')
     fixed = len(header) + len(notice) + sum(len(label) for label, _, _ in sections)
     if fixed > budget:
         return clip(header + notice + 'Read companion files: ' + ', '.join(r['source'] for r in records), budget)
@@ -1522,7 +1512,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
             rendered += label + (thread_view(body, lengths[i], brief) if name == 'Threads.md' else
                                  clip(body, lengths[i], both=name == 'Kurallar.md',
                                       tail=name == 'Kurallar.md' or (name == 'Journal.md' and not re.search(r'(?m)^## ', body))))
-        return rendered, rules or imported_rules
+        return rendered, rules
 
     needed = sum(len(body) for _, body, _ in sections)
     # Reserve the protected core before maps, receipts or retrieval. If even this core
@@ -1628,10 +1618,9 @@ def rules_opening(store, budget, receipt=''):
 
     The hook's own code path with a session id of the same length, so the numbers are the
     hook's. share is the current allocation (without reasons when reasons_omitted), not
-    a fixed ceiling: a shorter rule set can reclaim room from optional detail. A rule file
-    the vault's CLAUDE.md imports is reported whole with imported (#610), as for a session
-    started in the vault. None without a rules section."""
+    a fixed ceiling: a shorter rule set can reclaim room from optional detail. Filesystem
+    import references do not change this report or prove client delivery (#610).
+    None without a rules section."""
     report = {}
-    context(store, budget, '0' * 24, 'claude', receipt=receipt, report=report,
-            loaded=client_imports(store.vault_root, 'claude', store.vault_root))
+    context(store, budget, '0' * 24, 'claude', receipt=receipt, report=report)
     return report.get('Kurallar.md')

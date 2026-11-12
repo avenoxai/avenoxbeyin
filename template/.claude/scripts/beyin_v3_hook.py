@@ -955,23 +955,17 @@ def main():
                             rules_project = resolve_project_from_query(vault, query)
                         except Exception:
                             rules_project = None
-                # Companion files the client's own instruction files already import are
-                # not repeated (#610); any doubt keeps the source in the opening.
-                try:
-                    from beyin_v3_bridge import working_directory
-                    from beyin_v3_companion import client_imports
-                    loaded = client_imports(vault, args.harness, working_directory(payload, args.harness))
-                except Exception:
-                    loaded = {}
+                # Local import syntax cannot prove client delivery. Keep the normal
+                # companion text, including after resume/compact and continuity questions.
                 # The opening may carry its own machine-local budget (#140); never a vault preference.
                 limit = client_budget(args.harness, opening_budget(state, settings['context_chars']))
                 text = companion_context(store, max(0, limit - len(notice)), session, args.harness, query, receipt, warning, project=project,
-                                         rules_project=rules_project, loaded=loaded)
+                                         rules_project=rules_project)
                 smaller = client_rebudget(args.harness, limit, notice + text)
                 if smaller is not None and smaller < limit:
                     limit = smaller
                     text = companion_context(store, max(0, limit - len(notice)), session, args.harness, query, receipt, warning,
-                                             project=project, rules_project=rules_project, loaded=loaded)
+                                             project=project, rules_project=rules_project)
                     if client_rebudget(args.harness, limit, notice + text) is not None:
                         # Protected sections can change the Unicode ratio after a
                         # render. Bound further work by bisecting integer budgets:
@@ -984,7 +978,7 @@ def main():
                             trial = (low + high) // 2
                             candidate = companion_context(store, max(0, trial - len(notice)), session, args.harness,
                                                           query, receipt, warning, project=project,
-                                                          rules_project=rules_project, loaded=loaded)
+                                                          rules_project=rules_project)
                             if client_rebudget(args.harness, trial, notice + candidate) is None:
                                 low, fitting = trial, candidate
                             else:
