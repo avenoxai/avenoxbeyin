@@ -955,15 +955,38 @@ def main():
                             rules_project = resolve_project_from_query(vault, query)
                         except Exception:
                             rules_project = None
+                # Local import syntax cannot prove client delivery. Keep the normal
+                # companion text, including after resume/compact and continuity questions.
                 # The opening may carry its own machine-local budget (#140); never a vault preference.
                 limit = client_budget(args.harness, opening_budget(state, settings['context_chars']))
-                text = companion_context(store, limit, session, args.harness, query, receipt, warning, project=project,
+                text = companion_context(store, max(0, limit - len(notice)), session, args.harness, query, receipt, warning, project=project,
                                          rules_project=rules_project)
                 smaller = client_rebudget(args.harness, limit, notice + text)
-                if smaller is not None:
+                if smaller is not None and smaller < limit:
                     limit = smaller
-                    text = companion_context(store, limit, session, args.harness, query, receipt, warning,
+                    text = companion_context(store, max(0, limit - len(notice)), session, args.harness, query, receipt, warning,
                                              project=project, rules_project=rules_project)
+                    if client_rebudget(args.harness, limit, notice + text) is not None:
+                        # Protected sections can change the Unicode ratio after a
+                        # render. Bound further work by bisecting integer budgets:
+                        # at most limit.bit_length() renders, not one per character,
+                        # and none once half the hook budget is spent (the best fitting
+                        # render so far stays). Keep a measured fitting rendering, never
+                        # trim its tail to make the rules/handoff disappear at the client guard.
+                        low, high, fitting = 0, limit, ''
+                        while high - low > 1 and time.monotonic() - started < HOOK_BUDGET / 2:
+                            trial = (low + high) // 2
+                            candidate = companion_context(store, max(0, trial - len(notice)), session, args.harness,
+                                                          query, receipt, warning, project=project,
+                                                          rules_project=rules_project)
+                            if client_rebudget(args.harness, trial, notice + candidate) is None:
+                                low, fitting = trial, candidate
+                            else:
+                                high = trial
+                        if low:
+                            # Without any fitting trial (a notice alone over the cap) the
+                            # last render stays and the client guard trims it, as before.
+                            limit, text = low, fitting
             else:
                 # Per-turn automatic context is strict: only meaningful lexical matches are
                 # injected, and an empty match injects nothing at all instead of a receipt
@@ -991,6 +1014,7 @@ def main():
                         except Exception:
                             pass  # an advisor failure must never cost the local context
                 duplicates = []
+                topic_evidence = getattr(context, 'evidence', {})
                 suffix = receipt
                 if dedupe_enabled and context.get("records"):
                     try:
@@ -1025,8 +1049,14 @@ def main():
                         pass
                 try:
                     # Records held back as already delivered this session still anchor the topic (#363).
+                    if duplicates:
+                        from beyin_v3 import PackedContext
+                        anchored = PackedContext(delivered, records=list(delivered.get('records', [])) + duplicates)
+                        anchored.evidence = dict(topic_evidence, **getattr(delivered, 'evidence', {}))
+                    else:
+                        anchored = delivered
                     remember(store, args.harness, topic_session, query,
-                             dict(delivered, records=list(delivered.get("records", [])) + duplicates) if duplicates else delivered,
+                             anchored,
                              inherited=inherited)
                 except (ValueError, OSError):
                     pass

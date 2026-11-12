@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PureWindowsPath
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,150 @@ sys.path.insert(0, str(SCRIPTS))
 import beyin_v3_bridge as bridge
 import beyin_v3_hook as hook
 from beyin_v3_sync import SyncEngine
+
+# Drives the generated global plugin the way OpenCode 2.x does: setup(ctx), prompt,
+# request-time context, then the event stream. Prints one JSON line.
+OPENCODE_DRIVER = r"""
+import { pathToFileURL } from "node:url"
+const [plugin, project, elsewhere] = process.argv.slice(1)
+const sessions = { "bridge-1": project, "bridge-out": elsewhere, "bridge-sub": project }
+const hooks = {}
+const register = (domain) => async (name, callback) => {
+  hooks[`${domain}.${name}`] = callback
+  return { dispose: async () => {} }
+}
+const pending = []
+let notify = null
+let idle = null
+let aborted = false
+function subscribe({ signal } = {}) {
+  signal?.addEventListener("abort", () => { aborted = true; notify?.() })
+  return (async function* () {
+    while (!aborted) {
+      if (pending.length) { yield pending.shift(); continue }
+      idle?.()
+      await new Promise((resolve) => { notify = resolve })
+      notify = null
+    }
+    idle?.()
+  })()
+}
+const emit = (type, sessionID) => new Promise((resolve) => {
+  idle = resolve
+  pending.push({ id: `evt-${pending.length}`, type, data: { sessionID } })
+  notify?.()
+})
+// OpenCode 2.0.18 and 2.2.6 keep the folder under location, on the session and on ctx.
+const ctx = {
+  session: { hook: register("session"),
+    get: async ({ sessionID }) => ({ id: sessionID, projectID: "global", parentID: sessionID === "bridge-sub" ? "bridge-1" : undefined,
+                                    location: { directory: sessions[sessionID] } }) },
+  event: { subscribe },
+  location: { directory: elsewhere, workspaceID: undefined, project: { id: "global", directory: elsewhere } },
+}
+const mod = await import(pathToFileURL(plugin).href)
+const definition = mod.default
+const cleanup = await definition.setup(ctx)
+const prompt = (sessionID) => hooks["session.prompt"]({ sessionID, messageID: "msg", prompt: { text: "hi", files: [] }, delivery: "steer" })
+const system = async (sessionID) => {
+  const event = { sessionID, agent: "build", model: {}, system: [{ type: "text", text: "base" }], messages: [], options: {}, tools: {} }
+  await hooks["session.context"](event)
+  return event.system.slice(1)
+}
+const result = { id: definition?.id, keys: Object.keys(hooks).sort() }
+await prompt("bridge-1")
+result.allowed = await system("bridge-1")
+await emit("session.execution.succeeded", "bridge-1")
+await prompt("bridge-out")
+result.blocked = await system("bridge-out")
+await prompt("bridge-sub")
+result.child = await system("bridge-sub")
+await emit("session.deleted", "bridge-1")
+await cleanup()
+console.log(JSON.stringify(result))
+process.exit(0)
+"""
+
+# A 2.x instance whose session folder cannot be read: no location on the session or ctx.
+# The service directory (the Node cwd here) must never stand in for it.
+OPENCODE_NO_FOLDER_DRIVER = r"""
+import { pathToFileURL } from "node:url"
+const [plugin] = process.argv.slice(1)
+const hooks = {}
+const register = (domain) => async (name, callback) => {
+  hooks[`${domain}.${name}`] = callback
+  return { dispose: async () => {} }
+}
+const events = [{ type: "session.execution.succeeded", data: { sessionID: "lost-1" } },
+                { type: "session.execution.succeeded", data: { sessionID: "lost-2" } }]
+let release
+const ready = new Promise((resolve) => { release = resolve })
+async function* subscribe() {
+  await ready
+  yield* events
+}
+const ctx = {
+  session: { hook: register("session"),
+    get: async ({ sessionID }) => {
+      if (sessionID === "lost-2") throw new Error("session lookup failed")
+      return { id: sessionID, projectID: "global" }
+    } },
+  event: { subscribe },
+}
+const definition = (await import(pathToFileURL(plugin).href)).default
+const cleanup = await definition.setup(ctx)
+const result = {}
+for (const sessionID of ["lost-1", "lost-2"]) {
+  await hooks["session.prompt"]({ sessionID, messageID: "msg", prompt: { text: "hi", files: [] }, delivery: "steer" })
+  const event = { sessionID, agent: "build", model: {}, system: [], messages: [], options: {}, tools: {} }
+  await hooks["session.context"](event)
+  result[sessionID] = event.system
+}
+release()
+await new Promise((resolve) => setTimeout(resolve, 200))
+await cleanup()
+console.log(JSON.stringify(result))
+process.exit(0)
+"""
+
+# One imported module, as in a running OpenCode service that never re-imports a changed
+# plugin file: a reinstall with other roots and an uninstall must still apply to it.
+OPENCODE_RESCOPE_DRIVER = r"""
+import { copyFileSync, unlinkSync } from "node:fs"
+import { pathToFileURL } from "node:url"
+const [plugin, settings, narrowed, project, other] = process.argv.slice(1)
+const folders = { "scope-a": project, "scope-b": project, "scope-c": other, "scope-d": other }
+const hooks = {}
+const register = (domain) => async (name, callback) => {
+  hooks[`${domain}.${name}`] = callback
+  return { dispose: async () => {} }
+}
+async function* subscribe({ signal } = {}) {
+  await new Promise((resolve) => signal?.addEventListener("abort", resolve))
+}
+const ctx = {
+  session: { hook: register("session"),
+    get: async ({ sessionID }) => ({ id: sessionID, projectID: "global", location: { directory: folders[sessionID] } }) },
+  event: { subscribe },
+  location: { directory: other },
+}
+const cleanup = await (await import(pathToFileURL(plugin).href)).default.setup(ctx)
+const open = async (sessionID) => {
+  await hooks["session.prompt"]({ sessionID, messageID: "msg", prompt: { text: "hi", files: [] }, delivery: "steer" })
+  const event = { sessionID, agent: "build", model: {}, system: [], messages: [], options: {}, tools: {} }
+  await hooks["session.context"](event)
+  return event.system.length
+}
+const result = { a: await open("scope-a") }
+copyFileSync(narrowed, settings)
+result.b = await open("scope-b")
+result.c = await open("scope-c")
+unlinkSync(settings)
+result.d = await open("scope-d")
+await cleanup()
+console.log(JSON.stringify(result))
+process.exit(0)
+"""
 
 
 class BridgeTest(unittest.TestCase):
@@ -491,6 +636,17 @@ class BridgeTest(unittest.TestCase):
         self.assertIn('hookSpecificOutput', self.invoke(payload, harness='claude', cwd=self.home))
         self.assertIn('hookSpecificOutput', self.invoke(payload, harness='codex'))
         self.assertEqual(self.invoke(dict(self.payload, cwd=123)), {})
+
+    def test_opencode_never_uses_the_process_directory(self):
+        # The OpenCode service runs in its own directory for every session (home on 2.x); a
+        # payload without the session folder must not be attributed to it, even inside a root.
+        payload = {k: v for k, v in self.payload.items() if k != 'cwd'}
+        self.assertEqual(self.invoke(payload, harness='opencode', cwd=self.project), {})
+        self.assertEqual(self.invoke(dict(payload, cwd=None), harness='opencode', cwd=self.project), {})
+        self.assertEqual(self.queued(), [])
+        self.assertIn('hookSpecificOutput', self.invoke(dict(payload, cwd=str(self.project)), harness='opencode',
+                                                        cwd=self.home))
+        self.assertEqual([event['project'] for event in self.queued()], [self.project.name])
 
     def agy(self, native, workspaces, cwd=None, **fields):
         # Antigravity sends camelCase fields, no cwd, and runs the hook in the hooks.json folder.
@@ -1021,6 +1177,134 @@ class BridgeTest(unittest.TestCase):
         ag_data = json.loads(res_ag.stdout)
         self.assertIn('beyin-v3-bridge', ag_data)
         self.assertIn('PreInvocation', ag_data['beyin-v3-bridge'])
+
+
+    def test_bridge_install_and_uninstall_opencode_global_plugin(self):
+        target = bridge.global_opencode_plugin_path(home=self.home)
+        settings = bridge.global_opencode_settings_path(home=self.home)
+        self.assertEqual(target, self.home / '.config/opencode/plugins/beyin-v3-bridge.js')
+        self.assertEqual(settings, self.home / '.config/opencode/beyin-v3-bridge.json')
+        self.assertFalse(target.exists())
+
+        res = bridge.install_bridge(self.vault, self.state, 'opencode', [self.project], home=self.home)
+        self.assertEqual(res['status'], 'installed')
+        self.assertEqual(res['hook_file'], str(target))
+        text = target.read_text(encoding='utf-8')
+        self.assertIn(bridge.OPENCODE_MARKER, text)
+        # The module is the same for every install; paths and roots live in the settings file.
+        self.assertEqual(text, bridge.opencode_plugin_content())
+        self.assertNotIn(str(self.vault), text)
+        data = json.loads(settings.read_text(encoding='utf-8'))
+        self.assertEqual(data['managed_by'], 'beyin-v3-bridge')
+        self.assertEqual(data['python'], sys.executable)
+        command = data['command']
+        self.assertEqual(Path(command[0]).name, 'beyin_v3_bridge.py')
+        self.assertEqual(command[command.index('--vault') + 1], str(self.vault.resolve()))
+        self.assertEqual(command[command.index('--state') + 1], str(self.state.resolve()))
+        self.assertEqual(command[command.index('--harness') + 1], 'opencode')
+        self.assertEqual(command[command.index('--project-root') + 1], str(self.project.resolve()))
+
+        # Idempotent install: same bytes, no extra backup.
+        bridge.install_bridge(self.vault, self.state, 'opencode', [self.project], home=self.home)
+        self.assertFalse(target.with_name(target.name + '.bak').exists())
+        self.assertFalse(settings.with_name(settings.name + '.bak').exists())
+
+        # Reinstall after an edit backs the file up and rewrites the managed plugin.
+        target.write_text(text + '\n// local edit\n', encoding='utf-8')
+        bridge.install_bridge(self.vault, self.state, 'opencode', [self.project], home=self.home)
+        self.assertTrue(target.with_name(target.name + '.bak').is_file())
+        self.assertNotIn('// local edit', target.read_text(encoding='utf-8'))
+
+        # Other roots change only the settings, with a backup of the previous ones.
+        other = self.root / 'Projects' / 'Other'; other.mkdir()
+        bridge.install_bridge(self.vault, self.state, 'opencode', [other], home=self.home)
+        self.assertEqual(target.read_text(encoding='utf-8'), text)
+        self.assertIn(str(other.resolve()), json.loads(settings.read_text(encoding='utf-8'))['command'])
+        self.assertTrue(settings.with_name(settings.name + '.bak').is_file())
+
+        # A user file at either managed path is never replaced or deleted; nothing is written.
+        target.unlink()
+        target.write_text('export default {}\n', encoding='utf-8')
+        before = settings.read_bytes()
+        with self.assertRaises(ValueError):
+            bridge.install_bridge(self.vault, self.state, 'opencode', [self.project], home=self.home)
+        self.assertEqual(target.read_text(encoding='utf-8'), 'export default {}\n')
+        self.assertEqual(settings.read_bytes(), before)
+        # Uninstall removes only the managed settings file and keeps the user's plugin.
+        self.assertEqual(bridge.uninstall_bridge('opencode', home=self.home)['removed_count'], 1)
+        self.assertTrue(target.is_file())
+        self.assertFalse(settings.exists())
+        target.unlink()
+        settings.write_text('{"user": true}\n', encoding='utf-8')
+        with self.assertRaises(ValueError):
+            bridge.install_bridge(self.vault, self.state, 'opencode', [self.project], home=self.home)
+        self.assertFalse(target.exists())
+        self.assertEqual(bridge.uninstall_bridge('opencode', home=self.home)['removed_count'], 0)
+        self.assertEqual(settings.read_text(encoding='utf-8'), '{"user": true}\n')
+
+        # A managed plugin and its settings are removed by uninstall.
+        settings.unlink()
+        bridge.install_bridge(self.vault, self.state, 'opencode', [self.project], home=self.home)
+        self.assertEqual(bridge.uninstall_bridge('opencode', home=self.home)['removed_count'], 2)
+        self.assertFalse(target.exists())
+        self.assertFalse(settings.exists())
+
+    @unittest.skipUnless(shutil.which('node'), 'node is required to execute the OpenCode plugin')
+    def test_opencode_bridge_plugin_injects_only_for_allowed_projects(self):
+        target = bridge.global_opencode_plugin_path(home=self.home)
+        bridge.install_bridge(self.vault, self.state, 'opencode', [self.root / 'Projects'], home=self.home)
+        elsewhere = self.root / 'Elsewhere'
+        elsewhere.mkdir()
+        result = subprocess.run([shutil.which('node'), '--input-type=module', '-e', OPENCODE_DRIVER,
+                                 str(target), str(self.project), str(elsewhere)],
+                                capture_output=True, text=True, encoding='utf-8', env=self.env,
+                                cwd=self.root, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual(data['id'], 'beyin-v3-bridge')
+        self.assertEqual(data['keys'], ['session.compaction', 'session.context', 'session.prompt'])
+        self.assertIn('Beyin bridge active.', data['allowed'][0]['text'])  # bootstrap text of #500 (PR #505)
+        self.assertIn('--harness opencode', data['allowed'][0]['text'])
+        self.assertEqual(data['blocked'], [], 'Sessions outside the project roots get no bridge context')
+        self.assertEqual(data['child'], [], 'Sub-agent sessions get no bridge context')
+
+        hook.drain_queue(self.vault, self.state)
+        done = [json.loads(p.read_text(encoding='utf-8')) for p in (self.state / 'hook-done').glob('*.json')]
+        self.assertEqual({e['harness'] for e in done}, {'opencode'})
+        self.assertEqual({e['project'] for e in done}, {self.project.name},
+                         'The session directory names the project, not the service directory')
+        self.assertEqual(sorted(e['event'] for e in done), ['SessionEnd', 'SessionStart', 'Stop'])
+
+    @unittest.skipUnless(shutil.which('node'), 'node is required to execute the OpenCode plugin')
+    def test_opencode_bridge_plugin_without_a_session_folder_sends_nothing(self):
+        target = bridge.global_opencode_plugin_path(home=self.home)
+        bridge.install_bridge(self.vault, self.state, 'opencode', [self.root / 'Projects'], home=self.home)
+        # The service directory is inside a project root: falling back to it would bridge the session.
+        result = subprocess.run([shutil.which('node'), '--input-type=module', '-e', OPENCODE_NO_FOLDER_DRIVER,
+                                 str(target)], capture_output=True, text=True, encoding='utf-8', env=self.env,
+                                cwd=self.project, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout.strip().splitlines()[-1]), {'lost-1': [], 'lost-2': []})
+        self.assertEqual(self.queued(), [])
+        self.assertFalse((self.state / 'hook-done').exists() and any((self.state / 'hook-done').iterdir()))
+
+    @unittest.skipUnless(shutil.which('node'), 'node is required to execute the OpenCode plugin')
+    def test_opencode_bridge_scope_changes_apply_to_an_imported_plugin(self):
+        target = bridge.global_opencode_plugin_path(home=self.home)
+        settings = bridge.global_opencode_settings_path(home=self.home)
+        other = self.root / 'Other Projects' / 'İkinci'; other.mkdir(parents=True)
+        bridge.install_bridge(self.vault, self.state, 'opencode', [self.root / 'Projects'], home=self.home)
+        narrowed = self.root / 'narrowed.json'
+        narrowed.write_text(bridge.opencode_settings_content(self.vault.resolve(), self.state.resolve(),
+                                                             [other.resolve()], bridge.EVENTS, 1500), encoding='utf-8')
+        result = subprocess.run([shutil.which('node'), '--input-type=module', '-e', OPENCODE_RESCOPE_DRIVER,
+                                 str(target), str(settings), str(narrowed), str(self.project), str(other)],
+                                capture_output=True, text=True, encoding='utf-8', env=self.env,
+                                cwd=self.root, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # a: installed root; b: same root after narrowing; c: the new root; d: after the settings are removed.
+        self.assertEqual(json.loads(result.stdout.strip().splitlines()[-1]), {'a': 1, 'b': 0, 'c': 1, 'd': 0})
+        self.assertEqual(sorted(event['project'] for event in self.queued()), sorted([self.project.name, other.name]))
 
 
 if __name__ == '__main__':

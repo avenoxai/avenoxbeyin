@@ -296,9 +296,11 @@ class YakalaSecurityTest(unittest.TestCase):
             order.append('helper')
             return 'article text'
 
-        with patch.object(socket, 'getaddrinfo', side_effect=dns), patch.object(yakala, 'via_defuddle', helper):
+        with patch.object(socket, 'getaddrinfo', side_effect=dns), patch.object(yakala, 'via_defuddle', helper), \
+                patch.object(yakala, '_fetch_html', return_value=None) as check:
             self.assertEqual(yakala.extract(self.vault, card, {'npx': 'npx'})[:2], ('article text', 'defuddle'))
         self.assertEqual(order, ['dns', 'helper'])
+        check.assert_called_once_with(url, complete=True, budget=yakala.CHECK_BUDGET)
         card['body'] = '## Icerik\n\n' + 'Already clipped content. ' * 20
         with patch.object(socket, 'getaddrinfo', side_effect=AssertionError('clipping must stay offline')):
             self.assertEqual(yakala.extract(self.vault, card, self.no_tools)[1], 'web-clipper')
@@ -469,8 +471,13 @@ class YakalaSecurityTest(unittest.TestCase):
                 patch.object(socket, 'create_connection', side_effect=local_transport), \
                 patch.object(urllib.request, 'build_opener', side_effect=lambda *handlers:
                              opener(urllib.request.ProxyHandler({}), *handlers)):
-            self.assertIsNone(yakala.via_stdlib(f'http://example.com:{server.server_port}/start'))
-        self.assertEqual(seen, ['/start'])
+            url = f'http://example.com:{server.server_port}/start'
+            self.assertIsNone(yakala.via_stdlib(url))
+            card = {'meta': {'url': url}, 'body': ''}
+            with patch.object(yakala, 'via_defuddle', return_value='already extracted page'):
+                self.assertEqual(yakala.extract(self.vault, card, {'npx': 'npx'}, info={}),
+                                 ('already extracted page', 'defuddle', None))
+        self.assertEqual(seen, ['/start', '/start'])
 
     def local_page(self, seen):
         class Handler(BaseHTTPRequestHandler):

@@ -11,6 +11,8 @@ import time
 import tempfile
 import math
 
+from beyin_v3 import _receipt_lf
+
 
 # metadata row: the folded directory names the last sync kept out of the index, as a JSON list.
 EXCLUDED_DIRS_ROW = 'index_excluded_dirs'
@@ -791,8 +793,13 @@ def _event_refs(event):
     return [ref for ref in refs if isinstance(ref, str)] if isinstance(refs, list) else []
 
 
-def _receipt_view_contents(engine, db, warnings=None, *, include_human_daily=False):
-    """Render receipts without side effects; include_human_daily is for comparison only."""
+def _receipt_view_contents(engine, db, warnings=None, *, include_human_daily=False, receipt_sources=None,
+                           released_format=False):
+    """Render receipts without side effects; include_human_daily is for comparison only.
+
+    released_format reproduces the bytes V3.10-V3.12 wrote (hash-named links, no
+    withheld summaries). It only proves ownership of an older view; never write it.
+    """
     _hash, _, render = engine.projection_helpers()
     from beyin_v3_preferences import read_daily_layout
     layout = read_daily_layout(engine.root)
@@ -802,8 +809,11 @@ def _receipt_view_contents(engine, db, warnings=None, *, include_human_daily=Fal
     historical = set(previous.get('historical_receipts', []))
     zone = _local_zone()
     grouped = defaultdict(list)
-    events = [json.loads(row[0]) for row in db.execute('SELECT payload FROM receipts ORDER BY id')]
-    hidden = _hidden_ref_sources(db, [ref for event in events for ref in _event_refs(event)])
+    rows = db.execute('SELECT id, payload FROM receipts ORDER BY id')
+    # An ownership proof selects a few linked receipts; skip parsing the rest.
+    events = [json.loads(payload) for event_id, payload in rows
+              if receipt_sources is None or 'receipts/' + _hash(event_id) + '.md' in receipt_sources]
+    hidden = set() if released_format else _hidden_ref_sources(db, [ref for event in events for ref in _event_refs(event)])
     for event in events:
         source = 'receipts/' + _hash(event['event_id']) + '.md'
         if source in historical or not event.get('created_at'):
@@ -825,7 +835,7 @@ def _receipt_view_contents(engine, db, warnings=None, *, include_human_daily=Fal
     for day, items in sorted(grouped.items()):
         entries = []
         for _, at, source, summary, event_id in sorted(items):
-            link = _receipt_link(source, event_id)
+            link = f'[[{source}]]' if released_format else _receipt_link(source, event_id)
             entries.append(f'## {at}\n\n{summary}\n\nSource: {link}\n')
             outcomes.append(f'- {day}: {summary}\n  Source: {link}\n')
         relative = f'daily/{day}.md' if layout == 'flat' else f'daily/v3/{day}.md'
@@ -987,6 +997,40 @@ def _adopt_stale_receipt_views(engine, db, desired, _hash):
         db.execute(f'INSERT OR IGNORE INTO {_receipt_view_table(relative)} VALUES (?,?)', (relative, owned_hash))
 
 
+def _receipt_view_matches(engine, db, relative, raw, tracked, _hash):
+    """Prove newline-only drift against the last raw hash, including legacy mixed EOLs.
+
+    Links only select a candidate. Neither links nor generated metadata grant
+    ownership: its complete deterministic bytes must still match the saved hash.
+    A view saved by a released engine (V3.10-V3.12) is rebuilt in that format,
+    then replaced with the current one. Missing receipts, changed timezone or
+    another rendering, and unknown history fail closed.
+    """
+    if not tracked:
+        return False
+    normalized = _receipt_lf(raw)
+    if _hash(normalized) == tracked:
+        return True  # The previous writer used LF throughout.
+    sources = {item.decode('ascii') for item in re.findall(
+        rb'\[\[(receipts/[0-9a-f]{64}\.md)(?:\||\]\])', raw)}
+    if not sources:
+        return False
+    alternate = None
+    if relative.startswith('daily/'):
+        alternate = ('daily/' + relative[len('daily/v3/'):] if relative.startswith('daily/v3/')
+                     else 'daily/v3/' + relative[len('daily/'):])
+    for released_format in (False, True):
+        candidates = _receipt_view_contents(engine, db, include_human_daily=True, receipt_sources=sources,
+                                            released_format=released_format)
+        candidate = candidates.get(relative)
+        if candidate is None and alternate is not None:
+            candidate = candidates.get(alternate)
+        if (candidate is not None and _hash(candidate) == tracked and
+                normalized == _receipt_lf(candidate.encode('utf-8'))):
+            return True
+    return False
+
+
 def project_receipts(engine, db, warnings=None, recover_views=False, recovered=None, desired=None,
                      allow_view_writes=True):
     _hash, atomic, _ = engine.projection_helpers()
@@ -1008,10 +1052,13 @@ def project_receipts(engine, db, warnings=None, recover_views=False, recovered=N
         if _human_daily(engine, relative, tracked_views, warnings):
             continue
         path = engine._path(relative)
-        old = _hash(path.read_bytes()) if path.exists() else None
+        raw = path.read_bytes() if path.exists() else None
+        old = _hash(raw) if raw is not None else None
         desired_hash = _hash(content)
         tracked = tracked_views.get(relative)
-        if old != desired_hash and old is not None and (tracked is None or old != tracked):
+        if (old != desired_hash and old is not None and old != tracked and
+                _receipt_lf(raw) != _receipt_lf(content.encode('utf-8')) and
+                not _receipt_view_matches(engine, db, relative, raw, tracked, _hash)):
             if recover_views:
                 try:
                     archive_path = _archive_receipt_view(engine, path, old, _hash)
@@ -1055,14 +1102,15 @@ def _retire_stale_views(engine, db, desired, _hash, recover_views=False, recover
             continue
         try:
             path = engine._path(relative)
-            current = _hash(path.read_bytes()) if path.is_file() else None
+            raw = path.read_bytes() if path.is_file() else None
+            current = _hash(raw) if raw is not None else None
         except (ValueError, OSError):
             conflicts.append({'source': relative, 'reason': 'stale receipt view unreadable; preserved'})
             continue
         if current is None and not path.exists():
             db.execute(f'DELETE FROM {_receipt_view_table(relative)} WHERE path=?', (relative,))
             continue
-        if current != tracked:
+        if current != tracked and (raw is None or not _receipt_view_matches(engine, db, relative, raw, tracked, _hash)):
             if recover_views:
                 try:
                     archive_path = _archive_receipt_view(engine, path, current, _hash)
@@ -1078,6 +1126,9 @@ def _retire_stale_views(engine, db, desired, _hash, recover_views=False, recover
             conflicts.append({'source': relative, 'reason': 'manual receipt view edit preserved; view no longer generated'})
             continue
         try:
+            if _hash(path.read_bytes()) != current:
+                conflicts.append({'source': relative, 'reason': 'receipt view changed during projection'})
+                continue
             path.unlink()
         except FileNotFoundError:
             pass

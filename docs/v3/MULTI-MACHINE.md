@@ -29,6 +29,7 @@ kopyalama talimatı değildir.
 |---|---|---|
 | Notlar ve companion dosyaları | evet | Markdown kaynak gerçektir. |
 | `.beyin-daily-layout.json` | evet | `preferences --daily-layout flat\|v3` vault'un ortak görünüm yolunu seçer. Aynı vault'a yazan makineler aynı tercihi ve bu seçeneği destekleyen motor sürümünü kullanmalıdır. |
+| `.beyin-workspaces.json` | evet | `workspace` komutlarının üstverisidir (ad, tür, yaşam döngüsü, provision durumu). Klasör bağlantıları `.beyin-projects.json` içinde kalır; ikisi birlikte eşitlenmelidir. |
 | `🔮 850-Companion/Arşiv/` | evet | `companion-compact` metni canlı dosyadan çıkarıp arşive taşır ve yerine tek bir işaret satırı bırakır. Arşiv tek makinede kalırsa öbür makine içi boş bir işaret görür. Arşivdeki `visibility: private` otomatik bağlama girmez demektir, git dışı demek değildir. |
 | `receipts/` | evet | Receipt dosyası yazıldıktan sonra değişmez ve adı `event_id` özetidir (`beyin_v3_sync.py` `receipt()`). Öbür makine yeni receipt'i bir sonraki `sync`'te kendi veritabanına alır (`_scan_receipts()`). |
 | `receipts/*.md.view-provenance.json` | evet | Bir receipt'in üretilmiş görünüme dayandığı için dışlandığını, immutable olay kimliğiyle kaydeder. State yeniden kurulunca eski receipt dışarıda kalır; aynı günlük yoluna dayanan yeni insan receipt'leri engellenmez. İçerik taşımaz; bu dosyalar silinmemelidir. |
@@ -171,11 +172,11 @@ receipts/** -text
 **/Arşiv/*.md merge=union
 ```
 
-**`receipts/** -text`:** Beyin receipt dosyasını bayt bayt karşılaştırır. Git for Windows
-kurulumunun varsayılan seçeneği `core.autocrlf=true`'dur ve bu ayar öbür makineden gelen receipt'in satır
-sonlarını CRLF'ye çevirir. Bu satır olmadan o makinede receipt özetine `\r` karışır, günlük
-görünüm öbür makinedekinden farklı çıkar ve aynı receipt yeniden gönderilince
-`ReceiptConflict: event id collision` hatası alınır.
+**`receipts/** -text`:** Git for Windows varsayılanı `core.autocrlf=true`, eşitlenen
+receipt kaynaklarını CRLF'ye çevirebilir. Güncel motor yalnız satır sonu farkını aynı
+receipt kabul eder; eski istemciler bayt karşılaştırması nedeniyle çakışma bildirebilir.
+Bu satır gereksiz bayt değişikliklerini ve eski istemci sorunlarını önler; `eol=lf` de
+kullanılabilir.
 
 **`merge=union`:** Git iki tarafın satırlarını da tutar, çakışma çıkarmaz. Satır silmez ama
 çift bırakabilir. Bu yüzden yalnız yeni kaydın eklendiği dosyalar için uygundur:
@@ -411,27 +412,33 @@ depo ve iki vault; Beyin her birine ayrı `--state` ile kuruldu.
 
 ## Satır sonu: `core.autocrlf=true` ve receipt'ler
 
-Bu kontrol [#205](https://github.com/avenoxai/avenoxbeyin/issues/205) için eklendi. Git for Windows
-varsayılanı `core.autocrlf=true`'dur ve `receipts/** -text` satırı yoksa bu makine öbür makineden gelen
-receipt'i CRLF olarak çıkarır. Sonuç sessizdir: `sync` ve `doctor` hata vermez, ama aynı receipt'in
-bayt özeti iki makinede farklı olur ve receipt öbür makineden yeniden gönderilince
-`ReceiptConflict: event id collision` hatası gelir. Yukarıdaki [`.gitattributes`](#önerilen-gitattributes)
-satırı bunu önler; `eol=lf` de aynı işi görür.
+Bu kontrol [#205](https://github.com/avenoxai/avenoxbeyin/issues/205) için eklendi.
+Git for Windows varsayılanı `core.autocrlf=true`, `.gitattributes` ile sabitlenmeyen
+receipt dosyalarını CRLF olarak çıkarabilir. Güncel motor yeni özetleri LF ile yazar,
+CRLF/CR/LF farkını aynı receipt kabul eder ve eski kaynak dosyayı yeniden yazmaz.
+3.12.0 ve öncesinin CRLF çıkışını okurken indekste bıraktığı son CR de aynı receipt sayılır.
+Gerçek özet, refs veya links değişiklikleri hala çakışmadır. Eski istemcilerde
+satır sonu farkı `event id collision` hatasına yol açabilir.
 
-`doctor` artık vault bir git deposuysa ve `core.autocrlf=true` iken `receipts/` için `-text` ya da
-`eol=lf` yoksa `receipt_line_endings` alanında `warning` bildirir (insan çıktısında bir "Receipt satir
-sonu (bilgi)" satırı). Bu yalnız bilgidir, `doctor` durumunu değiştirmez ve hiçbir şeyi düzeltmez.
+`doctor`, Git deposunda `core.autocrlf=true` iken `receipts/` için `-text` veya `eol=lf`
+yoksa `receipt_line_endings.warning` bildirir. Bu bilgi durum değiştirmez ve dosyalara
+dokunmaz. Bayt değişikliklerini ve eski istemci sorunlarını önlemek için vault'un
+`.gitattributes` dosyasına `receipts/** -text` veya `receipts/** eol=lf` ekleyebilirsiniz.
+Kontrol: `git check-attr text eol -- receipts/x.md`.
 
-Uyarıyı gördüysen:
+Satır sonu değişmiş eski kaynaklar için yerel veritabanını silmek gerekmez;
+`python3 beyin.py sync --full` ile karşılaştırmayı yenileyin. Eski görünümün ham hash'i
+receipt'lerden güvenle yeniden üretilemezse dosya korunur. Bu durumda
+[arşivleyerek görünüm kurtarma](RUNTIME.md#receipt-görünümü-çakışması-ve-kurtarma)
+komutunu kullanın; kaynak receipt'leri silmeyin.
 
-1. `.gitattributes` dosyasına `receipts/** -text` ekle ve commit'le.
-2. Bu makinede receipt dosyalarını LF olarak yeniden çıkar (çalışma ağacın temizken):
-   `git rm -r receipts` ardından `git checkout HEAD -- receipts`.
-3. Dosyalar düzelse de bu makinenin yerel indeksi CRLF'li özeti tutmaya devam eder ve aynı receipt
-   yine `event id collision` verir. State klasöründeki `memory.sqlite3` dosyasını yedeğe taşı ve
-   `python3 beyin.py sync` çalıştır; indeks Markdown'dan yeniden kurulur.
-
-Kontrol: `git check-attr text -- receipts/x.md` çıktısı `text: unset` olmalıdır.
+Bu tolerans yalnız güncel motorda vardır. `rollback` yerel veritabanını geri almaz ve
+3.12.0 veya öncesi yine bayt karşılaştırması yapar: satır sonu değişmiş eski bir kaynak
+orada yeniden `receipt_divergence` verir, CRLF özet dosyasıyla gönderilmiş bir receipt
+aynı dosyayla yeniden gönderilince `event id collision` alır. Eski sürümde kalacaksanız
+eski çözüm geçerlidir: state klasöründeki `memory.sqlite3` dosyasını yedeğe taşıyın,
+`python3 beyin.py sync` ve ardından `python3 beyin.py sync --recover-views` çalıştırın;
+yeniden gönderimde özeti LF satır sonlarıyla verin.
 
 Presence eşitlemesi varsayılan olarak kapalıdır. Her cihazda `preferences --parallel-sessions on`
 ile açılır. Yerel `<state>/parallel-presence-device.json` dosyası rastgele bir cihaz kimliği
@@ -463,7 +470,11 @@ Komutlar:
   `note_create`, `note_update`, `task_create`, `task_update`, `receipt`. Yük kuyruğa girmeden
   doğrulanır (`note_update` için tam SHA-256 `expected_hash`, `task_update` için tam sayı
   `expected_revision`). İsteğe bağlı `mutation_id` aynı mutasyonun yeniden gönderilmesini
-  tek kayda indirir; aynı kimlik farklı bir mutasyonla gelirse reddedilir.
+  tek kayda indirir; aynı kimlik farklı bir mutasyonla gelirse reddedilir. Normal yazımlar gibi
+  state'in vault bağını denetler: başka bir vault'a bağlı state `runtime belongs to another vault`
+  ile reddedilir, bağsız state bu vault'a bağlanır. Kayıt bu bağın özetini taşır (yolu değil);
+  `--replay` başka bir vault'a bağlı kaydı hiçbir şey yazmadan `failed` yapar. Bu alan
+  eklenmeden önce kuyruğa girmiş kayıtlar eskisi gibi state'in kendi vault'una uygulanır.
 - `--list [--status pending|applied|conflict|failed|dismissed]`, `--replay`, `--clear-applied`
   (uygulanan ve kapatılan kayıtları siler), `--retry <id>` (incelenmiş `conflict`/`failed`
   kaydı yeniden `pending` yapar), `--dismiss <id>`.

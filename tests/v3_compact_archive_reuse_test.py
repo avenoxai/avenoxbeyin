@@ -26,10 +26,12 @@ class ArchiveReuseTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='compact-month-reuse-')
         self.addCleanup(self.tmp.cleanup)
-        self.vault = Path(self.tmp.name) / 'vault'
+        # Resolved so direct archive reads see the same path as compact() (macOS /var).
+        root = Path(self.tmp.name).resolve()
+        self.vault = root / 'vault'
         self.target = self.vault / '850-Companion'
         self.target.mkdir(parents=True)
-        self.state = Path(self.tmp.name) / 'state'
+        self.state = root / 'state'
         self.live = self.target / 'Threads.md'
         self.live.write_bytes(BODY.encode('utf-8'))
         self.archives = self.target / 'Arşiv'
@@ -66,7 +68,7 @@ class ArchiveReuseTest(unittest.TestCase):
         self.assertEqual(len(changed), len(BODY))
         self.live.write_bytes(changed.encode('utf-8'))
         self.assertEqual(self.compact(NOVEMBER)['backup'], 'written')
-        self.assertIn(changed.encode('utf-8'), self.november.read_bytes())
+        self.assertIn(changed, compact_module._archive_history(self.target, 'Threads.md', self.vault)[1].values())
         self.assertEqual(self.october.read_bytes(), original)
         stored = self.november.read_bytes()
         self.assertEqual(self.compact(NOVEMBER)['backup'], 'exists')
@@ -104,7 +106,8 @@ class ArchiveReuseTest(unittest.TestCase):
         self.assertFalse(self.november.exists())
         retry = self.compact(NOVEMBER)
         self.assertEqual(retry['backup'], 'written')
-        self.assertIn(edited, self.november.read_bytes())
+        self.assertIn(edited.decode('utf-8'),
+                      compact_module._archive_history(self.target, 'Threads.md', self.vault)[1].values())
 
     def test_missing_corrupt_or_changed_prior_archive_never_suppresses_a_backup(self):
         self.compact()

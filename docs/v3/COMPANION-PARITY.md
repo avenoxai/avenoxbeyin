@@ -54,6 +54,58 @@ ve dosyayı okumak gerektiğini söyler. Kesme satır sınırındadır, yarım k
 haritası ve ilişkili kaynaklar payını aldıktan sonra artan bütçe kırpılmış companion
 bölümlerine geri verilir; sınır hiçbir durumda aşılmaz.
 
+Açılışta yer darsa tam genel/proje kuralları (gerekçeleri çıkarmak gerekebilir), en üstteki
+tarihli devir kartı ve bütün açık konuların kısa görünümü önce ayrılır. Kuralların taban
+payı kategoriye aittir; genel ve proje dosyaları aynı payı bölüşür. Kimlik, üslup, Journal,
+bilgi haritası, receipt ve sorgu sonuçları kalan alanı kullanır. Bu çekirdek de sığmıyorsa
+önce kimlik, Journal ve öbür isteğe bağlı kaynaklar kısa bir başa iner; devir dosyası en üstteki
+kartını ve en az taban payını korur, konuların kısa görünümü kalanı alır. Bu kalan, eski orantılı
+paylaşımın konulara verdiğinden azsa her kaynak önce o orantılı payı (korunan kısmıyla ya da taban
+payıyla sınırlı) alır; artan alan sırayla kalan kurallara, en üstteki devir kartına ve konuların
+kısa görünümüne gider. Böylece kurallar ne kadar uzarsa uzasın devir kartı ve konu adımları eski
+paylaşımın gösterdiğinden azına inmez. Kuralların kendisi de sığmıyorsa sınırlı paylar ve açık
+kırpma işaretleri geçerlidir; keyfi uzunluktaki kuralların her sonlu bütçeye tam sığacağı
+söylenmez. Kaynak dosyalar bu işlemde değiştirilmez.
+Bu çekirdek bir tabandır, tavan değildir: kalan alan önce bütün kaynaklara paylaşılır. Böylece
+paralel oturumların daha eski devir kartları ve konu kartlarının tamamı sığdıkça gelir; en
+üstteki kart her zaman tam ve önce gelir, kesilen devir ayrıntısı `[truncated: read source]`
+işaretiyle biter. Konu kartları ya tam ya kısa görünümleriyle gelir; tam kartın kullanamadığı
+alan öbür kaynaklara geri döner.
+
+`Threads.md` içindeki `###` başlıklarının her biri kısa görünümde korunur. `**Status:**` /
+`**Durum:**` ile `**Next step:**` / `**Sonraki adım:**` paragrafları varsa bunlar, devam
+satırlarıyla birlikte aynen alınır; kalın yazılmamış `Status:` / `Next:` alanları da tanınır.
+İlk durum ve sonraki adım alanı güncel karttır; sonraki tarihli geçmiş paragrafları bu kısa
+görünümü büyütmez. Ayrıntı paragrafı boş satırla ayrılır. Eski serbest
+metin biçiminde ilk cümle ve bekleyen iş/hatırlatma belirten cümleler aynen seçilir.
+Alan daralırsa bu eski biçimden bir bekleyen adım cümlesi seçilir; başlıkların kendisi de
+sığamayacak kadar küçük bütçelerde bütün başlıkların görünmesi garanti edilmez.
+Bu seçim anlamsal bir özet değildir; etiketsiz veya farklı ifadeli bir sonraki adımı
+bulacağı garanti edilmez. Kısa görünüm ayrıntı ve etiketsiz adımlar için kaynağa yönlendirir.
+Kapalı konular ve kod çitlerindeki örnek başlıklar bu görünümün parçası değildir.
+Kısa görünüm de sığmadığında bütün başlıklar korunur; alan dosyadaki sırayla konulara en az
+80 karakterlik dilimler halinde verilir, sonrakiler yalnız başlıklarıyla gelir ve bölüm
+`[Thread overview clipped; read source]` işaretiyle biter. Yüzlerce konuda her başlığa bir iki
+karakter düşüp anlamsız parçalar oluşmaz. Başlıklar alanın neredeyse tamamını alıp daha az konuya
+durum bırakacaksa konular dosyadaki sırayla tam kısa görünümleriyle gelir, ardından sığan
+başlıklar ve aynı işaret; böylece alan büyüdükçe görünen sonraki adım sayısı azalmaz.
+
+`CLAUDE.md` içindeki bir `@yol` başvurusu, o dosyanın geçerli istemci oturumunda
+başarıyla yüklendiğini kanıtlamaz ([#610](https://github.com/avenoxai/avenoxbeyin/issues/610)).
+Örneğin Claude Code'un [`claudeMdExcludes`](https://code.claude.com/docs/en/settings-reference#claudemdexcludes)
+ayarı başvuruyu içeren talimat dosyasını dışlayabilir. Bu yüzden başlangıç, devam,
+sıkıştırma sonrası ve süreklilik sorularında companion kaynakları normal kaynak doğrulama,
+gizlilik ve bütçe kurallarıyla gösterilir; başvuru bulundu diye gövdeleri düşürülmez.
+İstemci aynı dosyayı ayrıca yüklerse tekrar oluşabilir; doğrulanmamış bir yüklemeye güvenip
+kuralları kaybetmekten kaçınılır. Açılış `Loaded in full` iddiası üretmez; `doctor` içindeki
+`companion_rules_opening` de dosya başvurusuna bakarak `imported: true` ya da kırpılmamış
+sonucu vermez, gerçek companion payını raporlar. Bu düzeltme yeni ayar veya opt-out eklemez
+ve gerçek Claude Code yüklemesinin doğrulandığı anlamına gelmez.
+
+Claude/Codex açılışında yeniden üretim, istemcinin UTF-16/UTF-8 ölçüsüne sığana kadar
+küçülen bütçeyle tekrarlanır. Hook'un ayrı bildirimleri de karakter bütçesinden düşülür;
+sondaki güvenlik kesmesinin companion kaynaklarını kaybetmesine güvenilmez.
+
 Bu paylaşımdan önce companion dosyaları kaynak doğrulamalı anlık görüntüden 200.000
 karakterlik bir üst sınırla okunur ([#374](https://github.com/avenoxai/avenoxbeyin/issues/374)).
 Payından kısa kalan dosya artanı uzun dosyalara bırakır; böylece kural kırpması ve
@@ -156,7 +208,8 @@ Düzeltme dört parçadır:
   gösterilir, bunlara sınır uygulanmaz. Hook `Kurallar.md` dosyasını doğrudan okur ve
   sığmadığında başını ve sonunu atlanan kural aralığıyla birlikte verir (#45, #196).
   `doctor` ayrıca `companion_rules_opening` altında Claude Code açılışının kural metninin
-  en fazla kaç karakterini tam gösterdiğini (`share`) hook'un kendi hesabıyla verir; sayı
+  o anki karakter payını (`share`) hook'un kendi hesabıyla verir; sayı sabit bir tavan değildir,
+  daha kısa bir kural dosyası isteğe bağlı ayrıntının yerini alabilir. Pay
   öbür companion dosyalarının o anki boyutuna ve receipt'e göre değişir. Kurallar
   kırpılıyorsa `--human` çıktısında tek satır görünür. Bilgi amaçlıdır, `doctor` durumunu
   değiştirmez ve hiçbir dosya yazmaz (#374). Ayrıca açılışta `Kurallar.md` kırpılıyorsa oturum
@@ -179,14 +232,21 @@ Düzeltme dört parçadır:
   otomatik bağlama ve olağan aramaya girmez, gerektiğinde doğrudan açılır. Canlı dosyada
   arşiv yolunu gösteren tek bir satır kalır. Frontmatter, kod blokları, CRLF satır sonları
   ve tarihsiz yapı korunur. Taşınacak tarihli kayıt yoksa ya da taşımadan sonra dosya
-  hala sınırı aşıyorsa komut dosyanın kalan tam metnini aynı aylık arşive kelimesi
-  kelimesine yedekler (`backup: written`; dosya değişmemişse yeniden kopyalamaz,
-  `backup: exists`). Taşınacak kayıt kalmamışsa aynı tam metin yedeği önceki 12 aylık
-  arşivde de aranır (toplam en fazla 8 MiB okuma); bulununca rapor gerçek eski arşiv
-  yolunu verir, yeni ayda aynı metni yeniden yazmaz. Eksik, değişmiş, okunamayan,
-  sembolik bağlı veya bu sınırların dışındaki arşiv bir yedeğin kanıtı sayılmaz;
-  komut güvenli biçimde yeni tam yedek yazar. Eski kopyaları silmez. Tarama sırasında
-  canlı dosya değişirse eski yedek kabul edilmez ve `conflict` döner.
+  hala sınırı aşıyorsa komut dosyanın kalan tam metnini aynı aylık arşive yedekler
+  (`backup: written`). Aynı metin SHA-256 özetiyle bu ayın arşivinde ve önceki 12 aylık
+  arşivde (toplam en fazla 8 MiB okuma) aranır; bulununca yeniden yazılmaz, rapor
+  `backup: exists` ve gerçek arşiv yolunu verir. Ayın ilk yedeği her zaman tam metindir.
+  Dosya aynı ay içinde yalnız biraz değiştiyse (#596) yeni yedek o aylık dosyadaki son
+  tam yedeğe göre fark yedeği olarak yazılır (`backup_format: delta`); fark metnin en
+  fazla yarısı kadarsa. Fark başka bir aya ya da başka bir farka dayanmaz, her aylık
+  dosya kendi başına geri kurulur. Her kayıt uzunluk ve SHA-256 ile doğrulanır;
+  depodaki `scripts/restore_v3_compact_backup.py` doğrulanmış sürümleri listeler ve
+  seçileni vault dışında yeni bir dosyaya yazar. Eksik, değişmiş, okunamayan, sembolik
+  bağlı veya bu sınırların dışındaki arşiv bir yedeğin kanıtı sayılmaz; komut güvenli
+  biçimde yeni yedek yazar. Eski kopyaları silmez. Kesintiden sonra yeniden çalışan
+  taşıma da aynı sınırlı taramayla önceki kaydı tanır ve metni ikinci kez eklemez;
+  pencerenin dışındaki bir kayıt yalnız fazladan bir kopyaya yol açar, metin kaybına
+  değil. Tarama sırasında canlı dosya değişirse eski yedek kabul edilmez ve `conflict` döner.
   Komut `needs_rewrite` döner; ajan dosyayı ancak bundan sonra sınır içinde
   yeniden yazar, böylece özetleme hiçbir metnin tek kopyası olmaz (#168). Arşiv
   yazıldıktan sonra canlı dosya değişmişse arşiv eski baytlarına döner ve `conflict`

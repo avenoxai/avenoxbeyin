@@ -140,6 +140,25 @@ class JevCardPassageTest(unittest.TestCase):
         self.assertIn('180 cm', card['excerpt'])
         self.assertLessEqual(len(card['excerpt']), advisor.AUTO_EXCERPT)
 
+    def test_note_level_strict_card_without_evidence_keeps_heading_aware_block(self):
+        # While the passage index builds, strict context comes from the note level and
+        # carries no evidence ranges; its card stays the #507 heading-aware block.
+        client.set_mode(self.state, 'on', enable=['auto_context'])
+        text = ('# Sistem\n\n' + ('Giris ve alakasiz aciklama satirlari burada. ' * 30) +
+                '\n\n## Postgres WAL Ayarlari\n\nPostgres WAL replikasyonu zirkon kovasi ile tetiklenir.\n\n' +
+                ('Diger kayitlar burada durur. ' * 30) + '\n')
+        self.record('wal', text)
+        self.store.STRICT_PASSAGES = False
+        query = 'postgres wal replikasyonu zirkon nasil'
+        context = self.store.context_for('claude', query, strict=True, budget_chars=4000)
+        self.assertEqual([r['id'] for r in context['records']], ['wal'])
+        self.assertEqual(getattr(context, 'evidence', {}), {})
+        advisor.auto_context(self.store, 'claude', query, context, budget_chars=4000, transport=self.transport)
+        card = next(iter(self.calls[0][0]['state']['notes'].values()))
+        self.assertEqual(card['excerpt'], advisor.card_excerpt(context.sources[0], query))
+        self.assertTrue(card['excerpt'].startswith('Sistem > Postgres WAL Ayarlari\n\n'))
+        self.assertNotIn('alakasiz', card['excerpt'])
+
     def test_excerpt_short_roots_keep_whole_words_and_project_exclusions(self):
         for query, project, tail in [('durum', None, 'Dur: red traffic light.'),
                                      ('boyum', 'boy', 'Boy: 180 cm.')]:

@@ -177,9 +177,10 @@ def filter_novel(state, harness, session, records, now=None):
 def drop_delivered(state, harness, session, context, now=None):
     """Return (context without held-back records, duplicates).
 
-    The returned context keeps the same type, unclipped `sources`, and `wider` views for kept records
-    (beyin_v3.PackedContext), so render_context repacks them from the originals and hands the
-    budget of the held-back records to the new ones instead of re-clipping earlier clips.
+    The returned context keeps the same type, unclipped `sources`, and the `wider`, `extensions`
+    and `evidence` attributes of kept records (beyin_v3.PackedContext), so render_context repacks
+    them from the originals and hands the budget of the held-back records to the new ones instead
+    of re-clipping earlier clips.
     """
     records = list(context.get('records') or [])
     novel, duplicates = filter_novel(state, harness, session, records, now=now)
@@ -191,10 +192,14 @@ def drop_delivered(state, harness, session, context, now=None):
     if len(sources) == len(records):
         held = {id(r) for r in duplicates}
         kept.sources = tuple(s for s, r in zip(sources, records) if id(r) not in held)
-    wider = getattr(context, 'wider', None)
-    if isinstance(wider, dict):
-        kept_ids = {r.get('id') for r in novel if isinstance(r, dict)}
-        kept.wider = {key: record for key, record in wider.items() if key in kept_ids}
+    kept_ids = {r.get('id') for r in novel if isinstance(r, dict)}
+    # Every per-record attribute travels with its kept record (#530, #574): the
+    # final envelope repacks from these, so a dropped record must not take a
+    # retained record's second passage, extensions or evidence ranges with it.
+    for name in ('wider', 'extensions', 'evidence'):
+        value = getattr(context, name, None)
+        if isinstance(value, dict):
+            setattr(kept, name, {key: item for key, item in value.items() if key in kept_ids})
     return kept, duplicates
 
 

@@ -19,11 +19,11 @@ NODE = shutil.which('node')
 # client, then invoke hooks with OpenCode's (input, output) shapes. Prints one JSON line.
 DRIVER = r"""
 import { pathToFileURL } from "node:url"
-const [plugin, parents] = process.argv.slice(1)
+const [plugin, parents, directory] = process.argv.slice(1)
 const parentOf = JSON.parse(parents)
-const client = { session: { get: async ({ path }) => ({ data: { id: path.id, parentID: parentOf[path.id] } }) } }
+const client = { session: { get: async ({ path }) => ({ data: { id: path.id, parentID: parentOf[path.id], directory } }) } }
 const mod = await import(pathToFileURL(plugin).href)
-const hooks = await mod.BeyinV3({ client, directory: process.cwd() })
+const hooks = await mod.BeyinV3({ client, directory })
 const system = async (sessionID) => {
   const output = { system: ["base"] }
   await hooks["experimental.chat.system.transform"]?.({ sessionID, model: {} }, output)
@@ -55,7 +55,7 @@ console.log(JSON.stringify(result))
 # setup(ctx) with hook registries and a controllable event stream, then use the cleanup.
 DRIVER_V2 = r"""
 import { pathToFileURL } from "node:url"
-const [plugin, parents] = process.argv.slice(1)
+const [plugin, parents, directory] = process.argv.slice(1)
 const parentOf = JSON.parse(parents)
 const hooks = {}
 const register = (domain) => async (name, callback) => {
@@ -84,10 +84,14 @@ const emit = (type, sessionID) => new Promise((resolve) => {
   pending.push({ id: `evt-${pending.length}`, type, data: { sessionID } })
   notify?.()
 })
+// OpenCode 2.0.18 and 2.2.6 keep the folder under location, on the session and on ctx;
+// neither has a top-level directory, and the service runs in its own directory.
 const ctx = {
-  session: { hook: register("session"), get: async ({ sessionID }) => ({ id: sessionID, parentID: parentOf[sessionID] }) },
+  session: { hook: register("session"),
+    get: async ({ sessionID }) => ({ id: sessionID, projectID: "global", parentID: parentOf[sessionID], location: { directory } }) },
   tool: { hook: register("tool") },
   event: { subscribe },
+  location: { directory, workspaceID: undefined, project: { id: "global", directory } },
 }
 const mod = await import(pathToFileURL(plugin).href)
 const definition = mod.default
@@ -161,6 +165,8 @@ class OpenCodeHarnessTest(unittest.TestCase):
         self.addCleanup(environment.stop)
         self.vault = Path(self.temp.name) / 'Beyin Ölçüm & Vault'
         self.state = Path(self.temp.name) / 'state'
+        self.elsewhere = Path(self.temp.name) / 'elsewhere'
+        self.elsewhere.mkdir()
         self.vault.mkdir()
         (self.vault / '🔮 850-Companion').mkdir()
         (self.vault / '🔮 850-Companion/Last-Session.md').write_text('# Son oturum\n\nOpenCode köprüsü kuruldu; makbuz bekleniyor.\n', encoding='utf-8')
@@ -184,8 +190,10 @@ class OpenCodeHarnessTest(unittest.TestCase):
                               input=json.dumps(payload), capture_output=True, text=True, encoding='utf-8')
 
     def drive(self, parents=None, driver=DRIVER):
-        result = subprocess.run([NODE, '--input-type=module', '-e', driver, str(self.plugin), json.dumps(parents or {})],
-                                capture_output=True, text=True, encoding='utf-8', cwd=self.vault)
+        # The service runs somewhere else; only the session carries the project directory.
+        result = subprocess.run([NODE, '--input-type=module', '-e', driver, str(self.plugin), json.dumps(parents or {}),
+                                 str(self.vault)],
+                                capture_output=True, text=True, encoding='utf-8', cwd=self.elsewhere)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout.strip().splitlines()[-1])
 
@@ -193,6 +201,9 @@ class OpenCodeHarnessTest(unittest.TestCase):
         drain = self.hook('opencode', {}, '--drain-queue')
         self.assertEqual(drain.returncode, 0, drain.stderr)
         return [json.loads(p.read_text(encoding='utf-8')) for p in (self.state / 'hook-done').glob('*.json')]
+
+    def project_label(self):
+        return ''.join(c for c in self.vault.name if c.isalnum() or c in ' ._-')
 
     def test_installer_plans_vault_local_plugin(self):
         self.assertTrue(self.plugin.is_file())
@@ -245,6 +256,8 @@ class OpenCodeHarnessTest(unittest.TestCase):
         self.assertEqual(sorted(e['event'] for e in done),
                          sorted(['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PreCompact', 'Stop', 'SessionEnd']),
                          'One event per mapped hook; read tools and the sub-agent session queue nothing')
+        self.assertEqual({e['project'] for e in done}, {self.project_label()},
+                         'The session directory names the project, not the service directory')
         for event in done:
             self.assertNotIn('prompt', event, 'Hook metadata must never persist transcript text')
 
@@ -274,6 +287,8 @@ class OpenCodeHarnessTest(unittest.TestCase):
                                  'SessionStart', 'SessionEnd', 'SessionStart', 'SessionEnd']),
                          'One Stop per prompted turn, one SessionEnd per session, nothing for read tools, '
                          'failed tools or the sub-agent session')
+        self.assertEqual({e['project'] for e in done}, {self.project_label()},
+                         'The session directory names the project, not the service directory')
         for event in done:
             self.assertNotIn('prompt', event, 'Hook metadata must never persist transcript text')
 

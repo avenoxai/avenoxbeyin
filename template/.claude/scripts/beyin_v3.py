@@ -157,6 +157,24 @@ def _plain_link(value):
         return False
 
 
+def _receipt_lf(text):
+    """Receipt text identity ignores CRLF/CR spelling, not other whitespace."""
+    if isinstance(text, bytes):
+        return text.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+    return text.replace('\r\n', '\n').replace('\r', '\n')
+
+
+def _receipt_same_summary(indexed, summary):
+    """Replay identity against an indexed summary, ignoring CRLF/CR/LF spelling.
+
+    V3.12 and older read a CRLF checkout (core.autocrlf) by dropping only the
+    final LF, so the index kept a trailing CR no writer sent. That one final
+    CR may be absent from a replay; any other text difference still conflicts.
+    """
+    summary = _receipt_lf(summary)
+    return _receipt_lf(indexed) == summary or (indexed.endswith('\r') and _receipt_lf(indexed[:-1]) == summary)
+
+
 def _json(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -637,6 +655,8 @@ def record_scope(record, scopes):
 # "not" against "notlar". Every token is replaced by ONE canonical stem, with the same
 # function on the query and the document side. Replacement, not expansion: the score stays
 # "how many query words matched", which STRICT_MIN_SHARED and the idf weight depend on.
+# A hyphenated name is the one exception (_COMPOUND): a note also counts its joined
+# spelling, and a query uses that spelling only in place of a missing part (_query_compounds).
 # Input reaches the stemmer already ASCII folded, so the table is written folded too.
 _VOWELS = frozenset("aeiou")
 _VOICELESS = frozenset("cfhkpst")
@@ -648,11 +668,22 @@ _VOICELESS = frozenset("cfhkpst")
 _SUFFIXES = (
     # Verb endings (#430) peel only after l or n, which cover passive/reflexive forms:
     # kurulmali, kurulmasin, kurulur, kurulmus and kuruldu all reach "kurul". This is a
-    # conservative spelling heuristic, not a voice classifier. Other stems stay alone:
-    # imperative prompts (goster, calistir) would match every note that uses the verb.
+    # conservative spelling heuristic, not a voice classifier.
     ("masin", 4, "ln"), ("mesin", 4, "ln"), ("mali", 5, "ln"), ("meli", 5, "ln"),
-    ("iyor", 4, "ln"), ("uyor", 4, "ln"),
+    ("iyordu", 4, "ln"), ("uyordu", 4, "ln"), ("iyor", 4, "ln"), ("uyor", 4, "ln"),
     ("acak", 4, "ln"), ("ecek", 4, "ln"), ("acag", 4, "ln"), ("eceg", 4, "ln"),
+    # Other consonant stems (#430): calisiyor, calisir, calismali, calisacak and calismis
+    # reach the past tense stem "calist", which "calisti" already peels to. The bare stem
+    # and the infinitive stay apart: they are how a prompt asks for an action (goster,
+    # calistirmak gerekiyor), so such a prompt still matches no conjugation of its verb in
+    # a note. m stays out: calismiyor is the negation, and the audit pairs it against
+    # calisiyor. The aorist needs a vowel before one consonant other than d: calistir
+    # (causative) and kalitedir (copula) are not calis+ir or kalited+ir.
+    ("iyordu", 4, "verb"), ("uyordu", 4, "verb"), ("iyor", 4, "verb"), ("uyor", 4, "verb"),
+    ("masin", 4, "verb"), ("mesin", 4, "verb"), ("mali", 5, "verb"), ("meli", 5, "verb"),
+    ("acak", 4, "verb"), ("ecek", 4, "verb"), ("acag", 4, "verb"), ("eceg", 4, "verb"),
+    ("mis", 4, "verb"), ("mus", 4, "verb"),
+    ("ir", 5, "aorist"), ("ur", 5, "aorist"),
     ("imiz", 4, "consonant"), ("umuz", 4, "consonant"), ("iniz", 4, "consonant"), ("unuz", 4, "consonant"),
     ("nden", 5, "vowel"), ("ndan", 5, "vowel"),
     ("ten", 4, "voiceless"), ("tan", 4, "voiceless"), ("den", 4, "voiced"), ("dan", 4, "voiced"),
@@ -682,9 +713,8 @@ _SUFFIXES_BY_LAST = {
 
 # Vowel loss (#430): a few roots drop their last vowel before a vowel suffix, so peeling
 # "metni" stops at "metn" while "metin" stays whole. The peeled short form is mapped back
-# to the root, on both sides. Forms that are often another word stay out: devre and
-# devreye (circuit, activation) for devir, resmi (official) for resim, karne for karin,
-# English burn for burun, the name Emre for emir, and al-in (take) for alin.
+# to the root, on both sides. Forms that are often another word stay out: resmi (official)
+# for resim, emre (the name Emre) for emir, and al-in (take) for alin.
 _VOWEL_LOSS = {
     "sehr": "sehir", "fikr": "fikir", "beyn": "beyin", "metn": "metin", "kism": "kisim",
     "hukm": "hukum", "nehr": "nehir", "zihn": "zihin", "vakt": "vakit", "nesl": "nesil",
@@ -694,7 +724,16 @@ _VOWEL_LOSS = {
     # A three-letter loss stops above the stem floor, so each surviving form is listed.
     "ismi": "isim", "ismin": "isim", "isme": "isim", "akli": "akil", "aklin": "akil",
     "akla": "akil", "agzi": "agiz", "agzin": "agiz", "agza": "agiz", "oglu": "ogul",
-    "oglun": "ogul", "omru": "omur", "omrun": "omur",
+    "oglun": "ogul", "omru": "omur", "omrun": "omur", "emri": "emir", "emrin": "emir",
+}
+# These short forms are also another word, which the suffix that reached them tells apart:
+# devri and devrinde come from devir, devre and devreye (circuit, activation) end in e and
+# devrim (revolution) in im; burnu and burnundan come from burun, while English burn takes
+# no suffix; karni comes from karin, karne (report card) ends in e.
+_VOWEL_LOSS_AFTER = {
+    "devr": ("devir", frozenset(("i", "in", "iniz"))),
+    "burn": ("burun", frozenset(("u", "un", "um", "umuz", "unuz"))),
+    "karn": ("karin", frozenset(("i", "in", "im", "imiz", "iniz"))),
 }
 
 
@@ -712,6 +751,10 @@ def _attaches(stem, gate):
         return previous in "ln"
     if gate == "passive":
         return previous in "ln" and stem[-2] in "iu"
+    if gate == "verb":
+        return previous not in _VOWELS and previous not in "lnm"
+    if gate == "aorist":
+        return previous not in _VOWELS and previous not in "lnmd" and stem[-2] in _VOWELS
     return True
 
 
@@ -728,6 +771,7 @@ def _harmonizes(stem, suffix):
 
 @functools.lru_cache(maxsize=16384)
 def _stem(word):
+    last = ""
     # Words under 5 characters are already stems; peeling them merges unrelated roots.
     while len(word) >= 5:
         # Claude ends in the spelling of a Turkish locative suffix. Preserve the
@@ -741,11 +785,19 @@ def _stem(word):
             stem = word[:-len(suffix)]
             if len(stem) < floor or not _attaches(stem, gate) or not _harmonizes(stem, suffix):
                 continue
-            word = stem
+            if gate in ("verb", "aorist"):
+                # The past tense stem: t after a voiceless consonant, d otherwise. A d before
+                # a vowel suffix is a softened t (kaydediyor, kaydetti).
+                if stem[-1] == "d" and suffix[0] in _VOWELS:
+                    stem = stem[:-1] + "t"
+                return stem + ("t" if stem[-1] in _VOICELESS else "d")
+            word, last = stem, suffix
             break
         else:
             break
     word = _VOWEL_LOSS.get(word, word)
+    if word in _VOWEL_LOSS_AFTER and last in _VOWEL_LOSS_AFTER[word][1]:
+        word = _VOWEL_LOSS_AFTER[word][0]
     # Consonant softening: kitap/kitabi and ornek/ornegi (soft g is already folded to g).
     # A b or g after a vowel goes back to p or k on every stem, peeled or not, so both
     # sides agree. d is left alone: past tense stems like "dened" would land on "denet".
@@ -780,11 +832,48 @@ def _short_root(stem):
     return None
 
 
+# A hyphenated name (#430) keeps its parts and also counts once as the joined word, so
+# claude-mem meets claudemem and e-posta meets eposta. NFKD has turned the other hyphen
+# forms into these two. All-digit compounds stay parts: a date or range is not a name, and
+# neither is a joined chain longer than any name. The scan starts at a hyphen, which few
+# characters are; a pattern tried at every word start costs as much as reading the words.
+_HYPHEN = re.compile("[-\u2010](?=[a-z0-9])")
+_WORD_END = re.compile("[a-z0-9]+\\Z")
+_COMPOUND = re.compile("[a-z0-9]+(?:[-\u2010][a-z0-9]+)+")
+
+
+def _fold(text):
+    """The casefolded, accent-free text that _token_counts reads words from."""
+    text = unicodedata.normalize("NFKD", str(text).casefold())
+    return "".join(c for c in text if not unicodedata.combining(c)).replace("ı", "i")
+
+
+def _compounds(text):
+    """(joined spelling, parts) of every hyphenated name in folded text."""
+    end = 0
+    for hyphen in _HYPHEN.finditer(text):
+        at = hyphen.start()
+        if at < end or not text[at - 1:at].isalnum():
+            continue  # inside the previous name, or a dash that follows a space
+        # A joined name has at most 64 characters, so its first part starts within reach.
+        word = _WORD_END.search(text, max(end, at - 65), at)
+        if word is None:
+            continue
+        compound = _COMPOUND.match(text, word.start())
+        end = compound.end()
+        parts = compound.group().replace("\u2010", "-").split("-")
+        joined = "".join(parts)
+        if len(joined) <= 64 and not joined.isdigit():
+            yield joined, parts
+
+
 def _token_counts(text):
     """Stem -> occurrence count; the keys are exactly _tokens(text)."""
-    text = unicodedata.normalize("NFKD", str(text).casefold())
-    text = "".join(c for c in text if not unicodedata.combining(c)).replace("ı", "i")
-    return Counter(_stem(word) for word in re.findall(r"[a-z0-9]+", text))
+    text = _fold(text)
+    counts = Counter(_stem(word) for word in re.findall(r"[a-z0-9]+", text))
+    for joined, _parts in _compounds(text):
+        counts[_stem(joined)] += 1
+    return counts
 
 
 def _tokens(text):
@@ -902,14 +991,47 @@ def _query_roots(terms, frequency, ignored=frozenset()):
     return alternatives
 
 
-def _fold_query_roots(term_counts, terms, ignored):
-    """Count each note's _query_roots occurrences under the query term, in place."""
+def _query_compounds(query, terms):
+    """(terms, {term: joined stem}): a query's hyphenated names as alternatives (#430).
+
+    A note counts a hyphenated name joined as well (_token_counts). In a query the joined
+    stem is no term of its own: it stands in for the name's first part that is still a term,
+    in a note without that part, so claude-mem still meets claudemem. A hyphenated word then
+    never counts for more terms than its remaining parts: "e-posta" shares one term with a
+    note about an e-posta, not posta and eposta, and one word cannot pass the two-term gate.
+    Parts that were all dropped (stopwords, single letters, short numbers) leave nothing.
+    """
+    text = _fold(query)
+    compounds = list(_compounds(text))
+    if not compounds:
+        return terms, {}
+    written = {_stem(word) for word in re.findall(r"[a-z0-9]+", text)}
+    terms, alternatives = set(terms), {}
+    for joined, parts in compounds:
+        joined = _stem(joined)
+        if joined in written or joined not in terms:
+            continue  # also written whole, already handled, or ignored like a project word
+        terms.discard(joined)
+        part = next((part for part in map(_stem, parts) if part in terms and part not in alternatives), None)
+        if part is not None:
+            alternatives[part] = joined
+    return terms, alternatives
+
+
+def _fold_query_roots(term_counts, terms, ignored, compounds=None):
+    """Count each note's _query_roots occurrences under the query term, in place.
+
+    compounds (_query_compounds) fold the same way where neither the term nor its root is in the note.
+    """
     term_counts = list(term_counts)
     alternatives = _query_roots(terms, lambda token: sum(1 for counts in term_counts if token in counts), ignored)
     for counts in term_counts:
         for term, root in alternatives.items():
             if root in counts:
                 counts[term] += counts.pop(root)
+        for term, joined in (compounds or {}).items():
+            if term not in counts and joined in counts:
+                counts[term] = counts.pop(joined)
 
 
 # Conventional Unicode hyphens/dashes and compatibility forms of ASCII hyphen.
@@ -952,7 +1074,8 @@ def _name_match_score(record, terms):
         return 0
     best_score = 0
     for cand in _name_candidates(record):
-        cand_tokens = _tokens(cand) - STOPWORDS
+        # Parts only: a joined hyphenated name must not demand that the query hyphenate too.
+        cand_tokens = _tokens(cand.translate(_NAME_SEPARATORS)) - STOPWORDS
         meaningful = {t for t in cand_tokens if len(t) >= 2}
         if meaningful and meaningful - NAME_GENERIC_TERMS and meaningful.issubset(terms):
             if len(meaningful) > best_score:
@@ -1249,6 +1372,7 @@ class MemoryStore:
             raise ValueError("unsupported harness")
         if not isinstance(refs, list) or not refs:
             raise ValueError("source refs required")
+        summary = _receipt_lf(summary)
         event = {"event_id": event_id, "summary": summary, "refs": [self._source(ref) for ref in refs], "harness": harness}
         if links:
             if not isinstance(links, list) or len(links) > MAX_RECEIPT_LINKS or not all(
@@ -1261,7 +1385,8 @@ class MemoryStore:
             old = db.execute("SELECT payload FROM receipts WHERE id=?", (event_id,)).fetchone()
             if old:
                 previous = json.loads(old[0])
-                if (previous["summary"], previous["refs"], previous.get("links")) != (summary, event["refs"], event.get("links")):
+                if (not _receipt_same_summary(previous["summary"], summary) or
+                        (previous["refs"], previous.get("links")) != (event["refs"], event.get("links"))):
                     raise ReceiptConflict("event_id reused with different payload")
                 event = previous
             db.execute("INSERT OR IGNORE INTO receipts VALUES (?,?)", (event_id, payload))
@@ -1697,11 +1822,13 @@ class MemoryStore:
         terms = query_tokens - STOPWORDS - project_tokens
         scoped_listing = project is not None and bool(query_tokens & project_tokens) and not (query_tokens - STOPWORDS - project_tokens)
         if strict:
-            terms = _strict_terms(terms)
+            terms, compounds = _query_compounds(query, _strict_terms(terms))
             if not terms and not scoped_listing and not snapshot:
                 if candidate_only:
                     return []
                 return pack_context([], limit, budget_chars, stale_count)
+        else:
+            terms, compounds = _query_compounds(query, terms)
         ranked = []
         vocabularies = {}
         term_counts = {}
@@ -1735,7 +1862,7 @@ class MemoryStore:
                 name_scores[record["id"]] = name_score
             scanned.append(record)
         # Root use is counted over every scanned note, so the counts are final only after the scan.
-        _fold_query_roots(term_counts.values(), terms, STOPWORDS | project_tokens)
+        _fold_query_roots(term_counts.values(), terms, STOPWORDS | project_tokens, compounds)
         for record in scanned:
             vocabulary = set(term_counts[record["id"]])
             vocabularies[record["id"]] = vocabulary
@@ -1845,6 +1972,8 @@ class PackedContext(dict):
     """
     sources = ()
     wider = {}
+    extensions = {}
+    evidence = {}
 
 
 def _clip_to(record, citation, room):
@@ -1935,14 +2064,15 @@ def pack_context(records, limit=5, budget_chars=8000, stale_count=0):
     return packed
 
 
-def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0):
+def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0, *, extensions=None):
     """pack_context, then each wholly delivered record may take its wider version (id -> record)
     from the room every record left over, in rank order.
 
     A wider version (a second passage of the same note) never cuts another record short: it is
-    used whole or not at all, and only once each record's own text fits. The result's sources
-    stay the narrow originals and .wider is kept, so every later pack (the advisor's, the final
-    envelope's) decides again at its own budget.
+    used whole or not at all, and only once each record's own text fits. A value may also be
+    a list of alternatives, in preference order; only the first whole one that fits is used.
+    The result's sources stay the narrow originals and .wider is kept, so every later pack
+    (the advisor's or the final envelope's) decides again at its own budget.
     """
     packed = pack_context(records, limit, budget_chars, stale_count)
     widened, spare, chosen = False, budget_chars - packed["used_chars"], list(records)
@@ -1951,14 +2081,37 @@ def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0):
         broader = wider.get(record["id"])
         if broader is None or record["id"] not in whole:
             continue
-        extra = len(_json(broader)) - len(_json(record))
-        if extra <= spare:
-            chosen[position], spare, widened = broader, spare - extra, True
+        alternatives = broader if isinstance(broader, (list, tuple)) else [broader]
+        for alternative in alternatives:
+            extra = len(_json(alternative)) - len(_json(record))
+            if extra <= spare:
+                chosen[position], spare, widened = alternative, spare - extra, True
+                break
     if widened:
         packed = pack_context(chosen, limit, budget_chars, stale_count)
+    # Optional source/section context spends only what the existing passage
+    # policy left over. Reserve every source's original second passage first;
+    # a rich first source must not displace a later source's answering passage.
+    if extensions:
+        spare = budget_chars - packed['used_chars']
+        chosen = list(packed['records'])
+        extended = False
+        for position, record in enumerate(chosen):
+            for alternative in extensions.get(record['id'], ()):
+                extra = len(_json(alternative)) - len(_json(record))
+                if extra <= spare:
+                    chosen[position], spare = alternative, spare - extra
+                    extended = True
+                    break
+        if extended:
+            prior = packed
+            packed = pack_context(chosen, len(chosen), budget_chars, stale_count)
+            packed['omitted_count'] = prior['omitted_count']
+            packed['truncated'] = packed['truncated'] or bool(prior['omitted_count'])
     by_id = {r["id"]: r for r in records}
     packed.sources = tuple(by_id[s["id"]] for s in packed.sources)
     packed.wider = dict(wider)
+    packed.extensions = dict(extensions or {})
     return packed
 
 
@@ -2016,14 +2169,18 @@ def render_context(context, budget_chars, prefix="", suffix=""):
         records = list(sources)  # re-clip the envelope from the originals, not from a clip
     full = {r["id"]: r for r in records}
     wider = getattr(context, "wider", {})
+    extensions = getattr(context, "extensions", {})
     records = [_delivery_view(r) for r in records]
-    wider_views = {key: _delivery_view(record) for key, record in wider.items()}
+    wider_views = {key: ([_delivery_view(r) for r in record] if isinstance(record, (list, tuple))
+                         else _delivery_view(record)) for key, record in wider.items()}
+    extension_views = {key: [_delivery_view(r) for r in choices] for key, choices in extensions.items()}
     extra = {k: v for k, v in context.items() if k not in
              {"records", "citations", "used_chars", "budget_chars", "omitted_count", "truncated", "abstained", "stale_count"}}
     available = max(0, budget_chars - len(prefix))
     payload_budget = available
     while True:
-        packed = pack_widened(records, wider_views, len(records), payload_budget, context.get("stale_count", 0))
+        packed = pack_widened(records, wider_views, len(records), payload_budget, context.get("stale_count", 0),
+                              extensions=extension_views)
         packed["omitted_count"] += context.get("omitted_count", 0)
         packed["truncated"] = packed["truncated"] or bool(context.get("truncated"))
         packed.update(extra)
@@ -2036,6 +2193,9 @@ def render_context(context, budget_chars, prefix="", suffix=""):
                 for r in packed["records"]])
             delivered.sources = tuple(full[s["id"]] for s in packed.sources)  # a re-render keeps identities
             delivered.wider = dict(wider)
+            delivered.extensions = dict(extensions)
+            delivered.evidence = {r['id']: getattr(context, 'evidence', {})[r['id']]
+                                  for r in delivered['records'] if r['id'] in getattr(context, 'evidence', {})}
             return prefix + text + tail, delivered
         if payload_budget == 0:
             # A nonsensically small budget cannot carry even an empty envelope.

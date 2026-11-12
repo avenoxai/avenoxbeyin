@@ -42,7 +42,8 @@ bağımsız çalıştırma ve güven sınırları incelenmeden tekleştirilmemel
    `state/yakala/` altına kopyalar (`shutil.copy2(script, runner)`). Vault'taki
    kardeş bir modülü import etmek, bu kopyanın yanında o modülün bulunacağını
    garanti etmez. `listen_mac` / `_hand_over` güncel vault kopyasına geçebilse de
-   başlangıç yolu tek başına açılabilmelidir.
+   başlangıç yolu tek başına açılabilmelidir. Bu yüzden `beyin_v3_docx.py`
+   isteğe bağlı yüklenir; kopyanın yanında yoksa DOCX kartı ajan incelemesine kalır.
 
 Yakala için **üretilen tek dosyalık bootstrap** ile **atomik runtime paketi**
 arasında karar açık. Karar; eski kısayol, vault'un bulunamaması, çoklu vault,

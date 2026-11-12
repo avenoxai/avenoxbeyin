@@ -15,6 +15,11 @@ is applied. A process that dies between the apply and its acknowledgement leaves
 record pending; the next replay first checks whether the target already reflects the
 mutation and then acknowledges it as applied (reconciled) instead of writing twice or
 reporting a false conflict.
+
+Vault binding: enqueue applies the runtime binding check ordinary writes get from
+MemoryStore, so a runtime bound to another vault is refused. Each record keeps a digest
+of that binding (never the path), and replay refuses a record bound to another vault.
+Records written before this field replay as before, against the runtime's own vault.
 """
 from __future__ import annotations
 
@@ -170,13 +175,32 @@ def _check_payload(action, source, payload):
             raise ValueError("receipt requires refs")
 
 
+def _vault_binding(root):
+    """Digest of a runtime's resolved vault root; the queue never stores the path itself."""
+    return hashlib.sha256(str(root).encode("utf-8")).hexdigest()
+
+
+def _bound_vault(state, vault):
+    """The state/vault binding check of an ordinary write (MemoryStore): a runtime bound to
+    another vault is refused, an unbound one is bound to this vault."""
+    from beyin_v3_sync import MemoryStore
+    return _vault_binding(MemoryStore(state, vault).vault_root)
+
+
 def enqueue_mutation(state, action, source, payload, vault=None, mutation_id=None):
     _require_enabled(state)
     _check_payload(action, source, payload)
     if mutation_id is not None and (not isinstance(mutation_id, str) or not _CLIENT_ID.fullmatch(mutation_id)):
         raise ValueError("mutation_id must be 8-64 letters, digits, '_' or '-'")
+    # The CLI always passes its vault; a library call without one records no binding.
+    binding = None if vault is None else _bound_vault(state, vault)
     with _queue_lock(state):
-        return _enqueue_mutation(state, action, source, payload, vault, mutation_id)
+        if vault is not None:
+            # First-use initializers can both observe no binding; only the committed
+            # owner may enqueue after they contend for the queue lock.
+            from beyin_v3_sync import MemoryStore
+            MemoryStore(state, vault, read_only=True)
+        return _enqueue_mutation(state, action, source, payload, binding, mutation_id)
 
 
 def _enqueue_mutation(
@@ -184,7 +208,7 @@ def _enqueue_mutation(
     action: str,
     source: str,
     payload: dict,
-    vault: str | Path | None = None,
+    binding: str | None = None,
     client_id: str | None = None,
 ) -> dict:
     """Enqueue an offline mutation to state/mutation-queue.jsonl."""
@@ -194,7 +218,8 @@ def _enqueue_mutation(
         # A caller-chosen id makes a resend of the same mutation a no-op.
         for item in list_mutations(state_dir):
             if item["mutation_id"] == client_id:
-                if (item.get("action"), item.get("source"), item.get("payload")) != (action, source, payload):
+                if ((item.get("action"), item.get("source"), item.get("payload")) != (action, source, payload) or
+                        (binding is not None and item.get("vault_binding", binding) != binding)):
                     raise ValueError("mutation_id already used for a different mutation")
                 return dict(item, duplicate=True)
     machine_id = get_machine_id(state_dir)
@@ -217,6 +242,8 @@ def _enqueue_mutation(
         "applied_at": None,
         "error": None,
     }
+    if binding is not None:
+        mutation["vault_binding"] = binding
 
     queue_file = _queue_path(state_dir)
     line = json.dumps(mutation, ensure_ascii=False) + "\n"
@@ -378,6 +405,17 @@ def _updated_note(engine, raw, payload):
     return render(meta, text.rstrip('\n') + '\n')
 
 
+def _stored_task_fields(engine, fields):
+    """Task fields as task_create and update_task store them, or None if they refuse them."""
+    fields, _ = engine._protect_metadata(dict(fields or {}))
+    fields = dict(fields)
+    try:
+        engine._canonical_refs(fields)  # evidence_refs as vault-relative POSIX paths
+    except ValueError:
+        return None
+    return fields
+
+
 def _task_reflects(engine, payload):
     """True when the task already carries this update: an interrupted replay applied it
     (or another writer made the same change) before the queue acknowledgement."""
@@ -388,8 +426,8 @@ def _task_reflects(engine, payload):
     if not row:
         return False
     record = json.loads(row[0])
-    changes, _ = engine._protect_metadata(dict(payload.get('changes') or {}))
-    return (record.get('kind') == 'task' and type(record.get('revision')) is int and
+    changes = _stored_task_fields(engine, payload.get('changes'))
+    return (changes is not None and record.get('kind') == 'task' and type(record.get('revision')) is int and
             record['revision'] > payload['expected_revision'] and
             all(record.get(key) == value for key, value in changes.items()))
 
@@ -431,6 +469,7 @@ def _replay_mutations(vault: str | Path, state: str | Path, sync_engine=None) ->
 
     from beyin_v3_notes import source_path, NoteConflict
     from beyin_v3_sync import parse, ReceiptConflict, RevisionConflict
+    binding = _vault_binding(sync_engine.root)
 
     applied_count = 0
     conflict_count = 0
@@ -442,6 +481,9 @@ def _replay_mutations(vault: str | Path, state: str | Path, sync_engine=None) ->
         source = mut["source"]
         payload = mut.get("payload", {})
         try:
+            # A record that names its vault replays only there; older records name none.
+            if "vault_binding" in mut and mut["vault_binding"] != binding:
+                raise ValueError("queued mutation belongs to another vault")
             # Revalidate: the queue file is local state, but it is not trusted input.
             _check_payload(action, source, payload)
             target_path = sync_engine._path(source)
@@ -498,9 +540,9 @@ def _replay_mutations(vault: str | Path, state: str | Path, sync_engine=None) ->
             elif action == "task_create":
                 if target_path.is_file():
                     stored_meta, stored_text = parse(target_path.read_bytes().decode('utf-8'))
-                    meta, _ = sync_engine._protect_metadata(payload.get('metadata') or {})
+                    meta = _stored_task_fields(sync_engine, payload.get('metadata'))
                     text, _ = sync_engine._protect(payload.get('text', ''))
-                    if (meta.get('id') and stored_meta.get('kind') == 'task' and
+                    if (meta is not None and meta.get('id') and stored_meta.get('kind') == 'task' and
                             stored_meta.get('revision') == 1 and
                             all(stored_meta.get(k) == v for k, v in meta.items()) and
                             stored_text == text + '\n'):

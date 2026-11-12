@@ -587,6 +587,36 @@ class MutationQueueTest(unittest.TestCase):
         result = mutation.replay_mutations(self.vault, self.state, self.sync)
         self.assertEqual((result['applied'], result['conflicts']), (0, 1), result)
 
+    def test_crash_after_task_write_with_noncanonical_evidence_is_reconciled(self):
+        # task_create and update_task store evidence_refs canonically (notes/./e.md -> notes/e.md);
+        # the reconciliation after a crash before the queue acknowledgement must compare that form,
+        # or the write becomes a false conflict (and, for a create, a task conflict copy).
+        from unittest.mock import patch
+        from beyin_v3_sync import parse
+        (self.vault / 'notes').mkdir()
+        for name in ('e', 'f'):
+            (self.vault / f'notes/{name}.md').write_text('evidence\n', encoding='utf-8')
+        path = self.vault / 'tasks/evidence.md'
+        for action, payload, stored in (
+                ('task_create', {'text': 'Evidence task', 'metadata': {
+                    'id': 'evidence-task', 'owner': 'test', 'status': 'active', 'evidence_refs': ['notes/./e.md']}},
+                 ['notes/e.md']),
+                ('task_update', {'id': 'evidence-task', 'expected_revision': 1,
+                                 'changes': {'evidence_refs': ['notes/./e.md', 'notes//f.md']}},
+                 ['notes/e.md', 'notes/f.md'])):
+            with self.subTest(action=action):
+                mutation.enqueue_mutation(self.state, action, 'tasks/evidence.md', payload)
+                with patch.object(mutation, '_save_all_mutations', side_effect=Crash):
+                    with self.assertRaises(Crash):
+                        mutation.replay_mutations(self.vault, self.state, self.sync)
+                self.assertEqual(parse(path.read_text(encoding='utf-8'))[0]['evidence_refs'], stored)
+                written = path.read_bytes()
+                result = mutation.replay_mutations(self.vault, self.state, self.sync)
+                self.assertEqual((result['applied'], result['conflicts'], result['failed']), (1, 0, 0), result)
+                self.assertEqual(mutation.list_mutations(self.state)[-1]['status'], 'applied')
+                self.assertEqual(path.read_bytes(), written)
+        self.assertFalse(list((self.vault / 'tasks').glob('*.sync-conflict-*.md')))
+
     def test_each_mutation_is_acknowledged_before_the_next_one(self):
         from unittest.mock import patch
         for name in ('first', 'second'):
@@ -716,6 +746,113 @@ class MutationQueueTest(unittest.TestCase):
             mutation.enqueue_mutation(self.state, 'note_create', 'notes/other.md', payload, mutation_id='client-0001')
         with self.assertRaisesRegex(ValueError, 'mutation_id'):
             mutation.enqueue_mutation(self.state, 'note_create', 'notes/once.md', payload, mutation_id='../x')
+
+    def test_concurrent_first_enqueues_cannot_mix_vaults(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from contextlib import contextmanager
+        from threading import Barrier
+        from unittest.mock import patch
+        from beyin_v3 import MemoryStore
+        state = self.tmp / 'racing-state'
+        mutation.set_enabled(state, True)
+        other = self.tmp / 'other-vault'
+        other.mkdir()
+        barrier = Barrier(2)
+        original_connect = MemoryStore._connect
+
+        class BindingCursor:
+            def __init__(self, cursor):
+                self.cursor = cursor
+
+            def fetchone(self):
+                row = self.cursor.fetchone()
+                if row is None:
+                    # Both initializers observed an unbound database before either claims it.
+                    barrier.wait(timeout=10)
+                return row
+
+        class Database:
+            def __init__(self, db):
+                self.db = db
+
+            def execute(self, sql, *args):
+                cursor = self.db.execute(sql, *args)
+                return BindingCursor(cursor) if sql == "SELECT value FROM metadata WHERE key='vault_root'" else cursor
+
+            def __getattr__(self, name):
+                return getattr(self.db, name)
+
+        @contextmanager
+        def connect(store):
+            with original_connect(store) as db:
+                yield Database(db)
+
+        def enqueue(vault):
+            try:
+                mutation.enqueue_mutation(state, 'note_create', 'notes/' + vault.name + '.md',
+                                          {'text': vault.name}, vault=vault)
+                return vault, None
+            except ValueError as exc:
+                return vault, str(exc)
+
+        with patch.object(MemoryStore, '_connect', connect), ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(enqueue, (self.vault, other)))
+        accepted = [vault for vault, error in outcomes if error is None]
+        rejected = [(vault, error) for vault, error in outcomes if error is not None]
+        self.assertEqual(len(accepted), 1, outcomes)
+        self.assertEqual(len(rejected), 1, outcomes)
+        self.assertIn('runtime belongs to another vault', rejected[0][1])
+        self.assertEqual(len(mutation.list_mutations(state)), 1)
+        result = mutation.replay_mutations(accepted[0], state)
+        self.assertEqual((result['applied'], result['failed']), (1, 0), result)
+        self.assertTrue((accepted[0] / ('notes/' + accepted[0].name + '.md')).is_file())
+        self.assertFalse((accepted[0] / ('notes/' + rejected[0][0].name + '.md')).exists())
+        self.assertFalse((rejected[0][0] / 'notes').exists())
+
+    def test_enqueue_and_replay_keep_the_runtime_vault_binding(self):
+        # An enqueue for another vault is refused like an ordinary write, so a replay from this
+        # vault cannot write that vault's content here (review on #409).
+        other = self.tmp / 'other-vault'
+        other.mkdir()
+        with self.assertRaisesRegex(ValueError, 'runtime belongs to another vault'):
+            mutation.enqueue_mutation(self.state, 'note_create', 'notes/other.md', {'text': 'other'}, vault=other)
+        payload_file = self.tmp / 'other.json'
+        payload_file.write_text(json.dumps({'action': 'note_create', 'source': 'notes/other.md',
+                                            'payload': {'text': 'other'}}), encoding='utf-8')
+        proc = subprocess.run([sys.executable, str(CLI), '--vault', str(other), '--state', str(self.state),
+                               'mutation-queue', '--enqueue', '--file', str(payload_file)],
+                              capture_output=True, text=True, env=inherited_env(BEYIN_UPDATES_OFF='1'))
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn('runtime belongs to another vault', json.loads(proc.stderr)['message'])
+        self.assertEqual(mutation.list_mutations(self.state), [])
+        # An unbound runtime is bound by its first enqueue, as by an ordinary write.
+        fresh = self.tmp / 'fresh-state'
+        mutation.set_enabled(fresh, True)
+        mutation.enqueue_mutation(fresh, 'note_create', 'notes/other.md', {'text': 'other'}, vault=other)
+        with self.assertRaisesRegex(ValueError, 'runtime belongs to another vault'):
+            SyncEngine(self.vault, fresh)
+        # A record keeps a digest of its binding, never the path. One bound to another vault
+        # (a runtime reset after it was queued) fails without writing; an older record without
+        # the field replays against this runtime's vault as before.
+        bound = mutation.enqueue_mutation(self.state, 'note_create', 'notes/bound.md', {'text': 'bound'},
+                                          vault=self.vault)
+        queue = (self.state / mutation.MUTATION_QUEUE_FILE).read_text(encoding='utf-8')
+        for path in (self.vault, self.vault.resolve()):
+            self.assertNotIn(str(path), queue)
+        foreign = dict(bound, mutation_id='foreign-01', source='notes/foreign.md',
+                       vault_binding=mutation._vault_binding(other.resolve()))
+        legacy = {key: value for key, value in bound.items() if key != 'vault_binding'}
+        legacy.update(mutation_id='legacy-01', source='notes/legacy.md')
+        mutation._save_all_mutations(self.state, [bound, foreign, legacy])
+        result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertEqual((result['applied'], result['conflicts'], result['failed']), (2, 0, 1), result)
+        items = {item['mutation_id']: item for item in mutation.list_mutations(self.state)}
+        self.assertEqual((items['foreign-01']['status'], items['foreign-01']['error']),
+                         ('failed', 'ValueError: queued mutation belongs to another vault'))
+        self.assertTrue((self.vault / 'notes/bound.md').is_file())
+        self.assertTrue((self.vault / 'notes/legacy.md').is_file())
+        self.assertFalse((self.vault / 'notes/foreign.md').exists())
+        self.assertFalse((other / 'notes').exists())
 
     def test_reviewed_conflicts_and_failures_can_be_retried_or_dismissed(self):
         item = mutation.enqueue_mutation(self.state, 'task_update', 'tasks/missing.md',
