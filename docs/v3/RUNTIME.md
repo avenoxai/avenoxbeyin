@@ -220,3 +220,9 @@ POSIX'te özgün görünüm değiştirilmeden önce arşiv dosyası, arşiv dizi
 `fsync` bariyerlerinden geçer; bariyer hatası kurtarmayı durdurur. Bu sıra güç kesintisi
 veya uzak dosya sistemi için mutlak kalıcılık garantisi değildir. Windows'ta dizin
 `fsync` desteği bulunmadığından aynı kalıcılık iddiası yapılmaz.
+
+### Öğrenim adaylarını sonuçlandırma hataları
+
+Açık bir `learn --resolve distilled|discarded` isteğinde aday defterinin varlığını denetleme veya mevcut defteri okuma, kilitleme ya da yazma işlemi bir G/Ç hatasıyla başarısız olursa komut çıkış 1 verir. JSON hatası, özel dosya yolu veya defter içeriği yerine sabit `learning candidate resolution failed` mesajını taşır. Başarılı sonuçlandırma, hatasız tamamlanan eşleşmesiz istek ve defterin bulunmaması mevcut sonuçlarını ve çıkış 0 davranışını korur. Eşleşme bulunmasa da mevcut yeniden yazma adımı çalışır; bu adımın G/Ç hatası da çıkış 1 verir. Receipt'in otomatik aday takibi isteğe bağlı kalır; sonuçlandırma hatası kalıcı receipt'i geri almaz veya başarısız saymaz. Defter biçimi ve yazma/tekrar davranışı değişmez.
+
+Açık `learn --list` isteği de mevcut aday defterinin denetimi veya okunması G/Ç hatasıyla başarısız olduğunda çıkış 1 ve özel yol/içerik içermeyen sabit `learning candidate listing failed` mesajı verir. Bulunmayan veya normal dosya olmayan defter boş liste olarak kalır. Başarılı filtreleme, bozuk satırların atlanması ve hook aday kontrollerinin mevcut en iyi çaba davranışı değişmez.
