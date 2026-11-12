@@ -1757,7 +1757,8 @@ def main(argv=None, return_result=False):
                     rules = companion.rules_opening(engine.MemoryStore(state, vault, read_only=True), budget,
                                                     receipt_context(vault, state))
                     result['companion_rules_opening'] = dict(
-                        rules or {}, status='clipped' if rules and rules['clipped'] else 'ok' if rules else 'no_rules',
+                        rules or {}, status='stale' if rules and rules.get('stale') else
+                        'clipped' if rules and rules['clipped'] else 'ok' if rules else 'no_rules',
                         budget=budget, harness='claude')
             except Exception as exc:  # never hides the rest of doctor
                 result['companion_rules_opening'] = {'status': 'unavailable', 'error': type(exc).__name__}

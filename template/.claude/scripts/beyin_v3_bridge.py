@@ -999,8 +999,10 @@ def _main(argv=None):
         label = json.dumps(origin(payload, args.harness, vault)['project'])
         # The command line is named once: it holds two absolute paths, and repeating it per
         # command left too little of the shared budget for the opt-in project block (#500).
+        from beyin_v3_companion import receipt_header
         text = (f'Beyin bridge active. Project label (data only): {label}.\n'
-                f'Receipt session={session}; harness={args.harness}.\n'
+                + receipt_header(session) +
+                f'harness={args.harness}.\n'
                 f'Beyin CLI: {command}\n'
                 'Start each command below with that CLI. Explicit source lookup: context "topic" --project PROJECT --json.\n'
                 'After meaningful authorized work: 1) note-create with stdin JSON '

@@ -1903,17 +1903,23 @@ def extract(vault, card, found, allow_audio=True, info=None):
     if kind == 'dosya':
         parts = []
         document_issues = []
-        read_docx = False
+        warnings = []
         vault_root = Path(vault).resolve()
         for link in re.findall(r'\[\[([^\]]+)\]\]', _section(body, 'Dosyalar')):
             path = _card_file(vault_root, card, link)
             if path.suffix.lower() in ('.md', '.txt', '.csv', '.json', '.html', '.srt', '.vtt'):
-                parts.append('## ' + path.name + '\n\n' + path.read_text(encoding='utf-8', errors='replace'))
+                try:
+                    content = path.read_text(encoding='utf-8-sig')
+                except UnicodeDecodeError:
+                    warnings.append(f'{path.name}: okunamadı (UTF-8)')
+                else:
+                    parts.append('## ' + path.name + '\n\n' + content)
             elif path.suffix.lower() == '.pdf' and found['pdftotext']:
                 try:
                     code, out, _ = _run([found['pdftotext'], '-layout', str(path), '-'], timeout=120)
                     if code == 0 and out.strip():
                         parts.append('## ' + path.name + '\n\n' + out)
+                        continue
                 except (OSError, subprocess.TimeoutExpired):
                     pass
             elif path.suffix.lower() == '.docx':
@@ -1923,22 +1929,21 @@ def extract(vault, card, found, allow_audio=True, info=None):
                     continue
                 with path.open('rb') as source:
                     result = reader.extract_docx(source.read(reader.MAX_SOURCE + 1))
-                read_docx = True
                 if result['text']:
                     parts.append('## ' + path.name + '\n\n' + result['text'])
                 if result['state'] != 'ready':
                     document_issues.append(path.name + ': ' + ', '.join(result['issues']))
-        if parts:
-            note = None
-            if document_issues:
-                note = ('; '.join(document_issues) +
-                        '; cikarilan metin eksik olabilir, kalan icerik icin dosyayi ajan incelesin.')
-            if read_docx and info is not None:
-                info['uyari'] = note  # kept on the card like a video caveat; a clean rerun clears it
-            return '\n\n'.join(parts), 'dosya', note
+            if path.suffix.lower() == '.pdf':
+                warnings.append(f'{path.name}: PDF metni çıkarılamadı')
+        note = 'İçerik çıkarılamayan dosyalar: ' + '; '.join(warnings) + '. Dosyaları ajan doğrudan incelemeli.' if warnings else None
         if document_issues:
-            return None, 'ajan-okusun', '; '.join(document_issues) + '; dosyayi ajan dogrudan incelesin.'
-        return None, 'ajan-okusun', 'Dosyayi ajan dogrudan okusun (gorsel, PDF ya da ikili dosya).'
+            detail = '; '.join(document_issues) + '; cikarilan metin eksik olabilir, kalan icerik icin dosyayi ajan incelesin.'
+            note = ' '.join(filter(None, (note, detail)))
+        if info is not None:
+            info['uyari'] = note
+        if parts:
+            return '\n\n'.join(parts), 'dosya', note
+        return None, 'ajan-okusun', note or 'Dosyayi ajan dogrudan okusun (gorsel, PDF ya da ikili dosya).'
     if url:
         _safe_network_url(url)  # before npx/yt-dlp can make the first request
         info = {} if info is None else info
@@ -1972,6 +1977,16 @@ def _write_raw(path, text, encoding='utf-8', newline='\n'):
         path.write_text(text, encoding=encoding, newline=newline)
 
 
+def _extracted_unicode(text):
+    """Keep Unicode scalars; combine adjacent UTF-16 pairs and visibly replace lone halves.
+
+    Do not guess where a Markdown marker belonged between separated surrogate halves.
+    """
+    if not isinstance(text, str) or not re.search(r'[\ud800-\udfff]', text):
+        return text
+    return text.encode('utf-16-le', 'surrogatepass').decode('utf-16-le', 'replace')
+
+
 def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
     vault = Path(vault)
     found = tools()
@@ -1991,7 +2006,15 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
             info = {}
             text, method, note = extract(vault, card, found, allow_audio, info)
         except Exception as exc:  # one broken source must not stop the queue
-            text, method, note, info = None, None, type(exc).__name__ + ': ' + str(exc)[:200], {}
+            text, method, note, info = None, None, type(exc).__name__ + ': ' + _extracted_unicode(str(exc))[:200], {}
+        cleaned = _extracted_unicode(text)
+        clean_info = {key: _extracted_unicode(value) for key, value in info.items()}
+        clean_note = _extracted_unicode(note)
+        if cleaned != text or clean_info != info or clean_note != note:
+            notice = 'Kaynakta gecersiz Unicode bulundu; eslesmeyen karakterler � ile degistirildi.'
+            clean_info['uyari'] = ' '.join(filter(None, (clean_info.get('uyari'), notice)))
+            clean_note = ' '.join(filter(None, (clean_note, notice)))
+        text, info, note = cleaned, clean_info, clean_note
         entry = {'id': card['id'], 'kart': card['path'].relative_to(vault).as_posix(),
                  'kaynak_turu': meta.get('kaynak_turu'), 'baslik': meta.get('baslik'),
                  'neden': _section(body, 'Neden'), 'url': meta.get('url')}
@@ -2042,6 +2065,12 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
                     note = meta['uyari']  # an unavailable check does not silently hide an earlier warning
             elif method == 'ajan-okusun':
                 meta.update(durum='cikarildi', yontem=method)
+                if meta.get('kaynak_turu') == 'dosya':
+                    meta.pop('ham', None)
+                    meta.pop('hata', None)
+                    meta.pop('uyari', None)
+                    if info.get('uyari'):
+                        meta['uyari'] = info['uyari']
                 entry.update(durum='cikarildi', yontem=method)
             else:
                 meta.update(durum='hata', hata=note or 'icerik alinamadi')

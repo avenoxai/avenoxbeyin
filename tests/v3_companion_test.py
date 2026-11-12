@@ -8,7 +8,7 @@ import tempfile
 import unittest
 import zipfile
 
-from v3_package_helpers import inherited_env
+from v3_package_helpers import inherited_env, without_hook_clock
 
 ROOT = Path(os.environ.get('BEYIN_TEST_REPO', Path(__file__).resolve().parents[1]))
 COMPANION = '🔮 850-Companion'
@@ -91,7 +91,7 @@ class CompanionTest(unittest.TestCase):
             for noise in ('WRONG_IDENTITY_CANARY', 'CLOSED_THREAD_NOISE', 'OLD_JOURNAL_NOISE', 'OLD_SESSION_NOISE'):
                 self.assertNotIn(noise, text)
             self.assertLessEqual(len(text), 5000)
-            contexts.append(text)
+            contexts.append(without_hook_clock(text))
         self.assertEqual(contexts[0], contexts[1])
         self.assertEqual(contexts[0], contexts[2])
 

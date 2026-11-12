@@ -305,3 +305,5 @@ protokolünün uygulanması aktif ajanın talimat takibine bağlıdır; mevcut h
 otomatik olarak geriye dönük yeniden yazılmaz.
 
 Karar defteri kaynak kartın gizlilik ve güven sınırını genişletmez: private, untrusted veya reddedilmiş kaynaklardan karar kopyalanmaz. Yeni `Kararlar.md` yerel aramaya açık (`visibility: internal`) ve uzak danışmana kapalıdır (`remote_allowed: false`). Var olan defterin de `remote_allowed: false` veya `visibility: private` taşıması gerekir; bozuk ya da uygun olmayan defterde kartlar taşınmadan dikkat uyarısı döner. Aynı satır farklı kartlarda geçiyorsa her kartın kararı ayrı korunur; aynı kartın tekrar denemesi yeni kopya eklemez.
+
+Doctor, kaynak doğrulamasından geçmeyen Kurallar.md için açılış ölçümünü `stale` olarak bildirir; `beyin.py sync` sonrasında yeniden kontrol edin. Bu tanı salt okunurdur, dışlanan kural metnini göstermez ve kuralları arşive taşımaz.

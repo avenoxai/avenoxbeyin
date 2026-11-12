@@ -1517,6 +1517,8 @@ browser cookie alma veya protokol izni genisletme onerilmez.
 | PDF, metin dosyası | `pdftotext` ya da doğrudan okuma; görselleri ajan açar |
 | DOCX dosyası | Metin ve tablo hücreleri yerel olarak okunur; görsel, ek içerik veya metinsiz belge ajan incelemesine bırakılır, eksik kalan kısım kartın `uyari` alanında yazar |
 
+Metin ekleri UTF-8 olarak okunur; BOM çıkarılır. Kodlaması bozuk ek ham metne alınmaz, dosya adı kartta uyarı olarak gösterilir.
+
 Ham metin kart klasörünün içinde `.ham/` altında durur. Nokta ile başlayan klasör olduğu için
 aramaya ve Obsidian'a karışmaz. `.ham/` ve yakalanan dosyaların durduğu `dosyalar/`, içlerine yazılan
 `.gitignore` ile kart klasörü hangisi olursa olsun depoya da girmez.
@@ -1600,6 +1602,9 @@ Hiçbiri zorunlu değil; varsa işleme genişler, yoksa elde olanla devam edilir
   Hızlandırmak için eksik kütüphaneyi kur (ör. `pip install nvidia-cublas-cu12` ve klasörünü PATH'e ekle).
   Whisper hiç metin üretmezse kartta Whisper'ın kendi son hata satırı yazar.
 - **pdftotext** (Poppler): PDF metni.
+
+Görüntü tabanlı PDF'den metin çıkmazsa dosya adı işlem sonucunda ve kartın uyarısında gösterilir.
+Diğer eklerden çıkarılan metin korunur; OCR yapılmaz.
 
 Windows'ta bu araçlar bir `.cmd`/`.bat` sarmalayici olarak kuruluysa, argumanlar komut
 yorumlayicidan (cmd.exe) gecmeden dogrudan calistirilir; bu mumkun degilse o arac atlanir ve
