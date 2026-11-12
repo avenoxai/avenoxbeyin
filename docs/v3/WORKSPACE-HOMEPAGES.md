@@ -133,7 +133,8 @@ gizli, güvenilmeyen, başka veya engellenmiş proje kapsamında, eksik ya da
 doğrulanamayacak kadar eskiyse bağlı sayfa arama ve bağlamdan çıkarılır. Bu
 tüm sayfaya uygulanan daraltmadır; başlık, gövde ve kişisel not dosyada kalır.
 Seçilmiş alan kaynakta silinmiş veya artık tek satırlık skaler değilse,
-ya da kaynak emekli/arşivlenmiş durumdaysa eski kopya da bağlamdan çıkarılır.
+ya da kaynak emekli/arşivlenmiş veya güvenilir bir kayıtla değiştirilmiş
+(`supersedes`) durumdaysa eski kopya da bağlamdan çıkarılır.
 Emekli kayıtlar ana sayfa üzerinden yeniden yazılmaz.
 Kaynak tekrar uygun hale gelip eşitlenince sayfa yeniden seçilebilir.
 

@@ -128,6 +128,23 @@ class HomepagePolicyTest(unittest.TestCase):
         self.assert_restricted(fixture, local=False, indexed=True)
         self.assertEqual(before, fixture.snapshot())
 
+    def test_superseded_source_withholds_copy_and_prevents_back_write(self):
+        fixture = self.fixture()
+        fixture.write('notes/source/Replacement.md', {
+            'id': 'replacement', 'kind': 'note', 'project': 'chosen',
+            'supersedes': ['record'], 'facts': {'value': 'Current value'}}, '# Replacement\n')
+        home = fixture.vault / fixture.page
+        home.write_text(home.read_text(encoding='utf-8').replace(
+            '-->ZirconConfidentialCanary<!--', '-->EditedCanary<!--'), encoding='utf-8')
+        before = fixture.snapshot()
+        fixture.cli('sync')
+        self.assert_restricted(fixture, local=False, indexed=True)
+        self.assertEqual(before, fixture.snapshot())
+        fixture.create(ok=False)
+        fixture.request['source'] = 'notes/home/Another.md'
+        fixture.create(ok=False)
+        self.assertEqual(before, fixture.snapshot())
+
     def probe(self, fixture, project='chosen'):
         scripts = fixture.vault / '.claude/scripts' if self.installed else fixtures.ROOT / 'template/.claude/scripts'
         run = subprocess.run([sys.executable, '-c', PROBE, str(scripts), str(fixture.vault),

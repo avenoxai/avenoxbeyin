@@ -10,7 +10,7 @@ import posixpath
 import re
 from urllib.parse import quote
 
-from beyin_v3 import BLOCKED_SCOPE, _trusted_record, _status_allowed, read_project_scopes, record_scope
+from beyin_v3 import BLOCKED_SCOPE, _trusted_record, _status_allowed, read_project_scopes, record_scope, resolve_supersedes
 from beyin_v3_notes import NoteConflict, locked, source_path, require_utf8_values
 from beyin_v3_sync import parse, render
 
@@ -118,6 +118,7 @@ def project_records(store, records, available=None):
     if not any(is_projection(record) for record in records):
         return records
     sources = {r['source']: r for r in (available if available is not None else records)}
+    superseded = resolve_supersedes(list(sources.values()))[0]
     memo, active = {}, set()
 
     def protect(record):
@@ -152,7 +153,7 @@ def project_records(store, records, available=None):
                 source = store._source(binding['source'])
                 dependency = sources.get(source)
                 if (dependency is None or source == page or
-                        dependency['id'] != binding['record_id'] or
+                        dependency['id'] != binding['record_id'] or dependency['id'] in superseded or
                         hashlib.sha256((store.vault_root / source).read_bytes()).hexdigest() != dependency['source_sha256']):
                     raise ValueError('missing, changed or stale homepage dependency')
                 dependency = protect(dependency)
@@ -247,6 +248,7 @@ def create(engine, request):
 
 def _create_locked(engine, request):
     scopes = read_project_scopes(engine.root)
+    superseded = engine.store._superseded_ids()
     page = request['source']
     expected = request['expected_sha256']
     selections = request['selections']
@@ -285,7 +287,7 @@ def _create_locked(engine, request):
                 raise NoteConflict('selected source is missing')
             metadata, source_body = parse(current['content'])
             metadata = dict(metadata, text=source_body)
-            if (_source_id(source, metadata) != indexed[source] or
+            if (_source_id(source, metadata) != indexed[source] or indexed[source] in superseded or
                     bindings[(source, field, editable)].get('record_id') != indexed[source] or
                     not _eligible(home, metadata, page, source, scopes)):
                 raise NoteConflict('selected source identity or scope changed')
@@ -327,7 +329,7 @@ def _create_locked(engine, request):
         metadata, source_body = parse(snapshot['content'])
         metadata = dict(metadata, text=source_body)
         record_id = _source_id(source, metadata)
-        if record_id != indexed[source] or not _eligible(home, metadata, page, source, scopes):
+        if record_id != indexed[source] or record_id in superseded or not _eligible(home, metadata, page, source, scopes):
             raise ValueError('selected source identity or scope changed')
         if source not in groups:
             relative = posixpath.relpath(source, posixpath.dirname(page) or '.')
@@ -369,6 +371,7 @@ def _edit(engine, snapshot, old, new):
 def reconcile(engine, *, on_write=None):
     """Re-read live files for every cell; report only divergent fields for choice."""
     scopes = read_project_scopes(engine.root)
+    superseded = engine.store._superseded_ids()
     with engine.store._connect() as db:
         indexed = {row[0] for row in db.execute('SELECT source FROM markdown_sources')}
         records = (json.loads(row[0]) for row in db.execute('SELECT payload FROM records'))
@@ -396,7 +399,7 @@ def reconcile(engine, *, on_write=None):
                     raise ValueError('selected source must be a separate indexed human note')
                 current = engine.note_read(source)
                 metadata, body = parse(current['content'])
-                if (_source_id(source, metadata) != binding['record_id'] or
+                if (_source_id(source, metadata) != binding['record_id'] or binding['record_id'] in superseded or
                         not _eligible(home, dict(metadata, text=body), page, source, scopes)):
                     raise ValueError('selected source identity or scope changed')
                 value = _fact(metadata, field)
