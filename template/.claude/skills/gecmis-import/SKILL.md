@@ -1,6 +1,6 @@
 ---
 name: gecmis-import
-description: Eski sohbet geçmişini (ChatGPT, Claude, Gemini Takeout dışa aktarımları) vault'un günlük log formatına çevirip derleyicinin sindirmesi için daily/ altına yazar. "geçmiş import", "geçmişimi aktar", "takeout", "chatgpt geçmişi", "eski sohbetlerimi beyne yükle" dendiğinde kullan.
+description: Eski sohbet geçmişini (ChatGPT, Claude, Gemini Takeout dışa aktarımları) beyin kasasının günlük log biçimine çevirip daily/ altına yazar. Tetik - "geçmiş import", "geçmişimi aktar", "takeout", "ChatGPT geçmişi", "eski sohbetlerimi beyne yükle", "import chat history". Kullanma - tek not kaydetmek veya kasada aramak (beyin), sağlık kontrolü (beyin-doktor).
 ---
 
 # Geçmiş İçe Aktarımı

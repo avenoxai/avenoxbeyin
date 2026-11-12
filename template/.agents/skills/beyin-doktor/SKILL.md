@@ -1,6 +1,6 @@
 ---
 name: beyin-doktor
-description: Beynin gerçekten çalışıp çalışmadığını, kaynak güncelliğini, hook/worker durumunu, skill çakışmalarını ve güncelleme sorunlarını denetle. Sağlık kontrolü ve hafıza arızasında kullan.
+description: Beyin kasasının gerçekten çalışıp çalışmadığını denetler - kaynak güncelliği, hook/worker durumu, skill çakışmaları, güncelleme sorunları. Tetik - "beyin doktor", "beyin çalışıyor mu", "hafıza bozuk", "kasa sağlık kontrolü", "hook çalışmıyor", "/beyin-doktor". Kullanma - sürüm yükseltme (beyin-guncelle), not alma (beyin).
 ---
 
 # Beyin doktoru

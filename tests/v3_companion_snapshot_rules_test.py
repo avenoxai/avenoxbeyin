@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from v3_package_helpers import inherited_env
+from v3_package_helpers import inherited_env, without_hook_clock
 
 ROOT = Path(os.environ.get('BEYIN_TEST_REPO', Path(__file__).resolve().parents[1]))
 COMPANION = '🔮 850-Companion'
@@ -81,6 +81,27 @@ class SnapshotTest(unittest.TestCase):
     def text(self, snapshot, name):
         return next(r['text'] for r in snapshot['records'] if r['source'].endswith('/' + name))
 
+    def test_stale_diagnostic_is_specific_to_eligible_rules(self):
+        self.write('Threads.md', '# Threads\nold\n')
+        (self.vault / COMPANION / 'Threads.md').write_text('changed', encoding='utf-8')
+        self.assertIsNone(companion.rules_opening(self.store, 5000))
+        self.write('Kurallar.md', '# Rules\nold\n')
+        (self.vault / COMPANION / 'Kurallar.md').write_text('changed', encoding='utf-8')
+        self.assertEqual(companion.rules_opening(self.store, 5000), {'stale': True})
+        for fields in ({'visibility': 'private'}, {'trust': 'untrusted'}, {'trusted': False}):
+            with self.subTest(fields=fields):
+                with self.store._connect() as db:
+                    row = db.execute('SELECT payload FROM records WHERE id=?', ('Kurallar.md',)).fetchone()
+                    original = row[0]
+                    record = json.loads(original)
+                    record.update(fields)
+                    db.execute('UPDATE records SET payload=? WHERE id=?', (json.dumps(record), 'Kurallar.md'))
+                try:
+                    self.assertIsNone(companion.rules_opening(self.store, 5000))
+                finally:
+                    with self.store._connect() as db:
+                        db.execute('UPDATE records SET payload=? WHERE id=?', (original, 'Kurallar.md'))
+
     def test_short_records_hand_their_share_to_a_long_rule_file(self):
         rules, _ = rules_file(45600)
         for name, body in dict(self.bodies, **{'Kurallar.md': rules}).items():
@@ -126,14 +147,16 @@ class SnapshotTest(unittest.TestCase):
         self.write('Kurallar.md', rules_file(45600)[0])
         report = {}
         text = companion.context(self.store, 5000, '0' * 24, 'claude', report=report)
-        self.assertEqual(text, companion.context(self.store, 5000, '0' * 24, 'claude'))
+        self.assertEqual(without_hook_clock(text),
+                         without_hook_clock(companion.context(self.store, 5000, '0' * 24, 'claude')))
         rules = report['Kurallar.md']
         self.assertTrue(rules['clipped'])
         self.assertEqual(rules['chars'], len(rules_file(45600)[0]))
         share = rules['share']
         self.assertIn(f'Memory hygiene: Kurallar.md opens clipped (fit ceiling {share} of {rules["chars"]} chars).', text)
         self.assertEqual(companion.rules_opening(self.store, 5000), rules)
-        # A rule file of exactly that size arrives whole; one character more is clipped.
+        # A rule file of exactly that size arrives whole. With priority allocation a
+        # shorter rule set can reclaim optional detail, so share is no fixed ceiling.
         whole, _ = rules_file(share, exact=True)
         self.assertEqual(len(whole), share)
         self.write('Kurallar.md', whole)
@@ -142,7 +165,7 @@ class SnapshotTest(unittest.TestCase):
         self.assertNotIn('Memory hygiene: Kurallar.md opens clipped', whole_text)
         shown = section(whole_text, 'Kurallar.md')
         self.assertEqual(shown, whole)
-        self.write('Kurallar.md', rules_file(share + 1, exact=True)[0])
+        self.write('Kurallar.md', rules_file(5000, exact=True)[0])
         self.assertTrue(companion.rules_opening(self.store, 5000)['clipped'])
 
 
@@ -182,6 +205,23 @@ class InstalledOpeningTest(unittest.TestCase):
     def tree(self):
         return {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
                 for root in (self.vault, self.state) for path in sorted(root.rglob('*')) if path.is_file()}
+
+    def test_doctor_distinguishes_stale_rules_without_writing_or_disclosing_text(self):
+        self.rules('# Rules\n- Initial rule.\n')
+        path = self.vault / COMPANION / 'Kurallar.md'
+        path.write_text('# Rules\n- STALE_PRIVATE_CANARY.\n', encoding='utf-8')
+        before = self.tree()
+        raw = self.run_cli(self.vault / 'beyin.py', 'doctor', '--json')
+        report = json.loads(raw)['companion_rules_opening']
+        self.assertEqual(report['status'], 'stale')
+        self.assertNotIn('STALE_PRIVATE_CANARY', raw)
+        human = self.run_cli(self.vault / 'beyin.py', 'doctor', '--human')
+        self.assertIn('beyin.py sync', human)
+        self.assertEqual(self.tree(), before)
+        self.assertNotIn('STALE_PRIVATE_CANARY', self.session_start())
+        self.run_cli(self.vault / 'beyin.py', 'sync')
+        self.assertEqual(json.loads(self.run_cli(self.vault / 'beyin.py', 'doctor', '--json'))
+                         ['companion_rules_opening']['status'], 'ok')
 
     def test_session_start_keeps_the_summary_and_names_the_real_rule_numbers(self):
         text, count = rules_file(45600)

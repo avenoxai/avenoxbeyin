@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from v3_package_helpers import inherited_env
+from v3_package_helpers import inherited_env, without_hook_clock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
@@ -113,7 +113,7 @@ class HermesHarnessTest(unittest.TestCase):
                                     input=payload, capture_output=True, text=True, encoding='utf-8')
             self.assertEqual(result.returncode, 0, result.stderr)
             outputs[harness] = json.loads(result.stdout)['hookSpecificOutput']['additionalContext']
-        self.assertEqual(outputs['claude'], outputs['hermes'], 'Harness selection must not change retrieval semantics')
+        self.assertEqual(without_hook_clock(outputs['claude']), without_hook_clock(outputs['hermes']), 'Harness selection must not change retrieval semantics')
 
     def test_receipt_and_doctor_accept_hermes_harness(self):
         receipt = json.dumps({'event_id': 'hermes-receipt-1', 'summary': 'Hermes köprüsü doğrulandı.', 'refs': ['notes/klima.md']})

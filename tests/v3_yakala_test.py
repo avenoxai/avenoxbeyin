@@ -401,6 +401,73 @@ class YakalaUnitTest(unittest.TestCase):
         text = yakala.capture(self.vault, text='pano metni')
         self.assertEqual(yakala.find_card(self.vault, text['id'])['meta']['visibility'], 'private')
 
+    def test_process_defuddle_json_surrogates(self):
+        env = patch.dict(os.environ, {'XDG_STATE_HOME': str(Path(self.tmp.name) / 'state')})
+        env.start()
+        self.addCleanup(env.stop)
+        cid = yakala.capture(self.vault, url='https://example.com/article')['id']
+        payload = json.dumps({'content': 'article text ' * 10 + '\ud835**\uddf2',
+                              'title': 'Article\ud800'})
+        with patch.object(yakala, 'tools', return_value={'npx': 'mock-npx'}), \
+                patch.object(yakala, '_safe_network_url'), patch.object(yakala, '_HelperNetwork') as guard, \
+                patch.object(yakala, '_run', return_value=(0, payload, '')) as run:
+            guard.return_value.__enter__.return_value = None
+            result = yakala.process(self.vault, [cid])['kartlar'][0]
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(result['durum'], 'cikarildi')
+        raw = (self.vault / result['ham']).read_text(encoding='utf-8')
+        self.assertIn('�**�', raw)
+        self.assertIn('Unicode', result['not'])
+
+    def test_extracted_unicode_preserves_scalars_and_pairs(self):
+        for text in ('Türkçe 😀 𝗲', 'a\r\nb\n', '\ufeffbom', 'x' * 10000, '', None):
+            self.assertEqual(yakala._extracted_unicode(text), text)
+        self.assertEqual(yakala._extracted_unicode('\ud835\uddf2'), '𝗲')
+        self.assertEqual(yakala._extracted_unicode('\ud835**\uddf2'), '�**�')
+        self.assertEqual(yakala._extracted_unicode('\udfff\ud800'), '��')
+
+    def test_process_surrogate_extraction_and_metadata_do_not_block_queue(self):
+        env = patch.dict(os.environ, {'XDG_STATE_HOME': str(Path(self.tmp.name) / 'state')})
+        env.start()
+        self.addCleanup(env.stop)
+        broken = yakala.capture(self.vault, url='https://example.com/broken')['id']
+        good = yakala.capture(self.vault, text='second safe card')['id']
+        text = 'Türkçe 😀 𝗲 ' + '\ud835**\uddf2' + ' tail ' + '\ud835\uddf2' + '\ud800'
+        def extraction(vault, card, found, allow_audio, info):
+            if card['id'] == broken:
+                info.update(title='title\ud800', author='author\udfff', uyari='existing warning')
+                return text, 'defuddle', 'extract note'
+            return 'second safe card', 'metin', None
+        with patch.object(yakala, 'tools', return_value={}), patch.object(yakala, 'extract', side_effect=extraction):
+            result = yakala.process(self.vault, [broken, good])
+        self.assertEqual([r['durum'] for r in result['kartlar']], ['cikarildi', 'cikarildi'])
+        first = result['kartlar'][0]
+        raw = (self.vault / first['ham']).read_text(encoding='utf-8')
+        self.assertIn('Türkçe 😀 𝗲 �**� tail 𝗲�', raw)
+        self.assertIn('visibility: private', raw)
+        self.assertIn('kaynak_guveni: guvenilmeyen', raw)
+        card = yakala.find_card(self.vault, broken)
+        self.assertEqual(card['meta']['baslik'], 'title�')
+        self.assertEqual(card['meta']['yazar'], 'author�')
+        self.assertIn('existing warning', card['meta']['uyari'])
+        self.assertIn('Unicode', card['meta']['uyari'])
+        self.assertIn('Unicode', first['not'])
+        self.assertIn('extract note', first['not'])
+        self.assertFalse(list((self.vault / INBOX).rglob('.yakala-ham-*')))
+
+    def test_process_failed_extraction_with_surrogate_error_continues(self):
+        env = patch.dict(os.environ, {'XDG_STATE_HOME': str(Path(self.tmp.name) / 'state')})
+        env.start()
+        self.addCleanup(env.stop)
+        bad = yakala.capture(self.vault, text='bad source')['id']
+        good = yakala.capture(self.vault, text='good source')['id']
+        with patch.object(yakala, 'tools', return_value={}), patch.object(yakala, 'extract',
+                side_effect=[ValueError('broken\ud800'), ('good source', 'metin', None)]):
+            result = yakala.process(self.vault, [bad, good])
+        self.assertEqual([r['durum'] for r in result['kartlar']], ['hata', 'cikarildi'])
+        self.assertEqual(yakala.find_card(self.vault, bad)['meta']['durum'], 'hata')
+        self.assertIn('broken�', result['kartlar'][0]['not'])
+
     def test_process_offline_and_finish(self):
         none = {name: None for name in ('npx', 'yt_dlp', 'whisper', 'pdftotext', 'ffmpeg')}
         note = yakala.capture(self.vault, text='Bağlam kaybı en pahalı kalem.', why='ders')

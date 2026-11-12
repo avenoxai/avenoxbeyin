@@ -1,4 +1,3 @@
-from v3_package_helpers import inherited_env
 """Directory identity and captured-source provenance regressions.
 
 The POSIX case-insensitive lookup model patches stat/lstat/open only; Path.resolve
@@ -6,37 +5,18 @@ still executes CPython's real code and preserves the supplied spelling. Native
 case-insensitive macOS/Windows volumes are not implied by those modeled checks.
 The rename/lock test uses two real processes and the host's actual directory inode.
 """
-
-
 import contextlib
-
-
 import hashlib
-
-
 import os
-
-
 from pathlib import Path
-
-
 import subprocess
-
-
 import sys
-
-
 import tempfile
-
-
 import unittest
-
-
 from unittest.mock import patch
 
-
 import v3_yakala_ajan_test as fixtures
-
+from v3_package_helpers import inherited_env
 
 y = fixtures.yakala
 
@@ -147,6 +127,115 @@ with y._WindowsCommitLock(Path(sys.argv[2])):
         if not alias.exists() or not os.path.samefile(alias, self.vault):
             self.skipTest('Native case-insensitive volume unavailable on this host')
         self.assertEqual(y._capture_lock_path(alias), y._capture_lock_path(self.vault))
+
+
+class CapturedSourceIdentityTest(unittest.TestCase):
+    call = fixtures.AgentBridgeFilesTest.call
+    note = fixtures.AgentBridgeFilesTest.note
+
+    def setUp(self):
+        default = patch.object(y, 'default_state', side_effect=lambda vault: Path(vault).parent /
+                               'local-state' / hashlib.sha256(str(vault).encode()).hexdigest()[:16])
+        default.start()
+        self.addCleanup(default.stop)
+        fixtures.AgentBridgeFilesTest.setUp(self)
+
+    def attach(self, relative, text):
+        target = self.note(relative, text)
+        card = self.vault / self.job['card_path']
+        card.write_text(card.read_text(encoding='utf-8') + '\n[[' + relative + ']]\n', encoding='utf-8')
+        return target
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX case-insensitive lookup model')
+    def test_authorized_attachment_alias_cannot_be_promoted_to_vault_data(self):
+        parent = Path(self.job['card_path']).parent
+        actual = parent / y.FILES / 'source.txt'
+        alias = parent / 'DOSYALAR' / 'source.txt'
+        self.note(actual.as_posix(), 'CAPTURED_INSTRUCTIONS_CANARY')
+        card = self.vault / self.job['card_path']
+        card.write_text(card.read_text(encoding='utf-8') + '\n[[' + alias.as_posix() + ']]\n', encoding='utf-8')
+        with case_alias((self.vault / alias).parent, (self.vault / actual).parent):
+            self.assertEqual((self.vault / alias).resolve().parent.name, 'DOSYALAR')
+            result = self.call('read_note', path=alias.as_posix())
+        self.assertIn('CAPTURED_INSTRUCTIONS_CANARY', result['text'])
+        self.assertEqual(result['source_trust'], 'untrusted')
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX case-insensitive lookup model')
+    def test_authorized_private_attachment_alias_keeps_own_source_access(self):
+        parent = Path(self.job['card_path']).parent
+        actual = parent / y.FILES / 'source.md'
+        alias = parent / 'DOSYALAR' / 'source.md'
+        self.note(actual.as_posix(), '---\nvisibility: private\n---\nOWN_PRIVATE_ATTACHMENT')
+        card = self.vault / self.job['card_path']
+        card.write_text(card.read_text(encoding='utf-8') + '\n[[' + alias.as_posix() + ']]\n', encoding='utf-8')
+        with case_alias((self.vault / alias).parent, (self.vault / actual).parent):
+            result = self.call('read_note', path=alias.as_posix())
+        self.assertIn('OWN_PRIVATE_ATTACHMENT', result['text'])
+        self.assertEqual(result['source_trust'], 'untrusted')
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX case-insensitive lookup model')
+    def test_card_file_alias_stays_untrusted_and_own(self):
+        actual = Path(self.job['card_path'])
+        alias = actual.with_name(actual.name.upper())
+        self.note(actual.as_posix(), '---\nvisibility: private\n---\nOWN_PRIVATE_CARD')
+        with case_alias(self.vault / alias, self.vault / actual):
+            result = self.call('read_note', path=alias.as_posix())
+        self.assertIn('OWN_PRIVATE_CARD', result['text'])
+        self.assertEqual(result['source_trust'], 'untrusted')
+
+    def test_unlinked_attachment_is_still_refused_before_provenance(self):
+        path = (Path(self.job['card_path']).parent / y.FILES / 'not-linked.txt').as_posix()
+        self.note(path, 'OTHER_CAPTURE_CANARY')
+        with patch.object(y, '_agent_note_origin') as origin:
+            with self.assertRaisesRegex(ValueError, 'not attached'):
+                self.call('read_note', path=path)
+        origin.assert_not_called()
+
+    def test_case_similar_distinct_store_does_not_gain_own_access(self):
+        parent = Path(self.job['card_path']).parent
+        correct = self.vault / parent / y.FILES
+        correct.mkdir()
+        other = self.vault / parent / 'DOSYALAR'
+        if other.exists():
+            self.skipTest('Host cannot create distinct case-variant directories')
+        other.mkdir()
+        path = (parent / 'DOSYALAR' / 'other.md').as_posix()
+        self.attach(path, '---\nvisibility: private\n---\nOTHER_STORE_CANARY')
+        with self.assertRaisesRegex(ValueError, 'Only this card'):
+            self.call('read_note', path=path)
+
+    def test_existing_memory_and_created_result_keep_their_data_label(self):
+        ordinary = 'knowledge/ordinary.md'
+        self.note(ordinary, 'EXISTING_MEMORY')
+        result = (Path(self.job['card_path']).parent / 'Ajan' / self.job['id'] / 'result.md').as_posix()
+        self.note(result, '---\nvisibility: private\n---\nOWN_RESULT')
+        for path in (ordinary, result):
+            with self.subTest(path=path):
+                self.assertEqual(self.call('read_note', path=path)['source_trust'], 'vault-data')
+
+    def test_identity_read_error_cannot_return_source_as_vault_data(self):
+        path = self.vault / self.job['card_path']
+        with patch.object(y, '_agent_safe_note', return_value=path), \
+                patch.object(y, '_agent_checked_path', side_effect=PermissionError('identity unavailable')):
+            with self.assertRaises(PermissionError):
+                self.call('read_note', path=self.job['card_path'])
+
+    def test_zero_inode_cannot_grant_unrelated_private_note_own_access(self):
+        path = 'knowledge/ordinary.md'
+        self.note(path, '---\nvisibility: private\n---\nPRIVATE_CANARY')
+        native_stat = os.stat
+
+        def unidentified(candidate, *args, **kwargs):
+            info = native_stat(candidate, *args, **kwargs)
+            if not isinstance(candidate, int) and Path(os.fsdecode(candidate)).is_relative_to(self.vault):
+                values = list(info)
+                values[1] = 0
+                return os.stat_result(values)
+            return info
+
+        with patch.object(os, 'stat', side_effect=unidentified):
+            with self.assertRaisesRegex(ValueError, 'Dosya kimligi dogrulanamadi'):
+                self.call('read_note', path=path)
 
 
 if __name__ == '__main__':

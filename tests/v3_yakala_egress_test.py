@@ -27,7 +27,8 @@ PUBLIC = '8.8.8.8'  # the address the fake resolver gives a "public" test name
 def without_proxies():
     """os.environ for a helper run: the suite's environment with no proxy or bypass list of its own."""
     env = {key: value for key, value in inherited_env().items()
-           if key.upper() not in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'NPM_CONFIG_NOPROXY')}
+           if key.upper() not in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+                                  'NPM_CONFIG_NOPROXY', 'NPM_CONFIG_PROXY', 'NPM_CONFIG_HTTPS_PROXY')}
     return patch.dict(os.environ, env, clear=True)
 
 
@@ -63,7 +64,7 @@ class Pages:
             def log_message(self, *_):
                 pass
         server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         worker.start()
         test.addCleanup(worker.join, 5)
         test.addCleanup(server.server_close)
@@ -516,6 +517,36 @@ class GuardedHelperTest(unittest.TestCase):
 
 
 class HelperEnvironmentTest(unittest.TestCase):
+    def test_mocked_helper_fixture_ignores_host_proxy_settings_and_restores_them(self):
+        host = {'npm_config_proxy': 'http://host-proxy.example:3128',
+                'NPM_CONFIG_HTTPS_PROXY': 'http://host-proxy.example:8080',
+                'NPM_CONFIG_NOPROXY': '.host.example', 'NO_PROXY': '*',
+                'YAKALA_FIXTURE_CANARY': 'keep-unrelated-environment'}
+        with patch.dict(os.environ, host):
+            before = dict(os.environ)
+            with without_proxies():
+                self.assertFalse(any(key.upper() in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+                                                     'NPM_CONFIG_PROXY', 'NPM_CONFIG_HTTPS_PROXY', 'NPM_CONFIG_NOPROXY')
+                                     for key in os.environ))
+                self.assertEqual(os.environ['YAKALA_FIXTURE_CANARY'], host['YAKALA_FIXTURE_CANARY'])
+            self.assertEqual(dict(os.environ), before)
+
+    def test_guard_preserves_explicit_npm_settings(self):
+        # The fixture must be isolated; production still gives explicit npm settings precedence.
+        for spell in (str.lower, str.upper):
+            with self.subTest(spelling=spell.__name__):
+                npm = {spell('npm_config_proxy'): 'http://npm-proxy.example:3128',
+                       spell('npm_config_https_proxy'): 'http://npm-proxy.example:8080',
+                       spell('npm_config_noproxy'): '.npm.example'}
+                original = dict(npm, HTTP_PROXY='http://user-proxy.example:3128',
+                                HTTPS_PROXY='http://user-proxy.example:8080', NO_PROXY='.user.example')
+                guarded = yakala._guarded_env(dict(original), 'http://127.0.0.1:12345')
+                self.assertEqual({key: guarded[key] for key in npm}, npm)
+                self.assertEqual(sorted((key.lower(), value) for key, value in guarded.items() if key.lower().startswith('npm_config_')),
+                                 sorted((key.lower(), value) for key, value in npm.items()))
+                self.assertEqual(guarded['ALL_PROXY'], 'http://127.0.0.1:12345')
+                self.assertFalse(any(key.upper() in ('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY') for key in guarded))
+
     def helper_envs(self, extra=None):
         """The environment each network helper is started with, without running one."""
         work = tempfile.TemporaryDirectory(prefix='yakala-env-')

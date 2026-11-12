@@ -84,6 +84,18 @@ with tempfile.TemporaryDirectory(prefix="beyin-v3-smoke-") as temporary:
     print("Synthetic CLI smoke passed; no hooks installed.")
 ```
 
+## Read-only memory audit
+
+`python3 beyin.py audit --human` compares eligible notes for overlap and possible
+status contradictions without editing them. `audit knowledge/note.md` limits the
+comparison to one note. Findings are advice, not independently verified facts.
+
+Chronology comes from each note's own creation/update metadata, never file mtime.
+ISO dates and timezone-free timestamps use UTC; timestamps with `Z` or a signed
+`HH:MM` offset are compared as instants, retaining fractional seconds. Equal or
+unknown dates do not establish a status change. Invalid date values, including
+unrecognized trailing text, do not establish chronology.
+
 ## JSON input and retrieval
 
 `ingest`, `receipt`, and `task-update` accept `--file input.json`; omitting the
@@ -255,6 +267,20 @@ and `[text](path)` links that resolve to nothing inside the vault, and lists the
 with file and line under `instruction_references`. Code blocks, inline code,
 URLs and links that leave the vault are skipped. It is information only: it
 makes no model call, writes nothing and does not change the doctor status.
+If discovering instruction files, building the visible note-path index, or
+reading or decoding an instruction file fails, the report is
+`status: unavailable` with only the exception type, rather than a successful
+partial link count. Human output also says the check could not complete;
+the file contents and raw error message are not printed.
+
+After moving a vault, `doctor` also reports stale global Claude, Codex and
+Antigravity bridge paths under `global_bridge_paths` when the command is explicitly
+bound to this vault's current state directory. Bridges bound to another state,
+missing settings and invalid settings are ignored. This is an informational path
+check, not a complete global-hook health check. It does not execute hook commands
+or modify global settings. Reinstall each affected bridge from the new vault with
+its original `--project-root`, `--event` and `--context-chars` choices; see
+[Global Bridge](GLOBAL-BRIDGE.md). `hook-reconcile` only repairs vault-local hooks.
 
 Hooks enqueue only event metadata, never raw prompts or transcripts. They start
 an opportunistic detached Python worker. Startup waits at most 1.5 seconds for
@@ -322,10 +348,28 @@ Client references: [Codex hooks](https://learn.chatgpt.com/docs/hooks) and
 ## Read-only triage of open topics
 
 Run `python3 beyin.py triage --stale-days 14` (add `--human` for readable output).
+Inbox read failures are diagnostic: invalid `state/inbox-report.json` settings stop the
+inbox scan instead of falling back to automatic folder discovery. An unavailable scan
+has `inbox.status: unavailable`; missing or unreadable inbox folders, or a capture
+whose metadata cannot be read, mark the count `partial`. Unreadable captures are not
+guessed to be pending from file mtime; readable counts remain available. Human output
+labels these counts incomplete and shows the error code.
+Other triage sections still run, and the command retains its normal exit behavior.
+Healthy inbox JSON is unchanged. Neither settings nor notes are repaired or rewritten.
+
 The additive `threads` section reports stale and undated `###` topics in the
 configured/discovered companion `Threads.md`, alongside the existing task report.
 Topics under active sections (Active/Open/Aktif/Açık) or the top-level title are
 considered open; closed/other sections and fenced code examples are ignored.
+
+The Companion summary also ignores fenced examples when counting active threads,
+including legacy headingless `Status`/`Durum` entries. Existing counting behavior
+outside fences is unchanged.
+
+Task triage ignores fenced examples when reading body-level `status:` lines and
+fallback headings. An example `status: done` cannot hide an open task, and an
+example heading cannot replace its title. Frontmatter and unfenced legacy status
+lines keep their existing behavior.
 
 For each topic, `last_date` is the newest valid `YYYY-MM-DD` mention in its heading
 or body. This is a freshness hint, **not evidence that its status was verified**:
@@ -339,3 +383,13 @@ opening-context budgets. Private/untrusted or excluded sources and symlinks are
 not scanned. An ambiguous identity, invalid directory marker, or unsafe/unreadable
 source is reported as `status: unavailable` with a reason, not a successful empty
 scan; a missing `Threads.md` reports `status: absent`.
+
+If task discovery, directory traversal, or reading an eligible task fails, the
+`tasks` section adds `status: partial`, `reason: task_scan_incomplete`, and an
+`errors` list of exception class names. Counts and rows cover only the tasks that
+could be read; they do not prove that no other open or stale task exists. Human
+output and recommendations also mark the incomplete scan. Failed paths and raw
+filesystem messages are not included. Intentionally excluded sources are not
+errors, and successful task reports retain their previous fields. The report
+remains read-only and the CLI keeps exit code 0 so other readable sections remain
+available; check the section status before treating task totals as complete.

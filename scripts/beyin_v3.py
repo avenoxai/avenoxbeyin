@@ -296,10 +296,9 @@ def state_location(vault: Path, state: Path, windows=None) -> dict:
 def receipt_line_endings(vault: Path) -> dict:
     """Report whether git can rewrite receipt line endings in this vault (#205).
 
-    Receipts are compared byte for byte. With core.autocrlf=true (the Git for Windows
-    default) a pulled receipt is checked out as CRLF unless the vault stops that for
-    receipts/ with `-text` or `eol=lf`; the index then reads a different summary and the
-    same receipt resubmitted from the other machine fails as an event id collision.
+    With core.autocrlf=true (the Git for Windows default), a pulled receipt can
+    be checked out as CRLF. Current receipt identity tolerates newline-only changes;
+    pinning receipts/ still avoids byte churn and keeps older clients compatible.
     Read-only, information only; a vault that is not a git work tree reports not_applicable.
     """
     def git(*args):
@@ -318,8 +317,8 @@ def receipt_line_endings(vault: Path) -> dict:
             return {"status": "ok", "autocrlf": "true", "receipts_attributes": found}
         return {"status": "warning", "autocrlf": "true", "receipts_attributes": found,
                 "warning": "line_endings: core.autocrlf=true and receipts/ is not pinned, so a receipt synced "
-                           "from another machine can be checked out as CRLF, which changes its bytes and makes "
-                           "the same receipt fail as an event id collision. Add 'receipts/** -text' to the "
+                           "from another machine can be checked out as CRLF. Current receipt identity accepts "
+                           "newline-only changes; older clients may report collisions. Add 'receipts/** -text' to the "
                            "vault's .gitattributes and check the receipts out again; see https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/MULTI-MACHINE.md."}
     except Exception as exc:  # no git, a hung git or a broken config must never hide the rest of doctor
         return {"status": "unavailable", "error": type(exc).__name__}
@@ -575,6 +574,69 @@ def hook_paths(vault: Path) -> dict:
                           "vault moved from another account or folder, pass the old state folder (or a copy) with "
                           "--state, and --rebind-state when the installer asks for it. Keep hook files out of sync: "
                           "https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/MULTI-MACHINE.md")
+    return result
+
+
+def global_bridge_paths(vault: Path, state: Path) -> dict | None:
+    """Read only global bridge paths owned by this state, without executing commands.
+
+    A different vault may legitimately own the user's global bridge. Inspect only
+    commands explicitly bound to this state; absent or invalid settings stay optional.
+    """
+    from beyin_v3_bridge import global_hook_path
+    here, owner = vault.resolve(), state.resolve()
+    expected = (here / '.claude/scripts/beyin_v3_bridge.py').resolve()
+    stale, checked = [], 0
+    for harness in ('claude', 'codex', 'antigravity'):
+        try:
+            data = json.loads(global_hook_path(harness).read_text(encoding='utf-8'))
+        except (OSError, ValueError, UnicodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        events = data.get('beyin-v3-bridge' if harness == 'antigravity' else 'hooks', {})
+        for event, groups in events.items() if isinstance(events, dict) else ():
+            for group in groups if isinstance(groups, list) else ():
+                if not isinstance(group, dict):
+                    continue
+                handlers = group.get('hooks', [group])
+                for handler in handlers if isinstance(handlers, list) else ():
+                    if not isinstance(handler, dict):
+                        continue
+                    command = (handler.get('commandWindows', handler.get('command'))
+                               if sys.platform == 'win32' else handler.get('command'))
+                    if not isinstance(command, str):
+                        continue
+                    arguments = _hook_arguments(command)
+                    script = next((arg for arg in arguments
+                                   if arg.replace('\\', '/').endswith('/beyin_v3_bridge.py')), None)
+                    if script is None:
+                        continue
+                    values = {}
+                    for flag in ('--state', '--vault'):
+                        if arguments.count(flag) == 1 and arguments.index(flag) < len(arguments) - 1:
+                            values[flag] = arguments[arguments.index(flag) + 1]
+                    if len(values) != 2:
+                        continue
+                    try:
+                        if not Path(values['--state']).is_absolute() or Path(values['--state']).resolve() != owner:
+                            continue
+                        same_vault = Path(values['--vault']).resolve() == here
+                        same_script = Path(script).resolve() == expected
+                    except (OSError, ValueError, RuntimeError):
+                        continue
+                    checked += 1
+                    for reason, same in (('other_vault', same_vault), ('other_script', same_script)):
+                        entry = {'harness': harness, 'event': event, 'reason': reason}
+                        if not same and entry not in stale:
+                            stale.append(entry)
+    if not checked:
+        return None
+    result = {'status': 'stale' if stale else 'ok', 'checked': checked}
+    if stale:
+        result['stale'] = stale
+        result['hint'] = ('From this vault, reinstall each affected global bridge with the original '
+                          '--project-root, --event and --context-chars choices. Global settings were not changed.')
     return result
 
 
@@ -1246,13 +1308,13 @@ def parser(note_namespace=None, is_json=False):
     pscope.add_argument("--folder", help="Vault-relative folder path")
     pscope.add_argument("--project", help="Project identifier for the folder")
     pscope.add_argument("--shared-unscoped", choices=["on", "off"],
-                        help="Toggle whether unassigned notes are visible in project scope")
+                        help="add only: toggle whether unassigned notes are visible in project scope")
     ingest_server = sub.add_parser("ingest-server", help="Local-first HTTP ingest server for mobile captures")
     ingest_server.add_argument("--host", default="127.0.0.1", help="Host interface to bind (default 127.0.0.1)")
     ingest_server.add_argument("--port", type=int, default=8484, help="Port to listen on (default 8484)")
     ingest_server.add_argument("--token", help="Optional Bearer token for authentication")
     bridge = sub.add_parser("bridge", help="Manage global lifecycle bridge configuration")
-    bridge.add_argument("--harness", choices=("claude", "codex", "antigravity"), required=True)
+    bridge.add_argument("--harness", choices=("claude", "codex", "antigravity", "opencode"), required=True)
     bridge.add_argument("--project-root", type=Path, action="append", help="Project root to bridge (repeatable)")
     bridge.add_argument("--install", action="store_true", help="Install global bridge hooks")
     bridge.add_argument("--uninstall", action="store_true", help="Uninstall global bridge hooks")
@@ -1268,6 +1330,24 @@ def parser(note_namespace=None, is_json=False):
     learn.add_argument("--resolve", choices=("distilled", "discarded"), default=None,
                        help="Resolve candidates for session as distilled or discarded")
     learn.add_argument("--all", action="store_true", help="When resolving or listing, apply across all sessions")
+    ws = sub.add_parser("workspace", help="Unified workspace registry management (RFC #368 P0-C)")
+    ws.add_argument("action", choices=["list", "create", "inspect", "connect", "disconnect", "archive", "unarchive", "plan", "provision"],
+                    nargs="?", default="list",
+                    help="Workspace action to perform (default: list)")
+    ws.add_argument("workspace_id", nargs="?", default=None, help="Workspace identifier")
+    ws.add_argument("--id", dest="explicit_id", default=None, help="Workspace identifier (flag form)")
+    ws.add_argument("--name", help="Workspace display name")
+    ws.add_argument("--kind", default=None, help="Workspace domain kind (software, learning, career, etc.)")
+    ws.add_argument("--description", help="Workspace purpose or description")
+    ws.add_argument("--rules", help="Initial custom workspace rules text for Kurallar.md")
+    ws.add_argument("--source", help="Vault-relative source folder path to connect/disconnect")
+    ws.add_argument("--dry-run", action="store_true", help="Preview workspace provisioning without making changes")
+    ws.add_argument("--all", action="store_true", help="Include archived workspaces in listing")
+    lint_parser = sub.add_parser("lint", help="Lint vault markdown notes for broken wikilinks and orphans (RFC #368 P0-E)")
+    lint_parser.add_argument("--folder", default=None, help="Vault-relative folder to lint (default: entire vault)")
+    moc_parser = sub.add_parser("moc", help="Generate or update Obsidian Map of Content (MOC) note (RFC #368 P0-E)")
+    moc_parser.add_argument("--folder", default="knowledge", help="Vault-relative folder for MOC (default: knowledge)")
+    moc_parser.add_argument("--file", default="MOC.md", help="Filename of MOC (default: MOC.md)")
     return root
 
 
@@ -1373,7 +1453,7 @@ def main(argv=None, return_result=False):
         if read_only_context and args.jev:
             raise ValueError("context --no-sync cannot be combined with --jev")
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
-        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue") else None
+        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc") else None
         store = engine.MemoryStore(state, vault, read_only=read_only_context) if engine else None
         sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
         if args.command == "bridge":
@@ -1625,6 +1705,12 @@ def main(argv=None, return_result=False):
                 result['hook_paths'] = hook_paths(vault)
             except Exception as exc:
                 result['hook_paths'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            try:  # optional global bridge belongs to the user, never reconcile it automatically
+                bridge_paths = global_bridge_paths(vault, state)
+                if bridge_paths is not None:
+                    result['global_bridge_paths'] = bridge_paths
+            except Exception as exc:
+                result['global_bridge_paths'] = {'status': 'unavailable', 'error': type(exc).__name__}
             result['tracked_machine_files'] = tracked_machine_files(vault)
             # Information only; a split or container-bound state root never raises the status.
             try:
@@ -1671,7 +1757,8 @@ def main(argv=None, return_result=False):
                     rules = companion.rules_opening(engine.MemoryStore(state, vault, read_only=True), budget,
                                                     receipt_context(vault, state))
                     result['companion_rules_opening'] = dict(
-                        rules or {}, status='clipped' if rules and rules['clipped'] else 'ok' if rules else 'no_rules',
+                        rules or {}, status='stale' if rules and rules.get('stale') else
+                        'clipped' if rules and rules['clipped'] else 'ok' if rules else 'no_rules',
                         budget=budget, harness='claude')
             except Exception as exc:  # never hides the rest of doctor
                 result['companion_rules_opening'] = {'status': 'unavailable', 'error': type(exc).__name__}
@@ -1772,14 +1859,14 @@ def main(argv=None, return_result=False):
             # indexed trees that look vendored. Reads the index and one small file; no vault walk.
             try:
                 import beyin_v3_index as index_settings
-                try:
-                    with store._connect() as db:
+                with store._connect() as db:
+                    # Before the first sync this table may legitimately be absent. Any
+                    # other query or payload error must reach the unavailable report below.
+                    rows = []
+                    if db.execute("SELECT 1 FROM sqlite_master WHERE name = 'markdown_sources' COLLATE NOCASE").fetchone():
                         rows = db.execute('SELECT m.source, r.payload FROM markdown_sources m LEFT JOIN records r ON r.id = m.id').fetchall()
-                        indexed_sources = [row[0] for row in rows]
-                        indexed_records = [json.loads(row[1]) if row[1] else {'source': row[0]} for row in rows]
-                except Exception:  # no sync has created the table yet
-                    indexed_sources = []
-                    indexed_records = []
+                indexed_sources = [row[0] for row in rows]
+                indexed_records = [json.loads(row[1]) if row[1] else {'source': row[0]} for row in rows]
                 result['index_exclusions'] = index_settings.doctor(state, vault, indexed_sources, records=indexed_records)
                 result['index_exclusions']['always_excluded'] = sorted(sys.modules['beyin_v3_sync'].EXCLUDED_DIRS)
             except Exception as exc:  # never hides the rest of doctor
@@ -2095,8 +2182,8 @@ def main(argv=None, return_result=False):
             if receipt_flags:
                 summary = args.summary
                 if args.summary_file is not None:
-                    # Preserve CRLF as well as LF, matching the JSON input text. utf-8-sig drops
-                    # the BOM that Windows PowerShell 5.1 writes with -Encoding UTF8.
+                    # Read the same text as JSON mode; the receipt engine normalizes line endings.
+                    # utf-8-sig drops the BOM from Windows PowerShell 5.1 -Encoding UTF8.
                     with args.summary_file.open(encoding="utf-8-sig", newline="") as stream:
                         summary = stream.read()
                 payload = {"event_id": args.event_id, "summary": summary, "refs": args.ref}
@@ -2136,15 +2223,39 @@ def main(argv=None, return_result=False):
             else:
                 target_sess = sess
             if args.resolve:
-                count = resolve_candidates(state, session=target_sess, target_status=args.resolve)
+                count = resolve_candidates(state, session=target_sess, target_status=args.resolve, strict=True)
                 result = {"status": "succeeded", "resolved_count": count, "session": target_sess, "target_status": args.resolve}
             elif args.candidate:
                 result = stage_candidate(state, sess, args.candidate, source=args.source, scope=args.scope or "global")
             elif args.list:
                 list_sess = None if getattr(args, "all", False) else (args.session or None)
-                result = {"candidates": list_candidates(state, session=list_sess, scope=args.scope)}
+                result = {"candidates": list_candidates(state, session=list_sess, scope=args.scope, strict=True)}
             else:
                 raise ValueError("one of --candidate, --list, or --resolve is required")
+        elif args.command == "workspace":
+            _ensure_scripts_path()
+            import beyin_v3_workspaces as workspaces
+            wid = args.workspace_id or args.explicit_id
+            result = workspaces.manage(
+                vault,
+                args.action,
+                workspace_id=wid,
+                name=args.name,
+                kind=args.kind,
+                description=getattr(args, "description", None),
+                rules=getattr(args, "rules", None),
+                source=args.source,
+                dry_run=getattr(args, "dry_run", False),
+                include_archived=getattr(args, "all", False),
+            )
+        elif args.command == "lint":
+            _ensure_scripts_path()
+            import beyin_v3_lint as linter
+            result = linter.manage(vault, "lint", folder=args.folder)
+        elif args.command == "moc":
+            _ensure_scripts_path()
+            import beyin_v3_lint as linter
+            result = linter.manage(vault, "moc", folder=args.folder, moc_file=args.file)
         else:
             payload = read_json(args.file)
             result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])
@@ -2165,6 +2276,10 @@ def main(argv=None, return_result=False):
         batch = getattr(exc, "batch_ingest", None)
         if isinstance(batch, dict):
             error.update(batch)
+        # A failed workspace provision names what its rollback removed and anything it had to keep.
+        reconciliation = getattr(exc, "workspace_reconciliation", None)
+        if isinstance(reconciliation, dict):
+            error["reconciliation"] = reconciliation
         code = 1
         if isinstance(exc, ArgumentParsingError):
             error["error"] = "SystemExit"

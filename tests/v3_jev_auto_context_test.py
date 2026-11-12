@@ -73,6 +73,42 @@ class AutoContextTest(unittest.TestCase):
         path = self.state / 'jev-calls.jsonl'
         return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()] if path.exists() else []
 
+    def test_nullable_titles_are_empty_bounded_and_do_not_mutate_records(self):
+        for i, title in enumerate((None, '', 'Başlık ' * 40, 123)):
+            with self.subTest(title=title):
+                ident = 'nullable-' + str(i)
+                source = ident + '.md'
+                text = 'Quartz deploy steps: push to main, the site server pulls.'
+                (self.vault / source).write_text(text, encoding='utf-8')
+                record = dict(id=ident, title=title, text='Quartz deploy steps: push to main, the site server pulls.',
+                              source=source)
+                self.store.ingest(record)
+                self.config()
+                calls = []
+                def transport(url, body, key, timeout):
+                    calls.append(body)
+                    return {'answers': {q: {'type': 'noul', 'noul': 0.9}
+                                        for q in body['questions']}}
+                self.filtered(transport=transport)
+                notes = list(calls[-1]['state']['notes'].values())
+                self.assertIn(str(title or '')[:160], [n['title'] for n in notes])
+                self.assertNotIn('None', [n['title'] for n in notes])
+                indexed = {r['id']: r for r in self.store.candidates(QUERY)}
+                self.assertEqual(indexed[ident]['title'], title)
+
+    def test_missing_title_is_empty_in_auto_card(self):
+        text = 'Quartz deploy the site with no explicit title.'
+        (self.vault / 'missing.md').write_text(text, encoding='utf-8')
+        self.store.ingest(dict(id='missing', text=text, source='missing.md'))
+        self.config()
+        calls = []
+        def transport(url, body, key, timeout):
+            calls.append(body)
+            return {'answers': {q: {'type': 'noul', 'noul': 0.9} for q in body['questions']}}
+        self.filtered(transport=transport)
+        notes = list(calls[-1]['state']['notes'].values())
+        self.assertEqual(sum(n['title'] == '' for n in notes), 1)
+
     def test_strict_matcher_misses_the_one_word_match(self):
         self.assertEqual(sorted(self.ids(self.local())), ['deploy', 'pricing'])
 
@@ -333,6 +369,20 @@ class AutoContextTest(unittest.TestCase):
         # An index built for another project scope is not reused.
         self.assertEqual(passage.loose_ranking(self.store, query, project='other'), [])
 
+    def test_the_passage_order_reads_hyphenated_names_like_the_strict_pass(self):
+        # #430 with #533: the loose order ranks with the strict pass's query terms, so the
+        # joined stem of a hyphenated name stands in for its part and is never a term of its own.
+        self.record('plugin', 'The claude-mem plugin keeps session notes between runs.')
+        query = 'where does claude-mem keep the session notes'
+        with patch.object(passage, 'search', wraps=passage.search) as spy:
+            self.local(query)
+            self.assertTrue(passage.loose_ranking(self.store, query))
+        (strict_args, strict_kw), (loose_args, loose_kw) = [(c.args, c.kwargs) for c in spy.call_args_list]
+        self.assertTrue(strict_kw.get('compounds'))
+        self.assertEqual(loose_kw.get('compounds'), strict_kw['compounds'])
+        self.assertEqual(set(loose_args[1]), set(strict_args[1]))
+        self.assertNotIn(runtime._stem('claudemem'), set(loose_args[1]))
+
     def test_a_pending_index_leaves_the_word_order_alone(self):
         query = self.long_note_vault()
         self.local(query)
@@ -393,6 +443,28 @@ class HookWiringTest(unittest.TestCase):
             with patch.object(advisor, 'auto_context', side_effect=RuntimeError('boom')):
                 failed = self.run_hook(vault, state, QUERY)
             self.assertIn('yearly plan', failed['hookSpecificOutput']['additionalContext'])
+
+    def test_hook_continuation_keeps_the_delivered_tail_without_an_advisor_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault, state = Path(tmp) / 'vault', Path(tmp) / 'state'
+            (vault / 'notes').mkdir(parents=True)
+            marker = 'Quartz rollback uses the amber switch.'
+            (vault / 'notes/guide.md').write_text('---\nid: guide\n---\n# Overview\n\n' +
+                'Unrelated background. ' * 120 + '\n\n## Recovery\n\n' + marker, encoding='utf-8')
+            from beyin_v3_sync import SyncEngine
+            SyncEngine(vault.resolve(), state.resolve()).sync()
+            client.set_mode(state.resolve(), 'on', enable=['auto_context'])
+            def transport(url, body, key, timeout):
+                return {'answers': {q: {'type': 'noul', 'noul': .99} for q in body['questions']}}
+            with patch.object(client, '_transport', transport):
+                first = self.run_hook(vault, state, 'explain quartz rollback switch')
+            self.assertIn(marker, first['hookSpecificOutput']['additionalContext'])
+            with patch.object(advisor, 'auto_context', side_effect=AssertionError('continuation called advisor')) as remote:
+                follow = self.run_hook(vault, state, 'bunu detaylandır')
+            remote.assert_not_called()
+            self.assertIn(marker, follow['hookSpecificOutput']['additionalContext'])
+            self.assertEqual('Unrelated background.' in first['hookSpecificOutput']['additionalContext'],
+                             'Unrelated background.' in follow['hookSpecificOutput']['additionalContext'])
 
 
 if __name__ == '__main__':

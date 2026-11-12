@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import zipfile
@@ -102,3 +103,9 @@ def rewrite_zip(source, target, mutate):
         for name, content in files.items():
             archive.writestr(name, content)
     return Path(target)
+
+
+def without_hook_clock(text):
+    """Compare hook content across calls without treating a minute rollover as a change."""
+    return re.sub(r'(?m)^(Receipt session=[0-9a-f]{24};) now=\d{4}-\d{2}-\d{2} '
+                  r'\d{2}:\d{2} [+-]\d{4}; ', r'\1 ', text, count=1)

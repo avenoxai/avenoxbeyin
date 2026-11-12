@@ -1,7 +1,6 @@
 """Shared vault skills; no third-party packages or global skill imports."""
 from pathlib import Path
 import hashlib
-import json
 import os
 import shutil
 import sqlite3

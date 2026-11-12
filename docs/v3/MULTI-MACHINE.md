@@ -29,6 +29,7 @@ kopyalama talimatı değildir.
 |---|---|---|
 | Notlar ve companion dosyaları | evet | Markdown kaynak gerçektir. |
 | `.beyin-daily-layout.json` | evet | `preferences --daily-layout flat\|v3` vault'un ortak görünüm yolunu seçer. Aynı vault'a yazan makineler aynı tercihi ve bu seçeneği destekleyen motor sürümünü kullanmalıdır. |
+| `.beyin-workspaces.json` | evet | `workspace` komutlarının üstverisidir (ad, tür, yaşam döngüsü, provision durumu). Klasör bağlantıları `.beyin-projects.json` içinde kalır; ikisi birlikte eşitlenmelidir. |
 | `🔮 850-Companion/Arşiv/` | evet | `companion-compact` metni canlı dosyadan çıkarıp arşive taşır ve yerine tek bir işaret satırı bırakır. Arşiv tek makinede kalırsa öbür makine içi boş bir işaret görür. Arşivdeki `visibility: private` otomatik bağlama girmez demektir, git dışı demek değildir. |
 | `receipts/` | evet | Receipt dosyası yazıldıktan sonra değişmez ve adı `event_id` özetidir (`beyin_v3_sync.py` `receipt()`). Öbür makine yeni receipt'i bir sonraki `sync`'te kendi veritabanına alır (`_scan_receipts()`). |
 | `receipts/*.md.view-provenance.json` | evet | Bir receipt'in üretilmiş görünüme dayandığı için dışlandığını, immutable olay kimliğiyle kaydeder. State yeniden kurulunca eski receipt dışarıda kalır; aynı günlük yoluna dayanan yeni insan receipt'leri engellenmez. İçerik taşımaz; bu dosyalar silinmemelidir. |
@@ -171,11 +172,11 @@ receipts/** -text
 **/Arşiv/*.md merge=union
 ```
 
-**`receipts/** -text`:** Beyin receipt dosyasını bayt bayt karşılaştırır. Git for Windows
-kurulumunun varsayılan seçeneği `core.autocrlf=true`'dur ve bu ayar öbür makineden gelen receipt'in satır
-sonlarını CRLF'ye çevirir. Bu satır olmadan o makinede receipt özetine `\r` karışır, günlük
-görünüm öbür makinedekinden farklı çıkar ve aynı receipt yeniden gönderilince
-`ReceiptConflict: event id collision` hatası alınır.
+**`receipts/** -text`:** Git for Windows varsayılanı `core.autocrlf=true`, eşitlenen
+receipt kaynaklarını CRLF'ye çevirebilir. Güncel motor yalnız satır sonu farkını aynı
+receipt kabul eder; eski istemciler bayt karşılaştırması nedeniyle çakışma bildirebilir.
+Bu satır gereksiz bayt değişikliklerini ve eski istemci sorunlarını önler; `eol=lf` de
+kullanılabilir.
 
 **`merge=union`:** Git iki tarafın satırlarını da tutar, çakışma çıkarmaz. Satır silmez ama
 çift bırakabilir. Bu yüzden yalnız yeni kaydın eklendiği dosyalar için uygundur:
@@ -325,15 +326,15 @@ junction yolları reddedilir.
 
 ## Vault'u başka klasöre ya da hesaba taşımak
 
-Hook dosyaları kurulumun mutlak yollarını taşır (Python, `beyin_v3_hook.py`, `--vault`,
+Vault içindeki hook dosyaları kurulumun mutlak yollarını taşır (Python, `beyin_v3_hook.py`, `--vault`,
 `--state`). Kurulu bir vault başka bir klasöre ya da başka bir Windows hesabına taşınınca
 (`C:\Users\<eski>\...`) her yaşam döngüsü hook'u genel bir hatayla düşer. `doctor` bunu
 `hook_paths: stale` ve `needs_attention` olarak gösterir; her satır dosyayı, olayı ve eski
 yolu (`hook_script_missing`, `other_vault`, `python_missing`) verir ([#204](https://github.com/avenoxai/avenoxbeyin/issues/204)).
 
 Çözüm, kurucuyu bu makinede yeni vault yoluyla yeniden çalıştırmaktır. Eski state klasörünü
-(ya da kopyasını) `--state` ile ver; kurulum kaydı oradadır ve kurucu yolları taşıyan bütün
-dosyaları yeniden üretir. State'teki indeks (`memory.sqlite3`) de kurulduğu vault yoluna
+(ya da kopyasını) `--state` ile ver; kurulum kaydı oradadır ve kurucu yolları taşıyan
+yönetilen vault içi dosyaları yeniden üretir. State'teki indeks (`memory.sqlite3`) de kurulduğu vault yoluna
 bağlıdır ve başka bir yoldaki vault'a açılmaz. Vault taşındıysa bu bağı `--rebind-state`
 açıkça yeni yola çeker ([#593](https://github.com/avenoxai/avenoxbeyin/issues/593)):
 
@@ -344,6 +345,14 @@ py -3 scripts/install_v3.py --vault "C:\Users\<yeni>\Beynim" --state "<eski stat
 macOS ve Linux'ta aynı komut `python3 scripts/install_v3.py --vault "/yeni/yol/Beynim" --state
 "<eski state klasörü>" --rebind-state` biçimindedir. Eski state yolu vault'taki
 `.beyin-runtime.json` dosyasının `state` alanındadır.
+
+**Genel köprü kurduysan ayrı olarak yenile:** `--rebind-state` genel istemci ayarlarını
+ve bu ayarlardaki eski vault yolunu değiştirmez. Yeni vault klasöründe, köprü kurduğun
+her harness için önceki `bridge --install` komutunu yeniden çalıştır; bütün
+`--project-root`, özel `--event` ve `--context-chars` seçimlerini koru.
+`doctor` çıktısında `hook_paths: ok` olması genel köprünün yeni yolu kullandığını
+kanıtlamaz; bu kontrol yalnız vault içindeki hook'lara bakar.
+[Genel köprüyü taşıma sonrası doğrulama](GLOBAL-BRIDGE.md#vaultun-yeri-değiştiğinde).
 
 Bayrak verilmezse ve indeks başka bir yola bağlıysa kurucu hiçbir dosyayı değiştirmeden durur,
 eski ve yeni yolu gösterip bayrağı önerir. Taşınan vault'ta `beyin.py update` de aynı hatayla
@@ -411,27 +420,33 @@ depo ve iki vault; Beyin her birine ayrı `--state` ile kuruldu.
 
 ## Satır sonu: `core.autocrlf=true` ve receipt'ler
 
-Bu kontrol [#205](https://github.com/avenoxai/avenoxbeyin/issues/205) için eklendi. Git for Windows
-varsayılanı `core.autocrlf=true`'dur ve `receipts/** -text` satırı yoksa bu makine öbür makineden gelen
-receipt'i CRLF olarak çıkarır. Sonuç sessizdir: `sync` ve `doctor` hata vermez, ama aynı receipt'in
-bayt özeti iki makinede farklı olur ve receipt öbür makineden yeniden gönderilince
-`ReceiptConflict: event id collision` hatası gelir. Yukarıdaki [`.gitattributes`](#önerilen-gitattributes)
-satırı bunu önler; `eol=lf` de aynı işi görür.
+Bu kontrol [#205](https://github.com/avenoxai/avenoxbeyin/issues/205) için eklendi.
+Git for Windows varsayılanı `core.autocrlf=true`, `.gitattributes` ile sabitlenmeyen
+receipt dosyalarını CRLF olarak çıkarabilir. Güncel motor yeni özetleri LF ile yazar,
+CRLF/CR/LF farkını aynı receipt kabul eder ve eski kaynak dosyayı yeniden yazmaz.
+3.12.0 ve öncesinin CRLF çıkışını okurken indekste bıraktığı son CR de aynı receipt sayılır.
+Gerçek özet, refs veya links değişiklikleri hala çakışmadır. Eski istemcilerde
+satır sonu farkı `event id collision` hatasına yol açabilir.
 
-`doctor` artık vault bir git deposuysa ve `core.autocrlf=true` iken `receipts/` için `-text` ya da
-`eol=lf` yoksa `receipt_line_endings` alanında `warning` bildirir (insan çıktısında bir "Receipt satir
-sonu (bilgi)" satırı). Bu yalnız bilgidir, `doctor` durumunu değiştirmez ve hiçbir şeyi düzeltmez.
+`doctor`, Git deposunda `core.autocrlf=true` iken `receipts/` için `-text` veya `eol=lf`
+yoksa `receipt_line_endings.warning` bildirir. Bu bilgi durum değiştirmez ve dosyalara
+dokunmaz. Bayt değişikliklerini ve eski istemci sorunlarını önlemek için vault'un
+`.gitattributes` dosyasına `receipts/** -text` veya `receipts/** eol=lf` ekleyebilirsiniz.
+Kontrol: `git check-attr text eol -- receipts/x.md`.
 
-Uyarıyı gördüysen:
+Satır sonu değişmiş eski kaynaklar için yerel veritabanını silmek gerekmez;
+`python3 beyin.py sync --full` ile karşılaştırmayı yenileyin. Eski görünümün ham hash'i
+receipt'lerden güvenle yeniden üretilemezse dosya korunur. Bu durumda
+[arşivleyerek görünüm kurtarma](RUNTIME.md#receipt-görünümü-çakışması-ve-kurtarma)
+komutunu kullanın; kaynak receipt'leri silmeyin.
 
-1. `.gitattributes` dosyasına `receipts/** -text` ekle ve commit'le.
-2. Bu makinede receipt dosyalarını LF olarak yeniden çıkar (çalışma ağacın temizken):
-   `git rm -r receipts` ardından `git checkout HEAD -- receipts`.
-3. Dosyalar düzelse de bu makinenin yerel indeksi CRLF'li özeti tutmaya devam eder ve aynı receipt
-   yine `event id collision` verir. State klasöründeki `memory.sqlite3` dosyasını yedeğe taşı ve
-   `python3 beyin.py sync` çalıştır; indeks Markdown'dan yeniden kurulur.
-
-Kontrol: `git check-attr text -- receipts/x.md` çıktısı `text: unset` olmalıdır.
+Bu tolerans yalnız güncel motorda vardır. `rollback` yerel veritabanını geri almaz ve
+3.12.0 veya öncesi yine bayt karşılaştırması yapar: satır sonu değişmiş eski bir kaynak
+orada yeniden `receipt_divergence` verir, CRLF özet dosyasıyla gönderilmiş bir receipt
+aynı dosyayla yeniden gönderilince `event id collision` alır. Eski sürümde kalacaksanız
+eski çözüm geçerlidir: state klasöründeki `memory.sqlite3` dosyasını yedeğe taşıyın,
+`python3 beyin.py sync` ve ardından `python3 beyin.py sync --recover-views` çalıştırın;
+yeniden gönderimde özeti LF satır sonlarıyla verin.
 
 Presence eşitlemesi varsayılan olarak kapalıdır. Her cihazda `preferences --parallel-sessions on`
 ile açılır. Yerel `<state>/parallel-presence-device.json` dosyası rastgele bir cihaz kimliği
@@ -463,7 +478,11 @@ Komutlar:
   `note_create`, `note_update`, `task_create`, `task_update`, `receipt`. Yük kuyruğa girmeden
   doğrulanır (`note_update` için tam SHA-256 `expected_hash`, `task_update` için tam sayı
   `expected_revision`). İsteğe bağlı `mutation_id` aynı mutasyonun yeniden gönderilmesini
-  tek kayda indirir; aynı kimlik farklı bir mutasyonla gelirse reddedilir.
+  tek kayda indirir; aynı kimlik farklı bir mutasyonla gelirse reddedilir. Normal yazımlar gibi
+  state'in vault bağını denetler: başka bir vault'a bağlı state `runtime belongs to another vault`
+  ile reddedilir, bağsız state bu vault'a bağlanır. Kayıt bu bağın özetini taşır (yolu değil);
+  `--replay` başka bir vault'a bağlı kaydı hiçbir şey yazmadan `failed` yapar. Bu alan
+  eklenmeden önce kuyruğa girmiş kayıtlar eskisi gibi state'in kendi vault'una uygulanır.
 - `--list [--status pending|applied|conflict|failed|dismissed]`, `--replay`, `--clear-applied`
   (uygulanan ve kapatılan kayıtları siler), `--retry <id>` (incelenmiş `conflict`/`failed`
   kaydı yeniden `pending` yapar), `--dismiss <id>`.
@@ -487,6 +506,14 @@ Replay kuralları:
 - `note_create` ve `task_create` aynı içerik zaten diskteyse yeniden yazmaz, uygulanmış sayar.
   `receipt` aynı `event_id` için motorun kendi idempotens kuralına uyar.
 - `task_update` çakışmasında kopya açılmaz; kayıt `conflict` olarak incelemeye kalır.
+
+Replay sonundaki indeks eşitlemesi tamamlanmazsa uygulanan mutasyonlar `applied` kalır;
+yeniden kuyruğa eklenmez. JSON çıktısındaki `source_sync`, `degraded` / `conflict` durumunda
+en çok 20 uyarı ve 20 çakışma ile toplam sayılarını; istisnada `error` durumu ve hata türünü
+bildirir. İnsan çıktısı da uyarır. Bu tanı kuyruk dosyasına kaydedilmez. `status: succeeded`,
+`applied` / `failed` sayıları ve çıkış kodu kuyruğun uygulama sonucudur; indeksin tamamen
+güncellendiğini göstermez. Sorunu görmek ve indeksi yenilemek için `python3 beyin.py sync`
+çalıştır; bekleyen kayıt yokken `--replay` tekrar eşitleme yapmaz.
 
 **Kesinti ve uzlaştırma.** Her mutasyonun sonucu, sıradakine geçmeden kuyruğa yazılır. Süreç
 bir mutasyonu uyguladıktan sonra ama bu onayı yazmadan ölürse kayıt `pending` kalır. Sonraki

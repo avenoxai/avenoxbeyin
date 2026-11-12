@@ -48,6 +48,8 @@ Turkish is agglutinative, so every token is reduced to one canonical stem by a s
 
 Filters apply before scoring. Public sees public; internal sees internal and public; private is explicit. Untrusted records never enter context. Project filtering is exact. Supersession is resolved over every trusted record, not only the eligible ones: a `supersedes` value names a note by its explicit id, by vault path (with or without `.md`) or `[[link]]`, or by its file name when exactly one note has it, never by substring. A value that resolves to nothing, to several notes or to the note itself retires nothing; sync reports it as `supersedes_issues` and doctor as `supersedes`, without degrading either. Untrusted notes cannot retire another note. Without explicit statuses every route drops notes whose status starts with a retired word (`superseded`, `retired`, `archived`, `deprecated`, `obsolete`, `replaced`, `arşiv`, `eski`, `emekli`, `geçersiz`); any other status stays deliverable. Explicit status filters select exactly the requested first words, case and Turkish letters folded; a note without a status counts as active, a task without one does not. Non-strict matches (`retrieve`, `candidates`, the `context` command) are ranked by Okapi BM25 over stem counts (`k1` 1.5, `b` 0.75) with timestamp as a tie-breaker, so a long hub note that mentions every query word once no longer outranks the note that is about them; records with no shared term keep timestamp order. Strict matches keep the calibrated weight and thresholds described below. Unknown queries abstain. Structured facts and citations are preserved; oversized text may be clipped with an explicit marker and text_truncated flag when the metadata fits, otherwise the record is omitted; the budget measures serialized record/citation characters, not tokenizer tokens or the entire response envelope.
 
+Supersession is stateless: the current trusted index determines each match, with no persisted target binding. A new same-basename note can therefore make a formerly unique name reference ambiguous and let its old target return to context; one added at the vault root matches a bare value as an exact path, so it is retired in the old target's place without any report. Prefer an explicit id or full vault-relative path to avoid this collision. Explicit `sync` and `doctor` human output shows a bounded warning for ineffective references; JSON fields, command statuses and per-turn hook behavior are unchanged. See [Supersedes references](MARKDOWN.md#supersedes-references) for the repair steps and limits.
+
 The per-turn hook asks for strict context (`context_for(..., strict=True)`), which ranks Markdown passages instead of whole notes (`beyin_v3_passage.py`, #83). Each record's text is split into heading-aware blocks (oversized blocks become overlapping windows of about 900 characters), a block is admitted with the same relative-idf weight family scaled by query coverage, and the best block per source is delivered with its heading path through the same `pack_context` budget and citation contract. Admission uses block frequency, ranking among admitted sources uses source frequency, and the coverage denominator is capped at four terms so a long conversational prompt is not rejected for its length. Frontmatter is never read (records carry the Markdown body), `daily/` and `receipts/` are always excluded, supersession, visibility, trust, project and freshness gates are the same `_eligible()` gates as the note-level path, and explicit project words do not count as matches. The derived index lives in the runtime directory as JSON (`passages.json`, 0600), re-tokenised only for changed records; a cold build runs in one-second steps and meanwhile, like any real error, falls back to the note-level path. An empty passage result is an answer, not a fallback. `retrieval.json` in the runtime directory may set `strict_floor` (default 0.20) and extra `strict_exclude` prefixes; see PREFERENCES.md. The same file can opt the unscoped explicit `context` command (no `--project`) into two-word admission (`unscoped_min_shared: 2`) and dominant-project demotion (`unscoped_dominant_weight`, BM25 part only); both are off by default because they cost recall on the frozen fixtures (#532). `scripts/evaluate_v3_passages.py` measures both paths on a deterministic synthetic corpus or, read-only, on your own vault.
 
 Both clients call `shared_context(store, harness, query, **kwargs)` or `store.context_for(harness, query, **kwargs)`. Codex and Claude use exactly the same retrieval implementation and normalized output. `codex_context` and `claude_context` are convenience wrappers.
@@ -100,6 +102,77 @@ hatalar açık proje çağrısını durdurmaya devam eder. Okuma dosyayı deği�
 dosyasını düzenler. `prune` artık bulunamayan klasör girdilerini ve geçersiz yolları çıkarır. Bozuk
 veya symlink yapılandırma üzerine yazılmaz; önce dosyayı onar.
 
+`--shared-unscoped on|off` yalnız `add` ile kullanılabilir. Eylemsiz çağrı `list`
+sayılır; bayrak eylemsiz, `list`, `remove` veya `prune` ile verilirse komut hiçbir
+kapsam veya runtime dosyasını değiştirmeden açık hata ve çıkış kodu 1 döndürür.
+Mevcut eşlemeyi koruyarak ayarı değiştirmek için aynı klasör ve proje adıyla yeniden
+`add` kullan:
+
+```sh
+python3 beyin.py project-scope add --folder "Projeler/Deneme" --project deneme --shared-unscoped on
+```
+
+Windows'ta `python3` yerine `py -3` kullan. Kapatmak için `off` ver; bayrağı
+vermezsen mevcut değer korunur, yeni dosyada varsayılan `false` olur. `add` çıktısı
+kaydedilen `shared_unscoped` değerini de gösterir. `on`, hiçbir
+projeye atanmamış uygun notları dış proje köprüsü dahil tüm açık proje sorgularına
+dahil eder; başka projeye ait veya `private` notları açmaz. Yalnız mevcut değeri
+görmek için bayraksız `project-scope list` kullan.
+
+## Çalışma alanları, bağlantı denetimi ve MOC
+
+`workspace`, `lint` ve `moc` yalnız açıkça çağrıldığında çalışır; SessionStart, `sync` ve
+`doctor` bunları çalıştırmaz. `workspace list`, `workspace inspect`, `workspace plan`,
+`workspace provision --dry-run` ve `lint` salt okunurdur ve state oluşturmaz.
+
+- Çalışma alanı üstverisi (ad, tür, yaşam döngüsü, kural dosyası, not kökleri, provision
+  durumu) vault kökündeki `.beyin-workspaces.json` dosyasındadır. Klasör bağlantıları
+  `.beyin-projects.json` içindeki `folders` haritasında kalır ve o dosyanın biçimi değişmez.
+  Eski sürüm kapsam dosyasını aynen okur ve kayıt dosyasını yok sayar; `rollback` sonrasında
+  proje kapsamları çalışmaya devam eder. Bir çalışma alanının kaynakları her okumada `folders`
+  haritasından türetilir: `project-scope add/remove` ile yapılan değişiklik hemen görünür.
+  Kaydı olmayan projeler `registered: false` ile listelenir. Daha yeni bir şema sürümüyle
+  yazılmış veya bozuk kayıt dosyası değiştirilmez.
+- `workspace disconnect` yalnız hala o çalışma alanını gösteren bağlantıyı kaldırır; diskteki
+  klasöre ve notlara dokunmaz. `archive` kapsamı değiştirmez, çalışma alanını yalnız listeden
+  gizler.
+- `workspace provision <id>` ilk dosyadan önce `provision.status: pending` kaydını yazar, sonra
+  klasörleri ve şablonları oluşturur (var olan dosya korunur), klasörleri bağlar ve doğrular.
+  Proje klasörü vault'un kendi proje klasörünün altındadır (şablonda `🏰 300-Projects/<id>`,
+  yoksa `projects/<id>`). `--source` verilse de kural ve MOC şablonlarının bulunduğu bu klasör
+  ve not kökü de çalışma alanına bağlanır (`plan` çıktısındaki `bindings`); doğrulama, şablon
+  dosyalarının retrieval kapsamında bu çalışma alanına düştüğünü de denetler.
+  Hata olursa yalnız bu denemenin kendi değişiklikleri geri alınır: oluşturduğu ve değişmemiş
+  dosyalar, boş kalan klasörler, hala bu çalışma alanını gösteren bağlantılar ve kendi kaydı.
+  Arada yapılmış başka değişiklikler korunur. Bir şey geri alınamazsa hata çıktısındaki
+  `reconciliation` nesnesi neyin kaldığını söyler ve kayıt `provision.status: failed` olarak
+  kalır; aynı `workspace provision <id>` komutu kaydı kaldığı yerden tamamlar.
+- `lint [--folder <klasör>]` kırık wikilink, eksik başlık veya ek, yetim ve gelen bağlantısı
+  olmayan notları raporlar. Kısmi yol (`[[klasör/not]]`) ve ekler Obsidian gibi ad ve yol
+  sonuyla çözülür; kod blokları ve satır içi kod sayılmaz. Hassas, arşiv (`📦 900-Archive`,
+  `Arşiv` gibi), `visibility: private` ve kurulum klasörlerindeki notlar taranmaz; böyle bir nota
+  giden bağlantı da kırık görünür. Sayılar her zaman tam döner; listeler en fazla 100 kayıt
+  taşır, kalanı `truncated` alanında sayılır (tamamı için daha dar bir `--folder` kullan).
+- `moc [--folder knowledge] [--file MOC.md]` yalnız hedef klasördeki düz bir `.md` dosyasına
+  yazar. `CLAUDE.md`, `AGENTS.md`, `Kurallar.md` gibi talimat, companion veya kural dosyası
+  adları kabul edilmez. Dosya yoksa oluşturur. Varsa yalnız tek bir `<!-- beyin-moc:start -->` ve
+  `<!-- beyin-moc:end -->` çifti taşıdığında ve yalnız bu iki işaretin arasını yeniden üretir;
+  işaretsiz dosyaya dokunmaz. Dizinin görüneceği yere işaret çiftini elle ekle. MOC yalnız
+  kendi okuyucularının da görebildiği notları listeler: notun proje kapsamı (`project` alanı
+  veya `.beyin-projects.json` klasörü) MOC dosyasının kapsamıyla aynı olmalı, görünürlüğü
+  MOC'unkinden dar olmamalı (`visibility: public` bir MOC yalnız public notları listeler) ve
+  `trust: untrusted` ya da reddedilmiş çıkarım olmamalı. İç içe kapsamda her proje klasörü için
+  ayrı `moc --folder <klasör>` çalıştır; atlanan notlar çıktıdaki `skipped` sayılarında görünür.
+  Kapsam dosyası değişince `moc` yeniden çalıştırılmalı. Değişiklik yoksa dosyaya yazılmaz.
+  Obsidian Beyin kilidini kullanmadığı için dosya, yeni metin hazır
+  olduktan sonra yeniden adlandırmadan hemen önce (içerik özeti, mtime, boyut, inode) tekrar
+  karşılaştırılır; değiştiyse hiçbir şey yazılmaz ve komut yeniden çalıştırılmayı ister.
+  macOS ve Linux'ta eski dosya yeniden adlandırma boyunca açık tutulur, bu arada yerinde
+  kaydedilen bir düzenleme fark edilip geri konur; önce dosyayı boşaltıp sonra yazan editör
+  için geri koymadan önce dosyanın değişmesi durana kadar (en fazla 0,2 sn) beklenir. Kalan
+  sınır: bir editör dosyayı tam bu mikro saniyelik aralıkta yeni bir dosyayla değiştirirse
+  işletim sistemi bunu kilitleyemez.
+
 ## Receipt görünümü çakışması ve kurtarma
 
 `daily/v3/YYYY-MM-DD.md` ve `knowledge/v3/outcomes.md` değişmez receipt kaynaklarından
@@ -109,6 +182,24 @@ bağlamı, lifecycle kayıtları ve yeni receipt yazımı devam eder; gerçek ka
 çakışmaları bağlamı ve geçmişi engellemeye devam eder. `receipt`, `task-update`,
 `context` ve `recap` JSON çıktıları ilgili tanıyı `source_sync.warnings` altında
 bildirir. `history` JSON liste biçimini korur ve uyarıyı stderr'e yazar.
+
+Yalnız CRLF/CR/LF farkı elle düzenleme sayılmaz. Yeni receipt özetleri LF kullanır;
+eski kaynak dosyalar ve indeks özetleri yeniden yazılmaz. CRLF çıkışlı bir receipt
+kaynağı, 3.12.0'ın okuduğu gibi sondaki CR ile dizine alınır; böylece `rollback`
+sonrasında eski sürümün bayt karşılaştırması da aynı satırı görür. Üretilen görünümler
+eski özetler için de LF kullanır. Sahipliği kanıtlanan eski görünüm ilk sync'te LF'ye
+geçer; takip edilen hash yazılan ham baytlara aittir ve sonraki LF kayıtları yeniden
+yazılmaz. Görünüm, güncel deterministik
+çıktıyla satır sonları dışında aynıysa güncellenebilir. Eski karma satır sonlu görünüm
+gecikmişse, içerdiği receipt bağlantıları yalnız yeniden üretilecek alt kümeyi seçer:
+yeniden üretilen **ham baytların** hash'i kayıtlı eski hash'e eşit olmalı, mevcut metin
+de yalnız satır sonlarında farklı olmalıdır. Bağlantı veya başlık tek başına yazma
+izni vermez. 3.10-3.12 sürümlerinin yazdığı görünüm o sürümlerin biçimiyle (hash adlı
+bağlantı, gizlenmemiş özet) yalnız karşılaştırma için yeniden üretilir; kanıt tutarsa
+güncel biçimle değiştirilir. Saat dilimi, başka bir üretici biçimi veya eksik geçmiş
+nedeniyle bu kanıt kurulamıyorsa görünüm korunur; aşağıdaki açık kurtarma komutunu
+kullanın. Aynı kontrol eski günlük düzenine ait takip edilen görünümün kaldırılmasında
+da geçerlidir.
 
 Takip edilen veya mevcut receipt'lerin üreteceği görünüm, başlığı silinse bile kaynak
 not olarak dizine eklenmez. Aynı dosyanın sabit bağlantıları da dışlanır. Önceden
@@ -131,3 +222,22 @@ POSIX'te özgün görünüm değiştirilmeden önce arşiv dosyası, arşiv dizi
 `fsync` bariyerlerinden geçer; bariyer hatası kurtarmayı durdurur. Bu sıra güç kesintisi
 veya uzak dosya sistemi için mutlak kalıcılık garantisi değildir. Windows'ta dizin
 `fsync` desteği bulunmadığından aynı kalıcılık iddiası yapılmaz.
+
+### Öğrenim adaylarını sonuçlandırma hataları
+
+Açık bir `learn --resolve distilled|discarded` isteğinde aday defterinin varlığını denetleme veya mevcut defteri okuma, kilitleme ya da yazma işlemi bir G/Ç hatasıyla başarısız olursa komut çıkış 1 verir. JSON hatası, özel dosya yolu veya defter içeriği yerine sabit `learning candidate resolution failed` mesajını taşır. Başarılı sonuçlandırma, hatasız tamamlanan eşleşmesiz istek ve defterin bulunmaması mevcut sonuçlarını ve çıkış 0 davranışını korur. Eşleşme bulunmasa da mevcut yeniden yazma adımı çalışır; bu adımın G/Ç hatası da çıkış 1 verir. Receipt'in otomatik aday takibi isteğe bağlı kalır; sonuçlandırma hatası kalıcı receipt'i geri almaz veya başarısız saymaz. Defter biçimi ve yazma/tekrar davranışı değişmez.
+
+Açık `learn --list` isteği de mevcut aday defterinin denetimi veya okunması G/Ç hatasıyla başarısız olduğunda çıkış 1 ve özel yol/içerik içermeyen sabit `learning candidate listing failed` mesajı verir. Bulunmayan veya normal dosya olmayan defter boş liste olarak kalır. Başarılı filtreleme, bozuk satırların atlanması ve hook aday kontrollerinin mevcut en iyi çaba davranışı değişmez.
+
+## Memory audit read errors
+
+An explicit `beyin.py audit` fails with exit 1 and `audit source scan failed` when a
+candidate note cannot be read or directory enumeration reports an I/O error. It
+does not return partial findings as a complete audit or call the memory balanced.
+The error includes no raw filesystem message or source contents. Check local file
+and directory access, then rerun the audit. User notes are not modified.
+
+Healthy report fields, excluded directories, private/untrusted/generated/retired
+note filtering, and the existing skip behavior for invalid frontmatter are
+unchanged. The lower-level `scan_audit_candidates` helper keeps its best-effort
+default; the explicit audit uses its keyword-only `strict=True` option.

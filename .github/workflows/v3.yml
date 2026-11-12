@@ -5,6 +5,7 @@ on:
     paths:
       - 'template/.claude/scripts/beyin_v3*.py'
       - 'scripts/*v3*.py'
+      - 'scripts/setup_v3_poppler.ps1'
       - 'scripts/beyin_entry.py'
       - 'template/.agents/skills/**'
       - 'tests/v3_*.py'
@@ -15,6 +16,7 @@ on:
     paths:
       - 'template/.claude/scripts/beyin_v3*.py'
       - 'scripts/*v3*.py'
+      - 'scripts/setup_v3_poppler.ps1'
       - 'scripts/beyin_entry.py'
       - 'template/.agents/skills/**'
       - 'tests/v3_*.py'
@@ -28,8 +30,9 @@ jobs:
   stdlib-contracts:
     name: ${{ matrix.os }} / Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
-    # Allow the full Windows suite and package lifecycle to finish on slower runners.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 40 || 15 }}
+    # Allow the complete test suite and downstream checks on slower native runners.
+    # The 15-minute Linux budget timed out during the suite in run 43239032499.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -44,6 +47,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - name: Install pinned Windows PDF extractor
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/setup_v3_poppler.ps1
       - name: Offline source, runtime, lifecycle and skill contracts
         run: python -m unittest discover -s tests -p "v3_*test.py"
       - name: Frozen development and holdout retrieval gates

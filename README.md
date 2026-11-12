@@ -4,7 +4,7 @@ Claude Code, Codex, Google Antigravity veya Kiro ile kullanabileceğin yerel iki
 
 Python **3.11 veya üzeri** yeterli. Git, pip, Mem0 hesabı, API anahtarı veya sürekli açık sunucu gerekmez. Kullandığın AI istemcisinin kendi kurulumu ve hesabı ayrı olarak gerekir.
 
-> **V3.12.0:** Yakala birden çok bağlantıyı ve isteğe bağlı pencere görüntüsünü birlikte kaydediyor; Windows dinleyicisi geçici hatalardan toparlanıyor, tarayıcı adres okuma desteği genişliyor. Aynı makinedeki ajanlar için hash kontrollü `note-read` / `note-edit`, yerel hafıza denetimi (`audit`), öğrenim adayları (`learn`) ve isteğe bağlı düz günlük düzeni geldi. Mevcut kurulumda vault içinde `python3 beyin.py update` çalıştır; yakala kullanıyorsan ardından bir kez `python3 beyin.py yakala kur`. [Sürüm notları](docs/v3/releases/3.12.0.md) · [Yakala](docs/v3/YAKALA.md) · [Güncelleme rehberi](docs/v3/UPDATE.md).
+> **V3.13.0:** Yakala kartları isteğe bağlı olarak Claude Code ya da Codex ajanına devredilebiliyor (Ctrl+Enter, önizlemeli toplu gönderim, açık izinle müzik tanıma), Word belgelerinden metin çıkarılıyor. Pi istemcisi, OpenCode global köprüsü, isteğe bağlı yerel web görünümü (`web ac`), çalışma alanı komutları (`workspace`, `lint`, `moc`) ve salt okunur `beyin-kontrol` skill'i geldi; açılış bağlamı bütün kuralları, açık konuları ve en yeni devir kartını önce ayırıyor, yerel indeks sınırlı olay geçmişiyle büyümüyor. Mevcut kurulumda vault içinde `python3 beyin.py update` çalıştır; yakala kullanıyorsan ardından bir kez `python3 beyin.py yakala kur`. [Sürüm notları](docs/v3/releases/3.13.0.md) · [Yakala](docs/v3/YAKALA.md) · [Güncelleme rehberi](docs/v3/UPDATE.md).
 
 ## En kolay kurulum: bir klasör, bir mesaj
 
@@ -104,6 +104,10 @@ Windows'ta aynı komutun başında `py -3` kullan. Kurulumda özel runtime yolu 
 ## İsteğe bağlı: tek tuşla beyne at
 
 Video, tweet, makale, mail ya da dosyayı gördüğün yerde yakala; ajanın metni çıkarıp dersleri `knowledge/` notlarına bağlasın. Kurulum bir kez: `python3 beyin.py yakala kur` (Windows'ta `py -3`). Sonra her uygulamada Mac'te `Control+Option+B`, Windows'ta `Ctrl+Alt+B`; Linux'ta KDE Plasma'da `Ctrl+Alt+B` (GNOME'da da kurulur ama gerçek masaüstünde henüz denenmedi), diğer masaüstlerinde `kur`'un verdiği komutu kendin bir tuşa bağlarsın; tarayıcıda Obsidian Web Clipper'ın "Beyne at" şablonu. Tuşu değiştirmek için `beyin.py yakala kisayol 'cmd+"'`. Ajanına "yakalananları işle" demen yeter. YouTube'da önce altyazı, yoksa yalnız ses yerelde yazıya dökülür. Ayrıntı: [docs/v3/YAKALA.md](docs/v3/YAKALA.md).
+
+## İsteğe bağlı: yerel web görünümü
+
+`python3 beyin.py web ac` görevleri, son receipt'leri, hafıza dosyalarının boyutunu ve doktor özetini tarayıcıda gösterir. Yalnız bu bilgisayarda (`127.0.0.1`) açılır, 30 dakika kullanılmazsa kapanır; kurulum ve hook'lar onu hiç başlatmaz. Gizli (`visibility: private`) ve hariç tutulan notlar gösterilmez; görev ve sıkıştırma yazmaları CLI komutlarıyla aynı yoldan gider, `--read-only` hepsini kapatır. Ayrıntı: [docs/v3/WEB.md](docs/v3/WEB.md).
 
 ## Tüketim ve kontrol sıklığı
 

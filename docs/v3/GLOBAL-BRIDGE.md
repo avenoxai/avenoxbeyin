@@ -20,6 +20,9 @@ python3 beyin.py bridge --harness claude --project-root "/tam/yol/Projelerim" --
 
 # Codex için:
 python3 beyin.py bridge --harness codex --project-root "/tam/yol/Projelerim" --install
+
+# OpenCode için (global eklenti dosyası):
+python3 beyin.py bridge --harness opencode --project-root "/tam/yol/Projelerim" --install
 ```
 
 Windows'ta `python3` yerine `py -3` ve gerçek Windows yollarınızı kullanın.
@@ -32,6 +35,7 @@ Otomatik kurulum (`--install`):
   - Claude Code: `~/.claude/settings.json` (özel `CLAUDE_CONFIG_DIR` varsa o dizin).
   - Codex: `$CODEX_HOME/hooks.json` (varsayılan `~/.codex/hooks.json`).
   - Antigravity: `~/.gemini/config/hooks.json`.
+  - OpenCode: `~/.config/opencode/plugins/beyin-v3-bridge.js` (`XDG_CONFIG_HOME` varsa `$XDG_CONFIG_HOME/opencode/plugins`). OpenCode'un proje eklentisi yalnız vault içinde yüklendiği için köprü, dört yaşam döngüsü olayını `beyin_v3_bridge.py`'ye ileten yönetilen bir global eklenti yazar. Python yolu, köprü komutu ve proje kökleri eklentinin bir üst klasöründeki yönetilen `beyin-v3-bridge.json` dosyasındadır (`~/.config/opencode/beyin-v3-bridge.json`); eklenti bu dosyayı her olayda okur. Çalışan bir OpenCode 2.2.6 servisi, yerinde yeniden yazılan eklenti dosyasına rağmen önceden içe aktardığı modülü kullanmaya devam etti; kökler bu yüzden modülde tutulmaz. Kökleri daraltan yeniden kurulum ve `--uninstall` servisi yeniden başlatmadan bir sonraki olaydan itibaren geçerli olur. Vault ve proje kökleri dışında sessizdir; Companion verisi taşımaz. İki yoldan birinde kullanıcıya ait bir dosya varsa hiçbiri yazılmaz, kurulum hata vererek durur. `--uninstall` yalnız yönetilen iki dosyayı siler. Yolu `opencode debug paths` çıktısındaki `config` satırıyla karşılaştırın (1.19.5 ve 2.2.6'da var); OpenCode servisi başka bir `XDG_CONFIG_HOME` ile çalışıyorsa kurulumu aynı değerle yapın.
 - **Otomatik `.bak` yedeği**: Var olan herhangi bir konfigürasyon dosyası değiştirilmeden önce yanına `.bak` uzantılı yedeği kaydedilir (örn. `hooks.json.bak`, `settings.json.bak`).
 - **Antigravity `GEMINI.md` işaretçisi**: `--harness antigravity --install` çalıştırıldığında, hook kaydına ek olarak kullanıcı ana dizinindeki `~/.gemini/config/GEMINI.md` dosyasına vault konumunu ve temel yönergeleri işaret eden idempotent bir blok (`<!-- beyin-v3-bridge:start --> ... <!-- beyin-v3-bridge:end -->`) eklenir veya güncellenir. Mevcut dosya varsa önce `GEMINI.md.bak` olarak yedeklenir.
 
@@ -45,6 +49,19 @@ yeni bir harness veya hariç tutma bileşeni kaydetmez. 3.11.0'a dönüldüğün
 köprü komutları çalışabilir, ancak yeni `bridge --install` / `--uninstall` komutları
 bulunmaz. Global köprüyü de kaldırmak istiyorsanız rollback öncesinde
 `python3 beyin.py bridge --harness antigravity --uninstall` çalıştırın.
+OpenCode köprüsü 3.12.0'dan sonra geldi; onu içermeyen bir sürüme dönmeden önce
+`python3 beyin.py bridge --harness opencode --uninstall` çalıştırın. Rollback global
+eklentiyi silmez: eklenti her OpenCode oturumunda vault'taki eski
+`beyin_v3_bridge.py` dosyasını çağırmaya devam eder, eski sürüm `--harness opencode`
+seçeneğini reddeder ve eklenti sessizce boş döner (bağlam ve kayıt yok, OpenCode
+oturumu etkilenmez). Eski sürümde `bridge --harness opencode --uninstall` da
+bulunmadığından, rollback sonrası kaldırmak için önce
+`~/.config/opencode/beyin-v3-bridge.json`, sonra
+`~/.config/opencode/plugins/beyin-v3-bridge.js` dosyasını elle silin
+(`XDG_CONFIG_HOME` varsa `~/.config` yerine o dizin); `.bak` yedekleri OpenCode
+tarafından yüklenmez. Beyin güncellemesi bu global dosyaları değiştirmez;
+sürüm notu OpenCode köprüsünde değişiklik bildirirse `--install` komutunu yeniden
+çalıştırın.
 
 Pi hook JSON kullanmaz. Aynı kapsamlı bridge için vault-owned extension'ı
 `pi -e /tam/yol/Beynim/.pi/extensions/beyin-v3.ts --beyin-project-root /tam/yol/Projelerim`
@@ -67,6 +84,9 @@ python3 "/tam/yol/Beynim/beyin.py" bridge --harness claude \
 
 Bu mod dosyaları değiştirmez. Üretilen `hooks` olay gruplarını ilgili global
 dosyanın mevcut olay listelerine manuel olarak ekleyebilirsiniz.
+OpenCode için çıktı JSON'dur ama hook grubu yerine yönetilen plugin dosyasının ve
+ayar dosyasının yollarını ve üretilecek içeriklerini taşır (`plugin`, `content`,
+`settings`, `settings_content`); dosyalar yine yazılmaz.
 Önce mevcut ayarı yedekleyin. Dosyanın tamamını bu çıktıyla değiştirmeyin; diğer
 ayarları ve hook'ları koruyun. Aynı köprüyü iki kez eklemeyin; bir proje için tek
 hedef Beyin seçin. Komutlar mevcut Python ve kurulu scriptin mutlak yolunu taşır;
@@ -84,6 +104,38 @@ alındı ve 10 Ekim 2026'da aynı sürümle Windows 11'de gerçek bir oturumda d
 1.2.3'e (macOS) gömülü belge de aynı biçimi tarif eder. macOS ve Linux'ta canlı teslim
 denenmedi. CLI simülasyonu gerçek Desktop hook teslimi kanıtı değildir;
 kurulumdan sonra her istemcide aşağıdaki geri okumayı yapın.
+
+## Vault'un yeri değiştiğinde
+
+Vault'u başka klasöre ya da kullanıcı hesabına taşıdıysan önce
+[taşıma ve state bağını yenileme adımlarını](MULTI-MACHINE.md#vaultu-başka-klasöre-ya-da-hesaba-taşımak)
+tamamla. Vault kurulumu ve `--rebind-state`, genel istemci ayarlarındaki köprü
+komutlarını yeniden yazmaz. Genel komutlar eski `beyin_v3_bridge.py` ve `--vault`
+yolunu çağırmaya devam eder ([#618](https://github.com/avenoxai/avenoxbeyin/issues/618)).
+
+- Otomatik köprü kurduğun her harness için **yeni vault klasöründe** önceki
+  `bridge --install` komutunu yeniden çalıştır. Önceden seçtiğin bütün `--project-root`
+  köklerini, özel `--event` listesini ve `--context-chars` bütçesini aynı komutta koru;
+  yalnız tekrar verdiğin kökler kapsama alınır, olay ve bütçe verilmezse varsayılanları
+  kullanılır. İstemcinin kullandığı hesap ve varsa özel `CLAUDE_CONFIG_DIR` /
+  `CODEX_HOME` ile çalıştır. İlgili genel ayarda
+  Beyin köprü handler'ları yenilenir, ilgisiz ayarlar korunur. Antigravity'nin
+  `GEMINI.md` köprü işaretçisi de yeni vault yoluyla güncellenir.
+- Elle kurduysan aynı kapsam, olay ve bütçe seçenekleriyle yeni konumdan
+  `--print-config` çıktısını üret ve genel ayarda yalnız eski Beyin köprü
+  handler'larını değiştir. Dosyanın tamamını ezme.
+- Claude, Codex ve Antigravity için kayıtlı komutların yeni vault yolundan üretilen
+  `--print-config` çıktısıyla eşleştiğini kontrol et. Gerekli istemci hook güven
+  incelemesini tamamla ve yeni oturum aç. `SessionStart` bağlamı açıksa izin verilen
+  vault dışı bir projede köprünün verdiği `Beyin CLI` yolunun yeni vault'u
+  gösterdiğini de doğrula.
+  `doctor` içindeki `hook_paths: ok` yalnız vault içi hook'ları denetler; genel
+  köprünün doğru yere baktığı anlamına gelmez.
+
+Pi kullanıyorsan kişisel ayar veya takma addaki `-e` extension yolunu yeni vault'a
+yönelt; proje kapsamı, olay ve bütçe seçimlerini koru. Pi için hook JSON üretilmez.
+
+Genel ayarlar kullanıcıya aittir ve vault güncellemesinin rollback kapsamına girmez.
 
 ## Kapsam ve ayrı bütçe
 
@@ -128,6 +180,13 @@ kurulumdan sonra her istemcide aşağıdaki geri okumayı yapın.
 - Cwd önceliği: payload, Claude için `CLAUDE_PROJECT_DIR`, işlem çalışma dizini
   (Antigravity için yalnız ilk `workspacePaths` girdisi).
   Geçersiz/izin dışı cwd ve eksik oturum kimliği kayıt oluşturmaz.
+- OpenCode'da cwd oturum dizininden gelir (2.x `session.location.directory`, 1.x
+  `session.directory`; oturum okunamazsa eklentinin yüklendiği klasör, 2.x
+  `ctx.location.directory`, 1.x fabrika `directory`); sunucu süreç dizinine düşülmez.
+  Klasör bilinmiyorsa eklenti olay göndermez, köprü de cwd'siz OpenCode olayını
+  kaydetmez. Global
+  eklenti her klasörde yüklenir ama köprü vault ve proje kökleri dışında `{}`
+  döner; vault oturumları yerel eklentiyle bir kez kaydedilir.
 - Kuyruk yalnız olay/harness/oturum hash'i, sınırlı proje etiketi, proje yolunun
   hash'i ve zamanı saklar. Tam cwd, prompt ve transcript saklanmaz. Aynı adlı
   klasörler hash ile ayrılır. Proje etiketi yerel metaveridir; sır içeren klasör
@@ -205,6 +264,7 @@ Otomatik kaldırma (`--uninstall`):
 - İlgili global ayar dosyasını (`hooks.json` veya `settings.json`) bularak yalnızca `beyin_v3_bridge` ile ilgili hook tanımlarını siler; diğer tüm kullanıcı ayarlarını ve özel hook'larını korur.
 - Değişiklik öncesinde var olan dosyanın `.bak` yedeğini alır.
 - Antigravity için `~/.gemini/config/GEMINI.md` içerisindeki köprü bloğunu (`<!-- beyin-v3-bridge:start --> ... <!-- beyin-v3-bridge:end -->`) güvenle temizler; dosya başka metin içermiyorsa dosyayı da siler.
+- OpenCode için önce `~/.config/opencode/beyin-v3-bridge.json`, sonra `~/.config/opencode/plugins/beyin-v3-bridge.js` dosyasını siler. Yönetilen işaretçiyi taşımayan dosyaya dokunmaz; kullanıcıya ait global eklentiler korunur. Çalışan servis eski modülü bellekte tutsa da ayar dosyası olmadan köprüyü çağırmaz.
 
 Manuel kaldırma durumunda, global ayardan yalnız eklenen köprü handler'larını kaldırıp yeni oturum açın;
 diğer handler'ları koruyun. Geçici susturma için manual profil kullanılabilir;

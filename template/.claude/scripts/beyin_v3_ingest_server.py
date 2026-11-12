@@ -268,7 +268,7 @@ class IngestHandler(BaseHTTPRequestHandler):
             })
         except ValueError as exc:
             self._send_json(400, {"error": "bad_request", "message": str(exc)})
-        except Exception as exc:
+        except Exception:
             self._send_json(500, {"error": "write_failed", "message": "Capture could not be saved"})
 
     def log_message(self, format, *args):

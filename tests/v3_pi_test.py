@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 
-from v3_package_helpers import ROOT, build_package, install, isolated_env
+from v3_package_helpers import ROOT, build_package, install, isolated_env, without_hook_clock
 
 BUN = shutil.which('bun')
 
@@ -140,7 +140,7 @@ class PiHarnessTest(unittest.TestCase):
             result = self.hook('UserPromptSubmit', harness=harness, prompt='klima kargo')
             self.assertEqual(result.returncode, 0, result.stderr)
             outputs.append(json.loads(result.stdout)['hookSpecificOutput']['additionalContext'])
-        self.assertEqual(*outputs)
+        self.assertEqual(*(without_hook_clock(text) for text in outputs))
         self.assertIn('notes/klima.md', outputs[0])
         self.assertNotIn('PRIVATE_PI_SENTINEL', outputs[0])
         self.assertNotIn('UNTRUSTED_PI_SENTINEL', outputs[0])
@@ -166,6 +166,11 @@ class PiHarnessTest(unittest.TestCase):
                     for event in ('SessionStart', 'UserPromptSubmit'):
                         outputs = [json.loads(self.hook(event, harness=h, prompt='klima kargo').stdout)
                                    for h in ('claude', 'codex', 'pi')]
+                        # Compare the complete payload while ignoring only its receipt clock.
+                        for output in outputs:
+                            specific = output.get('hookSpecificOutput', {})
+                            if 'additionalContext' in specific:
+                                specific['additionalContext'] = without_hook_clock(specific['additionalContext'])
                         self.assertEqual(outputs[0], outputs[1])
                         self.assertEqual(outputs[0], outputs[2])
 
@@ -184,8 +189,8 @@ class PiHarnessTest(unittest.TestCase):
             text = json.loads(result.stdout)['hookSpecificOutput']['additionalContext']
             outputs.append(text.replace('harness=' + harness, 'harness=CLIENT')
                            .replace('--harness ' + harness, '--harness CLIENT'))
-        self.assertEqual(outputs[0], outputs[1])
-        self.assertEqual(outputs[0], outputs[2])
+        self.assertEqual(without_hook_clock(outputs[0]), without_hook_clock(outputs[1]))
+        self.assertEqual(without_hook_clock(outputs[0]), without_hook_clock(outputs[2]))
         events = self.queued()
         self.assertEqual({e['harness'] for e in events}, {'claude', 'codex', 'pi'})
         self.assertEqual(len({e['session'] for e in events}), 1)
