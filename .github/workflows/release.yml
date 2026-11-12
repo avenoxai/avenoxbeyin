@@ -75,8 +75,9 @@ jobs:
   verify:
     needs: build
     runs-on: ${{ matrix.os }}
-    # Allow the full Windows suite and package lifecycle to finish on slower runners.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 40 || 15 }}
+    # Full contracts plus package upgrade/rollback exceeded 15/40 minutes.
+    # Preserve the checks and allow the complete lifecycle on slower runners.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:

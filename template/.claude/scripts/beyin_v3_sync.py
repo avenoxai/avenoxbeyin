@@ -1106,7 +1106,7 @@ class SyncEngine:
             self._refresh_homepages(result)
         return result
 
-    def _refresh_homepages(self, result):
+    def _refresh_homepages(self, result, *, on_write=None):
         if getattr(self, '_homepage_busy', False):
             return
         self._homepage_busy = True
@@ -1115,7 +1115,7 @@ class SyncEngine:
                 sys.path.insert(0, _MODULE_DIR)
             from beyin_v3_homepages import reconcile
             try:
-                outcome = reconcile(self)
+                outcome = reconcile(self, on_write=on_write)
             except (OSError, ValueError, NoteConflict, sqlite3.Error) as exc:
                 # Source writes have already succeeded; refresh issues must not undo that result.
                 outcome = {'updated': 0, 'conflicts': [], 'warnings': [{'reason': str(exc)}]}
@@ -1195,6 +1195,19 @@ class SyncEngine:
             old_payloads = dict(db.execute('SELECT id, payload FROM records'))
             cache = _SignatureCache(db, old_sources, old_payloads, full=full)
             records, warnings, conflicts = self._scan(cache, view_paths, alias_identities)
+            # A page's own signature cannot authorize copies from changed sources.
+            # Recompute its effective policy even when its Markdown was a cache hit.
+            if _MODULE_DIR not in sys.path:
+                sys.path.insert(0, _MODULE_DIR)
+            from beyin_v3_homepages import is_projection, project_records
+            if any(is_projection(record) if record is not None else
+                   ('"workspace_homepage"' in old_payloads[id] or 'beyin-field:' in old_payloads[id]
+                    or 'beyin-homepage-create:' in old_payloads[id]) for id, record in records.items()):
+                hydrated = [record if record is not None else json.loads(old_payloads[id])
+                            for id, record in records.items()]
+                for record in project_records(self.store, hydrated):
+                    if is_projection(record):
+                        records[record['id']] = record
             canonical_view_paths.update(self.discovered_receipt_views)
             warnings.extend(state_regression_warnings)
             warnings.extend(issue for issue in receipt_warnings if issue not in warnings)
@@ -1395,14 +1408,19 @@ class SyncEngine:
         if _MODULE_DIR not in sys.path:
             sys.path.insert(0, _MODULE_DIR)
         previous = getattr(self, '_homepage_busy', False)
+        def finish(result, checkpoint):
+            self._homepage_busy = False
+            try:
+                self._refresh_homepages(result, on_write=checkpoint)
+                if result['sha256'] != self.note_read(request['source'])['sha256']:
+                    raise NoteConflict('external edit detected during homepage refresh; reread source')
+            finally:
+                self._homepage_busy = True
         self._homepage_busy = True
         try:
-            result = note_apply_edits(self, request)
+            result = note_apply_edits(self, request, finalize=finish if not previous else None)
         finally:
             self._homepage_busy = previous
-        if not previous:
-            self._refresh_homepages(result)
-            result['sha256'] = self.note_read(request['source'])['sha256']
         return result
 
     def note_create(self, source, text, metadata=None, idempotency_key=None, evidence_refs=None):

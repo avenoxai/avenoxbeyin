@@ -29,9 +29,13 @@ yeniden kurma isteği çakışma verir. Mevcut sayfanın başlığı ve yazılar
 korunur; seçilen bilgiler gövdenin sonuna yeni bir bölüm olarak eklenir. Yeni
 sayfa istenen başlıkla açılır. Ana sayfanın frontmatter'ında
 `workspace_homepage: true` açıkça seçilir.
-Proje adı taşımayan mevcut notlar için `project:null` açıkça verilir; farklı
-`project` metadata'sına veya görünürlüğe sahip notlar aynı sayfaya bağlanmaz.
-Klasörlerden gelen etkin proje kapsamına ilişkin açık eksik aşağıda belirtilmiştir.
+Proje alanı taşımayan sayfa için `project:null` açıkça verilir; bu istek değeri
+notun frontmatter'ına `null` alanı eklemez. Sayfa ve kaynak aynı etkin proje
+kapsamında ve görünürlükte olmalıdır. Etkin kapsam, dolu `project` alanından,
+yoksa mevcut klasör eşlemelerinden gelir. Açık alan önceliği, en uzun klasör
+eşleşmesi ve engellenmiş klasör kuralları mevcut `record_scope` ile aynıdır.
+İki taraf da gerçekten kapsamsızsa bağlanabilir; `shared_unscoped` başka
+projedeki bir kaynağı ana sayfaya bağlama izni vermez.
 Komut ana sayfayı oluşturmadan önce kaynakları güncel dizine alır; ayrıca
 `sync` çalıştırmak gerekmez.
 Biçimi geçersiz istek eşitlemeyi başlatmadan reddedilir. Geçerli isteğin
@@ -84,9 +88,21 @@ sırasında güncel dosyalar yeniden okunur. Kişisel metin güncelleme aralığ
 alınmaz. Esas kayıt yazımı mevcut kilit, SHA-256 kontrolü, yedek ve indeks geri
 okumasını kullanır. Farklı bilgiler birleşir. Aynı bilgi iki tarafta aynı değere
 getirildiyse seçim gerekmez. İki farklı değer varsa `workspace_homepages.conflicts`
-yalnız o bilgiyi, iki değeri ve önceki ortak değeri döndürür; diğer bilgiler
-ilerler. Kullanıcı hangi değeri seçtiğinde, yalnız bu hücre veya esas kayıttaki
-bilgi seçilen değere getirilir ve normal eşitleme çalıştırılır.
+`reason:choose_value` ile yalnız o bilgiyi, iki değeri ve önceki ortak değeri
+döndürür; diğer bilgiler ilerler. Kullanıcı seçtiği değeri yalnız bu hücreye
+veya esas kayıttaki bilgiye yazar ve normal eşitleme çalıştırılır.
+
+Salt okunur hücre elle değiştirildiyse `reason:read_only_field`, kaynak ve
+sayfa değeri döner; bu yanıtta `base` bulunmaz. Kaynak yazılmaz; sayfa hücresi
+güncel kaynak değerine geri getirilir. Normal `note-edit` sonucunun üst düzey
+`written` olması yalnız not yazımını doğrular. İlgili hücrenin eşitlendiğini
+bildirmeden önce `workspace_homepages.conflicts` ve `warnings` alanlarını ve
+güncel değeri kontrol edin.
+
+Oluşturma sırasında eski SHA için sayfayı yeniden okuyup isteği güncelleyin.
+Farklı seçimle zaten bağlı sayfayı yeniden oluşturmak desteklenmez; aynı
+isteği tekrar denemek bunu çözmez. Mevcut seçimleri koruyun ve ayrı sayfa gibi
+desteklenen bir yol seçin. Aynı seçimle tekrar eski sayfayı yeniden biçimlendirmez.
 
 Kesinti kaynak yazımıyla sayfa yazımı arasına gelirse hücredeki önceki ortak
 değer korunur. Sonraki eşitleme kaynakla sayfanın aynı yeni değerde olduğunu
@@ -95,9 +111,13 @@ Tekrar eşitleme değişmemiş Markdown dosyalarını yazmaz.
 
 İlk adayın sınırları: yalnız mevcut tek satırlık skaler `facts` değerleri ve
 insan notları; görevler, listeler ve nesneler ayrı yazıcı davranışı gerektirir.
-Sayfa ve kayıt aynı `project` metadata'sını ve görünürlüğü taşımalı; üretilmiş
-kayıt, değişmiş kimlik ve indeks dışı hedef yazılmaz. Güven denetiminin bazı
-işaretleri eksiktir; aşağıdaki açık bulgulara bakın. Salt okunur hücrenin elle
+Bir ana sayfa başka ana sayfanın esas kaynağı seçilemez; doğrudan esas insan
+notuna bağlanın. Önceden kalmış veya elle hazırlanmış iç içe bağlar da okuma
+sırasında güvenli biçimde dışlanır.
+Sayfa ve kayıt aynı etkin proje kapsamını ve görünürlüğü taşımalı; üretilmiş
+kayıt, değişmiş kimlik ve indeks dışı hedef yazılmaz. `trust:untrusted`,
+`trusted:false`, `status:untrusted` ve `kind:untrusted` hem kaynakta hem sayfada
+oluşturma, tekrar ve eşitlemede reddedilir. Salt okunur hücrenin elle
 değiştirilmesi kaynak yazımı doğurmaz. Normal not yazımı, esas kayda geri yazarken
 frontmatter'ı mevcut JSON biçimine çevirebilir; gövde ve diğer bilgilerin
 içeriği korunur. Eşitleme olmayan salt dosya açma olayı tetikleyici değildir.
@@ -105,22 +125,51 @@ Obsidian'da değiştirme sonrası olağan eşitleme gerekir. Gerçek editörün 
 yazımı mevcut `note-edit` SHA kontrolünün sınırlarına tabidir; çok dosyalı atomik
 bir işlem iddiası yoktur.
 
-## Açık inceleme bulguları
+## Kaynak politikası sonradan daralırsa
 
-Bu sürümde aşağıdaki hatalar henüz düzeltilmedi. Mevcut
-başarılı test kapsamı bu açıkları kapatan bir güvenlik kabulü değildir.
+Bağlı kaynak izleri indeksleme ve okumada yeniden doğrulanır; ana sayfanın
+kendi dosyası değişmemiş olsa da önceki kopya eski izinle kullanılamaz. Kaynak
+gizli, güvenilmeyen, başka veya engellenmiş proje kapsamında, eksik ya da
+doğrulanamayacak kadar eskiyse bağlı sayfa arama ve bağlamdan çıkarılır. Bu
+tüm sayfaya uygulanan daraltmadır; başlık, gövde ve kişisel not dosyada kalır.
+Kaynak tekrar uygun hale gelip eşitlenince sayfa yeniden seçilebilir.
 
-- **P1 · Güven işaretleri:** Ana sayfa kapısı yalnız `trust: untrusted`
-  denetliyor. Depodaki diğer güvenilmeyen kayıt işaretleri (`trusted: false`,
-  `status: untrusted`, `kind: untrusted`) hem kaynakta hem sayfada aynı biçimde
-  reddedilmeli. Mevcut denetim bu değerlerle kabul veriyor; güvenilmeyen bilgi
-  güvenilir sayfaya taşınabilir.
-- **P1 · Etkin proje kapsamı:** Ana sayfa ile kaynağın yalnız `project`
-  metadata'sı karşılaştırılıyor. Metadata'sı boş iki not, klasör eşlemelerinde
-  farklı projelere ait olabilir. Oluşturma, tekrar ve yenileme mevcut
-  `record_scope` kuralını, engellenmiş klasörler dahil, kullanmalı.
-- **P2 · Anahtarlı yazma tekrarı:** Düzenlenebilir ana sayfada `idempotency_key`
-  içeren bir `note-edit` sonrası aynı istek arada kullanıcı yazımı olmadan
-  çakışabiliyor. Sayfanın hücre tabanı yenilenirken son hash sonuçta değişiyor,
-  tamamlanma kaydı önceki hash'te kalıyor. Son doğrulanmış hash kaydedilmeli;
-  gerçek araya giren kullanıcı düzenlemeleri yine korunmalı.
+Kaynak yalnız `remote_allowed:false` olmuşsa doğrulanan sayfa yerel aramada
+kalabilir, fakat ana sayfanın başlığı ve alıntıları da uzak bağlama gönderilmez.
+Kaynağın politikası henüz indekslenmemişse sayfa doğrulanana kadar yerel
+okumadan da çıkarılır. İki yönlü eşitleme dışarı gönderim politikasını da
+karşılaştırır; farklı politikalar arasında yeni değer aktarılmaz. Yerel
+eşitlemeyi sürdürmek için kullanıcı ana sayfasını da normal not yazıcısıyla
+`remote_allowed:false` yapabilir; komut kaynağın politikasını gevşetmez.
+
+Bu kısıt indeks, arama, kaynak anlık görüntüsü, geçmiş ve Jev'in manuel/otomatik
+bağlam seçimlerinde uygulanır. Jev inceleme ve yanıt doğrulama dahil gerçek
+gönderimden önce, paketleme ve kuyruk sonrasında bağlı kaynak hash'leri ve
+kapsam yeniden kontrol edilir. Bir kontrolün geçmesi sonraki politikayı
+kalıcı olarak yetkilendirmez.
+
+## Regresyon doğrulaması ve açık kabul sınırları
+
+`tests/v3_homepage_boundaries_test.py` normal ve temiz kurulu CLI'da dört
+güven işaretini, kaynak/sayfa kapılarını, oluşturma/tekrar/iki yönlü eşitlemeyi,
+klasör kapsamı değişimini ve engellenmiş klasörleri sınar. Eşit etkin kapsam
+ve açık alan önceliği çalışmaya devam eder. Önceki aday bu regresyonlarda
+başarısızdı; düzeltme aynı testlerle doğrulanır.
+
+Anahtarlı `note-edit`, hücre tabanı yenilendikten sonraki son hash'i yazıcı
+kilidi altında tamamlanma kaydına alır. Aynı istek arada kullanıcı yazımı yoksa
+baytları ve mtime'ı koruyarak başarıyla tekrarlanır. Gerçek kullanıcı yazımı
+sonrasında aynı anahtar yeniden uygulanmaz, çakışma döner. Kesintiden sonraki
+ilk toparlanmada kaynak için de bayt ve mtime korunumu ayrıca ölçülür.
+
+`tests/v3_homepage_policy_test.py`, [kaynak politikası incelemesindeki](https://github.com/avenoxai/avenoxbeyin/pull/647#issuecomment-6826486112)
+önceden kopyalanmış değer örneğini eski adayda başarısız olarak üretir. Normal
+ve kurulu sürümde politika daralması öncesi/sonrası yerel arama, indeks,
+kaynak anlık görüntüsü ve manuel/otomatik uzak kartlar sınanır. Dört Jev
+gönderim yolunda gerçek istek oluşturulurken veya gönderim kuyruğunda politika
+daraltılır; sentetik sağlayıcı aktarımına sıfır çağrı beklenir. Bunlar gerçek
+yerel dosyalar ve ürün koduyla, dış sağlayıcı yerine test aktarımıyla çalışır.
+
+Bu kontroller konuşmalı otomatik kurulumun veya gerçek Obsidian arayüzünün
+uçtan uca kabulü değildir. Çok dosyalı atomik işlem garantisi yoktur. Platform
+CI sonucu ilgili son commit için ayrıca değerlendirilmelidir.

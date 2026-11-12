@@ -37,8 +37,16 @@ def _fresh(store, records):
             path = store.vault_root / store._source(record['source'])
             if hashlib.sha256(path.read_bytes()).hexdigest() != record['source_sha256']:
                 return False
+            for dependency in record.get('homepage_dependencies', []):
+                path = store.vault_root / store._source(dependency['source'])
+                if hashlib.sha256(path.read_bytes()).hexdigest() != dependency['sha256']:
+                    return False
+            if 'homepage_scope_sha256' in record:
+                from beyin_v3_homepages import scope_stamp
+                if scope_stamp(store.vault_root) != record['homepage_scope_sha256']:
+                    return False
         return True
-    except (ValueError, OSError, KeyError):
+    except (ValueError, OSError, KeyError, TypeError):
         return False
 
 
@@ -75,7 +83,7 @@ MANUAL_POOL = 16
 MANUAL_EXCERPT = 800
 
 
-def _packaged(store, query, cards, project, versions, facets, mode, transport):
+def _packaged(store, query, cards, project, versions, facets, mode, transport, *, source_guard=None):
     """One advisor call, or up to client.PACKAGE_LIMIT when the pool is over one request's budget.
 
     Sixteen ordinary notes with 800-character excerpts exceed the default 24,000-character
@@ -88,13 +96,13 @@ def _packaged(store, query, cards, project, versions, facets, mode, transport):
     if parts is None or len(parts) == 1:
         # None: over the package limit; evaluate reports budget_exceeded before any call.
         advice = client.evaluate(store.state_dir, query, cards, scope='project:' + project,
-                                 source_versions=versions, facets=facets, transport=transport)
+                                 source_versions=versions, facets=facets, transport=transport, source_guard=source_guard)
         return dict(advice, packages=0 if parts is None else 1)
 
     def ask(part):
         return client.evaluate(store.state_dir, query, part, scope='project:' + project,
                                source_versions={c['id']: versions[c['id']] for c in part},
-                               facets=facets, transport=transport)
+                               facets=facets, transport=transport, source_guard=source_guard)
     # A local single-worker server (laya) would only queue parallel requests.
     started = time.monotonic()
     with ThreadPoolExecutor(max_workers=1 if mode.get('provider') == 'laya' else len(parts)) as pool:
@@ -153,7 +161,11 @@ def advise_context(store, query, *, project, audience='internal', statuses=None,
     # Semicolon-separated subrequests are independent facets, not fabricated topics.
     facets = [part.strip() for part in query.split(';') if part.strip()]
     facets = facets if 1 <= len(facets) <= 3 else [query]
-    advice = _packaged(store, query, cards, project, before, facets, mode, transport)
+    if not _fresh(store, records):
+        result['jev'] = _clear({'mode': mode['mode']}, 'source_or_dependency_changed')
+        return result
+    advice = _packaged(store, query, cards, project, before, facets, mode, transport,
+                       source_guard=_source_guard(store, records, project))
     current = store.candidates(query, **params, limit=MANUAL_POOL)
     if before != _signature(current) or not _fresh(store, records):
         result = store.retrieve(query, **params, limit=limit, budget_chars=budget_chars)
@@ -352,9 +364,11 @@ def auto_context(store, harness, query, context, *, budget_chars, timeout_cap=2.
     except (ValueError, OSError):
         client.log_event(store.state_dir, dict(outcome, outcome='skipped_sensitive'))
         return context
+    if not _fresh(store, records):
+        return store.context_for(harness, query, project=project, strict=True, budget_chars=budget_chars)
     advice = client.evaluate(store.state_dir, query[:AUTO_PROMPT], cards, scope='project:' + project if project else 'auto', purpose='auto_context',
                              source_versions={k: _signature([r])[r['id']] for k, r in keys.items()},
-                             transport=transport, timeout_cap=timeout_cap)
+                             transport=transport, timeout_cap=timeout_cap, source_guard=_source_guard(store, records, project))
     # Reapply index-only permissions/scope/supersession too, even on transport failure.
     current = _eligible(store, project)
     surviving = [current[r['id']] for r in records if r['id'] in current]
@@ -398,6 +412,20 @@ def _eligible(store, project):
     eligible = store._retrieve('', project=project, audience='internal',
                                limit=100000, budget_chars=10000000, snapshot=True)['records']
     return {r['id']: r for r in eligible if not r.get('text_truncated')}
+
+
+def _source_guard(store, records, project):
+    if not any('homepage_dependencies' in r or 'homepage_scope_sha256' in r for r in records):
+        return lambda: _fresh(store, records)
+    versions = _signature(records)
+
+    def ready():
+        current = _eligible(store, project)
+        return (all(r['id'] in current for r in records) and
+                versions == _signature([current[r['id']] for r in records]) and
+                _fresh(store, records))
+
+    return ready
 
 
 def _verified_evidence(store, evidence, project, by_id=None):
@@ -458,7 +486,7 @@ def review_candidate(store, proposal, *, project, transport=None):
     result = client.evaluate(store.state_dir, proposal['claim'], [card], scope='project:' + project,
                              source_versions=versions, purpose='evidence_review',
                              facets=['Do the exact quotes support the entire claim in its original scope?'],
-                             transport=transport)
+                             transport=transport, source_guard=_source_guard(store, refs, project))
     try:
         now = _verified_evidence(store, evidence, project)
         if versions != _signature(now):
@@ -527,7 +555,7 @@ def verify_answer(store, claims, *, project, transport=None):
             if (not isinstance(cite, dict) or set(cite) != {'record_id', 'source_sha256', 'quote'}
                     or any(not isinstance(v, str) or not v.strip() for v in cite.values())):
                 raise ValueError('invalid_citation')
-    results, items, snapshots = [], {}, {}
+    results, items, snapshots, references = [], {}, {}, {}
     by_id = _eligible(store, project)  # one full-index pass per phase, not per claim
     for index, claim in enumerate(claims):
         item = dict(index=index, verdict='insufficient', mechanical_verified=False, diagnostics=[])
@@ -559,6 +587,7 @@ def verify_answer(store, claims, *, project, transport=None):
             item.update(verdict='degraded', diagnostics=['context_sensitive'])
             continue
         snapshots[index] = _signature(refs)
+        references[index] = refs
         items[index] = dict(id='k' + str(index), claim=claim['text'],
                             quotes=[c['quote'] for c in claim['citations']], context=context)
     if items:
@@ -567,7 +596,8 @@ def verify_answer(store, claims, *, project, transport=None):
         def ask(indexes):
             advice = client.evaluate(store.state_dir, '', [items[i] for i in indexes], scope='project:' + project,
                                      source_versions={str(i): snapshots[i] for i in indexes},
-                                     purpose='answer_check', transport=transport)
+                                     purpose='answer_check', transport=transport,
+                                     source_guard=_source_guard(store, [r for i in indexes for r in references[i]], project))
             if 'budget_exceeded' in advice.get('diagnostics', []) and len(indexes) > 1:
                 # The budget is checked before any network call; halve and retry.
                 half = len(indexes) // 2

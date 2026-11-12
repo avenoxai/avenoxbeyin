@@ -28,8 +28,9 @@ jobs:
   stdlib-contracts:
     name: ${{ matrix.os }} / Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
-    # Allow the full Windows suite and package lifecycle to finish on slower runners.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 40 || 15 }}
+    # The full suite exceeded 15 minutes on Linux/macOS; keep all assertions
+    # and give every platform enough time to complete on slower runners.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:

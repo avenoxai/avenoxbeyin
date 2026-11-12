@@ -99,7 +99,9 @@ Kaynak nottaki düzenleme sayfaya, sayfadaki düzenlenebilir hücre ise doğru
 kaynak nota geçer. Diğer kayıt ve özgün davet dosyası korunur. Betik, kaynak
 yazıldıktan sonra eşitlemeyi yalnız örnek amaçlı bir kancayla keser. Sonraki
 `sync`, kaynağı yeniden yazmadan sayfayı tamamlar; arada güncellenen en son
-kişisel notu korur. Gerçek ürünün bir kesinti kancası yoktur.
+kişisel notu korur. Betik tam bu ilk toparlanmanın öncesi/sonrasında esas
+notun baytlarını ve sabitlenmiş mtime'ını karşılaştırır; aynı baytların tekrar
+yazılması da testi bozar. Gerçek ürünün bir kesinti kancası yoktur.
 
 Kesinti adımında önce sayfadaki 9 Nisan değeri 11 Nisan yapılır. Esas not 11
 Nisan olarak yazıldıktan, sayfanın eşitleme kaydı tamamlanmadan süreç
@@ -114,8 +116,9 @@ hem de değiştirilme zamanını korur.
 
 Bu son kontrol `homepage-create` tekrarını da içerir: aynı seçim `unchanged`
 döner ve kişisel sayfa düzenini yeniden yazmaz. Anahtarlı `note-edit`
-tekrarının ayrı açık hatası [özellik belgesinde](../../WORKSPACE-HOMEPAGES.md#açık-inceleme-bulguları)
-yer alır; buradaki yazmasız `sync` kabulü o hatayı kapatmaz.
+tekrarı, son hash ve gerçek kullanıcı düzenlemesi için ayrı
+[regresyon testleri](../../WORKSPACE-HOMEPAGES.md#regresyon-doğrulaması-ve-açık-kabul-sınırları)
+bulunur; bu örnekteki yazmasız `sync` kabulü o ayrı kontrolün yerine geçmez.
 
 ## Derslerim: genel gezinme sayfası
 

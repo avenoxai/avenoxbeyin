@@ -6,6 +6,7 @@ No user vault, home directory, network, or model is consulted. The optional
 """
 import argparse
 import json
+import os
 from pathlib import Path
 import posixpath
 import re
@@ -146,8 +147,13 @@ def career(example):
     source_bytes = (example.vault / evening).read_bytes()
     assert '11 Nisan 2099' in source_bytes.decode('utf-8')
     example.editor(home, 'yol süresini ve adresi sor', 'adresi ve giriş kapısını sor')
+    source_path = example.vault / evening
+    # A fixed old timestamp detects a same-byte rewrite even on coarse filesystems.
+    os.utime(source_path, ns=(1_600_000_000_000_000_000,) * 2)
+    source_mtime = source_path.stat().st_mtime_ns
     example.cli('sync')
-    assert source_bytes == (example.vault / evening).read_bytes()
+    assert source_bytes == source_path.read_bytes()
+    assert source_mtime == source_path.stat().st_mtime_ns
     assert 'adresi ve giriş kapısını sor' in example.read(home)['content']
     example.save('career-recovered.md', home)
     example.replay()

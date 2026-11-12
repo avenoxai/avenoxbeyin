@@ -10,6 +10,7 @@ import posixpath
 import re
 from urllib.parse import quote
 
+from beyin_v3 import BLOCKED_SCOPE, _trusted_record, read_project_scopes, record_scope
 from beyin_v3_notes import NoteConflict, locked, source_path, require_utf8_values
 from beyin_v3_sync import parse, render
 
@@ -68,12 +69,107 @@ def _same(left, right):
     return _json(left) == _json(right)
 
 
-def _eligible(home, source):
-    # No cross-project/private/untrusted promotion through a homepage.
-    return (home.get('project') == source.get('project') and
+def _writable(metadata):
+    return (_trusted_record(metadata) and not metadata.get('generated') and
+            metadata.get('kind') not in ('task', 'receipt', 'receipt-index'))
+
+
+def _scope(metadata, source, scopes):
+    return record_scope(dict(metadata, source=source), scopes or {'folders': []})
+
+
+def _eligible(home, source, page, path, scopes, *, check_remote=True):
+    # Use the same explicit-project precedence and blocked-folder rules as retrieval.
+    owner = _scope(home, page, scopes)
+    source_owner = _scope(source, path, scopes)
+    return (_writable(home) and _writable(source) and not is_projection(source) and owner is not BLOCKED_SCOPE and
+            source_owner is not BLOCKED_SCOPE and source_owner == owner and
             home.get('visibility', 'internal') == source.get('visibility', 'internal') and
-            source.get('trust') != 'untrusted' and not source.get('generated') and
-            source.get('kind') not in ('task', 'receipt', 'receipt-index'))
+            (not check_remote or _remote(home) == _remote(source)))
+
+
+def _remote(record):
+    from beyin_v3_jev import remote_allowed
+    return remote_allowed(record)
+
+
+def is_projection(record):
+    return (record.get('workspace_homepage') is True or
+            '<!-- beyin-field:' in record.get('text', '') or
+            CREATION.search(record.get('text', '')) is not None)
+
+
+def scope_stamp(root):
+    path = root / '.beyin-projects.json'
+    if path.is_symlink():
+        raise ValueError('project scope file must not be redirected')
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+
+
+def project_records(store, records, available=None):
+    """Narrow derived copies at index/read time without rewriting human Markdown.
+
+    A stale or missing dependency withholds the whole page until sync verifies it.
+    Local-only dependencies still allow local retrieval, but never remote context.
+    """
+    if not any(is_projection(record) for record in records):
+        return records
+    sources = {r['source']: r for r in (available if available is not None else records)}
+    memo, active = {}, set()
+
+    def protect(record):
+        if not is_projection(record):
+            return record
+        page = record['source']
+        if page in memo:
+            return memo[page]
+        result = dict(record)
+        try:
+            if page in active or len(active) >= 64:
+                raise ValueError('cyclic homepage dependency')
+            active.add(page)
+            raw = (store.vault_root / store._source(page)).read_bytes()
+            if hashlib.sha256(raw).hexdigest() != record['source_sha256']:
+                raise ValueError('stale homepage')
+            home, body = parse(raw.decode('utf-8'))
+            # Discard prior index-only restrictions before deriving current ones.
+            for key in ('project', 'trust', 'trusted', 'status', 'remote_allowed', 'sensitivity'):
+                result.pop(key, None)
+                if key in home:
+                    result[key] = home[key]
+            result['visibility'] = home.get('visibility', 'internal')
+            result['kind'] = home.get('kind', 'note')
+            matches = list(CELL.finditer(body))
+            if not matches or body.count('<!-- beyin-field:') != len(matches):
+                raise ValueError('missing or malformed homepage bindings')
+            scopes = read_project_scopes(store.vault_root)
+            dependencies = {}
+            for match in matches:
+                binding = json.loads(match[1])
+                source = store._source(binding['source'])
+                dependency = sources.get(source)
+                if (dependency is None or source == page or
+                        dependency['id'] != binding['record_id'] or
+                        hashlib.sha256((store.vault_root / source).read_bytes()).hexdigest() != dependency['source_sha256']):
+                    raise ValueError('missing, changed or stale homepage dependency')
+                dependency = protect(dependency)
+                if not _eligible(home, dependency, page, source, scopes, check_remote=False):
+                    raise ValueError('homepage dependency policy narrowed')
+                if not _remote(dependency):
+                    result['remote_allowed'] = False
+                dependencies[source] = dict(source=source, sha256=dependency['source_sha256'])
+                dependencies.update({d['source']: d for d in dependency.get('homepage_dependencies', [])})
+            result['homepage_dependencies'] = [dependencies[key] for key in sorted(dependencies)]
+            result['homepage_scope_sha256'] = scope_stamp(store.vault_root)
+        except (ValueError, KeyError, TypeError, OSError, UnicodeError):
+            # Keep the original file and its audit history; gate its derived copy.
+            result.update(trusted=False, remote_allowed=False)
+        finally:
+            active.discard(page)
+        memo[page] = result
+        return result
+
+    return [protect(record) for record in records]
 
 
 def _source_id(source, metadata):
@@ -145,6 +241,7 @@ def create(engine, request):
 
 
 def _create_locked(engine, request):
+    scopes = read_project_scopes(engine.root)
     page = request['source']
     expected = request['expected_sha256']
     selections = request['selections']
@@ -156,8 +253,8 @@ def _create_locked(engine, request):
         if len(matches) != 1 or matches[0] != fingerprint:
             raise NoteConflict('homepage already has a different creation selection')
         home, _ = parse(target['content'])
-        if (home.get('workspace_homepage') is not True or home.get('trust') == 'untrusted' or
-                home.get('generated') or ('project' in request and
+        if (home.get('workspace_homepage') is not True or not _writable(home) or
+                ('project' in request and
                 home.get('project') != request['project'])):
             raise NoteConflict('homepage configuration changed')
         expected_cells = {(part['source'], field['field'], field['editable'])
@@ -181,10 +278,11 @@ def _create_locked(engine, request):
             current = engine.note_read(source)
             if not current['exists']:
                 raise NoteConflict('selected source is missing')
-            metadata, _ = parse(current['content'])
+            metadata, source_body = parse(current['content'])
+            metadata = dict(metadata, text=source_body)
             if (_source_id(source, metadata) != indexed[source] or
                     bindings[(source, field, editable)].get('record_id') != indexed[source] or
-                    not _eligible(home, metadata)):
+                    not _eligible(home, metadata, page, source, scopes)):
                 raise NoteConflict('selected source identity or scope changed')
             _fact(metadata, field)
         return {'status': 'unchanged', 'source': page, 'sha256': target['sha256']}
@@ -194,7 +292,7 @@ def _create_locked(engine, request):
         home, body = parse(target['content'])
         if home.get('workspace_homepage') is True or '<!-- beyin-field:' in target['content']:
             raise NoteConflict('homepage already has selections')
-        if home.get('trust') == 'untrusted' or home.get('generated') or home.get('kind') in ('task', 'receipt', 'receipt-index'):
+        if not _writable(home):
             raise ValueError('target must be a writable human note')
         if home.get('project') is None and 'project' not in request:
             raise ValueError('existing homepage without a project requires explicit project (or null)')
@@ -202,12 +300,14 @@ def _create_locked(engine, request):
             raise ValueError('homepage project differs from the selected project')
         if request.get('title') is not None and home.get('title') not in (None, request['title']):
             raise ValueError('homepage title differs from the selected title')
-        if home.get('project') is None and 'project' in request:
+        if home.get('project') is None and request.get('project') is not None:
             home['project'] = request['project']
         if home.get('title') is None and request.get('title') is not None:
             home['title'] = request['title']
     else:
-        home, body = {'title': request['title'], 'project': request['project'], 'visibility': 'internal'}, ''
+        home, body = {'title': request['title'], 'visibility': 'internal'}, ''
+        if request['project'] is not None:
+            home['project'] = request['project']
     home['workspace_homepage'] = True
     with engine.store._connect() as db:
         indexed = {row[0]: row[1] for row in db.execute('SELECT source,id FROM markdown_sources')}
@@ -220,8 +320,9 @@ def _create_locked(engine, request):
         if not snapshot['exists']:
             raise ValueError('selected source is missing')
         metadata, source_body = parse(snapshot['content'])
+        metadata = dict(metadata, text=source_body)
         record_id = _source_id(source, metadata)
-        if record_id != indexed[source] or not _eligible(home, metadata):
+        if record_id != indexed[source] or not _eligible(home, metadata, page, source, scopes):
             raise ValueError('selected source identity or scope changed')
         if source not in groups:
             relative = posixpath.relpath(source, posixpath.dirname(page) or '.')
@@ -260,8 +361,9 @@ def _edit(engine, snapshot, old, new):
                                  edits=[dict(old=old, new=new)]))
 
 
-def reconcile(engine):
+def reconcile(engine, *, on_write=None):
     """Re-read live files for every cell; report only divergent fields for choice."""
+    scopes = read_project_scopes(engine.root)
     with engine.store._connect() as db:
         indexed = {row[0] for row in db.execute('SELECT source FROM markdown_sources')}
         records = (json.loads(row[0]) for row in db.execute('SELECT payload FROM records'))
@@ -271,7 +373,7 @@ def reconcile(engine):
         try:
             snapshot = engine.note_read(page)
             home, _ = parse(snapshot['content'])
-            if home.get('workspace_homepage') is not True or home.get('trust') == 'untrusted':
+            if home.get('workspace_homepage') is not True or not _writable(home):
                 continue
             text = snapshot['content']
             if text.count('<!-- beyin-field:') != len(list(CELL.finditer(text))):
@@ -289,7 +391,8 @@ def reconcile(engine):
                     raise ValueError('selected source must be a separate indexed human note')
                 current = engine.note_read(source)
                 metadata, body = parse(current['content'])
-                if _source_id(source, metadata) != binding['record_id'] or not _eligible(home, metadata):
+                if (_source_id(source, metadata) != binding['record_id'] or
+                        not _eligible(home, dict(metadata, text=body), page, source, scopes)):
                     raise ValueError('selected source identity or scope changed')
                 value = _fact(metadata, field)
                 base = binding['base']
@@ -316,7 +419,9 @@ def reconcile(engine):
                     updated_header = render(metadata, '')
                     if current['content'].startswith('\ufeff'):
                         updated_header = '\ufeff' + updated_header
-                    _edit(engine, current, header, updated_header)
+                    written = _edit(engine, current, header, updated_header)
+                    if on_write:
+                        on_write(written)
                     value = proposed
                 updated = _cell(dict(binding, base=value), value)
                 if updated != original[0]:
@@ -325,7 +430,9 @@ def reconcile(engine):
                     if latest_home != home:
                         raise NoteConflict('homepage configuration changed; rerun sync')
                     # Latest personal text is never part of this exact anchor.
-                    _edit(engine, latest, original[0], updated)
+                    written = _edit(engine, latest, original[0], updated)
+                    if on_write:
+                        on_write(written)
                     result['updated'] += 1
         except (ValueError, KeyError, TypeError, OSError, NoteConflict) as exc:
             result['warnings'].append(dict(homepage=page, reason=str(exc)))

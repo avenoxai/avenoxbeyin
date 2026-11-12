@@ -394,10 +394,10 @@ def read(engine, source):
             'sha256': _hash(raw) if raw is not None else None, 'content': text}
 
 
-def apply(engine, request):
+def apply(engine, request, *, finalize=None):
     committed = {}
     try:
-        return _apply(engine, request, committed)
+        return _apply(engine, request, committed, finalize)
     except Exception as exc:
         # Includes cleanup, path checks, directory fsync, sync, DB readback,
         # diagnostics and lock release. Every exception after replace is explicit.
@@ -546,7 +546,22 @@ def _seal_idempotency(path, details, fingerprint, output):
     return output
 
 
-def _replay_idempotency(engine, path, source, fingerprint, source_path, refs=()):
+def _finalize_write(finalize, details, path, fingerprint):
+    if finalize is None:
+        return
+
+    def checkpoint(written):
+        # Only a verified write to this operation's source can advance its hash.
+        # An interruption after cell refresh can then resume from pending bytes.
+        if written['source'] == details['source']:
+            details['sha256'] = written['sha256']
+            if path:
+                _journal_idempotency(path, details, fingerprint, 'pending')
+
+    finalize(details, checkpoint)
+
+
+def _replay_idempotency(engine, path, source, fingerprint, source_path, refs=(), finalize=None):
     """Answer a retry from the journal, or None when the keyed request never replaced the source."""
     from beyin_v3_sync import _hash
     _unlinked(path)
@@ -588,7 +603,8 @@ def _replay_idempotency(engine, path, source, fingerprint, source_path, refs=())
         if (engine._source_issues(result, source) or _bytes(source_path) != current or not row or
                 json.loads(row[0]).get('source_sha256') != saved['sha256']):
             raise NoteConflict('idempotent source requires projection review')
-    if saved['state'] != 'committed':
+    _finalize_write(finalize, answer, path, fingerprint)
+    if saved['state'] != 'committed' or answer['sha256'] != saved['sha256']:
         _seal_idempotency(path, answer, fingerprint, answer)
     if refs:
         answer['evidence_refs'] = list(refs)
@@ -596,7 +612,7 @@ def _replay_idempotency(engine, path, source, fingerprint, source_path, refs=())
     return answer
 
 
-def _apply(engine, request, committed):
+def _apply(engine, request, committed, finalize=None):
     from beyin_v3_sync import _hash, _safe_replace
     if not isinstance(request, dict):
         raise ValueError('note-edit request must be an object')
@@ -627,7 +643,7 @@ def _apply(engine, request, committed):
                                            expected_sha256=expected, evidence_refs=refs))
         if idempotency_key is not None:
             idempotency_file = _idempotency_path(folder, idempotency_key)
-            replay = _replay_idempotency(engine, idempotency_file, source, fingerprint, path, refs)
+            replay = _replay_idempotency(engine, idempotency_file, source, fingerprint, path, refs, finalize)
             if replay is not None:
                 return replay
         refs = evidence_refs(engine, refs, source)
@@ -661,6 +677,7 @@ def _apply(engine, request, committed):
         updated = text.encode('utf-8')  # Keeps BOM and untouched CRLF bytes exactly.
         if updated == raw:
             res = {'status': 'unchanged', 'source': source, 'sha256': actual}
+            _finalize_write(finalize, res, idempotency_file, fingerprint)
             if idempotency_file:
                 _journal_idempotency(idempotency_file, res, fingerprint, 'committed')
             if refs:
@@ -726,8 +743,11 @@ def _apply(engine, request, committed):
             if _bytes(source_path(engine, source)) != updated:
                 raise NoteConflict('external edit detected after replace; reread source')
         written_details = dict(journal)
+        # Derived homepage cells may update this source again. Finish them under
+        # the writer lock before publishing the keyed operation's final hash.
+        _finalize_write(finalize, written_details, idempotency_file, fingerprint)
         if idempotency_file:
-            _seal_idempotency(idempotency_file, journal, fingerprint, written_details)
+            _seal_idempotency(idempotency_file, written_details, fingerprint, written_details)
     if refs:
         written_details['evidence_refs'] = refs
     return engine._write_diagnostics(written_details, result)

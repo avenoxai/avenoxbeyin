@@ -1,8 +1,8 @@
 ---
 {
   "title": "Kariyerim",
-  "project": "kariyer",
   "visibility": "internal",
+  "project": "kariyer",
   "workspace_homepage": true
 }
 ---

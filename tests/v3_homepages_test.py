@@ -159,9 +159,13 @@ class HomepageTest(unittest.TestCase):
                 self.engine.sync()
         self.assertEqual(self.values()['gorusme'], '15 Kasım')
         self.home_edit('yol süresini ve adresi sor', 'adresi ve giriş kapısını sor')
-        source = (self.vault/'notes/aksam.md').read_bytes()
+        source_path = self.vault/'notes/aksam.md'
+        source = source_path.read_bytes()
+        os.utime(source_path, ns=(1_600_000_000_000_000_000,) * 2)
+        source_mtime = source_path.stat().st_mtime_ns
         self.cli('sync')
-        self.assertEqual(source, (self.vault/'notes/aksam.md').read_bytes())
+        self.assertEqual(source, source_path.read_bytes())
+        self.assertEqual(source_mtime, source_path.stat().st_mtime_ns)
         self.assertIn('adresi ve giriş kapısını sor', self.home.read_text(encoding='utf-8'))
         self.assert_replay()
 
