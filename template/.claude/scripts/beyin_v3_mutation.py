@@ -195,6 +195,11 @@ def enqueue_mutation(state, action, source, payload, vault=None, mutation_id=Non
     # The CLI always passes its vault; a library call without one records no binding.
     binding = None if vault is None else _bound_vault(state, vault)
     with _queue_lock(state):
+        if vault is not None:
+            # First-use initializers can both observe no binding; only the committed
+            # owner may enqueue after they contend for the queue lock.
+            from beyin_v3_sync import MemoryStore
+            MemoryStore(state, vault, read_only=True)
         return _enqueue_mutation(state, action, source, payload, binding, mutation_id)
 
 
