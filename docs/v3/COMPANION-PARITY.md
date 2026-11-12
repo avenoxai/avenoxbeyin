@@ -72,6 +72,10 @@ paralel oturumların daha eski devir kartları ve konu kartlarının tamamı sı
 işaretiyle biter. Konu kartları ya tam ya kısa görünümleriyle gelir; tam kartın kullanamadığı
 alan öbür kaynaklara geri döner.
 
+Konu ve devir kartı sınırları bulunurken kod çiti yalnız aynı işaretle, en az açılış
+uzunluğunda ve ardından yalnız boşluk varsa kapanır. İşaretten sonra örnek metin bulunan
+satır çiti kapatmaz; içindeki başlıklar yeni konu veya eski devir kartı sayılmaz.
+
 `Threads.md` içindeki `###` başlıklarının her biri kısa görünümde korunur. `**Status:**` /
 `**Durum:**` ile `**Next step:**` / `**Sonraki adım:**` paragrafları varsa bunlar, devam
 satırlarıyla birlikte aynen alınır; kalın yazılmamış `Status:` / `Next:` alanları da tanınır.
