@@ -63,7 +63,7 @@ class Pages:
             def log_message(self, *_):
                 pass
         server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         worker.start()
         test.addCleanup(worker.join, 5)
         test.addCleanup(server.server_close)
