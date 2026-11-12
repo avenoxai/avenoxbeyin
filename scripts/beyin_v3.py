@@ -1668,10 +1668,10 @@ def main(argv=None, return_result=False):
                 else:
                     from beyin_v3_hook import receipt_context
                     budget = companion.client_budget('claude', companion.opening_budget(state, prefs['context_chars']))
-                    rules = companion.rules_opening(engine.MemoryStore(state, vault, read_only=True), budget,
-                                                    receipt_context(vault, state))
+                    rules, stale = companion.rules_opening(engine.MemoryStore(state, vault, read_only=True), budget,
+                                                           receipt_context(vault, state))
                     result['companion_rules_opening'] = dict(
-                        rules or {}, status='clipped' if rules and rules['clipped'] else 'ok' if rules else 'no_rules',
+                        rules or {}, status='clipped' if rules and rules['clipped'] else 'stale' if stale else 'ok' if rules else 'no_rules',
                         budget=budget, harness='claude')
             except Exception as exc:  # never hides the rest of doctor
                 result['companion_rules_opening'] = {'status': 'unavailable', 'error': type(exc).__name__}

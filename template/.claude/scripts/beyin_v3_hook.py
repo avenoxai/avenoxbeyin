@@ -933,7 +933,7 @@ def main():
                     except Exception:
                         pass
             from beyin_v3_companion import (context as companion_context, relevant, opening_budget, client_budget,
-                                            client_rebudget, fit_client)
+                                            client_rebudget, fit_client, companion_imports)
             # Both budgets stop below a client's own cut-off; past it the client files the text away (#175).
             # A text over the client's own measure is rendered once more with a scaled budget.
             limit = client_budget(args.harness, settings['context_chars'])
@@ -957,13 +957,17 @@ def main():
                             rules_project = None
                 # The opening may carry its own machine-local budget (#140); never a vault preference.
                 limit = client_budget(args.harness, opening_budget(state, settings['context_chars']))
-                text = companion_context(store, limit, session, args.harness, query, receipt, warning, project=project,
-                                         rules_project=rules_project)
+                excluded = companion_imports(vault)
+                text = companion_context(store, limit, session, args.harness, query, receipt, warning,
+                                         project=project,
+                                         rules_project=rules_project,
+                                         exclude=excluded)
                 smaller = client_rebudget(args.harness, limit, notice + text)
                 if smaller is not None:
                     limit = smaller
                     text = companion_context(store, limit, session, args.harness, query, receipt, warning,
-                                             project=project, rules_project=rules_project)
+                                             project=project, rules_project=rules_project,
+                                             exclude=excluded)
             else:
                 # Per-turn automatic context is strict: only meaningful lexical matches are
                 # injected, and an empty match injects nothing at all instead of a receipt

@@ -326,4 +326,83 @@ class ClientTests(unittest.TestCase):
                 self.assertEqual(second['diagnostics'], ['configuration_changed'])
                 self.assertNotIn('cache_unavailable', second['diagnostics'])
 
+    def test_key_command_returns_key(self):
+        key_secret = 'cmd-secret'
+        self.config(key_command=[sys.executable, '-c', 'import sys;sys.stdout.write(sys.argv[1])', key_secret])
+        captured = {}
+        def transport(url, body, key, timeout):
+            captured['key'] = key
+            return dict(answers={q: dict(type='score', score=1.8) for q in body['questions']})
+        with patch.dict(os.environ, {}, clear=True):
+            result = j.evaluate(self.vault, 'q', self.cards, transport=transport)
+        self.assertFalse(result['degraded'], result['diagnostics'])
+        self.assertEqual(captured.get('key'), key_secret)
+
+    def test_key_command_error_credentials_missing(self):
+        self.config(key_command=[sys.executable, '-c', 'import sys;sys.exit(3)'])
+        with patch.dict(os.environ, {}, clear=True):
+            result = self.run_client()
+        self.assertTrue(result['degraded'])
+        self.assertIn('credentials_missing', result['diagnostics'])
+
+    def test_key_command_timeout_credentials_missing(self):
+        self.config(key_command=[sys.executable, '-c', 'import time;time.sleep(10)'])
+        with patch.dict(os.environ, {}, clear=True):
+            result = self.run_client()
+        self.assertTrue(result['degraded'])
+        self.assertIn('credentials_missing', result['diagnostics'])
+
+    def test_key_command_empty_output_credentials_missing(self):
+        self.config(key_command=[sys.executable, '-c', 'import sys;sys.stdout.write("\\n")'])
+        with patch.dict(os.environ, {}, clear=True):
+            result = self.run_client()
+        self.assertTrue(result['degraded'])
+        self.assertIn('credentials_missing', result['diagnostics'])
+
+    def test_env_file_takes_precedence_over_key_command(self):
+        keyfile = self.vault / 'env'
+        keyfile.write_text('TYPESAFE_API_KEY="env-secret"\n', encoding='utf-8')
+        self.config(env_file=str(keyfile), key_command=[sys.executable, '-c', 'import sys;sys.stdout.write("cmd-secret")'])
+        captured = {}
+        def transport(url, body, key, timeout):
+            captured['key'] = key
+            return dict(answers={q: dict(type='score', score=1.8) for q in body['questions']})
+        with patch.dict(os.environ, {}, clear=True):
+            result = j.evaluate(self.vault, 'q', self.cards, transport=transport)
+        self.assertFalse(result['degraded'], result['diagnostics'])
+        self.assertEqual(captured.get('key'), 'env-secret')
+
+    def test_environment_takes_precedence_over_key_command(self):
+        self.config(key_command=[sys.executable, '-c', 'import sys;sys.stdout.write("cmd-secret")'])
+        captured = {}
+        def transport(url, body, key, timeout):
+            captured['key'] = key
+            return dict(answers={q: dict(type='score', score=1.8) for q in body['questions']})
+        with patch.dict(os.environ, {'TYPESAFE_API_KEY': 'env-secret'}, clear=True):
+            result = j.evaluate(self.vault, 'q', self.cards, transport=transport)
+        self.assertFalse(result['degraded'], result['diagnostics'])
+        self.assertEqual(captured.get('key'), 'env-secret')
+
+    def test_status_key_source_command(self):
+        self.config(key_command=[sys.executable, '-c', 'import sys;sys.stdout.write("cmd-secret")'])
+        with patch.dict(os.environ, {}, clear=True):
+            st = j.status(self.vault)
+        self.assertEqual(st['key_source'], 'command')
+        self.assertTrue(st['key_present'])
+
+    def test_status_key_source_none(self):
+        self.config()
+        with patch.dict(os.environ, {}, clear=True):
+            st = j.status(self.vault)
+        self.assertEqual(st['key_source'], 'none')
+        self.assertFalse(st['key_present'])
+
+    def test_key_command_invalid_config(self):
+        for bad in ([], 'not-a-list', ['relative/path'], [123], ['/ok', 42]):
+            with self.subTest(cmd=bad):
+                self.config(key_command=bad)
+                self.assertFalse(j.inspect_config(self.vault)['valid'])
+                result = self.run_client()
+                self.assertIn('config_invalid', result['diagnostics'])
+
 if __name__=='__main__': unittest.main()
