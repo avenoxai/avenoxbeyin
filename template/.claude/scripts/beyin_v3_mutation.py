@@ -472,13 +472,13 @@ def _replay_mutations(vault: str | Path, state: str | Path, sync_engine=None) ->
     processed = []
 
     for mut in pending:
-        action = mut["action"]
-        source = mut["source"]
-        payload = mut.get("payload", {})
         try:
             # A record that names its vault replays only there; older records name none.
             if "vault_binding" in mut and mut["vault_binding"] != binding:
                 raise ValueError("queued mutation belongs to another vault")
+            action = mut["action"]
+            source = mut["source"]
+            payload = mut.get("payload", {})
             # Revalidate: the queue file is local state, but it is not trusted input.
             _check_payload(action, source, payload)
             target_path = sync_engine._path(source)

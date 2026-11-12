@@ -84,6 +84,41 @@ class MutationQueueTest(unittest.TestCase):
                 operation()
             self.assertEqual(queue.read_bytes(), original)
 
+    def test_replay_isolates_pending_entry_missing_action(self):
+        self._assert_missing_field_isolated('action')
+
+    def test_replay_isolates_pending_entry_missing_source(self):
+        self._assert_missing_field_isolated('source')
+
+    def _assert_missing_field_isolated(self, missing):
+        broken_source = f'notes/broken-{missing}.md'
+        valid_source = f'notes/valid-{missing}.md'
+        broken = mutation.enqueue_mutation(self.state, 'note_create', broken_source,
+            {'text': 'Malformed queued note'})
+        valid = mutation.enqueue_mutation(self.state, 'note_create', valid_source,
+            {'text': 'Independent queued note'})
+        queue = self.state / mutation.MUTATION_QUEUE_FILE
+        rows = mutation.list_mutations(self.state)
+        next(row for row in rows if row['mutation_id'] == broken['mutation_id']).pop(missing)
+        queue.write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8')
+
+        proc = subprocess.run([sys.executable, str(CLI), '--vault', str(self.vault),
+            '--state', str(self.state), 'mutation-queue', '--replay'],
+            capture_output=True, text=True, env=inherited_env())
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertEqual((result['replayed'], result['applied'], result['failed']), (2, 1, 1))
+        saved = {row['mutation_id']: row for row in mutation.list_mutations(self.state)}
+        self.assertEqual(saved[broken['mutation_id']]['status'], 'failed')
+        self.assertIn(missing, saved[broken['mutation_id']]['error'])
+        self.assertNotIn(missing, saved[broken['mutation_id']])
+        self.assertEqual(saved[broken['mutation_id']]['payload'], broken['payload'])
+        self.assertEqual(saved[valid['mutation_id']]['status'], 'applied')
+        self.assertFalse((self.vault / broken_source).exists())
+        self.assertIn('Independent queued note', (self.vault / valid_source).read_text())
+        replay = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertEqual(replay['replayed'], 0)
+
     def test_doctor_does_not_create_identity_or_state(self):
         empty = self.tmp / 'absent-state'
         self.assertEqual(mutation.doctor(empty), {'enabled': False})
