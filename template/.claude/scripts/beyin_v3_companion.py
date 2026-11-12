@@ -1634,4 +1634,15 @@ def rules_opening(store, budget, receipt=''):
     report = {}
     context(store, budget, '0' * 24, 'claude', receipt=receipt, report=report,
             loaded=client_imports(store.vault_root, 'claude', store.vault_root))
-    return report.get('Kurallar.md')
+    rules = report.get('Kurallar.md')
+    if rules is not None:
+        return rules
+    target = directory(store.vault_root)
+    if target is not None:
+        # Use the same privacy, trust and freshness gates; never infer rules from
+        # other stale companions or read excluded content into the diagnostic.
+        snapshot = store.source_snapshot(['Kurallar.md'], budget_chars=0,
+                                         source_directory=target.relative_to(store.vault_root).as_posix())
+        if snapshot['stale_excluded']:
+            return {'stale': True}
+    return None
