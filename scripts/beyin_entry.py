@@ -147,10 +147,40 @@ def sync_copy_lines(result):
     return lines
 
 
+def supersedes_lines(issues, count):
+    """Present existing sync/doctor findings only; do not guess or remember a target."""
+    issues = issues or []
+    count = max(count or 0, len(issues))
+    if not count:
+        return []
+
+    def field(value):
+        text = plain_text(value)
+        return text[:157] + '...' if len(text) > 160 else text
+
+    reasons = {'ambiguous supersedes reference': 'birden fazla notla eslesiyor',
+               'unresolved supersedes reference': 'hedef bulunamadi',
+               'supersedes reference points to the note itself': 'notun kendisine isaret ediyor',
+               'supersedes reference is part of a cycle': 'dongunun parcasi'}
+    lines = ['Supersedes uyarisi: ' + str(count) + ' referans su anda hicbir notu emekli etmiyor; '
+             'daha once emekli edilen notlar yeniden baglama girebilir.']
+    for issue in issues[:3]:
+        reason = issue.get('reason')
+        lines.append('  - ' + field(issue.get('source')) + ' -> ' + field(issue.get('value')) +
+                     ' (' + field(reasons.get(reason, reason)) + ')')
+    if count > min(3, len(issues)):
+        lines.append('+' + str(count - min(3, len(issues))) + ' referans daha.')
+    lines.append('Hedefi ve yonu kontrol et; dogru notu acik id veya tam vault yoluyla belirt. Ayrinti: --json.')
+    return lines
+
+
 def index_exclusion_lines(report, pruned=False):
     """Lines for the user's index exclusions (state/index.json); shared by doctor, sync and preferences."""
     if not isinstance(report, dict):
         return []
+    if report.get('status') == 'unavailable':
+        return ['Indeks kapsami denetlenemedi (' + plain_text(report.get('error', 'unknown')) +
+                '); indeks dislama ayarlari ve klasor ipuclari dogrulanamadi.']
     lines = []
     if report.get('excluded_dirs'):
         lines.append('Indeks disi klasor adlari (senin listen, her derinlikte): ' +
@@ -378,8 +408,12 @@ def human_result(result, command, installed_version=None):
                     '; ' + str(result.get('pending_count', 0)) + ' bekleyen, ' + str(result.get('conflict_count', 0)) +
                     ' cakisma, ' + str(result.get('failed_count', 0)) + ' basarisiz.')
         if 'replayed' in result:
-            return ('Kuyruk yeniden oynatildi: ' + str(result.get('applied', 0)) + ' uygulandi, ' +
+            text = ('Kuyruk yeniden oynatildi: ' + str(result.get('applied', 0)) + ' uygulandi, ' +
                     str(result.get('conflicts', 0)) + ' cakisma, ' + str(result.get('failed', 0)) + ' basarisiz.')
+            if result.get('source_sync', {}).get('status') in ('error', 'degraded', 'conflict'):
+                text += ('\nKaynak esitlemesi dikkat gerektiriyor; tanilamak ve indeksi yenilemek icin '
+                         'beyin.py sync calistir. Uygulanan kayitlari yeniden kuyruga ekleme.')
+            return text
         if 'pruned' in result:
             return 'Kuyruktan ' + str(result['pruned']) + ' kayit temizlendi; ' + str(result.get('remaining', 0)) + ' kayit kaldi.'
         if result.get('mutation_id'):
@@ -464,6 +498,8 @@ def human_result(result, command, installed_version=None):
                          megabytes(storage['free_bytes']) + ' MB bos sayfa. Diske geri vermek icin: ' +
                          ('py -3' if sys.platform == 'win32' else 'python3') + ' beyin.py state-compact')
         rules_opening = result.get('companion_rules_opening') or {}
+        if rules_opening.get('status') == 'stale':
+            lines.append('Kurallar.md kaynak dogrulamasi guncel degil (bilgi); acilis olcumu icin beyin.py sync calistir.')
         if rules_opening.get('status') == 'clipped':
             lines.append('Kurallar.md acilista kirpiliyor (bilgi): kural metni ' + str(rules_opening['chars']) +
                          ' karakter; Claude Code acilisi bu ayarlarla (' + str(rules_opening['budget']) +
@@ -471,12 +507,17 @@ def human_result(result, command, installed_version=None):
                          (' (gerekceler de cikarildi)' if rules_opening.get('reasons_omitted') else '') +
                          '. Kurallari kisa tut; uzun gerekceyi ve ayrintiyi ayri bir nota (or. Kurallar-Detay.md) tasi.')
         references = result.get('instruction_references') or {}
-        if references.get('dead_count'):
+        if references.get('status') == 'unavailable':
+            lines.append('Talimat ve skill baglanti denetimi tamamlanamadi (bilgi): ' +
+                         plain_text(references.get('error', 'unknown')) + '.')
+        elif references.get('dead_count'):
             shown = ', '.join(entry['file'] + ':' + str(entry['line']) + ' -> ' + entry['target']
                               for entry in references['dead'][:3])
             more = references['dead_count'] - min(3, len(references['dead']))
             lines.append('Talimat ve skill dosyalarinda kirik baglanti (bilgi): ' + shown +
                          (' ve ' + str(more) + ' tane daha' if more > 0 else '') + '.')
+        supersedes = result.get('supersedes') or {}
+        lines += supersedes_lines(supersedes.get('dead'), supersedes.get('dead_count'))
         boundary_report = result.get('boundary') or {}
         boundary_lines = {
             'parent_obsidian_index': 'Kok siniri (bilgi): ust klasorde de bir .obsidian var; Obsidian ust klasoru acip bu vault\'u alt klasor sayabilir.',
@@ -581,6 +622,14 @@ def human_result(result, command, installed_version=None):
             lines.append('Hook yollari baska bir kuruluma isaret ediyor (' + str(len(paths.get('stale', []))) + ' eski yol). ' +
                          'Guncellemek icin: ' + ('py -3' if sys.platform == 'win32' else 'python3') + ' beyin.py hook-reconcile')
         tracked = result.get('tracked_machine_files') or {}
+        bridges = result.get('global_bridge_paths') or {}
+        if bridges.get('status') == 'stale':
+            harnesses = sorted({row.get('harness') for row in bridges.get('stale', [])
+                                if row.get('harness') in ('claude', 'codex', 'antigravity')})
+            commands = ', '.join('bridge --harness ' + harness + ' ... --install' for harness in harnesses)
+            lines.append('Genel kopru yollari eski kuruluma isaret ediyor (bilgi): ' + commands +
+                         '. Yeni vault icinden onceki --project-root, --event ve --context-chars secimlerini koruyarak '
+                         'yeniden kur. Genel ayarlar degistirilmedi.')
         if tracked.get('status') == 'warning':
             lines.append('Git makineye ozel kurulum dosyalarini izliyor (bilgi): ' +
                          ', '.join(plain_text(name) for name in tracked.get('tracked', [])) +
@@ -665,7 +714,10 @@ def human_result(result, command, installed_version=None):
                 lines.append('  shared_unscoped: ' + ('acik' if shared else 'kapali'))
             return '\n'.join(lines)
         elif action == 'add':
-            return 'Klasor proje kapsamina eklendi: ' + plain_text(result.get('folder', '')) + ' -> ' + plain_text(result.get('project', ''))
+            # add is the only command that changes shared_unscoped (#607): show the saved value.
+            return ('Klasor proje kapsamina eklendi: ' + plain_text(result.get('folder', '')) + ' -> ' +
+                    plain_text(result.get('project', '')) +
+                    '\n  shared_unscoped: ' + ('acik' if result.get('shared_unscoped') else 'kapali'))
         elif action == 'remove':
             return 'Klasor proje kapsamindan cikarildi: ' + plain_text(result.get('folder', ''))
         elif action == 'prune':
@@ -702,7 +754,8 @@ def human_result(result, command, installed_version=None):
                     recovered_lines.append('  - ' + plain_text(item['source']) + ' -> ' + plain_text(item['archive']))
                 message = '\n'.join([message] + recovered_lines)
             message = '\n'.join([message] + index_exclusion_lines(result.get('index_exclusions'), pruned=True) +
-                                (sync_copy_lines(result) if command == 'sync' else []))
+                                (sync_copy_lines(result) if command == 'sync' else []) +
+                                supersedes_lines(result.get('supersedes_issues'), result.get('supersedes_issue_count')))
     if result.get('trust_review_required'):
         message += '\n' + trust_review_line(result.get('trust_review_files'))
     if result.get('view_conflicts'):
@@ -761,10 +814,14 @@ def main(argv=None):
     argv = [arg for arg in argv if arg not in ('--human', '--json')]
     if human:
         # A piped or redirected Windows console uses a legacy code page (cp1252 has no s-cedilla);
-        # an unencodable character must print as '?' instead of failing the whole command.
+        # write redirected human output as UTF-8 so stored text and paths survive intact.
+        # Keep the interactive terminal's encoding and replacement behavior.
         for stream in (sys.stdout, sys.stderr):
             if hasattr(stream, 'reconfigure'):
-                stream.reconfigure(errors='replace')
+                if stream.isatty():
+                    stream.reconfigure(errors='replace')
+                else:
+                    stream.reconfigure(encoding='utf-8', errors='replace')
     command = argv[0] if argv else 'doctor'
     if command in ('note-read', 'note-edit'):
         human = False  # These commands have a JSON contract, including on a terminal.
@@ -811,6 +868,10 @@ def main(argv=None):
             # Optional capture tool: its own small CLI, no index or sync engine.
             import beyin_v3_yakala as yakala
             return yakala.main((['--json'] if force_json else []) + argv[1:], vault=vault, state=state)
+        if argv and argv[0] == 'web':
+            # Optional local web view; only this explicit command ever starts it.
+            import beyin_v3_web as web
+            return web.main((['--json'] if force_json else []) + argv[1:], vault=vault, state=state, cli=cli)
         if argv and argv[0] in ('update', 'rollback', 'recover'):
             import argparse
             import beyin_v3_update as updater

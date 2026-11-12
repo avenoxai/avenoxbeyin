@@ -100,12 +100,12 @@ class ReceiptCliTest(unittest.TestCase):
         self.submit('--event-id', 'literal', '--summary', summary, '--ref', 'notes/ilk.md')
         self.assertEqual(self.saved('literal')['summary'], summary)
 
-    def test_summary_file_preserves_utf8_and_line_endings(self):
+    def test_summary_file_preserves_utf8_and_normalizes_line_endings(self):
         summary = 'İlk satır.\r\nİkinci satır.\nÖğrenilen: yok'
         summary_file = self.root / 'özet.txt'
         summary_file.write_bytes(summary.encode('utf-8'))
         self.submit('--event-id', 'summary-file', '--summary-file', summary_file, '--ref', 'notes/ilk.md')
-        self.assertEqual(self.saved('summary-file')['summary'], summary)
+        self.assertEqual(self.saved('summary-file')['summary'], summary.replace('\r\n', '\n'))
         self.submit('--file', '-', payload={'event_id': 'summary-file', 'summary': summary,
                                            'refs': ['notes/ilk.md']})
 

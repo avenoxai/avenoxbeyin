@@ -22,6 +22,7 @@ if _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
 from beyin_v3 import (HARNESSES, MAX_RECEIPT_LINKS, RECEIPT_CLIENT_NAME, RECEIPT_CLIENTS, REJECTED_AT, RETIRED_STATUSES, MemoryStore, ReceiptConflict, RevisionConflict, _json,
+                      _receipt_lf, _receipt_same_summary,
                       _path_redirected, _plain_link, _rejected_inference, _status_word, rejected_dependents, resolve_supersedes)
 from beyin_v3_index import applied_keys, dir_key, exclusions as index_exclusions, prune as prune_excluded
 from beyin_v3_hygiene import sensitive_excluded, sensitive_source
@@ -33,6 +34,7 @@ from beyin_v3_projections import (is_receipt_view_source, is_receipt_view_confli
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
 from beyin_v3_notes import (NoteConflict, locked as note_locked,
+                            validate_source_name, refuse_unicode_alias,
                             read as note_read_source, apply as note_apply_edits,
                             decode_utf8, require_utf8_text, require_utf8_values)
 
@@ -994,7 +996,8 @@ class SyncEngine:
                     row = db.execute('SELECT payload FROM receipts WHERE id=?', (event['event_id'],)).fetchone()
                     if row:
                         previous = json.loads(row[0])
-                        if (previous['summary'], previous['refs'], previous.get('links')) != (event['summary'], event['refs'], event.get('links')):
+                        if (not _receipt_same_summary(previous['summary'], event['summary']) or
+                                (previous['refs'], previous.get('links')) != (event['refs'], event.get('links'))):
                             raise ReceiptConflict('event id collision during recovery')
                     db.execute('INSERT OR IGNORE INTO receipts VALUES (?,?)', (event['event_id'], _json(event)))
                 completed.append(entry)
@@ -1002,10 +1005,10 @@ class SyncEngine:
                 conflicts.append({'journal': entry.name, 'reason': str(exc)})
         return completed, conflicts
 
-    def _receipt_event(self, relative):
+    def _receipt_event(self, relative, expected_summary=None):
         """Rebuild a receipts row from its immutable source; ValueError when the file is not a valid receipt."""
         path = self._path(relative, existing=True)
-        # Bytes, not read_text: universal newlines would turn '\r' into '\n' and fake an event id collision.
+        # Keep legacy bytes available for exact reconstruction of old generated views.
         text = path.read_bytes().decode('utf-8')
         if _has_conflict_markers(text):
             raise ValueError('unresolved git conflict markers; resolve the merge before sync')
@@ -1026,7 +1029,15 @@ class SyncEngine:
         if not isinstance(refs, list) or not refs or any(
                 not isinstance(ref, str) or not ref or Path(ref).is_absolute() or '..' in Path(ref).parts for ref in refs):
             raise ValueError('missing or invalid refs')
+        # The released reading, byte for byte: drop only the writer's final LF.
+        # A CRLF checkout (core.autocrlf) keeps a trailing CR here, exactly as
+        # V3.12 and older index it, so a row indexed by this engine still matches
+        # their exact comparison after a rollback; replays tolerate that one CR.
         summary = body[:-1] if body.endswith('\n') else body
+        # A legacy summary ending in CR fused with the writer's final LF. An
+        # existing row disambiguates it; never rewrite that immutable payload.
+        if expected_summary is not None and _receipt_lf(body) == _receipt_lf(expected_summary + '\n'):
+            summary = expected_summary
         if not summary.strip():
             raise ValueError('empty receipt summary')
         event = {'event_id': event_id, 'summary': summary, 'refs': [Path(ref).as_posix() for ref in refs], 'harness': harness}
@@ -1080,12 +1091,12 @@ class SyncEngine:
                 continue
             rel = 'receipts/' + name
             try:
-                event = self._receipt_event(rel)
+                event = self._receipt_event(rel, known.get(name, {}).get('summary'))
                 if name in known:
                     # Indexed receipts stay authoritative, but a source that no longer matches them means
                     # another device wrote the same event_id and a merge kept its file (#205).
                     old = known[name]
-                    if (old['summary'], old['refs'], old.get('links')) != (event['summary'], event['refs'], event.get('links')):
+                    if (_receipt_lf(old['summary']), old['refs'], old.get('links')) != (_receipt_lf(event['summary']), event['refs'], event.get('links')):
                         conflicts.append({'source': rel, 'kind': 'receipt_divergence',
                                           'reason': 'receipt source differs from indexed receipt; event_id reused on another device'})
                     continue
@@ -1435,6 +1446,7 @@ class SyncEngine:
         require_utf8_values(evidence_refs, 'evidence_refs')
         if text.lstrip().startswith('---'):
             raise ValueError('text must be body only; put frontmatter fields in metadata')
+        validate_source_name(source)
         if not source.startswith(('notes/', 'knowledge/')) or not source.endswith('.md'):
             raise ValueError('new semantic notes belong under notes/ or knowledge/')
         self._refuse_excluded(source)
@@ -1484,6 +1496,7 @@ class SyncEngine:
         # clients use different state roots. Acquire it before the DB transaction.
         with note_locked(self) as folder:
             self._refuse_excluded(source)
+            refuse_unicode_alias(self.root, source)
             path = self._path(source)
             idempotency_file = None
             journal = {'status': 'succeeded', 'source': source, 'sha256': _hash(intended)}
@@ -1526,6 +1539,7 @@ class SyncEngine:
     def task_create(self, source, text, metadata):
         if not isinstance(source, str) or not source.startswith('tasks/') or not source.endswith('.md'):
             raise ValueError('task-create source must be a tasks/ Markdown path')
+        validate_source_name(source)
         if not isinstance(text, str) or not text.strip() or not isinstance(metadata, dict):
             raise ValueError('task body and metadata required')
         if text.lstrip().startswith('---'):
@@ -1568,6 +1582,7 @@ class SyncEngine:
         intended = render(metadata, text+'\n')
         with self.store._connect() as db:
             db.execute('BEGIN IMMEDIATE')
+            refuse_unicode_alias(self.root, source)
             if path.exists() or db.execute('SELECT 1 FROM records WHERE id=?', (metadata['id'],)).fetchone():
                 raise ValueError('task source or id exists; use task-update')
             self._intent(source, None, intended, 'task')
@@ -1615,7 +1630,7 @@ class SyncEngine:
             raise ValueError('event id and summary required')
         if harness not in HARNESSES + ('manual',) or not isinstance(refs, list) or not refs:
             raise ValueError('harness and refs required')
-        summary, redacted = self._protect(summary)
+        summary, redacted = self._protect(_receipt_lf(summary))
         refs = [self.store._source(ref) for ref in refs]
         links = self._links(links)
         source = 'receipts/' + _hash(event_id) + '.md'
@@ -1639,9 +1654,10 @@ class SyncEngine:
                 row = (_json(old),)
             if row:
                 old = json.loads(row[0])
-                if old['summary'] != summary or old['refs'] != refs or old.get('links', []) != links:
+                if not _receipt_same_summary(old['summary'], summary) or old['refs'] != refs or old.get('links', []) != links:
                     raise ReceiptConflict('event id collision')
                 event = old
+                summary = old['summary']  # Preserve legacy source bytes and first-writer attribution.
             receipt_metadata = {'kind': 'receipt', 'event_id': event_id, **_receipt_harness(event), 'refs': refs, 'visibility': 'internal'}
             if links:
                 receipt_metadata['links'] = links
@@ -1652,15 +1668,15 @@ class SyncEngine:
             content = render(receipt_metadata, summary + '\n')
             path = self._path(source)
             if path.exists():
-                # Byte comparison: universal-newline text would call a '\r' summary a manual change.
-                if path.read_bytes() != content.encode('utf-8'):
+                # Only line endings may differ; metadata, spacing and actual edits still conflict.
+                if _receipt_lf(path.read_bytes()) != _receipt_lf(content.encode('utf-8')):
                     raise ReceiptConflict('receipt source manually changed')
             else:
                 self._intent(source, None, content, 'receipt', event)
         result = self.sync()
         if self._write_blockers(result, source):
             raise ReceiptConflict('receipt projection conflict')
-        if self._path(source, existing=True).read_bytes() != content.encode('utf-8'):
+        if _receipt_lf(self._path(source, existing=True).read_bytes()) != _receipt_lf(content.encode('utf-8')):
             raise ReceiptConflict('receipt source changed before readback')
         self.store.submit_receipt(event_id, summary, refs, event['harness'], links=links)
         self._record_redactions(redacted)

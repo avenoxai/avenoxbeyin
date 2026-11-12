@@ -296,9 +296,11 @@ class YakalaSecurityTest(unittest.TestCase):
             order.append('helper')
             return 'article text'
 
-        with patch.object(socket, 'getaddrinfo', side_effect=dns), patch.object(yakala, 'via_defuddle', helper):
+        with patch.object(socket, 'getaddrinfo', side_effect=dns), patch.object(yakala, 'via_defuddle', helper), \
+                patch.object(yakala, '_fetch_html', return_value=None) as check:
             self.assertEqual(yakala.extract(self.vault, card, {'npx': 'npx'})[:2], ('article text', 'defuddle'))
         self.assertEqual(order, ['dns', 'helper'])
+        check.assert_called_once_with(url, complete=True, budget=yakala.CHECK_BUDGET)
         card['body'] = '## Icerik\n\n' + 'Already clipped content. ' * 20
         with patch.object(socket, 'getaddrinfo', side_effect=AssertionError('clipping must stay offline')):
             self.assertEqual(yakala.extract(self.vault, card, self.no_tools)[1], 'web-clipper')
@@ -451,7 +453,7 @@ class YakalaSecurityTest(unittest.TestCase):
                 pass
         server = HTTPServer(('127.0.0.1', 0), Handler)
         self.addCleanup(server.server_close)
-        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         worker.start()
         self.addCleanup(worker.join, 5)
         self.addCleanup(server.shutdown)
@@ -469,8 +471,13 @@ class YakalaSecurityTest(unittest.TestCase):
                 patch.object(socket, 'create_connection', side_effect=local_transport), \
                 patch.object(urllib.request, 'build_opener', side_effect=lambda *handlers:
                              opener(urllib.request.ProxyHandler({}), *handlers)):
-            self.assertIsNone(yakala.via_stdlib(f'http://example.com:{server.server_port}/start'))
-        self.assertEqual(seen, ['/start'])
+            url = f'http://example.com:{server.server_port}/start'
+            self.assertIsNone(yakala.via_stdlib(url))
+            card = {'meta': {'url': url}, 'body': ''}
+            with patch.object(yakala, 'via_defuddle', return_value='already extracted page'):
+                self.assertEqual(yakala.extract(self.vault, card, {'npx': 'npx'}, info={}),
+                                 ('already extracted page', 'defuddle', None))
+        self.assertEqual(seen, ['/start', '/start'])
 
     def local_page(self, seen):
         class Handler(BaseHTTPRequestHandler):
@@ -487,7 +494,7 @@ class YakalaSecurityTest(unittest.TestCase):
                 pass
         server = HTTPServer(('127.0.0.1', 0), Handler)
         self.addCleanup(server.server_close)
-        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         worker.start()
         self.addCleanup(worker.join, 5)
         self.addCleanup(server.shutdown)
@@ -651,7 +658,13 @@ class YakalaSecurityTest(unittest.TestCase):
             if os.name == 'nt' and sys.platform == 'win32':
                 return 0, '', ''
             raise subprocess.TimeoutExpired(cmd='cmd', timeout=1)
-        with patch.dict(os.environ, self.PROXIES):
+        # This mocked helper fixture supplies its own proxy configuration. Host npm
+        # settings take precedence in production and must not change this expectation.
+        env = {key: value for key, value in inherited_env().items()
+               if key.upper() not in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+                                      'NPM_CONFIG_NOPROXY', 'NPM_CONFIG_PROXY', 'NPM_CONFIG_HTTPS_PROXY')}
+        env.update(self.PROXIES)
+        with patch.dict(os.environ, env, clear=True):
             for function, args in calls:
                 with self.subTest(function=function.__name__), \
                         patch.object(socket, 'getaddrinfo', return_value=public) as dns:

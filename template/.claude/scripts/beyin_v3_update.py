@@ -1,5 +1,5 @@
 """Verified stable-release updates with local journal recovery. Standard library only."""
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 import base64
 import hashlib
 import importlib.util
@@ -13,7 +13,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.request
 import zipfile
 
 OFFICIAL = 'https://api.github.com/repos/avenoxai/avenoxbeyin/releases/latest'

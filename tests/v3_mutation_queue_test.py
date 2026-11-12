@@ -84,6 +84,41 @@ class MutationQueueTest(unittest.TestCase):
                 operation()
             self.assertEqual(queue.read_bytes(), original)
 
+    def test_replay_isolates_pending_entry_missing_action(self):
+        self._assert_missing_field_isolated('action')
+
+    def test_replay_isolates_pending_entry_missing_source(self):
+        self._assert_missing_field_isolated('source')
+
+    def _assert_missing_field_isolated(self, missing):
+        broken_source = f'notes/broken-{missing}.md'
+        valid_source = f'notes/valid-{missing}.md'
+        broken = mutation.enqueue_mutation(self.state, 'note_create', broken_source,
+            {'text': 'Malformed queued note'})
+        valid = mutation.enqueue_mutation(self.state, 'note_create', valid_source,
+            {'text': 'Independent queued note'})
+        queue = self.state / mutation.MUTATION_QUEUE_FILE
+        rows = mutation.list_mutations(self.state)
+        next(row for row in rows if row['mutation_id'] == broken['mutation_id']).pop(missing)
+        queue.write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8')
+
+        proc = subprocess.run([sys.executable, str(CLI), '--vault', str(self.vault),
+            '--state', str(self.state), 'mutation-queue', '--replay'],
+            capture_output=True, text=True, env=inherited_env())
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertEqual((result['replayed'], result['applied'], result['failed']), (2, 1, 1))
+        saved = {row['mutation_id']: row for row in mutation.list_mutations(self.state)}
+        self.assertEqual(saved[broken['mutation_id']]['status'], 'failed')
+        self.assertIn(missing, saved[broken['mutation_id']]['error'])
+        self.assertNotIn(missing, saved[broken['mutation_id']])
+        self.assertEqual(saved[broken['mutation_id']]['payload'], broken['payload'])
+        self.assertEqual(saved[valid['mutation_id']]['status'], 'applied')
+        self.assertFalse((self.vault / broken_source).exists())
+        self.assertIn('Independent queued note', (self.vault / valid_source).read_text())
+        replay = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertEqual(replay['replayed'], 0)
+
     def test_doctor_does_not_create_identity_or_state(self):
         empty = self.tmp / 'absent-state'
         self.assertEqual(mutation.doctor(empty), {'enabled': False})
@@ -501,6 +536,52 @@ class MutationQueueTest(unittest.TestCase):
 
     # Crash consistency: an interrupted replay is reconciled, never double-applied or misreported.
 
+    def test_crash_after_task_create_with_canonicalized_evidence_is_reconciled(self):
+        from unittest.mock import patch
+        from beyin_v3_sync import parse
+        notes = self.vault / 'notes'
+        notes.mkdir()
+        (notes / 'e.md').write_text('Synthetic evidence\n', encoding='utf-8')
+        payload = {'text': 'Task body', 'metadata': {
+            'id': 'evidence-task', 'owner': 'test', 'status': 'inbox',
+            'evidence_refs': ['notes/./e.md']}}
+        source = 'tasks/evidence.md'
+        mutation.enqueue_mutation(self.state, 'task_create', source, payload, vault=self.vault)
+        with patch.object(mutation, '_save_all_mutations', side_effect=Crash):
+            with self.assertRaises(Crash):
+                mutation.replay_mutations(self.vault, self.state, self.sync)
+        path = self.vault / source
+        written = path.read_bytes()
+        self.assertEqual(parse(written.decode('utf-8'))[0]['evidence_refs'], ['notes/e.md'])
+        pending = mutation.list_mutations(self.state)[0]
+        self.assertEqual(pending['status'], 'pending')
+        self.assertEqual(pending['payload'], payload)
+        result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertEqual((result['applied'], result['conflicts'], result['failed']), (1, 0, 0), result)
+        item = mutation.list_mutations(self.state)[0]
+        self.assertEqual((item['status'], item['idempotent']), ('applied', True))
+        self.assertEqual(item['payload'], payload)
+        self.assertEqual(path.read_bytes(), written)
+        self.assertFalse(list(path.parent.glob('*.sync-conflict-*.md')))
+        self.assertEqual(mutation.replay_mutations(self.vault, self.state, self.sync)['replayed'], 0)
+
+    def test_task_create_with_different_evidence_remains_a_conflict(self):
+        notes = self.vault / 'notes'
+        notes.mkdir()
+        for name in ('first', 'second'):
+            (notes / (name + '.md')).write_text('Synthetic evidence\n', encoding='utf-8')
+        metadata = {'id': 'different-evidence', 'owner': 'test', 'status': 'inbox',
+                    'evidence_refs': ['notes/./first.md']}
+        source = 'tasks/different-evidence.md'
+        mutation.enqueue_mutation(self.state, 'task_create', source,
+                                  {'text': 'Task body', 'metadata': metadata}, vault=self.vault)
+        self.sync.task_create(source, 'Task body', dict(metadata, evidence_refs=['notes/second.md']))
+        written = (self.vault / source).read_bytes()
+        result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertEqual((result['applied'], result['conflicts'], result['failed']), (0, 1, 0), result)
+        self.assertEqual((self.vault / source).read_bytes(), written)
+        self.assertEqual(len(list((self.vault / 'tasks').glob('*.sync-conflict-*.md'))), 1)
+
     def _task(self):
         self.sync.task_create('tasks/crash.md', 'Crash body', {'id': 'crash-task', 'owner': 'test', 'status': 'inbox'})
         mutation.enqueue_mutation(self.state, 'task_update', 'tasks/crash.md',
@@ -586,6 +667,36 @@ class MutationQueueTest(unittest.TestCase):
         (self.vault / 'notes/other.md').write_text('someone else\n', encoding='utf-8')
         result = mutation.replay_mutations(self.vault, self.state, self.sync)
         self.assertEqual((result['applied'], result['conflicts']), (0, 1), result)
+
+    def test_crash_after_task_write_with_noncanonical_evidence_is_reconciled(self):
+        # task_create and update_task store evidence_refs canonically (notes/./e.md -> notes/e.md);
+        # the reconciliation after a crash before the queue acknowledgement must compare that form,
+        # or the write becomes a false conflict (and, for a create, a task conflict copy).
+        from unittest.mock import patch
+        from beyin_v3_sync import parse
+        (self.vault / 'notes').mkdir()
+        for name in ('e', 'f'):
+            (self.vault / f'notes/{name}.md').write_text('evidence\n', encoding='utf-8')
+        path = self.vault / 'tasks/evidence.md'
+        for action, payload, stored in (
+                ('task_create', {'text': 'Evidence task', 'metadata': {
+                    'id': 'evidence-task', 'owner': 'test', 'status': 'active', 'evidence_refs': ['notes/./e.md']}},
+                 ['notes/e.md']),
+                ('task_update', {'id': 'evidence-task', 'expected_revision': 1,
+                                 'changes': {'evidence_refs': ['notes/./e.md', 'notes//f.md']}},
+                 ['notes/e.md', 'notes/f.md'])):
+            with self.subTest(action=action):
+                mutation.enqueue_mutation(self.state, action, 'tasks/evidence.md', payload)
+                with patch.object(mutation, '_save_all_mutations', side_effect=Crash):
+                    with self.assertRaises(Crash):
+                        mutation.replay_mutations(self.vault, self.state, self.sync)
+                self.assertEqual(parse(path.read_text(encoding='utf-8'))[0]['evidence_refs'], stored)
+                written = path.read_bytes()
+                result = mutation.replay_mutations(self.vault, self.state, self.sync)
+                self.assertEqual((result['applied'], result['conflicts'], result['failed']), (1, 0, 0), result)
+                self.assertEqual(mutation.list_mutations(self.state)[-1]['status'], 'applied')
+                self.assertEqual(path.read_bytes(), written)
+        self.assertFalse(list((self.vault / 'tasks').glob('*.sync-conflict-*.md')))
 
     def test_each_mutation_is_acknowledged_before_the_next_one(self):
         from unittest.mock import patch
@@ -690,6 +801,123 @@ class MutationQueueTest(unittest.TestCase):
 
     # Input checks and review exits.
 
+    def test_enqueue_refuses_another_vault_before_queue_or_identity_writes(self):
+        other = self.tmp / 'other-vault'
+        other.mkdir()
+        with self.assertRaisesRegex(ValueError, 'runtime belongs to another vault'):
+            mutation.enqueue_mutation(self.state, 'note_create', 'notes/from-other.md',
+                                      {'text': 'Other vault content'}, vault=other)
+        for name in (mutation.MUTATION_QUEUE_FILE, mutation.DEVICE_FILE, '.beyin-note-write'):
+            self.assertFalse((self.state / name).exists(), name)
+        self.assertEqual(mutation.replay_mutations(self.vault, self.state)['applied'], 0)
+        self.assertFalse((self.vault / 'notes/from-other.md').exists())
+
+    def test_first_enqueue_binds_fresh_state_and_rejects_a_different_vault(self):
+        state = self.tmp / 'queue-only-state'
+        mutation.set_enabled(state, True)
+        payload = {'text': 'Once'}
+        mutation.enqueue_mutation(state, 'note_create', 'notes/bound.md', payload,
+                                  vault=self.vault / '.', mutation_id='client-bound-1')
+        before = {name: (state / name).read_bytes()
+                  for name in (mutation.MUTATION_QUEUE_FILE, mutation.DEVICE_FILE)}
+        other = self.tmp / 'other-vault'
+        other.mkdir()
+        # Even a duplicate client id must not accept the wrong vault.
+        with self.assertRaisesRegex(ValueError, 'runtime belongs to another vault'):
+            mutation.enqueue_mutation(state, 'note_create', 'notes/bound.md', payload,
+                                      vault=other, mutation_id='client-bound-1')
+        for name, content in before.items():
+            self.assertEqual((state / name).read_bytes(), content)
+        with self.assertRaisesRegex(ValueError, 'runtime belongs to another vault'):
+            mutation.replay_mutations(other, state)
+        result = mutation.replay_mutations(self.vault, state)
+        self.assertEqual((result['applied'], result['failed']), (1, 0), result)
+        self.assertFalse((other / 'notes/bound.md').exists())
+
+    def test_enqueue_refuses_state_inside_supplied_vault(self):
+        state = self.vault / 'queue-state'
+        mutation.set_enabled(state, True)
+        with self.assertRaisesRegex(ValueError, 'runtime must be outside vault'):
+            mutation.enqueue_mutation(state, 'note_create', 'notes/inside.md',
+                                      {'text': 'Private queued content'}, vault=self.vault)
+        self.assertEqual({path.name for path in state.iterdir()}, {mutation.SETTINGS_FILE})
+
+    def test_concurrent_first_enqueues_cannot_mix_vaults(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from contextlib import contextmanager
+        from threading import Barrier
+        from unittest.mock import patch
+        from beyin_v3 import MemoryStore
+        state = self.tmp / 'racing-state'
+        mutation.set_enabled(state, True)
+        other = self.tmp / 'other-vault'
+        other.mkdir()
+        barrier = Barrier(2)
+        original_connect = MemoryStore._connect
+
+        class BindingCursor:
+            def __init__(self, cursor):
+                self.cursor = cursor
+
+            def fetchone(self):
+                row = self.cursor.fetchone()
+                if row is None:
+                    # Both initializers observed an unbound database before either claims it.
+                    barrier.wait(timeout=10)
+                return row
+
+        class Database:
+            def __init__(self, db):
+                self.db = db
+
+            def execute(self, sql, *args):
+                cursor = self.db.execute(sql, *args)
+                return BindingCursor(cursor) if sql == "SELECT value FROM metadata WHERE key='vault_root'" else cursor
+
+            def __getattr__(self, name):
+                return getattr(self.db, name)
+
+        @contextmanager
+        def connect(store):
+            with original_connect(store) as db:
+                yield Database(db)
+
+        def enqueue(vault):
+            try:
+                mutation.enqueue_mutation(state, 'note_create', 'notes/' + vault.name + '.md',
+                                          {'text': vault.name}, vault=vault)
+                return vault, None
+            except ValueError as exc:
+                return vault, str(exc)
+
+        with patch.object(MemoryStore, '_connect', connect), ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(enqueue, (self.vault, other)))
+        accepted = [vault for vault, error in outcomes if error is None]
+        rejected = [(vault, error) for vault, error in outcomes if error is not None]
+        self.assertEqual(len(accepted), 1, outcomes)
+        self.assertEqual(len(rejected), 1, outcomes)
+        self.assertIn('runtime belongs to another vault', rejected[0][1])
+        self.assertEqual(len(mutation.list_mutations(state)), 1)
+        result = mutation.replay_mutations(accepted[0], state)
+        self.assertEqual((result['applied'], result['failed']), (1, 0), result)
+        self.assertTrue((accepted[0] / ('notes/' + accepted[0].name + '.md')).is_file())
+        self.assertFalse((accepted[0] / ('notes/' + rejected[0][0].name + '.md')).exists())
+        self.assertFalse((rejected[0][0] / 'notes').exists())
+
+    def test_cli_enqueue_refuses_state_bound_to_another_vault(self):
+        other = self.tmp / 'other-vault'
+        other.mkdir()
+        payload_file = self.tmp / 'wrong-vault.json'
+        payload_file.write_text(json.dumps({'action': 'note_create', 'source': 'notes/other.md',
+                                            'payload': {'text': 'Other vault content'}}), encoding='utf-8')
+        proc = subprocess.run([sys.executable, str(CLI), '--vault', str(other), '--state', str(self.state),
+                               'mutation-queue', '--enqueue', '--file', str(payload_file)],
+                              capture_output=True, text=True, env=inherited_env(BEYIN_UPDATES_OFF='1'))
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn('runtime belongs to another vault', json.loads(proc.stderr)['message'])
+        self.assertEqual(mutation.list_mutations(self.state), [])
+        self.assertFalse((self.state / mutation.DEVICE_FILE).exists())
+
     def test_enqueue_rejects_malformed_payloads_before_queueing(self):
         for action, source, payload in [
                 ('note_create', 'notes/a.md', {'text': ''}),
@@ -717,6 +945,51 @@ class MutationQueueTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'mutation_id'):
             mutation.enqueue_mutation(self.state, 'note_create', 'notes/once.md', payload, mutation_id='../x')
 
+    def test_enqueue_and_replay_keep_the_runtime_vault_binding(self):
+        # An enqueue for another vault is refused like an ordinary write, so a replay from this
+        # vault cannot write that vault's content here (review on #409).
+        other = self.tmp / 'other-vault'
+        other.mkdir()
+        with self.assertRaisesRegex(ValueError, 'runtime belongs to another vault'):
+            mutation.enqueue_mutation(self.state, 'note_create', 'notes/other.md', {'text': 'other'}, vault=other)
+        payload_file = self.tmp / 'other.json'
+        payload_file.write_text(json.dumps({'action': 'note_create', 'source': 'notes/other.md',
+                                            'payload': {'text': 'other'}}), encoding='utf-8')
+        proc = subprocess.run([sys.executable, str(CLI), '--vault', str(other), '--state', str(self.state),
+                               'mutation-queue', '--enqueue', '--file', str(payload_file)],
+                              capture_output=True, text=True, env=inherited_env(BEYIN_UPDATES_OFF='1'))
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn('runtime belongs to another vault', json.loads(proc.stderr)['message'])
+        self.assertEqual(mutation.list_mutations(self.state), [])
+        # An unbound runtime is bound by its first enqueue, as by an ordinary write.
+        fresh = self.tmp / 'fresh-state'
+        mutation.set_enabled(fresh, True)
+        mutation.enqueue_mutation(fresh, 'note_create', 'notes/other.md', {'text': 'other'}, vault=other)
+        with self.assertRaisesRegex(ValueError, 'runtime belongs to another vault'):
+            SyncEngine(self.vault, fresh)
+        # A record keeps a digest of its binding, never the path. One bound to another vault
+        # (a runtime reset after it was queued) fails without writing; an older record without
+        # the field replays against this runtime's vault as before.
+        bound = mutation.enqueue_mutation(self.state, 'note_create', 'notes/bound.md', {'text': 'bound'},
+                                          vault=self.vault)
+        queue = (self.state / mutation.MUTATION_QUEUE_FILE).read_text(encoding='utf-8')
+        for path in (self.vault, self.vault.resolve()):
+            self.assertNotIn(str(path), queue)
+        foreign = dict(bound, mutation_id='foreign-01', source='notes/foreign.md',
+                       vault_binding=mutation._vault_binding(other.resolve()))
+        legacy = {key: value for key, value in bound.items() if key != 'vault_binding'}
+        legacy.update(mutation_id='legacy-01', source='notes/legacy.md')
+        mutation._save_all_mutations(self.state, [bound, foreign, legacy])
+        result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertEqual((result['applied'], result['conflicts'], result['failed']), (2, 0, 1), result)
+        items = {item['mutation_id']: item for item in mutation.list_mutations(self.state)}
+        self.assertEqual((items['foreign-01']['status'], items['foreign-01']['error']),
+                         ('failed', 'ValueError: queued mutation belongs to another vault'))
+        self.assertTrue((self.vault / 'notes/bound.md').is_file())
+        self.assertTrue((self.vault / 'notes/legacy.md').is_file())
+        self.assertFalse((self.vault / 'notes/foreign.md').exists())
+        self.assertFalse((other / 'notes').exists())
+
     def test_reviewed_conflicts_and_failures_can_be_retried_or_dismissed(self):
         item = mutation.enqueue_mutation(self.state, 'task_update', 'tasks/missing.md',
             {'id': 'missing', 'expected_revision': 1, 'changes': {'status': 'active'}})
@@ -731,6 +1004,137 @@ class MutationQueueTest(unittest.TestCase):
             mutation.resolve(self.state, 'not-a-real-id')
         self.assertEqual(mutation.doctor(self.state)['status'], 'ok')
         self.assertEqual(mutation.clear_applied(self.state), {'status': 'succeeded', 'pruned': 1, 'remaining': 0})
+
+    def _pending_written_note(self, source='notes/recovered.md'):
+        # Model a create interrupted after writing Markdown, before indexing and queue ack.
+        payload = {'text': 'Synthetic recovered note'}
+        mutation.enqueue_mutation(self.state, 'note_create', source, payload)
+        path = self.vault / source
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(mutation._created_note(self.sync, payload))
+        return path
+
+    def test_replay_reports_final_sync_lock_without_replaying_applied_writes(self):
+        import sqlite3
+        path = self._pending_written_note()
+        written, modified = path.read_bytes(), path.stat().st_mtime_ns
+        self.sync.store.busy_timeout = .01
+        blocker = sqlite3.connect(self.sync.store.database)
+        try:
+            blocker.execute('BEGIN IMMEDIATE')
+            result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        finally:
+            blocker.rollback()
+            blocker.close()
+        self.assertEqual((result['status'], result['applied'], result['failed']), ('succeeded', 1, 0))
+        self.assertEqual(result['source_sync']['status'], 'error')
+        self.assertEqual(result['source_sync']['error'], 'OperationalError')
+        self.assertIn('beyin.py sync', result['source_sync']['hint'])
+        self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), (written, modified))
+        self.assertEqual(mutation.list_mutations(self.state)[0]['status'], 'applied')
+        self.assertNotIn('source_sync', mutation.list_mutations(self.state)[0])
+        with self.sync.store._connect() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM markdown_sources WHERE source=?',
+                                        ('notes/recovered.md',)).fetchone()[0], 0)
+        # An empty replay is not a resync command. The reported recovery step indexes the note.
+        again = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertEqual(again['replayed'], 0)
+        self.assertNotIn('source_sync', again)
+        with self.sync.store._connect() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM markdown_sources WHERE source=?',
+                                        ('notes/recovered.md',)).fetchone()[0], 0)
+        self.assertEqual(self.sync.sync()['status'], 'succeeded')
+        with self.sync.store._connect() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM markdown_sources WHERE source=?',
+                                        ('notes/recovered.md',)).fetchone()[0], 1)
+        self.assertEqual(path.read_bytes(), written)
+
+    def test_replay_preserves_bounded_final_sync_warnings(self):
+        self._pending_written_note()
+        for index in range(25):
+            (self.vault / f'notes/unreadable-{index}.md').write_bytes(b'\xff')
+        result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        details = result['source_sync']
+        self.assertEqual(details['status'], 'degraded')
+        self.assertEqual(details['warning_count'], 25)
+        self.assertEqual(len(details['warnings']), 20)
+        self.assertTrue(details['truncated'])
+        self.assertNotIn('source_sync', (self.state / mutation.MUTATION_QUEUE_FILE).read_text())
+
+    def test_replay_preserves_bounded_final_sync_conflicts(self):
+        from beyin_v3_sync import render
+        self._pending_written_note()
+        for index in range(25):
+            for copy in ('a', 'b'):
+                (self.vault / f'notes/duplicate-{index}-{copy}.md').write_text(
+                    render({'id': f'duplicate-{index}'}, 'Synthetic duplicate\n'), encoding='utf-8')
+        result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        details = result['source_sync']
+        self.assertEqual(details['status'], 'conflict')
+        self.assertEqual(details['conflict_count'], 25)
+        self.assertEqual(len(details['conflicts']), 20)
+        self.assertTrue(details['truncated'])
+        self.assertEqual((result['applied'], result['conflicts']), (1, 0))
+
+    def test_replay_clean_sync_and_human_counts_stay_unchanged(self):
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        try:
+            import beyin_entry
+        finally:
+            sys.path.remove(str(ROOT / 'scripts'))
+        self._pending_written_note()
+        result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertNotIn('source_sync', result)
+        self.assertEqual(beyin_entry.human_result(result, 'mutation-queue'),
+                         'Kuyruk yeniden oynatildi: 1 uygulandi, 0 cakisma, 0 basarisiz.')
+        for status in ('error', 'degraded', 'conflict'):
+            with self.subTest(status=status):
+                human = beyin_entry.human_result(dict(result, source_sync={'status': status}), 'mutation-queue')
+                self.assertIn('Kaynak esitlemesi', human)
+                self.assertIn('beyin.py sync', human)
+
+    def test_installed_replay_reports_sync_error_without_exception_contents(self):
+        from v3_package_helpers import install, isolated_env
+        env = isolated_env(self.tmp / 'home')
+        installed = install(self.vault, self.state, env)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        with self.sync.store._connect() as db:
+            db.execute("""CREATE TRIGGER synthetic_sync_failure BEFORE INSERT ON metadata
+                WHEN NEW.key='last_sync_time' BEGIN
+                SELECT RAISE(FAIL, 'synthetic private source text'); END""")
+        sources = {}
+        for mode in ('--json', '--human'):
+            with self.subTest(mode=mode):
+                path = self._pending_written_note('notes/' + mode[2:] + '.md')
+                written = path.read_bytes()
+                sources[path] = written
+                proc = subprocess.run([sys.executable, str(self.vault / 'beyin.py'),
+                    'mutation-queue', '--replay', mode], cwd=self.vault, env=env,
+                    text=True, encoding='utf-8', capture_output=True, timeout=30)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertNotIn('synthetic private source text', proc.stdout + proc.stderr)
+                self.assertIn('beyin.py sync', proc.stdout)
+                if mode == '--json':
+                    result = json.loads(proc.stdout)
+                    self.assertEqual(result['source_sync']['error'], 'IntegrityError')
+                    self.assertEqual((result['applied'], result['failed']), (1, 0))
+                else:
+                    self.assertIn('Kaynak esitlemesi', proc.stdout)
+                self.assertEqual(path.read_bytes(), written)
+                with self.sync.store._connect() as db:
+                    self.assertEqual(db.execute('SELECT COUNT(*) FROM markdown_sources WHERE source=?',
+                        (path.relative_to(self.vault).as_posix(),)).fetchone()[0], 0)
+        with self.sync.store._connect() as db:
+            db.execute('DROP TRIGGER synthetic_sync_failure')
+        proc = subprocess.run([sys.executable, str(self.vault / 'beyin.py'), 'sync', '--json'],
+            cwd=self.vault, env=env, text=True, encoding='utf-8', capture_output=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)['status'], 'succeeded')
+        with self.sync.store._connect() as db:
+            indexed = {row[0] for row in db.execute('SELECT source FROM markdown_sources')}
+        for path, written in sources.items():
+            self.assertIn(path.relative_to(self.vault).as_posix(), indexed)
+            self.assertEqual(path.read_bytes(), written)
 
 
 if __name__ == "__main__":

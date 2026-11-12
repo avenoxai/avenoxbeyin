@@ -52,6 +52,28 @@ class AdvisorTest(unittest.TestCase):
                     evidence=[dict(record_id='a', source_sha256=self.a['source_sha256'],
                                    quote='Quartz project prefers short notes.')])
 
+    def test_nullable_titles_are_empty_bounded_and_do_not_mutate_records(self):
+        for i, title in enumerate((None, '', 'Başlık ' * 40, 123)):
+            with self.subTest(title=title):
+                ident = 'nullable-' + str(i)
+                self.record(ident, title=title)
+                self.config('shadow')
+                self.calls.clear()
+                result = self.context()
+                cards = self.calls[-1]['state']['candidates']
+                self.assertEqual(next(c['title'] for c in cards if c['id'] == ident),
+                                 str(title or '')[:160])
+                self.assertFalse(result['jev']['degraded'])
+                self.assertEqual(next(c['title'] for c in cards if c['id'] == 'b'), '')
+                indexed = {r['id']: r for r in self.store.candidates('short notes', project='quartz')}
+                self.assertEqual(indexed[ident]['title'], title)
+
+    def test_null_private_title_is_not_sent(self):
+        self.record('private', title=None, visibility='private')
+        self.config()
+        self.context()
+        self.assertNotIn('private', {r['id'] for r in self.calls[-1]['state']['candidates']})
+
     def test_off_has_no_calls_or_cache(self):
         local = self.store.retrieve('short notes', project='quartz')
         actual = self.context()

@@ -12,6 +12,24 @@ from unittest.mock import patch
 
 from v3_yakala_windows_test import FakeSession, MODULE, wait_until, yakala as y
 
+# The pipe format of the public 3.12.0 release, copied literally. After `beyin.py update` the
+# listener keeps running its 3.12.0 state copy until `yakala kur`, while every warm popup starts
+# from the updated vault module; after a rollback it is the other way round.
+RELEASED_3_12_0 = {'schema': 3, 'version': 'win-capture-2026.10.13-r2'}
+CURRENT_MESSAGE, CURRENT_VALID = y._protocol_message, y._protocol_valid
+POPUP_KINDS, LISTENER_KINDS = ('READY', 'ACTIVE', 'DONE', 'ERROR'), ('ACTIVATE', 'FOCUS', 'STOP')
+
+
+def released_message(kind, instance, **fields):
+    return dict(type=kind, instance=instance, schema=RELEASED_3_12_0['schema'],
+                version=RELEASED_3_12_0['version'], **fields)
+
+
+def released_valid(message, instance, kinds):
+    return (isinstance(message, dict) and message.get('type') in kinds and message.get('instance') == instance
+            and type(message.get('schema')) is int and message['schema'] == RELEASED_3_12_0['schema']
+            and message.get('version') == RELEASED_3_12_0['version'])
+
 
 class PopupModel:
     def __init__(self, test, instance, mode, pid):
@@ -22,12 +40,13 @@ class PopupModel:
         self.done_seen = False
         self.exit_seen, self.reader_release = threading.Event(), threading.Event()
         self.sent = []
+        self.message = released_message if mode == 'released_3_12_0' else CURRENT_MESSAGE
         self.process = types.SimpleNamespace(pid=pid, returncode=None, stdin=self, stdout=self)
         self.process.poll = self.poll
         self.read_thread = threading.Thread(target=self.read_final, daemon=True)
         self.read_thread.start()
         if mode != 'warm_timeout':
-            self.packets.put(y._protocol_message('READY', instance, hwnd=111, pid=pid))
+            self.packets.put(self.message('READY', instance, hwnd=111, pid=pid))
 
     def poll(self):
         if self.process.returncode is not None:
@@ -44,7 +63,7 @@ class PopupModel:
             self.reader_release.wait(10)
         else:
             time.sleep(0.02)
-            self.packets.put(y._protocol_message('DONE', self.instance, capture_id=self.capture_id))
+            self.packets.put(self.message('DONE', self.instance, capture_id=self.capture_id))
         self.failed.set()  # reader EOF, after its final packet has been queued
 
     def receive(self):
@@ -57,8 +76,8 @@ class PopupModel:
                 # then publishes EOF before the broker checks the failed flag.
                 self.eof_queued = True
                 if self.mode == 'eof_delayed_active_done':
-                    self.packets.put(y._protocol_message('ACTIVE', self.instance, capture_id=self.capture_id))
-                self.packets.put(y._protocol_message('DONE', self.instance, capture_id=self.capture_id))
+                    self.packets.put(self.message('ACTIVE', self.instance, capture_id=self.capture_id))
+                self.packets.put(self.message('DONE', self.instance, capture_id=self.capture_id))
                 self.failed.set()
             return None
         if message['type'] == 'READY':
@@ -78,7 +97,7 @@ class PopupModel:
         if message['type'] == 'ACTIVATE':
             self.capture_id = message['capture_id']
             if self.mode not in ('activation_timeout', 'eof_delayed_active_done'):
-                self.packets.put(y._protocol_message('ACTIVE', self.instance, capture_id=message['capture_id']))
+                self.packets.put(self.message('ACTIVE', self.instance, capture_id=message['capture_id']))
         if message['type'] == 'STOP':
             self.process.returncode = 0
         return True
@@ -334,6 +353,52 @@ class BrokerRecoveryTest(unittest.TestCase):
             self.stop()
         self.assertEqual(self.result, {'code': 0})
         self.assertEqual(len(self.owners), 1)
+
+    def capture_round_trip(self):
+        """One key press, ACTIVE, DONE and exit, then the listener warms the next popup."""
+        # READY accepted: the listener signals ready instead of giving the hotkey back.
+        self.assertTrue(wait_until(lambda: bool(self.owners) and self.owners[0].ready_seen and self.ready(), 5),
+                        self.log())
+        self.assertEqual(list(self.session.hotkeys), [(0x4003, ord('B'))])
+        self.press()
+        self.assertTrue(wait_until(lambda: any(m['type'] == 'ACTIVATE' for m in self.owners[0].sent), 5),
+                        self.log())
+        first = self.owners[0]
+        first.packets.put(first.message('DONE', first.instance, capture_id=first.capture_id))
+        first.process.returncode = 0  # a real popup exits right after DONE
+        self.assert_recovered()
+        self.assertTrue(first.done_seen)
+        self.assertNotIn('uyusmazligi', self.log())
+        self.assertNotIn('gecici hata', self.log())
+        return first
+
+    def test_listener_from_the_3_12_0_release_keeps_working_with_this_popup(self):
+        # Update direction: old listener (state copy), popup from this module.
+        with patch.object(y, '_protocol_message', released_message), \
+                patch.object(y, '_protocol_valid', released_valid):
+            self.start('normal', 'normal')
+            first = self.capture_round_trip()
+        self.assertTrue(first.sent)
+        for message in first.sent:
+            self.assertTrue(CURRENT_VALID(message, first.instance, LISTENER_KINDS), message)
+
+    def test_this_listener_keeps_working_with_a_popup_from_the_3_12_0_release(self):
+        # Rollback direction: listener copy refreshed by `kur`, vault module restored to 3.12.0.
+        self.start('released_3_12_0', 'released_3_12_0')
+        first = self.capture_round_trip()
+        self.assertTrue(first.sent)
+        for message in first.sent:
+            self.assertTrue(released_valid(message, first.instance, LISTENER_KINDS), message)
+
+
+class ProtocolCompatibilityTest(unittest.TestCase):
+    def test_every_message_kind_matches_the_3_12_0_wire_format(self):
+        instance = 'a' * 32
+        for kind in POPUP_KINDS + LISTENER_KINDS:
+            with self.subTest(kind=kind):
+                ours = y._protocol_message(kind, instance, capture_id='b' * 32)
+                self.assertTrue(released_valid(ours, instance, (kind,)), ours)
+                self.assertTrue(y._protocol_valid(released_message(kind, instance), instance, (kind,)))
 
 
 class JsonPipeDirectTest(unittest.TestCase):
