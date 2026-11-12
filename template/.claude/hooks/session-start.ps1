@@ -132,6 +132,11 @@ if ($dailyFile) {
     catch { $daily = '' }
 }
 
+# session-start.sh:61 -- the clock the agent must use when it writes the session
+# card heading `## YYYY-MM-DD HH:MM · <etiket> · <session_id[:8]>`, so it never
+# has to guess and companion-compact never archives the wrong card.
+$now = Get-Date -Format 'yyyy-MM-dd HH:mm'
+
 # session-start.sh:73-87 -- the bare marker plus every per-session one. Each is
 # read, turned into a warning, and DELETED: debt is shown once, then cleared.
 $reflectionParts = [System.Collections.Generic.List[string]]::new()
