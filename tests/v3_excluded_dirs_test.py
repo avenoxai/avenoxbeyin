@@ -217,6 +217,44 @@ class UserListTest(EngineFixture):
                          (['receipts', '.gizli'], 0))
         self.assertEqual(self.engine.excluded_dir_keys, frozenset())
 
+    def test_path_entry_prunes_only_that_directory(self):
+        # Issue #629: a vault-root-relative path prunes only that directory, not every same-named one.
+        self.config({'excluded_dirs': ['projects/dukkan/research']})
+        self.note('knowledge/research/summary.md', 'Nebula calibration distilled research.\n')
+        self.note('projects/dukkan/research/draft.md', 'Nebula calibration raw draft.\n')
+        self.note('projects/other/research/notes.md', 'Nebula calibration other research.\n')
+        self.note('notlar/gercek.md', 'Nebula calibration real note.\n')
+        result = self.engine.sync()
+        self.assertEqual(result['status'], 'succeeded')
+        self.assertEqual(sorted(self.sources()), sorted(['knowledge/research/summary.md',
+                                                         'projects/other/research/notes.md',
+                                                         'notlar/gercek.md']))
+        self.assertEqual(result['index_exclusions'], {
+            'excluded_dirs': ['projects/dukkan/research'], 'pruned': 1,
+            'pruned_dirs': ['projects/dukkan/research']})
+
+    def test_path_entry_case_folding(self):
+        # dir_key folds every path component: case and NFC/NFD match.
+        self.config({'excluded_dirs': ['PROJE/DUKKAN/RESEARCH']})
+        self.note('proje/dukkan/research/draft.md', 'Nebula calibration raw draft.\n')
+        self.note('projects/dukkan/research/other.md', 'Nebula calibration different top level.\n')
+        self.note('notlar/gercek.md', 'Nebula calibration real note.\n')
+        result = self.engine.sync()
+        self.assertEqual(result['status'], 'succeeded')
+        self.assertEqual(sorted(self.sources()), sorted(['projects/dukkan/research/other.md',
+                                                         'notlar/gercek.md']))
+        self.assertEqual(result['index_exclusions']['pruned'], 1)
+
+    def test_backslash_normalized_to_slash(self):
+        # Windows backslashes are stored as forward slashes.
+        self.config({'excluded_dirs': ['proje\\dukkan\\research']})
+        self.note('proje/dukkan/research/draft.md', 'Nebula calibration raw draft.\n')
+        self.note('notlar/gercek.md', 'Nebula calibration real note.\n')
+        result = self.engine.sync()
+        self.assertEqual(result['status'], 'succeeded')
+        self.assertEqual(self.sources(), ['notlar/gercek.md'])
+        self.assertEqual(result['index_exclusions']['excluded_dirs'], ['proje/dukkan/research'])
+
     def test_built_in_and_hidden_names_are_harmless_and_receipts_keep_working(self):
         self.config({'excluded_dirs': ['node_modules', 'receipts', '.venv', 'target']})
         self.note('notes/kaynak.md', 'Nebula calibration receipt source.\n')
@@ -258,7 +296,9 @@ class RefusedConfigTest(EngineFixture):
 
     def test_one_bad_entry_refuses_the_whole_list(self):
         # 3rdparty is a valid entry and a real directory: a half-applied list would prune it.
-        for bad in ('../gizli', 'a/b', 'a\\b', '', ' 3rdparty ', '.', '..', 7, None, 'x' * 256, 'satir\nsonu'):
+        # Path entries ('a/b') are now valid vault-root-relative exclusions; bare bad entries still refuse.
+        for bad in ('../gizli', '', ' 3rdparty ', '.', '..', 7, None, 'x' * 256, 'satir\nsonu',
+                    '/absolute', 'C:\\absolute', 'a//b', 'a/..'):
             with self.subTest(entry=bad):
                 self.config({'excluded_dirs': ['3rdparty', bad]})
                 self.refused('excluded_dirs')
@@ -342,7 +382,8 @@ class SettingsFileTest(unittest.TestCase):
     def test_a_refused_change_writes_nothing(self):
         index_settings.save(self.state, self.vault, ['3rdparty'])
         before = (self.state / 'index.json').read_bytes()
-        for name in ('notes', 'knowledge', 'tasks', '🔮 850-Companion', 'a/b', '..', ''):
+        for name in ('notes', 'knowledge', 'tasks', '🔮 850-Companion', '..', '', '/absolute',
+                     'a//b', 'a/..'):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 index_settings.save(self.state, self.vault, [name])
         with self.assertRaises(ValueError):
