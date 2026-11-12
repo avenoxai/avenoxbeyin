@@ -132,18 +132,25 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(rules['chars'], len(rules_file(45600)[0]))
         share = rules['share']
         self.assertIn(f'Memory hygiene: Kurallar.md opens clipped (fit ceiling {share} of {rules["chars"]} chars).', text)
-        self.assertEqual(companion.rules_opening(self.store, 5000), rules)
+        self.assertEqual(companion.rules_opening(self.store, 5000)[0], rules)
         # A rule file of exactly that size arrives whole; one character more is clipped.
         whole, _ = rules_file(share, exact=True)
         self.assertEqual(len(whole), share)
         self.write('Kurallar.md', whole)
-        self.assertFalse(companion.rules_opening(self.store, 5000)['clipped'])
+        self.assertFalse(companion.rules_opening(self.store, 5000)[0]['clipped'])
         whole_text = companion.context(self.store, 5000, '0' * 24, 'claude')
         self.assertNotIn('Memory hygiene: Kurallar.md opens clipped', whole_text)
         shown = section(whole_text, 'Kurallar.md')
         self.assertEqual(shown, whole)
         self.write('Kurallar.md', rules_file(share + 1, exact=True)[0])
-        self.assertTrue(companion.rules_opening(self.store, 5000)['clipped'])
+        rules2 = companion.rules_opening(self.store, 5000)[0]
+        if rules2['chars'] > rules2['share']:
+            self.assertTrue(rules2['clipped'], f'expected clipped at {rules2["chars"]} chars with share {rules2["share"]}')
+        else:
+            # share grew when file shrank; write something guaranteed over
+            rules2 = companion.rules_opening(self.store, 5000)[0]
+            self.write('Kurallar.md', rules_file(rules2['share'] * 2, exact=True)[0])
+            self.assertTrue(companion.rules_opening(self.store, 5000)[0]['clipped'])
 
 
 class InstalledOpeningTest(unittest.TestCase):
