@@ -72,6 +72,10 @@ paralel oturumların daha eski devir kartları ve konu kartlarının tamamı sı
 işaretiyle biter. Konu kartları ya tam ya kısa görünümleriyle gelir; tam kartın kullanamadığı
 alan öbür kaynaklara geri döner.
 
+Konu ve devir kartı sınırları bulunurken kod çiti yalnız aynı işaretle, en az açılış
+uzunluğunda ve ardından yalnız boşluk varsa kapanır. İşaretten sonra örnek metin bulunan
+satır çiti kapatmaz; içindeki başlıklar yeni konu veya eski devir kartı sayılmaz.
+
 `Threads.md` içindeki `###` başlıklarının her biri kısa görünümde korunur. `**Status:**` /
 `**Durum:**` ile `**Next step:**` / `**Sonraki adım:**` paragrafları varsa bunlar, devam
 satırlarıyla birlikte aynen alınır; kalın yazılmamış `Status:` / `Next:` alanları da tanınır.
@@ -83,6 +87,8 @@ sığamayacak kadar küçük bütçelerde bütün başlıkların görünmesi gar
 Bu seçim anlamsal bir özet değildir; etiketsiz veya farklı ifadeli bir sonraki adımı
 bulacağı garanti edilmez. Kısa görünüm ayrıntı ve etiketsiz adımlar için kaynağa yönlendirir.
 Kapalı konular ve kod çitlerindeki örnek başlıklar bu görünümün parçası değildir.
+Kod çitlerinin içindeki örnek durum/sonraki adım alanları ve bekleyen iş cümleleri de kısa
+görünüme alınmaz; alan yetip tam konu kartı gösterildiğinde kod örnekleri aynen korunur.
 Kısa görünüm de sığmadığında bütün başlıklar korunur; alan dosyadaki sırayla konulara en az
 80 karakterlik dilimler halinde verilir, sonrakiler yalnız başlıklarıyla gelir ve bölüm
 `[Thread overview clipped; read source]` işaretiyle biter. Yüzlerce konuda her başlığa bir iki

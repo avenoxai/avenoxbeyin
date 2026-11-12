@@ -46,6 +46,8 @@ Her katkıya aynı ağırlıkta süreç uygulanmaz:
 
 **Geriye dönük uyumluluk:** Mevcut public API/CLI, kullanıcı verisi, yapılandırma, dosya yolu, hook ve paket sözleşmelerini mümkün olduğunca koruyun. Gerçekten uyumsuz bir değişiklik gerekiyorsa etkilenen kullanıcıları, geçiş/migration yolunu, uygun bir deprecation/uyumluluk katmanı ihtiyacını ve geri dönüş sınırlarını önceden açıklayın; iç refactor için gereksiz deprecation başlatmayın. Gerektiğinde önce uyumluluk katmanını, sonra iç taşıma işini ayrı PR'lara bölün.
 
+Kurulu `beyin.py` girişinin `--human` çıktısı pipe veya dosyaya yönlendirildiğinde UTF-8 olarak yazılır; etkileşimli terminalin kodlaması korunur.
+
 **Temel V3 kontrolleri** (repo kökünde):
 
 ```bash

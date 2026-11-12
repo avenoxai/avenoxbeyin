@@ -37,7 +37,13 @@ import unicodedata
 _MODULE_DIR = str(Path(__file__).resolve().parent)
 if _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
-from beyin_v3 import SENSITIVE_WORDS, sensitive_fold as fold, sensitive_excluded, sensitive_source
+# Compatibility exports used by the sync/bridge/projection modules and Yakala checks.
+from beyin_v3 import (
+    SENSITIVE_WORDS as SENSITIVE_WORDS,
+    sensitive_fold as fold,
+    sensitive_excluded,
+    sensitive_source as sensitive_source,
+)
 
 # Companion memory files grow by design and are compacted by the
 # companion-compact protocol, so they are fully exempt from every scan here
@@ -753,15 +759,14 @@ def _capture_time(path):
 
     A clone, a sync client or a restore rewrites mtimes, so a week-old capture would read as new;
     the note's own date survives that. A missing or malformed date falls back to the mtime.
+    A read error propagates to the folder report: without metadata, even whether a card
+    is still pending is unknown and must not be guessed from its mtime.
     """
     if fold(path.stem) in ('inbox', 'index', 'gelenkutusu'):
         return None
     modified = path.stat().st_mtime
-    try:
-        with path.open(encoding='utf-8', errors='replace') as handle:
-            head = handle.read(4096)
-    except OSError:
-        return modified
+    with path.open(encoding='utf-8', errors='replace') as handle:
+        head = handle.read(4096)
     values = _front_values(head, ('created', 'tur', 'durum', 'yakalandi', 'type', 'kind'))
     if values.get('type') == 'index' or values.get('kind') == 'index' or values.get('tur') == 'indeks':
         return None

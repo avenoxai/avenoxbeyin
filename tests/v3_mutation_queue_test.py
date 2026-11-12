@@ -84,6 +84,41 @@ class MutationQueueTest(unittest.TestCase):
                 operation()
             self.assertEqual(queue.read_bytes(), original)
 
+    def test_replay_isolates_pending_entry_missing_action(self):
+        self._assert_missing_field_isolated('action')
+
+    def test_replay_isolates_pending_entry_missing_source(self):
+        self._assert_missing_field_isolated('source')
+
+    def _assert_missing_field_isolated(self, missing):
+        broken_source = f'notes/broken-{missing}.md'
+        valid_source = f'notes/valid-{missing}.md'
+        broken = mutation.enqueue_mutation(self.state, 'note_create', broken_source,
+            {'text': 'Malformed queued note'})
+        valid = mutation.enqueue_mutation(self.state, 'note_create', valid_source,
+            {'text': 'Independent queued note'})
+        queue = self.state / mutation.MUTATION_QUEUE_FILE
+        rows = mutation.list_mutations(self.state)
+        next(row for row in rows if row['mutation_id'] == broken['mutation_id']).pop(missing)
+        queue.write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8')
+
+        proc = subprocess.run([sys.executable, str(CLI), '--vault', str(self.vault),
+            '--state', str(self.state), 'mutation-queue', '--replay'],
+            capture_output=True, text=True, env=inherited_env())
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertEqual((result['replayed'], result['applied'], result['failed']), (2, 1, 1))
+        saved = {row['mutation_id']: row for row in mutation.list_mutations(self.state)}
+        self.assertEqual(saved[broken['mutation_id']]['status'], 'failed')
+        self.assertIn(missing, saved[broken['mutation_id']]['error'])
+        self.assertNotIn(missing, saved[broken['mutation_id']])
+        self.assertEqual(saved[broken['mutation_id']]['payload'], broken['payload'])
+        self.assertEqual(saved[valid['mutation_id']]['status'], 'applied')
+        self.assertFalse((self.vault / broken_source).exists())
+        self.assertIn('Independent queued note', (self.vault / valid_source).read_text())
+        replay = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertEqual(replay['replayed'], 0)
+
     def test_doctor_does_not_create_identity_or_state(self):
         empty = self.tmp / 'absent-state'
         self.assertEqual(mutation.doctor(empty), {'enabled': False})
@@ -868,6 +903,137 @@ class MutationQueueTest(unittest.TestCase):
             mutation.resolve(self.state, 'not-a-real-id')
         self.assertEqual(mutation.doctor(self.state)['status'], 'ok')
         self.assertEqual(mutation.clear_applied(self.state), {'status': 'succeeded', 'pruned': 1, 'remaining': 0})
+
+    def _pending_written_note(self, source='notes/recovered.md'):
+        # Model a create interrupted after writing Markdown, before indexing and queue ack.
+        payload = {'text': 'Synthetic recovered note'}
+        mutation.enqueue_mutation(self.state, 'note_create', source, payload)
+        path = self.vault / source
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(mutation._created_note(self.sync, payload))
+        return path
+
+    def test_replay_reports_final_sync_lock_without_replaying_applied_writes(self):
+        import sqlite3
+        path = self._pending_written_note()
+        written, modified = path.read_bytes(), path.stat().st_mtime_ns
+        self.sync.store.busy_timeout = .01
+        blocker = sqlite3.connect(self.sync.store.database)
+        try:
+            blocker.execute('BEGIN IMMEDIATE')
+            result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        finally:
+            blocker.rollback()
+            blocker.close()
+        self.assertEqual((result['status'], result['applied'], result['failed']), ('succeeded', 1, 0))
+        self.assertEqual(result['source_sync']['status'], 'error')
+        self.assertEqual(result['source_sync']['error'], 'OperationalError')
+        self.assertIn('beyin.py sync', result['source_sync']['hint'])
+        self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), (written, modified))
+        self.assertEqual(mutation.list_mutations(self.state)[0]['status'], 'applied')
+        self.assertNotIn('source_sync', mutation.list_mutations(self.state)[0])
+        with self.sync.store._connect() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM markdown_sources WHERE source=?',
+                                        ('notes/recovered.md',)).fetchone()[0], 0)
+        # An empty replay is not a resync command. The reported recovery step indexes the note.
+        again = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertEqual(again['replayed'], 0)
+        self.assertNotIn('source_sync', again)
+        with self.sync.store._connect() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM markdown_sources WHERE source=?',
+                                        ('notes/recovered.md',)).fetchone()[0], 0)
+        self.assertEqual(self.sync.sync()['status'], 'succeeded')
+        with self.sync.store._connect() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM markdown_sources WHERE source=?',
+                                        ('notes/recovered.md',)).fetchone()[0], 1)
+        self.assertEqual(path.read_bytes(), written)
+
+    def test_replay_preserves_bounded_final_sync_warnings(self):
+        self._pending_written_note()
+        for index in range(25):
+            (self.vault / f'notes/unreadable-{index}.md').write_bytes(b'\xff')
+        result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        details = result['source_sync']
+        self.assertEqual(details['status'], 'degraded')
+        self.assertEqual(details['warning_count'], 25)
+        self.assertEqual(len(details['warnings']), 20)
+        self.assertTrue(details['truncated'])
+        self.assertNotIn('source_sync', (self.state / mutation.MUTATION_QUEUE_FILE).read_text())
+
+    def test_replay_preserves_bounded_final_sync_conflicts(self):
+        from beyin_v3_sync import render
+        self._pending_written_note()
+        for index in range(25):
+            for copy in ('a', 'b'):
+                (self.vault / f'notes/duplicate-{index}-{copy}.md').write_text(
+                    render({'id': f'duplicate-{index}'}, 'Synthetic duplicate\n'), encoding='utf-8')
+        result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        details = result['source_sync']
+        self.assertEqual(details['status'], 'conflict')
+        self.assertEqual(details['conflict_count'], 25)
+        self.assertEqual(len(details['conflicts']), 20)
+        self.assertTrue(details['truncated'])
+        self.assertEqual((result['applied'], result['conflicts']), (1, 0))
+
+    def test_replay_clean_sync_and_human_counts_stay_unchanged(self):
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        try:
+            import beyin_entry
+        finally:
+            sys.path.remove(str(ROOT / 'scripts'))
+        self._pending_written_note()
+        result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertNotIn('source_sync', result)
+        self.assertEqual(beyin_entry.human_result(result, 'mutation-queue'),
+                         'Kuyruk yeniden oynatildi: 1 uygulandi, 0 cakisma, 0 basarisiz.')
+        for status in ('error', 'degraded', 'conflict'):
+            with self.subTest(status=status):
+                human = beyin_entry.human_result(dict(result, source_sync={'status': status}), 'mutation-queue')
+                self.assertIn('Kaynak esitlemesi', human)
+                self.assertIn('beyin.py sync', human)
+
+    def test_installed_replay_reports_sync_error_without_exception_contents(self):
+        from v3_package_helpers import install, isolated_env
+        env = isolated_env(self.tmp / 'home')
+        installed = install(self.vault, self.state, env)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        with self.sync.store._connect() as db:
+            db.execute("""CREATE TRIGGER synthetic_sync_failure BEFORE INSERT ON metadata
+                WHEN NEW.key='last_sync_time' BEGIN
+                SELECT RAISE(FAIL, 'synthetic private source text'); END""")
+        sources = {}
+        for mode in ('--json', '--human'):
+            with self.subTest(mode=mode):
+                path = self._pending_written_note('notes/' + mode[2:] + '.md')
+                written = path.read_bytes()
+                sources[path] = written
+                proc = subprocess.run([sys.executable, str(self.vault / 'beyin.py'),
+                    'mutation-queue', '--replay', mode], cwd=self.vault, env=env,
+                    text=True, encoding='utf-8', capture_output=True, timeout=30)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertNotIn('synthetic private source text', proc.stdout + proc.stderr)
+                self.assertIn('beyin.py sync', proc.stdout)
+                if mode == '--json':
+                    result = json.loads(proc.stdout)
+                    self.assertEqual(result['source_sync']['error'], 'IntegrityError')
+                    self.assertEqual((result['applied'], result['failed']), (1, 0))
+                else:
+                    self.assertIn('Kaynak esitlemesi', proc.stdout)
+                self.assertEqual(path.read_bytes(), written)
+                with self.sync.store._connect() as db:
+                    self.assertEqual(db.execute('SELECT COUNT(*) FROM markdown_sources WHERE source=?',
+                        (path.relative_to(self.vault).as_posix(),)).fetchone()[0], 0)
+        with self.sync.store._connect() as db:
+            db.execute('DROP TRIGGER synthetic_sync_failure')
+        proc = subprocess.run([sys.executable, str(self.vault / 'beyin.py'), 'sync', '--json'],
+            cwd=self.vault, env=env, text=True, encoding='utf-8', capture_output=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)['status'], 'succeeded')
+        with self.sync.store._connect() as db:
+            indexed = {row[0] for row in db.execute('SELECT source FROM markdown_sources')}
+        for path, written in sources.items():
+            self.assertIn(path.relative_to(self.vault).as_posix(), indexed)
+            self.assertEqual(path.read_bytes(), written)
 
 
 if __name__ == "__main__":

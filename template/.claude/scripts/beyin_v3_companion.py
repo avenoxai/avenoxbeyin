@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 import unicodedata
 
@@ -25,18 +26,32 @@ STARTERS = {
 }
 
 
-def directory(vault):
-    """Reuse one existing local identity directory; never guess between identities."""
+def directory(vault, *, strict=False):
+    """Reuse one existing local identity directory; never guess between identities.
+
+    Strict discovery lets read-only diagnostics report inaccessible candidates instead
+    of relying on pathlib predicates that suppress inspection errors on newer Python.
+    Other callers retain their existing best-effort behavior.
+    """
+    def is_type(path, kind):
+        if not strict:
+            return getattr(path, 'is_' + kind)()
+        try:
+            mode = path.stat(follow_symlinks=kind != 'symlink').st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+        return {'dir': stat.S_ISDIR, 'file': stat.S_ISREG, 'symlink': stat.S_ISLNK}[kind](mode)
+
     vault = Path(vault).resolve()
     candidates = []
     named = []
     for path in vault.iterdir():
-        if (path.name.startswith('.') or path.is_symlink() or not path.is_dir() or
+        if (path.name.startswith('.') or is_type(path, 'symlink') or not is_type(path, 'dir') or
                 re.search(r'(?i)(archive|arşiv|arsiv)', path.name)):
             continue
         if path.name == DEFAULT_DIRECTORY or path.name.casefold().endswith(('companion', 'echo')):
             named.append(path)
-        elif any((path / name).is_file() for name in ('Core.md', 'Soul.md')):
+        elif any(is_type(path / name, 'file') for name in ('Core.md', 'Soul.md')):
             candidates.append(path)
     candidates = named or candidates
     if len(candidates) > 1:
@@ -990,7 +1005,8 @@ def headings(text, level):
     for line in text.splitlines(keepends=True):
         match = FENCE.match(line)
         if fence:
-            if match and match[1][0] == fence[0] and len(match[1]) >= len(fence):
+            if (match and match[1][0] == fence[0] and len(match[1]) >= len(fence)
+                    and not line[match.end():].strip()):
                 fence = None
         elif match:
             fence = match[1]
@@ -1064,6 +1080,24 @@ def thread_view(text, budget, brief=False):
     return prefix + '\n\n'.join(chosen) + ('\n' if whole else THREAD_OVERVIEW_MARKER)
 
 
+def thread_prose(text):
+    """Overview input without fenced examples; full topic cards keep their source text."""
+    lines, fence = [], None
+    for line in text.splitlines(keepends=True):
+        match = FENCE.match(line)
+        if fence:
+            if (match and match[1][0] == fence[0] and len(match[1]) >= len(fence)
+                    and not line[match.end():].strip()):
+                fence = None
+                lines.append('\n')
+        elif match:
+            fence = match[1]
+            lines.append('\n')  # do not join paragraphs on opposite sides of an example
+        else:
+            lines.append(line)
+    return ''.join(lines)
+
+
 def thread_cards(text, brief=False):
     """(text before the first topic, [(whole card, overview card)]) or None without topics."""
     starts = headings(text, 3)
@@ -1073,6 +1107,7 @@ def thread_cards(text, brief=False):
     for i, start in enumerate(starts):
         card = text[start:starts[i + 1] if i + 1 < len(starts) else len(text)].strip()
         title, _, body = card.partition('\n')
+        body = thread_prose(body)
         # A field can also follow another field without a blank line. Keep wrapped
         # lines with their field, rather than mistaking them for an older update.
         fields = re.split(r'\n(?=[ \t]*(?:[-*+] )?(?:\*\*[^*\n]+\*\*|(?:Status|Durum|Next|Sonraki|Sıradaki)\b))', body,

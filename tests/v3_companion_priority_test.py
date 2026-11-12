@@ -152,6 +152,68 @@ class OpeningPriorityTest(unittest.TestCase):
         self.assertIn('Status: ready\nNext: verify', result)
         self.assertNotIn('old status', result)
 
+    def test_fenced_example_fields_never_replace_current_thread_fields(self):
+        status = '**Status:** REAL_STATE\n  Wrapped current status.'
+        step = '**Next step:** REAL_NEXT\n  Wrapped current step.'
+        cases = (
+            ('```text', '', '```'),
+            ('~~~markdown', '```\nNext: EXAMPLE_OTHER_MARK\n', '~~~'),
+            ('````text', '```\nNext: EXAMPLE_SHORT_CLOSE\n', '`````'),
+            ('   ```text', '', '   ```'),
+            ('```text', '```not-a-close\nNext: EXAMPLE_SUFFIX_CLOSE\n', '```'),
+        )
+        for opener, inside, closer in cases:
+            with self.subTest(opener=opener, inside=inside):
+                text = ('## Active Threads\n### Topic\nExample field syntax:\n' + opener +
+                        '\nStatus: EXAMPLE_STATE\nNext: EXAMPLE_NEXT\n' + inside + closer + '\n\n' +
+                        status + '\n' + step + '\n\n' + 'Old history. ' * 300)
+                for brief in (False, True):
+                    for result in (companion.thread_overview(text, brief=brief),
+                                   companion.thread_view(text, 500, brief=brief)):
+                        self.assertIn(status, result)
+                        self.assertIn(step, result)
+                        self.assertNotIn('EXAMPLE_', result)
+                        self.assertNotIn('```', result)
+                        self.assertNotIn('~~~', result)
+                        self.assertIn('read source', result)
+                # Affordable full cards still carry their exact original examples.
+                self.assertEqual(companion.thread_view(text, len(text)), text)
+
+    def test_thread_prose_fallback_does_not_promote_fenced_pending_actions(self):
+        text = ('## Active Threads\n### Topic\nPrototype ready.\n\n'
+                '```text\nNext: EXAMPLE_NEXT.\n```\n\nPending: REAL_NEXT.\n')
+        result = companion.thread_overview(text)
+        self.assertIn('Prototype ready.', result)
+        self.assertIn('Pending: REAL_NEXT.', result)
+        self.assertNotIn('EXAMPLE_', result)
+        # An unfinished example is not a live action either.
+        unfinished = '## Active Threads\n### Topic\nPrototype ready.\n```text\nNext: EXAMPLE_NEXT.'
+        result = companion.thread_overview(unfinished)
+        self.assertIn('Prototype ready.', result)
+        self.assertNotIn('EXAMPLE_', result)
+
+    def test_opening_context_keeps_real_next_step_after_a_fenced_example(self):
+        threads = ('## Active Threads\n### Release checklist\nExample field syntax:\n'
+                   '```text\nStatus: EXAMPLE_STATE\nNext: EXAMPLE_NEXT\n```\n\n'
+                   'Status: REAL_WAITING_REVIEW\nNext: REAL_REQUEST_APPROVAL\n\n' +
+                   'Historical detail. ' * 300)
+        for name, text in (('Core.md', '# Identity\nSynthetic assistant.'),
+                           ('Kurallar.md', '# Rules\nAsk before changes.'),
+                           ('Last-Session.md', '## 2026-11-01\nAwait review.'),
+                           ('Threads.md', threads)):
+            self.write(f'{DIRECTORY}/{name}', text)
+        original = (self.vault / DIRECTORY / 'Threads.md').read_bytes()
+        for budget in (2000, 4000):
+            for harness in ('claude', 'codex', 'hermes'):
+                with self.subTest(budget=budget, harness=harness):
+                    text = companion.context(self.store, budget, 'synthetic', harness)
+                    self.assertLessEqual(len(text), budget)
+                    self.assertIn('### Release checklist', text)
+                    self.assertIn('Status: REAL_WAITING_REVIEW', text)
+                    self.assertIn('Next: REAL_REQUEST_APPROVAL', text)
+                    self.assertNotIn('EXAMPLE_', text)
+        self.assertEqual((self.vault / DIRECTORY / 'Threads.md').read_bytes(), original)
+
     def test_affordable_rules_stay_whole_when_the_thread_overview_cannot_fit(self):
         self.seed()
         # The explicit fields are themselves large: they must yield room to rules,

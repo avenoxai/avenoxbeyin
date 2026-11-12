@@ -178,6 +178,9 @@ def index_exclusion_lines(report, pruned=False):
     """Lines for the user's index exclusions (state/index.json); shared by doctor, sync and preferences."""
     if not isinstance(report, dict):
         return []
+    if report.get('status') == 'unavailable':
+        return ['Indeks kapsami denetlenemedi (' + plain_text(report.get('error', 'unknown')) +
+                '); indeks dislama ayarlari ve klasor ipuclari dogrulanamadi.']
     lines = []
     if report.get('excluded_dirs'):
         lines.append('Indeks disi klasor adlari (senin listen, her derinlikte): ' +
@@ -405,8 +408,12 @@ def human_result(result, command, installed_version=None):
                     '; ' + str(result.get('pending_count', 0)) + ' bekleyen, ' + str(result.get('conflict_count', 0)) +
                     ' cakisma, ' + str(result.get('failed_count', 0)) + ' basarisiz.')
         if 'replayed' in result:
-            return ('Kuyruk yeniden oynatildi: ' + str(result.get('applied', 0)) + ' uygulandi, ' +
+            text = ('Kuyruk yeniden oynatildi: ' + str(result.get('applied', 0)) + ' uygulandi, ' +
                     str(result.get('conflicts', 0)) + ' cakisma, ' + str(result.get('failed', 0)) + ' basarisiz.')
+            if result.get('source_sync', {}).get('status') in ('error', 'degraded', 'conflict'):
+                text += ('\nKaynak esitlemesi dikkat gerektiriyor; tanilamak ve indeksi yenilemek icin '
+                         'beyin.py sync calistir. Uygulanan kayitlari yeniden kuyruga ekleme.')
+            return text
         if 'pruned' in result:
             return 'Kuyruktan ' + str(result['pruned']) + ' kayit temizlendi; ' + str(result.get('remaining', 0)) + ' kayit kaldi.'
         if result.get('mutation_id'):
@@ -498,7 +505,10 @@ def human_result(result, command, installed_version=None):
                          (' (gerekceler de cikarildi)' if rules_opening.get('reasons_omitted') else '') +
                          '. Kurallari kisa tut; uzun gerekceyi ve ayrintiyi ayri bir nota (or. Kurallar-Detay.md) tasi.')
         references = result.get('instruction_references') or {}
-        if references.get('dead_count'):
+        if references.get('status') == 'unavailable':
+            lines.append('Talimat ve skill baglanti denetimi tamamlanamadi (bilgi): ' +
+                         plain_text(references.get('error', 'unknown')) + '.')
+        elif references.get('dead_count'):
             shown = ', '.join(entry['file'] + ':' + str(entry['line']) + ' -> ' + entry['target']
                               for entry in references['dead'][:3])
             more = references['dead_count'] - min(3, len(references['dead']))
@@ -794,10 +804,14 @@ def main(argv=None):
     argv = [arg for arg in argv if arg not in ('--human', '--json')]
     if human:
         # A piped or redirected Windows console uses a legacy code page (cp1252 has no s-cedilla);
-        # an unencodable character must print as '?' instead of failing the whole command.
+        # write redirected human output as UTF-8 so stored text and paths survive intact.
+        # Keep the interactive terminal's encoding and replacement behavior.
         for stream in (sys.stdout, sys.stderr):
             if hasattr(stream, 'reconfigure'):
-                stream.reconfigure(errors='replace')
+                if stream.isatty():
+                    stream.reconfigure(errors='replace')
+                else:
+                    stream.reconfigure(encoding='utf-8', errors='replace')
     command = argv[0] if argv else 'doctor'
     if command in ('note-read', 'note-edit'):
         human = False  # These commands have a JSON contract, including on a terminal.

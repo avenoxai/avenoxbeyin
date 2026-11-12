@@ -453,7 +453,7 @@ class YakalaSecurityTest(unittest.TestCase):
                 pass
         server = HTTPServer(('127.0.0.1', 0), Handler)
         self.addCleanup(server.server_close)
-        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         worker.start()
         self.addCleanup(worker.join, 5)
         self.addCleanup(server.shutdown)
@@ -494,7 +494,7 @@ class YakalaSecurityTest(unittest.TestCase):
                 pass
         server = HTTPServer(('127.0.0.1', 0), Handler)
         self.addCleanup(server.server_close)
-        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         worker.start()
         self.addCleanup(worker.join, 5)
         self.addCleanup(server.shutdown)

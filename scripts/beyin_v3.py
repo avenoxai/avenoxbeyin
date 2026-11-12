@@ -1789,14 +1789,14 @@ def main(argv=None, return_result=False):
             # indexed trees that look vendored. Reads the index and one small file; no vault walk.
             try:
                 import beyin_v3_index as index_settings
-                try:
-                    with store._connect() as db:
+                with store._connect() as db:
+                    # Before the first sync this table may legitimately be absent. Any
+                    # other query or payload error must reach the unavailable report below.
+                    rows = []
+                    if db.execute("SELECT 1 FROM sqlite_master WHERE name = 'markdown_sources' COLLATE NOCASE").fetchone():
                         rows = db.execute('SELECT m.source, r.payload FROM markdown_sources m LEFT JOIN records r ON r.id = m.id').fetchall()
-                        indexed_sources = [row[0] for row in rows]
-                        indexed_records = [json.loads(row[1]) if row[1] else {'source': row[0]} for row in rows]
-                except Exception:  # no sync has created the table yet
-                    indexed_sources = []
-                    indexed_records = []
+                indexed_sources = [row[0] for row in rows]
+                indexed_records = [json.loads(row[1]) if row[1] else {'source': row[0]} for row in rows]
                 result['index_exclusions'] = index_settings.doctor(state, vault, indexed_sources, records=indexed_records)
                 result['index_exclusions']['always_excluded'] = sorted(sys.modules['beyin_v3_sync'].EXCLUDED_DIRS)
             except Exception as exc:  # never hides the rest of doctor
@@ -2153,13 +2153,13 @@ def main(argv=None, return_result=False):
             else:
                 target_sess = sess
             if args.resolve:
-                count = resolve_candidates(state, session=target_sess, target_status=args.resolve)
+                count = resolve_candidates(state, session=target_sess, target_status=args.resolve, strict=True)
                 result = {"status": "succeeded", "resolved_count": count, "session": target_sess, "target_status": args.resolve}
             elif args.candidate:
                 result = stage_candidate(state, sess, args.candidate, source=args.source, scope=args.scope or "global")
             elif args.list:
                 list_sess = None if getattr(args, "all", False) else (args.session or None)
-                result = {"candidates": list_candidates(state, session=list_sess, scope=args.scope)}
+                result = {"candidates": list_candidates(state, session=list_sess, scope=args.scope, strict=True)}
             else:
                 raise ValueError("one of --candidate, --list, or --resolve is required")
         elif args.command == "workspace":

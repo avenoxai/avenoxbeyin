@@ -24,6 +24,14 @@ hygiene = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(hygiene)
 
 
+class CompatibilityExportsTest(unittest.TestCase):
+    def test_shared_privacy_exports_are_the_core_objects(self):
+        import beyin_v3
+
+        self.assertIs(hygiene.SENSITIVE_WORDS, beyin_v3.SENSITIVE_WORDS)
+        self.assertIs(hygiene.sensitive_source, beyin_v3.sensitive_source)
+
+
 class BoundaryTest(unittest.TestCase):
     def test_notebook_edit_path_is_recognized_without_scanning(self):
         notebook = (self.vault / 'notebook.ipynb').resolve()

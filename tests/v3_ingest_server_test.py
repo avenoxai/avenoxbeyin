@@ -67,7 +67,7 @@ class IngestServerTest(unittest.TestCase):
         port = server.server_address[1]
         base_url = f"http://127.0.0.1:{port}"
 
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         thread.start()
 
         def cleanup_server():
@@ -244,7 +244,7 @@ class IngestServerTest(unittest.TestCase):
 
     def test_tokenless_loopback_refuses_browser_writes_but_accepts_native(self):
         server = ingest_server.create_server(self.vault, port=0)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         thread.start()
         self.addCleanup(lambda: (server.shutdown(), server.server_close(), thread.join(2)))
         url = f'http://127.0.0.1:{server.server_address[1]}/ingest'
@@ -284,7 +284,7 @@ class IngestServerTest(unittest.TestCase):
         server.process_request = lambda request, address: (accepted.append(1), process_request(request, address))
         shutdown_request = server.shutdown_request
         server.shutdown_request = lambda request: (closed.append(1), shutdown_request(request))
-        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         t.start()
         self.addCleanup(lambda: (server.shutdown(), server.server_close(), t.join(2)))
 
@@ -336,7 +336,7 @@ class IngestServerTest(unittest.TestCase):
 
     def test_invalid_unicode_json_returns_400_and_server_remains_healthy(self):
         server = ingest_server.create_server(self.vault, port=0)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         thread.start()
         self.addCleanup(lambda: (server.shutdown(), server.server_close(), thread.join(2)))
         base = f'http://127.0.0.1:{server.server_address[1]}'
@@ -366,7 +366,7 @@ class IngestServerTest(unittest.TestCase):
         import threading
         server = ingest_server.create_server(self.vault, port=0)
         port = server.server_address[1]
-        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         t.start()
         self.addCleanup(lambda: (server.shutdown(), server.server_close(), t.join(2)))
 
@@ -391,7 +391,7 @@ class IngestServerTest(unittest.TestCase):
     def raw_http_client(self):
         import socket
         server = ingest_server.create_server(self.vault, port=0)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         thread.start()
         self.addCleanup(lambda: (server.shutdown(), server.server_close(), thread.join(2)))
 
