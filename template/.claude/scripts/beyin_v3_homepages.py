@@ -14,6 +14,9 @@ from beyin_v3 import BLOCKED_SCOPE, _trusted_record, _status_allowed, read_proje
 from beyin_v3_notes import NoteConflict, locked, source_path, require_utf8_values
 from beyin_v3_sync import parse, render
 
+# Reader capability used by rollback preflight; old readers lose dependency policy.
+HOMEPAGE_ROLLBACK_POLICY = 1
+
 CELL = re.compile(r'<!-- beyin-field:(\{[^\r\n]*?\}) -->([^\r\n]*?)<!-- /beyin-field -->')
 CREATION = re.compile(r'<!-- beyin-homepage-create:([0-9a-f]{64}) -->')
 

@@ -73,6 +73,24 @@ Yönetilen dosyada araya giren kullanıcı değişikliği varsa işlem bunu ezme
 Yalnız satır sonu farkı değişiklik sayılmaz: `core.autocrlf` ya da bir editör yönetilen dosyayı CRLF'e çevirmişse güncelleme, kaldırma ve rollback durmaz, dosya yeniden yazılırken stok LF biçimine döner. Conflict mesajı sebebi söyler: `content differs` gerçek bir düzenleme, `deleted` silinmiş dosya demektir.
 
 
+## Bağlı ana sayfalardan eski sürüme dönüş
+
+Seçilmiş bilgileri kopyalayan `homepage-create` sayfaları kaynaklarının güncel izinlerine
+bağlıdır. Bu bağı bilmeyen eski bir okuyucu (3.12.0 dahil), `sync` sırasında kopyayı
+bağımsız not sayabilir. Bu nedenle `rollback`, hedef okuyucu güvenli ana sayfa geri
+dönüş sözleşmesini taşımıyorsa ve vault içinde bağlı sayfa işaretleri bulunuyorsa,
+**sistem dosyalarını değiştirmeden durur**. Yarım kalmış rollback'in yeniden denenmesi
+ve `recover` yolu da denetimi tekrar yapar.
+
+Mevcut sürümde kalın veya türetilmiş kopyaları bilinçli olarak vault dışına aldıktan
+sonra tekrar deneyin. Yalnız bağlama işaretlerini silmek yeterli değildir: kopyalanmış
+hassas değerler kalırsa eski okuyucu bunları sıradan not olarak okuyabilir. Komut
+kullanıcı notlarını silmez, gizlilik metadata'sını değiştirmez veya bağı kendiliğinden
+koparmaz. Okunamayan Markdown varsa güvenlik doğrulanamadığı için işlem durur.
+Bağlı kopyası olmayan vault'larda rollback normal çalışır. Bu koruma desteklenen
+`rollback`/`recover` akışı içindir; runtime dosyalarını elle eski sürümle değiştirmek
+veya eski bir kurucuyla yeniden kurmak güvenli geri dönüş sayılmaz.
+
 ## State dizinini taşımak
 
 State dizini vault'un dışında, yerel hesap altındadır ve varsayılan yeri işletim

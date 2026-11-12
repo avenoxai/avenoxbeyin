@@ -318,7 +318,47 @@ def _runtime_health(state):
         connection.close()
 
 
+def _homepage_rollback_guard(vault, operations):
+    """Do not restore readers that forget copied facts' dependency policies.
+
+    This preflight reads only this vault, never linked/granted directories. Unknown
+    or unreadable Markdown fails closed; it does not rewrite or detach user notes.
+    """
+    name = '.claude/scripts/beyin_v3_homepages.py'
+    target = next((decode(item['new']) for item in operations
+                   if item.get('scope') == 'vault' and item['name'] == name), None)
+    if target is not None and b'HOMEPAGE_ROLLBACK_POLICY = 1' in target:
+        return
+    def failed(error):
+        raise ValueError('cannot verify homepage safety before rollback') from error
+    for directory, folders, files in os.walk(vault, followlinks=False, onerror=failed):
+        # Linked trees are not indexed by this runtime and must not expand scope.
+        folders[:] = [folder for folder in folders if not _is_link(Path(directory) / folder)]
+        for filename in files:
+            if not filename.lower().endswith('.md'):
+                continue
+            path = Path(directory) / filename
+            if _is_link(path):
+                continue
+            try:
+                with path.open('rb') as source:
+                    tail = b''
+                    while chunk := source.read(65536):
+                        data = tail + chunk
+                        if (b'<!-- beyin-field:' in data or
+                                b'<!-- beyin-homepage-create:' in data or
+                                re.search(rb'["\']?workspace_homepage["\']?\s*:\s*(?:true|True)', data)):
+                            raise ValueError('rollback blocked: bound homepage remains; the target runtime '
+                                             'cannot preserve source privacy. Keep the current runtime or '
+                                             'remove the derived copies from this vault before retrying.')
+                        tail = data[-256:]
+            except OSError as exc:
+                failed(exc)
+
+
 def _apply(vault, state, journal, migration=None):
+    if journal['direction'] == 'rollback':
+        _homepage_rollback_guard(vault, journal['operations'])
     for index, operation in enumerate(journal['operations']):
         path = _destination(vault, state, operation)
         if operation['name'] == '.beyin-version':
@@ -581,6 +621,7 @@ def rollback(vault, state):
             operations.append({'scope':'state','name':'v2-migration.json','old':encode(actual),'new':original.get('migration_backup')})
         operations.sort(key=lambda item: item['name'] == '.beyin-version')
         journal = {'schema': 1, 'vault': str(vault), 'direction': 'rollback', 'operations': operations}
+        _homepage_rollback_guard(vault, operations)
         atomic(pending, jbytes(journal))
         _apply(vault, state, journal)
         try:
