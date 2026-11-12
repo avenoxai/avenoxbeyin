@@ -63,7 +63,7 @@ import beyin_v3_yakala as y
 command=[y.tools()['pdftotext'],'-layout',sys.argv[2],'-']
 counts=collections.Counter()
 for attempt in range(40):
- for mode in ('ascii_direct','captured_direct'):
+ for mode in ('ascii_direct','captured_direct','installed_job'):
   command[2]=sys.argv[3] if mode=='ascii_direct' else sys.argv[2]
   started=time.monotonic()
   try:
