@@ -106,6 +106,28 @@ class HomepagePolicyTest(unittest.TestCase):
         fixture.cli('sync')
         return fixture
 
+    def test_removed_selected_fact_withholds_old_copy_until_restored(self):
+        fixture = self.fixture()
+        before = (fixture.vault / fixture.page).read_bytes()
+        fixture.change(fixture.source, facts={})
+        fixture.cli('sync')
+        self.assert_restricted(fixture, local=False, indexed=True)
+        self.assertEqual(before, (fixture.vault / fixture.page).read_bytes())
+        fixture.change(fixture.source, facts={'value': 'ZirconConfidentialCanary'})
+        fixture.cli('sync')
+        self.assertIn(fixture.page, self.probe(fixture)['local'])
+
+    def test_retired_source_withholds_copy_and_prevents_back_write(self):
+        fixture = self.fixture()
+        fixture.change(fixture.source, status='retired')
+        home = fixture.vault / fixture.page
+        home.write_text(home.read_text(encoding='utf-8').replace(
+            '-->ZirconConfidentialCanary<!--', '-->EditedCanary<!--'), encoding='utf-8')
+        before = fixture.snapshot()
+        fixture.cli('sync')
+        self.assert_restricted(fixture, local=False, indexed=True)
+        self.assertEqual(before, fixture.snapshot())
+
     def probe(self, fixture, project='chosen'):
         scripts = fixture.vault / '.claude/scripts' if self.installed else fixtures.ROOT / 'template/.claude/scripts'
         run = subprocess.run([sys.executable, '-c', PROBE, str(scripts), str(fixture.vault),

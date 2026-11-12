@@ -10,7 +10,7 @@ import posixpath
 import re
 from urllib.parse import quote
 
-from beyin_v3 import BLOCKED_SCOPE, _trusted_record, read_project_scopes, record_scope
+from beyin_v3 import BLOCKED_SCOPE, _trusted_record, _status_allowed, read_project_scopes, record_scope
 from beyin_v3_notes import NoteConflict, locked, source_path, require_utf8_values
 from beyin_v3_sync import parse, render
 
@@ -70,7 +70,7 @@ def _same(left, right):
 
 
 def _writable(metadata):
-    return (_trusted_record(metadata) and not metadata.get('generated') and
+    return (_trusted_record(metadata) and _status_allowed(metadata, None) and not metadata.get('generated') and
             metadata.get('kind') not in ('task', 'receipt', 'receipt-index'))
 
 
@@ -153,6 +153,8 @@ def project_records(store, records, available=None):
                         hashlib.sha256((store.vault_root / source).read_bytes()).hexdigest() != dependency['source_sha256']):
                     raise ValueError('missing, changed or stale homepage dependency')
                 dependency = protect(dependency)
+                # A surviving source file does not authorize a removed/scalar-invalid fact.
+                _fact(dependency, binding['field'])
                 if not _eligible(home, dependency, page, source, scopes, check_remote=False):
                     raise ValueError('homepage dependency policy narrowed')
                 if not _remote(dependency):
