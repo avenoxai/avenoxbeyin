@@ -759,15 +759,14 @@ def _capture_time(path):
 
     A clone, a sync client or a restore rewrites mtimes, so a week-old capture would read as new;
     the note's own date survives that. A missing or malformed date falls back to the mtime.
+    A read error propagates to the folder report: without metadata, even whether a card
+    is still pending is unknown and must not be guessed from its mtime.
     """
     if fold(path.stem) in ('inbox', 'index', 'gelenkutusu'):
         return None
     modified = path.stat().st_mtime
-    try:
-        with path.open(encoding='utf-8', errors='replace') as handle:
-            head = handle.read(4096)
-    except OSError:
-        return modified
+    with path.open(encoding='utf-8', errors='replace') as handle:
+        head = handle.read(4096)
     values = _front_values(head, ('created', 'tur', 'durum', 'yakalandi', 'type', 'kind'))
     if values.get('type') == 'index' or values.get('kind') == 'index' or values.get('tur') == 'indeks':
         return None
