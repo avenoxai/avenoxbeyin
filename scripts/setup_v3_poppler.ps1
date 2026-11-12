@@ -16,11 +16,12 @@ if ($actualSha256 -ne $expectedSha256) {
     throw "Poppler archive SHA256 mismatch: $actualSha256"
 }
 Expand-Archive -LiteralPath $archive -DestinationPath $installRoot
-$bin = Join-Path $installRoot 'poppler-26.09.0/Library/bin'
+$bin = (Resolve-Path -LiteralPath (Join-Path $installRoot 'poppler-26.09.0/Library/bin')).Path
 $executable = Join-Path $bin 'pdftotext.exe'
 if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
     throw 'Pinned Poppler archive does not contain the expected pdftotext.exe.'
 }
+$executable = (Get-Item -LiteralPath $executable).FullName
 $version = (& $executable -v 2>&1 | Out-String)
 if ($LASTEXITCODE -ne 0 -or $version -notmatch 'pdftotext version 26\.09\.0') {
     throw "Unexpected pinned Poppler version: $version"
@@ -28,7 +29,7 @@ if ($LASTEXITCODE -ne 0 -or $version -notmatch 'pdftotext version 26\.09\.0') {
 # Set this process and subsequent workflow steps, ahead of Git's bundled Xpdf.
 $env:PATH = $bin + [IO.Path]::PathSeparator + $env:PATH
 if ((Get-Command pdftotext -CommandType Application).Source -ne $executable) {
-    throw 'Pinned Poppler did not take precedence on PATH.'
+    throw "Pinned Poppler did not take precedence on PATH: $((Get-Command pdftotext -CommandType Application).Source) != $executable"
 }
 Add-Content -LiteralPath $env:GITHUB_PATH -Value $bin -Encoding utf8
 Write-Host "Verified Poppler 26.09.0 ($actualSha256): $executable"
