@@ -910,54 +910,6 @@ class MutationQueueTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'mutation_id'):
             mutation.enqueue_mutation(self.state, 'note_create', 'notes/once.md', payload, mutation_id='../x')
 
-    def __init__(self, cursor):
-                self.cursor = cursor
-
-            def fetchone(self):
-                row = self.cursor.fetchone()
-                if row is None:
-                    # Both initializers observed an unbound database before either claims it.
-                    barrier.wait(timeout=10)
-                return row
-
-        class Database:
-            def __init__(self, db):
-                self.db = db
-
-            def execute(self, sql, *args):
-                cursor = self.db.execute(sql, *args)
-                return BindingCursor(cursor) if sql == "SELECT value FROM metadata WHERE key='vault_root'" else cursor
-
-            def __getattr__(self, name):
-                return getattr(self.db, name)
-
-        @contextmanager
-        def connect(store):
-            with original_connect(store) as db:
-                yield Database(db)
-
-        def enqueue(vault):
-            try:
-                mutation.enqueue_mutation(state, 'note_create', 'notes/' + vault.name + '.md',
-                                          {'text': vault.name}, vault=vault)
-                return vault, None
-            except ValueError as exc:
-                return vault, str(exc)
-
-        with patch.object(MemoryStore, '_connect', connect), ThreadPoolExecutor(max_workers=2) as pool:
-            outcomes = list(pool.map(enqueue, (self.vault, other)))
-        accepted = [vault for vault, error in outcomes if error is None]
-        rejected = [(vault, error) for vault, error in outcomes if error is not None]
-        self.assertEqual(len(accepted), 1, outcomes)
-        self.assertEqual(len(rejected), 1, outcomes)
-        self.assertIn('runtime belongs to another vault', rejected[0][1])
-        self.assertEqual(len(mutation.list_mutations(state)), 1)
-        result = mutation.replay_mutations(accepted[0], state)
-        self.assertEqual((result['applied'], result['failed']), (1, 0), result)
-        self.assertTrue((accepted[0] / ('notes/' + accepted[0].name + '.md')).is_file())
-        self.assertFalse((accepted[0] / ('notes/' + rejected[0][0].name + '.md')).exists())
-        self.assertFalse((rejected[0][0] / 'notes').exists())
-
     def test_enqueue_and_replay_keep_the_runtime_vault_binding(self):
         # An enqueue for another vault is refused like an ordinary write, so a replay from this
         # vault cannot write that vault's content here (review on #409).
