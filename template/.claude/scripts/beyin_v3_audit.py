@@ -12,13 +12,10 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timezone
-import json
 import os
 from pathlib import Path
 import re
 import sys
-import time
-import unicodedata
 
 _MODULE_DIR = str(Path(__file__).resolve().parent)
 if _MODULE_DIR not in sys.path:
@@ -28,8 +25,6 @@ if _MODULE_DIR not in sys.path:
 # report may print. The runtime modules always ship next to this file.
 from beyin_v3 import (
     _tokens,
-    _token_counts,
-    _stem,
     _status_word,
     _trusted_record,
     RETIRED_STATUSES,
