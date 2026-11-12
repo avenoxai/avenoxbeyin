@@ -178,6 +178,9 @@ def index_exclusion_lines(report, pruned=False):
     """Lines for the user's index exclusions (state/index.json); shared by doctor, sync and preferences."""
     if not isinstance(report, dict):
         return []
+    if report.get('status') == 'unavailable':
+        return ['Indeks kapsami denetlenemedi (' + plain_text(report.get('error', 'unknown')) +
+                '); indeks dislama ayarlari ve klasor ipuclari dogrulanamadi.']
     lines = []
     if report.get('excluded_dirs'):
         lines.append('Indeks disi klasor adlari (senin listen, her derinlikte): ' +

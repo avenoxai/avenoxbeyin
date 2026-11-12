@@ -1789,14 +1789,14 @@ def main(argv=None, return_result=False):
             # indexed trees that look vendored. Reads the index and one small file; no vault walk.
             try:
                 import beyin_v3_index as index_settings
-                try:
-                    with store._connect() as db:
+                with store._connect() as db:
+                    # Before the first sync this table may legitimately be absent. Any
+                    # other query or payload error must reach the unavailable report below.
+                    rows = []
+                    if db.execute("SELECT 1 FROM sqlite_master WHERE name = 'markdown_sources' COLLATE NOCASE").fetchone():
                         rows = db.execute('SELECT m.source, r.payload FROM markdown_sources m LEFT JOIN records r ON r.id = m.id').fetchall()
-                        indexed_sources = [row[0] for row in rows]
-                        indexed_records = [json.loads(row[1]) if row[1] else {'source': row[0]} for row in rows]
-                except Exception:  # no sync has created the table yet
-                    indexed_sources = []
-                    indexed_records = []
+                indexed_sources = [row[0] for row in rows]
+                indexed_records = [json.loads(row[1]) if row[1] else {'source': row[0]} for row in rows]
                 result['index_exclusions'] = index_settings.doctor(state, vault, indexed_sources, records=indexed_records)
                 result['index_exclusions']['always_excluded'] = sorted(sys.modules['beyin_v3_sync'].EXCLUDED_DIRS)
             except Exception as exc:  # never hides the rest of doctor
