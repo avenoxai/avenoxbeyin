@@ -993,7 +993,10 @@ def _adopt_stale_receipt_views(engine, db, desired, _hash):
             if comparison_views is None:
                 comparison_views = _receipt_view_contents(engine, db, include_human_daily=True)
             expected = comparison_views.get(alternate)
-        owned_hash = observed_hash if expected is not None and observed_hash == _hash(expected) else ''
+        # Both the legacy raw render and the LF projection are deterministic.
+        # Compare the observed raw hash; normalizing unknown bytes grants no ownership.
+        owned_hash = observed_hash if expected is not None and observed_hash in (
+            _hash(expected), _hash(_receipt_lf(expected))) else ''
         db.execute(f'INSERT OR IGNORE INTO {_receipt_view_table(relative)} VALUES (?,?)', (relative, owned_hash))
 
 
@@ -1051,6 +1054,9 @@ def project_receipts(engine, db, warnings=None, recover_views=False, recovered=N
         # A note may have appeared since the desired view plan was built.
         if _human_daily(engine, relative, tracked_views, warnings):
             continue
+        # Keep the renderer's legacy bytes for exact provenance reconstruction;
+        # only the generated output is canonicalized, never receipt sources or rows.
+        content = _receipt_lf(content)
         path = engine._path(relative)
         raw = path.read_bytes() if path.exists() else None
         old = _hash(raw) if raw is not None else None
