@@ -405,8 +405,12 @@ def human_result(result, command, installed_version=None):
                     '; ' + str(result.get('pending_count', 0)) + ' bekleyen, ' + str(result.get('conflict_count', 0)) +
                     ' cakisma, ' + str(result.get('failed_count', 0)) + ' basarisiz.')
         if 'replayed' in result:
-            return ('Kuyruk yeniden oynatildi: ' + str(result.get('applied', 0)) + ' uygulandi, ' +
+            text = ('Kuyruk yeniden oynatildi: ' + str(result.get('applied', 0)) + ' uygulandi, ' +
                     str(result.get('conflicts', 0)) + ' cakisma, ' + str(result.get('failed', 0)) + ' basarisiz.')
+            if result.get('source_sync', {}).get('status') in ('error', 'degraded', 'conflict'):
+                text += ('\nKaynak esitlemesi dikkat gerektiriyor; tanilamak ve indeksi yenilemek icin '
+                         'beyin.py sync calistir. Uygulanan kayitlari yeniden kuyruga ekleme.')
+            return text
         if 'pruned' in result:
             return 'Kuyruktan ' + str(result['pruned']) + ' kayit temizlendi; ' + str(result.get('remaining', 0)) + ' kayit kaldi.'
         if result.get('mutation_id'):
