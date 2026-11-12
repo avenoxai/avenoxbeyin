@@ -505,7 +505,10 @@ def human_result(result, command, installed_version=None):
                          (' (gerekceler de cikarildi)' if rules_opening.get('reasons_omitted') else '') +
                          '. Kurallari kisa tut; uzun gerekceyi ve ayrintiyi ayri bir nota (or. Kurallar-Detay.md) tasi.')
         references = result.get('instruction_references') or {}
-        if references.get('dead_count'):
+        if references.get('status') == 'unavailable':
+            lines.append('Talimat ve skill baglanti denetimi tamamlanamadi (bilgi): ' +
+                         plain_text(references.get('error', 'unknown')) + '.')
+        elif references.get('dead_count'):
             shown = ', '.join(entry['file'] + ':' + str(entry['line']) + ' -> ' + entry['target']
                               for entry in references['dead'][:3])
             more = references['dead_count'] - min(3, len(references['dead']))

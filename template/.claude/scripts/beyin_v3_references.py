@@ -6,6 +6,7 @@ skipped so examples in skills never count, and a link that leaves the vault is n
 import os
 from pathlib import Path
 import re
+import stat
 import unicodedata
 from urllib.parse import unquote
 
@@ -22,22 +23,42 @@ LIMIT = 20
 TARGET_LIMIT = 200  # a runaway match never floods the doctor output
 
 
+def _is_type(path, kind):
+    """Keep missing optional paths normal, but do not hide an inspection failure."""
+    try:
+        return kind(path.stat().st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+
+
+def _walk(root, *, skip_hidden=False):
+    """Like walk without suppressed scan/type errors; never descend directory symlinks."""
+    pending = [root]
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                directory = entry.is_dir()
+                if directory and skip_hidden and entry.name.startswith('.'):
+                    continue
+                path = Path(entry.path)
+                yield path
+                if directory and not entry.is_symlink():
+                    pending.append(path)
+
+
 def instruction_files(vault):
     """AGENTS.md, CLAUDE.md, the companion Kurallar.md and every Markdown file in the skill roots."""
+    import beyin_v3_companion
     files = [vault / 'AGENTS.md', vault / 'CLAUDE.md']
-    try:
-        import beyin_v3_companion
-        folder = beyin_v3_companion.directory(vault)
-        if folder is not None:
-            files.append(folder / 'Kurallar.md')
-    except Exception:
-        pass  # a missing companion never hides the other files
+    folder = beyin_v3_companion.directory(vault, strict=True)
+    if folder is not None:
+        files.append(folder / 'Kurallar.md')
     for root in ('.agents/skills', '.claude/skills', '.kiro/skills'):
-        if (vault / root).is_dir():
-            files += sorted((vault / root).rglob('*.md'))
+        if _is_type(vault / root, stat.S_ISDIR):
+            files += sorted(path for path in _walk(vault / root) if path.match('*.md'))
     unique = {}
     for path in files:
-        if path.is_file() and not _mirror(vault, path):
+        if _is_type(path, stat.S_ISREG) and not _mirror(vault, path):
             unique.setdefault(os.path.realpath(path), path)  # CLAUDE.md -> AGENTS.md is read once
     return list(unique.values())
 
@@ -47,11 +68,9 @@ def _mirror(vault, path):
     for root in ('.claude/skills', '.kiro/skills'):
         try:
             twin = vault / '.agents/skills' / path.relative_to(vault / root)
-            return twin.is_file() and twin.read_bytes() == path.read_bytes()
         except ValueError:
             continue
-        except OSError:
-            return False
+        return _is_type(twin, stat.S_ISREG) and twin.read_bytes() == path.read_bytes()
     return False
 
 
@@ -67,16 +86,13 @@ def _note_index(vault):
     so one set answers bare names, partial paths and full paths on every file system alike.
     """
     keys = set()
-    for directory, folders, files in os.walk(vault):
-        folders[:] = [name for name in folders if not name.startswith('.')]
-        parts = Path(directory).relative_to(vault).parts
-        for name in folders + files:
-            full = parts + (name,)
-            for start in range(len(full)):
-                tail = _key('/'.join(full[start:]))
-                keys.add(tail)
-                if tail.endswith('.md'):
-                    keys.add(tail[:-3])
+    for path in _walk(vault, skip_hidden=True):
+        full = path.relative_to(vault).parts
+        for start in range(len(full)):
+            tail = _key('/'.join(full[start:]))
+            keys.add(tail)
+            if tail.endswith('.md'):
+                keys.add(tail[:-3])
     return keys
 
 
@@ -197,14 +213,12 @@ def _link_dead(vault, source, target, index):
 
 
 def check(vault):
+    """Report complete link findings; doctor reports discovery/read errors as unavailable."""
     vault = Path(vault).resolve()
     files = instruction_files(vault)
     dead, index = [], None
     for source in files:
-        try:
-            text = _blank_code(source.read_text(encoding='utf-8-sig'))
-        except (OSError, UnicodeError):
-            continue
+        text = _blank_code(source.read_text(encoding='utf-8-sig'))
         for number, line in enumerate(text.splitlines(), 1):
             wikis, links = list(WIKI.finditer(line)), list(LINK.finditer(line))
             if (wikis or links) and index is None:
