@@ -273,6 +273,15 @@ reading or decoding an instruction file fails, the report is
 partial link count. Human output also says the check could not complete;
 the file contents and raw error message are not printed.
 
+After moving a vault, `doctor` also reports stale global Claude, Codex and
+Antigravity bridge paths under `global_bridge_paths` when the command is explicitly
+bound to this vault's current state directory. Bridges bound to another state,
+missing settings and invalid settings are ignored. This is an informational path
+check, not a complete global-hook health check. It does not execute hook commands
+or modify global settings. Reinstall each affected bridge from the new vault with
+its original `--project-root`, `--event` and `--context-chars` choices; see
+[Global Bridge](GLOBAL-BRIDGE.md). `hook-reconcile` only repairs vault-local hooks.
+
 Hooks enqueue only event metadata, never raw prompts or transcripts. They start
 an opportunistic detached Python worker. Startup waits at most 1.5 seconds for
 source synchronization before context; a slower sync keeps running and the turn

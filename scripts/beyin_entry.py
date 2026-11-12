@@ -620,6 +620,14 @@ def human_result(result, command, installed_version=None):
             lines.append('Hook yollari baska bir kuruluma isaret ediyor (' + str(len(paths.get('stale', []))) + ' eski yol). ' +
                          'Guncellemek icin: ' + ('py -3' if sys.platform == 'win32' else 'python3') + ' beyin.py hook-reconcile')
         tracked = result.get('tracked_machine_files') or {}
+        bridges = result.get('global_bridge_paths') or {}
+        if bridges.get('status') == 'stale':
+            harnesses = sorted({row.get('harness') for row in bridges.get('stale', [])
+                                if row.get('harness') in ('claude', 'codex', 'antigravity')})
+            commands = ', '.join('bridge --harness ' + harness + ' ... --install' for harness in harnesses)
+            lines.append('Genel kopru yollari eski kuruluma isaret ediyor (bilgi): ' + commands +
+                         '. Yeni vault icinden onceki --project-root, --event ve --context-chars secimlerini koruyarak '
+                         'yeniden kur. Genel ayarlar degistirilmedi.')
         if tracked.get('status') == 'warning':
             lines.append('Git makineye ozel kurulum dosyalarini izliyor (bilgi): ' +
                          ', '.join(plain_text(name) for name in tracked.get('tracked', [])) +

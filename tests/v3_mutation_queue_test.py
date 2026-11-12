@@ -536,6 +536,52 @@ class MutationQueueTest(unittest.TestCase):
 
     # Crash consistency: an interrupted replay is reconciled, never double-applied or misreported.
 
+    def test_crash_after_task_create_with_canonicalized_evidence_is_reconciled(self):
+        from unittest.mock import patch
+        from beyin_v3_sync import parse
+        notes = self.vault / 'notes'
+        notes.mkdir()
+        (notes / 'e.md').write_text('Synthetic evidence\n', encoding='utf-8')
+        payload = {'text': 'Task body', 'metadata': {
+            'id': 'evidence-task', 'owner': 'test', 'status': 'inbox',
+            'evidence_refs': ['notes/./e.md']}}
+        source = 'tasks/evidence.md'
+        mutation.enqueue_mutation(self.state, 'task_create', source, payload, vault=self.vault)
+        with patch.object(mutation, '_save_all_mutations', side_effect=Crash):
+            with self.assertRaises(Crash):
+                mutation.replay_mutations(self.vault, self.state, self.sync)
+        path = self.vault / source
+        written = path.read_bytes()
+        self.assertEqual(parse(written.decode('utf-8'))[0]['evidence_refs'], ['notes/e.md'])
+        pending = mutation.list_mutations(self.state)[0]
+        self.assertEqual(pending['status'], 'pending')
+        self.assertEqual(pending['payload'], payload)
+        result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertEqual((result['applied'], result['conflicts'], result['failed']), (1, 0, 0), result)
+        item = mutation.list_mutations(self.state)[0]
+        self.assertEqual((item['status'], item['idempotent']), ('applied', True))
+        self.assertEqual(item['payload'], payload)
+        self.assertEqual(path.read_bytes(), written)
+        self.assertFalse(list(path.parent.glob('*.sync-conflict-*.md')))
+        self.assertEqual(mutation.replay_mutations(self.vault, self.state, self.sync)['replayed'], 0)
+
+    def test_task_create_with_different_evidence_remains_a_conflict(self):
+        notes = self.vault / 'notes'
+        notes.mkdir()
+        for name in ('first', 'second'):
+            (notes / (name + '.md')).write_text('Synthetic evidence\n', encoding='utf-8')
+        metadata = {'id': 'different-evidence', 'owner': 'test', 'status': 'inbox',
+                    'evidence_refs': ['notes/./first.md']}
+        source = 'tasks/different-evidence.md'
+        mutation.enqueue_mutation(self.state, 'task_create', source,
+                                  {'text': 'Task body', 'metadata': metadata}, vault=self.vault)
+        self.sync.task_create(source, 'Task body', dict(metadata, evidence_refs=['notes/second.md']))
+        written = (self.vault / source).read_bytes()
+        result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertEqual((result['applied'], result['conflicts'], result['failed']), (0, 1, 0), result)
+        self.assertEqual((self.vault / source).read_bytes(), written)
+        self.assertEqual(len(list((self.vault / 'tasks').glob('*.sync-conflict-*.md'))), 1)
+
     def _task(self):
         self.sync.task_create('tasks/crash.md', 'Crash body', {'id': 'crash-task', 'owner': 'test', 'status': 'inbox'})
         mutation.enqueue_mutation(self.state, 'task_update', 'tasks/crash.md',
@@ -755,32 +801,46 @@ class MutationQueueTest(unittest.TestCase):
 
     # Input checks and review exits.
 
-    def test_enqueue_rejects_malformed_payloads_before_queueing(self):
-        for action, source, payload in [
-                ('note_create', 'notes/a.md', {'text': ''}),
-                ('note_create', 'notes/a.md', {'text': 'a', 'metadata': []}),
-                ('note_create', 'C:/notes/a.md', {'text': 'a'}),
-                ('note_create', 'notes/a:stream.md', {'text': 'a'}),
-                ('task_create', 'tasks/a.md', {'text': 'a'}),
-                ('task_update', 'tasks/a.md', {'id': 'a', 'expected_revision': True, 'changes': {'status': 'active'}}),
-                ('task_update', 'tasks/a.md', {'id': 'a', 'expected_revision': 1, 'changes': {}}),
-                ('receipt', 'receipts/a.md', {'event_id': 'a', 'summary': 'a', 'refs': []}),
-                ('delete', 'notes/a.md', {})]:
-            with self.assertRaises(ValueError, msg=(action, payload)):
-                mutation.enqueue_mutation(self.state, action, source, payload)
-        self.assertFalse((self.state / mutation.MUTATION_QUEUE_FILE).exists())
+    def test_enqueue_refuses_another_vault_before_queue_or_identity_writes(self):
+        other = self.tmp / 'other-vault'
+        other.mkdir()
+        with self.assertRaisesRegex(ValueError, 'runtime belongs to another vault'):
+            mutation.enqueue_mutation(self.state, 'note_create', 'notes/from-other.md',
+                                      {'text': 'Other vault content'}, vault=other)
+        for name in (mutation.MUTATION_QUEUE_FILE, mutation.DEVICE_FILE, '.beyin-note-write'):
+            self.assertFalse((self.state / name).exists(), name)
+        self.assertEqual(mutation.replay_mutations(self.vault, self.state)['applied'], 0)
+        self.assertFalse((self.vault / 'notes/from-other.md').exists())
 
-    def test_client_mutation_id_makes_a_resend_a_no_op(self):
-        payload = {'text': 'once'}
-        first = mutation.enqueue_mutation(self.state, 'note_create', 'notes/once.md', payload, mutation_id='client-0001')
-        again = mutation.enqueue_mutation(self.state, 'note_create', 'notes/once.md', payload, mutation_id='client-0001')
-        self.assertEqual(first['mutation_id'], 'client-0001')
-        self.assertTrue(again['duplicate'])
-        self.assertEqual(len(mutation.list_mutations(self.state)), 1)
-        with self.assertRaisesRegex(ValueError, 'different mutation'):
-            mutation.enqueue_mutation(self.state, 'note_create', 'notes/other.md', payload, mutation_id='client-0001')
-        with self.assertRaisesRegex(ValueError, 'mutation_id'):
-            mutation.enqueue_mutation(self.state, 'note_create', 'notes/once.md', payload, mutation_id='../x')
+    def test_first_enqueue_binds_fresh_state_and_rejects_a_different_vault(self):
+        state = self.tmp / 'queue-only-state'
+        mutation.set_enabled(state, True)
+        payload = {'text': 'Once'}
+        mutation.enqueue_mutation(state, 'note_create', 'notes/bound.md', payload,
+                                  vault=self.vault / '.', mutation_id='client-bound-1')
+        before = {name: (state / name).read_bytes()
+                  for name in (mutation.MUTATION_QUEUE_FILE, mutation.DEVICE_FILE)}
+        other = self.tmp / 'other-vault'
+        other.mkdir()
+        # Even a duplicate client id must not accept the wrong vault.
+        with self.assertRaisesRegex(ValueError, 'runtime belongs to another vault'):
+            mutation.enqueue_mutation(state, 'note_create', 'notes/bound.md', payload,
+                                      vault=other, mutation_id='client-bound-1')
+        for name, content in before.items():
+            self.assertEqual((state / name).read_bytes(), content)
+        with self.assertRaisesRegex(ValueError, 'runtime belongs to another vault'):
+            mutation.replay_mutations(other, state)
+        result = mutation.replay_mutations(self.vault, state)
+        self.assertEqual((result['applied'], result['failed']), (1, 0), result)
+        self.assertFalse((other / 'notes/bound.md').exists())
+
+    def test_enqueue_refuses_state_inside_supplied_vault(self):
+        state = self.vault / 'queue-state'
+        mutation.set_enabled(state, True)
+        with self.assertRaisesRegex(ValueError, 'runtime must be outside vault'):
+            mutation.enqueue_mutation(state, 'note_create', 'notes/inside.md',
+                                      {'text': 'Private queued content'}, vault=self.vault)
+        self.assertEqual({path.name for path in state.iterdir()}, {mutation.SETTINGS_FILE})
 
     def test_concurrent_first_enqueues_cannot_mix_vaults(self):
         from concurrent.futures import ThreadPoolExecutor
@@ -843,6 +903,47 @@ class MutationQueueTest(unittest.TestCase):
         self.assertTrue((accepted[0] / ('notes/' + accepted[0].name + '.md')).is_file())
         self.assertFalse((accepted[0] / ('notes/' + rejected[0][0].name + '.md')).exists())
         self.assertFalse((rejected[0][0] / 'notes').exists())
+
+    def test_cli_enqueue_refuses_state_bound_to_another_vault(self):
+        other = self.tmp / 'other-vault'
+        other.mkdir()
+        payload_file = self.tmp / 'wrong-vault.json'
+        payload_file.write_text(json.dumps({'action': 'note_create', 'source': 'notes/other.md',
+                                            'payload': {'text': 'Other vault content'}}), encoding='utf-8')
+        proc = subprocess.run([sys.executable, str(CLI), '--vault', str(other), '--state', str(self.state),
+                               'mutation-queue', '--enqueue', '--file', str(payload_file)],
+                              capture_output=True, text=True, env=inherited_env(BEYIN_UPDATES_OFF='1'))
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn('runtime belongs to another vault', json.loads(proc.stderr)['message'])
+        self.assertEqual(mutation.list_mutations(self.state), [])
+        self.assertFalse((self.state / mutation.DEVICE_FILE).exists())
+
+    def test_enqueue_rejects_malformed_payloads_before_queueing(self):
+        for action, source, payload in [
+                ('note_create', 'notes/a.md', {'text': ''}),
+                ('note_create', 'notes/a.md', {'text': 'a', 'metadata': []}),
+                ('note_create', 'C:/notes/a.md', {'text': 'a'}),
+                ('note_create', 'notes/a:stream.md', {'text': 'a'}),
+                ('task_create', 'tasks/a.md', {'text': 'a'}),
+                ('task_update', 'tasks/a.md', {'id': 'a', 'expected_revision': True, 'changes': {'status': 'active'}}),
+                ('task_update', 'tasks/a.md', {'id': 'a', 'expected_revision': 1, 'changes': {}}),
+                ('receipt', 'receipts/a.md', {'event_id': 'a', 'summary': 'a', 'refs': []}),
+                ('delete', 'notes/a.md', {})]:
+            with self.assertRaises(ValueError, msg=(action, payload)):
+                mutation.enqueue_mutation(self.state, action, source, payload)
+        self.assertFalse((self.state / mutation.MUTATION_QUEUE_FILE).exists())
+
+    def test_client_mutation_id_makes_a_resend_a_no_op(self):
+        payload = {'text': 'once'}
+        first = mutation.enqueue_mutation(self.state, 'note_create', 'notes/once.md', payload, mutation_id='client-0001')
+        again = mutation.enqueue_mutation(self.state, 'note_create', 'notes/once.md', payload, mutation_id='client-0001')
+        self.assertEqual(first['mutation_id'], 'client-0001')
+        self.assertTrue(again['duplicate'])
+        self.assertEqual(len(mutation.list_mutations(self.state)), 1)
+        with self.assertRaisesRegex(ValueError, 'different mutation'):
+            mutation.enqueue_mutation(self.state, 'note_create', 'notes/other.md', payload, mutation_id='client-0001')
+        with self.assertRaisesRegex(ValueError, 'mutation_id'):
+            mutation.enqueue_mutation(self.state, 'note_create', 'notes/once.md', payload, mutation_id='../x')
 
     def test_enqueue_and_replay_keep_the_runtime_vault_binding(self):
         # An enqueue for another vault is refused like an ordinary write, so a replay from this
