@@ -357,6 +357,11 @@ The Companion summary also ignores fenced examples when counting active threads,
 including legacy headingless `Status`/`Durum` entries. Existing counting behavior
 outside fences is unchanged.
 
+Task triage ignores fenced examples when reading body-level `status:` lines and
+fallback headings. An example `status: done` cannot hide an open task, and an
+example heading cannot replace its title. Frontmatter and unfenced legacy status
+lines keep their existing behavior.
+
 For each topic, `last_date` is the newest valid `YYYY-MM-DD` mention in its heading
 or body. This is a freshness hint, **not evidence that its status was verified**:
 a quoted historical date or future plan is still a date mention. Future dates
