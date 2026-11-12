@@ -1,174 +1,227 @@
-# 🧠 avenoxbeyin V3
+# İkinci Beyin
 
-Claude Code, Codex, Google Antigravity veya Kiro ile kullanabileceğin yerel ikinci beyin. Notların Markdown dosyalarında kalır; bir istemcide kaydettiğin kaynak ve iş sonucu diğerinde de bulunabilir. Obsidian ile açabilir, normal bir metin editörüyle düzenleyebilirsin.
+![İkinci Beyin: farklı ajanlar aynı Markdown notlarına bağlanır.](docs/assets/readme/cover.png)
 
-Python **3.11 veya üzeri** yeterli. Git, pip, Mem0 hesabı, API anahtarı veya sürekli açık sunucu gerekmez. Kullandığın AI istemcisinin kendi kurulumu ve hesabı ayrı olarak gerekir.
+**AI istemcin değişse de notların, kararların ve görevlerin aynı yerde kalsın.**
 
-> **V3.13.0:** Yakala kartları isteğe bağlı olarak Claude Code ya da Codex ajanına devredilebiliyor (Ctrl+Enter, önizlemeli toplu gönderim, açık izinle müzik tanıma), Word belgelerinden metin çıkarılıyor. Pi istemcisi, OpenCode global köprüsü, isteğe bağlı yerel web görünümü (`web ac`), çalışma alanı komutları (`workspace`, `lint`, `moc`) ve salt okunur `beyin-kontrol` skill'i geldi; açılış bağlamı bütün kuralları, açık konuları ve en yeni devir kartını önce ayırıyor, yerel indeks sınırlı olay geçmişiyle büyümüyor. Mevcut kurulumda vault içinde `python3 beyin.py update` çalıştır; yakala kullanıyorsan ardından bir kez `python3 beyin.py yakala kur`. [Sürüm notları](docs/v3/releases/3.13.0.md) · [Yakala](docs/v3/YAKALA.md) · [Güncelleme rehberi](docs/v3/UPDATE.md).
+AvenoxBeyin, AI ajanlarınla kullanabileceğin yerel bir hafıza sistemi. Önemli bilgiyi Markdown dosyalarına kaydettirir, sonraki oturumda kaynağıyla bulursun. Klasörünü Obsidian'da veya istediğin metin editöründe açabilirsin.
 
-## En kolay kurulum: bir klasör, bir mesaj
+**[Kuruluma geç](#kurulum)** · [Son sürümü indir](https://github.com/avenoxai/avenoxbeyin/releases/latest) · [Görsel kurulum rehberi](https://avenox.io/ikincibeyin) · [Belgeler](#belgeler)
 
-1. Obsidian'da yeni bir vault oluştur veya mevcut vault klasörünü seç.
-2. Bu klasörü desteklenen AI istemcilerinden biriyle aç.
-3. Aşağıdaki mesajı yapıştır:
+macOS · Windows · Linux &nbsp; | &nbsp; Python 3.11+ &nbsp; | &nbsp; [MIT lisansı](LICENSE)
 
-> https://avenox.lol/beyin.md adresini oku. Bu klasöre ikinci beynimi kur. Mevcut kurulum varsa notlarımı koruyarak güncelle. Gerekli indirme ve kurulum adımlarını sen yap. Sonunda örnek bir bilgiyi kaydedip yeni oturumda geri okuyarak birlikte doğrulayalım.
+## Ne işe yarar?
 
-Ajan resmi kararlı paketi bulur, checksum ile doğrular, geçici alanda açar, kurulumu yapar ve sağlık kontrolünü çalıştırır. Kullanıcı yalnızca istemcinin gösterdiği normal klasör, workspace veya hook güven incelemesini tamamlar.
+| İstediğin | Beyin ile yapabileceğin |
+| --- | --- |
+| Yeni oturumda kaldığın yerden devam etmek | Son işin sonucunu, açık konuları ve sonraki adımı kaynak notlara kaydetmek |
+| Daha önce verdiğin kararı bulmak | Notlarda aramak, kararın geçtiği dosyayı açmak |
+| Bir kaynağı kaybetmemek | Video, makale veya dosyayı **Yakala** ile gelen kutuna almak |
+| Claude'dan Codex'e geçmek | Aynı klasördeki not ve görevleri başka bir desteklenen istemciyle kullanmak |
 
-Görsel anlatım, kopyalanabilir mesaj ve manuel indirme: **[avenox.lol/ikincibeyin](https://avenox.lol/ikincibeyin)**.
+### Nasıl çalışır?
 
-## Manuel kurulum
+```mermaid
+flowchart TB
+    A["Sen ve AI ajanın"] -->|"Bilgiyi kaydet"| B["Yerel Markdown notları"]
+    B -->|"Yerel arama"| C["İlgili notlar ve kaynakları"]
+    C -->|"Sonraki oturumda bağlam"| A
+```
 
-1. [Son kararlı sürüm sayfasını](https://github.com/avenoxai/avenoxbeyin/releases/latest) aç. **`beyin-v3-X.Y.Z.zip`** dosyasını ve yanındaki SHA-256 dosyasını indir (`X.Y.Z` sayfadaki sürüm numarasıdır). GitHub'ın otomatik “Source code” arşivi yerine bu paketi seç.
-2. Obsidian'da bir vault oluştur veya mevcut vault klasörünü seç. Notlarını başka yere taşıman gerekmez.
-3. Açtığın paket klasöründe terminal aç ve vault yolunu kendi klasörünle değiştir:
+Asıl kaynak dosyaların. Beyin bunların yerel indeksini tutar ve seçilen bağlamı kullandığın AI istemcisine verir. Sohbet geçmişinin tamamını kendiliğinden bilgiye dönüştürmez; kalıcı olmasını istediğin şeyi nota yazdırırsın.
 
-macOS / Linux:
+> **V3.13.0'da yeni:** Yakala'dan isteğe bağlı Claude/Codex'e gönderim, Word (.docx) belgelerini okuma, Pi bağlantısı ve OpenCode global köprüsü. Yerel web görünümü ve çalışma alanı araçları da bu sürümde. [Tüm yenilikler](docs/v3/releases/3.13.0.md).
+
+<a id="kurulum"></a>
+## Üç adımda kurulum
+
+**Gerekenler:** Python **3.11+** ve desteklenen bir AI istemcisi. İstemcinin kurulumu ve hesabı ayrı gerekir. Beyin'in temel kurulumu için Git, pip, Mem0 hesabı, ek API anahtarı veya sürekli açık sunucu gerekmez. Obsidian isteğe bağlıdır.
+
+### 1. Bir klasör seç
+
+Yeni bir klasör veya mevcut Obsidian vault'un olabilir. Notlarını başka yere taşıman gerekmez.
+
+### 2. AI istemcinde o klasörü aç
+
+Claude Code, Codex veya aşağıdaki [istemcilerden](#istemciler) birini kullan. Kurulumu istediğin klasörde çalıştığından emin ol.
+
+### 3. Bu mesajı yapıştır
+
+```text
+https://avenox.io/beyin.md adresini oku. Bu klasöre ikinci beynimi kur.
+Mevcut kurulum varsa notlarımı koruyarak güncelle. Gerekli indirme ve
+kurulum adımlarını sen yap. Sonunda örnek bir bilgiyi kaydedip yeni
+oturumda geri okuyarak birlikte doğrulayalım.
+```
+
+Ajan resmi kararlı paketi indirir, checksum'u doğrular ve kurulumu kontrol eder. İstemcinin gösterdiği klasör veya hook güven incelemesini tamamla. Ardından **aynı klasörde yeni bir oturum aç**; Codex'te yeni hook tanımlarını `/hooks` ekranında incele.
+
+<details>
+<summary><strong>Terminalden kendim kurmak istiyorum</strong></summary>
+
+1. [Son sürümden](https://github.com/avenoxai/avenoxbeyin/releases/latest) **`beyin-v3-X.Y.Z.zip`** ve yanındaki **`.sha256`** dosyasını indir. GitHub'ın **Source code** arşivini seçme.
+2. ZIP'in SHA-256 değerini yanındaki dosyayla karşılaştır ve paketi aç. [Doğrulama adımları](beyin.md).
+3. **Açtığın paket klasöründe** terminal aç. Vault yolunu kendi not klasörünle değiştir:
+
+**macOS / Linux**
 
 ```sh
 python3 scripts/install_v3.py --vault "/tam/yol/Beynim"
 ```
 
-Windows:
+**Windows**
 
 ```powershell
 py -3 scripts/install_v3.py --vault "C:\Notlar\Beynim"
 ```
 
-Kurulum istemciler için proje bağlantılarını, ortak motoru, üç başlangıç skill'ini ve güncelleme kısayolunu kurar. Bundan sonra paket klasörünü açık tutman gerekmez.
+Kurucu motoru, istemci bağlantılarını ve dört başlangıç skill'ini vault'a yerleştirir. Paket klasörünü açık tutman gerekmez. Vault'u istemcinde aç, güven incelemesini tamamla ve yeni bir oturum başlat. [Ayrıntılı kurulum](SETUP-V3.md).
 
-Hermes Agent kullanıyorsan aynı motor bir Hermes eklentisi üzerinden bağlanır; installer eklenti dosyalarını vault içine yazar, ama profil bazlı bağlantı ve `hermes plugins enable beyin-v3` adımını sen yaparsın. Adımlar: [docs/v3/HERMES.md](docs/v3/HERMES.md). Bu destek V3.1.0 ve sonraki paketlere dahildir.
+</details>
 
-Vault klasörünü kullandığın AI istemcisinde açıp **yeni bir oturum başlat**. Codex'te `/hooks` ekranında yeni hook tanımlarını inceleyip güven; diğer istemcilerde workspace güvenini tamamla. İstemci güvenini kurucu senin adına uydurmaz. Agent ile kurulum yapmak istersen [SETUP-V3.md](SETUP-V3.md) rehberini takip etmesini iste.
+## İlk 5 dakika
 
-OpenCode için ek adım yok: installer vault içine eklentisini yazar, OpenCode vault klasöründe açılınca aynı motora bağlanır. Aynı eklenti OpenCode 1.x (1.3.4 ve sonrası) ve 2.x ile çalışır. OpenCode 2.x eklentileri istemci kapansa da çalışan arka plan servisinde yükler; bu yüzden orada `SessionEnd` yalnız oturum silinince veya servis durunca gelir, tur sonu senkronizasyonu `Stop` ile her turda sürer. Adımlar: [docs/v3/OPENCODE.md](docs/v3/OPENCODE.md).
+Ajanına sırayla şunları söyle. Bunlar örnek mesajlar; kendi bilgilerinle değiştirebilirsin.
 
-OMP (Oh My Pi) için ek adım yok: installer vault içine `.omp/hooks/pre/beyin-v3.ts` yazar, OMP vault klasöründe açılınca aynı motora bağlanır. Dosyayı global agentDir'e kopyalama; vault dışında işe yaramaz. Adımlar: [docs/v3/OMP.md](docs/v3/OMP.md).
-
-Pi için installer `.pi/extensions/beyin-v3.ts` üretir; vault klasöründe Pi'yi açıp extension için proje güvenini onayla. Pi ve OMP farklı istemcilerdir. Başka proje klasöründen merkezi vault'a erişim yalnız açık `--beyin-project-root` kapsamıyla etkinleşir. Kurulum, receipt ve kapsam ayrıntıları: [docs/v3/PI.md](docs/v3/PI.md).
-
-Kiro IDE 1.x ve CLI V3 için bu kaynak checkout'u `.kiro/hooks/beyin-v3.json` ve `.kiro/skills/` kurar. Kiro'da vault'u açıp hook'ları inceleyerek yeni oturum başlat. Eski ZIP paketlerinde bu dosyalar bulunmayabilir; kaynak kurulum adımları ve istemci sınırları: [docs/v3/KIRO.md](docs/v3/KIRO.md).
-
-## İlk konuşma
-
-V3.1.0 kişilik/süreklilik davranışı: yeni kurulum düşünme ortağı kimliğini
-ve başlangıç notlarını oluşturur; mevcut Core/Soul, kullanıcı düzeltmeleri, aktif konular
-ve son oturum kaynakları açılışta önceliklidir. Kalıcı öğrenimler aktif ajan tarafından
-kavram ve bağlantı notlarına işlenir. [V2/V3 karşılaştırması ve doğrulama](docs/v3/COMPANION-PARITY.md).
-Bu davranış V3.1.0 ve sonraki paketlere dahildir.
-
-Ajanına şunu söyle:
-
-> Beyin skill'ini kullan. Beni tanımak için kısa sorular sor; cevapları kaynak notlara kaydet. Sonra birlikte bir görev oluşturup tekrar okuyalım.
-
-Kurulu dört skill:
-
-| Skill | Ne zaman kullanılır? |
+| Adım | Ajanına söyle |
 | --- | --- |
-| **beyin** | Not bulmak, bilgi kaydetmek, görev değiştirmek, iş sonucu ve ders çıkarmak |
-| **beyin-doktor** | Bir not bulunamıyorsa, bağlantı veya kayıt sorunu varsa |
-| **beyin-guncelle** | Kurulu sistemi kontrol etmek, güncellemek veya geri almak |
-| **beyin-kontrol** | Hafızada yazılı durumun hala doğru olup olmadığını denetlemek; yalnız sen istediğinde çalışır, sen onay vermeden hiçbir şey yazmaz |
+| **Tanış** | “Beyin skill'ini kullan. Beni tanımak için birkaç kısa soru sor ve cevaplarımı notlara kaydet.” |
+| **Kaydet** | “Örnek proje için Python seçtim, çünkü ekip Python biliyor. Bunu karar notu olarak kaydet.” |
+| **Geri bul** | Yeni oturum aç: “Örnek projede hangi dili seçmiştik, neden? Kaynak notu göster.” |
+| **Görev oluştur** | “Örnek projenin ilk taslağını hazırlamam için bir görev oluştur.” |
 
-Bunlar `.agents/skills` altında bulunur; Claude ve Kiro kendi proje skill kopyalarını kullanır. Eklemek istediğin kişisel skill'leri ayrıca içe alabilirsin. Aynı adlı farklı içerik sessizce ezilmez.
+Kaydı dosyada, geri çağırmayı yeni oturumda kontrol et. Böylece kendi istemcinde bağlantının çalıştığını da görürsün.
 
-## Günlük kullanım
+<details>
+<summary><strong>Kurulan dört skill ne yapıyor?</strong></summary>
 
-Notu yaz, ajana ne istediğini söyle. Kaynaklar oturum açılışı ve konuşmanın uygun noktalarında yeniden indekslenir. İstemciler kapalıyken sürekli tarayan bir servis yoktur. Önemli iş sonuçları kısa, kaynak bağlantılı kayıtlarla tutulur; tüm sohbetin kendiliğinden doğru bilgiye dönüştüğü iddia edilmez.
+| Skill | Kullanım |
+| --- | --- |
+| **beyin** | Not bulma, bilgi kaydetme, görev ve iş sonucu oluşturma |
+| **beyin-doktor** | Bağlantı, kayıt ve kurulum sorunlarını kontrol etme |
+| **beyin-guncelle** | Güncelleme, sürüm kontrolü ve geri alma |
+| **beyin-kontrol** | Hafızadaki bilginin hala doğru olup olmadığını denetleme; yalnız sen istediğinde çalışır, onayın olmadan yazmaz |
 
-Beyin sohbet metnini saklamaz. Claude Code yerel sohbet kayıtlarını (`~/.claude/projects/`) varsayılan olarak 30 gün sonra siler; kalıcı olmasını istediğin karar ve bilgiyi nota yazdır. Süreyi uzatmak için `~/.claude/settings.json` içine örneğin `"cleanupPeriodDays": 365` ekle ([Claude Code belgesi](https://code.claude.com/docs/en/claude-directory#cleaned-up-automatically)). Silinmeden önce iz yazılmamış eski oturumlardan kısa özet çıkarmak için isteğe bağlı, varsayılanı deneme olan `python3 beyin.py chat-trace backfill` komutu var: [docs/v3/CHAT-TRACE.md](docs/v3/CHAT-TRACE.md).
+Ortak kaynak `.agents/skills` içindedir; Claude ve Kiro kendi proje kopyalarını kullanır. Mevcut kişisel skill'ler sessizce ezilmez.
 
-Son günlerde ne yapıldığını görmek için vault klasöründe `python3 beyin.py recap --days 7`
-çalıştır. Son yedi UTC gününün kaynak bağlantılı iş sonuçlarını en yeniden eskiye listeler;
-model çağırmaz. Bunlar ajanın yazdığı sonuç iddialarıdır, bağımsız doğrulanmış olgular
-değildir. Özel notlara giden bağlantılar gizlenir, silinmiş kaynaklar listelenmez.
-`--days` (1-366) ve `--limit` (1-100) ile aralığı ve uzunluğu değiştirebilirsin.
+</details>
 
-Belirli bir tarih aralığı için `--days` yerine `--since` ve `--until` kullan:
-`python3 beyin.py recap --since 2026-09-24 --until 2026-09-24` yalnız o günü getirir.
-Yalnız tarih yazarsan (`YYYY-AA-GG`) bilgisayarının yerel günü sayılır; bu, `daily/v3/`
-dosya adlarındaki günle aynıdır ve `--until` o günün sonuna kadar kapsar. Saat de
-vereceksen sonuna `Z` ya da saat farkı ekle (`2026-09-24T18:30:00+03:00`). Yalnız
-`--until` verirsen alt sınır yoktur; yalnız `--since` verirsen aralık bugüne kadar sürer.
-`--days` bu iki seçenekle birlikte kullanılamaz.
+<a id="istemciler"></a>
+## Hangi istemcilerle kullanılır?
 
-Bir şey ters giderse ajana **“beyin-doktor ile kontrol et”** de. Terminalden, vault klasöründe:
+| İstemci | Kurulum sonrası |
+| --- | --- |
+| **Claude Code** | Vault klasöründe yeni oturum aç. |
+| **Codex** | Yeni hook tanımlarını `/hooks` ile incele; yeni oturum aç. |
+| **Google Antigravity** | Vault'u workspace olarak aç ve klasöre güven. [Kurulum](SETUP-V3.md) |
+| **Kiro** | Hook'ları incele; yeni oturum aç. [Rehber](docs/v3/KIRO.md) |
+| **Hermes Agent** | Profil bağlantısını yap, `beyin-v3` eklentisini etkinleştir. [Rehber](docs/v3/HERMES.md) |
+| **OpenCode** | Vault klasöründe aç; eklenti yüklenir. [Rehber](docs/v3/OPENCODE.md) |
+| **OMP / Oh My Pi** | Vault klasöründe aç; hook yüklenir. [Rehber](docs/v3/OMP.md) |
+| **Pi** | Extension için proje güvenini onayla; yeni oturum aç. [Rehber](docs/v3/PI.md) |
+
+İstemcilerin hook ve güven akışları farklıdır. Codex Desktop'ta açık skill kullanımı ile otomatik hook teslimi aynı şey değildir; otomatik Desktop akışı henüz doğrulanmış sayılmaz. [Gerçek istemci kontrolleri](docs/v3/LIVE-CLIENTS.md).
+
+Başka proje klasörlerinde çalışırken merkezi beynine erişmek için [isteğe bağlı global köprü](docs/v3/GLOBAL-BRIDGE.md) var.
+
+## Bir kaynağı tek tuşla yakala
+
+Video, tweet, makale, mail veya dosyayı gelen kutuna al. Sonra ajanına **“yakalananları işle”** de; metni çıkarıp notlarına bağlasın.
+
+**Bir kez, vault klasöründe:**
 
 ```sh
-python3 beyin.py doctor
+python3 beyin.py yakala kur
 ```
 
-Windows'ta aynı komutun başında `py -3` kullan. Kurulumda özel runtime yolu seçtiysen kurulu `beyin.py` bunu zaten bilir.
-
-## İsteğe bağlı: tek tuşla beyne at
-
-Video, tweet, makale, mail ya da dosyayı gördüğün yerde yakala; ajanın metni çıkarıp dersleri `knowledge/` notlarına bağlasın. Kurulum bir kez: `python3 beyin.py yakala kur` (Windows'ta `py -3`). Sonra her uygulamada Mac'te `Control+Option+B`, Windows'ta `Ctrl+Alt+B`; Linux'ta KDE Plasma'da `Ctrl+Alt+B` (GNOME'da da kurulur ama gerçek masaüstünde henüz denenmedi), diğer masaüstlerinde `kur`'un verdiği komutu kendin bir tuşa bağlarsın; tarayıcıda Obsidian Web Clipper'ın "Beyne at" şablonu. Tuşu değiştirmek için `beyin.py yakala kisayol 'cmd+"'`. Ajanına "yakalananları işle" demen yeter. YouTube'da önce altyazı, yoksa yalnız ses yerelde yazıya dökülür. Ayrıntı: [docs/v3/YAKALA.md](docs/v3/YAKALA.md).
-
-## İsteğe bağlı: yerel web görünümü
-
-`python3 beyin.py web ac` görevleri, son receipt'leri, hafıza dosyalarının boyutunu ve doktor özetini tarayıcıda gösterir. Yalnız bu bilgisayarda (`127.0.0.1`) açılır, 30 dakika kullanılmazsa kapanır; kurulum ve hook'lar onu hiç başlatmaz. Gizli (`visibility: private`) ve hariç tutulan notlar gösterilmez; görev ve sıkıştırma yazmaları CLI komutlarıyla aynı yoldan gider, `--read-only` hepsini kapatır. Ayrıntı: [docs/v3/WEB.md](docs/v3/WEB.md).
-
-## Tüketim ve kontrol sıklığı
-
-Ajanına **“ekonomik moda geç”**, **“otomatik kontrolleri kapat”** veya **“kontrol aralığını 30 dakika yap”** diyebilirsin. Üç istemci aynı vault tercihini kullanır; güncellemeler tercihini korur.
-
-| Mod | Yerel kontrol | Oturuma eklenen bağlam |
+| macOS | Windows | Linux |
 | --- | --- | --- |
-| Normal (varsayılan) | Her ilgili istemci olayında | Oturum başı ve mesajlarda, en çok 5000 karakter |
-| Ekonomik | Yeni oturumda; sonrasında en az 15 dakika aralıklı | Yalnız oturum başında, en çok 2000 karakter |
-| Manuel | Otomatik kapalı | Otomatik kapalı |
+| `Control + Option + B` | `Ctrl + Alt + B` | KDE Plasma'da `Ctrl + Alt + B`; diğer masaüstleri için [rehber](docs/v3/YAKALA.md) |
 
-Süre dolunca kendi başına çalışan bir zamanlayıcı kurulmaz; bir sonraki istemci olayı kontrolü başlatır. İstemciler kapalıyken işlem yapılmaz. Yerel Python kontrolleri **model çağırmaz**; otomatik Luna/Sonnet maliyeti yoktur. Ajana yaptırdığın işler ve eklenen bağlam normal istemci tüketimine girer. Ekonomik veya manuel modda gerektiğinde kaynaklar açık `context`/`sync` komutuyla tazelenir.
+Varsayılan **Enter** yalnız kartı kaydeder. İstersen Claude Code veya Codex ajan modunu ayrıca açıp **Ctrl+Enter** ile o kartı ajana gönderebilirsin. Word (.docx) belgeleri desteklenir; YouTube sesini yazıya çevirme gibi ek işler ayrı araçlar gerektirebilir. [Yakala rehberi](docs/v3/YAKALA.md).
 
-İsteğe bağlı Jev danışmanı bundan ayrıdır: varsayılan kapalıdır, yalnız kendi TypeSafe API anahtarı olanlar içindir ve kurucu onu ne sorar ne kurar. Durumu `python3 beyin.py jev status` gösterir; `jev shadow`, `jev on` ve `jev off` ile değiştirilir. Anahtar istemeyen yerel seçenek olarak ayrı kurulan açık ağırlıklı Laya sunucusu da seçilebilir (`jev shadow --provider laya`); Beyin'e PyTorch veya model girmez. Laya yalnız gölge modda çalışır: ölçümde Jev'den çok daha zayıf çıktığı için puanları ölçüm ve gizlilik denemeleri için kaydedilir, gördüğün sonucu değiştirmez. [Ayrıntılar ve sınırlar](docs/v3/JEV.md).
+## Beynine tarayıcıdan bak
 
-Tercihler: `python3 beyin.py preferences`. Ekonomik: `preferences --profile economical`. Manuel: `preferences --profile manual`. Aralık: `preferences --interval-minutes 30`. Opt-in sır süzgeci: `preferences --secret-filter on`. Windows'ta `py -3` kullan. [Ayrıntılar](docs/v3/PREFERENCES.md).
-
-## Hafıza dosyalarının boyutu
-
-`Last-Session.md` son oturumların devir kartlarıdır (oturum başına `## YYYY-MM-DD HH:MM · <etiket> · <session_id[:8]>` başlığıyla açılır, oturum yalnız kendi kartını düzenler), `Threads.md` açık konuların güncel durumudur. İkisi de yerinde güncellenir, alta eklenmez. Varsayılan sınır 3.000 ve 8.000 karakterdir. Sınır aşılırsa oturum başı bağlamı tek satırlık `Memory hygiene:` uyarısıyla açılır ve `doctor` aynı bilgiyi gösterir. Ajan o zaman `python3 beyin.py companion-compact` çalıştırır: eski bölümler ve eski tarihli kayıtlar kelimesi kelimesine companion klasöründeki `Arşiv/` altına, özel işaretli aylık bir dosyaya taşınır. Hiçbir metin silinmez veya özetlenmez, model çağrılmaz, zamanlayıcı kurulmaz. Planı önce görmek için `--dry-run`, sınırları değiştirmek için `preferences --last-session-chars 4000 --threads-chars 12000` (`0` kapatır). [Ayrıntılar](docs/v3/COMPANION-PARITY.md).
-
-## Güncelleme
-
-Ajanına **“beynimi güncelle”** diyebilir veya vault içindeki kısayolu açabilirsin:
-
-- macOS: `Beyni Güncelle.command`
-- Windows: `Beyni Guncelle.cmd`
-- Linux: `Beyni Güncelle.desktop` veya `Beyni Güncelle.sh`
-
-Kısayol aynı updater'ı çalıştırır. Terminalde önce kontrol etmek istersen:
+Görevlerini, son iş sonuçlarını ve doktor özetini tek ekranda gör. İsteğe bağlı web görünümünü **vault klasöründe** aç:
 
 ```sh
-python3 beyin.py update --check
-python3 beyin.py update
+python3 beyin.py web ac
 ```
 
-Yeni sürüm kontrolü varsayılan olarak açıktır: oturum başında ayrı bir süreç günde en fazla bir kez GitHub sürüm bilgisini kontrol eder. Not, prompt veya hesap bilgisi göndermez; model çağırmaz. İlk sonuç sonraki oturumda veya `doctor` çıktısında görünür. Aynı sürüm için bildirim bir kez gösterilir. Otomatik kurulum yapılmaz.
+![Örnek verilerle gerçek Beyin web arayüzünün görev görünümü.](docs/assets/readme/web-tasks.png)
 
-- Hafif kontrol: `python3 beyin.py update --check --metadata-only`
-- Bildirimi kapat: `python3 beyin.py preferences --update-notifications off`
-- Aç: `python3 beyin.py preferences --update-notifications on`
-- Bir sürümü sustur: `python3 beyin.py update --dismiss X.Y.Z`
+*Gerçek arayüz, örnek not ve görevlerle, salt okunur modda görüntülendi. Kişisel veri içermez.*
 
-Windows'ta `python3` yerine `py -3` kullan. V3.0.2 kurulumunda yeni seçenekler ilk `update` işleminden sonra gelir.
+Yalnız bu bilgisayarda açılır; 30 dakika kullanılmazsa kapanır. Kurulum sırasında kendiliğinden başlamaz. Sadece görüntülemek için `web ac --read-only` kullan. [Web rehberi](docs/v3/WEB.md).
 
-Varsayılan kaynak yalnız resmi GitHub **stable release** paketidir; geliştirme dalından kendiliğinden kod çekmez. Paket yayınlanmamışsa veya erişilemiyorsa hata bildirir, güncellenmiş gibi davranmaz. İndirilmiş ZIP ile çevrimdışı güncelleme ve geri alma için [güncelleme rehberi](docs/v3/UPDATE.md).
+## Güncelleme ve yardım
 
-## V2'den geliyorsan
+Güncellemek için ajanına **“beynimi güncelle”**, sorun varsa **“beyin-doktor ile kontrol et”** de. Terminal tercih edersen **vault klasöründe**:
 
-Aynı kurucuyu mevcut vault üzerinde çalıştır. Notlar, Companion dosyaları, eski `daily/` ve `knowledge/` içerikleri korunur. Tanınan eski writer'lar geri alınabilir biçimde devreden çıkarılır; özelleştirilmiş sistem dosyası veya çalışan eski worker varsa işlem durur ve açıklama verir.
+```sh
+python3 beyin.py update --check   # Yeni sürümü kontrol et
+python3 beyin.py update          # Güncelle
+python3 beyin.py doctor          # Kurulumu ve bağlantıları kontrol et
+```
 
-V2'nin arka planda model çağıran günlük özetleyici/derleyici akışı V3'te çalışmaz. Bunun yerine aktif ajan bilinçli olarak iş sonucu ve bilgi notu yazar. Yeni sonuç bağlantıları `daily/v3/` ve `knowledge/v3/outcomes.md` altında oluşturulur. Eski günlükler yeniden özetlenmez. [Geçiş ve sınırları](docs/v3/MIGRATION.md) · [Tarihsel V2 rehberi](docs/V2-README.md).
+**Windows:** Bu sayfadaki `python3 beyin.py ...` komutlarında `python3` yerine `py -3` kullan.
 
-## Ne korunur, ne ölçülür?
+**Yakala kullanıyorsan**, güncellemeden sonra `python3 beyin.py yakala kur` komutunu bir kez daha çalıştır; ayrı kopyalanan dinleyici ve skill de yenilensin. İstemcinde yeni oturum aç. Global köprü kullanıyorsan sürümün [yeniden kurulum notlarını](docs/v3/releases/3.13.0.md) da kontrol et.
 
-Kullanıcı notları updater'ın değiştireceği sistem dosyaları değildir. Yönetilen dosyada farklı bir değişiklik görülürse conflict bildirilir; ilgisiz desteklenen ayar değişiklikleri birleştirilir. Yedek ve journal vault dışında yereldir. Bir kesinti sonrası `recover` veya `rollback` kullanılabilir.
+Kullanıcı notları güncellenen sistem dosyalarından ayrıdır. Yönetilen bir dosyada kendi değişikliğin varsa sessizce ezilmez; çakışma bildirilir. [Çevrimdışı güncelleme, `rollback` ve `recover`](docs/v3/UPDATE.md).
 
-Arama yerel kelime eşleştirmesi kullanır; genel doğal dil anlama veya her soruda doğru hatırlama sözü vermez. Motor kendisi model çağırmaz; ajana yaptırdığın işler istemcinin normal kullanımına girer. Otomatik doğrulamalar ve gerçek istemci kontrolleri [ayrı raporlanır](docs/v3/README.md).
+## Merak edilenler
 
-## Geliştiriciler
+<details>
+<summary><strong>Notlarım nerede? AI sağlayıcısına ne gider?</strong></summary>
 
-[Katkı rehberi](CONTRIBUTING.md) · [Kaynak formatı](docs/v3/MARKDOWN.md) · [Runtime](docs/v3/RUNTIME.md) · [Semantik test sözleşmesi](docs/v3/SEMANTIC-TEST-CONTRACT.md) · [Sürüm paketi ve updater](docs/v3/UPDATE.md) · [Birden çok makine](docs/v3/MULTI-MACHINE.md).
+Notların yerel Markdown dosyalarında, indeks bu bilgisayarda tutulur. Seçilen bağlam AI istemcine verilir; istemcinin model sağlayıcısı ve hesap koşulları geçerlidir. “Yerel hafıza”, bütün AI konuşmasının çevrimdışı olduğu anlamına gelmez.
 
-Açık kaynak, [MIT lisansı](LICENSE). Avenox tarafından günlük ikinci beyin iş akışlarından geliştirildi. V2 bilgi derleme fikri için [Karpathy'nin bilgi tabanı desenine](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) teşekkürler.
+Özel not işaretleri Beyin'in bağlam ve web filtrelerini etkiler; dosya erişimi verdiğin bir ajan için işletim sistemi düzeyinde koruma oluşturmaz. [Kaynak biçimi ve görünürlük](docs/v3/MARKDOWN.md).
+
+</details>
+
+<details>
+<summary><strong>Ek maliyet veya sürekli çalışan bir servis var mı?</strong></summary>
+
+Temel yerel kontroller model çağırmaz. Ajana yaptırdığın işler ve eklenen bağlam istemcinin normal tüketimine girer. “Ekonomik moda geç” veya “otomatik kontrolleri kapat” diyebilirsin; desteklenen istemciler aynı vault tercihini kullanır.
+
+İstemciler kapalıyken sürekli hafıza tarayan bir servis yoktur. Yakala dinleyicisi ve web görünümü ayrı, isteğe bağlı araçlardır. Sürüm bildirimi günde en fazla bir kez GitHub'ı kontrol eder; not göndermez ve kendiliğinden güncelleme kurmaz. İsteğe bağlı Jev danışmanı varsayılan kapalıdır.
+
+[Normal / Ekonomik / Manuel modlar](docs/v3/PREFERENCES.md) · [Jev](docs/v3/JEV.md)
+
+</details>
+
+<details>
+<summary><strong>Her şeyi hatırlar mı? Eski sohbetlerim ne olur?</strong></summary>
+
+Arama yerel kelime eşleştirmesine dayanır; her soruda doğru hatırlama garantisi yoktur. Önemli kararları nota yazdır, gerektiğinde kaynağını açtır. İş sonucu kaydı da ajanın yazdığı bir iddiadır; bağımsız doğrulama yerine geçmez.
+
+Eski sohbet geçmişinin tamamı otomatik alınmaz. İsteğe bağlı sohbet izi ve geçmişten özet çıkarma için [chat-trace rehberi](docs/v3/CHAT-TRACE.md), son işlerin özeti için [komut rehberi](docs/v3/QUICKSTART.md) var.
+
+</details>
+
+<details>
+<summary><strong>V2'den geliyorum veya vault'u başka bilgisayara taşıyorum</strong></summary>
+
+V2'den geçişte aynı kurucuyu mevcut vault üzerinde çalıştırırsın. Notlar ve eski günlükler korunur; tanınan eski otomatik yazıcılar geri alınabilir biçimde devreden çıkarılır. Özelleştirilmiş dosyalar varsa kurucu durup açıklar. V2'nin arka planda model çağıran derleyicisi V3'te çalışmaz.
+
+Vault'u taşımak ve birden çok makinede kullanmak ayrı adımlar gerektirir; çalışma veritabanını sıradan bir eşitlenen dosya gibi paylaşma.
+
+[V2 geçişi](docs/v3/MIGRATION.md) · [Birden çok makine](docs/v3/MULTI-MACHINE.md) · [Tarihsel V2 rehberi](docs/V2-README.md)
+
+</details>
+
+<a id="belgeler"></a>
+## Belgeler ve katkı
+
+| Aradığın | Rehber |
+| --- | --- |
+| Komutlar, görevler ve son işlerin özeti | [Komut rehberi](docs/v3/QUICKSTART.md) |
+| Açılış hafızası, kişilik ve arşivleme | [Companion](docs/v3/COMPANION-PARITY.md) |
+| Çalışma alanları ve not bağlantıları | [V3.13.0 yenilikleri](docs/v3/releases/3.13.0.md) |
+| Teknik mimari ve kaynak biçimi | [V3 belgeleri](docs/v3/README.md) · [Runtime](docs/v3/RUNTIME.md) · [Markdown](docs/v3/MARKDOWN.md) |
+| Neler test edildi? | [Platform testleri](docs/v3/PLATFORM-TESTS.md) · [Gerçek istemciler](docs/v3/LIVE-CLIENTS.md) |
+| Bir hata veya katkı | [Issue aç](https://github.com/avenoxai/avenoxbeyin/issues) · [Katkı rehberi](CONTRIBUTING.md) |
+
+Avenox'un günlük ikinci beyin iş akışlarından geliştirildi. Katkı veren herkese teşekkürler. V2 bilgi derleme fikri için [Karpathy'nin bilgi tabanı deseninden](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) yararlanıldı.
