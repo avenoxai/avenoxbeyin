@@ -143,7 +143,7 @@ def advise_context(store, query, *, project, audience='internal', statuses=None,
     local_only = [r for r in store.candidates(query, **params, strict=True, limit=MANUAL_POOL)
                   if not remote_allowed(r)]
     try:
-        cards = [dict(id=r['id'], title=r.get('title', '')[:160], statement=json.dumps(dict(text=r['text'][:MANUAL_EXCERPT],
+        cards = [dict(id=r['id'], title=str(r.get('title') or '')[:160], statement=json.dumps(dict(text=r['text'][:MANUAL_EXCERPT],
                       excerpt_truncated=len(r['text']) > MANUAL_EXCERPT, project=r.get('project'), status=r.get('status'), updated_at=r.get('updated_at')), ensure_ascii=False),
                       scope='project:' + project, domains=[r.get('kind', 'note')]) for r in remote]
         _safe(store, [query, cards])
@@ -372,7 +372,7 @@ def auto_context(store, harness, query, context, *, budget_chars, timeout_cap=2.
             return card_excerpt(record, query, project)
         return passage_card(query, record, wider.get(record['id']), ref, AUTO_EXCERPT, project=project)
 
-    cards = [dict(id=k, title=str(r.get('title', ''))[:160], excerpt=excerpt(r),
+    cards = [dict(id=k, title=str(r.get('title') or '')[:160], excerpt=excerpt(r),
                   project=str(r.get('project') or ''), status=str(r.get('status') or ''),
                   updated_at=str(r.get('updated_at') or '')) for k, r in keys.items()]
     sent_strict = sum(1 for r in keys.values() if r['id'] in known)
