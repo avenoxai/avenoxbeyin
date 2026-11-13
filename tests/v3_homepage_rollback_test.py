@@ -12,7 +12,8 @@ class HomepageRollbackTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        # Match updater journal paths, including macOS /var aliases and Windows short paths.
+        self.root = Path(self.tmp.name).resolve()
         self.vault = self.root / 'vault'
         self.state = self.root / 'state'
         self.vault.mkdir()
