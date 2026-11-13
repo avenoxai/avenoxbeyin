@@ -424,6 +424,25 @@ def lint_vault(vault_root, folder=None):
         "unlinked_count": len(unlinked),
     }
     result.update({name: items[:LINT_REPORT_LIMIT] for name, items in lists.items()})
+    # Group full findings, not their first page: a noisy folder must not hide the
+    # existence of findings elsewhere. Paths already passed the scan's privacy filter.
+    folders = {}
+    for category, items in lists.items():
+        for item in items:
+            source = item['source'] if category == 'broken_links' else item
+            folder_name = posixpath.dirname(source) or '.'
+            row = folders.setdefault(folder_name, {
+                'folder': folder_name, 'broken_links': 0, 'orphans': 0, 'unlinked': 0})
+            row[category] += 1
+    rows = sorted(folders.values(),
+                  key=lambda row: (-sum(row[name] for name in lists), row['folder']))
+    result['folder_counts'] = rows[:LINT_REPORT_LIMIT]
+    if len(rows) > LINT_REPORT_LIMIT:
+        remaining = rows[LINT_REPORT_LIMIT:]
+        result['folder_counts_remaining'] = {
+            'folders': len(remaining),
+            **{name: sum(row[name] for row in remaining) for name in lists},
+        }
     truncated = {name: len(items) - LINT_REPORT_LIMIT for name, items in lists.items()
                  if len(items) > LINT_REPORT_LIMIT}
     if truncated:
