@@ -209,7 +209,7 @@ V2'den geçişte aynı kurucuyu mevcut vault üzerinde çalıştırırsın. Notl
 
 Vault'u taşımak ve birden çok makinede kullanmak ayrı adımlar gerektirir; çalışma veritabanını sıradan bir eşitlenen dosya gibi paylaşma.
 
-[V2 geçişi](docs/v3/MIGRATION.md) · [Birden çok makine](docs/v3/MULTI-MACHINE.md) · [Tarihsel V2 rehberi](docs/V2-README.md)
+[V2 geçişi](docs/v3/MIGRATION.md) · [Birden çok makine](docs/v3/MULTI-MACHINE.md) · [Kademeli çoklu cihaz düzeni](docs/v3/DEVICES.md) · [Tarihsel V2 rehberi](docs/V2-README.md)
 
 </details>
 

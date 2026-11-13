@@ -591,6 +591,18 @@ def human_result(result, command, installed_version=None):
                          (' (kuyruk dosyasi okunamadi)' if queue.get('status') == 'invalid' else
                           ' (' + str(queue.get('pending_count', 0)) + ' bekleyen, ' + str(queue.get('conflict_count', 0)) +
                           ' cakisma, ' + str(queue.get('failed_count', 0)) + ' basarisiz)'))
+        devices = result.get('devices') or {}
+        if devices.get('valid') is False:
+            lines.append('devices.json gecersiz; coklu cihaz duzeni kapali sayiliyor.')
+        if devices.get('enabled') or devices.get('last_sync'):
+            last = devices.get('last_sync') or {}
+            lines.append('Coklu cihaz: ' + str(devices.get('level', 'solo')) +
+                         (' / ' + str(devices['phone_sync']) if devices.get('phone_sync') else '') +
+                         (' / ' + str(devices['role']) if devices.get('role') else '') +
+                         ('; son esitleme ' + str(last.get('status')) + ', ' + str(last.get('age_minutes', '?')) + ' dk once'
+                          if last else '; henuz esitleme turu yok' if devices.get('level') in ('computers', 'hub') else ''))
+            if last.get('status') in ('conflict', 'blocked', 'error'):
+                lines.append('Coklu cihaz esitlemesi durdu: ' + str(last.get('reason', last.get('status')))[:200])
         index_scope = result.get('index_exclusions') or {}
         lines += index_exclusion_lines(index_scope)
         hint = index_scope.get('vendored_hint') or {}
