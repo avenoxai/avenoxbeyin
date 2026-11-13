@@ -1340,6 +1340,7 @@ class MemoryStore:
         if not rows or (not current and rows[-1][1] != "delete"):
             return []
         boundary = json.loads(current[0] if current else rows[-1][4])
+        boundary = self._homepage_policy([boundary])[0]
         # A formerly indexed receipt view cannot authorize its own leaked audit
         # trail. Later clean notes at a retired path have sequences past the cutoff.
         if rows[-1][0] <= quarantined.get(boundary.get("source"), 0):
@@ -1356,7 +1357,8 @@ class MemoryStore:
                     return []
             except (ValueError, OSError, TypeError):
                 return []
-        return [{"sequence": row[0], "event_type": row[1], "record_id": row[2], "revision": row[3], "record": record}
+        return [{"sequence": row[0], "event_type": row[1], "record_id": row[2], "revision": row[3],
+                 "record": dict(record, remote_allowed=False) if boundary.get('remote_allowed') is False else record}
                 for row in rows if (record := json.loads(row[4])).get("visibility") in allowed and
                 row[0] > quarantined.get(record.get("source"), 0) and
                 record.get("trust") != "untrusted" and record.get("trusted") is not False and
@@ -1465,6 +1467,7 @@ class MemoryStore:
                 clause = ("id IN (" + ",".join("?" * len(ids)) + ") OR (" + other + ")") if ids else other
                 query, params = "SELECT payload FROM records WHERE " + clause + " ORDER BY id", ids + needles
             records = [json.loads(row[0]) for row in db.execute(query, params)]
+        records = self._homepage_policy(records)
         candidates = {name: [] for name in source_names}
         stale_count = 0
         for record in records:
@@ -1751,6 +1754,16 @@ class MemoryStore:
         with self._connect() as db:
             return [json.loads(row[0]) for row in db.execute("SELECT payload FROM records ORDER BY id")]
 
+    def _homepage_policy(self, records, available=None):
+        # Import only for this opt-in format; ordinary vault retrieval stays unchanged.
+        if not any(r.get('workspace_homepage') is True or '<!-- beyin-field:' in r.get('text', '')
+                   or '<!-- beyin-homepage-create:' in r.get('text', '') for r in records):
+            return records
+        if _MODULE_DIR not in sys.path:
+            sys.path.insert(0, _MODULE_DIR)
+        from beyin_v3_homepages import project_records
+        return project_records(self, records, self._records() if available is None else available)
+
     def _eligible(self, audience="internal", project=None, rejected_only=False, records=None):
         """Visibility, trust, project and source-freshness gates shared by every retrieval path.
 
@@ -1762,6 +1775,7 @@ class MemoryStore:
             raise ValueError("invalid audience")
         if records is None:
             records = self._records()
+        records = self._homepage_policy(records, records)
         allowed = {"public"} if audience == "public" else {"public", "internal"} if audience == "internal" else {"public", "internal", "private"}
         # Read only for an explicit project: the per-turn hook path passes none.
         scopes = read_project_scopes(self.vault_root) if project is not None else None

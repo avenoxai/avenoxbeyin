@@ -1120,7 +1120,31 @@ class SyncEngine:
     def sync(self, full=False, recover_views=False):
         """Index the vault. `full` reads every source: no stored stat signature is taken on trust."""
         with ExitStack() as note_locks:
-            return self._sync(full, recover_views, note_locks)
+            result = self._sync(full, recover_views, note_locks)
+        if not getattr(self, '_homepage_busy', False):
+            self._refresh_homepages(result)
+        return result
+
+    def _refresh_homepages(self, result, *, on_write=None):
+        if getattr(self, '_homepage_busy', False):
+            return
+        self._homepage_busy = True
+        try:
+            if _MODULE_DIR not in sys.path:
+                sys.path.insert(0, _MODULE_DIR)
+            from beyin_v3_homepages import reconcile
+            try:
+                outcome = reconcile(self, on_write=on_write)
+            except (OSError, ValueError, NoteConflict, sqlite3.Error) as exc:
+                # Source writes have already succeeded; refresh issues must not undo that result.
+                outcome = {'updated': 0, 'conflicts': [], 'warnings': [{'reason': str(exc)}]}
+            if outcome['updated'] or outcome['conflicts'] or outcome['warnings']:
+                result['workspace_homepages'] = outcome
+                if outcome['conflicts'] or outcome['warnings']:
+                    if result.get('status') == 'succeeded':
+                        result['status'] = 'degraded'
+        finally:
+            self._homepage_busy = False
 
     def _sync(self, full, recover_views, note_locks):
         # Serialize recovery, source scan and projection across local processes.
@@ -1190,6 +1214,19 @@ class SyncEngine:
             old_payloads = dict(db.execute('SELECT id, payload FROM records'))
             cache = _SignatureCache(db, old_sources, old_payloads, full=full)
             records, warnings, conflicts = self._scan(cache, view_paths, alias_identities)
+            # A page's own signature cannot authorize copies from changed sources.
+            # Recompute its effective policy even when its Markdown was a cache hit.
+            if _MODULE_DIR not in sys.path:
+                sys.path.insert(0, _MODULE_DIR)
+            from beyin_v3_homepages import is_projection, project_records
+            if any(is_projection(record) if record is not None else
+                   ('"workspace_homepage"' in old_payloads[id] or 'beyin-field:' in old_payloads[id]
+                    or 'beyin-homepage-create:' in old_payloads[id]) for id, record in records.items()):
+                hydrated = [record if record is not None else json.loads(old_payloads[id])
+                            for id, record in records.items()]
+                for record in project_records(self.store, hydrated):
+                    if is_projection(record):
+                        records[record['id']] = record
             canonical_view_paths.update(self.discovered_receipt_views)
             warnings.extend(state_regression_warnings)
             warnings.extend(issue for issue in receipt_warnings if issue not in warnings)
@@ -1389,7 +1426,21 @@ class SyncEngine:
     def note_edit(self, request):
         if _MODULE_DIR not in sys.path:
             sys.path.insert(0, _MODULE_DIR)
-        return note_apply_edits(self, request)
+        previous = getattr(self, '_homepage_busy', False)
+        def finish(result, checkpoint):
+            self._homepage_busy = False
+            try:
+                self._refresh_homepages(result, on_write=checkpoint)
+                if result['sha256'] != self.note_read(request['source'])['sha256']:
+                    raise NoteConflict('external edit detected during homepage refresh; reread source')
+            finally:
+                self._homepage_busy = True
+        self._homepage_busy = True
+        try:
+            result = note_apply_edits(self, request, finalize=finish if not previous else None)
+        finally:
+            self._homepage_busy = previous
+        return result
 
     def note_create(self, source, text, metadata=None, idempotency_key=None, evidence_refs=None):
         if _MODULE_DIR not in sys.path:

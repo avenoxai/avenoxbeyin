@@ -27,8 +27,8 @@ def default_state(vault: Path) -> Path:
     return base / "beyin-v3" / key
 
 
-SOURCE_WRITE_COMMANDS = ("note-create", "note-edit", "task-create", "task-update")
-NOTE_JSON_COMMANDS = ("note-read", "note-edit")
+SOURCE_WRITE_COMMANDS = ("note-create", "note-edit", "homepage-create", "task-create", "task-update")
+NOTE_JSON_COMMANDS = ("note-read", "note-edit", "homepage-create")
 
 
 class NoteUsageError(ValueError):
@@ -1246,6 +1246,8 @@ def parser(note_namespace=None, is_json=False):
     note_edit.add_argument("--file", default="-", help="JSON {source, expected_sha256, edits} or new content; - for stdin")
     note_edit.add_argument("--idempotency-key", help="Optional retry key (1-128 of A-Z a-z 0-9 _ -), bound to this exact request")
     note_edit.add_argument("--evidence-ref", action="append", dest="evidence_refs", help="Existing vault source path backing the edit; repeatable")
+    homepage = sub.add_parser("homepage-create", help="Create or attach a selected Workspace homepage")
+    homepage.add_argument("--file", default="-", help="JSON {source, expected_sha256, title, project, selections}; - for stdin")
     task = sub.add_parser("task-create", help="Create and verify an explicit new task")
     task.add_argument("--file", default="-", help="JSON {source: tasks/name.md, text, metadata: {id,status,owner}}")
     mutation_queue = sub.add_parser("mutation-queue", help="Opt-in local offline mutation queue (off by default; machine-local state)")
@@ -1455,7 +1457,7 @@ def main(argv=None, return_result=False):
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
         engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc") else None
         store = engine.MemoryStore(state, vault, read_only=read_only_context) if engine else None
-        sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
+        sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "homepage-create", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
         if args.command == "bridge":
             if sum([bool(args.print_config), bool(args.install), bool(args.uninstall)]) > 1:
                 argument_parser.error("--print-config, --install, and --uninstall are mutually exclusive")
@@ -2100,6 +2102,10 @@ def main(argv=None, return_result=False):
             result = sync.note_create(payload['source'], payload['text'], payload.get('metadata'),
                                       idempotency_key=payload.get('idempotency_key'),
                                       evidence_refs=payload.get('evidence_refs'))
+        elif args.command == "homepage-create":
+            _ensure_scripts_path()
+            from beyin_v3_homepages import create
+            result = create(sync, read_json(args.file))
         elif args.command == "task-create":
             payload = read_json(args.file)
             result = sync.task_create(payload['source'], payload['text'], payload['metadata'])
@@ -2266,7 +2272,7 @@ def main(argv=None, return_result=False):
             result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])
         if ((args.command in SOURCE_WRITE_COMMANDS or
              (args.command == "mutation-queue" and args.replay and result.get("applied", 0) > 0))
-                and (args.command != "note-edit" or result.get('status') == 'written')
+                and (args.command not in ("note-edit", "homepage-create") or result.get('status') == 'written')
                 and (os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID"))):
             mark_session_edit(state, vault, result.get("source"))
         if return_result:

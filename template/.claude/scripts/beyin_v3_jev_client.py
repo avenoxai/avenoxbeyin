@@ -452,7 +452,7 @@ def _cache_path(vault, digest):
     return path
 
 
-def evaluate(vault, query, candidates, *, source_versions=None, scope='user', facets=None, transport=None, purpose='retrieval', timeout_cap=None):
+def evaluate(vault, query, candidates, *, source_versions=None, scope='user', facets=None, transport=None, purpose='retrieval', timeout_cap=None, source_guard=None):
     started=time.monotonic()
     result=dict(mode='off',scores={},facet_scores={},relations={},diagnostics=[],degraded=False,cache_hit=False,
                 usage={},latency_ms=0,request_hash=None,reported_model=None,network_requests=0,http_requests=0,
@@ -556,15 +556,21 @@ def evaluate(vault, query, candidates, *, source_versions=None, scope='user', fa
         remaining=config['timeout']-(time.monotonic()-started)
         if remaining<=0: raise ValueError('deadline_exceeded')
         if inspect_config(vault) != policy: raise ValueError('configuration_changed')
+        if source_guard is not None and not source_guard(): raise ValueError('source_or_dependency_changed')
         # One logical call; http_requests counts wire requests separately.
         result['network_requests'] = 1
         if laya and transport is None:
             sent=[]
             sender=functools.partial(laya.call,requests=requests,model=config['model'],sent=sent,
-                                     guard=lambda: inspect_config(vault)==policy)
+                                     guard=lambda: inspect_config(vault)==policy and (source_guard is None or source_guard()))
         else:
             result['http_requests'] = 1
             sender=transport or _transport
+        unguarded_sender=sender
+        def sender(endpoint, body, key, timeout):
+            # Recheck in the dispatch worker, after serialization and queueing.
+            if source_guard is not None and not source_guard(): raise ValueError('source_or_dependency_changed')
+            return unguarded_sender(endpoint, body, key, timeout)
         raw=_bounded_transport(sender,endpoint,body,key,remaining)
         if inspect_config(vault) != policy: raise ValueError('configuration_changed')
         if time.monotonic()-started>config['timeout']: raise ValueError('deadline_exceeded')
@@ -599,7 +605,7 @@ def evaluate(vault, query, candidates, *, source_versions=None, scope='user', fa
             except OSError: result['diagnostics'].append('cache_write_failed')
     except Exception as exc:
         safe_codes={'config_invalid','env_file_invalid','endpoint_invalid','payload_invalid','budget_exceeded','answers_invalid','credentials_missing','deadline_exceeded','purpose_invalid','configuration_changed',
-                    'laya_state_too_large','laya_state_truncated','laya_checkpoint_mismatch'}
+                    'laya_state_too_large','laya_state_truncated','laya_checkpoint_mismatch','source_or_dependency_changed'}
         code=str(exc) if isinstance(exc,ValueError) and str(exc) in safe_codes else 'request_failed'
         issue=getattr(exc,'issue',None)
         if code=='answers_invalid' and isinstance(issue,str) and re.fullmatch(r'[a-z_]{1,64}',issue): result['answer_issue']=issue
