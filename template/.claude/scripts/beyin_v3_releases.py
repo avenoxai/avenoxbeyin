@@ -340,7 +340,7 @@ def session_start(vault, state):
         if os.environ.get('BEYIN_V3_NO_SPAWN') != '1' and claim_worker(state, vault=vault):
             options = {'stdin': subprocess.DEVNULL, 'stdout': subprocess.DEVNULL,
                        'stderr': subprocess.DEVNULL, 'close_fds': True}
-            if os.name == 'nt': options['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+            if os.name == 'nt': options['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
             else: options['start_new_session'] = True
             subprocess.Popen([sys.executable, '-B', str(Path(__file__).resolve()), '--worker', str(state)], **options)
         return text

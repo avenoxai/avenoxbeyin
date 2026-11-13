@@ -106,3 +106,19 @@ Tell the user, in a few short lines:
 - that `beyin doktor` diagnoses the machine layer if something looks wrong.
 
 Then tell them to open the vault in Obsidian and start a session there.
+
+### Arka plan pencereleri ve yerel workaround (#671)
+
+V3 hook ve sürüm kontrolü işçileri Windows'ta `CREATE_NEW_PROCESS_GROUP |
+CREATE_NO_WINDOW` ile başlatılır; `DETACHED_PROCESS` kullanılmaz. Standart
+girdi/çıktı kapalı kalır, POSIX yeni oturum davranışı değişmez. Bu, normal
+alt süreçlerin gereksiz konsol penceresi açmasını önlemeyi hedefler; açıkça
+yeni pencere isteyen harici araçları gizleme garantisi değildir.
+
+Bu iki yönetilen dosyayı eski sürümde elle değiştirdiysen güncelleyici yine
+`content differs` ile durabilir. Düzeltme eski manifestteki hash'i değiştirmez
+ve yerel düzenlemeni otomatik ezmez. Önce değişikliği yedekleyip diff'i incele;
+yalnız bu workaround olduğundan eminsen dosyayı **kurulu sürümün** doğrulanmış
+stok kopyasına geri getirip normal güncellemeyi tekrar çalıştır. Başka
+değişiklikleri koru; manifest hash'lerini değiştirme veya conflict korumasını
+atlama. Ayrıntılar: [güncelleme sözleşmesi](docs/v3/UPDATE.md).
