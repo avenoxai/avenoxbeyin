@@ -953,6 +953,7 @@ def triage(
     stale_days: int = 14,
     digest_days: int = 7,
     now: float | None = None,
+    review: dict | None = None,
 ) -> dict:
     now_ts = time.time() if now is None else now
     vault = Path(vault).resolve()
@@ -962,6 +963,8 @@ def triage(
     companion_report = scan_companion(vault, state, now=now_ts)
     threads_report = scan_stale_threads(vault, now_ts, stale_days=stale_days, state=state)
     recs = generate_recommendations(inbox_report_res, tasks_report, digest_report, companion_report, vault=vault, threads=threads_report)
+    if review and review.get('due_count', 0):
+        recs.append(f"{review['due_count']} notun yeniden bakma tarihi (review_at) geldi; kaynaklari gozden gecirin. Bu bir gorev veya otomatik terfi degildir.")
 
     return {
         'schema': 1,
@@ -972,6 +975,7 @@ def triage(
         'digest': digest_report,
         'companion': companion_report,
         'threads': threads_report,
+        **({'review': review} if review is not None else {}),
         'recommendations': recs,
     }
 
@@ -1054,6 +1058,24 @@ def format_human(report: dict) -> str:
                 lines.append(f"  - {path}: {title} ({age})")
             if len(threads.get(key, [])) > 5:
                 lines.append(f"  ... ve {len(threads[key]) - 5} konu daha")
+        lines.append('')
+
+    if 'review' in report:
+        review = report['review']
+        lines.append('[Yeniden Bakilacak Notlar] (review_at, bilgi)')
+        if review.get('status') == 'unavailable':
+            lines.append('  Taranamadi; doctor ve sync ile kontrol edin.')
+        else:
+            lines.append(f"  Tarihi gelen: {review.get('due_count', 0)}")
+            for item in review.get('due', [])[:5]:
+                source = _strip_terminal_controls(item.get('source') or '')
+                lines.append(f"  - {source}: {item['review_at']} ({item['days_overdue']} gun once)")
+            if review.get('due_count', 0) > 5:
+                lines.append(f"  ... ve {review['due_count'] - 5} not daha")
+            if review.get('stale_count', 0):
+                lines.append('  Degismis veya okunamayan indeks kaynaklari sayilmadi; sync calistirin.')
+            if review.get('invalid_count', 0):
+                lines.append(f"  Gecersiz review_at: {review['invalid_count']}; doctor ile kontrol edin.")
         lines.append('')
 
     digest = report.get('digest', {})

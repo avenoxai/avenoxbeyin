@@ -2031,7 +2031,12 @@ def main(argv=None, return_result=False):
         elif args.command == "triage":
             _ensure_scripts_path()
             import beyin_v3_triage as triage_module
-            result = triage_module.triage(vault, state=state, stale_days=args.stale_days, digest_days=args.digest_days)
+            try:
+                review = load_sync().reader(store).review_health(source_verified=True)
+            except Exception as exc:
+                review = {'status': 'unavailable', 'error': type(exc).__name__}
+            result = triage_module.triage(vault, state=state, stale_days=args.stale_days,
+                                          digest_days=args.digest_days, review=review)
         elif args.command == "audit":
             _ensure_scripts_path()
             import beyin_v3_audit as audit_module

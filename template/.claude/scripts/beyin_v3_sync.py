@@ -799,7 +799,7 @@ class SyncEngine:
                 'ambiguous_rejected_link_count': len(ambiguous), 'ambiguous_rejected_links': ambiguous[:20],
                 'truncated': len(ignored) > 20 or len(dependents) > 20 or len(ambiguous) > 20}
 
-    def review_health(self, today=None):
+    def review_health(self, today=None, source_verified=False):
         """Notes whose own `review_at` date has come: an idea to revisit, not a task to do.
 
         Only notes that set `review_at` are decoded (the payload is prefiltered in SQLite, so a
@@ -814,6 +814,11 @@ class SyncEngine:
             # _json() writes compact keys, so every record that sets the field contains this text.
             records = [json.loads(row[0]) for row in db.execute(
                 'SELECT payload FROM records WHERE instr(payload, ?) > 0 ORDER BY id', ('"review_at":',))]
+        # Triage is a source-facing read without sync: never advertise stale/private
+        # indexed metadata. Doctor retains its existing diagnostic index view.
+        stale_count = 0
+        if source_verified:
+            records, stale_count = self.store._eligible(records=records)
         candidates = []
         for record in records:
             value = record.get('review_at')
@@ -840,8 +845,11 @@ class SyncEngine:
                             'days_overdue': (today - when).days})
         due.sort(key=lambda entry: (-entry['days_overdue'], entry['source'] or ''))
         invalid.sort(key=lambda entry: entry['source'] or '')
-        return {'due_count': len(due), 'due': due[:20], 'invalid_count': len(invalid), 'invalid': invalid[:20],
-                'truncated': len(due) > 20 or len(invalid) > 20}
+        result = {'due_count': len(due), 'due': due[:20], 'invalid_count': len(invalid), 'invalid': invalid[:20],
+                  'truncated': len(due) > 20 or len(invalid) > 20}
+        if source_verified:
+            result['stale_count'] = stale_count
+        return result
 
     def supersedes_health(self):
         """Report supersedes values that retire nothing: unresolved, ambiguous, the note itself or a cycle."""

@@ -25,6 +25,21 @@ Kurucu ortak motoru, `beyin`, `beyin-doktor`, `beyin-guncelle`, `beyin-kontrol` 
 - Ortak skill kaynakları `.agents/skills` içindedir. Claude ve Kiro kendi proje kopyalarına erişir; kişisel skill çakışmaları gizlenmez.
 - Updater yalnız resmi stable release veya açıkça verilen yerel paketi kullanır. Yönetilen dosya yedekleri, kesinti journal'ı, checksum ve runtime ön kontrolleri uygulanır; başarılı sürüm kaydı en son yazılır.
 
+### Yeniden bakılacak notlar
+
+`python beyin.py triage --human` (ve JSON çıktısı), `review_at` tarihi gelmiş
+notları `review` bölümünde en eski tarihten başlayarak bildirir. Bu yalnız
+bilgidir: görev oluşturmaz, notu değiştirmez veya terfi ettirmez. JSON en fazla
+20 kaynak, insan çıktısı ilk 5 kaynağı gösterir; toplam sayı ayrıca verilir.
+
+Triage otomatik `sync` yapmaz. Yalnız indeksteki, kaynak hash'i hâlâ aynı olan,
+güvenilir public/internal notlar sayılır; özel, emekli, reddedilmiş veya başka
+notla geçersiz kılınmış kaynaklar dışarıda kalır. Değişmiş/okunamayan kaynaklar
+`stale_count` ile belirtilir; yeni veya değiştirilmiş notların güncel sayımı için
+önce `python beyin.py sync` çalıştırın. Boş veya şablon tarihleri atlanır;
+geçersiz tarihler ayrı sayılır. Oturum açılışına yeni satır veya otomatik hatırlatma
+eklenmez; `doctor` mevcut tanılama davranışını korur.
+
 ## V2 geçişi
 
 [V2 migration rehberi](MIGRATION.md) eski kaynakların korunmasını ve writer geçişini anlatır. Tanınan V2 özetleyici/derleyici devreden çıkarılır. Modelle bilgi damıtmayı artık aktif ajan, `beyin` skill'i üzerinden bilinçli olarak yapar; deterministic görünümler bunun yerine bilgi uydurmaz. Özelleştirilmiş veya harici eski işler ayrıca değerlendirilir.
