@@ -25,15 +25,16 @@ import functools
 import hashlib
 import json
 import math
-import statistics
 import os
-import re
 import queue
+import re
+import socket
+import statistics
+import subprocess
 import threading
 import tempfile
 import time
 import urllib.error
-import socket
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -234,7 +235,7 @@ def _supplied(vault):
     if path.is_symlink() or path.stat().st_size > 16000: raise ValueError('config_invalid')
     try: supplied = json.loads(path.read_text(encoding='utf-8'))
     except (json.JSONDecodeError, UnicodeDecodeError): raise ValueError('config_invalid') from None
-    if not isinstance(supplied, dict) or set(supplied) - set(DEFAULTS) - {'env_file', 'laya'}:
+    if not isinstance(supplied, dict) or set(supplied) - set(DEFAULTS) - {'env_file', 'key_command', 'laya'}:
         raise ValueError('config_invalid')
     return supplied
 
@@ -270,10 +271,52 @@ def _validated(config):
             raise ValueError('config_invalid')
     if 'env_file' in config and (not isinstance(config['env_file'],str) or not Path(config['env_file']).is_absolute()):
         raise ValueError('config_invalid')
+    if 'key_command' in config:
+        cmd = config['key_command']
+        if not isinstance(cmd, list) or not cmd or any(not isinstance(part,str) for part in cmd):
+            raise ValueError('config_invalid')
+        if not Path(cmd[0]).is_absolute():
+            raise ValueError('config_invalid')
     if 'laya' in config or config['provider'] == 'laya':
         import beyin_v3_laya as laya
         config['laya'] = laya.validate(config.get('laya', {}))
     return config
+
+
+def _command_key(command, timeout=2.0):
+    """Run key_command argv (no shell); return first stripped output line or None.
+
+    Errors, timeouts and empty output all yield None so the caller falls through
+    to credentials_missing. The key is never written to disk or logs.
+    """
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+        if result.returncode != 0:
+            return None
+        lines = result.stdout.splitlines()
+        if not lines:
+            return None
+        key = lines[0].strip()
+        return key or None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _key_source(config):
+    """'env', 'env_file', 'command' or 'none' for status reporting."""
+    for name in ('TYPESAFE_API_KEY','TYPESAFE_BASE_URL','LAYA_API_KEY'):
+        if name in os.environ:
+            return 'env'
+    if config.get('env_file'):
+        path = Path(config['env_file'])
+        if path.is_absolute() and path.is_file():
+            for line in path.read_text(encoding='utf-8').splitlines():
+                match = re.fullmatch(r'\s*(?:export\s+)?(TYPESAFE_API_KEY|TYPESAFE_BASE_URL|LAYA_API_KEY)\s*=\s*(.*?)\s*',line)
+                if match:
+                    return 'env_file'
+    if config.get('key_command'):
+        return 'command'
+    return 'none'
 
 
 def _environment(config):
@@ -291,6 +334,10 @@ def _environment(config):
                 values[match[1]]=value
     for name in ('TYPESAFE_API_KEY','TYPESAFE_BASE_URL','LAYA_API_KEY'):
         if name in os.environ: values[name]=os.environ[name]
+    if not values.get('TYPESAFE_API_KEY') and config.get('key_command'):
+        key = _command_key(config['key_command'])
+        if key:
+            values['TYPESAFE_API_KEY']=key
     return values
 
 
@@ -701,14 +748,18 @@ def status(vault):
     laya=provider=='laya'
     key_present = False
     key_checked = info['valid'] and info['mode'] != 'off' and bool(features)
+    key_source = 'none'
     if key_checked:
-        try: key_present=bool(_environment(load_config(vault)).get('LAYA_API_KEY' if laya else 'TYPESAFE_API_KEY'))
+        try:
+            env=_environment(load_config(vault))
+            key_present=bool(env.get('LAYA_API_KEY' if laya else 'TYPESAFE_API_KEY'))
+            key_source=_key_source(load_config(vault))
         except Exception: pass
     try: saved=_validated(dict(DEFAULTS,**_supplied(vault)))['mode']
     except Exception: saved='off'
     result=dict(mode=info['mode'],saved_mode=saved,config_valid=info['valid'],configured=(Path(vault)/'jev.json').exists(),
                 kill_switch=killed(vault),features={name:name in features for name in FEATURES},key_present=key_present,key_checked=key_checked,
-                automatic_model_calls=info['mode']!='off' and 'auto_context' in features,last_24h=_recent(vault))
+                key_source=key_source,automatic_model_calls=info['mode']!='off' and 'auto_context' in features,last_24h=_recent(vault))
     if provider:
         result['provider']=provider
     if provider in SHADOW_ONLY:

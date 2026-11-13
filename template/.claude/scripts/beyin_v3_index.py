@@ -10,6 +10,7 @@ is what keeps a source out of context.
 """
 import json
 import os
+import re
 from pathlib import Path
 import stat
 import tempfile
@@ -78,6 +79,12 @@ def check(value, vault=None):
     """The validated name list, first spelling of each name kept; ValueError says what is wrong.
 
     All or nothing: one bad entry refuses the file, so a typo is reported instead of half applied.
+
+    Entries without '/' are bare directory names matched at any depth (existing behavior).
+    Entries with '/' are vault-root-relative paths: only that exact directory is pruned, e.g.
+    ``projects/dukkan/research`` prunes only that folder, not every ``research``. Windows
+    backslashes are normalized to '/'. Leading '/', '..', absolute Windows paths and names
+    read back through the index are refused.
     """
     if not isinstance(value, dict) or set(value) - {'schema', 'excluded_dirs'} or value.get('schema', 1) != 1:
         raise ValueError('index settings accept only excluded_dirs')
@@ -88,13 +95,25 @@ def check(value, vault=None):
     for name in names:
         if not isinstance(name, str) or not name.strip() or name != name.strip() or len(name) > MAX_NAME_CHARS:
             raise ValueError('excluded_dirs entries must be directory names without surrounding spaces: ' + repr(name)[:80])
-        if '/' in name or '\\' in name or name in ('.', '..') or any(ord(char) < 32 or ord(char) == 127 for char in name):
-            raise ValueError('excluded_dirs takes bare directory names, matched at any depth, not paths: ' + repr(name)[:80])
-        key = dir_key(name)
+        # Normalize Windows backslashes to forward slashes and store the normalized spelling.
+        normalized = name.replace('\\', '/')
+        # Refuse '.', '..', absolute paths, escaping components, and empty components.
+        if normalized in ('.', '..') or normalized.startswith('/') or normalized.startswith('../') \
+           or re.match(r'^[A-Za-z]:', normalized):
+            raise ValueError('excluded_dirs entries must be vault-root-relative, not absolute or escaping: ' + repr(name)[:80])
+        if '/..' in normalized or normalized.endswith('/..') \
+           or any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+            raise ValueError('excluded_dirs entries must not escape the vault: ' + repr(name)[:80])
+        parts = normalized.split('/')
+        if any(part == '' for part in parts):
+            raise ValueError('excluded_dirs entries must not have empty path components: ' + repr(name)[:80])
+        # Every path component is folded with dir_key; bare names keep the old behavior.
+        key = '/'.join(dir_key(part) for part in parts)
         if key not in seen:
-            seen[key] = name
-            result.append(name)
-    refused = next((key for key in seen if key in _PROTECTED_KEYS), None) or companion_key(vault, seen)
+            seen[key] = normalized
+            result.append(normalized)
+    # Refuse any entry whose top-level component is read back through the index.
+    refused = next((key for key in seen if key.split('/')[0] in _PROTECTED_KEYS), None) or companion_key(vault, seen)
     if refused is not None:
         raise ValueError('this folder is read back through the index and cannot be excluded: ' + repr(seen[refused])[:80])
     return result
@@ -136,7 +155,9 @@ def exclusions(state, vault=None):
     report = {'excluded_dirs': names, 'pruned': 0, 'pruned_dirs': []}
     if error is not None:
         report['error'] = error
-    return frozenset(dir_key(name) for name in names), report
+    # Keys are stored as-is: bare names and vault-root-relative paths with '/' separators.
+    # Every component of each entry is folded with dir_key.
+    return frozenset('/'.join(dir_key(part) for part in name.replace('\\', '/').split('/')) for name in names), report
 
 
 def applied_keys(keys, walk_skips=()):
@@ -151,15 +172,32 @@ def applied_keys(keys, walk_skips=()):
 
 
 def prune(root, directory, dirs, keys, report):
-    """Drop the excluded names from one os.walk level and note what was skipped."""
+    """Drop the excluded names from one os.walk level and note what was skipped.
+
+    Bare names match at any depth (existing behavior). Vault-root-relative path entries
+    (containing '/') match only that exact directory: the full path from root, e.g.
+    'projects/dukkan/research', is compared against each candidate subdirectory. A parent
+    component of a listed path is pruned too, since everything under it matches the path.
+    """
     kept = []
     for name in dirs:
-        if dir_key(name) not in keys:
+        bare_key = dir_key(name)
+        rel_dir = os.path.relpath(directory, root)
+        if rel_dir == '.':
+            full_path = name
+        else:
+            full_path = rel_dir.replace(os.sep, '/') + '/' + name
+        full_key = '/'.join(dir_key(part) for part in full_path.split('/'))
+        # Bare-name match at any depth, or exact path match → prune.
+        # A listed path key starting with full_key + '/' means this directory is
+        # a parent of a listed path: descend into it (do not prune).
+        match = bare_key in keys or full_key in keys
+        if match:
+            report['pruned'] += 1
+            if len(report['pruned_dirs']) < REPORT_LIMIT:
+                report['pruned_dirs'].append((Path(directory) / name).relative_to(root).as_posix())
+        else:
             kept.append(name)
-            continue
-        report['pruned'] += 1
-        if len(report['pruned_dirs']) < REPORT_LIMIT:
-            report['pruned_dirs'].append((Path(directory) / name).relative_to(root).as_posix())
     return kept
 
 
