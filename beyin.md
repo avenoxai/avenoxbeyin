@@ -168,6 +168,10 @@ Pi kullaniliyorsa vault klasorunde Pi'yi ac, `.pi/extensions/beyin-v3.ts` dosyas
 kullaniciya gosterip Pi'nin proje guveni sorusunu kullaniciya biraktir ve yeni oturum
 baslat; `~/.pi/agent/trust.json` dosyasina elle yazma. Vault disindaki projelerde Pi
 yalniz acik `--beyin-project-root` kapsamiyla baglanir (`docs/v3/PI.md`).
+DeepSeek Harness (DSH) icin ek hook dosyasi yoktur; vault klasorunde DSH'yi ac ve yeni
+oturum baslat. DSH `AGENTS.md` blogunu ve `.agents/skills` altindaki skill'leri kendi
+kesfeder; otomatik baglam isteyenler depodaki istege bagli `extras/dsh-bridge` eklentisini
+kullanabilir (`docs/v3/DSH.md`). Makbuzlar `--harness dsh` ile yazilir.
 Ardindan yeni bir istemci oturumu acilmasini iste. Codex Desktop otomatik hook baglami
 gorunmezse bu bir kurulum basarisi iddiasi degildir; kurulu `beyin.py context` ve `sync`
 komutlariyla dogrudan tazeleme kullanilabilir.

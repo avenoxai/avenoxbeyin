@@ -119,6 +119,7 @@ Ortak kaynak `.agents/skills` içindedir; Claude ve Kiro kendi proje kopyaların
 | **OpenCode** | Vault klasöründe aç; eklenti yüklenir. [Rehber](docs/v3/OPENCODE.md) |
 | **OMP / Oh My Pi** | Vault klasöründe aç; hook yüklenir. [Rehber](docs/v3/OMP.md) |
 | **Pi** | Extension için proje güvenini onayla; yeni oturum aç. [Rehber](docs/v3/PI.md) |
+| **DeepSeek Harness (DSH)** | Vault klasöründe aç; skill'ler `.agents/skills` altından yüklenir, hook yok. [Rehber](docs/v3/DSH.md) |
 
 İstemcilerin hook ve güven akışları farklıdır. Codex Desktop'ta açık skill kullanımı ile otomatik hook teslimi aynı şey değildir; otomatik Desktop akışı henüz doğrulanmış sayılmaz. [Gerçek istemci kontrolleri](docs/v3/LIVE-CLIENTS.md).
 

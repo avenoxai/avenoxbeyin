@@ -1,0 +1,3 @@
+- insert:
+    - id: beyin-bridge
+      name: '@local/dsh-beyin-bridge'

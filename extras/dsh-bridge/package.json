@@ -1,0 +1,21 @@
+{
+  "name": "@local/dsh-beyin-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DeepSeek Harness icin istege bagli beyin koprusu: oturum basi recap enjeksiyonu ve tur sonu 'kaydedeyim mi?' sorusu.",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
