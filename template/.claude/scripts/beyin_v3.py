@@ -22,13 +22,13 @@ import urllib.parse
 
 
 # Every supported client. "manual" is accepted for receipts only.
-HARNESSES = ("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro", "pi")
+HARNESSES = ("codex", "claude", "antigravity", "hermes", "opencode", "omp", "kiro", "pi", "dsh")
 
 # Clients newer than the receipt validator of released 3.12.0, which rejects any other
 # `harness` value and degrades sync. Their receipt sources are written as `harness: manual`
 # plus `client: <name>`, a field older versions ignore, so a rollback or an older device keeps
 # reading them while this version still attributes the receipt to its client (#385).
-RECEIPT_CLIENTS = ("pi",)
+RECEIPT_CLIENTS = ("pi", "dsh")
 RECEIPT_CLIENT_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}", re.ASCII)
 
 # rejected_at grammar: a date, optionally with an RFC 3339-style time.
