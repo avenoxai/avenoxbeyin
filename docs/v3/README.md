@@ -6,6 +6,8 @@ V3'te Markdown kaynak, SQLite yerel indeks, Codex/Claude Code/Antigravity, [Herm
 
 [Yeni kullanıcı başlangıcı](../../README.md) · [Ajanla kurulum](../../SETUP-V3.md) · [Güncelleme/geri alma](UPDATE.md) · [Birden çok makine](MULTI-MACHINE.md) · [Kaynak şeması](MARKDOWN.md) · [Runtime](RUNTIME.md)
 
+[Sorgu değişikliklerini karşılaştırma ve kendi kasanızda ölçüm](QUERY-EXPERIMENTS.md).
+
 Geliştiriciler için: [kaynak ve dağıtım sınırları envanteri](MODULE-BOUNDARIES.md).
 
 Üçüncü taraf [topluluk araçları](../COMMUNITY-TOOLS.md): proje tarafından desteklenmez ve denetlenmez.
