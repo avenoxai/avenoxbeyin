@@ -156,6 +156,13 @@ görmek için bayraksız `project-scope list` kullan.
   gövdesi okunmaz ve `#başlık` bölümü doğrulanmaz. Receipt dosyaları tarama/MOC listesine
   girmez; yalın ad veya olmayan receipt hâlâ kırık sayılır. Sayılar her zaman tam döner; listeler en fazla 100 kayıt
   taşır, kalanı `truncated` alanında sayılır (tamamı için daha dar bir `--folder` kullan).
+  `folder_counts`, kırpılmadan önceki bulguları kaynak dosyanın doğrudan üst klasörüne
+  göre sayar (`.` kasa kökü); kırık bağlantı sayısı hedef dosya değil bağlantı adedidir.
+  En çok bulgusu olan ilk 100 klasör listelenir, eşitlikte yol sırası kullanılır; kalan
+  klasör ve bulgu sayıları `folder_counts_remaining` alanında tutulur. `--folder`
+  kullanıldığında bu dağılım da yalnız seçilen tarama alanını kapsar. Bu özet dışlama
+  politikasını değiştirmez: dizin dışı bırakılmış veya üretilmiş dosyalar için yeni bir
+  muafiyet eklemez.
 - `moc [--folder knowledge] [--file MOC.md]` yalnız hedef klasördeki düz bir `.md` dosyasına
   yazar. `CLAUDE.md`, `AGENTS.md`, `Kurallar.md` gibi talimat, companion veya kural dosyası
   adları kabul edilmez. Dosya yoksa oluşturur. Varsa yalnız tek bir `<!-- beyin-moc:start -->` ve
