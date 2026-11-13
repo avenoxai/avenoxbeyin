@@ -488,6 +488,62 @@ And another link on line 8: [[Components/Auth]].
         self.assertIn("knowledge/orphan.md", report["orphans"])
         self.assertIn("knowledge/unlinked.md", report["unlinked"])
 
+    def test_lint_resolves_exact_receipt_links_without_scanning_receipts(self):
+        # Generated daily and outcomes views link every entry as [[receipts/<sha256>.md]];
+        # receipts stay outside the scan, yet an existing one is not a broken link.
+        name = "a" * 64 + ".md"
+        (self.vault / "receipts").mkdir()
+        (self.vault / "receipts" / name).write_text("# Receipt\n", encoding="utf-8")
+        (self.vault / "daily").mkdir()
+        (self.vault / "daily/2026-01-02.md").write_text(
+            "# Day\n[[receipts/" + name + "]]\n[[receipts/" + "b" * 64 + ".md]]\n[[" + "a" * 64 + "]]\n",
+            encoding="utf-8")
+
+        report = linter.lint_vault(self.vault)
+        self.assertEqual(report["scanned_files_count"], 1)
+        self.assertEqual(sorted(link["target"] for link in report["broken_links"]),
+                         ["a" * 64, "receipts/" + "b" * 64 + ".md"])
+        self.assertNotIn("receipts/" + name, report["orphans"] + report["unlinked"])
+        self.assertNotIn("daily/2026-01-02.md", report["orphans"])
+
+    def test_receipt_fragments_never_read_receipt_bodies(self):
+        name = 'a' * 64 + '.md'
+        (self.vault / 'receipts').mkdir()
+        receipt = self.vault / 'receipts' / name
+        receipt.write_text('# Private marker\nDO_NOT_READ', encoding='utf-8')
+        (self.vault / 'knowledge').mkdir()
+        (self.vault / 'knowledge/day.md').write_text(
+            '[[receipts/' + name + '#Private marker]]\n[[receipts/' + name + '#Missing marker]]',
+            encoding='utf-8')
+        original = Path.read_text
+        def read(path, *args, **kwargs):
+            self.assertNotEqual(path, receipt, 'receipt bodies must not be read for heading validation')
+            return original(path, *args, **kwargs)
+        with patch.object(Path, 'read_text', read):
+            report = linter.lint_vault(self.vault)
+        self.assertEqual(report['status'], 'ok')
+        self.assertEqual(report['broken_links_count'], 0)
+        self.assertEqual(report['scanned_files_count'], 1)
+        self.assertNotIn('DO_NOT_READ', json.dumps(report))
+
+    def test_lint_finds_no_broken_links_in_engine_written_receipt_views(self):
+        (self.vault / "knowledge").mkdir()
+        (self.vault / "knowledge/note.md").write_text("# Note\n", encoding="utf-8")
+        base = ["--vault", str(self.vault), "--state", str(self.state)]
+        _, code = cli.main(base + ["receipt", "--harness", "claude", "--event-id", "lint-receipt-view",
+                                   "--summary", "Lint receipt link check.", "--ref", "knowledge/note.md"],
+                           return_result=True)
+        self.assertEqual(code, 0)
+        _, code = cli.main(base + ["sync"], return_result=True)
+        self.assertEqual(code, 0)
+        views = [path for path in self.vault.rglob("*.md")
+                 if "receipts" not in path.relative_to(self.vault).parts
+                 and "[[receipts/" in path.read_text(encoding="utf-8")]
+        self.assertTrue(views, "sync wrote no view linking a receipt")
+
+        report = linter.lint_vault(self.vault)
+        self.assertEqual([link for link in report["broken_links"] if link["target"].startswith("receipts/")], [])
+
     def test_lint_vault_clean_pass(self):
         (self.vault / "knowledge").mkdir(parents=True)
         (self.vault / "knowledge/alpha.md").write_text("# Alpha\nLinks to [[beta]].", encoding="utf-8")

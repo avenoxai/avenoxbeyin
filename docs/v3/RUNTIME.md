@@ -151,7 +151,10 @@ görmek için bayraksız `project-scope list` kullan.
   olmayan notları raporlar. Kısmi yol (`[[klasör/not]]`) ve ekler Obsidian gibi ad ve yol
   sonuyla çözülür; kod blokları ve satır içi kod sayılmaz. Hassas, arşiv (`📦 900-Archive`,
   `Arşiv` gibi), `visibility: private` ve kurulum klasörlerindeki notlar taranmaz; böyle bir nota
-  giden bağlantı da kırık görünür. Sayılar her zaman tam döner; listeler en fazla 100 kayıt
+  giden bağlantı da kırık görünür. İstisna: kökteki `receipts/` klasörünün üst seviyesinde
+  bulunan düz `.md` receipt dosyalarına tam vault yoluyla verilen bağlantı çözülür; receipt
+  gövdesi okunmaz ve `#başlık` bölümü doğrulanmaz. Receipt dosyaları tarama/MOC listesine
+  girmez; yalın ad veya olmayan receipt hâlâ kırık sayılır. Sayılar her zaman tam döner; listeler en fazla 100 kayıt
   taşır, kalanı `truncated` alanında sayılır (tamamı için daha dar bir `--folder` kullan).
 - `moc [--folder knowledge] [--file MOC.md]` yalnız hedef klasördeki düz bir `.md` dosyasına
   yazar. `CLAUDE.md`, `AGENTS.md`, `Kurallar.md` gibi talimat, companion veya kural dosyası
