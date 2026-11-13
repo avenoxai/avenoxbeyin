@@ -1640,9 +1640,10 @@ DNS yanıtları da denetlenir; Python HTTP yolunun yönlendirmeleri aynı kapıd
 olarak çözümlenemezse kart hata notuyla kalır, sıradaki kartlar işlenmeye devam eder.
 
 Python HTTP yolu bağlanırken adı yeniden çözer, her cevabı aynı kapıdan geçirir ve soketi denetlenen
-IP adresine açar (TLS yine asıl sunucu adını doğrular). Denetimden sonra değişen bir DNS cevabı
-(rebinding) bu yolu yerel adrese yönlendiremez. Sistemde proxy ayarlıysa hedefi proxy çözer; bu bağlama
-proxy'nin kendisine uygulanmaz.
+IP adresine açar (TLS yine asıl sunucu adını doğrular). Sistemde proxy ayarlıysa da hedef
+yeniden proxy tarafında çözülmez: proxy'ye yalnız denetlenmiş sayısal IP için tünel açtırılır.
+Denetimden sonra değişen bir DNS cevabı (rebinding) bağlantıyı yerel adrese yönlendiremez.
+Kullanıcının proxy adresi bu genel-adres kapısının dışındadır; yerel proxy istemcileri kullanılabilir.
 
 Defuddle ve yt-dlp her çalıştığında `isle` yalnız `127.0.0.1` üzerinde dinleyen kısa ömürlü bir
 koruma proxy'si açar ve onu yardımcının tek proxy'si yapar (`ALL_PROXY`). Yardımcının açtığı her
@@ -1656,13 +1657,22 @@ Ortamda (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`) ya da yt-dlp için işletim s
 ayarlıysa (örneğin `127.0.0.1:7890` gibi yerel bir proxy istemcisi) koruma kapanmaz, o proxy'nin
 önünde durur: her hedef önce aynı kapıdan geçer, bağlantıyı ancak ondan sonra kullanıcının proxy'si
 taşır.
-Yerel veya özel adrese giden bir adım kullanıcının proxy'sine hiç sorulmaz. HTTP proxy'si, `socks5h`
-ve `socks4a` hedef adını alıp kendisi çözer (Python yolundaki gibi); `socks5` ve `socks4` denetlenen
-IP adresini alır. `NO_PROXY` listesindeki herkese açık bir ad doğrudan, denetlenen IP adresine
-bağlanır. Proxy girişi (`kullanici:parola@`) korunur. Koruma `https://` proxy'si (proxy'ye TLS ile
+Yerel veya özel adrese giden bir adım kullanıcının proxy'sine hiç sorulmaz. HTTP, `socks5h`,
+`socks4a`, `socks5` ve `socks4` denetlenen IP adresini alır; SOCKS4 türleri yalnız IPv4 kullanır.
+HTTP proxy'ye düz HTTP için de sayısal `CONNECT IP:port` gönderilir, absolute-form URL ile
+yeniden ad çözümlemesine izin verilmez. Asıl `Host` başlığı ve HTTPS için uçtan uca TLS/SNI
+korunur; proxy parolası hedef sunucuya gönderilmez. Sayısal hedefe veya 80 portuna CONNECT
+izin vermeyen proxy ile işlem hata verir; ad çözümleyen veya doğrudan yola geri düşülmez.
+`NO_PROXY` listesindeki herkese açık bir ad doğrudan, denetlenen IP adresine bağlanır.
+Proxy girişi (`kullanici:parola@`) korunur. Koruma `https://` proxy'si (proxy'ye TLS ile
 bağlanma) gibi zincirleyemediği bir türde bağlantıyı açmaz; yardımcı o zaman sayfayı alamaz. npm
 yalnız kendi kayıt deposu için kullanıcının proxy ayarlarını ve `NO_PROXY` listesini
 `npm_config_https_proxy`, `npm_config_proxy` ve `npm_config_noproxy` üzerinden kullanmaya devam eder.
+
+Uyumluluk: `socks5h`/`socks4a` ayar adları kabul edilir, ancak hedef DNS artık yerelde
+çözülür; yalnız proxy içinde çözülebilen alan adları çalışmaz. Yeni ayar veya kalıcı state yoktur.
+Eski sürüme rollback bu korumayı kaldırır. Güvenilen upstream proxy sayısal hedefi gerçekten
+uygulamalıdır; proxy'nin kendi yönlendirme/NAT/ağ politikasını Yakala denetleyemez.
 
 Sınır: Defuddle'ın YouTube, Reddit, X, Bilibili ve C2 wiki okuyucuları o sitelerin sabit
 adreslerine kendi bağlantısını açar; bu istekler koruma proxy'sinden geçmez, ama hedefleri kart

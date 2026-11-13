@@ -293,7 +293,7 @@ class CompletenessTest(unittest.TestCase):
         worker.start()
         self.addCleanup(worker.join, 10)
         self.addCleanup(server.shutdown)
-        dns, connect, opener = socket.getaddrinfo, socket.create_connection, urllib.request.build_opener
+        dns, connect = socket.getaddrinfo, socket.create_connection
 
         def answer(host, port, *args, **kwargs):
             if host == 'example.com':
@@ -307,8 +307,7 @@ class CompletenessTest(unittest.TestCase):
         card = {'meta': {'url': f'http://example.com:{server.server_port}/slow'}, 'body': ''}
         with patch.object(socket, 'getaddrinfo', side_effect=answer), \
                 patch.object(socket, 'create_connection', side_effect=local_transport), \
-                patch.object(urllib.request, 'build_opener', side_effect=lambda *handlers:
-                             opener(urllib.request.ProxyHandler({}), *handlers)), \
+                patch.object(urllib.request, 'getproxies', return_value={}), \
                 patch.object(y, 'CHECK_BUDGET', 1), patch.object(y, 'CHECK_TIMEOUT', 1), \
                 patch.object(y, 'via_defuddle', return_value=extracted(HEADINGS[:6])):
             started = time.monotonic()
