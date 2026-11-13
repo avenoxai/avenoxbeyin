@@ -4,6 +4,7 @@ DSH'nin shell hook'u yoktur; bu testler hook teslimi degil, istemcinin adinin
 taninmasini ve eski surumlerle okunabilir makbuz yazimini dogrular.
 """
 import json
+from contextlib import closing
 from pathlib import Path
 import tempfile
 import sqlite3
@@ -63,7 +64,7 @@ class DshClientTest(unittest.TestCase):
         self.assertEqual(sync.returncode, 0, sync.stderr.decode('utf-8'))
         self.assertEqual(json.loads(sync.stdout)['status'], 'succeeded')
         self.assertEqual(sources[0].read_bytes(), before)
-        with sqlite3.connect(self.state / 'memory.sqlite3') as db:
+        with closing(sqlite3.connect(self.state / 'memory.sqlite3')) as db:
             row = db.execute('SELECT payload FROM receipts WHERE id=?', ('dsh-replay',)).fetchone()
         self.assertIsNotNone(row)
         self.assertEqual(json.loads(row[0])['harness'], 'dsh')
