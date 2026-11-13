@@ -1,0 +1,148 @@
+{
+  "version": 1,
+  "description": "Synthetic paired query diagnostic. Labels and rewrites fixed before measuring; no private vault data. Controls retain content words and filler-only query.",
+  "records": [
+    {
+      "id": "redis",
+      "source": "knowledge/redis.md",
+      "title": "",
+      "kind": "note",
+      "text": "Redis cache expiration uses a bounded TTL. Redis invalidation happens after committed writes.",
+      "facts": {}
+    },
+    {
+      "id": "sqlite",
+      "source": "knowledge/sqlite.md",
+      "title": "",
+      "kind": "note",
+      "text": "SQLite backup uses a consistent snapshot. SQLite recovery checks the checksum.",
+      "facts": {}
+    },
+    {
+      "id": "telescope",
+      "source": "knowledge/telescope.md",
+      "title": "",
+      "kind": "note",
+      "text": "Telescope exposure uses a calibrated tracking mount. Telescope observations record the weather.",
+      "facts": {}
+    },
+    {
+      "id": "orchid",
+      "source": "knowledge/orchid.md",
+      "title": "",
+      "kind": "note",
+      "text": "Orchid watering follows dry roots. Orchid substrate needs drainage.",
+      "facts": {}
+    },
+    {
+      "id": "bicycle",
+      "source": "knowledge/bicycle.md",
+      "title": "",
+      "kind": "note",
+      "text": "Bicycle brake inspection checks the pads. Bicycle tires use the recommended pressure.",
+      "facts": {}
+    },
+    {
+      "id": "compiler",
+      "source": "knowledge/compiler.md",
+      "title": "",
+      "kind": "note",
+      "text": "Compiler optimization preserves program meaning. Compiler passes run after parsing.",
+      "facts": {}
+    },
+    {
+      "id": "var",
+      "source": "knowledge/var.md",
+      "title": "",
+      "kind": "note",
+      "text": "JavaScript var declarations have function scope. A var declaration can be hoisted.",
+      "facts": {}
+    },
+    {
+      "id": "about",
+      "source": "knowledge/about.md",
+      "title": "",
+      "kind": "note",
+      "text": "Hakkında sayfası ürün ekibini tanıtır. Hakkında sayfası erişilebilir olmalıdır.",
+      "facts": {}
+    },
+    {
+      "id": "interest",
+      "source": "knowledge/interest.md",
+      "title": "",
+      "kind": "note",
+      "text": "İlgi alanı keşfi için kısa denemeler yapılır. Konu seçimi ilgi ve bilgi gerektirir.",
+      "facts": {}
+    },
+    {
+      "id": "filler",
+      "source": "knowledge/filler.md",
+      "title": "",
+      "kind": "note",
+      "text": "Neler biliyoruz? İlgili notlarda neler var? Hakkında ve konusunda okumalıyım. Notlarımızda notları nasıl ararız?",
+      "facts": {}
+    }
+  ],
+  "cases": [
+    {
+      "id": "redis",
+      "query": "Redis ile ilgili neler biliyoruz",
+      "target_id": "redis",
+      "category": "bilingual_filler"
+    },
+    {
+      "id": "sqlite",
+      "query": "SQLite hakkında notlarda neler var",
+      "target_id": "sqlite",
+      "category": "bilingual_filler"
+    },
+    {
+      "id": "telescope",
+      "query": "Telescope konusunda neler biliyoruz",
+      "target_id": "telescope",
+      "category": "bilingual_filler"
+    },
+    {
+      "id": "orchid",
+      "query": "Orchid hakkında ne okumalıyım",
+      "target_id": "orchid",
+      "category": "bilingual_filler"
+    },
+    {
+      "id": "bicycle",
+      "query": "Bicycle ile ilgili notlarımızda neler var",
+      "target_id": "bicycle",
+      "category": "bilingual_filler"
+    },
+    {
+      "id": "compiler",
+      "query": "Compiler konusunda notları bul",
+      "target_id": "compiler",
+      "category": "bilingual_filler"
+    },
+    {
+      "id": "var",
+      "query": "JavaScript var declarations",
+      "target_id": "var",
+      "category": "content_control"
+    },
+    {
+      "id": "about",
+      "query": "Hakkında sayfası",
+      "target_id": "about",
+      "category": "content_control"
+    },
+    {
+      "id": "interest",
+      "query": "ilgi konu seçimi",
+      "target_id": "interest",
+      "category": "content_control"
+    },
+    {
+      "id": "filler",
+      "query": "notlarda neler var",
+      "target_id": "filler",
+      "category": "content_control"
+    }
+  ]
+}
