@@ -216,6 +216,58 @@ class KnowledgeLintTest(unittest.TestCase):
         self.assertEqual(result['truncated'], {'broken_links': 5, 'orphans': 5})
         self.assertTrue(all(len(link['raw']) <= linter.MAX_RAW_LINK_CHARS for link in result['broken_links']))
 
+    def test_lint_folder_counts_include_findings_beyond_list_limit(self):
+        for index in range(105):
+            path = self.vault / 'capture' / f'n{index:03}.md'
+            path.parent.mkdir(exist_ok=True)
+            path.write_text('# Card\n[[missing]]\n', encoding='utf-8')
+        (self.vault / 'knowledge').mkdir()
+        (self.vault / 'knowledge/a.md').write_text('# A\n[[b]]', encoding='utf-8')
+        (self.vault / 'knowledge/b.md').write_text('# B', encoding='utf-8')
+        (self.vault / 'root.md').write_text('# Root', encoding='utf-8')
+        (self.vault / 'secret.md').write_text('---\nvisibility: private\n---\n[[hidden]]', encoding='utf-8')
+        report = linter.lint_vault(self.vault)
+        self.assertEqual(report['folder_counts'], [
+            {'folder': 'capture', 'broken_links': 105, 'orphans': 105, 'unlinked': 0},
+            {'folder': '.', 'broken_links': 0, 'orphans': 1, 'unlinked': 0},
+            {'folder': 'knowledge', 'broken_links': 0, 'orphans': 0, 'unlinked': 1},
+        ])
+        for category, count in (('broken_links', 'broken_links_count'), ('orphans', 'orphan_count'),
+                                ('unlinked', 'unlinked_count')):
+            self.assertEqual(sum(row[category] for row in report['folder_counts']), report[count])
+        scoped = linter.lint_vault(self.vault, 'knowledge')
+        self.assertEqual(scoped['folder_counts'], [
+            {'folder': 'knowledge', 'broken_links': 0, 'orphans': 0, 'unlinked': 1}])
+
+    def test_lint_folder_counts_are_bounded_and_remainder_is_exact(self):
+        for index in range(105):
+            path = self.vault / f'f{index:03}' / 'note.md'
+            path.parent.mkdir()
+            path.write_text('# Note\n[[missing]]', encoding='utf-8')
+        report = linter.lint_vault(self.vault)
+        self.assertEqual(len(report['folder_counts']), 100)
+        self.assertEqual(report['folder_counts'][0]['folder'], 'f000')
+        self.assertEqual(report['folder_counts'][-1]['folder'], 'f099')
+        self.assertEqual(report['folder_counts_remaining'],
+                         {'folders': 5, 'broken_links': 5, 'orphans': 5, 'unlinked': 0})
+
+    def test_installed_lint_returns_folder_counts(self):
+        from v3_package_helpers import install, isolated_env
+        env = isolated_env(Path(self.tmp.name) / 'home')
+        proc = install(self.vault, self.state, env)
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode('utf-8', errors='replace'))
+        target = self.vault / 'knowledge/summary-fixture'
+        target.mkdir(parents=True, exist_ok=True)
+        (target / 'note.md').write_text('# Note\n[[missing]]\n[[also-missing]]', encoding='utf-8')
+        proc = subprocess.run([sys.executable, str(self.vault / 'beyin.py'),
+                               '--json', 'lint', '--folder', 'knowledge/summary-fixture'],
+                              env=env, capture_output=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode('utf-8', errors='replace'))
+        report = json.loads(proc.stdout)
+        self.assertEqual(report['folder_counts'], [
+            {'folder': 'knowledge/summary-fixture', 'broken_links': 2, 'orphans': 1, 'unlinked': 0}])
+        self.assertNotIn('folder_counts_remaining', report)
+
     def test_wikilink_scan_stays_linear_on_adversarial_lines(self):
         import time
         for line in ('[[' + 'a' * 200000, '[[a' * 70000, '[[' + 'a|' * 100000, '![[' * 70000):
