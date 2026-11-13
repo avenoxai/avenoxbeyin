@@ -1,0 +1,44 @@
+{
+  "variants": [
+    {
+      "id": "redis",
+      "query": "Redis"
+    },
+    {
+      "id": "sqlite",
+      "query": "SQLite"
+    },
+    {
+      "id": "telescope",
+      "query": "Telescope"
+    },
+    {
+      "id": "orchid",
+      "query": "Orchid"
+    },
+    {
+      "id": "bicycle",
+      "query": "Bicycle"
+    },
+    {
+      "id": "compiler",
+      "query": "Compiler"
+    },
+    {
+      "id": "var",
+      "query": "JavaScript var declarations"
+    },
+    {
+      "id": "about",
+      "query": "Hakkında sayfası"
+    },
+    {
+      "id": "interest",
+      "query": "ilgi konu seçimi"
+    },
+    {
+      "id": "filler",
+      "query": "notlarda neler var"
+    }
+  ]
+}
