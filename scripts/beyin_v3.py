@@ -1562,7 +1562,7 @@ def main(argv=None, return_result=False):
                 # A hand-edited typo must not block unrelated preference changes.
                 try:
                     result_excluded = exclusions.read_exclusions(vault)
-                except ValueError as exc:
+                except (ValueError, OSError) as exc:
                     result_excluded, exclusion_notice = [], 'Haric tutma dosyasi gecersiz: ' + str(exc)
             settings = preferences.save(vault, changes, args.profile) if changes or args.profile else preferences.read(vault)
             result = {'status': 'saved' if changes or args.profile or (args.exclude_component or args.include_component) else 'current',
@@ -1727,7 +1727,7 @@ def main(argv=None, return_result=False):
             import beyin_v3_exclusions as exclusions
             try:
                 configured_excluded = exclusions.read_exclusions(vault)
-            except ValueError as exc:
+            except (ValueError, OSError) as exc:
                 # doctor reports the broken file instead of failing; update/install stay strict.
                 configured_excluded = result['excluded_components']
                 result['exclusions_error'] = str(exc)

@@ -277,6 +277,58 @@ class ComponentExclusionTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(path.read_text(encoding="utf-8"), "# Mine\nbefore\n\nafter\n")
 
+    def test_exclusion_read_errors_keep_kind_and_name_without_mutation(self):
+        self.assertEqual(self.cli().returncode, 0)
+        config = self.vault / ".beyin-exclusions.json"
+        for module_path in (ROOT / "template/.claude/scripts/beyin_v3_exclusions.py",
+                            self.vault / ".claude/scripts/beyin_v3_exclusions.py"):
+            spec = importlib.util.spec_from_file_location("exclusions_errors", module_path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            with self.subTest(runtime=str(module_path)):
+                for payload, kind in ((b'{"excluded_components":', json.JSONDecodeError),
+                                      (b'\xff', UnicodeDecodeError)):
+                    config.write_bytes(payload)
+                    with self.assertRaises(kind) as caught:
+                        module.read_exclusions(self.vault)
+                    self.assertIn(config.name, str(caught.exception))
+                    self.assertEqual(config.read_bytes(), payload)
+                config.unlink()
+                config.mkdir()
+                # Windows may report PermissionError for a directory; keep the OS kind.
+                try:
+                    config.read_text(encoding="utf-8")
+                except OSError as expected:
+                    with self.assertRaises(type(expected)) as caught:
+                        module.read_exclusions(self.vault)
+                    self.assertEqual(caught.exception.errno, expected.errno)
+                    self.assertEqual(caught.exception.filename, expected.filename)
+                else:
+                    self.fail("reading a directory unexpectedly succeeded")
+                self.assertTrue(config.is_dir())
+                config.rmdir()
+                self.assertEqual(module.read_exclusions(self.vault), [])
+
+    def test_unreadable_exclusions_do_not_hide_doctor_or_other_preferences(self):
+        self.assertEqual(self.cli().returncode, 0)
+        config = self.vault / ".beyin-exclusions.json"
+        config.mkdir()
+        def run(*args):
+            return subprocess.run([sys.executable, str(self.vault / "beyin.py"), *args, "--json"],
+                                  cwd=self.vault, env=self.env, capture_output=True,
+                                  text=True, encoding="utf-8", timeout=120)
+        doctor = run("doctor")
+        self.assertEqual(doctor.returncode, 0, doctor.stderr + doctor.stdout)
+        self.assertIn(config.name, json.loads(doctor.stdout)["exclusions_error"])
+        prefs = run("preferences", "--context-chars", "6000")
+        self.assertEqual(prefs.returncode, 0, prefs.stderr + prefs.stdout)
+        data = json.loads(prefs.stdout)
+        self.assertEqual(data["preferences"]["context_chars"], 6000)
+        self.assertIn(config.name, data["exclusion_notice"])
+        self.assertNotEqual(run("preferences", "--exclude-component", "skills").returncode, 0)
+        self.assertNotEqual(self.cli().returncode, 0)
+        self.assertTrue(config.is_dir())
+
     def test_doctor_reports_invalid_exclusions_file(self):
         self.assertEqual(self.cli().returncode, 0)
         (self.vault / ".beyin-exclusions.json").write_text('{"excluded_components": ["skils"]}', encoding="utf-8")
