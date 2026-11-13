@@ -664,7 +664,7 @@ def hygiene(vault, state, names=NAMES, target=None):
     return report
 
 
-def hygiene_notice(report, rules=None):
+def hygiene_notice(report, rules=None, *, parallel=False):
     """Lines at the top of the session context for handoff files over limit or clipped rules."""
     if rules is None and isinstance(report, dict) and 'rules' in report:
         rules = report['rules']
@@ -674,9 +674,21 @@ def hygiene_notice(report, rules=None):
                 for name in report.get('over_limit', [])]
         if over:
             python = 'py -3' if sys.platform == 'win32' else 'python3'
-            lines.append('Memory hygiene: ' + '; '.join(over) + f'. Before other memory writes run: {python} beyin.py companion-compact '
-                         '(moves old entries verbatim to a private archive, deletes nothing). Do not read the whole file; '
-                         'afterwards rewrite in place, never append.\n')
+            if parallel and 'Last-Session.md' in report.get('over_limit', []):
+                chars = report['files']['Last-Session.md']['chars']
+                suggested = ((chars + 999) // 1000) * 1000
+                if suggested <= LIMIT_RANGE[1]:
+                    advice = (f'If these cards are still needed, consider: {python} beyin.py preferences '
+                              f'--last-session-chars {suggested} (fits the current file, not future growth). ')
+                else:
+                    advice = 'The file exceeds the supported limit; coordinate a handoff review before archiving. '
+                lines.append('Memory hygiene: ' + '; '.join(over) + '. Parallel-session notices are enabled. '
+                             "Do not compact other sessions' fresh cards just to clear this warning. " + advice +
+                             'Only edit your own card; coordinate compaction after other sessions finish.\n')
+            else:
+                lines.append('Memory hygiene: ' + '; '.join(over) + f'. Before other memory writes run: {python} beyin.py companion-compact '
+                             '(moves old entries verbatim to a private archive, deletes nothing). Do not read the whole file; '
+                             'afterwards rewrite in place, never append.\n')
     if rules and rules.get('clipped'):
         share = rules.get('share', 0)
         chars = rules.get('chars', 0)
@@ -1333,7 +1345,9 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
     hygiene_line = ''
     if target is not None:
         try:
-            hygiene_line = hygiene_notice(hygiene(store.vault_root, store.state_dir, tuple(LIMITS), target))
+            from beyin_v3_parallel import enabled as parallel_enabled
+            hygiene_line = hygiene_notice(hygiene(store.vault_root, store.state_dir, tuple(LIMITS), target),
+                                          parallel=parallel_enabled(store.state_dir))
         except Exception:
             hygiene_line = ''  # A size check must never cost the session its context.
     session_header = receipt_header(session) + '--harness CLIENT.\n'
