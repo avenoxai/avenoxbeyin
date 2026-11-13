@@ -685,15 +685,23 @@ class YakalaSecurityTest(unittest.TestCase):
                                              'all': 'socks5://proxy.example:1080'}])
 
     def test_stdlib_fetch_keeps_the_configured_proxy(self):
-        """No empty ProxyHandler: urllib's default handler reads the environment and system proxy. Offline."""
+        """Preserve urllib's discovered proxy map, independent of the runner environment."""
         import urllib.request
-        with patch.object(yakala, '_safe_network_url', side_effect=lambda url: url), \
-                patch('urllib.request.build_opener') as build:
-            build.return_value.open.side_effect = OSError('offline')
-            self.assertIsNone(yakala.via_stdlib('https://example.com/page'))
-        empty = [handler for handler in build.call_args.args
-                 if isinstance(handler, urllib.request.ProxyHandler) and handler.proxies == {}]
-        self.assertEqual(empty, [])
+        configured = {'http': 'http://proxy.example:3128',
+                      'https': 'socks5h://proxy.example:1080',
+                      'no': 'public.example'}
+        for proxies in (configured, {}):
+            with self.subTest(proxies=proxies), \
+                    patch('urllib.request.getproxies', return_value=proxies) as discover, \
+                    patch.object(yakala, '_safe_network_url', side_effect=lambda url: url), \
+                    patch('urllib.request.build_opener') as build:
+                build.return_value.open.side_effect = OSError('offline')
+                self.assertIsNone(yakala.via_stdlib('https://example.com/page'))
+            discover.assert_called_once_with()
+            handlers = [handler for handler in build.call_args.args
+                        if isinstance(handler, urllib.request.ProxyHandler)]
+            self.assertEqual(len(handlers), 1)
+            self.assertEqual(handlers[0].proxies, proxies)
 
     def test_extra_urls_keep_public_only_validation(self):
         for value in ('file:///secret', 'https://user:pass@example.com/', '-option', 'http://0x7f.1/'):
