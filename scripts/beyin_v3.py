@@ -2262,7 +2262,7 @@ def main(argv=None, return_result=False):
         elif args.command == "lint":
             _ensure_scripts_path()
             import beyin_v3_lint as linter
-            result = linter.manage(vault, "lint", folder=args.folder)
+            result = linter.manage(vault, "lint", folder=args.folder, state=state)
         elif args.command == "moc":
             _ensure_scripts_path()
             import beyin_v3_lint as linter
