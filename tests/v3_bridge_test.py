@@ -484,6 +484,16 @@ class BridgeTest(unittest.TestCase):
         bridge.uninstall_bridge('claude', home=self.home)
         self.assertEqual(json.loads(target.read_text(encoding='utf-8')), {'hooks': {'PostToolUse': [custom]}})
 
+    def test_global_json_updates_use_the_atomic_writer(self):
+        target = bridge.global_hook_path('claude', home=self.home)
+        target.parent.mkdir(parents=True)
+        target.write_text(json.dumps({'hooks': {}}), encoding='utf-8')
+        with patch('beyin_v3_sync.atomic', wraps=__import__('beyin_v3_sync').atomic) as atomic:
+            bridge.install_bridge(self.vault, self.state, 'claude', [self.project], home=self.home)
+            bridge.uninstall_bridge('claude', home=self.home)
+        self.assertEqual(atomic.call_count, 2)
+        self.assertEqual(json.loads(target.read_text(encoding='utf-8')), {})
+
     def test_cli_print_config_keeps_the_selected_events(self):
         base = [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault), '--state', str(self.state),
                 'bridge', '--harness', 'claude', '--project-root', str(self.project), '--print-config']
