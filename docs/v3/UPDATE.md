@@ -72,6 +72,29 @@ Yönetilen dosyada araya giren kullanıcı değişikliği varsa işlem bunu ezme
 
 Yalnız satır sonu farkı değişiklik sayılmaz: `core.autocrlf` ya da bir editör yönetilen dosyayı CRLF'e çevirmişse güncelleme, kaldırma ve rollback durmaz, dosya yeniden yazılırken stok LF biçimine döner. Conflict mesajı sebebi söyler: `content differs` gerçek bir düzenleme, `deleted` silinmiş dosya demektir.
 
+## Tam kaldırma: kalan bileşenleri kontrol et
+
+`python3 beyin.py rollback` ya da kurucunun `--uninstall` seçeneği vault içindeki
+yönetilen dosyaları geri alır. Bilerek **notları, receipt'leri ve vault dışındaki state
+klasörünü silmez**. Ek olarak açılmış isteğe bağlı bileşenleri şu sırayla kapat:
+
+1. Her etkin global köprü için, vault içindeki güncel CLI ile örneğin
+   `python3 beyin.py bridge --harness codex --uninstall` çalıştır (etkin her harness adı
+   için tekrarla). Bu adımı vault adaptörünü kaldırmadan önce yap; global ayarda olmayan bir
+   vault betiği kalırsa istemci başlangıçta hata verebilir.
+2. Yakala kuruluysa `python3 beyin.py yakala kaldir` çalıştır. Bu; kısayol, başlangıç
+   entegrasyonu ve Yakala skill'ini kaldırır; kartlar, indirilen dosyalar ve tanı kayıtları
+   yerinde kalır.
+3. Sonra vault kurulumunu `python3 scripts/install_v3.py --vault "<vault>" --uninstall`
+   ile kaldır veya önceki sürüme dönüyorsan `python3 beyin.py rollback` çalıştır.
+4. En son, saklamak istemediğin makine-yerel indeks/geçmiş varsa state yolunu `doctor`
+   veya `.beyin-runtime.json` üzerinden bul, yedekle ve **ayrı, açık bir karar** olarak
+   sil. Bu işlem geri alınamaz; varsayılan kaldırmanın parçası değildir.
+
+Birden çok harness veya Yakala kurulumu varsa ilk iki adımı her etkin bileşen için tekrarla.
+Köprü ya da Yakala hiç kurulmadıysa o adımı geç. Kaldırmadan önce `beyin.py doctor`, işlem
+sonrasında `git status --short` ile kalan dosyaları incele; kullanıcıya ait ayarları topluca silme.
+
 
 ## Bağlı ana sayfalardan eski sürüme dönüş
 
