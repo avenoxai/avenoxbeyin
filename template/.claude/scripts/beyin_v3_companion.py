@@ -46,17 +46,25 @@ def directory(vault, *, strict=False):
     vault = Path(vault).resolve()
     candidates = []
     named = []
+    inspection_errors = []
     for path in vault.iterdir():
-        if (path.name.startswith('.') or is_type(path, 'symlink') or not is_type(path, 'dir') or
-                re.search(r'(?i)(archive|arşiv|arsiv)', path.name)):
+        try:
+            if (path.name.startswith('.') or is_type(path, 'symlink') or not is_type(path, 'dir') or
+                    re.search(r'(?i)(archive|arşiv|arsiv)', path.name)):
+                continue
+            if path.name == DEFAULT_DIRECTORY or path.name.casefold().endswith(('companion', 'echo')):
+                named.append(path)
+            elif any(is_type(path / name, 'file') for name in ('Core.md', 'Soul.md')):
+                candidates.append(path)
+        except OSError as exc:
+            inspection_errors.append((path, exc))
             continue
-        if path.name == DEFAULT_DIRECTORY or path.name.casefold().endswith(('companion', 'echo')):
-            named.append(path)
-        elif any(is_type(path / name, 'file') for name in ('Core.md', 'Soul.md')):
-            candidates.append(path)
     candidates = named or candidates
     if len(candidates) > 1:
         return None
+    if strict and not candidates and inspection_errors:
+        paths = ', '.join(str(path) for path, _ in inspection_errors)
+        raise RuntimeError('cannot inspect companion directory candidates: ' + paths)
     return candidates[0] if candidates else vault / DEFAULT_DIRECTORY
 
 
