@@ -1162,7 +1162,9 @@ def install(vault, state, uninstall=False, plan_only=False, version=None, legacy
         legacy_hashes = package.get('legacy_hashes', {})
         legacy_skill_hashes = package.get('legacy_skill_hashes', {})
     else:
-        version = version or '3.0.0'
+        version = version or (ROOT / 'VERSION').read_text(encoding='utf-8-sig').strip()
+        if not re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', version):
+            raise ValueError('Invalid source VERSION')
     if plan_only or uninstall:
         return _install(vault, state, uninstall, plan_only, version, legacy_hashes, legacy_skill_hashes,
                         accept_customized=accept_customized, keep_customized=keep_customized,

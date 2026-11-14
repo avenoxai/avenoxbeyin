@@ -144,6 +144,14 @@ class InstallLegacyExemptionTest(unittest.TestCase):
                                      (ROOT / 'template/.agents/skills' / skill / 'SKILL.md').read_bytes(),
                                      relative)
 
+    def test_source_install_uses_version_file_without_a_release_manifest(self):
+        self.assertFalse((ROOT / 'manifest.json').exists())
+        expected = (ROOT / 'VERSION').read_text(encoding='utf-8-sig').strip()
+        self.installer.install(self.vault, self.state)
+        self.assertEqual((self.vault / '.beyin-version').read_text(encoding='utf-8').strip(), expected)
+        installed = json.loads((self.state / 'v3-install.json').read_text(encoding='utf-8'))
+        self.assertEqual(installed['version'], expected)
+
     def test_released_package_carries_the_exemption_for_both_roots(self):
         import zipfile
         extracted = self.base / 'extracted'
