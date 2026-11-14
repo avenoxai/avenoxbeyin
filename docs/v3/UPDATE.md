@@ -268,6 +268,7 @@ Kullanıcı gereksinim duymadığı bileşenleri (`skills/<ad>`, `adapters/<ad>`
 - Kullanıcı tarafından değiştirilmiş dosyalar asla silinmez, üzerine yazılmaz; korunur ve işlem özetinde bildirilir.
 - Kullanıcı ortak dosyalardaki (`AGENTS.md` veya `.agents/hooks.json`) V3 bölgelerini elle kaldırmışsa çakışma üretilmez.
 - Rollback yapıldığında önceki durum geri yüklenir; `.beyin-exclusions.json` dosyasındaki hariç tutma tercihleri korunur.
+- Hariç tutma dosyası okunamıyorsa işletim sistemi hatası korunur; geçersiz JSON veya UTF-8 hatası dosya adını belirtir. Okuma hataları dosyayı değiştirmez.
 
 ## Geliştiriciler için paket üretimi
 

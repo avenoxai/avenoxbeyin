@@ -39,8 +39,11 @@ def read_exclusions(vault):
         return []
     try:
         data = json.loads(path.read_text(encoding='utf-8'))
-    except Exception:
-        raise ValueError('Invalid exclusions file format; expected JSON')
+    except json.JSONDecodeError as exc:
+        raise json.JSONDecodeError(path.name + ' is not valid JSON: ' + exc.msg, exc.doc, exc.pos) from None
+    except UnicodeDecodeError as exc:
+        raise UnicodeDecodeError(exc.encoding, exc.object, exc.start, exc.end,
+                                 exc.reason + ' (' + path.name + ' is not UTF-8)') from None
     if isinstance(data, list):
         items = data
     elif isinstance(data, dict):
