@@ -280,6 +280,30 @@ def read_workspaces(vault_root):
     return result
 
 
+def matching_workspace_ids(vault_root, query):
+    """Active Workspace IDs explicitly named in a natural-language query.
+
+    The caller decides whether zero matches means ordinary global lookup or
+    multiple matches are ambiguous. Matching names never grants record access.
+    """
+    if not isinstance(query, str) or not query.strip():
+        return []
+    folded = _scope_key(query)
+    matches = set()
+    for workspace_id, workspace in read_workspaces(vault_root).items():
+        if workspace.get("lifecycle") != "active":
+            continue
+        for name in (workspace_id, workspace.get("name")):
+            if not isinstance(name, str):
+                continue
+            key = _scope_key(name.strip())
+            if not key:
+                continue
+            if re.search(r"(?<![\w-])" + re.escape(key) + r"(?![\w-])", folded):
+                matches.add(workspace_id)
+    return sorted(matches)
+
+
 def _workspace_view(vault_root, workspace_id):
     view = read_workspaces(vault_root).get(workspace_id)
     # A legacy project whose last folder was just disconnected has no record left.

@@ -173,6 +173,19 @@ class DecisionQualityTest(unittest.TestCase):
         self.assertNotIn('local secret', json.dumps(self.calls))
         self.assertNotIn('PRIVATE_TITLE_CANARY', json.dumps(self.calls))
 
+    def test_cross_workspace_local_only_grant_stays_off_provider_transport(self):
+        self.note('z', 'Quartz deployment local secret.', remote_allowed=False,
+                  workspace_readers=['demo'])
+        self.store.update_task('z', 1, {'project': 'elsewhere'})
+        self.note('target'); self.config()
+        local = self.store.retrieve('Quartz deployment', project='demo')
+        self.assertIn('z', [row['id'] for row in local['records']])
+        advisor.advise_context(self.store, 'Quartz deployment', project='demo',
+                               transport=self.transport)
+        sent = json.dumps(self.calls)
+        self.assertNotIn('local secret', sent)
+        self.assertNotIn('workspace_readers', sent)
+
     def test_local_only_common_word_does_not_override_semantic_abstention(self):
         self.note('local', 'Donanım test raporu.', remote_allowed=False)
         self.note('remote', 'Test archive.'); self.config()
