@@ -3,7 +3,7 @@
 
 Only `beyin.py web` starts it; install, update and hooks never do. It listens on 127.0.0.1
 alone and answers only when the Host names this listener (DNS rebinding) and any Origin or
-Sec-Fetch-Site is this listener. A launch token opens one browser session: the session
+Sec-Fetch-Site is this listener. A single-use launch token opens one browser session: the session
 cookie is HttpOnly and SameSite=Strict, and every write also carries that session's CSRF
 token. No CORS header is ever sent.
 
@@ -337,6 +337,7 @@ class WebServer(HTTPServer):
         self.core = core
         self.read_only = bool(read_only)
         self.token = token or secrets.token_urlsafe(32)
+        self.launch_token = secrets.token_urlsafe(32)
         self.sessions = {}
         self.last_activity = time.monotonic()
         super().__init__((HOST, port), Handler)
@@ -359,6 +360,10 @@ class WebServer(HTTPServer):
         cookie, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         self.sessions[cookie] = csrf
         return cookie
+
+    def new_launch_token(self):
+        self.launch_token = secrets.token_urlsafe(32)
+        return self.launch_token
 
     def stop_soon(self):
         threading.Thread(target=self.shutdown, daemon=True).start()
@@ -502,9 +507,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _page(self, token):
         if token:
-            if not hmac.compare_digest(token.encode(), self.server.token.encode()):
+            launch = self.server.launch_token
+            if not launch or not hmac.compare_digest(token.encode(), launch.encode()):
                 self._send(401, ui.unlock_page(True).encode('utf-8'), 'text/html; charset=utf-8')
                 return
+            self.server.launch_token = None
             cookie = self.server.new_session()
             self.server.touch()
             # The token leaves the address bar at once; the session lives only in the HttpOnly cookie.
@@ -537,10 +544,14 @@ class Handler(BaseHTTPRequestHandler):
         if body is None or not self._guard():
             return
         path = urllib.parse.urlsplit(self.path).path
-        if path == '/api/kapat' and self._bearer() and self.headers.get('Origin') is None:
-            self._json(200, {'durum': 'kapaniyor'})
-            self.server.stop_soon()
-            return
+        if self._bearer() and self.headers.get('Origin') is None:
+            if path == '/api/kapat':
+                self._json(200, {'durum': 'kapaniyor'})
+                self.server.stop_soon()
+                return
+            if path == '/api/ac':
+                self._json(200, {'token': self.server.new_launch_token()})
+                return
         session = self._session()
         if not session:
             self._fail(401, 'Oturum yok; beyin.py web ac ile yeniden aç')
@@ -644,6 +655,19 @@ def alive(running):
         return False
 
 
+def launch_url(running):
+    status, body = _request(running, 'POST', '/api/ac')
+    if status != 200:
+        raise WebError(status, 'Web görünümü için yeni açılış bağlantısı alınamadı')
+    try:
+        token = json.loads(body).get('token')
+    except (ValueError, TypeError):
+        token = None
+    if not isinstance(token, str) or not token:
+        raise WebError(502, 'Web görünümü geçersiz açılış bağlantısı döndürdü')
+    return f"http://127.0.0.1:{running['port']}/?token={token}"
+
+
 def bind(core, port=None, read_only=False):
     candidates = (port,) if port else PORTS + (0,)
     last = None
@@ -658,7 +682,7 @@ def bind(core, port=None, read_only=False):
 def serve(core, port=None, read_only=False, open_browser=True, as_json=False):
     running = read_running(core.state)
     if running and alive(running):
-        url = f"http://127.0.0.1:{running['port']}/?token={running['token']}"
+        url = launch_url(running)
         _say(as_json, {'durum': 'zaten_calisiyor', 'adres': url, 'salt_okunur': bool(running.get('read_only'))},
              'Web görünümü zaten çalışıyor: ' + url)
         if open_browser:
@@ -667,7 +691,7 @@ def serve(core, port=None, read_only=False, open_browser=True, as_json=False):
     server = bind(core, port, read_only)
     try:
         write_running(core.state, server)
-        url = f'http://127.0.0.1:{server.port}/?token={server.token}'
+        url = f'http://127.0.0.1:{server.port}/?token={server.launch_token}'
         _say(as_json, {'durum': 'basladi', 'adres': url, 'salt_okunur': server.read_only},
              '\n'.join(('Beyin web görünümü açıldı (yalnız bu bilgisayar).', 'Adres: ' + url,
                         'Mod: ' + ('salt okunur' if server.read_only else 'yazma açık (görev, eşitleme, sıkıştırma)'),
