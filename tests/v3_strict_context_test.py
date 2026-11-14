@@ -59,6 +59,12 @@ class StrictRetrieveTest(unittest.TestCase):
     def test_meaningful_match_survives_strict_mode(self):
         self.assertEqual(self.sources('why is the GoPlus quota wasted', strict=True), ['knowledge/goplus-quota.md'])
 
+    def test_turkish_question_wrappers_do_not_compete_with_topic(self):
+        self.ingest('redis-note', 'Redis önbelleği için bağlantı ayarları.', 'knowledge/redis.md')
+        self.ingest('hak-note', 'Hak sahipliği ve erişim koşulları.', 'knowledge/hak.md')
+        self.assertEqual(self.sources('Redis hakkında ne biliyoruz', strict=True), ['knowledge/redis.md'])
+        self.assertEqual(self.sources('hak', strict=True), ['knowledge/hak.md'])
+
     def test_strict_abstains_when_nothing_relates(self):
         result = self.store.retrieve('thanks that was great', strict=True)
         self.assertEqual(result['records'], [])

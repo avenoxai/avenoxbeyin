@@ -952,6 +952,23 @@ class _CountCache:
 # used to be here, which emptied the query instead of widening it.
 STOPWORDS = _tokens("the a an is are was were what which who when where how why of to in on at for from with and or does did do has have latest current please tell about my our this that it its project projects status decision decisions show find get ve veya bir bu su o ne kim nasil hangi nedir neydi mi mu icin ile bana benim bizim olarak olan oldu en son guncel soyle getir bul yok say ignore disregard no")
 
+# These are question wrappers, not global stopwords. In particular, removing the
+# stem of "notlarda" must not also remove a real query for "not", and "hakkında"
+# must not remove the distinct topic "hak".
+_STRICT_FILLER_SURFACES = frozenset((
+    "hakkinda", "ilgili", "konusunda", "notlarda", "notlarimizda",
+    "neler", "biliyoruz", "okumaliyim",
+))
+
+
+def _strict_query_tokens(query):
+    """Return strict query tokens without known Turkish question wrappers."""
+    terms = _tokens(query)
+    for raw_word in re.findall(r"[^\W_]+", str(query), flags=re.UNICODE):
+        if _fold(raw_word) in _STRICT_FILLER_SURFACES:
+            terms -= _tokens(raw_word)
+    return terms
+
 
 def _strict_terms(terms):
     """Filter out non-topical terms in strict mode (#358).
@@ -1836,7 +1853,7 @@ class MemoryStore:
         terms = query_tokens - STOPWORDS - project_tokens
         scoped_listing = project is not None and bool(query_tokens & project_tokens) and not (query_tokens - STOPWORDS - project_tokens)
         if strict:
-            terms, compounds = _query_compounds(query, _strict_terms(terms))
+            terms, compounds = _query_compounds(query, _strict_terms(_strict_query_tokens(query) - STOPWORDS - project_tokens))
             if not terms and not scoped_listing and not snapshot:
                 if candidate_only:
                     return []
