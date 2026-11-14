@@ -160,9 +160,14 @@ görmek için bayraksız `project-scope list` kullan.
   göre sayar (`.` kasa kökü); kırık bağlantı sayısı hedef dosya değil bağlantı adedidir.
   En çok bulgusu olan ilk 100 klasör listelenir, eşitlikte yol sırası kullanılır; kalan
   klasör ve bulgu sayıları `folder_counts_remaining` alanında tutulur. `--folder`
-  kullanıldığında bu dağılım da yalnız seçilen tarama alanını kapsar. Bu özet dışlama
-  politikasını değiştirmez: dizin dışı bırakılmış veya üretilmiş dosyalar için yeni bir
-  muafiyet eklemez.
+  kullanıldığında bu dağılım da yalnız seçilen tarama alanını kapsar.
+  Configured `index.json` exclusions omit notes from orphan and unlinked findings,
+  including counts, folder summaries and truncated lists. The CLI reads the selected
+  runtime state without creating it. Bare directory names match at any depth using
+  the index's case and Unicode rules; invalid settings apply no exclusions.
+  Excluded notes still supply link targets and backlinks, and their broken links
+  remain visible. Scan and link counts, privacy filters and MOC behavior are unchanged.
+  Generated files have no separate exemption.
 - `moc [--folder knowledge] [--file MOC.md]` yalnız hedef klasördeki düz bir `.md` dosyasına
   yazar. `CLAUDE.md`, `AGENTS.md`, `Kurallar.md` gibi talimat, companion veya kural dosyası
   adları kabul edilmez. Dosya yoksa oluşturur. Varsa yalnız tek bir `<!-- beyin-moc:start -->` ve

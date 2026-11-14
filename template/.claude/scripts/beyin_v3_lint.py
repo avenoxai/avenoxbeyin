@@ -326,7 +326,7 @@ def resolve_wikilink(vault_root, link_target, source_file=None, vault_index=None
     return {"exists": False, "resolved_path": None}
 
 
-def lint_vault(vault_root, folder=None):
+def lint_vault(vault_root, folder=None, *, state=None):
     """Lint markdown notes in vault for broken wikilinks, orphans, and link graph health."""
     vault_root = Path(vault_root)
     if folder:
@@ -402,15 +402,24 @@ def lint_vault(vault_root, folder=None):
 
     broken_links = [link for link in broken_links if link["source"] in target_set]
 
+    # Keep excluded notes in the graph, but omit their orphan/unlinked findings.
+    classification_files = target_files
+    if state is not None:
+        from beyin_v3_index import applied_keys, dir_key, exclusions
+        excluded, _report = exclusions(state, vault_root)
+        excluded = applied_keys(excluded, EXCLUDED_DIR_NAMES)
+        classification_files = [f for f in target_files
+                                if not any(dir_key(part) in excluded for part in f.split('/')[:-1])]
+
     # Identify orphans (no incoming and no outgoing)
     orphans = []
-    for f in target_files:
+    for f in classification_files:
         if len(outgoing_links[f]) == 0 and len(incoming_links[f]) == 0:
             orphans.append(f)
 
     # Identify unlinked notes (has outgoing but no incoming)
     unlinked = []
-    for f in target_files:
+    for f in classification_files:
         if len(incoming_links[f]) == 0 and f not in orphans:
             unlinked.append(f)
 
@@ -801,11 +810,11 @@ Bu not, `{target_folder}` altındaki notların navigasyon ve içerik haritasıd�
     }
 
 
-def manage(vault_root, action, folder=None, moc_file="MOC.md"):
+def manage(vault_root, action, folder=None, moc_file="MOC.md", *, state=None):
     """CLI dispatcher for beyin.py lint and moc commands."""
     vault_root = Path(vault_root)
     if action == "lint":
-        return lint_vault(vault_root, folder=folder)
+        return lint_vault(vault_root, folder=folder, state=state)
     elif action == "moc":
         target = folder or "knowledge"
         return generate_moc(vault_root, target_folder=target, moc_filename=moc_file)
