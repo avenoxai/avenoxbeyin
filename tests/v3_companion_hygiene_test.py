@@ -1077,7 +1077,7 @@ class CompactionRaceTest(unittest.TestCase):
         real_stat = Path.stat
 
         def stat(path, *args, **kwargs):
-            if path == blocked:
+            if os.fspath(path) == os.fspath(blocked):
                 raise PermissionError('synthetic candidate failure')
             return real_stat(path, *args, **kwargs)
 
@@ -1091,7 +1091,7 @@ class CompactionRaceTest(unittest.TestCase):
         real_stat = Path.stat
 
         def stat(path, *args, **kwargs):
-            if path in (blocked, self.directory):
+            if os.fspath(path) in {os.fspath(blocked), os.fspath(self.directory)}:
                 raise PermissionError('synthetic candidate failure')
             return real_stat(path, *args, **kwargs)
 
