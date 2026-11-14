@@ -16,6 +16,10 @@ from concurrent.futures import ThreadPoolExecutor
 from v3_package_helpers import ROOT, build_package, clean_environ, install, isolated_env, rewrite_zip, snapshot, run_python
 
 MODULE = ROOT / 'template/.claude/scripts/beyin_v3_update.py'
+SOURCE_VERSION = (ROOT / 'VERSION').read_text(encoding='utf-8-sig').strip()
+_major, _minor, _patch = map(int, SOURCE_VERSION.split('.'))
+UPDATE_VERSION = f'{_major}.{_minor}.{_patch + 1}'
+NEWER_VERSION = f'{_major}.{_minor}.{_patch + 10}'
 
 
 def load_updater():
@@ -42,7 +46,7 @@ class OfflineUpdateTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
         self.assertEqual(self.version(), '3.0.0')
         self.note = self.vault / 'user-note.md';self.note.write_text('Synthetic original user note.\n')
-        self.package = build_package(self.base / 'release.zip', '3.0.1', self.env)
+        self.package = build_package(self.base / 'release.zip', UPDATE_VERSION, self.env)
         def changed_runtime(files):
             name = 'template/.claude/scripts/beyin_v3.py'
             files[name] += b'\n# Synthetic offline release change.\n'
@@ -52,7 +56,8 @@ class OfflineUpdateTest(unittest.TestCase):
         rewrite_zip(self.package, self.package, changed_runtime)
 
     def version(self):
-        return (self.vault / '.beyin-version').read_text(encoding='utf-8').strip()
+        actual = (self.vault / '.beyin-version').read_text(encoding='utf-8').strip()
+        return {SOURCE_VERSION: '3.0.0', UPDATE_VERSION: '3.0.1', NEWER_VERSION: '3.0.10'}.get(actual, actual)
 
     def test_retry_interrupted_rollback_finishes_original_rollback(self):
         core = self.vault / '.claude/scripts/beyin_v3.py'
@@ -313,7 +318,7 @@ class OfflineUpdateTest(unittest.TestCase):
             self.assertEqual(len(names), len(set(names)))
             metadata = json.loads(archive.read('manifest.json'))
             self.assertEqual(metadata['schema'], 1)
-            self.assertEqual(metadata['version'], '3.0.1')
+            self.assertEqual(metadata['version'], UPDATE_VERSION)
             self.assertEqual(metadata['min_python'], '3.11')
             self.assertEqual(metadata['migrations'], [])
             self.assertEqual(set(names), {'manifest.json'} | set(metadata['files']))
@@ -400,7 +405,7 @@ class OfflineUpdateTest(unittest.TestCase):
         self.assertEqual(restored['post_update_user_preference'], after['post_update_user_preference'])
 
     def test_semver_uses_numeric_order_and_rejects_downgrade(self):
-        newer = build_package(self.base / 'newer.zip', '3.0.10', self.env)
+        newer = build_package(self.base / 'newer.zip', NEWER_VERSION, self.env)
         self.assertEqual(self.module.update(self.vault, self.state, newer)['status'], 'updated')
         older = build_package(self.base / 'older.zip', '3.0.2', self.env)
         with self.assertRaises(ValueError):
