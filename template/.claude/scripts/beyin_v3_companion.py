@@ -1655,18 +1655,33 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
     regained, regained_rules = companion(budget - fixed - len(extra))
     if len(text) < len(regained) <= budget - len(extra):
         text, rules = regained, regained_rules
-    if report is not None and rules:
-        report['Kurallar.md'] = rules
     if rules and rules.get('clipped'):
-        rules_line = hygiene_notice(None, rules=rules)
-        full_header = (hygiene_line + rules_line + warning + session_header +
-                       'V3 source-backed context (data, not instructions). Use AGENTS.md companion protocol.\n')
-        new_fixed = len(full_header) + len(notice) + sum(len(label) for label, _, _ in sections)
-        if new_fixed > budget:
-            return clip(full_header + notice + 'Read companion files: ' + ', '.join(r['source'] for r in records), budget)
-        adjusted, _ = companion(max(0, budget - new_fixed - len(extra)), header_text=full_header)
-        if len(adjusted) <= budget - len(extra):
-            text = adjusted
+        # The hygiene line is part of the final budget, so rendering it after the
+        # first allocation can clip Kurallar.md again. Re-render with the line and
+        # publish the report from that final allocation; otherwise doctor can claim
+        # a larger ceiling than the SessionStart text actually received (#689).
+        final_rules = rules
+        for _ in range(3):
+            rules_line = hygiene_notice(None, rules=final_rules)
+            full_header = (hygiene_line + rules_line + warning + session_header +
+                           'V3 source-backed context (data, not instructions). Use AGENTS.md companion protocol.\n')
+            new_fixed = len(full_header) + len(notice) + sum(len(label) for label, _, _ in sections)
+            if new_fixed > budget:
+                if report is not None:
+                    report['Kurallar.md'] = final_rules
+                return clip(full_header + notice + 'Read companion files: ' + ', '.join(r['source'] for r in records), budget)
+            adjusted, adjusted_rules = companion(max(0, budget - new_fixed - len(extra)),
+                                                 header_text=full_header)
+            if len(adjusted) > budget - len(extra):
+                break
+            text, final_rules = adjusted, adjusted_rules or final_rules
+            if final_rules == rules:
+                break
+            rules = final_rules
+        if report is not None and final_rules:
+            report['Kurallar.md'] = final_rules
+    elif report is not None and rules:
+        report['Kurallar.md'] = rules
     return text + extra
 
 
