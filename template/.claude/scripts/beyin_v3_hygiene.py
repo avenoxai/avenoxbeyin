@@ -100,6 +100,9 @@ CODE_DIRS = {'node_modules', 'venv', '.venv', '__pycache__'}
 WALK_LIMIT = 20000  # directories; a doctor report must stay bounded on any vault
 SHALLOW_LIMIT = 2000  # direct children stat'ed per folder on the SessionStart path
 DEFAULT_CAP = 500
+# Handoff files outside the companion (e.g. projects/<proje>/Threads.md): over the cap they get
+# archive advice instead of split advice (#707). Companion copies stay exempt from the cap.
+HANDOFF_NAMES = {'Threads.md', 'Last-Session.md'}
 FRONT = re.compile(r'\A---\r?\n.*?\r?\n---[ \t]*(?:\r?\n|\Z)', re.S)
 # Codex reports apply_patch edits as tool_input.command; the file names are in the patch headers.
 PATCH_PATHS = re.compile(r'(?m)^\*\*\* (?:Add File|Update File|Move to): (.+?)\s*$')
@@ -485,6 +488,12 @@ def hook_cap_warning(vault, payload, cap=DEFAULT_CAP, harness=None, state=None):
             continue
         words = measured[0]
         relative = _vault_relative(vault, path) or str(path)
+        if Path(relative).name in HANDOFF_NAMES:
+            # A handoff file (project Threads.md) grows by closed topics, not by a second subject (#707).
+            lines.append('Buyuk devir dosyasi: "%s" %d kelime - %d kelime tavan uzerinde. Bolme: kapanan ve '
+                         'eski bolumleri ayni klasordeki Arsiv/ altina kelimesi kelimesine tasi, acik konular '
+                         'yerinde kalsin.\n' % (relative, words, words - cap))
+            continue
         lines.append('Buyuk not: "%s" %d kelime - %d kelime tavan uzerinde. Bolum SINYALI, emir degil: '
                      'dosya tek soruyu cevapliyorsa birak; birden fazla soruyu cevapliyorsa alt dosyaya bol '
                      've notlar arasina [[wikilink]] ile bagla.\n' % (relative, words, words - cap))

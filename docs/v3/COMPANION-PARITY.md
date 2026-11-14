@@ -212,6 +212,9 @@ Düzeltme dört parçadır:
   Mevcut dosyayı sığdıran, 1.000 karaktere yuvarlanmış `--last-session-chars` önerisini
   gösterir (en fazla 200.000); bu otomatik ayar değişikliği, oturum sayısı hesabı veya
   gelecekteki büyümeye garanti değildir. Daha büyük dosyada koordineli inceleme önerilir.
+  Claude, Codex ve Pi'de aynı satır, sınırı aşan dosya yazıldığı anda (PostToolUse) da
+  gelir; böylece kartı yazan ajan bunu bir sonraki oturumu beklemeden görür. Yalnız
+  düzenlenen companion devir dosyası ölçülür, başka yazımlar dosya okumaz (#707).
   `doctor` bütün companion dosyalarının boyutunu `companion_hygiene` altında
   raporlar; `--human` çıktısında sınırı aşan her dosya için bir satır görünür. Bu bir
   senkronizasyon arızası değildir, `doctor` durumunu değiştirmez. `Kurallar.md`,

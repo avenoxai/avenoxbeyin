@@ -317,6 +317,36 @@ class HarnessGateTest(unittest.TestCase):
             self.assertEqual(hygiene.hook_cap_warning(self.vault, self.payload, harness=harness), '')
 
 
+class HandoffAdviceTest(unittest.TestCase):
+    """#707: a project handoff file over the cap is archived, not split."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix='v3-hygiene-handoff-')
+        self.addCleanup(tmp.cleanup)
+        self.vault = Path(tmp.name)
+        self.project = self.vault / 'projects' / 'ornek'
+        self.project.mkdir(parents=True)
+
+    def warn(self, path):
+        payload = {'hook_event_name': 'PostToolUse', 'tool_input': {'file_path': str(path)}}
+        return hygiene.hook_cap_warning(self.vault, payload, harness='claude')
+
+    def test_project_threads_over_cap_get_archive_advice(self):
+        threads = self.project / 'Threads.md'
+        threads.write_text('konu ' * 600, encoding='utf-8')
+        text = self.warn(threads)
+        self.assertIn('Buyuk devir dosyasi: "projects/ornek/Threads.md" 600 kelime', text)
+        self.assertIn('Arsiv/', text)
+        self.assertNotIn('Bolum SINYALI', text)
+
+    def test_other_long_notes_keep_split_advice(self):
+        plan = self.project / 'Plan.md'
+        plan.write_text('konu ' * 600, encoding='utf-8')
+        text = self.warn(plan)
+        self.assertIn('Bolum SINYALI', text)
+        self.assertNotIn('devir dosyasi', text)
+
+
 class TouchLogOptInTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix='v3-hygiene-touch-')
