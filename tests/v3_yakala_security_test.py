@@ -457,7 +457,7 @@ class YakalaSecurityTest(unittest.TestCase):
         worker.start()
         self.addCleanup(worker.join, 5)
         self.addCleanup(server.shutdown)
-        dns, connect, opener = socket.getaddrinfo, socket.create_connection, urllib.request.build_opener
+        dns, connect = socket.getaddrinfo, socket.create_connection
 
         def answer(host, port, *args, **kwargs):
             if host == 'example.com':
@@ -469,8 +469,7 @@ class YakalaSecurityTest(unittest.TestCase):
             return connect(('127.0.0.1', server.server_port), timeout, source_address)
         with patch.object(socket, 'getaddrinfo', side_effect=answer), \
                 patch.object(socket, 'create_connection', side_effect=local_transport), \
-                patch.object(urllib.request, 'build_opener', side_effect=lambda *handlers:
-                             opener(urllib.request.ProxyHandler({}), *handlers)):
+                patch.object(urllib.request, 'getproxies', return_value={}):
             url = f'http://example.com:{server.server_port}/start'
             self.assertIsNone(yakala.via_stdlib(url))
             card = {'meta': {'url': url}, 'body': ''}
@@ -502,9 +501,7 @@ class YakalaSecurityTest(unittest.TestCase):
 
     def no_proxy(self):
         import urllib.request
-        opener = urllib.request.build_opener
-        return patch.object(urllib.request, 'build_opener', side_effect=lambda *handlers:
-                            opener(urllib.request.ProxyHandler({}), *handlers))
+        return patch.object(urllib.request, 'getproxies', return_value={})
 
     def test_dns_rebinding_after_check_never_reaches_local_target(self):
         # The first answer passes the check; the resolver the connection asks next says loopback.
@@ -563,19 +560,17 @@ class YakalaSecurityTest(unittest.TestCase):
             self.assertIsNone(yakala.via_stdlib(f'http://example.com:{port}/mixed'))
         self.assertEqual(seen, [])
 
-    def test_configured_proxy_keeps_resolution_at_the_proxy(self):
-        # With a proxy the target is resolved by the proxy, so the connection goes to the proxy host.
+    def test_configured_proxy_pins_target_instead_of_resolving_at_proxy(self):
+        from v3_yakala_egress_test import Pages, Upstream, PUBLIC, without_proxies
         import urllib.request
-        seen = []
-        port = self.local_page(seen)
-        opener = urllib.request.build_opener
-        # The target check is not under test here; a loopback proxy stands in for a real one.
-        with patch.object(yakala, '_safe_network_url', side_effect=lambda url: url), \
-                patch.object(urllib.request, 'build_opener', side_effect=lambda *handlers: opener(
-                    urllib.request.ProxyHandler({'http': f'http://127.0.0.1:{port}'}), *handlers)):
-            text = yakala.via_stdlib('http://example.com/through-proxy')
-        self.assertIn('ic ag sayfasi', text)
-        self.assertEqual(seen, ['http://example.com/through-proxy'])
+        pages, upstream = Pages(self), Upstream(self)
+        dns, dial = pages.network()
+        with without_proxies(), dns, dial, patch.object(urllib.request, 'getproxies',
+                return_value={'http': f'http://127.0.0.1:{upstream.port}'}):
+            text = yakala.via_stdlib('http://ornek.example/through-proxy')
+        self.assertIn('Acik makale', text)
+        self.assertEqual(upstream.asked[0][:3], ('http', 'CONNECT', PUBLIC + ':80'))
+        self.assertEqual(pages.hits['public'], ['/through-proxy'])
 
     def test_installed_release_rejects_edited_file_card_and_marks_untrusted_text(self):
         vault = self.root / 'Örnek Beyin'
@@ -690,15 +685,23 @@ class YakalaSecurityTest(unittest.TestCase):
                                              'all': 'socks5://proxy.example:1080'}])
 
     def test_stdlib_fetch_keeps_the_configured_proxy(self):
-        """No empty ProxyHandler: urllib's default handler reads the environment and system proxy. Offline."""
+        """Preserve urllib's discovered proxy map, independent of the runner environment."""
         import urllib.request
-        with patch.object(yakala, '_safe_network_url', side_effect=lambda url: url), \
-                patch('urllib.request.build_opener') as build:
-            build.return_value.open.side_effect = OSError('offline')
-            self.assertIsNone(yakala.via_stdlib('https://example.com/page'))
-        empty = [handler for handler in build.call_args.args
-                 if isinstance(handler, urllib.request.ProxyHandler) and handler.proxies == {}]
-        self.assertEqual(empty, [])
+        configured = {'http': 'http://proxy.example:3128',
+                      'https': 'socks5h://proxy.example:1080',
+                      'no': 'public.example'}
+        for proxies in (configured, {}):
+            with self.subTest(proxies=proxies), \
+                    patch('urllib.request.getproxies', return_value=proxies) as discover, \
+                    patch.object(yakala, '_safe_network_url', side_effect=lambda url: url), \
+                    patch('urllib.request.build_opener') as build:
+                build.return_value.open.side_effect = OSError('offline')
+                self.assertIsNone(yakala.via_stdlib('https://example.com/page'))
+            discover.assert_called_once_with()
+            handlers = [handler for handler in build.call_args.args
+                        if isinstance(handler, urllib.request.ProxyHandler)]
+            self.assertEqual(len(handlers), 1)
+            self.assertEqual(handlers[0].proxies, proxies)
 
     def test_extra_urls_keep_public_only_validation(self):
         for value in ('file:///secret', 'https://user:pass@example.com/', '-option', 'http://0x7f.1/'):
