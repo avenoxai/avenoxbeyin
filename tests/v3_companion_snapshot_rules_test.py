@@ -168,6 +168,22 @@ class SnapshotTest(unittest.TestCase):
         self.write('Kurallar.md', rules_file(5000, exact=True)[0])
         self.assertTrue(companion.rules_opening(self.store, 5000)['clipped'])
 
+    def test_opening_report_matches_final_hygiene_budget(self):
+        # The clipped notice consumes opening budget. The report and its notice must
+        # describe the final render, not the pre-notice allocation (#689).
+        for name, body in self.bodies.items():
+            self.write(name, body)
+        self.write('Kurallar.md', rules_file(45600)[0])
+        report = {}
+        text = companion.context(self.store, 5000, '0' * 24, 'claude', report=report)
+        rules = report['Kurallar.md']
+        self.assertTrue(rules['clipped'])
+        self.assertIn(
+            f'Memory hygiene: Kurallar.md opens clipped (fit ceiling {rules["share"]} of {rules["chars"]} chars).',
+            text,
+        )
+        self.assertEqual(companion.rules_opening(self.store, 5000), rules)
+
 
 class InstalledOpeningTest(unittest.TestCase):
     def setUp(self):
