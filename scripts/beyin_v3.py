@@ -583,7 +583,7 @@ def global_bridge_paths(vault: Path, state: Path) -> dict | None:
     A different vault may legitimately own the user's global bridge. Inspect only
     commands explicitly bound to this state; absent or invalid settings stay optional.
     """
-    from beyin_v3_bridge import global_hook_path
+    from beyin_v3_bridge import global_hook_path, global_opencode_settings_path
     here, owner = vault.resolve(), state.resolve()
     expected = (here / '.claude/scripts/beyin_v3_bridge.py').resolve()
     stale, checked = [], 0
@@ -630,6 +630,32 @@ def global_bridge_paths(vault: Path, state: Path) -> dict | None:
                         entry = {'harness': harness, 'event': event, 'reason': reason}
                         if not same and entry not in stale:
                             stale.append(entry)
+    # OpenCode's global bridge is a managed plugin plus a JSON settings file,
+    # rather than a hook command embedded in client settings.
+    try:
+        opencode_settings = global_opencode_settings_path()
+        data = json.loads(opencode_settings.read_text(encoding='utf-8'))
+    except (OSError, ValueError, UnicodeError):
+        data = None
+    if isinstance(data, dict) and data.get('managed_by') == 'beyin-v3-bridge':
+        command = data.get('command')
+        if isinstance(command, list) and all(isinstance(value, str) for value in command):
+            values = {}
+            for flag in ('--state', '--vault'):
+                if command.count(flag) == 1 and command.index(flag) < len(command) - 1:
+                    values[flag] = command[command.index(flag) + 1]
+            script = command[0] if command else None
+            if (isinstance(script, str) and len(values) == 2 and
+                    Path(values['--state']).is_absolute() and
+                    Path(values['--state']).resolve() == owner):
+                checked += 1
+                same_vault = Path(values['--vault']).resolve() == here
+                same_script = (Path(script).resolve() == (here / '.claude/scripts/beyin_v3_bridge.py').resolve()
+                                and Path(script).is_file())
+                for reason, same in (('other_vault', same_vault), ('other_script', same_script)):
+                    entry = {'harness': 'opencode', 'event': 'global', 'reason': reason}
+                    if not same and entry not in stale:
+                        stale.append(entry)
     if not checked:
         return None
     result = {'status': 'stale' if stale else 'ok', 'checked': checked}
