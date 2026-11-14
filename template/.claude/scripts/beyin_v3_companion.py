@@ -48,17 +48,24 @@ def directory(vault, *, strict=False):
     named = []
     inspection_errors = []
     for path in vault.iterdir():
+        is_named = (path.name == DEFAULT_DIRECTORY or
+                    path.name.casefold().endswith(('companion', 'echo')))
         try:
             if (path.name.startswith('.') or is_type(path, 'symlink') or not is_type(path, 'dir') or
                     re.search(r'(?i)(archive|arşiv|arsiv)', path.name)):
                 continue
-            if path.name == DEFAULT_DIRECTORY or path.name.casefold().endswith(('companion', 'echo')):
+            if is_named:
                 named.append(path)
             elif any(is_type(path / name, 'file') for name in ('Core.md', 'Soul.md')):
                 candidates.append(path)
         except OSError as exc:
-            inspection_errors.append((path, exc))
-            continue
+            # Strict callers may continue only for a directory that is named like a
+            # companion candidate.  Errors from ordinary entries (or while probing
+            # Core/Soul) must keep their original meaning for reference checks.
+            if strict and is_named:
+                inspection_errors.append((path, exc))
+                continue
+            raise
     candidates = named or candidates
     if len(candidates) > 1:
         return None
