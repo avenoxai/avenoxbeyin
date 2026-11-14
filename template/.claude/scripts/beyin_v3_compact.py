@@ -657,7 +657,7 @@ def _compact_lock(target, timeout=10.0, step=0.1):
 
 def compact(vault, state, dry_run=False, now=None):
     vault = Path(vault).resolve()
-    target = directory(vault)
+    target = directory(vault, strict=True)
     if target is None:
         return {'status': 'needs_attention', 'reason': 'Multiple companion directories; nothing moved.', 'files': {}}
     configured, valid = read_limits(state)

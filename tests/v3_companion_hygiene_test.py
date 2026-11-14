@@ -1070,6 +1070,35 @@ class CompactionRaceTest(unittest.TestCase):
         self.assertEqual(report['over_limit'], ['Last-Session.md'])
         self.assertIn('Memory hygiene: Last-Session.md is', companion_module.hygiene_notice(report))
 
+    def test_compact_skips_one_unreadable_directory_candidate(self):
+        blocked = self.vault / 'Blocked Companion'
+        blocked.mkdir()
+        (blocked / 'Core.md').write_text('# blocked', encoding='utf-8')
+        real_stat = Path.stat
+
+        def stat(path, *args, **kwargs):
+            if path == blocked:
+                raise PermissionError('synthetic candidate failure')
+            return real_stat(path, *args, **kwargs)
+
+        with mock.patch.object(Path, 'stat', stat):
+            self.assertEqual(companion_module.directory(self.vault, strict=True), self.directory)
+
+    def test_compact_fails_closed_when_all_directory_candidates_are_unreadable(self):
+        blocked = self.vault / 'Blocked Companion'
+        blocked.mkdir()
+        (blocked / 'Core.md').write_text('# blocked', encoding='utf-8')
+        real_stat = Path.stat
+
+        def stat(path, *args, **kwargs):
+            if path in (blocked, self.directory):
+                raise PermissionError('synthetic candidate failure')
+            return real_stat(path, *args, **kwargs)
+
+        with mock.patch.object(Path, 'stat', stat):
+            with self.assertRaisesRegex(RuntimeError, 'cannot inspect companion directory candidates'):
+                compact_module.compact(self.vault, self.state, now=NOW)
+
     def test_hygiene_notice_reports_clipped_rules_and_handoff_files(self):
         report = companion_module.hygiene(self.vault, self.state)
         # 1. Rules alone clipped (#461)
