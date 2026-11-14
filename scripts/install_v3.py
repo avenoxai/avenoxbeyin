@@ -1212,6 +1212,7 @@ def main():
     mode.add_argument("--uninstall", action="store_true")
     mode.add_argument("--plan", action="store_true", help="report what an install would do; change nothing")
     mode.add_argument("--reconcile-hooks", action="store_true", help="reconcile stale hook commands with backup")
+    parser.add_argument("--version", help="source-install version; must be semver")
     parser.add_argument("--accept-customized-legacy", action="append", default=[], metavar="PATH",
                         help="retire one named customized legacy runner (vault-relative); repeatable")
     parser.add_argument("--keep-customized-legacy", action="append", default=[], metavar="PATH",
@@ -1248,6 +1249,7 @@ def main():
         excluded = tuple(name.replace("\\", "/") for name in args.exclude_component)
         included = tuple(name.replace("\\", "/") for name in args.include_component)
         result = install(args.vault, args.state or default_state(args.vault.resolve()), args.uninstall,
+                         version=args.version,
                          plan_only=args.plan, accept_customized=accepted, keep_customized=kept,
                          exclude_components=excluded,
                          include_components=included, rebind_state=args.rebind_state)
