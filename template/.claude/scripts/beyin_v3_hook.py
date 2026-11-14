@@ -877,6 +877,17 @@ def main():
                     return
             else:
                 store = MemoryStore(state, vault)
+            review_notice = ''
+            if event == 'SessionStart':
+                try:
+                    from beyin_v3_sync import SyncEngine
+                    review = SyncEngine.reader(store).review_health(source_verified=True)
+                    if review.get('due_count'):
+                        oldest = min(item['review_at'] for item in review.get('due', [])
+                                     if item.get('review_at'))
+                        review_notice = f'Due reviews: {review["due_count"]}; oldest {oldest}.\n'
+                except Exception:
+                    pass  # An informational review hint must never block or alter opening context.
             query = prompt_text(payload)
             project = payload.get('project')
             project = project if isinstance(project, str) and project.strip() else None
@@ -924,6 +935,7 @@ def main():
                 except Exception:
                     pass
             warning += coverage
+            warning += review_notice
 
             def remember_notice(shown):
                 if coverage and dedupe_enabled and coverage.strip() in shown:

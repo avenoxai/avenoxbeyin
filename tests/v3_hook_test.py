@@ -1446,6 +1446,18 @@ runpy.run_path({str(HOOK)!r}, run_name='__main__')
         self.assertIn('ALPHA_HOOK_QUERY_RULE', sibling_context)
 
 
+    def test_session_start_reports_due_review_count_and_oldest_date_without_sources(self):
+        from beyin_v3_sync import SyncEngine
+        source = self.vault / 'private-review.md'
+        source.write_text('---\n' + json.dumps({'id': 'review-item', 'review_at': '2020-01-02',
+                           'visibility': 'internal'}) + '\n---\nPrivate review text.\n', encoding='utf-8')
+        SyncEngine(self.vault, self.state).sync()
+        response = self.invoke(dict(self.payload, hook_event_name='SessionStart'))
+        context = response['hookSpecificOutput']['additionalContext']
+        self.assertIn('Due reviews: 1; oldest 2020-01-02.', context)
+        self.assertNotIn('private-review.md', context)
+        self.assertNotIn(str(self.vault), context)
+
 
 class HookFailOpenTest(unittest.TestCase):
     """#417: the foreground hook answers the client even when its own diagnostics cannot be written."""
