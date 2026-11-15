@@ -219,7 +219,8 @@ def _git(vault, *args, timeout=GIT_TIMEOUT):
     env.update({'GIT_TERMINAL_PROMPT': '0', 'LC_ALL': 'C', 'LANGUAGE': 'C'})
     env.setdefault('GIT_SSH_COMMAND', 'ssh -o BatchMode=yes -o ConnectTimeout=20')
     try:
-        return subprocess.run([exe, '-C', str(vault), *args], capture_output=True, text=True,
+        # core.quotePath=false: report emoji/Turkish paths as UTF-8, not as quoted octal escapes.
+        return subprocess.run([exe, '-C', str(vault), '-c', 'core.quotePath=false', *args], capture_output=True, text=True,
                               encoding='utf-8', errors='replace', timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(args, 124, '', 'timeout after ' + str(timeout) + 's')

@@ -353,6 +353,21 @@ class SyncRoundTest(Base):
         git(self.b, "reset", "-q", "--hard", "origin/main")
         self.assertEqual(devices.sync_once(self.b, self.b_state)["status"], "ok")
 
+    def test_conflict_lists_non_ascii_paths_readably(self):
+        # Vault folders often carry emoji or Turkish letters; git quotes them by default.
+        name = "🔮 Companion/Çalışma.md"
+        note = self.a / name
+        note.parent.mkdir()
+        note.write_text("# Ortak\n", encoding="utf-8")
+        devices.sync_once(self.a, self.a_state)
+        devices.sync_once(self.b, self.b_state)
+        note.write_text("# A\n", encoding="utf-8")
+        (self.b / name).write_text("# B\n", encoding="utf-8")
+        devices.sync_once(self.a, self.a_state)
+        result = devices.sync_once(self.b, self.b_state)
+        self.assertEqual(result["status"], "conflict", result)
+        self.assertEqual(result["conflicts"], [name])
+
     def test_unreachable_remote_keeps_the_local_commit(self):
         devices.sync_once(self.b, self.b_state)
         git(self.b, "remote", "set-url", "origin", str(self.tmp / "missing.git"))
