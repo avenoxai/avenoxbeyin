@@ -1795,7 +1795,25 @@ def main(argv=None, return_result=False):
                 result['pending_exclusions'] = sorted(set(configured_excluded) ^ set(result['excluded_components']))
                 result['exclusions_pending'] = True
             import beyin_v3_preferences as preferences
-            result['preferences'] = preferences.read(vault)
+            prefs = preferences.read(vault)
+            result['preferences'] = prefs
+            # First-use setup summary: context budget, secret filter, remote transmission (#691.3)
+            result['setup_summary'] = {
+                'profile': prefs.get('profile', 'normal'),
+                'context_mode': prefs['context_mode'],
+                'context_chars': prefs['context_chars'],
+                'secret_filter': prefs['secret_filter'],
+                'auto_sync': prefs['auto_sync'],
+                'interval_minutes': prefs['interval_minutes'],
+                'warnings': []
+            }
+            if prefs['context_mode'] != 'off' and not prefs['secret_filter']:
+                result['setup_summary']['warnings'].append(
+                    'Context is sent to remote model provider without secret filtering. '
+                    'Enable with: beyin.py preferences --secret-filter on')
+            if prefs['context_mode'] == 'off':
+                result['setup_summary']['warnings'].append(
+                    'Context mode is off; no vault context is sent to the model.')
             import beyin_v3_releases as releases
             result['updates'] = releases.status(vault, state)
             from beyin_v3_secrets import health as secret_filter_health
