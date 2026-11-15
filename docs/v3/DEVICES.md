@@ -186,7 +186,7 @@ adı mesaja yazılmaz.
 |---|---|
 | macOS | Kullanıcı LaunchAgent'ı (`~/Library/LaunchAgents/com.avenox.beyin-devices.<kimlik>.plist`) |
 | Linux, systemd kullanıcı oturumu varsa | `~/.config/systemd/user/beyin-devices-<kimlik>.service` ve `.timer` |
-| Windows | Görev Zamanlayıcı görevi (`BeyinDevices-<kimlik>`) |
+| Windows (gerçek makinede denenmedi) | Görev Zamanlayıcı görevi (`BeyinDevices-<kimlik>`) |
 | cron olan ama systemd olmayan Linux | Hiçbir şey kurulmaz; plan eklenecek crontab satırını verir |
 | Zamanlayıcı yoksa (ör. konteyner) | Hiçbir şey kurulmaz; plan kendi başlangıç betiğine koyacağın döngüyü verir |
 
@@ -223,6 +223,26 @@ dosyadan kendin kopyalarsın. Sunucu yalnız gelen kutusuna ekler, vault'tan hi�
 - `--detect`, `--plan` ve durum çıktısı ağa çıkmaz. Ağa çıkan tek şey senin yapılandırdığın
   uzak depoya giden `--sync-once` turudur.
 
+## Gerçek cihazda denenenler
+
+Birim testlerinin dışında bu sürüm şu düzende gerçek cihazlarla denendi:
+
+| Parça | Durum |
+|---|---|
+| macOS, vault iCloud Drive/Obsidian klasöründe (`phone` + `icloud`) | Denendi |
+| iPhone'da Obsidian ile aynı klasör; telefondaki değişikliğin Mac'teki turla commit edilmesi | Denendi |
+| macOS LaunchAgent yüklemesi ve kaldırılması (`--interval`, `--remove-schedule`) | Denendi |
+| `--git-dir` ile git dizinini iCloud dışına alma | Denendi |
+| İki bilgisayar arası tur, `merge=union` birleşmesi, çakışmada rebase'in geri alınması | Denendi |
+| `hub` kademesi: Linux sunucuda bare depo, Mac istemciden SSH ile tur | Denendi |
+| Linux systemd kullanıcı zamanlayıcısı | Denenmedi |
+| Windows (Görev Zamanlayıcı dahil) | Denenmedi |
+| `obsidian-sync` ve `other` telefon seçenekleri | Denenmedi |
+| `--capture` (yakalama sunucusu) | Denenmedi |
+
+Denenmeyen yolların kodu ve birim testleri yerindedir; gerçek makinede ilk kullanımda
+`--plan` çıktısını okuyup sonucu bildirmen bu tabloyu güncellemeye yeter.
+
 ## Bilinen sınırlar
 
 - Bu düzen dosya düzeyinde eşitlemedir; cihazlar arası kayıt düzeyinde birleştirme, cihaz
@@ -232,7 +252,7 @@ dosyadan kendin kopyalarsın. Sunucu yalnız gelen kutusuna ekler, vault'tan hi�
 - iCloud gizli klasörleri de yükler; `.beyin-note-write/` altındaki not yedekleri kendi iCloud
   hesabında durur.
 - Zamanlayıcı tanımlarının (LaunchAgent, systemd, Görev Zamanlayıcı) içeriği birim testleriyle
-  sınanır. Tanımın işletim sistemine yüklenmesi (`launchctl`, `systemctl`, `schtasks`) bu
-  sürümde gerçek makinede denenmedi; yükleme başarısız olursa `--apply` durur, hatayı gösterir
-  ve ayarı değiştirmez.
+  sınanır. İşletim sistemine yükleme macOS'ta (`launchctl`) gerçek makinede denendi; Linux
+  (`systemctl`) ve Windows (`schtasks`) yüklemesi denenmedi. Yükleme başarısız olursa `--apply`
+  durur, hatayı gösterir ve ayarı değiştirmez.
 - Özel notları dışarıda bırakan filtreli bir bulut yedeği bu komutun kapsamında değildir.
