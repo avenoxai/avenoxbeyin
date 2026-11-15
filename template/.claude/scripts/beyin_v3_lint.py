@@ -16,6 +16,8 @@ import tempfile
 import time
 import unicodedata
 
+from beyin_v3_index import dir_key
+
 # ReDoS-safe wikilink pattern: bounded character class prevents catastrophic backtracking.
 # Matches [[target]], [[target|display]], [[target#heading]], [[target#heading|display]], and embeds ![[...]]
 WIKILINK_PATTERN = re.compile(r"!?\[\[([^\[\]\r\n]{1,500})\]\]")
@@ -326,7 +328,7 @@ def resolve_wikilink(vault_root, link_target, source_file=None, vault_index=None
     return {"exists": False, "resolved_path": None}
 
 
-def lint_vault(vault_root, folder=None):
+def lint_vault(vault_root, folder=None, state=None):
     """Lint markdown notes in vault for broken wikilinks, orphans, and link graph health."""
     vault_root = Path(vault_root)
     if folder:
@@ -338,6 +340,21 @@ def lint_vault(vault_root, folder=None):
         folder = None if folder == "." else folder
     vault_index = build_vault_index(vault_root)
     all_files = list(vault_index["by_rel"].values())
+
+    # Load index exclusions from state
+    excluded_dir_keys = frozenset()
+    if state is not None:
+        try:
+            from beyin_v3_index import exclusions
+            excluded_dir_keys, _ = exclusions(state)
+        except Exception:
+            pass
+
+    # Beyin's own generated subdirectories that should not count as orphans
+    # These are the v3 daily and knowledge directories that Beyin writes to
+    AUTO_GENERATED_DIRS = frozenset({"daily", "knowledge"})
+    # But only when they contain the version marker (v3/)
+    # We'll check this dynamically
 
     # If folder is specified, restrict scan target
     if folder:
@@ -402,16 +419,33 @@ def lint_vault(vault_root, folder=None):
 
     broken_links = [link for link in broken_links if link["source"] in target_set]
 
+    def _is_excluded_or_auto(path, excluded_dir_keys):
+        """Check if a file path is in an excluded directory or Beyin's auto-generated v3 directory."""
+        parts = path.split("/")
+        for i, part in enumerate(parts):
+            key = dir_key(part)
+            if key in excluded_dir_keys:
+                return True
+            # Check for Beyin's v3 auto-generated directories: daily/v3/, knowledge/v3/
+            if key in ("daily", "knowledge") and i + 1 < len(parts):
+                if dir_key(parts[i + 1]) == "v3":
+                    return True
+        return False
+
     # Identify orphans (no incoming and no outgoing)
     orphans = []
     for f in target_files:
         if len(outgoing_links[f]) == 0 and len(incoming_links[f]) == 0:
+            if _is_excluded_or_auto(f, excluded_dir_keys):
+                continue
             orphans.append(f)
 
     # Identify unlinked notes (has outgoing but no incoming)
     unlinked = []
     for f in target_files:
         if len(incoming_links[f]) == 0 and f not in orphans:
+            if _is_excluded_or_auto(f, excluded_dir_keys):
+                continue
             unlinked.append(f)
 
     lists = {"broken_links": broken_links, "orphans": sorted(orphans), "unlinked": sorted(unlinked)}
@@ -801,11 +835,11 @@ Bu not, `{target_folder}` altındaki notların navigasyon ve içerik haritasıd�
     }
 
 
-def manage(vault_root, action, folder=None, moc_file="MOC.md"):
+def manage(vault_root, action, folder=None, moc_file="MOC.md", state=None):
     """CLI dispatcher for beyin.py lint and moc commands."""
     vault_root = Path(vault_root)
     if action == "lint":
-        return lint_vault(vault_root, folder=folder)
+        return lint_vault(vault_root, folder=folder, state=state)
     elif action == "moc":
         target = folder or "knowledge"
         return generate_moc(vault_root, target_folder=target, moc_filename=moc_file)

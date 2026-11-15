@@ -1743,7 +1743,7 @@ def main(argv=None, return_result=False):
             result['secrets_redacted'] = result['secret_filter']['total']
             try:
                 import beyin_v3_companion as companion
-                result['companion_hygiene'] = companion.hygiene(vault, state)
+                result['companion_hygiene'] = companion.hygiene(vault, state, include_projects=True)
             except Exception as exc:  # a size report must never hide the rest of doctor
                 result['companion_hygiene'] = {'status': 'unavailable', 'error': type(exc).__name__}
             # Information only (#374): how much of Kurallar.md the Claude Code opening shows whole.
@@ -2262,7 +2262,7 @@ def main(argv=None, return_result=False):
         elif args.command == "lint":
             _ensure_scripts_path()
             import beyin_v3_lint as linter
-            result = linter.manage(vault, "lint", folder=args.folder)
+            result = linter.manage(vault, "lint", folder=args.folder, state=state)
         elif args.command == "moc":
             _ensure_scripts_path()
             import beyin_v3_lint as linter
