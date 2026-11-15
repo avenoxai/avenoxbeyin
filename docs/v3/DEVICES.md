@@ -193,6 +193,11 @@ adı mesaja yazılmaz.
 `python3 beyin.py devices --remove-schedule` kurulan zamanlamayı kaldırır. Zamanlama yönetici
 yetkisi istemez ve sistem geneline bir şey kurmaz.
 
+`devices` komutunu içermeyen bir sürüme `rollback` ve `uninstall` zamanlamayı kendiliğinden
+kaldırır ve çıktıda `devices_schedule` alanıyla bildirir; aksi halde eski motor her turu
+reddederdi. Ayarın geri kalanı state klasöründe kalır; yeniden güncelledikten sonra
+`devices --apply ... --interval <dakika>` ile zamanlamayı yeniden kur.
+
 **macOS + iCloud:** macOS, iCloud Drive, Belgeler ve Masaüstü klasörlerini arka plan işlerine
 kapatır. Vault bu klasörlerdeyse zamanlanmış tur `Operation not permitted` ile düşer; plan bunu
 uyarır. Çözüm, planda adı geçen Python'a Sistem Ayarları › Gizlilik ve Güvenlik › Tam Disk
@@ -232,6 +237,7 @@ Birim testlerinin dışında bu sürüm şu düzende gerçek cihazlarla denendi:
 | macOS, vault iCloud Drive/Obsidian klasöründe (`phone` + `icloud`) | Denendi |
 | iPhone'da Obsidian ile aynı klasör; telefondaki değişikliğin Mac'teki turla commit edilmesi | Denendi |
 | macOS LaunchAgent yüklemesi ve kaldırılması (`--interval`, `--remove-schedule`) | Denendi |
+| `devices` içermeyen sürüme `rollback`, `uninstall` ve yeniden güncelleme (zamanlama kaldırılır, ayar korunur) | Denendi |
 | `--git-dir` ile git dizinini iCloud dışına alma | Denendi |
 | İki bilgisayar arası tur, `merge=union` birleşmesi, çakışmada rebase'in geri alınması | Denendi |
 | `hub` kademesi: Linux sunucuda bare depo, Mac istemciden SSH ile tur | Denendi |

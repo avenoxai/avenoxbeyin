@@ -861,6 +861,20 @@ def _remove_scheduler(spec):
             pass
 
 
+def release_schedule(vault, state):
+    """Remove the recorded schedule when the engine that runs it goes away: a rollback to a release
+    without this module, or an uninstall. The schedule would otherwise call `devices --sync-once`
+    on an engine that rejects the command, every round. Settings stay; never raises."""
+    try:
+        settings, valid = read_settings(state)
+        if not valid or not settings.get('scheduler'):
+            return None
+        result = remove_scheduler(vault, state)
+    except Exception as exc:
+        return {'status': 'failed', 'reason': str(exc)[:200]}
+    return {**result, 'next': 'after updating to a release with devices, run devices --apply with --interval again'}
+
+
 def apply(vault, state, options, home=None):
     """Run the plan in order and store the settings last. Stops at the first failed action."""
     vault, state = Path(vault), Path(state)
