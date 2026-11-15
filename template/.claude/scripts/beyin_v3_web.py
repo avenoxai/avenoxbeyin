@@ -14,6 +14,7 @@ companion-compact, sync) under the CLI's locks; this module never writes a vault
 The page is served from this package and fetches nothing from the network.
 """
 import argparse
+import hashlib
 import hmac
 import http.client
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -305,6 +306,7 @@ class Core:
         metadata = {'id': f'web-{stamp}-{suffix}', 'title': title, 'status': status, 'owner': owner}
         if project:
             metadata['project'] = project
+            metadata['project_id'] = hashlib.sha256(project.encode()).hexdigest()[:24]
         source = f'tasks/{_slug(title)}-{suffix}.md'
         record = self.run_json('task-create', {'source': source, 'text': body, 'metadata': metadata})
         return {'durum': 'olusturuldu', 'gorev': task_view(record)}

@@ -1557,7 +1557,7 @@ class SyncEngine:
         if text.lstrip().startswith('---'):
             raise ValueError('text must be body only; put frontmatter fields in metadata')
         self._refuse_excluded(source)
-        allowed = {'id', 'title', 'kind', 'revision', 'status', 'owner', 'project', 'visibility', 'facts', 'next_action', 'priority', 'due_at', 'updated_at', 'created_at', 'completion_contract', 'completion_criterion', 'evidence_refs'}
+        allowed = {'id', 'title', 'kind', 'revision', 'status', 'owner', 'project', 'project_id', 'visibility', 'facts', 'next_action', 'priority', 'due_at', 'updated_at', 'created_at', 'completion_contract', 'completion_criterion', 'evidence_refs'}
         if set(metadata) - allowed:
             raise ValueError('unsupported task metadata')
         metadata = dict(metadata)
@@ -1566,6 +1566,11 @@ class SyncEngine:
             metadata['updated_at'] = now_date
         if 'created_at' not in metadata:
             metadata['created_at'] = metadata['updated_at']
+        # Derive project_id from project name if not provided (for bridge context matching #690)
+        if 'project' in metadata and 'project_id' not in metadata:
+            project_name = str(metadata['project'] or '').strip()
+            if project_name:
+                metadata['project_id'] = hashlib.sha256(project_name.encode()).hexdigest()[:24]
         text, redacted = self._protect(text)
         if not isinstance(metadata.get('id'), str) or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}', metadata['id']):
             raise ValueError('stable task id required')
