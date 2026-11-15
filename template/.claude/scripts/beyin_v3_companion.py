@@ -638,30 +638,86 @@ def size(path):
     return count
 
 
-def hygiene(vault, state, names=NAMES, target=None):
-    """Read-only size report of the companion sources; limited files say whether they are over."""
+def _project_companion_dirs(vault):
+    """Find project directories that contain companion files (Threads.md, Last-Session.md, etc.)."""
+    vault = Path(vault).resolve()
+    dirs = []
+    try:
+        from beyin_v3_projects import candidate_project_folders
+        for parent_name in candidate_project_folders(vault):
+            parent = vault / parent_name
+            if not parent.is_dir():
+                continue
+            for entry in parent.iterdir():
+                if not entry.is_dir() or entry.is_symlink():
+                    continue
+                # Check if this project directory has companion files
+                if any((entry / name).is_file() for name in ('Threads.md', 'Last-Session.md', 'Core.md', 'Soul.md')):
+                    dirs.append(entry)
+    except Exception:
+        pass
+    return dirs
+
+
+def hygiene(vault, state, names=NAMES, target=None, include_projects=False):
+    """Read-only size report of the companion sources; limited files say whether they are over.
+
+    If include_projects is True, also scan project directories that contain companion files.
+    """
     vault = Path(vault).resolve()
     target = directory(vault) if target is None else target
     configured, valid = read_limits(state)
-    report = {'status': 'ok', 'limits': configured, 'limits_file': 'ok' if valid else 'invalid_defaults_used',
-              'files': {}, 'over_limit': []}
-    if target is None:
-        return dict(report, status='ambiguous_directory')
-    report['directory'] = target.relative_to(vault).as_posix()
-    for name in names:
-        path = target / name
-        if path.is_symlink() or not path.is_file():
-            continue
-        entry = {'chars': size(path)}
-        if name in LIMITS:
-            entry['limit'] = configured[name]
-            entry['over_limit'] = bool(configured[name]) and entry['chars'] > configured[name]
-            if entry['over_limit']:
-                report['over_limit'].append(name)
-        report['files'][name] = entry
-    if report['over_limit']:
-        report['status'] = 'over_limit'
-    return report
+
+    def scan_dir(dir_path, dir_name):
+        """Scan a single directory for companion files and limits."""
+        report = {'status': 'ok', 'limits': configured, 'limits_file': 'ok' if valid else 'invalid_defaults_used',
+                  'files': {}, 'over_limit': []}
+        if dir_path is None:
+            return dict(report, status='ambiguous_directory')
+        report['directory'] = dir_path.relative_to(vault).as_posix()
+        for name in names:
+            path = dir_path / name
+            if path.is_symlink() or not path.is_file():
+                continue
+            entry = {'chars': size(path)}
+            if name in LIMITS:
+                entry['limit'] = configured[name]
+                entry['over_limit'] = bool(configured[name]) and entry['chars'] > configured[name]
+                if entry['over_limit']:
+                    report['over_limit'].append(name)
+            report['files'][name] = entry
+        if report['over_limit']:
+            report['status'] = 'over_limit'
+        return report
+
+    # Main companion directory
+    main_report = scan_dir(target, 'main')
+    if not include_projects:
+        return main_report
+
+    # Project companion directories
+    project_dirs = _project_companion_dirs(vault)
+    project_reports = []
+    for pdir in project_dirs:
+        project_reports.append(scan_dir(pdir, 'project'))
+
+    # Combine reports
+    combined = {
+        'status': main_report['status'],
+        'limits': configured,
+        'limits_file': main_report['limits_file'],
+        'files': main_report['files'],
+        'over_limit': main_report['over_limit'],
+        'directory': main_report['directory'],
+        'project_directories': [r['directory'] for r in project_reports],
+        'projects': project_reports,
+    }
+    # Aggregate over_limit status
+    for pr in project_reports:
+        if pr['status'] == 'over_limit':
+            combined['status'] = 'over_limit'
+            combined['over_limit'].extend([f"{pr['directory']}/{f}" for f in pr['over_limit']])
+    return combined
 
 
 def hygiene_notice(report, rules=None, *, parallel=False):
@@ -670,21 +726,46 @@ def hygiene_notice(report, rules=None, *, parallel=False):
         rules = report['rules']
     lines = []
     if report and isinstance(report, dict):
-        over = [f'{name} is {report["files"][name]["chars"]} chars (limit {report["files"][name]["limit"]})'
-                for name in report.get('over_limit', [])]
+        # Main companion directory over-limit files
+        over = []
+        for name in report.get('over_limit', []):
+            # Skip project entries (they have directory/ prefix)
+            if '/' not in name:
+                files = report.get('files', {})
+                if name in files:
+                    over.append(f'{name} is {files[name]["chars"]} chars (limit {files[name]["limit"]})')
+        # Project directories over-limit files
+        for proj in report.get('projects', []):
+            for name in proj.get('over_limit', []):
+                files = proj.get('files', {})
+                if name in files:
+                    over.append(f'{proj["directory"]}/{name} is {files[name]["chars"]} chars (limit {files[name]["limit"]})')
         if over:
             python = 'py -3' if sys.platform == 'win32' else 'python3'
-            if parallel and 'Last-Session.md' in report.get('over_limit', []):
-                chars = report['files']['Last-Session.md']['chars']
-                suggested = ((chars + 999) // 1000) * 1000
-                if suggested <= LIMIT_RANGE[1]:
-                    advice = (f'If these cards are still needed, consider: {python} beyin.py preferences '
-                              f'--last-session-chars {suggested} (fits the current file, not future growth). ')
+            if parallel and any('Last-Session.md' in o for o in over):
+                # Find the Last-Session.md that's over limit
+                chars = None
+                if 'Last-Session.md' in report.get('over_limit', []):
+                    chars = report['files']['Last-Session.md']['chars']
                 else:
-                    advice = 'The file exceeds the supported limit; coordinate a handoff review before archiving. '
-                lines.append('Memory hygiene: ' + '; '.join(over) + '. Parallel-session notices are enabled. '
-                             "Do not compact other sessions' fresh cards just to clear this warning. " + advice +
-                             'Only edit your own card; coordinate compaction after other sessions finish.\n')
+                    for proj in report.get('projects', []):
+                        if 'Last-Session.md' in proj.get('over_limit', []):
+                            chars = proj['files']['Last-Session.md']['chars']
+                            break
+                if chars is not None:
+                    suggested = ((chars + 999) // 1000) * 1000
+                    if suggested <= LIMIT_RANGE[1]:
+                        advice = (f'If these cards are still needed, consider: {python} beyin.py preferences '
+                                  f'--last-session-chars {suggested} (fits the current file, not future growth). ')
+                    else:
+                        advice = 'The file exceeds the supported limit; coordinate a handoff review before archiving. '
+                    lines.append('Memory hygiene: ' + '; '.join(over) + '. Parallel-session notices are enabled. '
+                                 "Do not compact other sessions' fresh cards just to clear this warning. " + advice +
+                                 'Only edit your own card; coordinate compaction after other sessions finish.\n')
+                else:
+                    lines.append('Memory hygiene: ' + '; '.join(over) + f'. Before other memory writes run: {python} beyin.py companion-compact '
+                                 '(moves old entries verbatim to a private archive, deletes nothing). Do not read the whole file; '
+                                 'afterwards rewrite in place, never append.\n')
             else:
                 lines.append('Memory hygiene: ' + '; '.join(over) + f'. Before other memory writes run: {python} beyin.py companion-compact '
                              '(moves old entries verbatim to a private archive, deletes nothing). Do not read the whole file; '
@@ -1346,7 +1427,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
     if target is not None:
         try:
             from beyin_v3_parallel import enabled as parallel_enabled
-            hygiene_line = hygiene_notice(hygiene(store.vault_root, store.state_dir, tuple(LIMITS), target),
+            hygiene_line = hygiene_notice(hygiene(store.vault_root, store.state_dir, tuple(LIMITS), target, include_projects=True),
                                           parallel=parallel_enabled(store.state_dir))
         except Exception:
             hygiene_line = ''  # A size check must never cost the session its context.
@@ -1677,9 +1758,29 @@ def rules_opening(store, budget, receipt=''):
     hook's. share is the current allocation (without reasons when reasons_omitted), not
     a fixed ceiling: a shorter rule set can reclaim room from optional detail. Filesystem
     import references do not change this report or prove client delivery (#610).
-    None without a rules section."""
+    None without a rules section.
+
+    Accounts for the notice (hygiene, parallel session, update) that the hook prepends
+    before calling companion_context, matching the hook's budget subtraction."""
     report = {}
-    context(store, budget, '0' * 24, 'claude', receipt=receipt, report=report)
+    # Estimate notice size: hygiene notice + parallel session notice buffer
+    # The hook subtracts len(notice) from the limit before calling companion_context.
+    notice_estimate = 0
+    try:
+        from beyin_v3_parallel import enabled as parallel_enabled
+        target = directory(store.vault_root)
+        if target is not None:
+            # Include project directories in hygiene check to match SessionStart context
+            hygiene_report = hygiene(store.vault_root, store.state_dir, tuple(LIMITS), target, include_projects=True)
+            notice_estimate = len(hygiene_notice(hygiene_report, parallel=parallel_enabled(store.state_dir)))
+            # Add buffer for parallel session notice (~200 chars) and update notification (~300 chars)
+            notice_estimate += 500
+    except Exception:
+        # Fallback: conservative estimate for hygiene + parallel + update notices
+        notice_estimate = 500
+
+    effective_budget = max(0, budget - notice_estimate)
+    context(store, effective_budget, '0' * 24, 'claude', receipt=receipt, report=report)
     rules = report.get('Kurallar.md')
     if rules is not None:
         return rules
