@@ -255,7 +255,12 @@ class SourceSyncTest(unittest.TestCase):
         before = self.snapshot()
         report = self.engine.sync()
         self.assertEqual(report['status'], 'succeeded', 'a numbered name alone never degrades a sync')
-        self.assertEqual(report['warnings'], [])
+        # Numbered copies now produce warnings so doctor and automation can detect them.
+        self.assertEqual(len(report['warnings']), 2)
+        warn_sources = {w['source'] for w in report['warnings']}
+        self.assertEqual(warn_sources, {'notes/Sezon 2.md', 'notes/plan (1).md'})
+        for w in report['warnings']:
+            self.assertIn('possible file sync copy', w['reason'])
         self.assertEqual(report['sync_copy_candidate_count'], 2)
         self.assertEqual(sorted(report['sync_copy_candidates'], key=lambda c: c['source']), [
             {'source': 'notes/Sezon 2.md', 'original': 'notes/Sezon.md', 'same_content': False},

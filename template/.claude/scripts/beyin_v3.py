@@ -963,11 +963,13 @@ _STRICT_FILLER_SURFACES = frozenset((
 
 def _strict_query_tokens(query):
     """Return strict query tokens without known Turkish question wrappers."""
-    terms = _tokens(query)
-    for raw_word in re.findall(r"[\w]+", str(query), flags=re.UNICODE):
-        if _fold(raw_word) in _STRICT_FILLER_SURFACES:
-            terms -= _tokens(raw_word)
-    return terms
+    # Remove surfaces before stemming so a wrapper cannot erase an explicit
+    # topic with the same stem ("not notlarda", "konu konusunda"). Preserve
+    # punctuation so compound names retain their normal tokenization.
+    text = re.sub(r"[a-z0-9]+", lambda match: (
+        " " if match.group() in _STRICT_FILLER_SURFACES else match.group()
+    ), _fold(query))
+    return _tokens(text)
 
 
 def _strict_terms(terms):
