@@ -58,6 +58,47 @@ class AgentProcessIdentityTest(unittest.TestCase):
                 patch.object(Path, 'read_text', return_value=raw):
             self.assertIsNone(yakala._agent_process_identity(123))
 
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Real Linux procfs race')
+    def test_linux_process_reaped_after_stat_open_is_absent(self):
+        process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, env=inherited_env())
+        def close_process():
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+
+        self.addCleanup(close_process)
+        identity = yakala._agent_process_identity(process.pid)
+        self.assertIsNotNone(identity)
+        original_open = Path.open
+        stat_path = Path('/proc', str(process.pid), 'stat')
+        opened = []
+
+        def open_then_reap(path, *args, **kwargs):
+            stream = original_open(path, *args, **kwargs)
+            if path == stat_path:
+                opened.append(stream)
+                process.kill()  # Our live Popen, not a PID recovered from state.
+                process.wait(timeout=5)
+            return stream
+
+        # Preserve the real procfs descriptor: reading it after the process exits
+        # raises ESRCH, unlike opening the now-missing path (ENOENT).
+        with patch.object(Path, 'open', open_then_reap):
+            self.assertFalse(yakala._agent_same_process(identity))
+        self.assertEqual(len(opened), 1)
+        self.assertTrue(opened[0].closed)
+
+    def test_linux_unreadable_identity_is_not_mistaken_for_absent(self):
+        system = types.SimpleNamespace(**{**vars(os), 'name': 'posix'})
+        platform = types.SimpleNamespace(**{**vars(sys), 'platform': 'linux'})
+        for error in (PermissionError('denied'), OSError('io failure')):
+            with self.subTest(error=type(error).__name__), patch.object(yakala, 'os', system), \
+                    patch.object(yakala, 'sys', platform), patch.object(Path, 'read_text', side_effect=error), \
+                    self.assertRaises(type(error)):
+                yakala._agent_process_identity(123)
+
     def test_linux_mismatched_pid_namespace_is_refused(self):
         system = types.SimpleNamespace(**{**vars(os), 'name': 'posix'})
         platform = types.SimpleNamespace(**{**vars(sys), 'platform': 'linux'})
