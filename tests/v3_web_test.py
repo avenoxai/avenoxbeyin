@@ -107,7 +107,7 @@ class WebFixture(unittest.TestCase):
             connection.close()
 
     def login(self):
-        response, _ = self.request('GET', '/?token=' + self.server.token)
+        response, _ = self.request('GET', '/?token=' + self.server.new_launch_token())
         self.assertEqual(response.status, 303)
         cookie = response.getheader('Set-Cookie').split(';')[0]
         response, page = self.request('GET', '/', {'Cookie': cookie})
@@ -134,7 +134,7 @@ class WebGuardTest(WebFixture):
         for headers in ({'Host': f'evil.example:{self.server.port}'}, {'Host': '127.0.0.1:1'},
                         {'Origin': 'http://evil.example'}, {'Origin': 'null'}, {'Sec-Fetch-Site': 'cross-site'},
                         {'Sec-Fetch-Site': 'same-site'}):
-            for path in ('/app.css', '/', '/?token=' + self.server.token, '/api/durum'):
+            for path in ('/app.css', '/', '/?token=' + self.server.launch_token, '/api/durum'):
                 response, body = self.request('GET', path, headers)
                 self.assertEqual(response.status, 403, (headers, path))
                 self.assertNotIn(b'Set-Cookie', body)
@@ -158,7 +158,8 @@ class WebGuardTest(WebFixture):
         response, _ = self.request('GET', '/?token=wrong')
         self.assertEqual(response.status, 401)
         self.assertIsNone(response.getheader('Set-Cookie'))
-        response, _ = self.request('GET', '/?token=' + self.server.token)
+        token = self.server.launch_token
+        response, _ = self.request('GET', '/?token=' + token)
         self.assertEqual(response.status, 303)
         self.assertEqual(response.getheader('Location'), '/')
         cookie = response.getheader('Set-Cookie')
@@ -166,13 +167,17 @@ class WebGuardTest(WebFixture):
         self.assertIn('SameSite=Strict', cookie)
         self.assertNotIn(self.server.token, cookie)
         self.assertNotIn('Max-Age', cookie)
+        response, _ = self.request('GET', '/?token=' + token)
+        self.assertEqual(response.status, 401)
+        response, _ = self.request('GET', '/?token=' + self.server.token)
+        self.assertEqual(response.status, 401)
         # Without the cookie the page is the unlock form, never the app or its CSRF token.
         response, page = self.request('GET', '/')
         self.assertEqual(response.status, 401)
         self.assertNotIn(b'beyin-csrf', page)
 
     def test_api_needs_a_session_and_the_launch_token_is_not_a_query_credential(self):
-        for path in ('/api/durum', '/api/gorevler', '/api/durum?token=' + self.server.token):
+        for path in ('/api/durum', '/api/gorevler', '/api/durum?token=' + self.server.launch_token):
             response, _ = self.request('GET', path)
             self.assertEqual(response.status, 401, path)
         response, _ = self.request('GET', '/api/durum', {'Cookie': f'beyin_web_{self.server.port}=forged'})
@@ -512,6 +517,9 @@ class WebLifecycleTest(unittest.TestCase):
             running = web.read_running(self.state)
             self.assertIsNotNone(running)
             self.assertTrue(web.alive(running))
+            reopened = web.launch_url(running)
+            self.assertNotIn(running['token'], reopened)
+            self.assertTrue(reopened.startswith(f"http://127.0.0.1:{running['port']}/?token="))
             if os.name != 'nt':
                 self.assertEqual((self.state / 'web' / web.RUNNING).stat().st_mode & 0o777, 0o600)
             self.assertEqual(web.status(self.state)['durum'], 'calisiyor')

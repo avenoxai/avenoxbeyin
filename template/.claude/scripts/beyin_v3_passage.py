@@ -152,8 +152,6 @@ def _windows(text, start, end, target, overlap):
             cut = cursor + match.end()
         if cut is None:
             space = max(window.rfind(" ", target // 2), window.rfind("\n", target // 2))
-            if space < 0:
-                space = max(window.rfind(" "), window.rfind("\n"))
             cut = cursor + space + 1 if space > 0 else limit
         out.append((cursor, cut))
         # Carry the trailing sentences (or words) that fit in `overlap` into the next window.
