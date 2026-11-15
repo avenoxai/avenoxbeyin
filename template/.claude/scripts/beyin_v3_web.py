@@ -685,8 +685,10 @@ def serve(core, port=None, read_only=False, open_browser=True, as_json=False):
     running = read_running(core.state)
     if running and alive(running):
         url = launch_url(running)
+        # Don't expose launch token in human output (#691.1)
+        display_url = f'http://127.0.0.1:{running["port"]}/'
         _say(as_json, {'durum': 'zaten_calisiyor', 'adres': url, 'salt_okunur': bool(running.get('read_only'))},
-             'Web görünümü zaten çalışıyor: ' + url)
+             'Web görünümü zaten çalışıyor: ' + display_url)
         if open_browser:
             webbrowser.open(url)
         return 0
@@ -694,10 +696,13 @@ def serve(core, port=None, read_only=False, open_browser=True, as_json=False):
     try:
         write_running(core.state, server)
         url = f'http://127.0.0.1:{server.port}/?token={server.launch_token}'
+        # Don't expose launch token in human output (#691.1); it's single-use and consumed on first browser visit
+        display_url = f'http://127.0.0.1:{server.port}/'
         _say(as_json, {'durum': 'basladi', 'adres': url, 'salt_okunur': server.read_only},
-             '\n'.join(('Beyin web görünümü açıldı (yalnız bu bilgisayar).', 'Adres: ' + url,
-                        'Mod: ' + ('salt okunur' if server.read_only else 'yazma açık (görev, eşitleme, sıkıştırma)'),
-                        f'{IDLE_SECONDS // 60} dakika kullanılmazsa kapanır. Kapatmak için Ctrl+C ya da beyin.py web durdur.')))
+             '\n'.join(('Beyin web görünümü açıldı (yalnız bu bilgisayar).',
+                         'Tarayıcıda açılıyor: ' + display_url + ' (tek kullanımlık bağlantı, terminallerde gösterilmiyor)',
+                         'Mod: ' + ('salt okunur' if server.read_only else 'yazma açık (görev, eşitleme, sıkıştırma)'),
+                         f'{IDLE_SECONDS // 60} dakika kullanılmazsa kapanır. Kapatmak için Ctrl+C ya da beyin.py web durdur.')))
     except BaseException:
         # A server that never got announced never serves: no open port, no stale running record.
         server.server_close()
