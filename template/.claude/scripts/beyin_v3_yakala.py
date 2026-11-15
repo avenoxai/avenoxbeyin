@@ -1270,14 +1270,65 @@ def tools():
             'pdftotext': _which('pdftotext'), 'ffmpeg': _which('ffmpeg')}
 
 
-def via_defuddle(url, found, info=None, lang=None):
+def _defuddle_approval_path(state):
+    """Path to the defuddle approval file in state directory."""
+    return Path(state) / 'yakala' / 'defuddle-approval.json'
+
+
+def _defuddle_approval_granted(state):
+    """Check if user has approved defuddle (npx defuddle@0.19.4) execution."""
+    path = _defuddle_approval_path(state)
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+        return bool(data.get('approved')) and data.get('version') == DEFUDDLE
+    except (OSError, ValueError):
+        return False
+
+
+def _grant_defuddle_approval(state):
+    """Persist user's approval for defuddle execution."""
+    path = _defuddle_approval_path(state)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    from beyin_v3_sync import atomic
+    atomic(path, json.dumps({'schema': 1, 'approved': True, 'version': DEFUDDLE}, ensure_ascii=False))
+
+
+def _prompt_defuddle_approval(state):
+    """Prompt user for approval to run npx defuddle. Returns True if granted."""
+    import sys
+    print(f'\nYakala, web sayfalarından metin çıkarmak için "npx -y {DEFUDDLE}" paketini indirip çalıştırmak istiyor.', file=sys.stderr)
+    print('Bu işlem: Node.js (npx) gerektirir, defuddle paketini geçici olarak indirir, kullanıcı ayrıcalıklarıyla çalışır.', file=sys.stderr)
+    print(f'Sürüm sabit: {DEFUDDLE} (package-lock.json veya npm registry\'den doğrulanmış).', file=sys.stderr)
+    print('Onay veriyor musunuz? [e/E/yes/Y] ', end='', file=sys.stderr)
+    sys.stderr.flush()
+    try:
+        response = sys.stdin.readline().strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    if response in ('e', 'evet', 'yes', 'y'):
+        _grant_defuddle_approval(state)
+        return True
+    return False
+
+
+def via_defuddle(url, found, info=None, lang=None, state=None):
     """Main text as Markdown; title, author, date and language go into `info` when given.
 
     `lang` asks for a video transcript in that language; `language` in the answer is the track it took.
+    Requires user approval for npx defuddle execution on first use (#691.5).
     """
     _safe_source_url(url)
     if not found['npx']:
         return None
+    # Check/require user approval for npx defuddle execution (#691.5)
+    if state is not None:
+        if not _defuddle_approval_granted(state):
+            if not _prompt_defuddle_approval(state):
+                if info is not None:
+                    info['uyari'] = 'Defuddle onayı verilmedi; npx defuddle çalıştırılmadı.'
+                return None
     _safe_network_url(url)
     try:
         with _HelperNetwork() as guard:  # Defuddle reads ALL_PROXY for the page and each redirect
@@ -1485,7 +1536,7 @@ def via_audio(url, found, workdir, lang=None, problems=None):
                 path.unlink(missing_ok=True)
 
 
-def via_youtube(url, found, allow_audio=True, info=None):
+def via_youtube(url, found, allow_audio=True, info=None, state=None):
     """(text, method, note) for a video, the transcript in the spoken language where that can be told.
 
     yt-dlp names the spoken language, Defuddle is asked for that language and its answer is checked.
@@ -1502,7 +1553,7 @@ def via_youtube(url, found, allow_audio=True, info=None):
         tracks = youtube_tracks(url, found, workdir)
         spoken = tracks['dil'] if tracks else None
         unsure = 'Video dublajli gorunuyor ve konusulan dil belirlenemedi; ' if tracks and tracks['dublaj'] and not spoken else None
-        text = via_defuddle(url, found, info, spoken)
+        text = via_defuddle(url, found, info, spoken, state)
         section = re.search(r'^## Transcript', text or '', re.M)
         took = info.get('language', '')[:20] if section else None
         if section and (not spoken or _base(took) == _base(spoken)):
@@ -1879,7 +1930,7 @@ def _docx_reader():
     return module
 
 
-def extract(vault, card, found, allow_audio=True, info=None):
+def extract(vault, card, found, allow_audio=True, info=None, state=None):
     """Return (text, method, note). Prefer what is already captured, then the cheapest fetch."""
     meta, body = card['meta'], card['body']
     url, kind = meta.get('url'), meta.get('kaynak_turu') or kind_of(meta.get('url'))
@@ -1892,7 +1943,7 @@ def extract(vault, card, found, allow_audio=True, info=None):
         return clipped, 'web-clipper', None
     if kind == 'youtube' and url:
         _safe_network_url(url)
-        return via_youtube(url, found, allow_audio, info)
+        return via_youtube(url, found, allow_audio, info, state)
     if kind == 'mail':
         selected = _section(body, 'Secim')
         if selected:
@@ -2004,7 +2055,7 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
             continue
         try:
             info = {}
-            text, method, note = extract(vault, card, found, allow_audio, info)
+            text, method, note = extract(vault, card, found, allow_audio, info, state)
         except Exception as exc:  # one broken source must not stop the queue
             text, method, note, info = None, None, type(exc).__name__ + ': ' + _extracted_unicode(str(exc))[:200], {}
         cleaned = _extracted_unicode(text)

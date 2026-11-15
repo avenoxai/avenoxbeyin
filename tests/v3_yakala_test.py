@@ -433,7 +433,7 @@ class YakalaUnitTest(unittest.TestCase):
         broken = yakala.capture(self.vault, url='https://example.com/broken')['id']
         good = yakala.capture(self.vault, text='second safe card')['id']
         text = 'Türkçe 😀 𝗲 ' + '\ud835**\uddf2' + ' tail ' + '\ud835\uddf2' + '\ud800'
-        def extraction(vault, card, found, allow_audio, info):
+        def extraction(vault, card, found, allow_audio, info, state=None):
             if card['id'] == broken:
                 info.update(title='title\ud800', author='author\udfff', uyari='existing warning')
                 return text, 'defuddle', 'extract note'
