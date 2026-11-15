@@ -673,9 +673,11 @@ class WebInstalledEntryTest(unittest.TestCase):
             self.assertEqual(run('durdur')[:2], (0, 'Web görünümü durduruldu.' + os.linesep))
             output, error = server.communicate(timeout=30)
             self.assertEqual(server.returncode, 0, error.decode('cp1252', 'replace'))
-            lines = output.decode('cp1252').splitlines()
+            lines = output.decode('cp1252', 'replace').splitlines()
             self.assertEqual(lines[0], 'Beyin web görünümü aç?ld? (yaln?z bu bilgisayar).')
-            self.assertTrue(lines[1].startswith('Adres: http://127.0.0.1:'))
+            # Line 1 should mention the URL but NOT the launch token (single-use, not shown in terminal)
+            self.assertIn('http://127.0.0.1:', lines[1])
+            self.assertNotIn('token=', lines[1])
             self.assertEqual(lines[-1], 'Web görünümü kapand?.')
             self.assertIsNone(web.read_running(state))
             # JSON stays ASCII under the legacy code page, Turkish messages included.
