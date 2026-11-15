@@ -1760,24 +1760,23 @@ def rules_opening(store, budget, receipt=''):
     import references do not change this report or prove client delivery (#610).
     None without a rules section.
 
-    Accounts for the notice (hygiene, parallel session, update) that the hook prepends
-    before calling companion_context, matching the hook's budget subtraction."""
+    Accounts for the update notification (session_start) that the hook prepends
+    before calling companion_context. Hygiene notice is handled internally by context()."""
     report = {}
-    # Estimate notice size: hygiene notice + parallel session notice buffer
+    # Estimate update notification size only (what session_start returns).
     # The hook subtracts len(notice) from the limit before calling companion_context.
-    notice_estimate = 0
+    # Hygiene notice is calculated inside context() and included in its header.
+    notice_estimate = 300  # Typical update notification: "Beyin X.Y.Z hazir... Guncelle: py -3 beyin.py update"
     try:
-        from beyin_v3_parallel import enabled as parallel_enabled
+        from beyin_v3_releases import notification
         target = directory(store.vault_root)
         if target is not None:
-            # Include project directories in hygiene check to match SessionStart context
-            hygiene_report = hygiene(store.vault_root, store.state_dir, tuple(LIMITS), target, include_projects=True)
-            notice_estimate = len(hygiene_notice(hygiene_report, parallel=parallel_enabled(store.state_dir)))
-            # Add buffer for parallel session notice (~200 chars) and update notification (~300 chars)
-            notice_estimate += 500
+            # Get actual notification text if available
+            notif = notification(store.vault_root, store.state_dir)
+            if notif:
+                notice_estimate = len(notif)
     except Exception:
-        # Fallback: conservative estimate for hygiene + parallel + update notices
-        notice_estimate = 500
+        pass  # Use fallback estimate
 
     effective_budget = max(0, budget - notice_estimate)
     context(store, effective_budget, '0' * 24, 'claude', receipt=receipt, report=report)
