@@ -161,7 +161,7 @@ def _windows(text, start, end, target, overlap):
             nxt = cut - len(back) + match.end()
         else:
             space = back.find(" ")
-            nxt = cut - len(back) + space + 1 if 0 <= space < len(back) - 1 else cut
+            nxt = cut - len(back) + space + 1 if 0 <= space < len(back) - 1 else cut - len(back)
         cursor = max(nxt, cursor + 1)
     return out
 
