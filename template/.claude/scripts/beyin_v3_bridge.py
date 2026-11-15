@@ -187,7 +187,17 @@ def project_context(vault, state, project_id, project_name, budget=1200, today_i
                     continue
                 if due > today or not _fresh(vault, record):
                     continue
-                if wanted and str(record.get('project') or '').strip().casefold() == wanted:
+                # Match by project_id (canonical path hash) when available to avoid name collisions (#690).
+                # Fall back to project name for older records without project_id.
+                rec_project_id = record.get('project_id')
+                rec_project = str(record.get('project') or '').strip().casefold()
+                if rec_project_id and project_id and rec_project_id == project_id:
+                    match = True
+                elif wanted and rec_project == wanted:
+                    match = True
+                else:
+                    match = False
+                if match:
                     title = _one_line(record.get('title'), 160)
                     if title:
                         current.append((due, title, _one_line(record.get('next_action'), 200)))
