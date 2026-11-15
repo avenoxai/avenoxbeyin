@@ -904,6 +904,8 @@ class SyncEngine:
                 original = numbered_copy_of(name, siblings)
                 if original is not None:
                     self.copy_candidates.append(self._copy_candidate(Path(directory), name, original))
+                    warnings.append({'source': relative, 'reason': 'possible file sync copy; compare it with the original, '
+                                                                   'keep the right side and delete the other'})
                 try:
                     # Path proof first: an outside-vault or symlinked source keeps its rejection reason.
                     path, resolved = self._scan_path(relative)
@@ -1310,7 +1312,9 @@ class SyncEngine:
                 db.execute("DELETE FROM metadata WHERE key='receipt_scan_signature'")
         for entry in completed:
             entry.unlink(missing_ok=True)
-        result = {'status': 'conflict' if conflicts else 'degraded' if warnings else 'succeeded', 'indexed': len(records), 'deleted': deleted, 'warnings': warnings, 'conflicts': conflicts}
+        # Numbered copy warnings are informational; they don't degrade the sync status.
+        degraded_warnings = [w for w in warnings if not str(w.get('reason', '')).startswith('possible file sync copy')]
+        result = {'status': 'conflict' if conflicts else 'degraded' if degraded_warnings else 'succeeded', 'indexed': len(records), 'deleted': deleted, 'warnings': warnings, 'conflicts': conflicts}
         if recover_views:
             result['recovered_views'] = recovered_views or []
         if dead_supersedes:
