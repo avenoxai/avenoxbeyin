@@ -48,7 +48,8 @@ class UninstallKeepsUserTextTest(unittest.TestCase):
         return json.loads(result.stdout)
 
     def install(self, *extra):
-        return self.ok(ROOT / 'scripts/install_v3.py', '--vault', self.vault, '--state', self.state, *extra)
+        # These upgrade fixtures intentionally start from the synthetic 3.0.0 release.
+        return self.ok(ROOT / 'scripts/install_v3.py', '--vault', self.vault, '--state', self.state, '--version', '3.0.0', *extra)
 
     def uninstall(self):
         return self.install('--uninstall')

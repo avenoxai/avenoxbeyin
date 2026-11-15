@@ -75,7 +75,8 @@ class ProductInstallationTest(unittest.TestCase):
         note = self.vault / 'user-after-interruption.md'
         note.write_text('Synthetic note created while installation was interrupted.')
         installer.install(self.vault, self.state)
-        self.assertEqual((self.vault / '.beyin-version').read_text().strip(), '3.0.0')
+        self.assertEqual((self.vault / '.beyin-version').read_text().strip(),
+                         (ROOT / 'VERSION').read_text(encoding='utf-8-sig').strip())
         self.assertTrue((self.vault / 'beyin.py').is_file())
         self.assertFalse((self.state / 'update-journal.json').exists())
         self.assertEqual(note.read_text(), 'Synthetic note created while installation was interrupted.')
