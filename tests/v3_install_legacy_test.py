@@ -17,6 +17,9 @@ from v3_package_helpers import ROOT, build_package, inherited_env, isolated_env,
 
 RELEASED = Path(__file__).resolve().parent / 'fixtures/v3/released-skills'
 TAGS = ('v3.0.0', 'v3.0.1', 'v3.0.2')
+SOURCE_VERSION = (ROOT / 'VERSION').read_text(encoding='utf-8-sig').strip()
+_major, _minor, _patch = map(int, SOURCE_VERSION.split('.'))
+UPGRADE_VERSION = f'{_major}.{_minor}.{_patch + 1}'
 SKILLS = ('beyin', 'beyin-doktor', 'beyin-guncelle')
 ROOTS = ('.agents', '.claude')
 CUSTOM_RUNNER = b'# kullanicinin kendi flush surumu\nprint("synthetic customized legacy runner")\n'
@@ -516,11 +519,11 @@ class InstallLegacyExemptionTest(unittest.TestCase):
         runner = self.seed('.claude/scripts/flush.py', CUSTOM_RUNNER)
         result = self.cli('--keep-customized-legacy', '.claude/scripts/flush.py')
         self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
-        package = build_package(self.base / 'upgrade.zip', '3.0.1', self.env)
+        package = build_package(self.base / 'upgrade.zip', UPGRADE_VERSION, self.env)
         update = run_python(self.vault / 'beyin.py', ['update', '--package', package], self.vault, self.env)
         self.assertEqual(update.returncode, 0, update.stderr.decode('utf-8', errors='replace'))
         self.assertEqual(runner.read_bytes(), CUSTOM_RUNNER)
-        self.assertEqual((self.vault / '.beyin-version').read_text(encoding='utf-8').strip(), '3.0.1')
+        self.assertEqual((self.vault / '.beyin-version').read_text(encoding='utf-8').strip(), UPGRADE_VERSION)
         manifest = json.loads((self.state / 'v3-install.json').read_text(encoding='utf-8'))
         self.assertEqual(manifest['kept_legacy'], ['.claude/scripts/flush.py'])
 
@@ -570,7 +573,7 @@ class InstallLegacyExemptionTest(unittest.TestCase):
         self.assertEqual(reinstall.returncode, 0, reinstall.stderr.decode('utf-8', errors='replace'))
         self.assertIn('"timeout": 30', settings.read_text(encoding='utf-8'))
         edit(lambda group: group['hooks'].clear() if kept(group) else None)
-        package = build_package(self.base / 'upgrade.zip', '3.0.1', self.env)
+        package = build_package(self.base / 'upgrade.zip', UPGRADE_VERSION, self.env)
         update = run_python(self.vault / 'beyin.py', ['update', '--package', package], self.vault, self.env)
         self.assertEqual(update.returncode, 0, update.stderr.decode('utf-8', errors='replace'))
         self.assertNotIn('session-end.sh', settings.read_text(encoding='utf-8'))

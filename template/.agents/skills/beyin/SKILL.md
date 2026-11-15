@@ -106,6 +106,8 @@ Kaynak yazıldıktan sonra `python3 beyin.py sync` çalıştır. Görev değişi
 
 ### Örnek · Çalışma alanının ana sayfasını güncelleme
 
+Aşağıdaki B-17 örneği, bağlı `facts` hücresi olmayan düz Markdown durum satırı içindir. Bilgi ana sayfaya `homepage-create` ile bağlanmışsa esas notu normal `note-edit` ile güncelle; sayfayı geri okuyup sonucu ve `workspace_homepages.conflicts`/`warnings` alanlarını kontrol et, aynı değişiklik için bağlı hücreye ikinci bir yazım yapma.
+
 Kullanıcının amacına ve mevcut notlarına göre bir düzen öner. “İki kayıt da ana sayfanın yanında dursun” derse seçtiği klasörde mevcut notları kullan, yalnız eksikleri oluştur.
 
 “Yanıt geldi, cuma tekrar bakacağım” dendiğinde proje içinde benzer kayıtları bul ve esas metinlerini oku. Örneğin gelen belgede B-17 yazıyorsa bu numarayı taşıyan kayda yanıtı, cuma günkü adımı ve özgün belgenin bağlantısını ekle. Kasa dışındaki dosyayı yerinde bırak ve mutlak yolundan bir Markdown bağlantısı üret (ör. `[Yanıt](file:///Belgeler/B-17%20yanit.pdf)`). Kanıt iki kaydı ayırmıyorsa yazmadan önce tek ayırıcı soru sor.
