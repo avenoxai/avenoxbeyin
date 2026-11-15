@@ -217,6 +217,29 @@ class HygieneCliTest(unittest.TestCase):
         self.assertNotIn('Memory hygiene', self.hook('PostToolUse', tool_name='Edit',
                                                      tool_input={'file_path': str(project / 'Last-Session.md')}))
 
+    def test_codex_apply_patch_reports_the_handoff_limit_at_write_time(self):
+        # Codex sends apply_patch as tool_input.command; the header path is relative to cwd.
+        path = self.write('Last-Session.md', '# Son oturum\n' + 'x' * 3100)
+        self.run_cli('sync')
+        relative = path.relative_to(self.vault).as_posix()
+
+        def patch(*headers):
+            body = ''.join('*** %s\n@@\n-x\n+x\n' % header for header in headers)
+            return {'command': '*** Begin Patch\n' + body + '*** End Patch\n'}
+
+        text = self.hook('PostToolUse', tool_name='apply_patch', cwd=str(self.vault),
+                         tool_input=patch('Update File: ' + relative))
+        self.assertTrue(text.startswith('Memory hygiene: Last-Session.md is 3113 chars (limit 3000).'), text[:300])
+        # The companion file found among several headers of one patch still reports.
+        self.assertIn('Memory hygiene', self.hook('PostToolUse', tool_name='apply_patch', cwd=str(self.vault),
+                                                  tool_input=patch('Add File: not.md', 'Update File: ' + relative)))
+        # Without an absolute cwd a relative header cannot be resolved, so nothing is reported.
+        self.assertNotIn('Memory hygiene', self.hook('PostToolUse', tool_name='apply_patch',
+                                                     tool_input=patch('Update File: ' + relative)))
+        # A deleted companion file is not measured.
+        self.assertNotIn('Memory hygiene', self.hook('PostToolUse', tool_name='apply_patch', cwd=str(self.vault),
+                                                     tool_input=patch('Delete File: ' + relative)))
+
     def test_post_tool_use_limit_notice_is_harness_gated(self):
         path = self.write('Last-Session.md', '# Son oturum\n' + 'x' * 3100)
         payload = {'hook_event_name': 'PostToolUse', 'tool_input': {'file_path': str(path)}}
