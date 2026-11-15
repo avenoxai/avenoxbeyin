@@ -145,10 +145,14 @@ class SnapshotTest(unittest.TestCase):
         for name, body in self.bodies.items():
             self.write(name, body)
         self.write('Kurallar.md', rules_file(45600)[0])
+        # rules_opening mimics the hook: it subtracts the update notification (~300 chars)
+        # before calling context. So compare with context called with effective budget.
+        notice_estimate = 300
+        effective_budget = 5000 - notice_estimate
         report = {}
-        text = companion.context(self.store, 5000, '0' * 24, 'claude', report=report)
+        text = companion.context(self.store, effective_budget, '0' * 24, 'claude', report=report)
         self.assertEqual(without_hook_clock(text),
-                         without_hook_clock(companion.context(self.store, 5000, '0' * 24, 'claude')))
+                         without_hook_clock(companion.context(self.store, effective_budget, '0' * 24, 'claude')))
         rules = report['Kurallar.md']
         self.assertTrue(rules['clipped'])
         self.assertEqual(rules['chars'], len(rules_file(45600)[0]))
@@ -161,7 +165,7 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(len(whole), share)
         self.write('Kurallar.md', whole)
         self.assertFalse(companion.rules_opening(self.store, 5000)['clipped'])
-        whole_text = companion.context(self.store, 5000, '0' * 24, 'claude')
+        whole_text = companion.context(self.store, effective_budget, '0' * 24, 'claude')
         self.assertNotIn('Memory hygiene: Kurallar.md opens clipped', whole_text)
         shown = section(whole_text, 'Kurallar.md')
         self.assertEqual(shown, whole)
@@ -250,10 +254,16 @@ class InstalledOpeningTest(unittest.TestCase):
         self.assertIn(f'Kurallar.md acilista kirpiliyor (bilgi): kural metni {report["chars"]} karakter; '
                       f'Claude Code acilisi bu ayarlarla (5000 karakter) en fazla {report["share"]} karakterini tam gosterir',
                       human)
-        self.assertIn(f'Memory hygiene: Kurallar.md opens clipped (fit ceiling {report["share"]} of {report["chars"]} chars).',
-                      initial_context)
+        # Doctor uses notice estimate (~300), hook uses actual notice length.
+        # Doctor should be conservative: its share <= hook's share (warns earlier).
+        hook_share_match = re.search(r'fit ceiling (\d+) of (\d+) chars', initial_context)
+        self.assertIsNotNone(hook_share_match, 'Hook context should contain Memory hygiene line')
+        hook_share = int(hook_share_match.group(1))
+        self.assertLessEqual(report['share'], hook_share,
+            f'Doctor share ({report["share"]}) should be <= hook share ({hook_share}) - doctor is conservative')
+        self.assertIn('Memory hygiene: Kurallar.md opens clipped', initial_context)
         # The number is the hook's own: a rule file of exactly that size arrives whole at SessionStart.
-        whole, _ = rules_file(report['share'], exact=True)
+        whole, _ = rules_file(hook_share, exact=True)
         self.rules(whole)
         whole_context = self.session_start()
         self.assertEqual(section(whole_context, 'Kurallar.md'), whole)

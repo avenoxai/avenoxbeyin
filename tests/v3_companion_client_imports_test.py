@@ -269,10 +269,12 @@ class ClientImportsTest(unittest.TestCase):
 
     def test_doctor_reports_actual_allocation_not_inferred_import_delivery(self):
         self.seed()
-        baseline = companion.rules_opening(self.store, 1000)
+        # rules_opening now accounts for hook's notice (~500 chars), so use budget that
+        # leaves room for rules after notice subtraction (500 notice + 1000 for rules)
+        baseline = companion.rules_opening(self.store, 1500)
         self.assertTrue(baseline['clipped'])
         self.write('CLAUDE.md', f'@./{DIRECTORY.replace(" ", chr(92) + " ")}/Kurallar.md\n')
-        rules = companion.rules_opening(self.store, 1000)
+        rules = companion.rules_opening(self.store, 1500)
         self.assertEqual(rules, baseline)
         self.assertNotIn('imported', rules)
 
