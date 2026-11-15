@@ -356,8 +356,11 @@ def lint_vault(vault_root, folder=None):
         full_path = vault_root / rel_path
         try:
             content = full_path.read_text(encoding="utf-8-sig")
-        except Exception:
-            continue
+        except (OSError, UnicodeError):
+            # The index admitted this source. Losing it before link extraction
+            # makes the report incomplete, not clean. Do not expose the path or
+            # exception text (which can contain private note bytes).
+            raise OSError('lint source read failed') from None
 
         links = extract_wikilinks(content)
         if rel_path in target_set:
