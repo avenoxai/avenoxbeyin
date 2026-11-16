@@ -1,28 +1,40 @@
 # Yol haritası: avenox'a eklenecekler
 
 Her madde fork'ta `ege/` altında geliştirilir; upstream dosyalarına dokunmadan, ayrı skill/hook/ajan
-olarak kurulur. Durum: ⬜ başlanmadı · 🟡 sürüyor · ✅ bitti
+olarak kurulur. Durum: ⬜ başlanmadı · 🟡 sürüyor (yazıldı ve test edildi, henüz hiçbir makineye
+kurulmadı) · ✅ bitti
 
 ## 1. Temel (şirket 5090)
 
-- ⬜ Global köprü (Claude) + `project-context on` + önerilen `preferences` ayarları.
-- ⬜ `beyin-yazici` alt ajanı (Sonnet 5.5, medium): receipt, oturum kartı ve not yazımını ana modelden
-  devralır. Global `CLAUDE.md` kuralı: "vault yazımını beyin-yazici'ye ver".
-- ⬜ `_Sistem/Ajan/` ana kopyalar + makineye kopyalayan tek komut.
+- 🟡 Global köprü (Claude) + `project-context on` + önerilen `preferences` ayarları:
+  [kur.py](kur.py) 5. adımı köprüyü kurar, `--ayarlar` ile ayarları açar ([KURULUM.md](KURULUM.md)).
+  Yazıldı ve test edildi, henüz hiçbir makinede çalıştırılmadı.
+- 🟡 `beyin-yazici` alt ajanı (Sonnet 5.5, medium): receipt, oturum kartı ve karar yazımını ana modelden
+  devralır ([agents/beyin-yazici.md](agents/beyin-yazici.md)). Global `CLAUDE.md` kuralı:
+  "kaydı beyin-yazici'ye ver" ([claude/CLAUDE-kural.md](claude/CLAUDE-kural.md)). Yazıldı; ajanın
+  kullandığı komutlar test edildi, ajanın kendisi gerçek bir oturumda henüz denenmedi.
+- 🟡 Makineye kopyalayan tek komut: [kur.py](kur.py) ([KURULUM.md](KURULUM.md)). Ana kopyalar vault'ta
+  `_Sistem/Ajan/` altında değil, bu fork'ta durur (`ege/agents/`, `ege/skills/`, `ege/claude/`).
 - ⬜ `scheduled-check` Görev Zamanlayıcı kaydı.
 
 ## 2. Süreklilik
 
-- ⬜ **[İLK İŞ] Proje kimliği = repo adı / git remote**: aynı repo farklı makinelerde tek proje
+- 🟡 **[İLK İŞ] Proje kimliği = repo adı / git remote**: aynı repo farklı makinelerde tek proje
   sayılsın (upstream `project_id` = klasör yolu hash'i; proje adı ise repo klasör adının vault'taki
   `30 Projeler/<ad>` klasörüyle veya `.beyin-projects.json` ile eşleşmesinden çözülüyor).
-- ⬜ **Proje bazında "kaldığım yer"**: oturum başında açılan repoya ait son kart/kayıt.
+  [hooks/proje.py](hooks/proje.py): kimlik `sahip/repo`, klasör `_Sistem/projeler.json` ya da ad
+  eşleşmesiyle bulunur ([hooks/README.md](hooks/README.md)). Yazıldı ve test edildi, kurulmadı.
+- 🟡 **Proje bazında "kaldığım yer"**: oturum başında açılan repoya ait son kart
+  (`30 Projeler/<ad>/Oturumlar/`, iş başına yeni dosya; `proje.py start`). Yazıldı ve test edildi, kurulmadı.
 - 🟡 **git-devir hook'u** ([hooks/git_devir.py](hooks/git_devir.py)): kapanışta yarım iş `wip/<makine>/<dal>`
   dalına + commit'ler push; açılışta fetch + güvenliyse fast-forward pull, başka makinenin wip'ini
   haber verir. Yazıldı ve test edildi, henüz hiçbir makineye kurulmadı ([hooks/README.md](hooks/README.md)).
-- ⬜ **Projeye özel `Kararlar.md`** (tarih · karar · neden · alternatifler) ve açılışta son kararlar.
+- 🟡 **Projeye özel `Kararlar.md`** (tarih · karar · neden · alternatifler) ve açılışta son 3 karar
+  (`proje.py karar`, `proje.py start`). Yazıldı ve test edildi, kurulmadı.
 - ⬜ **Oturum kartı zorunluluğu**: Stop'ta kart kontrolü (ayrı hook) veya kartı receipt'e gömme.
-- ⬜ Makine etiketi: her kayıtta `makine: <ad>`.
+- 🟡 Makine etiketi: kartlarda `makine: <ad>` alanı ve dosya adı, kararlarda `Makine:` satırı,
+  receipt'te `--event-id` içinde. Receipt şemasında ayrı bir makine alanı yok (upstream). Yazıldı ve
+  test edildi, kurulmadı.
 
 ## 3. Haftalık gözden geçirme skill'i
 
