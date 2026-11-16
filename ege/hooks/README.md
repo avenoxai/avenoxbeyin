@@ -5,6 +5,9 @@ Aynı repolarda birden çok makinede (şirket PC'si, MacBook, ev PC'si) çalış
 Tek dosya: [`git_devir.py`](git_devir.py). Yalnız Python standart kütüphanesi; Windows, macOS ve
 Linux'ta çalışır.
 
+Bu klasörde iki hook var: **git-devir** (bu bölüm) ve **proje** (repo → vault projesi, oturum
+kartları, kararlar; [aşağıda](#proje-proje-çözücü-oturum-kartları-ve-kararlar)).
+
 Durum: **yazıldı ve test edildi, henüz hiçbir makineye kurulmadı.**
 
 ## Ne yapar?
@@ -78,7 +81,9 @@ hiçbir şey yapmaz, yalnız not bırakır.
 
 ## Kurulum
 
-Her makinede bir kez (`<...>` kısımlarını o makineye göre doldur):
+Önerilen yol tek komuttur: [`ege/kur.py`](../kur.py) git-devir'i, proje hook'unu, `beyin-yazici`
+ajanını ve global kuralı birlikte kurar ([../KURULUM.md](../KURULUM.md)). Yalnız git-devir'i kurmak
+istersen, her makinede bir kez (`<...>` kısımlarını o makineye göre doldur):
 
 ```sh
 python ege/hooks/install_git_devir.py --machine <ad> --project-root <repo-koku> --vault <vault-yolu> --dry-run
@@ -119,6 +124,7 @@ ekle). Bir oturum için kapatmak: `GIT_DEVIR_OFF=1`.
 | `auto_hosts` | Tam otomatik sunucular | `["github.com"]` |
 | `max_file_mb` | wip yedeğine girecek en büyük dosya (MB) | `50` |
 | `remote_aliases` | İleri düzey/test: `{"<remote adresi>": "<politikada kullanılacak adres>"}` | `{}` |
+| `python`, `proje_py` | `ege/kur.py` yazar: hook'ları çalıştıran Python ve `proje.py` yolu; `beyin-yazici` buradan okur | (yalnız `kur.py` kurulumunda) |
 
 Dosya yoksa veya bozuksa hook hiçbir şey yapmaz.
 
@@ -156,10 +162,116 @@ Not: 1. yol wip'te silinmiş dosyaları silmez.
   (untracked) dosyalar pull'u engellemez; git onların üstüne yazmayı zaten reddeder.
 - `compact` ile başlayan oturumlarda açılış adımı atlanır.
 
-## Test
+# proje: proje çözücü, oturum kartları ve kararlar
 
-```sh
-python -m unittest discover -s ege/hooks -p "test_*.py" -v
+Tek dosya: [`proje.py`](proje.py). Açılan repoyu vault'taki proje klasörüne bağlar, o projede
+"nerede kalmıştım" bilgisini oturum başında verir ve kayıt yazıcısının (`beyin-yazici` alt ajanı,
+[../agents/beyin-yazici.md](../agents/beyin-yazici.md)) kullandığı komutları sağlar.
+Ayar dosyası, kapılar ve remote çözümü git-devir ile ortaktır (`git_devir.py` içinden kullanılır).
+
+Durum: **yazıldı ve test edildi, henüz hiçbir makineye kurulmadı.** Kurulum: [../KURULUM.md](../KURULUM.md).
+
+## Proje kimliği ve vault klasörü
+
+- Kimlik `origin` remote'undaki **`sahip/repo`**'dur (https ve ssh adresleri aynı sonuca çözülür);
+  görünen ad repo adıdır. Remote yoksa ya da çözülemiyorsa kimlik `local/<klasör adı>` olur.
+  Klasör yolu kimliğe girmez; aynı repo her makinede aynı projedir.
+- Vault klasörü şu sırayla aranır:
+  1. **Eşleme dosyası** `_Sistem/projeler.json` (vault'ta, Sync ile taşınır):
+     `{"sahip/repo": "30 Projeler/Klasör Adı"}`. Anahtar büyük/küçük harfe duyarsızdır. Değer
+     `false` ise "bu repo için klasör istenmiyor" demektir.
+  2. **Ad eşleşmesi:** `30 Projeler/` altında adı repo adına eşit olan klasör. Karşılaştırma
+     büyük/küçük harfe, boşluk, `-` ve `_` farkına bakmaz; `I İ ı i` tek harf sayılır. Bu
+     tutmazsa ikinci denemede Türkçe işaretler de yok sayılır (`ogrenme-kocu` ↔ `Öğrenme Koçu`).
+     Eşleme dosyasında başka bir kimliğe bağlı klasör ad eşleşmesine girmez (iki farklı sahipte
+     aynı adlı repo karışmaz). Birden çok klasör eşleşirse seçim yapılmaz, kullanıcıya sorulur.
+  3. Bulunamazsa proje **çözülmemiş** sayılır. Hook klasör açmaz; modele "kullanıcıya sor" der.
+
+## Klasör düzeni
+
+```text
+30 Projeler/<ad>/
+  Oturumlar/2026-11-16-1742-is-5090.md   # iş başına YENİ kart: YYYY-AA-GG-SSDD-<makine>.md
+  Oturumlar/2026-11-16-2210-ev.md
+  Kararlar.md                            # en yeni karar üstte
+  Kurallar.md                            # yalnız bu projenin kuralları
+_Sistem/projeler.json                    # sahip/repo → klasör eşlemesi
 ```
 
-Testler geçici klasörde yerel "bare" repolarla çalışır; gerçek `~/.claude` dosyalarına dokunmaz.
+- **Kart, tek bir `Durum.md` dosyasının yerini alır.** Her makine yalnız yeni dosya ekler, hiçbir
+  makine başkasının kartını düzenlemez; bu yüzden Obsidian Sync'te çakışma olmaz.
+  "Kaldığım yer" = dosya adına göre en yeni kart.
+- Kart içeriği (gövde en çok 1200 karakter; aşan kart yazılmaz, kısaltılması istenir):
+  frontmatter `proje`, `proje_id`, `makine`, `tarih`, `dal`, `commit` (varsa kısa sha); gövde
+  `Hedef`, `Yapılan`, `Açık adımlar`, `Sonraki somut adım`, varsa `Kararlar`.
+- Aynı dakikada aynı makineden ikinci kart `-2`, `-3` … ekiyle yazılır.
+- `Kararlar.md` girdisi:
+
+  ```markdown
+  ## 2026-11-16 · Karar metni
+  - Neden: …
+  - Alternatifler: …
+  - Makine: is-5090
+  ```
+
+  Yeni girdi ilk girdinin önüne eklenir; dosyanın geri kalanı bayt bayt aynı kalır. Dosya okuma ile
+  yazma arasında değiştiyse (sha256 farklıysa) yazılmaz ve bildirilir.
+
+## Oturum açılırken (`SessionStart` → `proje.py start`)
+
+- Kapılar git-devir ile aynıdır (ayardaki `project_roots` altında, vault'un içinde değil, kökte
+  `beyin.py` ya da `.git-devir-off` yok, `GIT_DEVIR_OFF=1` değil); tek fark `origin` remote'unun
+  zorunlu olmamasıdır.
+- Proje çözüldüyse en çok 1500 karakterlik blok:
+  - `Proje: <ad> (<sahip/repo>) → <vault klasörü>`
+  - en yeni kartın tarihi, makinesi, dalı, `Açık adımlar` ve `Sonraki somut adım` bölümleri;
+    kart başka makinedense `BAŞKA MAKİNEDEN` diye belirtilir
+  - `Kararlar.md`'deki son 3 karar, birer satır
+  - `Kurallar.md`'de madde varsa: `Bu projenin kuralları: <yol> (işe başlamadan oku)`
+  - kayıtların `beyin-yazici` alt ajanına ham bilgi verilerek yazdırılacağını hatırlatan satır
+- Çözülmediyse tek satır: kullanıcıya `30 Projeler/<ad>` klasörünün açılıp açılmayacağını sor ve
+  çalıştırılacak `proje.py init` komutu. **Hook hiçbir zaman klasör oluşturmaz.**
+  Git reposu olmayan düz klasörde bu soru hiç sorulmaz.
+- `resume` ve `compact` ile gelen oturumda, o oturuma daha önce gösterilen blok değişmediyse
+  tekrar yazılmaz.
+- Ağ kullanmaz; iki kısa `git` çağrısı ve birkaç dosya okuması yapar (ölçülen süre ~0,3 sn).
+  Her hata yutulur, çıkış kodu her zaman 0, hata durumunda çıktı yoktur.
+
+## Komutlar
+
+`<python> ege/hooks/proje.py <komut> [--cwd <repo>]` (`--cwd` verilmezse bulunulan klasör):
+
+| Komut | Ne yapar | Kim çalıştırır |
+|---|---|---|
+| `start` | SessionStart hook'u (stdin'de payload) | Claude Code |
+| `context` | Aynı bloğu düz metin yazdırır (kapısız; elle bakmak için) | sen |
+| `resolve` | Kimlik, ad, sunucu, vault klasörü (JSON) | `beyin-yazici` |
+| `init [--ad <klasör>]` | `30 Projeler/<ad>/` altında `Kararlar.md`, `Kurallar.md`, `Oturumlar/` açar, eşlemeyi ekler; var olan dosyanın üstüne yazmaz. `--ad` var olan bir klasörse repoyu ona bağlar | ana model, **kullanıcı "evet" dedikten sonra** |
+| `sustur` | Eşlemeye `false` yazar; bu repo için bir daha klasör sorulmaz | ana model, kullanıcı "hayır" dedikten sonra |
+| `kart --dosya <json>` | Yeni oturum kartı (`--dosya -` stdin okur; ya da `--hedef --yapilan --acik --sonraki --karar`) | `beyin-yazici` |
+| `karar --karar … --neden … [--alternatif …]` | `Kararlar.md`'ye bir karar ekler (`--sha256` ile ön koşul verilebilir) | `beyin-yazici` |
+
+Çıkış kodları: `0` tamam · `1` hata (ayar yok, geçersiz girdi, anahtar/şifre gibi görünen metin) ·
+`2` yazılmadı, yeniden dene (kart sınırı aşıldı ya da dosya arada değişti) · `3` proje çözülemedi.
+`start` ve `context` her durumda `0` döner.
+
+## Bilinen sınırlar (proje)
+
+- Obsidian Sync `.json` dosyalarını yalnız "diğer tüm dosya türleri" seçeneği açıksa taşır. Kapalıysa
+  `_Sistem/projeler.json` o makinede kalır: ad eşleşmesi yine çalışır, ama özel adlı klasör bağları
+  ve `sustur` kayıtları diğer makinelere gitmez.
+- `Kararlar.md` ve `projeler.json` ortak dosyalardır; iki makine aynı anda çevrimdışı ekleme yaparsa
+  Sync çakışma kopyası oluşturabilir. Kartlar bundan etkilenmez; kararların tek satırlık özeti kartta da durur.
+- Kartın zorunlu olduğunu denetleyen bir Stop kontrolü yoktur; kartı `beyin-yazici` iş kaydıyla birlikte yazar.
+- Receipt'in kendisinde proje ya da makine alanı yoktur (upstream şeması). Bağ, özetin ilk satırı
+  (`Proje: <ad>`), `--event-id` ve receipt'in gösterdiği kart üzerinden kurulur.
+
+# Test
+
+```sh
+python -m unittest discover -s ege -p "test_*.py" -v
+```
+
+Üç dosya: `hooks/test_git_devir.py`, `hooks/test_proje.py`, `test_kur.py`. Testler geçici klasörde
+yerel "bare" repolar, sahte remote adresleri, geçici bir vault ve geçici `CLAUDE_CONFIG_DIR` ile
+çalışır; gerçek `~/.claude` dosyalarına ve gerçek vault'a dokunmaz.
