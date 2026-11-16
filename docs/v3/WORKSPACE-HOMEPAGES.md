@@ -5,6 +5,32 @@ kullanıcının düzenlediği Markdown ana sayfasına bağlar. Kurulum bir alan 
 seçtirmez. Görüşme tarihi metin, tarifteki porsiyon sayısı sayı olabilir.
 Yeni servis veya otomatik model çağrısı yoktur.
 
+## Başka alandaki esas kayıttan devam
+
+Bir ana sayfa başka projedeki tek esas nota bağlanabilir. Kullanıcının seçtiği
+notun frontmatter'ındaki `workspace_readers: [bakim]`, mevcut sahibine ek olarak
+`context "pompa bakımına nereden devam" --project bakim` okumasını açar. Aynı
+`id`, `source` ve not gövdesindeki sonraki adım döner; ikinci esas not üretilmez.
+Normal `context "Bakım Odası’nda pompa bakımına nereden devam ederim?"` sorgusu
+da kayıtlı tek aktif Workspace adını bulursa aynı kapsamı kullanır. İki alan
+adı geçtiğinde kapsam belirsizliği gösterir; `--project` açıkça seçildiğinde
+o seçim önceliklidir. Hiç alan adı geçmeyen genel arama önceki gibi çalışır.
+Ana sayfaya bağlantı eklemek tek başına okuma üyeliği oluşturmaz. Üyelik normal
+`note-read`/`note-edit` ile seçilmiş nota yazılır ve `sync` ile dizine alınır.
+Üyelik kaldırılırsa kaynak değiştiği anda eski indeks yanıtı vermez; eşitleme
+sonrası diğer yetkili alanlar etkilenmez. `private`, güvenilmeyen, engellenmiş ve
+dışlanan kaynaklar üyelikle açılmaz. `remote_allowed: false` uzak danışmaya
+gönderilmez. Üyelik ana sayfa oluşturma veya esas kayda yazma hakkı vermez;
+`homepage-create` için aşağıdaki aynı proje ve görünürlük kuralı geçerlidir.
+
+Örneğin esas not `notes/kayitlar/pompa.md` içinden
+`[Form](../belgeler/Pompa%20Bak%C4%B1m%20Formu.txt)` bağlantısı veriyorsa
+hedef `notes/belgeler/Pompa Bakım Formu.txt` olur. Notun eski bağlantısını
+notun klasörüne göre çözün, URL kodunu açın ve gerçek dosyayı doğrulayın.
+Dosya taşınmışsa eski yolu güncel belge diye sunmayın. İki klasörde aynı
+`Form.pdf` bulunurken `[[Form.pdf]]` gibi basename bağlantısı kesin hedef
+göstermez; adayları ayırmadan birini seçmeyin.
+
 [Sentetik kullanım örnekleri](examples/workspace-homepages/README.md), Kariyer
 akışının kurulmasını ve iki yönde düzenlenmesini; genel Dersler sayfasında ise
 kaynak, ödev dosyası, doğrulanmış teslim, plan ve kişisel not ayrımını gösterir.
