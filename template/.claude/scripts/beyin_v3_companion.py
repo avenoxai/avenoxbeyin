@@ -1671,7 +1671,12 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
                 report['Kurallar.md'] = final_rules
             full_header = hygiene_line + hygiene_notice(None, rules=final_rules) + header_tail
             return clip(full_header + notice + 'Read companion files: ' + ', '.join(r['source'] for r in records), budget)
-        allocation = max(0, budget - new_fixed - len(extra))
+        # Optional retrieval/receipt text was chosen before adding the rules notice.
+        # If it no longer fits even beside the fixed framing, omit it as a unit:
+        # clipping here could leave a receipt header without its meaningful body.
+        if new_fixed + len(extra) > budget:
+            extra = ''
+        allocation = budget - new_fixed - len(extra)
         _, final_rules = companion(allocation, header_text=reserved_header)
         full_header = hygiene_line + hygiene_notice(None, rules=final_rules) + header_tail
         text, final_rules = companion(allocation, header_text=full_header)

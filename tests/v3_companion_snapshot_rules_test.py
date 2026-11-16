@@ -190,6 +190,16 @@ class SnapshotTest(unittest.TestCase):
                 expected = companion.clip(rules_file(45600)[0], rules['share'], both=True, tail=True)
                 self.assertEqual(section(text, 'Kurallar.md'), expected)
 
+    def test_rules_notice_keeps_long_receipt_within_total_budget(self):
+        for name, body in self.bodies.items():
+            self.write(name, body)
+        self.write('Kurallar.md', rules_file(45600)[0])
+        receipt = 'Receipt (historical):\n' + 'x' * 3000
+        for budget in (600, 601, 620, 700, 1000, 1100):
+            with self.subTest(budget=budget):
+                text = companion.context(self.store, budget, '0' * 24, 'claude', receipt=receipt)
+                self.assertLessEqual(len(text), budget)
+
 
 
 class InstalledOpeningTest(unittest.TestCase):
