@@ -28,6 +28,7 @@ Ege'nin çalışma düzenine göre genişletir. Amaç: **aktif olarak ne yaptı�
 | [MAKINELER.md](MAKINELER.md) | Her bilgisayar için kurulum kurgusu ve sıra |
 | [YOL-HARITASI.md](YOL-HARITASI.md) | Avenox'a ekleyeceğimiz özelleştirmeler ve durumları |
 | [skills/](skills/README.md) | Fork'un kendi skill'leri ve kurulumu |
+| [hooks/](hooks/README.md) | Fork'un hook'ları: git-devir (kapanışta wip+push, açılışta pull) |
 
 ## Şu anki durum (2026-11-16)
 

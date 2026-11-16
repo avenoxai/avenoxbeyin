@@ -40,6 +40,8 @@ Durum işaretleri: ✅ karar verildi · ⏳ önerildi, onay bekliyor · ❓ aç�
     `Kararlar.md`, `Kurallar.md`.
 - ✅ (2026-11-16) **Köprüye git uyarıları:** oturum açılınca "repo uzak dalın gerisinde, önce pull";
   oturum kapanırken "push edilmemiş commit var". Otomatik commit/push yok.
+- ✅ (2026-11-16) **Kapanışta otomatik commit+push (wip dalı), açılışta pull — git-devir hook'u.**
+  Ayrıntı: [hooks/README.md](hooks/README.md).
 - ✅ (2026-11-16) **Projeye özel `Kararlar.md`:** her proje klasöründe; karar başına tarih · karar ·
   neden · alternatifler. O projede oturum açılınca son birkaç karar otomatik gelir.
   (Upstream'de kararlar yalnız oturum kartındaki `**Karar:**` satırında doğar; kart arşivlenince

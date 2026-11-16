@@ -17,8 +17,9 @@ olarak kurulur. Durum: ⬜ başlanmadı · 🟡 sürüyor · ✅ bitti
   sayılsın (upstream `project_id` = klasör yolu hash'i; proje adı ise repo klasör adının vault'taki
   `30 Projeler/<ad>` klasörüyle veya `.beyin-projects.json` ile eşleşmesinden çözülüyor).
 - ⬜ **Proje bazında "kaldığım yer"**: oturum başında açılan repoya ait son kart/kayıt.
-- ⬜ **Köprüye git uyarıları**: SessionStart'ta `git fetch` + "gerisindesin, pull"; Stop/SessionEnd'de
-  "push edilmemiş commit". Ağ yavaşsa hook süresini aşmamak için zaman sınırlı.
+- 🟡 **git-devir hook'u** ([hooks/git_devir.py](hooks/git_devir.py)): kapanışta yarım iş `wip/<makine>/<dal>`
+  dalına + commit'ler push; açılışta fetch + güvenliyse fast-forward pull, başka makinenin wip'ini
+  haber verir. Yazıldı ve test edildi, henüz hiçbir makineye kurulmadı ([hooks/README.md](hooks/README.md)).
 - ⬜ **Projeye özel `Kararlar.md`** (tarih · karar · neden · alternatifler) ve açılışta son kararlar.
 - ⬜ **Oturum kartı zorunluluğu**: Stop'ta kart kontrolü (ayrı hook) veya kartı receipt'e gömme.
 - ⬜ Makine etiketi: her kayıtta `makine: <ad>`.
