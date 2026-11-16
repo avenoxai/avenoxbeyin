@@ -679,6 +679,24 @@ And another link on line 8: [[Components/Auth]].
         self.assertEqual(parsed["indexed_notes_count"], 2)
         self.assertTrue((self.vault / "knowledge/MOC.md").is_file())
 
+    def test_lint_excludes_directories_correctly(self):
+        # Create root vendor.md (should NOT be treated as a directory or excluded from orphans)
+        (self.vault / "vendor.md").write_text("# Vendor Root File", encoding="utf-8")
+        # Create an excluded directory vendor/ with an orphan note inside
+        (self.vault / "vendor").mkdir(parents=True)
+        (self.vault / "vendor/ignored.md").write_text("# Ignored Orphan", encoding="utf-8")
+        # Configure state to exclude 'vendor' directory
+        state_dir = self.state / "index"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        # Write exclusions to state index or mock exclusions
+        with patch("beyin_v3_index.exclusions", return_value=(frozenset({"vendor"}), set())):
+            report = linter.lint_vault(self.vault, state=self.state)
+        self.assertEqual(report["status"], "ok")
+        # vendor.md should be in orphans because it has no links, whereas vendor/ignored.md is excluded
+        orphans = report["orphans"]
+        self.assertIn("vendor.md", orphans)
+        self.assertNotIn("vendor/ignored.md", orphans)
+
 
 if __name__ == "__main__":
     unittest.main()
