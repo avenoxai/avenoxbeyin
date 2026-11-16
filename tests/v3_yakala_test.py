@@ -4,6 +4,8 @@ Offline: `isle` runs with every helper tool hidden, so nothing reaches the netwo
 popup/hotkey paths are never started.
 """
 import ast
+from contextlib import contextmanager
+from email.message import Message
 import io
 import json
 import os
@@ -27,6 +29,23 @@ SCRIPTS = ROOT / 'template/.claude/scripts'
 INBOX = '📥 000-Inbox/Yakala'
 sys.path.insert(0, str(SCRIPTS))
 import beyin_v3_yakala as yakala  # noqa: E402
+
+
+@contextmanager
+def offline_completeness(test, url, text):
+    """Exercise the real completeness parser with a synthetic HTTP response."""
+    response = io.BytesIO(('<html><main><p>' + text + '</p></main></html>').encode('utf-8'))
+    response.headers = Message()
+    response.headers['Content-Type'] = 'text/html; charset=utf-8'
+    opener = Mock()
+    opener.open.return_value = response
+    with patch.object(yakala, '_public_opener', return_value=opener), \
+            patch.object(socket, 'create_connection', side_effect=AssertionError('offline fixture')) as dial:
+        yield
+    opener.open.assert_called_once()
+    test.assertEqual(opener.open.call_args.args[0].full_url, url)
+    dial.assert_not_called()
+    test.assertTrue(response.closed)
 
 
 class WindowsSourceDecisionTest(unittest.TestCase):
@@ -408,7 +427,8 @@ class YakalaUnitTest(unittest.TestCase):
         cid = yakala.capture(self.vault, url='https://example.com/article')['id']
         payload = json.dumps({'content': 'article text ' * 10 + '\ud835**\uddf2',
                               'title': 'Article\ud800'})
-        with patch.object(yakala, 'tools', return_value={'npx': 'mock-npx'}), \
+        with offline_completeness(self, 'https://example.com/article', 'article text ' * 10), \
+                patch.object(yakala, 'tools', return_value={'npx': 'mock-npx'}), \
                 patch.object(yakala, '_safe_network_url'), patch.object(yakala, '_HelperNetwork') as guard, \
                 patch.object(yakala, '_run', return_value=(0, payload, '')) as run:
             guard.return_value.__enter__.return_value = None
@@ -1560,7 +1580,8 @@ class YakalaVideoLanguageTest(unittest.TestCase):
         self.assertEqual(len(self.calls('yt-dlp')), 1)
         # An article never costs a yt-dlp request and its card gains no language field.
         page = {'title': 'Yazı', 'language': 'tr', 'content': 'Uzun makale metni. ' * 20}
-        entry, meta, _raw = self.isle({'video': dubbed(), 'defuddle': {'': page}}, url='https://ornek.com/yazi')
+        with offline_completeness(self, 'https://ornek.com/yazi', page['content']):
+            entry, meta, _raw = self.isle({'video': dubbed(), 'defuddle': {'': page}}, url='https://ornek.com/yazi')
         self.assertEqual(entry['yontem'], 'defuddle')
         self.assertEqual(self.calls('yt-dlp'), [])
         self.assertNotIn('--lang', self.calls('npx')[0])
