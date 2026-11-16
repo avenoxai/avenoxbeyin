@@ -8,9 +8,12 @@
     proje.py sustur  [--cwd D]         the user does not want a vault folder for this repo
     proje.py kart    [--cwd D] --dosya F|-  (or --hedef/--yapilan/--acik/--sonraki/--karar)
     proje.py karar   [--cwd D] --karar K --neden N [--alternatif A ...]
+    proje.py kural   [--cwd D] --kural K [--genel]
 
 Design rules (see README.md next to this file):
 - project identity is ``owner/repo`` from the ``origin`` remote, never a folder path;
+- the repo -> folder link is a Markdown file inside the folder (``Proje.md`` with ``proje_id``),
+  written once, because Obsidian Sync carries Markdown but not ``.json`` by default;
 - every finished piece of work is a NEW card file, so Obsidian Sync never has to merge;
 - nothing in the vault is overwritten: new files are created exclusively, shared files are
   rewritten only when their hash still matches what was read;
@@ -34,12 +37,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import git_devir as gd  # noqa: E402
 
 PROJECTS_DIR = "30 Projeler"
-MAP_FILE = "_Sistem/projeler.json"
+PROJECT_FILE = "Proje.md"  # frontmatter proje_id: owner/repo binds the folder to a repo
+LEGACY_MAP_FILE = "_Sistem/projeler.json"  # read-only fallback from an earlier design; never written
 CARDS_DIR = "Oturumlar"
 DECISIONS_FILE = "Kararlar.md"
 RULES_FILE = "Kurallar.md"
+COMPANION_DIR = "🔮 850-Companion"  # avenox default; otherwise the single top-level "*companion" folder
 START_LIMIT = 1500
 CARD_LIMIT = 1200
+RULE_LIMIT = 400
 WRITER = "beyin-yazici"
 
 EXIT_ERROR, EXIT_CONFLICT, EXIT_UNRESOLVED = 1, 2, 3
@@ -168,56 +174,76 @@ def vault_root(cfg):
     return path if path is not None and path.is_dir() else None
 
 
-def read_mapping(vault: Path):
-    """(mapping, sha256 or None, error). A broken file is reported, never repaired silently."""
-    path = vault / MAP_FILE
+def declared_id(folder: Path) -> str:
+    """The ``proje_id`` a project folder declares in its Proje.md, or '' when it declares none."""
+    meta, _ = split_note(read_text(folder / PROJECT_FILE, 4096))
+    return meta.get("proje_id", "").strip()
+
+
+def legacy_mapping(vault: Path) -> dict:
+    """{id.casefold(): folder} from an old _Sistem/projeler.json. Read-only; a broken file is ignored."""
     try:
-        raw = path.read_bytes()
-    except FileNotFoundError:
-        return {}, None, ""
-    except OSError as exc:
-        return {}, None, f"{MAP_FILE} okunamadı: {exc}"
-    try:
-        data = json.loads(raw.decode("utf-8-sig"))
-    except ValueError:
-        return {}, sha256(raw), f"{MAP_FILE} geçerli JSON değil"
+        data = json.loads((vault / LEGACY_MAP_FILE).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
     if not isinstance(data, dict):
-        return {}, sha256(raw), f"{MAP_FILE} bir JSON nesnesi değil"
-    return data, sha256(raw), ""
+        return {}
+    return {key.casefold(): safe_rel(value) for key, value in data.items()
+            if isinstance(key, str) and safe_rel(value)}
+
+
+def mute_path() -> Path:
+    return gd.state_dir() / "proje" / "sustur.json"
+
+
+def muted_ids() -> list:
+    """Repos the user declined on THIS machine (machine-local, never in the vault)."""
+    try:
+        data = json.loads(mute_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [item for item in data if isinstance(item, str)] if isinstance(data, list) else []
+
+
+def set_muted(project_id: str, muted: bool) -> bool:
+    """Returns True when the list changed."""
+    current = muted_ids()
+    kept = [item for item in current if item.casefold() != project_id.casefold()]
+    new = kept + [project_id] if muted else kept
+    if new == current:
+        return False
+    gd._atomic_write(mute_path(), json.dumps(new, ensure_ascii=False, indent=1))
+    return True
 
 
 def find_folder(vault: Path, project: dict):
-    """(vault-relative folder or None, source, note). source: mapping | name | muted | ambiguous | ''."""
-    mapping, _, error = read_mapping(vault)
-    wanted = project["id"].casefold()
-    taken = set()
-    for key, value in mapping.items():
-        if not isinstance(key, str):
-            continue
-        if key.casefold() != wanted:
-            other = safe_rel(value)
-            if other:
-                taken.add(other.casefold())
-            continue
-        if value is False:
-            return None, "muted", ""
-        rel = safe_rel(value)
-        if rel and (vault / rel).is_dir():
-            return rel, "mapping", ""
+    """(vault-relative folder or None, source, note). source: proje_md | legacy | name | ambiguous | ''."""
     try:
         names = sorted(entry.name for entry in os.scandir(vault / PROJECTS_DIR) if entry.is_dir())
     except OSError:
-        return None, "", error
-    names = [n for n in names if f"{PROJECTS_DIR}/{n}".casefold() not in taken]  # another project's folder
-    for fold in (False, True):
+        return None, "", ""
+    wanted = project["id"].casefold()
+    declared = {name: declared_id(vault / PROJECTS_DIR / name) for name in names}
+    bound = [name for name in names if declared[name].casefold() == wanted]
+    if len(bound) == 1:
+        return f"{PROJECTS_DIR}/{bound[0]}", "proje_md", ""
+    if bound:
+        return None, "ambiguous", ", ".join(bound)
+    legacy = legacy_mapping(vault)
+    old = legacy.get(wanted)
+    if old and (vault / old).is_dir() and not declared_id(vault / old):
+        return old, "legacy", ""
+    taken = {rel.casefold() for key, rel in legacy.items() if key != wanted}
+    free = [n for n in names if not declared[n] and f"{PROJECTS_DIR}/{n}".casefold() not in taken]
+    for fold in (False, True):  # only folders that no other project has claimed
         key = name_key(project["name"], fold)
-        hits = [n for n in names if key and name_key(n, fold) == key]
+        hits = [n for n in free if key and name_key(n, fold) == key]
         exact = [n for n in hits if n == project["name"]]
         if len(hits) == 1 or len(exact) == 1:
             return f"{PROJECTS_DIR}/{(exact or hits)[0]}", "name", ""
         if hits:
             return None, "ambiguous", ", ".join(hits)
-    return None, "", error
+    return None, "", ""
 
 
 def resolve(cwd, cfg, project=None) -> dict:
@@ -239,11 +265,11 @@ def resolve(cwd, cfg, project=None) -> dict:
     info.update(folder=folder, source=source, note=note, resolved=bool(folder))
     if folder:
         info["folder_path"] = posix(vault / folder)
-    elif source == "muted":
-        info["note"] = "Kullanıcı bu repo için vault klasörü istemedi (projeler.json: false)."
     elif source == "ambiguous":
         info["note"] = f"Birden çok klasör eşleşiyor: {note}. Kullanıcıya sor; seçileni `init --ad` ile bağla."
-    elif not note:
+    elif any(item.casefold() == project["id"].casefold() for item in muted_ids()):
+        info.update(source="muted", note="Kullanıcı bu makinede bu repo için vault klasörü istemedi (sustur).")
+    else:
         info["note"] = (f"Vault'ta klasör yok. Kullanıcıya sor; evet derse `init`. "
                         f"Beklenen: {PROJECTS_DIR}/{project['name']}")
     return info
@@ -349,8 +375,9 @@ def has_rules(folder: Path) -> bool:
 # --------------------------------------------------------------------------- session start text
 
 def writer_line() -> str:
-    return (f"Kayıt: anlamlı iş bitince veya avenox kayıt (receipt) isteyince ham bilgiyi `{WRITER}` alt "
-            "ajanına ver; kaydı kendin yazma.")
+    return ("Kayıt: anlamlı iş bitince, ya da avenox köprüsü/Stop hook'u `note-create`/`receipt` çalıştırmanı "
+            f"isteyince, bunları kendin çalıştırma: ham bilgiyi ve `Receipt session=` değerini `{WRITER}` alt "
+            "ajanına ver; onun yazdığı kayıt hook'u karşılar.")
 
 
 def cli(*args) -> str:
@@ -492,22 +519,15 @@ def templates(name: str) -> dict:
     }
 
 
-def update_mapping(vault: Path, project_id: str, value) -> str:
-    """Set one mapping entry; returns added | unchanged | kept:<existing> | error:<why>."""
-    mapping, digest, error = read_mapping(vault)
-    if error:
-        return f"error:{error}; dosyaya dokunulmadı"
-    for key in list(mapping):
-        if isinstance(key, str) and key.casefold() == project_id.casefold():
-            if mapping[key] == value:
-                return "unchanged"
-            if mapping[key] is not False and value is not False and safe_rel(mapping[key]):
-                return f"kept:{mapping[key]}"
-            del mapping[key]
-    mapping[project_id] = value
-    text = json.dumps(mapping, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    guarded_write(vault / MAP_FILE, digest, text.encode("utf-8"))
-    return "added"
+def project_note(info: dict) -> str:
+    """Proje.md: written once per project, so it never conflicts in Sync."""
+    return ("---\n"
+            f"proje_id: {json.dumps(info['id'], ensure_ascii=False)}\n"
+            f"ad: {json.dumps(info['name'], ensure_ascii=False)}\n"
+            f"olusturma: {datetime.date.today().isoformat()}\n"
+            "---\n\n"
+            f"Bu klasör `{info['id']}` reposunun vault'taki proje klasörüdür; `proje_id` satırını değiştirme "
+            "(oturum başında repo bu satırla eşleştirilir).\n")
 
 
 def do_init(cwd, cfg, name=None) -> dict:
@@ -522,9 +542,9 @@ def do_init(cwd, cfg, name=None) -> dict:
         if BAD_NAME_RE.search(name) or name in ("", ".", "..") or name.endswith((".", " ")):
             raise ProjeError(f"Klasör adı geçersiz: {name!r}")
         folder = f"{PROJECTS_DIR}/{name}"
-        if info["source"] == "mapping" and info["folder"].casefold() != folder.casefold():
+        if info["source"] == "proje_md" and info["folder"].casefold() != folder.casefold():
             raise ProjeError(f"{info['id']} zaten {info['folder']} klasörüne bağlı; hiçbir şey oluşturulmadı. "
-                             f"Değiştirmek için {MAP_FILE} dosyasını kullanıcıyla birlikte düzenle.")
+                             f"Değiştirmek için o klasördeki {PROJECT_FILE} dosyasını kullanıcıyla birlikte düzenle.")
     elif info["resolved"]:
         folder = info["folder"]
     elif info["source"] == "ambiguous":
@@ -532,13 +552,22 @@ def do_init(cwd, cfg, name=None) -> dict:
     else:
         folder = f"{PROJECTS_DIR}/{BAD_NAME_RE.sub('-', info['name']).strip('. ') or 'proje'}"
     target = vault / folder
+    owner = declared_id(target)
+    if owner and owner.casefold() != info["id"].casefold():
+        raise ProjeError(f"{folder} başka bir projeye ait ({owner}); hiçbir şey oluşturulmadı. "
+                         "Başka bir ad seç: `init --ad`.")
     created, kept = [], []
-    for filename, text in templates(PurePosixPath(folder).name).items():
+    files = {PROJECT_FILE: project_note(info), **templates(PurePosixPath(folder).name)}
+    for filename, text in files.items():
         (created if create_new(target / filename, text) else kept).append(f"{folder}/{filename}")
     (target / CARDS_DIR).mkdir(parents=True, exist_ok=True)
-    mapping = update_mapping(vault, info["id"], folder)
-    return {"ok": True, "id": info["id"], "folder": folder, "created": created, "kept": kept,
-            "mapping": mapping, "message": f"{folder} hazır. Var olan dosyaların üstüne yazılmadı."}
+    set_muted(info["id"], False)  # explicit consent replaces an earlier "no" on this machine
+    result = {"ok": True, "id": info["id"], "folder": folder, "created": created, "kept": kept,
+              "message": f"{folder} hazır. Var olan dosyaların üstüne yazılmadı."}
+    if not declared_id(target):  # a hand-written Proje.md without proje_id was left alone
+        result["message"] += (f" Dikkat: {folder}/{PROJECT_FILE} içinde `proje_id` yok; repoyu bağlamak için "
+                              f"frontmatter'a `proje_id: {info['id']}` satırını kullanıcıyla birlikte ekle.")
+    return result
 
 
 def do_mute(cwd, cfg) -> dict:
@@ -547,9 +576,9 @@ def do_mute(cwd, cfg) -> dict:
         raise ProjeError(info["note"])
     if info["resolved"]:
         raise ProjeError(f"Bu projenin klasörü zaten var: {info['folder']}. Susturulmadı.")
-    mapping = update_mapping(Path(info["vault"]), info["id"], False)
-    return {"ok": not mapping.startswith("error"), "id": info["id"], "mapping": mapping,
-            "message": f"{info['id']} için bir daha klasör sorulmayacak ({MAP_FILE}). Geri almak için `init`."}
+    changed = set_muted(info["id"], True)
+    return {"ok": True, "id": info["id"], "status": "written" if changed else "unchanged",
+            "message": f"{info['id']} için bu makinede bir daha klasör sorulmayacak. Geri almak için `init`."}
 
 
 # --------------------------------------------------------------------------- kart
@@ -669,6 +698,126 @@ def do_decision(cwd, cfg, decision, why, alternatives=(), date=None, expected=No
     return {"ok": True, "status": "written", "file": relative, "sha256": sha256(new_raw)}
 
 
+# --------------------------------------------------------------------------- kural
+
+LIST_ITEM_RE = re.compile(r"^(?:[-*+]|\d+[.)])[ \t]+")
+SCOPE_RE = re.compile(r"\[(?:scope|kapsam):\s*([^\]]+)\]", re.IGNORECASE)
+
+
+def companion_rules(vault: Path):
+    """The avenox companion Kurallar.md, or None when the companion folder cannot be told for sure."""
+    default = vault / COMPANION_DIR
+    if default.is_dir():
+        return default / RULES_FILE
+    try:
+        named = [entry.name for entry in os.scandir(vault) if entry.is_dir()
+                 and not entry.name.startswith(".") and entry.name.casefold().endswith("companion")]
+    except OSError:
+        return None
+    return vault / named[0] / RULES_FILE if len(named) == 1 else None
+
+
+def add_item(text: str, item: str) -> str:
+    """Insert one list item at the end of a "## Kurallar" section, else at the end of the file.
+
+    Nothing else moves: the text before and after the new line stays byte for byte.
+    """
+    nl = "\r\n" if "\r\n" in text else "\n"
+    end = len(text)
+    heading = re.search(r"^##[ \t]+Kurallar[ \t]*\r?$", text, re.MULTILINE)
+    if heading:
+        following = re.search(r"^#{1,6}[ \t]", text[heading.end():], re.MULTILINE)
+        if following:
+            end = heading.end() + following.start()
+    head = text[:end].rstrip()
+    rest = text[len(head):]
+    if not head:
+        return item + nl + rest
+    last = head.splitlines()[-1]
+    in_list = bool(LIST_ITEM_RE.match(last)) or last.startswith((" ", "\t"))
+    return head + nl + ("" if in_list else nl) + item + (rest or nl)
+
+
+def write_item(path: Path, item: str, already, expected=None, template=None):
+    """Add one list item under the hash guard; returns (written | unchanged, sha256)."""
+    try:
+        raw = path.read_bytes()
+        digest = sha256(raw)
+    except FileNotFoundError:
+        if template is None:
+            raise ProjeError(f"{posix(path)} bulunamadı; yazılmadı.")
+        raw, digest = template.encode("utf-8"), None
+    if expected and expected.lower() != (digest or ""):
+        raise ProjeError(f"{path.name} verilen sha256 ile eşleşmiyor (arada değişmiş); yazılmadı. "
+                         "Yeniden oku, yeniden dene.", EXIT_CONFLICT, sha256=digest)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ProjeError(f"{path.name} UTF-8 değil; dokunulmadı.")
+    if already(text):
+        return "unchanged", digest
+    new_raw = add_item(text, item).encode("utf-8")
+    guarded_write(path, digest, new_raw)
+    return "written", sha256(new_raw)
+
+
+def do_rule(cwd, cfg, rule, general=False, date=None, expected=None) -> dict:
+    rule = one_line(rule)
+    if not rule:
+        raise ProjeError("`--kural` boş olamaz.")
+    if len(rule) > RULE_LIMIT:
+        raise ProjeError(f"Kural {len(rule)} karakter; sınır {RULE_LIMIT} (bir iki satır). Gerekçeyi kısalt; "
+                         "uzun anlatım ayrı bir nota gider. Yazılmadı.")
+    date = (date or datetime.date.today().isoformat()).strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        raise ProjeError("--tarih biçimi: YYYY-AA-GG")
+    check_secret(rule)
+    vault = vault_root(cfg)
+    if vault is None:
+        raise ProjeError("Vault klasörü bulunamadı (git-devir.json içindeki vault_path).")
+    companion = companion_rules(vault)
+    item = f"- {date} · {rule}"
+
+    def has_rule(text):  # the same rule text on any list line, whatever its date
+        for line in text.splitlines():
+            body = re.sub(r"^\d{4}-\d{2}-\d{2}\s*·\s*", "", LIST_ITEM_RE.sub("", line.strip()))
+            if one_line(body) == rule:
+                return True
+        return False
+
+    if general:
+        if companion is None or not companion.is_file():
+            raise ProjeError("Genel Kurallar.md bulunamadı (vault'ta avenox companion klasörü yok ya da birden çok). "
+                             "Yazılmadı.")
+        status, digest = write_item(companion, item, has_rule, expected)
+        return {"ok": True, "status": status, "scope": "genel", "sha256": digest,
+                "file": companion.relative_to(vault).as_posix()}
+    info, vault, folder = require_resolved(cwd, cfg)
+    name = folder.name
+    status, digest = write_item(folder / RULES_FILE, item, has_rule, expected, templates(name)[RULES_FILE])
+    result = {"ok": True, "status": status, "scope": name, "sha256": digest,
+              "file": f"{info['folder']}/{RULES_FILE}", "pointer": "skipped"}
+    if companion is None or not companion.is_file():
+        result["message"] = "Kural yazıldı. Genel Kurallar.md bulunamadığı için kapsam işaretçisi eklenmedi."
+        return result
+    scopes = [name] if name == info["name"] else [name, info["name"]]
+    keys = {name_key(scope) for scope in scopes}
+
+    def has_pointer(text):
+        return any(name_key(scope) in keys for match in SCOPE_RE.finditer(text) for scope in match.group(1).split(","))
+
+    pointer = f"- [kapsam: {', '.join(scopes)}] {name} işinde önce {info['folder']}/{RULES_FILE} dosyasını oku."
+    for attempt in (1, 2):  # the companion file is shared: retry once when it changed underneath
+        try:
+            result["pointer"] = "added" if write_item(companion, pointer, has_pointer)[0] == "written" else "present"
+            break
+        except ProjeError as exc:
+            if exc.code != EXIT_CONFLICT or attempt == 2:
+                result.update(pointer="failed", message=f"Kural yazıldı, ama kapsam işaretçisi eklenemedi: {exc}")
+                break
+    return result
+
+
 # --------------------------------------------------------------------------- command line
 
 def read_fields(args) -> dict:
@@ -716,6 +865,11 @@ def build_parser():
     decision.add_argument("--alternatif", action="append", default=[])
     decision.add_argument("--tarih", help="YYYY-AA-GG (varsayılan: bugün).")
     decision.add_argument("--sha256", help="Kararlar.md'nin okuduğun andaki sha256'sı; değiştiyse yazılmaz.")
+    rule = add("kural", "Kurallar.md'ye tarihli bir kural ekler (proje; --genel ile genel).")
+    rule.add_argument("--kural", required=True, help="Bir iki satırlık kural; gerekçe kısa olsun.")
+    rule.add_argument("--genel", action="store_true", help="Her işte geçerli kural: avenox companion Kurallar.md.")
+    rule.add_argument("--tarih", help="YYYY-AA-GG (varsayılan: bugün).")
+    rule.add_argument("--sha256", help="Hedef Kurallar.md'nin okuduğun andaki sha256'sı; değiştiyse yazılmaz.")
     return parser
 
 
@@ -751,6 +905,8 @@ def main(argv=None) -> int:
             result = do_mute(cwd, cfg)
         elif args.command == "kart":
             result = do_card(cwd, cfg, read_fields(args), args.zaman)
+        elif args.command == "kural":
+            result = do_rule(cwd, cfg, args.kural, args.genel, args.tarih, args.sha256)
         else:
             result = do_decision(cwd, cfg, args.karar, args.neden, args.alternatif, args.tarih, args.sha256)
         print(json.dumps(result, ensure_ascii=False, indent=1))

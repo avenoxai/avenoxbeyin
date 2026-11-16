@@ -87,17 +87,24 @@ class ProjeCase(unittest.TestCase):
             self.git(path, "commit", "-q", "-m", "init")
         return path
 
-    def folder(self, name):
+    def folder(self, name, project_id=None):
+        """A project folder; with ``project_id`` it also gets a Proje.md that binds it to that repo."""
         path = self.vault / P / name
         path.mkdir(parents=True, exist_ok=True)
+        if project_id:
+            (path / "Proje.md").write_text(f'---\nproje_id: "{project_id}"\nad: "{name}"\n---\n\nbağ\n',
+                                           encoding="utf-8")
         return path
 
-    def mapping(self, data=None):
-        path = self.vault / proje.MAP_FILE
-        if data is not None:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+    def legacy(self, data):
+        path = self.vault / proje.LEGACY_MAP_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        return path
+
+    def muted(self):
+        path = self.cfgdir / "git-devir" / "proje" / "sustur.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
 
     def cli(self, *args, code=0):
         """Run proje.main in-process; returns the parsed JSON (or text) and checks the exit code."""
@@ -174,28 +181,57 @@ class ResolveCase(ProjeCase):
         info = self.cli("resolve", "--cwd", plain, code=proje.EXIT_UNRESOLVED)
         self.assertEqual((info["id"], info["git"]), ("local/duz-klasor", False))
 
-    def test_mapping_file_wins_over_name_match(self):
+    def test_proje_md_wins_over_name_match(self):
         repo = self.repo("proj", "https://github.com/owner/proj.git")
         self.folder("proj")
-        self.folder("Başka Ad")
-        self.mapping({"OWNER/Proj": f"{P}/Başka Ad"})
+        self.folder("Başka Ad", "OWNER/Proj")  # the id is compared case-insensitively
         info = self.cli("resolve", "--cwd", repo)
-        self.assertEqual((info["folder"], info["source"]), (f"{P}/Başka Ad", "mapping"))
+        self.assertEqual((info["folder"], info["source"]), (f"{P}/Başka Ad", "proje_md"))
+        (self.vault / P / "Başka Ad").rename(self.vault / P / "Yeni Ad")  # the link travels with the folder
+        self.assertEqual(self.cli("resolve", "--cwd", repo)["folder"], f"{P}/Yeni Ad")
 
-    def test_mapping_to_missing_or_unsafe_folder_is_ignored(self):
-        repo = self.repo("proj", "https://github.com/owner/proj.git")
-        self.folder("proj")
-        for value in (f"{P}/yok", "../disari", str(self.tmp), 7):
-            self.mapping({"owner/proj": value})
-            info = self.cli("resolve", "--cwd", repo)
-            self.assertEqual((info["folder"], info["source"]), (f"{P}/proj", "name"), value)
+    def test_proje_md_without_id_or_with_plain_frontmatter(self):
+        repo = self.repo("klon", "https://github.com/owner/proj.git")
+        folder = self.folder("Serbest Ad")
+        (folder / "Proje.md").write_text("---\nproje_id: owner/proj\nad: x\n---\n", encoding="utf-8")  # unquoted
+        self.assertEqual(self.cli("resolve", "--cwd", repo)["source"], "proje_md")
+        (folder / "Proje.md").write_text("# yalnız başlık, kimlik yok\n", encoding="utf-8")
+        self.cli("resolve", "--cwd", repo, code=proje.EXIT_UNRESOLVED)
 
-    def test_folder_mapped_to_another_owner_is_not_matched_by_name(self):
+    def test_folder_bound_to_another_owner_is_not_matched_by_name(self):
         repo = self.repo("proj", "https://github.com/ikinci/proj.git")
-        self.folder("proj")
-        self.mapping({"birinci/proj": f"{P}/proj"})
+        self.folder("proj", "birinci/proj")
         info = self.cli("resolve", "--cwd", repo, code=proje.EXIT_UNRESOLVED)
         self.assertFalse(info["resolved"])
+
+    def test_same_id_in_two_folders_is_ambiguous(self):
+        repo = self.repo("proj", "https://github.com/owner/proj.git")
+        self.folder("Bir", "owner/proj")
+        self.folder("İki", "owner/proj")
+        info = self.cli("resolve", "--cwd", repo, code=proje.EXIT_UNRESOLVED)
+        self.assertEqual(info["source"], "ambiguous")
+        self.assertIn("Bir, İki", info["note"])
+
+    def test_old_projeler_json_is_a_read_only_fallback(self):
+        repo = self.repo("klon", "https://github.com/owner/proj.git")
+        self.folder("Eski Ad")
+        self.folder("proj")
+        path = self.legacy({"Owner/Proj": f"{P}/Eski Ad", "baska/repo": f"{P}/proj", "x/y": False})
+        before = path.read_bytes()
+        info = self.cli("resolve", "--cwd", repo)
+        self.assertEqual((info["folder"], info["source"]), (f"{P}/Eski Ad", "legacy"))
+        other = self.repo("proj", "https://github.com/ucuncu/proj.git")  # proj is taken by baska/repo
+        self.cli("resolve", "--cwd", other, code=proje.EXIT_UNRESOLVED)
+        self.cli("init", "--cwd", repo)  # adopts the legacy folder by writing Proje.md there
+        self.assertEqual(self.cli("resolve", "--cwd", repo)["source"], "proje_md")
+        self.cli("sustur", "--cwd", other)
+        self.assertEqual(path.read_bytes(), before)
+        for index, value in enumerate((f"{P}/yok", "../disari", str(self.tmp), 7)):  # unusable entries
+            self.legacy({"owner/baska": value})
+            third = self.repo(f"k{index}", "https://github.com/owner/baska.git")
+            self.cli("resolve", "--cwd", third, code=proje.EXIT_UNRESOLVED)
+        path.write_text("{bozuk", encoding="utf-8")
+        self.assertEqual(self.cli("resolve", "--cwd", repo)["source"], "proje_md")
 
     def test_name_key_is_turkish_safe(self):
         key = proje.name_key
@@ -254,36 +290,39 @@ class ResolveCase(ProjeCase):
 
 
 class InitCase(ProjeCase):
-    def test_init_creates_files_and_mapping(self):
+    def test_init_creates_files_and_binding(self):
         repo = self.repo("klon", "https://github.com/owner/proj.git")
         result = self.cli("init", "--cwd", repo)
         self.assertEqual(result["folder"], f"{P}/proj")
-        self.assertEqual(self.vault_files(), [f"{P}/proj/Kararlar.md", f"{P}/proj/Kurallar.md", proje.MAP_FILE])
+        self.assertEqual(self.vault_files(),  # Markdown only, all inside the project folder: nothing under _Sistem
+                         [f"{P}/proj/Kararlar.md", f"{P}/proj/Kurallar.md", f"{P}/proj/Proje.md"])
         self.assertTrue((self.vault / P / "proj" / "Oturumlar").is_dir())
-        self.assertEqual(self.mapping(), {"owner/proj": f"{P}/proj"})
+        meta, body = proje.split_note((self.vault / P / "proj" / "Proje.md").read_text(encoding="utf-8"))
+        self.assertEqual(list(meta), ["proje_id", "ad", "olusturma"])
+        self.assertEqual((meta["proje_id"], meta["ad"]), ("owner/proj", "proj"))
+        self.assertRegex(meta["olusturma"], r"^\d{4}-\d{2}-\d{2}$")
+        self.assertEqual(len(body.strip().splitlines()), 1)
         self.assertIn("# proj · Kararlar", (self.vault / P / "proj" / "Kararlar.md").read_text(encoding="utf-8"))
         info = self.cli("resolve", "--cwd", repo)
-        self.assertEqual((info["folder"], info["source"]), (f"{P}/proj", "mapping"))
+        self.assertEqual((info["folder"], info["source"]), (f"{P}/proj", "proje_md"))
 
     def test_init_never_overwrites(self):
         repo = self.repo("klon", "https://github.com/owner/proj.git")
         folder = self.folder("Proj")
         (folder / "Kurallar.md").write_text("- benim kuralım\n", encoding="utf-8")
-        self.mapping({"baska/repo": f"{P}/x"})
         result = self.cli("init", "--cwd", repo)
         self.assertEqual(result["folder"], f"{P}/Proj")  # the existing folder is adopted
         self.assertEqual(result["kept"], [f"{P}/Proj/Kurallar.md"])
-        self.assertEqual(result["created"], [f"{P}/Proj/Kararlar.md"])
+        self.assertEqual(result["created"], [f"{P}/Proj/Proje.md", f"{P}/Proj/Kararlar.md"])
         self.assertEqual((folder / "Kurallar.md").read_text(encoding="utf-8"), "- benim kuralım\n")
-        self.assertEqual(self.mapping(), {"baska/repo": f"{P}/x", "owner/proj": f"{P}/Proj"})
         (folder / "Kararlar.md").write_text("elle\n", encoding="utf-8")
-        before = (self.vault / proje.MAP_FILE).read_bytes()
+        before = (folder / "Proje.md").read_bytes()
         again = self.cli("init", "--cwd", repo)
-        self.assertEqual((again["created"], again["mapping"]), ([], "unchanged"))
+        self.assertEqual(again["created"], [])
         self.assertEqual((folder / "Kararlar.md").read_text(encoding="utf-8"), "elle\n")
-        self.assertEqual((self.vault / proje.MAP_FILE).read_bytes(), before)
+        self.assertEqual((folder / "Proje.md").read_bytes(), before)
 
-    def test_init_with_custom_name_and_existing_mapping(self):
+    def test_init_with_custom_name_and_existing_binding(self):
         repo = self.repo("klon", "https://github.com/owner/proj.git")
         result = self.cli("init", "--cwd", repo, "--ad", "Özel Ad")
         self.assertEqual(result["folder"], f"{P}/Özel Ad")
@@ -294,27 +333,44 @@ class InitCase(ProjeCase):
         for bad in ("a/b", "..", "ad."):
             self.cli("init", "--cwd", repo, "--ad", bad, code=proje.EXIT_ERROR)
 
-    def test_init_leaves_broken_mapping_file_alone(self):
+    def test_init_refuses_a_folder_of_another_project(self):
         repo = self.repo("klon", "https://github.com/owner/proj.git")
-        path = self.vault / proje.MAP_FILE
-        path.parent.mkdir(parents=True)
-        path.write_text("{bozuk", encoding="utf-8")
-        result = self.cli("init", "--cwd", repo)
-        self.assertTrue(result["mapping"].startswith("error:"))
-        self.assertEqual(path.read_text(encoding="utf-8"), "{bozuk")
-        self.assertTrue((self.vault / P / "proj" / "Kararlar.md").exists())
+        taken = self.folder("Dolu", "baska/repo")
+        before = sorted(p.name for p in taken.iterdir())
+        refused = self.cli("init", "--cwd", repo, "--ad", "Dolu", code=proje.EXIT_ERROR)
+        self.assertIn("baska/repo", refused["message"])
+        self.assertEqual(sorted(p.name for p in taken.iterdir()), before)
 
-    def test_init_refuses_inside_vault_and_sustur_mutes(self):
+    def test_init_reports_a_hand_written_proje_md_without_id(self):
+        repo = self.repo("klon", "https://github.com/owner/proj.git")
+        folder = self.folder("Elle")
+        (folder / "Proje.md").write_text("benim notum\n", encoding="utf-8")
+        result = self.cli("init", "--cwd", repo, "--ad", "Elle")
+        self.assertIn("proje_id", result["message"])
+        self.assertEqual((folder / "Proje.md").read_text(encoding="utf-8"), "benim notum\n")
+
+    def test_init_refuses_inside_vault_and_sustur_is_machine_local(self):
         inside = self.repo("ic", "https://github.com/owner/ic.git", parent=self.vault)
         self.cli("init", "--cwd", inside, code=proje.EXIT_ERROR)
         repo = self.repo("klon", "https://github.com/owner/proj.git")
         self.assertIn("klasör yok", self.start(repo))
-        self.cli("sustur", "--cwd", repo)
-        self.assertEqual(self.mapping(), {"owner/proj": False})
+        self.assertEqual(self.cli("sustur", "--cwd", repo)["status"], "written")
+        self.assertEqual(self.cli("sustur", "--cwd", repo)["status"], "unchanged")
+        self.assertEqual(self.muted(), ["owner/proj"])
+        self.assertEqual([p.name for p in self.vault.iterdir()], ["30 Projeler", "ic"])  # the "no" stays local
+        self.assertEqual(list((self.vault / P).iterdir()), [])
         self.assertEqual(self.start(repo, session="s2"), "")
         self.assertEqual(self.cli("resolve", "--cwd", repo, code=proje.EXIT_UNRESOLVED)["source"], "muted")
         self.cli("init", "--cwd", repo)  # explicit consent replaces the mute
-        self.assertEqual(self.mapping(), {"owner/proj": f"{P}/proj"})
+        self.assertEqual(self.muted(), [])
+        self.assertTrue(self.cli("resolve", "--cwd", repo)["resolved"])
+
+    def test_folder_from_another_machine_beats_a_local_mute(self):
+        repo = self.repo("klon", "https://github.com/owner/proj.git")
+        self.cli("sustur", "--cwd", repo)
+        self.folder("Gelen", "owner/proj")  # created on another machine, arrived through Sync
+        self.assertEqual(self.cli("resolve", "--cwd", repo)["folder"], f"{P}/Gelen")
+        self.cli("sustur", "--cwd", repo, code=proje.EXIT_ERROR)
 
 
 class CardCase(ProjeCase):
@@ -615,6 +671,162 @@ class StartCase(ProjeCase):
         self.assertLess(best, 2.0)
 
 
+GENERAL_RULES = """---
+title: Kurallar
+---
+
+# Kurallar
+
+## Kurallar
+
+- **kural:** Kısa cevap. **neden:** sonuç önce.
+- **kural:** Önce oku. **neden:** eski
+  bilgi iş bozar.
+
+## Nasıl büyür
+
+Düzeltmeler buraya madde olarak eklenir.
+"""
+
+
+class RuleCase(ProjeCase):
+    COMPANION = "🔮 850-Companion"
+    POINTER = f"- [kapsam: Proje Adı, proj] Proje Adı işinde önce {P}/Proje Adı/Kurallar.md dosyasını oku."
+
+    def setUp(self):
+        super().setUp()
+        self.repo_path = self.repo("klon", "https://github.com/owner/proj.git")
+        self.cli("init", "--cwd", self.repo_path, "--ad", "Proje Adı")
+        self.rules = self.vault / P / "Proje Adı" / "Kurallar.md"
+        self.companion = self.vault / self.COMPANION / "Kurallar.md"
+        self.companion.parent.mkdir()
+        self.companion.write_bytes(GENERAL_RULES.encode("utf-8"))
+
+    def add(self, text, *extra, code=0, date="2026-11-16", cwd=None):
+        return self.cli("kural", "--cwd", cwd or self.repo_path, "--kural", text, "--tarih", date, *extra, code=code)
+
+    def test_project_rule_and_scope_pointer(self):
+        template = self.rules.read_text(encoding="utf-8")
+        result = self.add("Testsiz commit atma;\n  önce testi çalıştır.")
+        self.assertEqual((result["status"], result["file"], result["scope"], result["pointer"]),
+                         ("written", f"{P}/Proje Adı/Kurallar.md", "Proje Adı", "added"))
+        first = "- 2026-11-16 · Testsiz commit atma; önce testi çalıştır.\n"
+        self.assertEqual(self.rules.read_text(encoding="utf-8"), template + "\n" + first)
+        self.assertEqual(result["sha256"], proje.sha256(self.rules.read_bytes()))
+        anchor = "  bilgi iş bozar.\n"
+        self.assertEqual(self.companion.read_text(encoding="utf-8"),
+                         GENERAL_RULES.replace(anchor, anchor + self.POINTER + "\n"))
+        before = self.companion.read_bytes()
+        second = self.add("Dal adları İngilizce olsun.", date="2026-11-17")
+        self.assertEqual((second["status"], second["pointer"]), ("written", "present"))
+        self.assertEqual(self.companion.read_bytes(), before)
+        self.assertEqual(self.rules.read_text(encoding="utf-8"),
+                         template + "\n" + first + "- 2026-11-17 · Dal adları İngilizce olsun.\n")
+        self.assertIn("Bu projenin kuralları:", self.start(self.repo_path))
+
+    def test_duplicate_rule_is_unchanged(self):
+        self.add("Aynı kural")
+        before = self.rules.read_bytes(), self.companion.read_bytes()
+        again = self.add("  Aynı   kural ", date="2026-12-01")
+        self.assertEqual((again["status"], again["pointer"]), ("unchanged", "present"))
+        self.assertEqual((self.rules.read_bytes(), self.companion.read_bytes()), before)
+
+    def test_general_rule(self):
+        other = self.repo("yeni", "https://github.com/owner/yeni.git")  # no vault folder needed
+        result = self.add("Cevaplar Türkçe olsun.", "--genel", cwd=other)
+        self.assertEqual((result["status"], result["scope"], result["file"]),
+                         ("written", "genel", f"{self.COMPANION}/Kurallar.md"))
+        self.assertNotIn("pointer", result)
+        anchor = "  bilgi iş bozar.\n"
+        self.assertEqual(self.companion.read_text(encoding="utf-8"),
+                         GENERAL_RULES.replace(anchor, anchor + "- 2026-11-16 · Cevaplar Türkçe olsun.\n"))
+        self.assertEqual(self.add("Cevaplar Türkçe olsun.", "--genel")["status"], "unchanged")
+        self.assertNotIn("Cevaplar", self.rules.read_text(encoding="utf-8"))
+
+    def test_files_without_a_rules_heading_and_crlf(self):
+        self.companion.write_bytes("# Düzeltmeler\r\n\r\nHenüz yok.\r\n".encode("utf-8"))
+        self.add("Genel kural", "--genel")
+        raw = self.companion.read_bytes()
+        self.assertEqual(raw.decode("utf-8"), "# Düzeltmeler\r\n\r\nHenüz yok.\r\n\r\n- 2026-11-16 · Genel kural\r\n")
+        self.add("İkinci", "--genel")
+        self.assertTrue(self.companion.read_bytes().decode("utf-8").endswith("Genel kural\r\n- 2026-11-16 · İkinci\r\n"))
+        self.rules.write_bytes(b"- eski kural")  # no trailing newline
+        self.add("Yeni")
+        self.assertEqual(self.rules.read_text(encoding="utf-8"), "- eski kural\n- 2026-11-16 · Yeni\n")
+
+    def test_existing_pointer_in_any_form_is_recognised(self):
+        self.companion.write_text(GENERAL_RULES + "\n- [scope: PROJ] proj kuralları ayrı dosyada.\n", encoding="utf-8")
+        before = self.companion.read_bytes()
+        self.assertEqual(self.add("Kural")["pointer"], "present")
+        self.assertEqual(self.companion.read_bytes(), before)
+
+    def test_hash_conflicts(self):
+        stale = proje.sha256(self.rules.read_bytes())
+        self.add("Birinci", "--sha256", stale)
+        before = self.rules.read_bytes()
+        refused = self.add("İkinci", "--sha256", stale, code=proje.EXIT_CONFLICT)
+        self.assertEqual(refused["sha256"], proje.sha256(before))
+        self.assertEqual(self.rules.read_bytes(), before)
+
+        def other_machine(path):
+            if path == self.rules:
+                path.write_bytes(path.read_bytes() + "- başka makineden\n".encode("utf-8"))
+
+        with mock.patch.object(proje, "_before_write", other_machine):
+            result = self.add("Çakışan", code=proje.EXIT_CONFLICT)
+        self.assertIn("değişti", result["message"])
+        text = self.rules.read_text(encoding="utf-8")
+        self.assertIn("başka makineden", text)
+        self.assertNotIn("Çakışan", text)
+
+    def test_pointer_conflict_retries_and_never_fails_the_rule(self):
+        (self.companion).write_bytes(GENERAL_RULES.encode("utf-8"))
+        calls = []
+
+        def once(path):
+            if path == self.companion and not calls:
+                calls.append(1)
+                path.write_bytes(path.read_bytes() + "- eşzamanlı satır\n".encode("utf-8"))
+
+        with mock.patch.object(proje, "_before_write", once):
+            self.assertEqual(self.add("Bir")["pointer"], "added")
+        text = self.companion.read_text(encoding="utf-8")
+        self.assertIn("- eşzamanlı satır\n", text)
+        self.assertIn(self.POINTER, text)
+
+        self.companion.write_bytes(GENERAL_RULES.encode("utf-8"))
+
+        def always(path):
+            if path == self.companion:
+                path.write_bytes(path.read_bytes() + b"- x\n")
+
+        with mock.patch.object(proje, "_before_write", always):
+            result = self.add("İki")
+        self.assertEqual((result["ok"], result["status"], result["pointer"]), (True, "written", "failed"))
+        self.assertIn("İki", self.rules.read_text(encoding="utf-8"))
+        self.assertNotIn("kapsam", self.companion.read_text(encoding="utf-8"))
+
+    def test_companion_folder_detection(self):
+        self.companion.parent.rename(self.vault / "Benim Companion")
+        self.assertEqual(self.add("Bir")["pointer"], "added")
+        self.assertEqual(self.add("Genel", "--genel")["file"], "Benim Companion/Kurallar.md")
+        (self.vault / "İkinci Companion").mkdir()  # two candidates: never guess
+        result = self.add("İki")
+        self.assertEqual((result["status"], result["pointer"]), ("written", "skipped"))
+        self.add("Genel iki", "--genel", code=proje.EXIT_ERROR)
+
+    def test_refusals(self):
+        before = self.rules.read_bytes(), self.companion.read_bytes()
+        self.add("   ", code=proje.EXIT_ERROR)
+        self.assertIn("400", self.add("uzun " * 100, code=proje.EXIT_ERROR)["message"])
+        self.add("x", date="16.11.2026", code=proje.EXIT_ERROR)
+        self.add("anahtar " + "gh" + "p_" + "a1B2" * 9, code=proje.EXIT_ERROR)
+        other = self.repo("yeni", "https://github.com/owner/yeni.git")
+        self.add("proje kuralı", cwd=other, code=proje.EXIT_UNRESOLVED)
+        self.assertEqual((self.rules.read_bytes(), self.companion.read_bytes()), before)
+        self.assertFalse((self.vault / P / "yeni").exists())
+
+
 class WriterAgentCase(ProjeCase):
     """The agent definition is prose, but the commands it quotes must exist."""
 
@@ -639,7 +851,7 @@ class WriterAgentCase(ProjeCase):
                 options = choices[match.group(1)]._option_string_actions
                 for flag in re.findall(r"--[a-z0-9-]+", match.group(2)):
                     self.assertIn(flag, options, line)
-        self.assertEqual(seen, {"resolve", "kart", "karar"})
+        self.assertEqual(seen, {"resolve", "kart", "karar", "kural"})
         example = re.search(r"<<'JSON'\n(.*?)\nJSON", text, re.DOTALL).group(1)
         source = self.tmp / "ornek.json"
         source.write_text(example, encoding="utf-8")

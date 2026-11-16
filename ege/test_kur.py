@@ -198,6 +198,10 @@ class KurCase(unittest.TestCase):
         self.assertTrue(text.startswith(USER_TEXT + "\n" + kur.BLOCK_START + "\n"))
         self.assertTrue(text.endswith(kur.BLOCK_END + "\n"))
         self.assertIn("`beyin-yazici` alt ajanına ver", text)
+        for expected in ("note-create / receipt", "`Receipt session=`", "hook'u karşılar", "--genel"):
+            self.assertIn(expected, text)
+        self.assertNotIn(kur.CLI_PLACEHOLDER, text)
+        self.assertIn(kur.proje_cli(sys.executable) + ' kural --kural "', text)
         self.assertEqual(self.calls(), [["bridge", "--harness", "claude", "--project-root", str(self.kod),
                                          "--install"]])
         self.assertEqual(len(self.backups()), 1)
@@ -224,6 +228,14 @@ class KurCase(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
         text = json.loads(proc.stdout.decode("utf-8"))["hookSpecificOutput"]["additionalContext"]
         self.assertIn("Proje: demo (local/demo) → 30 Projeler/demo", text)
+        # The rule command quoted in the CLAUDE.md block must work as written.
+        block = self.claude_md.read_text(encoding="utf-8")
+        quoted = next(line.strip().strip("`") for line in block.splitlines() if " kural --kural " in line)
+        command = quoted.replace('"<bir iki satırlık kural>"', '"once test"') + f' --cwd "{repo.as_posix()}"'
+        proc = subprocess.run(command, shell=True, capture_output=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stdout.decode("utf-8", "replace"))
+        self.assertRegex((self.vault / "30 Projeler" / "demo" / "Kurallar.md").read_text(encoding="utf-8"),
+                         r"\n- \d{4}-\d{2}-\d{2} · once test\n$")
 
     def test_managed_block_refresh_keeps_outside_text(self):
         self.kur()

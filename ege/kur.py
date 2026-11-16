@@ -39,6 +39,7 @@ PROJE_MARK = ("/proje.py", "\\proje.py")
 PROJE_MODES = {"SessionStart": "start"}
 PROJE_TIMEOUTS = {"SessionStart": 10}
 RULE_FILE = EGE / "claude" / "CLAUDE-kural.md"
+CLI_PLACEHOLDER = "{{PROJE_CLI}}"  # replaced with "<python> <proje.py>" for this machine
 BLOCK_START = "<!-- ege-beyin:start -->"
 BLOCK_END = "<!-- ege-beyin:end -->"
 BLOCK_NOTE = "<!-- Bu bloğu ege/kur.py yönetir; elle düzenleme (kaynak: ege/claude/CLAUDE-kural.md). -->"
@@ -288,7 +289,13 @@ def block_span(text: str):
     return text.index(BLOCK_START), text.index(BLOCK_END) + len(BLOCK_END)
 
 
-def step_claude_md(run: Run, manifest: dict, install: bool):
+def proje_cli(python) -> str:
+    """The command the rule block names; forward slashes work in every shell Claude Code uses."""
+    parts = [str(item).replace(chr(92), "/") for item in (python, PROJE_SCRIPT)]
+    return " ".join(f'"{part}"' if " " in part else part for part in parts)
+
+
+def step_claude_md(run: Run, manifest: dict, install: bool, python=sys.executable):
     run.step("4. Global kural bloğu (CLAUDE.md)")
     path = run.base / "CLAUDE.md"
     exists = path.is_file()
@@ -301,7 +308,7 @@ def step_claude_md(run: Run, manifest: dict, install: bool):
     nl = "\r\n" if "\r\n" in text else "\n"
     state = manifest["claude_md"]
     if install:
-        rule = RULE_FILE.read_text(encoding="utf-8").strip()
+        rule = RULE_FILE.read_text(encoding="utf-8").strip().replace(CLI_PLACEHOLDER, proje_cli(python))
         block = nl.join([BLOCK_START, BLOCK_NOTE, *rule.splitlines(), BLOCK_END])
         if span:
             new = text[:span[0]] + block + text[span[1]:]
@@ -419,7 +426,7 @@ def main(argv=None) -> int:
         config = step_config(run, args)
         step_hooks(run, args.python, install=True)
         step_files(run, manifest, args.force)
-        step_claude_md(run, manifest, install=True)
+        step_claude_md(run, manifest, install=True, python=args.python)
         write_manifest(run, manifest)
         step_bridge(run, config, args.python, args.ayarlar)
         run.step("Özet")
