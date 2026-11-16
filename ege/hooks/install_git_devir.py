@@ -65,12 +65,15 @@ def _decoded(command) -> str:
     return command
 
 
-def is_own(handler) -> bool:
+def is_own(handler, mark=SCRIPT_MARK) -> bool:
+    """``mark`` is a substring of the hook command, or a tuple of alternatives (other installers
+    in this folder reuse these helpers with their own script name)."""
+    marks = (mark,) if isinstance(mark, str) else tuple(mark)
     return isinstance(handler, dict) and any(
-        SCRIPT_MARK in _decoded(handler.get(key)) for key in ("command", "commandWindows"))
+        m in _decoded(handler.get(key)) for key in ("command", "commandWindows") for m in marks)
 
 
-def without_own(groups):
+def without_own(groups, mark=SCRIPT_MARK):
     """Drop git-devir handlers from an event's group list; returns (groups, removed_count)."""
     cleaned, removed = [], 0
     for group in groups:
@@ -78,7 +81,7 @@ def without_own(groups):
         if not isinstance(handlers, list):
             cleaned.append(group)
             continue
-        remaining = [h for h in handlers if not is_own(h)]
+        remaining = [h for h in handlers if not is_own(h, mark)]
         removed += len(handlers) - len(remaining)
         if len(remaining) == len(handlers):
             cleaned.append(group)
@@ -102,29 +105,32 @@ def read_settings(path: Path) -> dict:
     return data
 
 
-def own_handlers(data: dict) -> dict:
+def own_handlers(data: dict, mark=SCRIPT_MARK) -> dict:
     hooks = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
     found = {}
     for event, groups in hooks.items():
         for group in groups if isinstance(groups, list) else []:
             handlers = group.get("hooks") if isinstance(group, dict) else None
             for handler in handlers if isinstance(handlers, list) else []:
-                if is_own(handler):
+                if is_own(handler, mark):
                     found.setdefault(event, []).append(handler)
     return found
 
 
-def merged_settings(data: dict, python: str, install: bool):
+def merged_settings(data: dict, python: str, install: bool, script=None, modes=None, timeouts=None,
+                    mark=SCRIPT_MARK):
+    """Merge (or remove) one script's handlers; defaults are git-devir's own."""
+    script, modes, timeouts = script or HOOK_SCRIPT, modes or MODES, timeouts or TIMEOUTS
     if install:
-        wanted = {event: [{"type": "command", "command": shell_command([python, HOOK_SCRIPT, mode]),
-                           "timeout": TIMEOUTS[event]}] for event, mode in MODES.items()}
-        if own_handlers(data) == wanted:  # already installed exactly like this: change nothing
+        wanted = {event: [{"type": "command", "command": shell_command([python, script, mode]),
+                           "timeout": timeouts[event]}] for event, mode in modes.items()}
+        if own_handlers(data, mark) == wanted:  # already installed exactly like this: change nothing
             return data, 0, {event: h[0]["command"] for event, h in wanted.items()}
     data = json.loads(json.dumps(data))  # deep copy
     hooks = data.setdefault("hooks", {})
     removed = 0
     for event in list(hooks):
-        cleaned, count = without_own(hooks[event])
+        cleaned, count = without_own(hooks[event], mark)
         removed += count
         if count:
             if cleaned:
@@ -133,9 +139,9 @@ def merged_settings(data: dict, python: str, install: bool):
                 del hooks[event]
     added = {}
     if install:
-        for event, mode in MODES.items():
-            command = shell_command([python, HOOK_SCRIPT, mode])
-            group = {"hooks": [{"type": "command", "command": command, "timeout": TIMEOUTS[event]}]}
+        for event, mode in modes.items():
+            command = shell_command([python, script, mode])
+            group = {"hooks": [{"type": "command", "command": command, "timeout": timeouts[event]}]}
             hooks.setdefault(event, []).append(group)
             added[event] = command
     if not hooks:

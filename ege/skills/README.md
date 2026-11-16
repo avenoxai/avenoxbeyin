@@ -20,6 +20,10 @@ Kurulum = skill klasörünü olduğu gibi kopyalamak. İki seçenek var:
 `beyin-skill-onerici` vault komutlarını (`beyin.py`) kullandığı için **vault** seçeneğiyle,
 yalnız editör makineye kurulur.
 
+Tek komutluk kurucu ([../kur.py](../kur.py), [../KURULUM.md](../KURULUM.md)) bu klasördeki skill'leri
+global seçenekle (`~/.claude/skills/`) kopyalar. Yalnız vault'a kurulması gereken skill'in klasörüne
+boş bir `.yalniz-vault` dosyası konur; kurucu o klasörü atlar. `beyin-skill-onerici` böyledir.
+
 Kurduktan sonra yeni bir Claude Code oturumu aç; skill listesinde görünmesi yeterli kontroldür.
 
 ## Upstream skill araçlarıyla ilişkisi
