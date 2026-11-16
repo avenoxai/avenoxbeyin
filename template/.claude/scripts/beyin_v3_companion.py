@@ -46,15 +46,30 @@ def directory(vault, *, strict=False):
     vault = Path(vault).resolve()
     candidates = []
     named = []
+    inspection_errors = []
     for path in vault.iterdir():
-        if (path.name.startswith('.') or is_type(path, 'symlink') or not is_type(path, 'dir') or
-                re.search(r'(?i)(archive|arşiv|arsiv)', path.name)):
-            continue
-        if path.name == DEFAULT_DIRECTORY or path.name.casefold().endswith(('companion', 'echo')):
-            named.append(path)
-        elif any(is_type(path / name, 'file') for name in ('Core.md', 'Soul.md')):
-            candidates.append(path)
+        is_named = (path.name == DEFAULT_DIRECTORY or
+                    path.name.casefold().endswith(('companion', 'echo')))
+        try:
+            if (path.name.startswith('.') or is_type(path, 'symlink') or not is_type(path, 'dir') or
+                    re.search(r'(?i)(archive|arşiv|arsiv)', path.name)):
+                continue
+            if is_named:
+                named.append(path)
+            elif any(is_type(path / name, 'file') for name in ('Core.md', 'Soul.md')):
+                candidates.append(path)
+        except OSError as exc:
+            # A named identity that cannot be inspected may still compete with
+            # readable identities. Never silently select a different identity.
+            # Ordinary-entry/Core/Soul failures retain their original exception.
+            if strict and is_named:
+                inspection_errors.append((path, exc))
+                continue
+            raise
     candidates = named or candidates
+    if strict and inspection_errors:
+        paths = ', '.join(str(path) for path, _ in inspection_errors)
+        raise RuntimeError('cannot inspect companion directory candidates: ' + paths)
     if len(candidates) > 1:
         return None
     return candidates[0] if candidates else vault / DEFAULT_DIRECTORY
