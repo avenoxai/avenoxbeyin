@@ -174,18 +174,22 @@ class SnapshotTest(unittest.TestCase):
         for name, body in self.bodies.items():
             self.write(name, body)
         self.write('Kurallar.md', rules_file(45600)[0])
-        report = {}
-        text = companion.context(self.store, 5000, '0' * 24, 'claude', report=report)
-        rules = report['Kurallar.md']
-        self.assertTrue(rules['clipped'])
-        self.assertIn(
-            f'Memory hygiene: Kurallar.md opens clipped (fit ceiling {rules["share"]} of {rules["chars"]} chars).',
-            text,
-        )
-        self.assertEqual(companion.rules_opening(self.store, 5000), rules)
-        # Check source-to-output, not two diagnostics sharing the same stale number.
-        expected = companion.clip(rules_file(45600)[0], rules['share'], both=True, tail=True)
-        self.assertEqual(section(text, 'Kurallar.md'), expected)
+        for budget in (2188, 2189, 2190, 5000):
+            with self.subTest(budget=budget):
+                report = {}
+                text = companion.context(self.store, budget, '0' * 24, 'claude', report=report)
+                rules = report['Kurallar.md']
+                self.assertTrue(rules['clipped'])
+                self.assertLessEqual(len(text), budget)
+                self.assertIn(
+                    f'Memory hygiene: Kurallar.md opens clipped (fit ceiling {rules["share"]} of {rules["chars"]} chars).',
+                    text,
+                )
+                self.assertEqual(companion.rules_opening(self.store, budget), rules)
+                # Check source-to-output, not two diagnostics sharing a stale number.
+                expected = companion.clip(rules_file(45600)[0], rules['share'], both=True, tail=True)
+                self.assertEqual(section(text, 'Kurallar.md'), expected)
+
 
 
 class InstalledOpeningTest(unittest.TestCase):
