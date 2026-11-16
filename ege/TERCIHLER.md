@@ -38,8 +38,9 @@ Durum işaretleri: ✅ karar verildi · ⏳ önerildi, onay bekliyor · ❓ aç�
   `Kararlar.md`'ye kopyalanır ama açılışta artık gelmez.)
 - ✅ (2026-11-16) **Açılış bağlam bütçesi 5.000 karakter** (avenox varsayılanı, değişmiyor).
 - ⏳ Kayıt şablonu: sabit 4 satır (Yapılan / Doğrulama / Açık / Öğrenilen), en fazla ~600 karakter.
-- ⏳ **Skill önerici:** haftalık gözden geçirmede tekrar eden iş akışlarını ve kararları tespit edip
+- ✅ (2026-11-16) **Skill önerici:** haftalık gözden geçirmede tekrar eden iş akışlarını ve kararları tespit edip
   skill taslağı önermek; onaylanırsa oluşturmak. Upstream'de böyle bir özellik yok.
+  Skill: [skills/beyin-skill-onerici/SKILL.md](skills/beyin-skill-onerici/SKILL.md).
 
 ## Avenox'tan seçilen ek özellikler
 

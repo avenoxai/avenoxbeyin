@@ -28,8 +28,9 @@ olarak kurulur. Durum: ⬜ başlanmadı · 🟡 sürüyor · ✅ bitti
 - ⬜ `triage` + `recap` + Gelen dağıtımı (`00 Gelen` → proje / Öğrendiklerim / Fikirler / görev),
   işlenen günlükleri `60 Günlük/`'e taşıma, gelecek haftanın görevleri.
 - ⬜ Ayda bir `audit` + `beyin-kontrol`.
-- ⬜ **Skill önerici**: kayıtlarda ve kararlarda tekrar eden iş akışlarını bulur, skill taslağı
-  önerir; onayla oluşturulur (upstream'de yok).
+- 🟡 **Skill önerici**: kayıtlarda ve kararlarda tekrar eden iş akışlarını bulur, skill taslağı
+  önerir; onayla oluşturulur (upstream'de yok). Skill yazıldı
+  ([skills/beyin-skill-onerici](skills/beyin-skill-onerici/SKILL.md)), henüz hiçbir makineye kurulmadı.
 - ⬜ Yalnız editör makinede çalışır.
 
 ## 4. Öğrenme koçu ("Öğrenmem gerekenler")
