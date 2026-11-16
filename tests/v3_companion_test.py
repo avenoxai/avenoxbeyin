@@ -32,7 +32,8 @@ class CompanionTest(unittest.TestCase):
         return json.loads(result.stdout)
 
     def install(self):
-        return self.run_cli(ROOT / 'scripts/install_v3.py', '--vault', self.vault, '--state', self.state)
+        # These upgrade fixtures intentionally start from the synthetic 3.0.0 release.
+        return self.run_cli(ROOT / 'scripts/install_v3.py', '--vault', self.vault, '--state', self.state, '--version', '3.0.0')
 
     def sync(self):
         return self.run_cli(ROOT / 'scripts/beyin_v3.py', '--vault', self.vault, '--state', self.state, 'sync')
@@ -167,6 +168,7 @@ class CompanionTest(unittest.TestCase):
 
     def test_existing_update_and_rollback_keep_learning_and_preferences(self):
         self.install()
+        self.assertEqual((self.vault / '.beyin-version').read_text().strip(), '3.0.0')
         core = self.vault / COMPANION / 'Core.md'
         core.write_text('LEARNED_IDENTITY_CANARY', encoding='utf-8')
         settings = self.vault / '.beyin-preferences.json'
@@ -174,9 +176,11 @@ class CompanionTest(unittest.TestCase):
         package = self.base / 'upgrade.zip'
         self.run_cli(ROOT / 'scripts/build_v3_release.py', '--output', package, '--version', '3.0.3')
         self.run_cli(self.vault / 'beyin.py', 'update', '--package', package)
+        self.assertEqual((self.vault / '.beyin-version').read_text().strip(), '3.0.3')
         self.assertEqual(core.read_text(), 'LEARNED_IDENTITY_CANARY')
         self.assertEqual(json.loads(settings.read_text())['context_chars'], 2000)
         self.run_cli(self.vault / 'beyin.py', 'rollback')
+        self.assertEqual((self.vault / '.beyin-version').read_text().strip(), '3.0.0')
         self.assertEqual(core.read_text(), 'LEARNED_IDENTITY_CANARY')
 
     def test_bootstrap_after_managed_update_is_idempotent_and_keeps_deleted_notes_deleted(self):
