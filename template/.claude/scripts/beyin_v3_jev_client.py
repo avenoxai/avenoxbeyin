@@ -28,6 +28,7 @@ import math
 import statistics
 import os
 import re
+import subprocess
 import queue
 import threading
 import tempfile
@@ -234,7 +235,7 @@ def _supplied(vault):
     if path.is_symlink() or path.stat().st_size > 16000: raise ValueError('config_invalid')
     try: supplied = json.loads(path.read_text(encoding='utf-8'))
     except (json.JSONDecodeError, UnicodeDecodeError): raise ValueError('config_invalid') from None
-    if not isinstance(supplied, dict) or set(supplied) - set(DEFAULTS) - {'env_file', 'laya'}:
+    if not isinstance(supplied, dict) or set(supplied) - set(DEFAULTS) - {'env_file', 'laya', 'key_command'}:
         raise ValueError('config_invalid')
     return supplied
 
@@ -270,6 +271,12 @@ def _validated(config):
             raise ValueError('config_invalid')
     if 'env_file' in config and (not isinstance(config['env_file'],str) or not Path(config['env_file']).is_absolute()):
         raise ValueError('config_invalid')
+    if 'key_command' in config:
+        cmd = config['key_command']
+        if not isinstance(cmd, list) or not cmd or not all(isinstance(part, str) and part.strip() for part in cmd):
+            raise ValueError('config_invalid')
+        if not Path(cmd[0]).is_absolute():
+            raise ValueError('config_invalid')
     if 'laya' in config or config['provider'] == 'laya':
         import beyin_v3_laya as laya
         config['laya'] = laya.validate(config.get('laya', {}))
@@ -277,7 +284,13 @@ def _validated(config):
 
 
 def _environment(config):
+    """Return (values, key_source). key_source: 'env', 'env_file', 'command', or 'none'.
+
+    key_command runs only when neither env nor env_file supplied a key. Its first stdout line
+    is the key; output is never written to disk or logs.
+    """
     values = {}
+    key_source = 'none'
     if config.get('env_file'):
         path = Path(config['env_file'])
         if not path.is_absolute() or not path.is_file():
@@ -290,8 +303,26 @@ def _environment(config):
                     value=value[1:-1]
                 values[match[1]]=value
     for name in ('TYPESAFE_API_KEY','TYPESAFE_BASE_URL','LAYA_API_KEY'):
-        if name in os.environ: values[name]=os.environ[name]
-    return values
+        if name in os.environ:
+            values[name]=os.environ[name]
+            key_source = 'env'
+    if key_source == 'none':
+        for name in ('TYPESAFE_API_KEY','TYPESAFE_BASE_URL','LAYA_API_KEY'):
+            if name in values:
+                key_source = 'env_file'
+                break
+    if key_source == 'none' and config.get('key_command'):
+        cmd = config['key_command']
+        try:
+            done = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+            if done.returncode == 0 and done.stdout.strip():
+                first_line = done.stdout.strip().splitlines()[0]
+                for name in ('TYPESAFE_API_KEY','TYPESAFE_BASE_URL','LAYA_API_KEY'):
+                    values[name] = first_line
+                key_source = 'command'
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            pass
+    return values, key_source
 
 
 LOOPBACK_HOSTS = ('localhost', '127.0.0.1', '::1')
@@ -516,7 +547,7 @@ def evaluate(vault, query, candidates, *, source_versions=None, scope='user', fa
             # Split and size-check before any cache, key or network access.
             requests=laya.plan(purpose,body,config['model'])
         if inspect_config(vault) != policy: raise ValueError('configuration_changed')
-        env=_environment(config)
+        env, _ = _environment(config)
         # TYPESAFE_BASE_URL and TYPESAFE_API_KEY never apply to the local backend.
         endpoint=laya.endpoint(config['base_url']) if laya else _endpoint(env.get('TYPESAFE_BASE_URL',config['base_url']))
         fingerprint=dict(body=body,scope=scope,sources=source_versions or {},endpoint=endpoint,
@@ -700,14 +731,18 @@ def status(vault):
     provider=info.get('provider')
     laya=provider=='laya'
     key_present = False
+    key_source = 'none'
     key_checked = info['valid'] and info['mode'] != 'off' and bool(features)
     if key_checked:
-        try: key_present=bool(_environment(load_config(vault)).get('LAYA_API_KEY' if laya else 'TYPESAFE_API_KEY'))
+        try:
+            env, key_source = _environment(load_config(vault))
+            key_present=bool(env.get('LAYA_API_KEY' if laya else 'TYPESAFE_API_KEY'))
         except Exception: pass
     try: saved=_validated(dict(DEFAULTS,**_supplied(vault)))['mode']
     except Exception: saved='off'
     result=dict(mode=info['mode'],saved_mode=saved,config_valid=info['valid'],configured=(Path(vault)/'jev.json').exists(),
                 kill_switch=killed(vault),features={name:name in features for name in FEATURES},key_present=key_present,key_checked=key_checked,
+                key_source=key_source,
                 automatic_model_calls=info['mode']!='off' and 'auto_context' in features,last_24h=_recent(vault))
     if provider:
         result['provider']=provider
