@@ -293,6 +293,40 @@ def state_location(vault: Path, state: Path, windows=None) -> dict:
     return report
 
 
+def backup_advisory(vault: Path) -> dict:
+    """Local configuration hint only; never contacts remotes or asserts a backup exists."""
+    report = {'status': 'unknown', 'backup_verified': False, 'remote_configured': False,
+              'guide': 'https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/BACKUP.md'}
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith('GIT_')}
+    env.update(GIT_OPTIONAL_LOCKS='0', GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+               GIT_TERMINAL_PROMPT='0', GIT_NO_LAZY_FETCH='1', GIT_ALLOW_PROTOCOL='', LC_ALL='C')
+    command = ['git', '-c', 'core.fsmonitor=false', '-C', str(vault)]
+
+    def run(*args):
+        return subprocess.run(command + list(args), env=env, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2)
+
+    try:
+        inside = run('rev-parse', '--is-inside-work-tree')
+        if inside.returncode:
+            reason = 'not_git_repository' if b'not a git repository' in inside.stderr.lower() else 'git_error'
+            return dict(report, status='unknown' if reason == 'not_git_repository' else 'unavailable', reason=reason)
+        if inside.stdout.strip() != b'true':
+            return dict(report, reason='not_worktree')
+        # Only local config: global remote settings and environment overrides are not vault evidence.
+        # Never return remote names, URLs, stderr or exception messages (they can contain secrets).
+        remotes = run('config', '--local', '--get-regexp', r'^remote\..*\.url$')
+        if remotes.returncode not in (0, 1):
+            return dict(report, status='unavailable', reason='git_config_error')
+        configured = any(len(line.split(None, 1)) == 2 and line.split(None, 1)[1].strip()
+                         for line in remotes.stdout.splitlines())
+        return dict(report, status='remote_configured' if configured else 'unknown',
+                    remote_configured=bool(configured),
+                    reason='remote_not_verified' if configured else 'no_remote_url')
+    except (OSError, subprocess.SubprocessError):
+        return dict(report, status='unavailable', reason='git_unavailable')
+
+
 def receipt_line_endings(vault: Path) -> dict:
     """Report whether git can rewrite receipt line endings in this vault (#205).
 
@@ -1873,6 +1907,7 @@ def main(argv=None, return_result=False):
                 result['index_exclusions']['always_excluded'] = sorted(sys.modules['beyin_v3_sync'].EXCLUDED_DIRS)
             except Exception as exc:  # never hides the rest of doctor
                 result['index_exclusions'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            result['backup'] = backup_advisory(vault)  # information only; no network, writes or health escalation
             result['receipt_line_endings'] = receipt_line_endings(vault)  # information only: the status below is untouched
             try:  # information only (#585): index size, free pages, leftover temp files; reads only
                 _ensure_scripts_path()

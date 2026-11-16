@@ -19,6 +19,8 @@ macOS · Windows · Linux &nbsp; | &nbsp; Python 3.11+ &nbsp; | &nbsp; [MIT lisa
 | Bir kaynağı kaybetmemek | Video, makale veya dosyayı **Yakala** ile gelen kutuna almak |
 | Claude'dan Codex'e geçmek | Aynı klasördeki not ve görevleri başka bir desteklenen istemciyle kullanmak |
 
+Kasanın ayrı bir kopyasını sakla: [Git bilmeden veya özel Git deposuyla yedekleme](docs/v3/BACKUP.md).
+
 ### Nasıl çalışır?
 
 ```mermaid

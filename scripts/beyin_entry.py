@@ -617,6 +617,12 @@ def human_result(result, command, installed_version=None):
                          py_cmd + ' beyin.py preferences ' + exclude_args)
         lines += state_location_lines(result.get('state_location'))
         lines += receipt_line_endings_lines(result.get('receipt_line_endings'))
+        backup = result.get('backup') or {}
+        if backup.get('status') == 'remote_configured':
+            lines.append('Yedek (bilgi): Git uzak adresi ayarli; guncel ve geri yuklenebilir ikinci kopya dogrulanmadi. docs/v3/BACKUP.md')
+        elif backup:
+            lines.append('Yedek (bilgi): Bu kasanin ikinci kopyasi dogrulanamadi; baska yolla aldiginiz yedek burada gorunmez. Disk arizasina karsi ayri bir kopya tutun. docs/v3/BACKUP.md')
+
         paths = result.get('hook_paths') or {}
         if paths.get('status') == 'stale':
             lines.append('Hook yollari baska bir kuruluma isaret ediyor (' + str(len(paths.get('stale', []))) + ' eski yol). ' +
