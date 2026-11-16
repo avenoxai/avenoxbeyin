@@ -1,0 +1,92 @@
+name: Exact queue evidence 728-734-736-738
+
+# Temporary evidence carrier; never merge. Tests immutable queue, not this PR.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/landing-queue-728-734-736-738.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  exact-landing:
+    name: Queue 728-734-736-738 / Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.14']
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONIOENCODING: utf-8
+      BEYIN_V3_NO_SPAWN: '1'
+    steps:
+      - name: Check out immutable base, not this workflow PR
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: avenoxai/avenoxbeyin
+          ref: 1a49cfa80a48ec4ccbb2e4c44adb416c8960c435
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Reconstruct and assert exact landing tree
+        working-directory: candidate
+        env:
+          EXPECTED_TREE: 5398df608d49637a2e570c8cab31b5ee2a46b56e
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 1a49cfa80a48ec4ccbb2e4c44adb416c8960c435
+          git config user.name 'Landing validation'
+          git config user.email 'landing-validation@users.noreply.github.com'
+          git fetch --no-tags origin d097e48126dbff280fca297bc8f794569cf812da
+          git merge --no-ff --no-edit d097e48126dbff280fca297bc8f794569cf812da
+          git fetch --no-tags origin 1aa8b3040a8e9207cd7378e242f03baa05b47919
+          git merge --no-ff --no-edit 1aa8b3040a8e9207cd7378e242f03baa05b47919
+          git fetch --no-tags origin 7811c6694af9d8df98a851f173c399afbc538a04
+          git merge --no-ff --no-edit 7811c6694af9d8df98a851f173c399afbc538a04
+          git fetch --no-tags origin fa78f77b6275c119c902e93aca67cebab4b60f07
+          git merge --no-ff --no-edit fa78f77b6275c119c902e93aca67cebab4b60f07
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test -z "$(git status --porcelain)"
+          test ! -e .github/workflows/landing-queue-728-734-736-738.yml
+          git show -s --format='candidate_commit=%H%ncandidate_tree=%T%nparents=%P'
+          python --version
+      - name: Install and require PDF and media test tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils ffmpeg
+          command -v pdftotext
+          command -v ffmpeg
+          command -v ffprobe
+          pdftotext -v
+          ffmpeg -version
+          ffprobe -version
+      - name: Complete unfiltered V3 contracts
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/landing-home"
+          export XDG_STATE_HOME="$RUNNER_TEMP/landing-state"
+          mkdir -p "$HOME" "$XDG_STATE_HOME"
+          python -m unittest discover -s tests -p 'v3_*test.py'
+      - name: Frozen development and holdout retrieval gates
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/eval-home"
+          export XDG_STATE_HOME="$RUNNER_TEMP/eval-state"
+          mkdir -p "$HOME" "$XDG_STATE_HOME"
+          python scripts/evaluate_v3.py
+      - name: Verify candidate remained unchanged
+        working-directory: candidate
+        env:
+          EXPECTED_TREE: 5398df608d49637a2e570c8cab31b5ee2a46b56e
+        run: |
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test -z "$(git status --porcelain)"
