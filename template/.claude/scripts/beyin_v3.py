@@ -1845,7 +1845,9 @@ class MemoryStore:
             except ImportError:
                 # Without the exclusion policy, strict fallback must not deliver sources.
                 return [] if candidate_only else pack_context([], limit, budget_chars, stale_count)
-            prefixes = tuple(_path_key(prefix) for prefix in settings(self.state_dir)["exclude"])
+            _settings = settings(self.state_dir)
+            prefixes = tuple(_path_key(prefix) for prefix in _settings["exclude"])
+            strict_keep_prefixes = tuple(_path_key(prefix) for prefix in _settings.get("strict_keep", ()))
             eligible = [record for record in eligible
                         if not _path_key(str(record.get("source", ""))).startswith(prefixes)]
         query_tokens = _tokens(query)
@@ -1871,8 +1873,10 @@ class MemoryStore:
                 continue
             if not _status_allowed(record, allowed_statuses):
                 continue
-            if strict and str(record.get("source", "")).startswith(self.STRICT_EXCLUDE):
-                continue
+            if strict:
+                source = str(record.get("source", ""))
+                if source.startswith(self.STRICT_EXCLUDE) and not source.startswith(strict_keep_prefixes):
+                    continue
             # Aliases are source metadata, never a shortcut around eligibility gates.
             aliases = record.get("aliases", [])
             aliases = aliases if isinstance(aliases, list) else []

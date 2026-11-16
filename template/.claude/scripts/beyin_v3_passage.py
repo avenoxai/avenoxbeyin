@@ -87,8 +87,10 @@ def settings(state_dir):
     """Optional runtime config; an invalid file means defaults, never a broken hook.
 
     strict_exclude adds prefixes to DEFAULT_EXCLUDE; it cannot remove V3's own paths.
+    strict_keep prefixes override strict exclusion: a source matching a keep prefix is
+    never dropped by the strict gate even if it also matches an exclude prefix.
     """
-    result = {"floor": FLOOR, "exclude": DEFAULT_EXCLUDE}
+    result = {"floor": FLOOR, "exclude": DEFAULT_EXCLUDE, "strict_keep": ()}
     path = Path(state_dir) / CONFIG_NAME
     try:
         if path.is_symlink() or not path.is_file() or path.stat().st_size > 65536:
@@ -106,6 +108,10 @@ def settings(state_dir):
             all(isinstance(item, str) and 0 < len(item.strip()) and len(item) <= 256 for item in exclude)):
         extra = tuple(item.replace("\\", "/") for item in exclude)
         result["exclude"] = DEFAULT_EXCLUDE + tuple(item for item in extra if item not in DEFAULT_EXCLUDE)
+    keep = value.get("strict_keep")
+    if (isinstance(keep, list) and len(keep) <= MAX_EXCLUDES and
+            all(isinstance(item, str) and 0 < len(item.strip()) and len(item) <= 256 for item in keep)):
+        result["strict_keep"] = tuple(item.replace("\\", "/") for item in keep)
     return result
 
 
