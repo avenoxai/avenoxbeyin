@@ -38,16 +38,27 @@ Durum işaretleri: ✅ karar verildi · ⏳ önerildi, onay bekliyor · ❓ aç�
     veritabanında). Bu yüzden proje bağı vault'a yazılır: kayıt özetinin ilk satırı `Proje: <ad>`
     ve kayıt `30 Projeler/<ad>/Durum.md`'ye bağlanır. Her proje klasöründe `Durum.md`,
     `Kararlar.md`, `Kurallar.md`.
-- ✅ (2026-11-16) **Köprüye git uyarıları:** oturum açılınca "repo uzak dalın gerisinde, önce pull";
-  oturum kapanırken "push edilmemiş commit var". Otomatik commit/push yok.
 - ✅ (2026-11-16) **Kapanışta otomatik commit+push (wip dalı), açılışta pull — git-devir hook'u.**
-  Ayrıntı: [hooks/README.md](hooks/README.md).
+  Ayrıntı: [hooks/README.md](hooks/README.md). (Önceki "yalnız uyarı, otomatik push yok" kararının
+  yerine geçer.)
+  - Commit edilmemiş iş: `wip/<makine>/<dal>` dalına anlık kopya; kullanıcının dalına, index'ine ve
+    çalışma ağacına dokunulmaz.
+  - Commit edilmiş iş: **kişisel repolarda `main` dahil otomatik push** (asla `--force`).
+    Şirket/diğer remote'larda yalnız uyarı.
+  - Açılışta temiz ve yalnız gerideyse otomatik ileri sarma; başka makinedeki yarım iş yalnız
+    haber verilir, onaysız alınmaz.
+  - Makine etiketleri: `is-5090` (şirket PC'si), `ev` (ev PC'si), `macbookneo` (laptop).
+- ✅ (2026-11-16) **Yeni repo, vault'ta klasörü yok:** ajan `30 Projeler/<ad>` klasörünü açmadan önce sorar.
+- ✅ (2026-11-16) **Proje adı geçmeyen soru:** ajan tahmin etmez, hangi projeyi kastettiğini sorar.
 - ✅ (2026-11-16) **Projeye özel `Kararlar.md`:** her proje klasöründe; karar başına tarih · karar ·
   neden · alternatifler. O projede oturum açılınca son birkaç karar otomatik gelir.
   (Upstream'de kararlar yalnız oturum kartındaki `**Karar:**` satırında doğar; kart arşivlenince
   `Kararlar.md`'ye kopyalanır ama açılışta artık gelmez.)
 - ✅ (2026-11-16) **Açılış bağlam bütçesi 5.000 karakter** (avenox varsayılanı, değişmiyor).
-- ⏳ Kayıt şablonu: sabit 4 satır (Yapılan / Doğrulama / Açık / Öğrenilen), en fazla ~600 karakter.
+- ✅ (2026-11-16) **Kayıt şablonu:** sabit 4 satır (Yapılan / Doğrulama / Açık / Öğrenilen), en fazla
+  ~600 karakter; başında `Proje: <ad>` satırı.
+- ✅ (2026-11-16) **Editör makine = ev PC'si (`ev`):** haftalık gözden geçirme ve yapısal düzenlemeler
+  yalnız orada yapılır.
 - ✅ (2026-11-16) **Skill önerici:** haftalık gözden geçirmede tekrar eden iş akışlarını ve kararları tespit edip
   skill taslağı önermek; onaylanırsa oluşturmak. Upstream'de böyle bir özellik yok.
   Skill: [skills/beyin-skill-onerici/SKILL.md](skills/beyin-skill-onerici/SKILL.md).
@@ -62,6 +73,10 @@ Durum işaretleri: ✅ karar verildi · ⏳ önerildi, onay bekliyor · ❓ aç�
   - Adaylar birikir; haftada bir `50 Öğrendiklerim/` altına **öğretici not**:
     Ne · Neden önemli · Basit anlatım · Kendi projemden örnek · Kendini test et (2–3 soru) · Kaynak ve sonraki adım.
   - **AI Mühendisi Yol Haritası** notu: bildiğim / eksik konular, haftalık güncellenir.
+  - ✅ (2026-11-16) **Odak alanları — genel anlamda AI Engineering:** LLM'ler · Agentic AI
+    geliştirme · sistem mühendisliği ve tasarımı · quantitative engineering ve analiz · digital
+    pathology AI engineering · recommendation systems · kurucu bakışı (Türkiye'de ürün satan bir
+    şirketin sahibi olarak düşünmek). **Eski tarz MLOps konuları girmez.** Sıklık: haftalık.
 - ✅ **Yakala**: alınacak; nasıl çalışacağı konuşulacak.
 - ✅ **scheduled-check**: alınacak; önerilen: ev PC'si açılışında + şirket PC'sinde günde bir, `--notify`.
 
@@ -94,20 +109,24 @@ Alınmayacaklar: `gecmis-import` (V2'ye ait, V3'te çalışmaz), eski `template/
   telefondaki Claude uygulamasından bağlanılır. VPS gerekmez; port açılmaz.
 - Açma: **akıllı priz + BIOS "AC gelince aç"** (öneri) veya Wake-on-LAN; kapatma ajana
   "kapat" diyerek, prizden değil.
-- Mail: ajan **yalnız taslak** oluşturur, asla göndermez.
+- Akıllı priz adayı: güç ölçümlü, betik ve webhook destekli bir model (Shelly Plug S MTR Gen3;
+  betik için Matter kapalı). Hedef otomasyon: "güç birkaç dakika eşiğin altındaysa kendini kapat",
+  zamanlı açılış, ajanın prizi sorgulayabilmesi.
+- ✅ (2026-11-16) Mail: ajan **yalnız taslak** oluşturur, asla göndermez. İki hesap: kişisel Gmail
+  ve üniversite hesabı (adresler bu depoya yazılmaz; yalnız makinenin yerel ayarında durur).
 - CV: vault'ta "Kariyer" ana notu, iş kayıtlarından beslenir; PDF/Word `40 İçerik/CV/`.
+  Varsayılan: Türkçe + İngilizce, bir ana CV ve ilana özel sürüm (⏳ açıkça onaylanmadı).
   Upstream'in gelecek "workspace homepages" özelliği (Kariyer örneği) bunun için uygun.
 
 ## Açık sorular ❓
 
 1. Repo kökü: her makinede `~/Kod` mı? Şirket PC'sinde repolar Desktop'ta kalsın mı?
-2. Haftalık gözden geçirmeyi yapan **editör makine**: ev PC'si mi, şirket 5090 mı?
-3. 2×4090 makinesi: işletim sistemi, Claude hesabı, Codex var mı?
-4. Ev PC'si: yalnız şahsi Claude mı, Codex de mi?
-5. Açma yöntemi: akıllı priz var mı, modem WOL destekliyor mu, sürekli açık mı?
-6. Mail hesabı: kişisel mi şirket mi? "Yalnız taslak" kuralı onaylı mı?
-7. Öğrenme notları: odak alanları (LLM ajanları, MLOps, model eğitimi, sistem tasarımı…) ve sıklık.
-8. Yakala: en çok ne yakalanıyor (link, makale, PDF, ekran görüntüsü, ses)?
-9. CV: tek ana CV mi, ilana özel mi; Türkçe / İngilizce?
-10. `70 Kişisel` aramaya girsin mi (girmesin ise adı `Özel` içeren bir ada çevrilir)?
-11. Oturum kartı: Stop'ta zorunlu mu, kayda mı gömülsün?
+2. 2×4090 makinesi: işletim sistemi, Claude hesabı, Codex var mı?
+3. Ev PC'si: yalnız şahsi Claude mı, Codex de mi?
+4. Ev PC'sinin BIOS'unda "AC gelince aç" ayarı var mı (yoksa Wake-on-LAN)?
+5. Yakala: en çok ne yakalanıyor (link, makale, PDF, ekran görüntüsü, ses)?
+6. CV varsayılanı (TR + EN, ana CV + ilana özel) uygun mu?
+7. `70 Kişisel` aramaya girsin mi (girmesin ise adı `Özel` içeren bir ada çevrilir)?
+8. Oturum kartı: Stop'ta zorunlu mu, kayda mı gömülsün?
+9. Açılması önerilen `preferences` ayarları onaylı mı?
+10. Şirket işlerinin özetlerinin kişisel vault'a gitmesi şirket politikasına uygun mu?
