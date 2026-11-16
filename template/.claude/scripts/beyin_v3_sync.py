@@ -1559,7 +1559,7 @@ class SyncEngine:
         if text.lstrip().startswith('---'):
             raise ValueError('text must be body only; put frontmatter fields in metadata')
         self._refuse_excluded(source)
-        allowed = {'id', 'title', 'kind', 'revision', 'status', 'owner', 'project', 'visibility', 'facts', 'next_action', 'priority', 'due_at', 'updated_at', 'created_at', 'completion_contract', 'completion_criterion', 'evidence_refs'}
+        allowed = {'id', 'title', 'kind', 'revision', 'status', 'owner', 'project', 'project_id', 'visibility', 'facts', 'next_action', 'priority', 'due_at', 'updated_at', 'created_at', 'completion_contract', 'completion_criterion', 'evidence_refs'}
         if set(metadata) - allowed:
             raise ValueError('unsupported task metadata')
         metadata = dict(metadata)

@@ -324,6 +324,14 @@ class WebPrivacyTest(WebFixture):
 
 
 class WebWriteTest(WebFixture):
+    def test_web_task_display_name_does_not_become_project_identity(self):
+        self.core.create_task({'baslik': 'identity test', 'proje': 'Same Name', 'sorumlu': 'user'})
+        paths = list((self.vault / 'tasks').glob('identity-test-*.md'))
+        self.assertEqual(len(paths), 1)
+        metadata = json.loads(paths[0].read_text().split('---')[1])
+        self.assertEqual(metadata['project'], 'Same Name')
+        self.assertNotIn('project_id', metadata)
+
     def test_task_create_and_status_change_use_the_core_task_commands(self):
         cookie, csrf = self.login()
         headers = self.write_headers(cookie, csrf)
