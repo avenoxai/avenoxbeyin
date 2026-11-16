@@ -27,8 +27,19 @@ Durum işaretleri: ✅ karar verildi · ⏳ önerildi, onay bekliyor · ❓ aç�
   dosyalar, test, açık adım) iletir. Önceki "Haiku" kararının yerine geçer.
   Avenox'ta özeti varsayılan olarak oturumdaki ana model yazar; Stop hook'u yalnız yazdırır.
 - ⏳ Oturum kartının da zorunlu tutulması (Stop'ta kart kontrolü) veya kartın kayda gömülmesi.
-- ⏳ "Kaldığım yer" proje bazında ve makineler arasında ortak: proje kimliği klasör yolundan
-  değil **repo adından / git remote'tan**.
+- ✅ (2026-11-16) **Proje kimliği = repo adı / git remote** (fork'un ilk düzeltmesi). "Kaldığım yer"
+  proje bazında ve makineler arasında ortak olur. Upstream'de kayıtların `project_id`'si klasör
+  yolunun hash'i; Windows ve Mac'te aynı repo iki ayrı proje sayılıyor.
+- ✅ (2026-11-16) **Köprüye git uyarıları:** oturum açılınca "repo uzak dalın gerisinde, önce pull";
+  oturum kapanırken "push edilmemiş commit var". Otomatik commit/push yok.
+- ✅ (2026-11-16) **Projeye özel `Kararlar.md`:** her proje klasöründe; karar başına tarih · karar ·
+  neden · alternatifler. O projede oturum açılınca son birkaç karar otomatik gelir.
+  (Upstream'de kararlar yalnız oturum kartındaki `**Karar:**` satırında doğar; kart arşivlenince
+  `Kararlar.md`'ye kopyalanır ama açılışta artık gelmez.)
+- ✅ (2026-11-16) **Açılış bağlam bütçesi 5.000 karakter** (avenox varsayılanı, değişmiyor).
+- ⏳ Kayıt şablonu: sabit 4 satır (Yapılan / Doğrulama / Açık / Öğrenilen), en fazla ~600 karakter.
+- ⏳ **Skill önerici:** haftalık gözden geçirmede tekrar eden iş akışlarını ve kararları tespit edip
+  skill taslağı önermek; onaylanırsa oluşturmak. Upstream'de böyle bir özellik yok.
 
 ## Avenox'tan seçilen ek özellikler
 

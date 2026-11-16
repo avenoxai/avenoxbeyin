@@ -13,9 +13,13 @@ olarak kurulur. Durum: ⬜ başlanmadı · 🟡 sürüyor · ✅ bitti
 
 ## 2. Süreklilik
 
-- ⬜ **Proje kimliği = repo adı / git remote**: aynı repo farklı makinelerde tek proje sayılsın
-  (upstream `project_id` = klasör yolu hash'i).
+- ⬜ **[İLK İŞ] Proje kimliği = repo adı / git remote**: aynı repo farklı makinelerde tek proje
+  sayılsın (upstream `project_id` = klasör yolu hash'i; proje adı ise repo klasör adının vault'taki
+  `30 Projeler/<ad>` klasörüyle veya `.beyin-projects.json` ile eşleşmesinden çözülüyor).
 - ⬜ **Proje bazında "kaldığım yer"**: oturum başında açılan repoya ait son kart/kayıt.
+- ⬜ **Köprüye git uyarıları**: SessionStart'ta `git fetch` + "gerisindesin, pull"; Stop/SessionEnd'de
+  "push edilmemiş commit". Ağ yavaşsa hook süresini aşmamak için zaman sınırlı.
+- ⬜ **Projeye özel `Kararlar.md`** (tarih · karar · neden · alternatifler) ve açılışta son kararlar.
 - ⬜ **Oturum kartı zorunluluğu**: Stop'ta kart kontrolü (ayrı hook) veya kartı receipt'e gömme.
 - ⬜ Makine etiketi: her kayıtta `makine: <ad>`.
 
@@ -24,6 +28,8 @@ olarak kurulur. Durum: ⬜ başlanmadı · 🟡 sürüyor · ✅ bitti
 - ⬜ `triage` + `recap` + Gelen dağıtımı (`00 Gelen` → proje / Öğrendiklerim / Fikirler / görev),
   işlenen günlükleri `60 Günlük/`'e taşıma, gelecek haftanın görevleri.
 - ⬜ Ayda bir `audit` + `beyin-kontrol`.
+- ⬜ **Skill önerici**: kayıtlarda ve kararlarda tekrar eden iş akışlarını bulur, skill taslağı
+  önerir; onayla oluşturulur (upstream'de yok).
 - ⬜ Yalnız editör makinede çalışır.
 
 ## 4. Öğrenme koçu ("Öğrenmem gerekenler")
