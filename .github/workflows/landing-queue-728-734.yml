@@ -37,7 +37,7 @@ jobs:
       - name: Reconstruct and assert exact landing tree
         working-directory: candidate
         env:
-          EXPECTED_TREE: 03fef8c1a4df42db3f0498987f049007238f6d7e
+          EXPECTED_TREE: ca856834127c1696c800d423f03cdd1ce8687fae
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = 1a49cfa80a48ec4ccbb2e4c44adb416c8960c435
@@ -45,8 +45,8 @@ jobs:
           git config user.email 'landing-validation@users.noreply.github.com'
           git fetch --no-tags origin d097e48126dbff280fca297bc8f794569cf812da
           git merge --no-ff --no-edit d097e48126dbff280fca297bc8f794569cf812da
-          git fetch --no-tags origin b5ca22981dd93fe85f2ed97347262da30f73a00f
-          git merge --no-ff --no-edit b5ca22981dd93fe85f2ed97347262da30f73a00f
+          git fetch --no-tags origin 1aa8b3040a8e9207cd7378e242f03baa05b47919
+          git merge --no-ff --no-edit 1aa8b3040a8e9207cd7378e242f03baa05b47919
           test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
           test -z "$(git status --porcelain)"
           test ! -e .github/workflows/landing-queue-728-734.yml
@@ -82,7 +82,7 @@ jobs:
       - name: Verify candidate remained unchanged
         working-directory: candidate
         env:
-          EXPECTED_TREE: 03fef8c1a4df42db3f0498987f049007238f6d7e
+          EXPECTED_TREE: ca856834127c1696c800d423f03cdd1ce8687fae
         run: |
           test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
           test -z "$(git status --porcelain)"
