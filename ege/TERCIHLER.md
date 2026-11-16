@@ -30,6 +30,14 @@ Durum işaretleri: ✅ karar verildi · ⏳ önerildi, onay bekliyor · ❓ aç�
 - ✅ (2026-11-16) **Proje kimliği = repo adı / git remote** (fork'un ilk düzeltmesi). "Kaldığım yer"
   proje bazında ve makineler arasında ortak olur. Upstream'de kayıtların `project_id`'si klasör
   yolunun hash'i; Windows ve Mac'te aynı repo iki ayrı proje sayılıyor.
+  - Kimlik: `origin` remote'undaki **`sahip/repo`** (iki farklı sahipte aynı adlı repo karışmasın);
+    görünen proje adı ve `30 Projeler/<ad>` klasörü = repo adı. Remote yoksa klasör adı.
+  - **Bundan sonra her proje GitHub (veya şirket projesi ise şirketin git sunucusu) remote'u ile
+    çalışılır**; makine değiştirirken commit + push, başlarken pull.
+  - Upstream kayıtlarında proje alanı **yok** (oturum→proje bağı yalnız o makinenin yerel
+    veritabanında). Bu yüzden proje bağı vault'a yazılır: kayıt özetinin ilk satırı `Proje: <ad>`
+    ve kayıt `30 Projeler/<ad>/Durum.md`'ye bağlanır. Her proje klasöründe `Durum.md`,
+    `Kararlar.md`, `Kurallar.md`.
 - ✅ (2026-11-16) **Köprüye git uyarıları:** oturum açılınca "repo uzak dalın gerisinde, önce pull";
   oturum kapanırken "push edilmemiş commit var". Otomatik commit/push yok.
 - ✅ (2026-11-16) **Projeye özel `Kararlar.md`:** her proje klasöründe; karar başına tarih · karar ·

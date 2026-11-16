@@ -27,6 +27,7 @@ Ege'nin çalışma düzenine göre genişletir. Amaç: **aktif olarak ne yaptı�
 | [TERCIHLER.md](TERCIHLER.md) | Verilmiş kararlar, onay bekleyen öneriler, açık sorular |
 | [MAKINELER.md](MAKINELER.md) | Her bilgisayar için kurulum kurgusu ve sıra |
 | [YOL-HARITASI.md](YOL-HARITASI.md) | Avenox'a ekleyeceğimiz özelleştirmeler ve durumları |
+| [skills/](skills/README.md) | Fork'un kendi skill'leri ve kurulumu |
 
 ## Şu anki durum (2026-11-16)
 
