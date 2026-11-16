@@ -359,6 +359,16 @@ def _backup_file(path):
             index += 1
 
 
+def _write_global_json(path, data):
+    """Durably replace a global JSON configuration without exposing a partial file."""
+    from beyin_v3_sync import atomic
+    target = Path(path)
+    if target.is_symlink():
+        target = target.resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    atomic(target, json.dumps(data, indent=2, ensure_ascii=False) + '\n')
+
+
 def _decoded_command(command):
     if not isinstance(command, str):
         return ""
@@ -755,7 +765,7 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
     new_bytes = (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode('utf-8')
     if not target.is_file() or target.read_bytes() != new_bytes:
         _backup_file(target)
-        target.write_bytes(new_bytes)
+        _write_global_json(target, data)
 
     gemini_path = None
     if harness == 'antigravity':
@@ -817,7 +827,7 @@ def uninstall_bridge(harness, home=None):
                         del data['hooks']
             if modified:
                 _backup_file(target)
-                target.write_bytes((json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode('utf-8'))
+                _write_global_json(target, data)
 
     if harness == 'antigravity':
         removed_count += remove_gemini_md(home=home)
