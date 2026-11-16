@@ -43,7 +43,7 @@ class GlobalBridgeDiagnosticsTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
 
     def test_installed_bridge_move_and_explicit_reinstall(self):
-        for harness in ('claude', 'codex', 'antigravity'):
+        for harness in ('claude', 'codex', 'antigravity', 'opencode'):
             self.bridge(self.old, harness)
         self.move()
         before_home = snapshot(self.home)
@@ -53,17 +53,17 @@ class GlobalBridgeDiagnosticsTest(unittest.TestCase):
         global_paths = report.get('global_bridge_paths', {})
         self.assertEqual(global_paths.get('status'), 'stale', global_paths)
         self.assertEqual({row['harness'] for row in global_paths['stale']},
-                         {'claude', 'codex', 'antigravity'})
+                         {'claude', 'codex', 'antigravity', 'opencode'})
         before_state = snapshot(self.state)
         self.assertEqual(json.loads(self.cli(self.vault, 'doctor'))['global_bridge_paths'], global_paths)
         human = self.cli(self.vault, 'doctor', '--human')
-        for harness in ('claude', 'codex', 'antigravity'):
+        for harness in ('claude', 'codex', 'antigravity', 'opencode'):
             self.assertIn('bridge --harness ' + harness, human)
         self.assertIn('--install', human)
         self.assertEqual(snapshot(self.home), before_home)
         self.assertEqual(snapshot(self.vault), before_vault)
         self.assertEqual(snapshot(self.state), before_state)
-        for harness in ('claude', 'codex', 'antigravity'):
+        for harness in ('claude', 'codex', 'antigravity', 'opencode'):
             self.bridge(self.vault, harness)
         recovered = json.loads(self.cli(self.vault, 'doctor'))
         self.assertEqual(recovered['global_bridge_paths']['status'], 'ok')

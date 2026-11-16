@@ -631,7 +631,7 @@ def human_result(result, command, installed_version=None):
         bridges = result.get('global_bridge_paths') or {}
         if bridges.get('status') == 'stale':
             harnesses = sorted({row.get('harness') for row in bridges.get('stale', [])
-                                if row.get('harness') in ('claude', 'codex', 'antigravity')})
+                                if row.get('harness') in ('claude', 'codex', 'antigravity', 'opencode')})
             commands = ', '.join('bridge --harness ' + harness + ' ... --install' for harness in harnesses)
             lines.append('Genel kopru yollari eski kuruluma isaret ediyor (bilgi): ' + commands +
                          '. Yeni vault icinden onceki --project-root, --event ve --context-chars secimlerini koruyarak '
