@@ -1070,11 +1070,13 @@ class CompactionRaceTest(unittest.TestCase):
         self.assertEqual(report['over_limit'], ['Last-Session.md'])
         self.assertIn('Memory hygiene: Last-Session.md is', companion_module.hygiene_notice(report))
 
-    def test_compact_skips_one_unreadable_directory_candidate(self):
+    def test_compact_rejects_unreadable_identity_without_writing(self):
         blocked = self.vault / 'Blocked Companion'
         blocked.mkdir()
         (blocked / 'Core.md').write_text('# blocked', encoding='utf-8')
         real_stat = Path.stat
+        before = {p.relative_to(self.vault).as_posix(): p.read_bytes()
+                  for p in self.vault.rglob('*') if p.is_file()}
 
         def stat(path, *args, **kwargs):
             if os.fspath(path) == os.fspath(blocked):
@@ -1082,7 +1084,12 @@ class CompactionRaceTest(unittest.TestCase):
             return real_stat(path, *args, **kwargs)
 
         with mock.patch.object(Path, 'stat', stat):
-            self.assertEqual(companion_module.directory(self.vault, strict=True), self.directory)
+            with self.assertRaisesRegex(RuntimeError, 'cannot inspect companion directory candidates'):
+                compact_module.compact(self.vault, self.state, now=NOW)
+        after = {p.relative_to(self.vault).as_posix(): p.read_bytes()
+                 for p in self.vault.rglob('*') if p.is_file()}
+        self.assertEqual(after, before)
+        self.assertFalse(self.state.exists())
 
     def test_compact_fails_closed_when_all_directory_candidates_are_unreadable(self):
         blocked = self.vault / 'Blocked Companion'

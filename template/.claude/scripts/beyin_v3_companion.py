@@ -59,19 +59,19 @@ def directory(vault, *, strict=False):
             elif any(is_type(path / name, 'file') for name in ('Core.md', 'Soul.md')):
                 candidates.append(path)
         except OSError as exc:
-            # Strict callers may continue only for a directory that is named like a
-            # companion candidate.  Errors from ordinary entries (or while probing
-            # Core/Soul) must keep their original meaning for reference checks.
+            # A named identity that cannot be inspected may still compete with
+            # readable identities. Never silently select a different identity.
+            # Ordinary-entry/Core/Soul failures retain their original exception.
             if strict and is_named:
                 inspection_errors.append((path, exc))
                 continue
             raise
     candidates = named or candidates
-    if len(candidates) > 1:
-        return None
-    if strict and not candidates and inspection_errors:
+    if strict and inspection_errors:
         paths = ', '.join(str(path) for path, _ in inspection_errors)
         raise RuntimeError('cannot inspect companion directory candidates: ' + paths)
+    if len(candidates) > 1:
+        return None
     return candidates[0] if candidates else vault / DEFAULT_DIRECTORY
 
 
