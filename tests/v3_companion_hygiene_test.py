@@ -838,7 +838,7 @@ class CompactionRaceTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='companion-race-')
         self.addCleanup(self.tmp.cleanup)
-        self.vault = Path(self.tmp.name) / 'vault'
+        self.vault = Path(self.tmp.name).resolve() / 'vault'
         self.directory = self.vault / COMPANION
         self.directory.mkdir(parents=True)
         self.state = Path(self.tmp.name) / 'state'
@@ -1069,6 +1069,42 @@ class CompactionRaceTest(unittest.TestCase):
         self.assertEqual(report['files']['Last-Session.md']['chars'], len(self.live.read_bytes().decode('utf-8')))
         self.assertEqual(report['over_limit'], ['Last-Session.md'])
         self.assertIn('Memory hygiene: Last-Session.md is', companion_module.hygiene_notice(report))
+
+    def test_compact_rejects_unreadable_identity_without_writing(self):
+        blocked = self.vault / 'Blocked Companion'
+        blocked.mkdir()
+        (blocked / 'Core.md').write_text('# blocked', encoding='utf-8')
+        real_stat = Path.stat
+        before = {p.relative_to(self.vault).as_posix(): p.read_bytes()
+                  for p in self.vault.rglob('*') if p.is_file()}
+
+        def stat(path, *args, **kwargs):
+            if os.fspath(path) == os.fspath(blocked):
+                raise PermissionError('synthetic candidate failure')
+            return real_stat(path, *args, **kwargs)
+
+        with mock.patch.object(Path, 'stat', stat):
+            with self.assertRaisesRegex(RuntimeError, 'cannot inspect companion directory candidates'):
+                compact_module.compact(self.vault, self.state, now=NOW)
+        after = {p.relative_to(self.vault).as_posix(): p.read_bytes()
+                 for p in self.vault.rglob('*') if p.is_file()}
+        self.assertEqual(after, before)
+        self.assertFalse(self.state.exists())
+
+    def test_compact_fails_closed_when_all_directory_candidates_are_unreadable(self):
+        blocked = self.vault / 'Blocked Companion'
+        blocked.mkdir()
+        (blocked / 'Core.md').write_text('# blocked', encoding='utf-8')
+        real_stat = Path.stat
+
+        def stat(path, *args, **kwargs):
+            if os.fspath(path) in {os.fspath(blocked), os.fspath(self.directory)}:
+                raise PermissionError('synthetic candidate failure')
+            return real_stat(path, *args, **kwargs)
+
+        with mock.patch.object(Path, 'stat', stat):
+            with self.assertRaisesRegex(RuntimeError, 'cannot inspect companion directory candidates'):
+                compact_module.compact(self.vault, self.state, now=NOW)
 
     def test_hygiene_notice_reports_clipped_rules_and_handoff_files(self):
         report = companion_module.hygiene(self.vault, self.state)
