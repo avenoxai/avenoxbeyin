@@ -47,6 +47,17 @@ class StrictRetrieveTest(unittest.TestCase):
     def sources(self, query, **kwargs):
         return [record['source'] for record in self.store.retrieve(query, **kwargs)['records']]
 
+    def test_wrappers_do_not_remove_explicit_topic_with_the_same_stem(self):
+        self.assertEqual(self.module._strict_query_tokens('not notlarda'), {'not'})
+        self.assertEqual(self.module._strict_query_tokens('konu konusunda'), {'konu'})
+        self.assertEqual(self.module._strict_query_tokens('hakkında Quartz notlarda'), {'quartz'})
+        self.assertIn('clientserver', self.module._strict_query_tokens('client-server hakkında'))
+
+    def test_strict_retrieval_preserves_topic_shared_with_a_wrapper(self):
+        self.ingest('topic-note', 'Konu bilgisi burada.', 'notes/topic.md')
+        self.assertEqual(self.sources('konu', strict=True), ['notes/topic.md'])
+        self.assertEqual(self.sources('konu konusunda', strict=True), ['notes/topic.md'])
+
     def test_single_shared_word_is_not_a_match_in_strict_mode(self):
         self.assertEqual(self.sources('is the budget approved', strict=False), ['daily/2026-09-11.md'])
         self.assertEqual(self.sources('is the budget approved', strict=True), [])
