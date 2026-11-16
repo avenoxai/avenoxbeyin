@@ -670,6 +670,24 @@ class WebInstalledEntryTest(unittest.TestCase):
             code, output, error = run('durum')
             self.assertEqual(code, 0, error)
             self.assertTrue(output.startswith('Web görünümü çal???yor: http://127.0.0.1:'), output)
+            # Explicit JSON is the opt-in manual bootstrap. It must remain usable and one-use.
+            code, manual, error = run('ac', '--no-browser', '--json')
+            self.assertEqual(code, 0, error)
+            from urllib.parse import urlsplit
+            address = urlsplit(json.loads(manual)['adres'])
+            for expected in (303, 401):
+                connection = http.client.HTTPConnection(address.hostname, address.port, timeout=5)
+                try:
+                    connection.request('GET', address.path + '?' + address.query)
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, expected)
+                    response.read()
+                finally:
+                    connection.close()
+            code, manual_help, error = run('ac', '--no-browser')
+            self.assertEqual(code, 0, error)
+            self.assertIn('beyin.py web ac --no-browser --json', manual_help)
+            self.assertNotIn('token=', manual_help)
             self.assertEqual(run('durdur')[:2], (0, 'Web görünümü durduruldu.' + os.linesep))
             output, error = server.communicate(timeout=30)
             self.assertEqual(server.returncode, 0, error.decode('cp1252', 'replace'))
@@ -678,6 +696,8 @@ class WebInstalledEntryTest(unittest.TestCase):
             # Line 1 should mention the URL but NOT the launch token (single-use, not shown in terminal)
             self.assertIn('http://127.0.0.1:', lines[1])
             self.assertNotIn('token=', lines[1])
+            self.assertNotIn('Taray?c?da aç?l?yor', lines[1])
+            self.assertIn('beyin.py web ac --no-browser --json', output.decode('cp1252', 'replace'))
             self.assertEqual(lines[-1], 'Web görünümü kapand?.')
             self.assertIsNone(web.read_running(state))
             # JSON stays ASCII under the legacy code page, Turkish messages included.
