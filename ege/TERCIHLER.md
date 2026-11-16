@@ -22,8 +22,10 @@ Durum işaretleri: ✅ karar verildi · ⏳ önerildi, onay bekliyor · ❓ aç�
 ## Kurallar ve kayıt
 
 - ✅ Kural düzeltmesi: **hemen yaz, haber ver**.
-- ✅ Vault yazımları ucuz olmalı: kayıt/kart/not yazımı **Haiku, medium effort** bir alt ajana
-  (`beyin-yazici`) verilir; ana model yalnız kısa özet sağlar.
+- ✅ (2026-11-16) **İş kaydı özetini Sonnet 5.5, medium effort yazar.** Kayıt/kart/not yazımı
+  `beyin-yazici` alt ajanına verilir; ana model (Opus) yalnız ham bilgiyi (ne yapıldı, değişen
+  dosyalar, test, açık adım) iletir. Önceki "Haiku" kararının yerine geçer.
+  Avenox'ta özeti varsayılan olarak oturumdaki ana model yazar; Stop hook'u yalnız yazdırır.
 - ⏳ Oturum kartının da zorunlu tutulması (Stop'ta kart kontrolü) veya kartın kayda gömülmesi.
 - ⏳ "Kaldığım yer" proje bazında ve makineler arasında ortak: proje kimliği klasör yolundan
   değil **repo adından / git remote'tan**.

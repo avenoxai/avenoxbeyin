@@ -6,7 +6,7 @@ olarak kurulur. Durum: ⬜ başlanmadı · 🟡 sürüyor · ✅ bitti
 ## 1. Temel (şirket 5090)
 
 - ⬜ Global köprü (Claude) + `project-context on` + önerilen `preferences` ayarları.
-- ⬜ `beyin-yazici` alt ajanı (Haiku, medium): receipt, oturum kartı ve not yazımını ana modelden
+- ⬜ `beyin-yazici` alt ajanı (Sonnet 5.5, medium): receipt, oturum kartı ve not yazımını ana modelden
   devralır. Global `CLAUDE.md` kuralı: "vault yazımını beyin-yazici'ye ver".
 - ⬜ `_Sistem/Ajan/` ana kopyalar + makineye kopyalayan tek komut.
 - ⬜ `scheduled-check` Görev Zamanlayıcı kaydı.
