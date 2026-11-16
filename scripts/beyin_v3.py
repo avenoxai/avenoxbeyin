@@ -1229,6 +1229,13 @@ def parser(note_namespace=None, is_json=False):
     settings.add_argument("--context-chars", type=int)
     settings.add_argument("--companion-context-chars", type=int,
                           help="Opening context budget (SessionStart, continuity questions), 1000..24000; 0 uses --context-chars")
+    # Context-fill reminder (issue #685): machine-local, opt-in, never in preferences file.
+    settings.add_argument("--context-fill", choices=("on", "off"),
+                          help="Opt-in reminder at Stop when context tokens exceed threshold; never a preferences key")
+    settings.add_argument("--context-fill-first", type=int,
+                          help="First threshold in tokens for context-fill reminder (default 150000)")
+    settings.add_argument("--context-fill-repeat", type=int,
+                          help="Repeat threshold in tokens for context-fill reminder (default 75000)")
     settings.add_argument("--secret-filter", choices=("on", "off"))
     settings.add_argument("--daily-layout", choices=("flat", "v3"),
                           help="Vault-wide daily receipt view layout (default v3); applied by the next sync")
@@ -1602,6 +1609,23 @@ def main(argv=None, return_result=False):
                 if not limits_valid:
                     raise ValueError('companion-limits.json in the runtime state is invalid; fix or remove it first')
                 companion.check_limits(dict(current_limits, **limits))
+            # Context-fill config (issue #685): machine-local in state/context-fill.json
+            import beyin_v3_context_fill as context_fill
+            fill_changes = {}
+            if args.context_fill is not None:
+                fill_changes['enabled'] = args.context_fill == 'on'
+            if args.context_fill_first is not None:
+                if not 1000 <= args.context_fill_first <= 1000000:
+                    raise ValueError('--context-fill-first must be between 1000 and 1000000')
+                fill_changes['first_threshold'] = args.context_fill_first
+            if args.context_fill_repeat is not None:
+                if not 1000 <= args.context_fill_repeat <= 1000000:
+                    raise ValueError('--context-fill-repeat must be between 1000 and 1000000')
+                fill_changes['repeat_threshold'] = args.context_fill_repeat
+            if fill_changes:
+                cfg = context_fill.load_config(state)
+                cfg.update(fill_changes)
+                context_fill.save_config(state, cfg)
             changes = {key: getattr(args, key) for key in ('interval_minutes', 'context_mode', 'context_chars') if getattr(args, key) is not None}
             if args.auto_sync is not None:
                 changes['auto_sync'] = args.auto_sync == 'on'
@@ -1834,6 +1858,9 @@ def main(argv=None, return_result=False):
                 result['jev']['context_mode'] = result['preferences'].get('context_mode')
                 result['jev'] = jev_advice(result['jev'])
             result['automatic_model_calls'] = result['jev'].get('automatic_model_calls', False)
+            # Context-fill reminder (issue #685)
+            import beyin_v3_context_fill as context_fill
+            result['context_fill'] = context_fill.get_doctor_status(state)
             health = result['hook-health.json'] or {}
             gaps_info = result['receipt-gaps.json']
             result['potential_missing_receipts'] = gaps_info.get('potential_missing_receipts') if gaps_info is not None else None

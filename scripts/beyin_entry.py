@@ -439,6 +439,15 @@ def human_result(result, command, installed_version=None):
                 cm = ascii_text(jev.get('context_mode', (result.get('preferences') or {}).get('context_mode', '?')))
                 lines.append("Jev otomatik baglam yalniz 'context_mode: turn' ile calisir; su an '" +
                              cm + "' modunda. Etkinlestirmek icin: beyin.py preferences --context-mode turn")
+        # Context-fill reminder (issue #685)
+        ctx_fill = result.get('context_fill') or {}
+        if ctx_fill.get('enabled'):
+            lines.append('Bağlam doluluk hatırlatması: aktif (ilk eşik ' + str(ctx_fill.get('first_threshold', 150000)) +
+                         ', tekrar ' + str(ctx_fill.get('repeat_threshold', 75000)) + ' token)')
+        elif ctx_fill.get('enabled') is False:
+            lines.append('Bağlam doluluk hatırlatması: kapali')
+        elif ctx_fill.get('status') == 'invalid':
+            lines.append('Bağlam doluluk hatırlatması: ayar gecersiz (' + str(ctx_fill.get('error', 'unknown')) + ')')
         if result.get('secrets_redacted'):
             lines.append('Sir suzgeci ' + str(result['secrets_redacted']) + ' eslesmeyi [REDACTED] olarak yazdi.')
         cov = result.get('receipt_coverage')
