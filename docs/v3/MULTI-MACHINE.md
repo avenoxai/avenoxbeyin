@@ -33,6 +33,8 @@ kopyalama talimatı değildir.
 | `🔮 850-Companion/Arşiv/` | evet | `companion-compact` metni canlı dosyadan çıkarıp arşive taşır ve yerine tek bir işaret satırı bırakır. Arşiv tek makinede kalırsa öbür makine içi boş bir işaret görür. Arşivdeki `visibility: private` otomatik bağlama girmez demektir, git dışı demek değildir. |
 | `receipts/` | evet | Receipt dosyası yazıldıktan sonra değişmez ve adı `event_id` özetidir (`beyin_v3_sync.py` `receipt()`). Öbür makine yeni receipt'i bir sonraki `sync`'te kendi veritabanına alır (`_scan_receipts()`). |
 | `receipts/*.md.view-provenance.json` | evet | Bir receipt'in üretilmiş görünüme dayandığı için dışlandığını, immutable olay kimliğiyle kaydeder. State yeniden kurulunca eski receipt dışarıda kalır; aynı günlük yoluna dayanan yeni insan receipt'leri engellenmez. İçerik taşımaz; bu dosyalar silinmemelidir. |
+| `.presence/` | yalnız `parallel-sessions` açıksa | Açık oturumlar için kısa ömürlü JSON işaretleridir. Oturum kimliği ve zaman damgaları taşır; istem metni ya da çalışma klasörü taşımaz. Git ya da bulut eşitlemesi, bu metadata'yı da taşır. |
+| `knowledge/conversations/` | yalnız chat trace açık ve özet yazılmışsa | Kullanıcı/ajan konuşmasından üretilen Markdown özetleridir; not metni gibi eşitlenir ve içerik taşıyabilir. |
 | `daily/v3/`, `knowledge/v3/` | hayır | Bu görünümler yerel veritabanındaki receipt'lerden üretilir (`beyin_v3_projections.py` `project_receipts()`). Receipt'ler eşitlendiyse aynı saat dilimindeki iki makinede aynı çıkar; dosya adı makinenin yerel günüdür, farklı saat dilimindeki makineler aynı receipt'i farklı güne koyabilir. Git'e alınırlarsa öbür makineden gelen dosya elle düzenlenmiş sayılır (`manual receipt view edit preserved`) ve o görünüm artık güncellenmez. |
 | `AGENTS.md`, `CLAUDE.md` | evet | Kullanıcının kendi talimatları da bu dosyalardadır. 3.7.0'dan beri Beyin bloğu makine yolu taşımaz (`python3 beyin.py sync`), aynı sürümü kuran her makinede aynıdır. Önce güncelleyen makinenin bloğu git'le öbürüne gelirse öbür makinenin güncellemesi onu kendi bloğu sayar ve çakışma vermez. |
 | Kurulum dosyaları | hayır | Bir kısmı bu makinenin yollarını taşır (`.beyin-runtime.json`, hook dosyaları, Hermes ve OMP eklentileri); geri kalanı bu makinede kurulu sürüme aittir. Güncellemeyi önce yapan makinenin dosyaları git'le öbürüne geçerse o makinenin kurulum kaydıyla uyuşmaz; yeniden kurulum `Reinstall conflict: managed file changed` hatasıyla durur. |
@@ -41,6 +43,29 @@ kopyalama talimatı değildir.
 İnsan günlükleri de burada bulunabildiği için tüm `daily/` klasörünü Git dışında bırakma;
 yalnız üretilen dosyaları ayır. Yerel gün ve saat dilimi kuralı iki düzende de aynıdır.
 Ayrıntılar [günlük receipt düzeninde](PREFERENCES.md#günlük-receipt-düzeni).
+
+### Gizlilik seçimi
+
+Git ve bulut eşitleme vault içindeki dosya yollarına göre çalışır; `visibility: private`
+otomatik bağlama girmeyi engeller, dosyayı Git veya OneDrive/iCloud/Dropbox dışına çıkarmaz.
+Paylaşılan depoya göndermeden önce `git status --short` ile bu yolları kontrol et.
+
+Çapraz cihazdaki açık-oturum uyarısına ihtiyacın yoksa `.gitignore` dosyana şunu ekleyebilirsin:
+
+```gitignore
+.presence/
+```
+
+Bu seçim başka cihazdaki açık oturumların görünmesini engeller. Konuşma özetlerini yerel
+tutmak istiyorsan ayrıca şunu ekle:
+
+```gitignore
+knowledge/conversations/
+```
+
+Bu ikinci seçim, yeni özetlerin Git'e eklenmesini önler; zaten izlenen dosyaları izlemeyi
+bırakmaz. Bulut eşitleme kullanıyorsan eşdeğer hariç tutmayı o hizmette ayrıca ayarla.
+Özetleri veya presence işaretlerini başka cihazda kullanmak istiyorsan bu satırları ekleme.
 
 ## Önerilen `.gitignore`
 
