@@ -64,6 +64,17 @@ jobs:
           test ! -e .github/workflows/landing-queue-5d8f510.yml
           git show -s --format='candidate_commit=%H%ncandidate_tree=%T%nparents=%P'
           python --version
+      - name: Install and require PDF and media test tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils ffmpeg
+          command -v pdftotext
+          command -v ffmpeg
+          command -v ffprobe
+          pdftotext -v
+          ffmpeg -version
+          ffprobe -version
       - name: Complete unfiltered V3 contracts
         working-directory: candidate
         run: |
