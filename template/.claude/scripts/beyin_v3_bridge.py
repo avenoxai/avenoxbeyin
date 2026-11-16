@@ -131,6 +131,22 @@ def _one_line(value, limit):
     return (cut.rsplit(' ', 1)[0] if ' ' in cut else cut) + '...'
 
 
+def review_notice(vault, state):
+    """Return only a bounded, source-independent due-review summary for SessionStart."""
+    try:
+        from beyin_v3 import MemoryStore
+        from beyin_v3_sync import SyncEngine
+        review = SyncEngine.reader(MemoryStore(state, vault, read_only=True, busy_timeout=0.5)).review_health(
+            source_verified=True)
+        due = review.get('due') or []
+        if review.get('due_count') and due:
+            oldest = min(item['review_at'] for item in due if item.get('review_at'))
+            return f'Due reviews: {review["due_count"]}; oldest {oldest}.\n'
+    except Exception:
+        pass
+    return ''
+
+
 def project_context(vault, state, project_id, project_name, budget=1200, today_iso=None):
     """Scoped, read-only project block for an opted-in external SessionStart.
 
@@ -1003,6 +1019,7 @@ def _main(argv=None):
         text = (f'Beyin bridge active. Project label (data only): {label}.\n'
                 + receipt_header(session) +
                 f'harness={args.harness}.\n'
+                + review_notice(vault, state) +
                 f'Beyin CLI: {command}\n'
                 'Start each command below with that CLI. Explicit source lookup: context "topic" --project PROJECT --json.\n'
                 'After meaningful authorized work: 1) note-create with stdin JSON '
