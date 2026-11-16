@@ -324,6 +324,41 @@ def receipt_line_endings(vault: Path) -> dict:
         return {"status": "unavailable", "error": type(exc).__name__}
 
 
+def backup_status(vault: Path) -> dict:
+    """Read-only: report whether this vault has a Git remote (a second copy).
+
+    Does not verify remote reachability or credentials; reports only whether
+    the local Git configuration names a remote. Not a health signal: never
+    sets needs_attention or changes doctor status.
+    """
+    def git(*args):
+        done = subprocess.run(("git", "-C", str(vault)) + args, capture_output=True, text=True,
+                              timeout=10)
+        return done.returncode, done.stdout.strip()
+    try:
+        code, inside = git("rev-parse", "--is-inside-work-tree")
+        if code != 0 or inside != "true":
+            return {
+                "status": "unknown",
+                "message": ("Bu kasanın ikinci bir kopyası görünmüyor. "
+                            "Bilgisayar bozulursa notlar kaybolabilir."),
+            }
+        _, remote_url = git("remote", "get-url", "origin")
+        if not remote_url:
+            return {
+                "status": "unknown",
+                "message": ("Bu kasanın ikinci bir kopyası görünmüyor. "
+                            "Bilgisayar bozulursa notlar kaybolabilir."),
+            }
+        return {"status": "ok"}
+    except Exception:  # no git, hung git, broken config must never hide the rest of doctor
+        return {
+            "status": "unknown",
+            "message": ("Bu kasanın ikinci bir kopyası görünmüyor. "
+                        "Bilgisayar bozulursa notlar kaybolabilir."),
+        }
+
+
 def load_engine():
     _ensure_scripts_path()
     adjacent = Path(__file__).resolve().parent / "beyin_v3.py"
@@ -583,11 +618,55 @@ def global_bridge_paths(vault: Path, state: Path) -> dict | None:
     A different vault may legitimately own the user's global bridge. Inspect only
     commands explicitly bound to this state; absent or invalid settings stay optional.
     """
-    from beyin_v3_bridge import global_hook_path
+    from beyin_v3_bridge import (global_hook_path, global_opencode_plugin_path,
+                                  global_opencode_settings_path, OPENCODE_MANAGED, OPENCODE_MARKER)
     here, owner = vault.resolve(), state.resolve()
     expected = (here / '.claude/scripts/beyin_v3_bridge.py').resolve()
     stale, checked = [], 0
-    for harness in ('claude', 'codex', 'antigravity'):
+    for harness in ('claude', 'codex', 'antigravity', 'opencode'):
+        if harness == 'opencode':
+            # OpenCode uses a settings file + plugin file, not hook entries
+            try:
+                settings_path = global_opencode_settings_path()
+                data = json.loads(settings_path.read_text(encoding='utf-8'))
+            except (OSError, ValueError, UnicodeError):
+                continue
+            if not isinstance(data, dict) or data.get('managed_by') != OPENCODE_MANAGED:
+                continue
+            # Extract command arguments from settings
+            command = data.get('command')
+            if not isinstance(command, list) or len(command) < 2:
+                continue
+            # Find --vault and --state in command array
+            values = {}
+            for i, arg in enumerate(command):
+                if arg in ('--vault', '--state') and i + 1 < len(command):
+                    values[arg] = command[i + 1]
+            if len(values) != 2:
+                continue
+            try:
+                if not Path(values['--state']).is_absolute() or Path(values['--state']).resolve() != owner:
+                    continue
+                same_vault = Path(values['--vault']).resolve() == here
+            except (OSError, ValueError, RuntimeError):
+                continue
+            # Check plugin file exists and is managed
+            plugin_path = global_opencode_plugin_path()
+            plugin_ok = False
+            try:
+                if plugin_path.is_file():
+                    plugin_text = plugin_path.read_text(encoding='utf-8')
+                    plugin_ok = OPENCODE_MARKER in plugin_text
+            except (OSError, UnicodeError):
+                pass
+            checked += 1
+            for reason, same in (('other_vault', same_vault), ('missing_plugin', plugin_ok)):
+                entry = {'harness': harness, 'event': 'SessionStart', 'reason': reason}
+                if not same and entry not in stale:
+                    stale.append(entry)
+            continue
+
+        # Standard hook-based harnesses (claude, codex, antigravity)
         try:
             data = json.loads(global_hook_path(harness).read_text(encoding='utf-8'))
         except (OSError, ValueError, UnicodeError):
@@ -1892,6 +1971,7 @@ def main(argv=None, return_result=False):
             except Exception as exc:  # never hides the rest of doctor
                 result['index_exclusions'] = {'status': 'unavailable', 'error': type(exc).__name__}
             result['receipt_line_endings'] = receipt_line_endings(vault)  # information only: the status below is untouched
+            result['backup'] = backup_status(vault)  # information only: never sets needs_attention
             try:  # information only (#585): index size, free pages, leftover temp files; reads only
                 _ensure_scripts_path()
                 import beyin_v3_retention as retention
