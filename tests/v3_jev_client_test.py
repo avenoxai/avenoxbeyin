@@ -70,7 +70,8 @@ class ClientTests(unittest.TestCase):
         keyfile=self.vault/'env';keyfile.write_text('TYPESAFE_API_KEY="$(touch nope)"\n')
         self.config(env_file=str(keyfile))
         with patch.dict(os.environ,{},clear=True):
-            self.assertEqual(j._environment(j.load_config(self.vault))['TYPESAFE_API_KEY'],'$(touch nope)')
+            env, _ = j._environment(j.load_config(self.vault))
+            self.assertEqual(env['TYPESAFE_API_KEY'],'$(touch nope)')
         self.assertFalse((self.vault/'nope').exists())
     def test_deadline(self):
         # The transport blocks far longer than the deadline, so a loaded CI runner
@@ -325,5 +326,35 @@ class ClientTests(unittest.TestCase):
                 self.assertEqual(second['scores'], {})
                 self.assertEqual(second['diagnostics'], ['configuration_changed'])
                 self.assertNotIn('cache_unavailable', second['diagnostics'])
+
+    def test_set_key_command_and_retrieval(self):
+        self.config()
+        py_exe = sys.executable
+        # Absolute path accepted, writes to jev-state.json and not jev.json
+        with patch.dict(os.environ, {}, clear=True):
+            res = j.set_key_command(self.vault, [py_exe, '-c', 'print("secret-key-123")'])
+            self.assertEqual(res['key_source'], 'command')
+            self.assertTrue(res['key_present'])
+        self.assertTrue((j._jev_state_path(self.vault)).exists())
+        self.assertFalse('key_command' in (self.vault / 'jev.json').read_text())
+
+        # Environment retrieval uses key_command when env/env_file are absent
+        with patch.dict(os.environ, {}, clear=True):
+            state = j._load_jev_state(self.vault)
+            env, source = j._environment(j.load_config(self.vault), state)
+            self.assertEqual(source, 'command')
+            self.assertEqual(env['TYPESAFE_API_KEY'], 'secret-key-123')
+
+        # Invalid key_command (relative path, empty, non-list) raises ValueError
+        for bad_cmd in ('not-absolute', [], [123], ['relative/path']):
+            with self.assertRaises(ValueError):
+                j.set_key_command(self.vault, bad_cmd if isinstance(bad_cmd, list) else bad_cmd) # type: ignore
+
+        # Remove key_command
+        with patch.dict(os.environ, {}, clear=True):
+            res_removed = j.set_key_command(self.vault, None)
+            self.assertEqual(res_removed['key_source'], 'none')
+            self.assertFalse(res_removed['key_present'])
+
 
 if __name__=='__main__': unittest.main()

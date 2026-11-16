@@ -272,6 +272,16 @@ def human_result(result, command, installed_version=None):
         if not result.get('config_valid', True):
             lines.append('Ayar dosyasi bozuk; jev.json elle duzeltilmeli.')
         return '\n'.join(lines + jev_lines(result))
+    if command == 'jev-key':
+        key_source = result.get('key_source', 'none')
+        if result.get('changed'):
+            if result.get('key_source') == 'command':
+                return 'Jev key_command ayarlandi (makineye ozel, jev.json dokunulmadi)'
+            else:
+                return 'Jev key_command kaldirildi (makineye ozel, jev.json dokunulmadi)'
+        lines = ['Jev key_command: ' + ('ayarlanmis' if key_source == 'command' else 'yok'),
+                 'Anahtar kaynagi: ' + key_source]
+        return '\n'.join(lines)
     if command == 'preferences':
         prefs = result['preferences']
         lines = ['Otomatik kontrol: ' + ('acik' if prefs['auto_sync'] else 'kapali'),

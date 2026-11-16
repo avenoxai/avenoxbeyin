@@ -1347,6 +1347,8 @@ def parser(note_namespace=None, is_json=False):
     jev.add_argument("--base-url", dest="base_url", help="laya only: loopback URL, default http://127.0.0.1:8765")
     jev.add_argument("--model", choices=LAYA_MODELS, help="laya only: pinned checkpoint, default multilingual")
     jev.add_argument("--check", action="store_true", help="with status: one GET /health to the local Laya server")
+    jev_key = sub.add_parser("jev-key", help="Configure machine-local key_command for credential retrieval (never in jev.json)")
+    jev_key.add_argument("command", nargs="*", help="argv list (first element absolute path), or empty to remove")
     answer = sub.add_parser("jev-answer", help="Advisory answer claim verification against exact source quotes")
     answer.add_argument("--file", required=True, help="JSON list of claims (maximum 32,000 characters)")
     answer.add_argument("--project", required=True)
@@ -1745,6 +1747,13 @@ def main(argv=None, return_result=False):
                 result["context_mode"] = jev_context_mode(vault)
                 result = jev_advice(result)
                 result["changed"] = True
+        elif args.command == "jev-key":
+            if not args.command:
+                key_command = None
+            else:
+                key_command = args.command
+            result = jev_client().set_key_command(vault, key_command)
+            result["changed"] = True
         elif args.command == "hook-reconcile":
             result = hook_reconcile(vault, state, force=getattr(args, 'force', False))
         elif args.command == "doctor":

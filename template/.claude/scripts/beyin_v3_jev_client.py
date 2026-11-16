@@ -28,6 +28,7 @@ import math
 import statistics
 import os
 import re
+import subprocess
 import queue
 import threading
 import tempfile
@@ -228,6 +229,54 @@ def killed(vault):
     return os.environ.get('BEYIN_JEV_DISABLE') == '1' or (Path(vault) / 'jev.disabled').exists()
 
 
+def _jev_state_path(vault):
+    """Return the path to the machine-local Jev state file (jev-state.json).
+
+    The state directory is outside the vault so it is never synced across machines.
+    Uses the same convention as beyin_v3_yakala.resolve_state.
+    """
+    import sys
+    try:
+        if sys.platform == 'win32':
+            base = Path(os.environ.get('LOCALAPPDATA', str(Path.home() / 'AppData/Local')))
+        elif sys.platform == 'darwin':
+            base = Path.home() / 'Library/Application Support'
+        else:
+            base = Path(os.environ.get('XDG_STATE_HOME', str(Path.home() / '.local/state')))
+    except RuntimeError:
+        # Path.home() fails when HOME/USERPROFILE is not set (e.g., in tests with cleared env).
+        # Fall back to a temporary directory.
+        base = Path(tempfile.gettempdir()) / 'beyin-v3-fallback'
+    state_dir = base / 'beyin-v3' / hashlib.sha256(str(vault).encode()).hexdigest()[:16]
+    return state_dir / 'jev-state.json'
+
+
+def _load_jev_state(vault):
+    """Load machine-local Jev state (key_command, etc.). Returns empty dict if missing/invalid."""
+    path = _jev_state_path(vault)
+    if not path.exists() or path.is_symlink():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+        if not isinstance(data, dict):
+            return {}
+        return data
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        return {}
+
+
+def _save_jev_state(vault, state):
+    """Save machine-local Jev state atomically."""
+    path = _jev_state_path(vault)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent, delete=False) as handle:
+        os.chmod(handle.name, 0o600)
+        json.dump(state, handle, ensure_ascii=False)
+        temporary = handle.name
+    os.replace(temporary, path)
+    os.chmod(path, 0o600)
+
+
 def _supplied(vault):
     path = Path(vault) / 'jev.json'
     if not path.exists(): return {}
@@ -276,8 +325,16 @@ def _validated(config):
     return config
 
 
-def _environment(config):
+def _environment(config, state=None):
+    """Return (values, key_source).
+
+    key_source: 'env', 'env_file', 'command', or 'none'.
+    key_command runs only when neither env nor env_file supplied a key.
+    Its first stdout line is the key; output is never written to disk or logs.
+    base_url from env/env_file is NOT counted as a key source.
+    """
     values = {}
+    key_source = 'none'
     if config.get('env_file'):
         path = Path(config['env_file'])
         if not path.is_absolute() or not path.is_file():
@@ -289,9 +346,38 @@ def _environment(config):
                 if len(value)>=2 and value[0]==value[-1] and value[0] in "\"'":
                     value=value[1:-1]
                 values[match[1]]=value
-    for name in ('TYPESAFE_API_KEY','TYPESAFE_BASE_URL','LAYA_API_KEY'):
-        if name in os.environ: values[name]=os.environ[name]
-    return values
+    # Check env for actual keys (not base_url)
+    for name in ('TYPESAFE_API_KEY','LAYA_API_KEY'):
+        if name in os.environ:
+            values[name]=os.environ[name]
+            key_source = 'env'
+    # Check env_file for actual keys (not base_url)
+    if key_source == 'none':
+        for name in ('TYPESAFE_API_KEY','LAYA_API_KEY'):
+            if name in values:
+                key_source = 'env_file'
+                break
+    # Try key_command from machine-local state
+    if key_source == 'none' and state and state.get('key_command'):
+        cmd = state['key_command']
+        if isinstance(cmd, list) and cmd and all(isinstance(part, str) and part.strip() for part in cmd):
+            if Path(cmd[0]).is_absolute():
+                try:
+                    done = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+                    if done.returncode == 0 and done.stdout.strip():
+                        first_line = done.stdout.strip().splitlines()[0]
+                        key_name = 'LAYA_API_KEY' if config.get('provider') == 'laya' else 'TYPESAFE_API_KEY'
+                        values[key_name] = first_line
+                        key_source = 'command'
+                except (OSError, subprocess.TimeoutExpired, ValueError):
+                    pass
+    # Also read base_url from env/env_file if present (but don't count as key_source)
+    for name in ('TYPESAFE_BASE_URL',):
+        if name in os.environ:
+            values[name] = os.environ[name]
+        elif name not in values and config.get('env_file'):
+            pass
+    return values, key_source
 
 
 LOOPBACK_HOSTS = ('localhost', '127.0.0.1', '::1')
@@ -516,7 +602,8 @@ def evaluate(vault, query, candidates, *, source_versions=None, scope='user', fa
             # Split and size-check before any cache, key or network access.
             requests=laya.plan(purpose,body,config['model'])
         if inspect_config(vault) != policy: raise ValueError('configuration_changed')
-        env=_environment(config)
+        state = _load_jev_state(vault)
+        env, _ = _environment(config, state)
         # TYPESAFE_BASE_URL and TYPESAFE_API_KEY never apply to the local backend.
         endpoint=laya.endpoint(config['base_url']) if laya else _endpoint(env.get('TYPESAFE_BASE_URL',config['base_url']))
         fingerprint=dict(body=body,scope=scope,sources=source_versions or {},endpoint=endpoint,
@@ -700,14 +787,19 @@ def status(vault):
     provider=info.get('provider')
     laya=provider=='laya'
     key_present = False
+    key_source = 'none'
     key_checked = info['valid'] and info['mode'] != 'off' and bool(features)
     if key_checked:
-        try: key_present=bool(_environment(load_config(vault)).get('LAYA_API_KEY' if laya else 'TYPESAFE_API_KEY'))
+        try:
+            state = _load_jev_state(vault)
+            env, key_source = _environment(load_config(vault), state)
+            key_present=bool(env.get('LAYA_API_KEY' if laya else 'TYPESAFE_API_KEY'))
         except Exception: pass
     try: saved=_validated(dict(DEFAULTS,**_supplied(vault)))['mode']
     except Exception: saved='off'
     result=dict(mode=info['mode'],saved_mode=saved,config_valid=info['valid'],configured=(Path(vault)/'jev.json').exists(),
                 kill_switch=killed(vault),features={name:name in features for name in FEATURES},key_present=key_present,key_checked=key_checked,
+                key_source=key_source,
                 automatic_model_calls=info['mode']!='off' and 'auto_context' in features,last_24h=_recent(vault))
     if provider:
         result['provider']=provider
@@ -779,4 +871,27 @@ def set_mode(vault, mode=None, enable=(), disable=(), provider=None, laya=None):
         json.dump(supplied,handle,ensure_ascii=False)
         temporary=handle.name
     os.replace(temporary,path)
+    return status(vault)
+
+
+def set_key_command(vault, key_command=None):
+    """Configure machine-local key_command for credential retrieval.
+
+    key_command: argv list (first element must be absolute path), or None to remove.
+    Stored in machine-local state file (jev-state.json), never in jev.json.
+    This preserves rollback compatibility - old readers never see key_command.
+    """
+    if key_command is not None:
+        if not isinstance(key_command, list) or not key_command:
+            raise ValueError('key_command_invalid')
+        if not all(isinstance(part, str) and part.strip() for part in key_command):
+            raise ValueError('key_command_invalid')
+        if not Path(key_command[0]).is_absolute():
+            raise ValueError('key_command_invalid')
+    state = _load_jev_state(vault)
+    if key_command is None:
+        state.pop('key_command', None)
+    else:
+        state['key_command'] = key_command
+    _save_jev_state(vault, state)
     return status(vault)
