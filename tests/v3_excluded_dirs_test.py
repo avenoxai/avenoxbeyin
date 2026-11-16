@@ -258,7 +258,11 @@ class RefusedConfigTest(EngineFixture):
 
     def test_one_bad_entry_refuses_the_whole_list(self):
         # 3rdparty is a valid entry and a real directory: a half-applied list would prune it.
-        for bad in ('../gizli', 'a/b', 'a\\b', '', ' 3rdparty ', '.', '..', 7, None, 'x' * 256, 'satir\nsonu'):
+        # Path entries with '/' (e.g. 'projects/dukkan/research') are now valid;
+        # only malformed entries refuse the whole list.
+        for bad in ('../gizli', '', ' 3rdparty ', '.', '..', 7, None, 'x' * 256, 'satir\nsonu',
+                    'projects/../gizli', 'projects/./research', 'projects//dukkan',
+                    './projects/dukkan', 'projects/dukkan/'):
             with self.subTest(entry=bad):
                 self.config({'excluded_dirs': ['3rdparty', bad]})
                 self.refused('excluded_dirs')
@@ -342,9 +346,15 @@ class SettingsFileTest(unittest.TestCase):
     def test_a_refused_change_writes_nothing(self):
         index_settings.save(self.state, self.vault, ['3rdparty'])
         before = (self.state / 'index.json').read_bytes()
-        for name in ('notes', 'knowledge', 'tasks', '🔮 850-Companion', 'a/b', '..', ''):
+        for name in ('notes', 'knowledge', 'tasks', '🔮 850-Companion', '..', '',
+                     'projects/../gizli', 'projects/./research', 'projects//dukkan',
+                     './projects/dukkan', 'projects/dukkan/'):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 index_settings.save(self.state, self.vault, [name])
+        # Path entries like 'a/b' are now accepted.
+        saved = index_settings.save(self.state, self.vault, ['a/b'])
+        self.assertEqual(saved, ['3rdparty', 'a/b'])
+        index_settings.save(self.state, self.vault, remove=['a/b'])
         with self.assertRaises(ValueError):
             index_settings.save(self.state, self.vault, ['d%d' % i for i in range(64)])
         self.assertEqual((self.state / 'index.json').read_bytes(), before)
@@ -738,6 +748,89 @@ class ExcludedRefTest(unittest.TestCase):
         self.assertEqual(recap[self.OPEN], (['Çalışma/acik.md'], None))
         self.assertEqual(recap[self.GENERAL], ([], withheld))
         self.assertEqual(recap[self.PRIVATE], ([], {'private': 2, 'missing': 0}))
+        # Path-excluded directory: persists final folded component in index_excluded_dirs and withholds in fresh reader.
+        draft = self.vault / 'projects/demo/drafts/private.md'
+        draft.parent.mkdir(parents=True, exist_ok=True)
+        draft.write_bytes(b'---\nvisibility: private\n---\nGizli taslak.\n')
+        self.beyin('preferences', '--index-include-dir', 'notlar')
+        self.beyin('sync')
+        self.beyin('receipt', '--event-id', 'synthetic-path-private', '--summary', 'Zirkonpath gizli kaydi.',
+                   '--ref', 'projects/demo/drafts/private.md')
+        self.assertNotEqual(self.unsynced()['latest'], 'Zirkonpath gizli kaydi.')
+        self.beyin('preferences', '--index-exclude-dir', 'projects/demo/drafts')
+        self.assertEqual(self.beyin('sync')['index_exclusions']['pruned_dirs'], ['projects/demo/drafts'])
+        self.assertEqual(self.rows("SELECT value FROM metadata WHERE key='index_excluded_dirs'"), ['["drafts"]'])
+        self.assertNotEqual(self.unsynced()['latest'], 'Zirkonpath gizli kaydi.')
+
+
+class PathListTest(EngineFixture):
+    """Vault-root-relative path entries exclude only that exact path."""
+
+    def refused(self, reason):
+        result = self.engine.sync()
+        self.assertEqual(result['status'], 'succeeded', 'a refused file is reported, not a degraded scan')
+        report = result['index_exclusions']
+        self.assertEqual((report['excluded_dirs'], report['pruned'], report['pruned_dirs']), ([], 0, []))
+        self.assertIn(reason, report['error'])
+        return report
+
+    def test_path_entry_excludes_only_that_directory(self):
+        # knowledge/research is distilled notes; projects/dukkan/research is raw drafts.
+        # Excluding only projects/dukkan/research must not touch knowledge/research.
+        self.config({'excluded_dirs': ['projects/dukkan/research']})
+        self.note('knowledge/research/distilled.md', 'Distilled insight.\n')
+        self.note('projects/dukkan/research/draft.md', 'Raw draft.\n')
+        self.note('projects/dukkan/research/notes.md', 'More draft.\n')
+        self.note('notlar/gercek.md', 'Real note.\n')
+        result = self.engine.sync()
+        self.assertEqual(result['status'], 'succeeded')
+        self.assertEqual(self.sources(),
+                         ['knowledge/research/distilled.md', 'notlar/gercek.md'])
+        self.assertEqual(result['index_exclusions']['pruned'], 1)
+        self.assertEqual(result['index_exclusions']['pruned_dirs'],
+                         ['projects/dukkan/research'])
+
+    def test_path_entry_with_backslash_is_normalized(self):
+        self.config({'excluded_dirs': ['projects\\dukkan\\research']})
+        self.note('knowledge/research/distilled.md', 'Distilled insight.\n')
+        self.note('projects/dukkan/research/draft.md', 'Raw draft.\n')
+        result = self.engine.sync()
+        self.assertEqual(self.sources(), ['knowledge/research/distilled.md'])
+        self.assertEqual(result['index_exclusions']['pruned_dirs'],
+                         ['projects/dukkan/research'])
+
+    def test_path_entry_with_dot_or_dotdot_is_refused(self):
+        for bad in ('projects/../gizli', 'projects/./research', 'projects//dukkan',
+                    './projects/dukkan', 'projects/dukkan/'):
+            with self.subTest(entry=bad):
+                self.config({'excluded_dirs': ['3rdparty', bad]})
+                self.refused('excluded_dirs')
+
+    def test_path_entry_does_not_match_at_other_depths(self):
+        # projects/dukkan/research is excluded, but projects/research is not.
+        self.config({'excluded_dirs': ['projects/dukkan/research']})
+        self.note('projects/dukkan/research/draft.md', 'Raw draft.\n')
+        self.note('projects/research/draft.md', 'Different research.\n')
+        self.note('projects/dukkan/research/deep/nested.md', 'Nested draft.\n')
+        self.note('notlar/gercek.md', 'Real note.\n')
+        result = self.engine.sync()
+        self.assertEqual(sorted(self.sources()),
+                         ['notlar/gercek.md', 'projects/research/draft.md'])
+        # Only the projects/dukkan/research directory is pruned; nested.md
+        # disappears with it but is not counted separately.
+        self.assertEqual(result['index_exclusions']['pruned'], 1)
+
+    def test_path_entry_and_bare_name_can_coexist(self):
+        self.config({'excluded_dirs': ['3rdparty', 'projects/dukkan/research']})
+        self.note('proje/3rdparty/lib/x.md', 'Vendored.\n')
+        self.note('projects/dukkan/research/draft.md', 'Draft.\n')
+        self.note('notlar/gercek.md', 'Real note.\n')
+        result = self.engine.sync()
+        self.assertEqual(self.sources(), ['notlar/gercek.md'])
+        self.assertEqual(result['index_exclusions']['pruned'], 2)
+        self.assertEqual(set(result['index_exclusions']['pruned_dirs']),
+                         {'projects/dukkan/research', 'proje/3rdparty'})
+
 
 
 if __name__ == '__main__':

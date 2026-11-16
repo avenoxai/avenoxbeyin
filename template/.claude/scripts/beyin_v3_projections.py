@@ -34,7 +34,9 @@ def _record_excluded_dirs(engine, db):
     is committed together with the record deletions (or re-indexing) the list caused, so it
     always describes the records the same reader sees. A release without the row ignores it.
     """
-    _record_names(db, EXCLUDED_DIRS_ROW, getattr(engine, 'excluded_dir_keys', None))
+    keys = getattr(engine, 'excluded_dir_keys', None)
+    projected = None if keys is None else {key[-1] if isinstance(key, tuple) else key for key in keys}
+    _record_names(db, EXCLUDED_DIRS_ROW, projected)
 
 
 def _record_unreadable_sources(engine, db):
@@ -51,7 +53,9 @@ def _record_names(db, key, names):
     if names is None:
         return  # no scan ran on this engine; the stored row still describes the index
     stored = db.execute('SELECT value FROM metadata WHERE key=?', (key,)).fetchone()
-    value = json.dumps(sorted(names), ensure_ascii=False) if names else None
+    # names may contain str (bare names) and tuple (path keys); sort by string form.
+    ordered = sorted(names, key=lambda k: '/'.join(k) if isinstance(k, tuple) else k)
+    value = json.dumps(ordered, ensure_ascii=False) if names else None
     if value is None:
         if stored:
             db.execute('DELETE FROM metadata WHERE key=?', (key,))
