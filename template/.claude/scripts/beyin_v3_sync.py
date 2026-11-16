@@ -198,7 +198,9 @@ def _mapping_value(sub_key, value):
 
 
 def parse(text):
-    """JSON frontmatter or deliberately bounded flat scalar/list YAML with single-level mapping."""
+    """Parse source text, rejecting an unresolved Git merge before ingest."""
+    if _has_conflict_markers(text):
+        raise ValueError('unresolved git conflict markers; resolve the merge before sync')
     lines = text.splitlines(keepends=True)
     if not lines or lines[0].lstrip('\ufeff').strip() != '---':
         return {}, text

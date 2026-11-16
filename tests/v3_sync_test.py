@@ -138,6 +138,13 @@ class SourceSyncTest(unittest.TestCase):
         self.assertEqual(report['warnings'], [])
         self.assertEqual([r['id'] for r in self.records()], ['nebula-task'])
 
+    def test_parse_rejects_real_conflict_but_accepts_normal_text(self):
+        with self.assertRaisesRegex(ValueError, 'conflict markers'):
+            self.module.parse('<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n')
+        metadata, body = self.module.parse('Setext heading\n=======\n\nNormal text.\n')
+        self.assertEqual(metadata, {})
+        self.assertIn('Normal text.', body)
+
     def test_conflict_inside_code_fence_and_unlabeled_markers_are_reported(self):
         for body in ('Nebula calibration awaits owner Synthetic Reviewer.\n```bash\n<<<<<<< HEAD\necho a\n'
                      '=======\necho b\n>>>>>>> 3f9a1c2\n```\n',
