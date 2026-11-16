@@ -365,6 +365,7 @@ def lint_vault(vault_root, folder=None, state=None):
     target_set = set(target_files)
 
     broken_links = []
+    withheld_targets = []
     outgoing_links = defaultdict(set)
     incoming_links = defaultdict(set)
     all_extracted_count = 0
@@ -409,15 +410,40 @@ def lint_vault(vault_root, folder=None, state=None):
                 outgoing_links[rel_path].add(resolved)
                 incoming_links[resolved].add(rel_path)
             else:
-                broken_links.append({
-                    "source": rel_path,
-                    "line": link["line"],
-                    "target": link["file_target"][:MAX_RAW_LINK_CHARS],
-                    "raw": link["raw"][:MAX_RAW_LINK_CHARS],
-                    "type": "wikilink",
-                })
+                # Withheld targets: receipts or private/archived notes whose file exists but
+                # are intentionally outside the lint index. Report separately, not as broken.
+                target_norm = link["file_target"].replace("\\", "/").strip().strip("/")
+                is_receipt_target = target_norm.startswith("receipts/") or target_norm.startswith("receipts\\")
+                is_withheld_source = False
+                if not is_receipt_target and "/" not in target_norm.split("#")[0].strip():
+                    try:
+                        candidate = vault_root / (target_norm + ".md" if not target_norm.lower().endswith(".md") else target_norm)
+                        if candidate.is_file():
+                            meta = _note_metadata(vault_root, candidate)
+                            if meta is None:
+                                is_withheld_source = True
+                    except (OSError, ValueError):
+                        pass
+                if is_receipt_target or is_withheld_source:
+                    withheld_targets.append({
+                        "source": rel_path,
+                        "line": link["line"],
+                        "target": link["file_target"][:MAX_RAW_LINK_CHARS],
+                        "raw": link["raw"][:MAX_RAW_LINK_CHARS],
+                        "type": "wikilink",
+                        "reason": "receipt" if is_receipt_target else "withheld",
+                    })
+                else:
+                    broken_links.append({
+                        "source": rel_path,
+                        "line": link["line"],
+                        "target": link["file_target"][:MAX_RAW_LINK_CHARS],
+                        "raw": link["raw"][:MAX_RAW_LINK_CHARS],
+                        "type": "wikilink",
+                    })
 
     broken_links = [link for link in broken_links if link["source"] in target_set]
+    withheld_targets = [link for link in withheld_targets if link["source"] in target_set]
 
     def _is_excluded_or_auto(path, excluded_dir_keys):
         """Check if a file path is in an excluded directory or Beyin's auto-generated v3 directory."""
@@ -454,10 +480,12 @@ def lint_vault(vault_root, folder=None, state=None):
         "scanned_files_count": len(target_files),
         "total_links_count": all_extracted_count,
         "broken_links_count": len(broken_links),
+        "withheld_targets_count": len(withheld_targets),
         "orphan_count": len(orphans),
         "unlinked_count": len(unlinked),
     }
     result.update({name: items[:LINT_REPORT_LIMIT] for name, items in lists.items()})
+    result["withheld_targets"] = withheld_targets[:LINT_REPORT_LIMIT]
     # Group full findings, not their first page: a noisy folder must not hide the
     # existence of findings elsewhere. Paths already passed the scan's privacy filter.
     folders = {}
