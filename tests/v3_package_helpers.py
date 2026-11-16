@@ -76,7 +76,9 @@ def run_python(script, args, cwd, env, payload=None):
 
 
 def install(vault, state, env):
-    return run_python(INSTALLER, ['--vault', vault, '--state', state], ROOT, env)
+    # Update scenarios deliberately begin from a fixed synthetic release. Source installs
+    # without this helper still use VERSION, which is covered by the installer tests.
+    return run_python(INSTALLER, ['--vault', vault, '--state', state, '--version', '3.0.0'], ROOT, env)
 
 
 def build_package(path, version, env):

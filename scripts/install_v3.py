@@ -1162,7 +1162,9 @@ def install(vault, state, uninstall=False, plan_only=False, version=None, legacy
         legacy_hashes = package.get('legacy_hashes', {})
         legacy_skill_hashes = package.get('legacy_skill_hashes', {})
     else:
-        version = version or '3.0.0'
+        version = version or (ROOT / 'VERSION').read_text(encoding='utf-8-sig').strip()
+        if not re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', version):
+            raise ValueError('Invalid source VERSION')
     if plan_only or uninstall:
         return _install(vault, state, uninstall, plan_only, version, legacy_hashes, legacy_skill_hashes,
                         accept_customized=accept_customized, keep_customized=keep_customized,
@@ -1210,6 +1212,7 @@ def main():
     mode.add_argument("--uninstall", action="store_true")
     mode.add_argument("--plan", action="store_true", help="report what an install would do; change nothing")
     mode.add_argument("--reconcile-hooks", action="store_true", help="reconcile stale hook commands with backup")
+    parser.add_argument("--version", help="source-install version; must be semver")
     parser.add_argument("--accept-customized-legacy", action="append", default=[], metavar="PATH",
                         help="retire one named customized legacy runner (vault-relative); repeatable")
     parser.add_argument("--keep-customized-legacy", action="append", default=[], metavar="PATH",
@@ -1246,6 +1249,7 @@ def main():
         excluded = tuple(name.replace("\\", "/") for name in args.exclude_component)
         included = tuple(name.replace("\\", "/") for name in args.include_component)
         result = install(args.vault, args.state or default_state(args.vault.resolve()), args.uninstall,
+                         version=args.version,
                          plan_only=args.plan, accept_customized=accepted, keep_customized=kept,
                          exclude_components=excluded,
                          include_components=included, rebind_state=args.rebind_state)

@@ -98,6 +98,24 @@ class SplitTest(unittest.TestCase):
             self.assertLess(time.perf_counter() - started, 1.0)
             self.assertEqual(spans[0][0], 'a' + gap + 'b')
 
+    def test_oversized_text_without_spaces_preserves_overlap_and_does_not_loop(self):
+        text = "a" * 49 + " " + "b" * 150
+        spans = passage._windows(text, 0, len(text), 100, 20)
+        self.assertLess(spans[1][0], spans[0][1], "Overlap was dropped!")
+
+    def test_overlap_fallback_keeps_bounded_window_count(self):
+        for text in ("a" * 49 + " " + "b" * 150, "a" * 1000, "a " + "b" * 1000):
+            with self.subTest(length=len(text)):
+                spans = passage._windows(text, 0, len(text), 100, 20)
+                self.assertLessEqual(len(spans), (len(text) + 99) // 100)
+                self.assertEqual(spans[0][0], 0)
+                self.assertEqual(spans[-1][1], len(text))
+                for previous, current in zip(spans, spans[1:]):
+                    self.assertGreater(current[0], previous[0])
+                    self.assertGreater(current[1], previous[1])
+                    self.assertLess(current[0], previous[1])
+                    self.assertLessEqual(previous[1] - current[0], 20)
+
 
 class PassageContextTest(Vault):
     def test_a_question_naming_the_note_gets_the_section_that_answers_it(self):

@@ -76,7 +76,8 @@ class InstructionBlockTest(unittest.TestCase):
         return json.loads(result.stdout)
 
     def install(self, *extra):
-        return self.run_cli(ROOT / 'scripts/install_v3.py', '--vault', self.vault, '--state', self.state, *extra)
+        # These upgrade fixtures intentionally start from the synthetic 3.0.0 release.
+        return self.run_cli(ROOT / 'scripts/install_v3.py', '--vault', self.vault, '--state', self.state, '--version', '3.0.0', *extra)
 
     def install_conflict(self):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/install_v3.py'), '--vault', str(self.vault),
