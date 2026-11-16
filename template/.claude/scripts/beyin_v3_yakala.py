@@ -8326,7 +8326,9 @@ def _agent_process_identity(pid):
                 return None
             birth = str(int(fields[19]))
             boot = _agent_uuid(Path('/proc/sys/kernel/random/boot_id').read_text(encoding='ascii').strip())
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
+            # A process reaped after stat was opened yields ESRCH on read, not
+            # ENOENT. Both mean that this process generation is no longer live.
             return None
         except (IndexError, ValueError) as exc:
             raise OSError('Ajan /proc surec kimligi gecersiz.') from exc
