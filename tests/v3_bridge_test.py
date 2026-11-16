@@ -825,6 +825,31 @@ class BridgeTest(unittest.TestCase):
         self.assertIn('Tarihi gelen gorevler:', text)
         self.assertIn('- Deploy v2: Run ansible', text)
 
+    def test_explicit_task_project_id_never_falls_back_to_same_display_name(self):
+        engine = SyncEngine(self.vault, self.state)
+        for suffix, project_id in (('local', 'a' * 24), ('foreign', 'b' * 24)):
+            engine.task_create('tasks/' + suffix + '.md', 'Task body', {
+                'id': suffix, 'title': suffix + '-canary', 'next_action': suffix + '-next',
+                'status': 'active', 'due_at': '2026-09-01', 'owner': 'user',
+                'project': self.project.name, 'project_id': project_id})
+        engine.sync()
+        text = bridge.project_context(self.vault, self.state, 'a' * 24,
+                                      self.project.name, today_iso='2026-09-02')
+        self.assertIn('local-canary', text)
+        self.assertNotIn('foreign-canary', text)
+        self.assertNotIn('foreign-next', text)
+
+    def test_task_create_does_not_invent_canonical_identity_from_display_name(self):
+        engine = SyncEngine(self.vault, self.state)
+        record = engine.task_create('tasks/legacy.md', 'Task body', {
+            'id': 'legacy', 'title': 'legacy-canary', 'status': 'active',
+            'due_at': '2026-09-01', 'owner': 'user', 'project': self.project.name})
+        self.assertNotIn('project_id', record)
+        self.assertNotIn('project_id:', (self.vault / 'tasks/legacy.md').read_text())
+        text = bridge.project_context(self.vault, self.state, 'a' * 24,
+                                      self.project.name, today_iso='2026-09-02')
+        self.assertIn('legacy-canary', text)
+
     def test_different_cwd_receipts_do_not_leak_across_projects(self):
         bridge.save_project_context(self.state, True)
         self.invoke(dict(self.payload, event_id='start-a'))
