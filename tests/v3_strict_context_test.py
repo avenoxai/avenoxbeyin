@@ -70,6 +70,11 @@ class StrictRetrieveTest(unittest.TestCase):
     def test_meaningful_match_survives_strict_mode(self):
         self.assertEqual(self.sources('why is the GoPlus quota wasted', strict=True), ['knowledge/goplus-quota.md'])
 
+    def test_strict_keep_overrides_strict_exclude(self):
+        (self.store.state_dir / 'retrieval.json').write_text(
+            json.dumps({'strict_exclude': ['knowledge/'], 'strict_keep': ['knowledge/']}), encoding='utf-8')
+        self.assertEqual(self.sources('why is the GoPlus quota wasted', strict=True), ['knowledge/goplus-quota.md'])
+
     def test_strict_abstains_when_nothing_relates(self):
         result = self.store.retrieve('thanks that was great', strict=True)
         self.assertEqual(result['records'], [])
