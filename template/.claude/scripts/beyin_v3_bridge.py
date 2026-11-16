@@ -203,7 +203,13 @@ def project_context(vault, state, project_id, project_name, budget=1200, today_i
                     continue
                 if due > today or not _fresh(vault, record):
                     continue
-                if wanted and str(record.get('project') or '').strip().casefold() == wanted:
+                # An explicit identity is authoritative, including a mismatch or invalid value.
+                # Display-name fallback is only for legacy records without this field.
+                if 'project_id' in record:
+                    match = isinstance(record['project_id'], str) and record['project_id'] == project_id
+                else:
+                    match = bool(wanted and str(record.get('project') or '').strip().casefold() == wanted)
+                if match:
                     title = _one_line(record.get('title'), 160)
                     if title:
                         current.append((due, title, _one_line(record.get('next_action'), 200)))

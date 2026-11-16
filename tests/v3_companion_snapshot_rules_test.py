@@ -168,6 +168,39 @@ class SnapshotTest(unittest.TestCase):
         self.write('Kurallar.md', rules_file(5000, exact=True)[0])
         self.assertTrue(companion.rules_opening(self.store, 5000)['clipped'])
 
+    def test_opening_report_matches_final_hygiene_budget(self):
+        # The clipped notice consumes opening budget. The report and its notice must
+        # describe the final render, not the pre-notice allocation (#689).
+        for name, body in self.bodies.items():
+            self.write(name, body)
+        self.write('Kurallar.md', rules_file(45600)[0])
+        for budget in (2188, 2189, 2190, 5000):
+            with self.subTest(budget=budget):
+                report = {}
+                text = companion.context(self.store, budget, '0' * 24, 'claude', report=report)
+                rules = report['Kurallar.md']
+                self.assertTrue(rules['clipped'])
+                self.assertLessEqual(len(text), budget)
+                self.assertIn(
+                    f'Memory hygiene: Kurallar.md opens clipped (fit ceiling {rules["share"]} of {rules["chars"]} chars).',
+                    text,
+                )
+                self.assertEqual(companion.rules_opening(self.store, budget), rules)
+                # Check source-to-output, not two diagnostics sharing a stale number.
+                expected = companion.clip(rules_file(45600)[0], rules['share'], both=True, tail=True)
+                self.assertEqual(section(text, 'Kurallar.md'), expected)
+
+    def test_rules_notice_keeps_long_receipt_within_total_budget(self):
+        for name, body in self.bodies.items():
+            self.write(name, body)
+        self.write('Kurallar.md', rules_file(45600)[0])
+        receipt = 'Receipt (historical):\n' + 'x' * 3000
+        for budget in (600, 601, 620, 700, 1000, 1100):
+            with self.subTest(budget=budget):
+                text = companion.context(self.store, budget, '0' * 24, 'claude', receipt=receipt)
+                self.assertLessEqual(len(text), budget)
+
+
 
 class InstalledOpeningTest(unittest.TestCase):
     def setUp(self):

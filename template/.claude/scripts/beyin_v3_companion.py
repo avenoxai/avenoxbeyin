@@ -46,15 +46,30 @@ def directory(vault, *, strict=False):
     vault = Path(vault).resolve()
     candidates = []
     named = []
+    inspection_errors = []
     for path in vault.iterdir():
-        if (path.name.startswith('.') or is_type(path, 'symlink') or not is_type(path, 'dir') or
-                re.search(r'(?i)(archive|arşiv|arsiv)', path.name)):
-            continue
-        if path.name == DEFAULT_DIRECTORY or path.name.casefold().endswith(('companion', 'echo')):
-            named.append(path)
-        elif any(is_type(path / name, 'file') for name in ('Core.md', 'Soul.md')):
-            candidates.append(path)
+        is_named = (path.name == DEFAULT_DIRECTORY or
+                    path.name.casefold().endswith(('companion', 'echo')))
+        try:
+            if (path.name.startswith('.') or is_type(path, 'symlink') or not is_type(path, 'dir') or
+                    re.search(r'(?i)(archive|arşiv|arsiv)', path.name)):
+                continue
+            if is_named:
+                named.append(path)
+            elif any(is_type(path / name, 'file') for name in ('Core.md', 'Soul.md')):
+                candidates.append(path)
+        except OSError as exc:
+            # A named identity that cannot be inspected may still compete with
+            # readable identities. Never silently select a different identity.
+            # Ordinary-entry/Core/Soul failures retain their original exception.
+            if strict and is_named:
+                inspection_errors.append((path, exc))
+                continue
+            raise
     candidates = named or candidates
+    if strict and inspection_errors:
+        paths = ', '.join(str(path) for path, _ in inspection_errors)
+        raise RuntimeError('cannot inspect companion directory candidates: ' + paths)
     if len(candidates) > 1:
         return None
     return candidates[0] if candidates else vault / DEFAULT_DIRECTORY
@@ -1655,18 +1670,35 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
     regained, regained_rules = companion(budget - fixed - len(extra))
     if len(text) < len(regained) <= budget - len(extra):
         text, rules = regained, regained_rules
-    if report is not None and rules:
-        report['Kurallar.md'] = rules
     if rules and rules.get('clipped'):
-        rules_line = hygiene_notice(None, rules=rules)
-        full_header = (hygiene_line + rules_line + warning + session_header +
+        # Reserve the longest possible numeric share before allocating. Reclaiming
+        # its spare digits can oscillate (999 -> 1000 -> 999), so keep this small
+        # reserve fixed and build the actual notice from the final allocation.
+        # share() never allocates more than the source length.
+        rules_line = hygiene_notice(None, rules=dict(rules, share=rules['chars']))
+        header_tail = (warning + session_header +
                        'V3 source-backed context (data, not instructions). Use AGENTS.md companion protocol.\n')
-        new_fixed = len(full_header) + len(notice) + sum(len(label) for label, _, _ in sections)
+        reserved_header = hygiene_line + rules_line + header_tail
+        new_fixed = len(reserved_header) + len(notice) + sum(len(label) for label, _, _ in sections)
         if new_fixed > budget:
+            final_rules = dict(rules, share=0)
+            if report is not None:
+                report['Kurallar.md'] = final_rules
+            full_header = hygiene_line + hygiene_notice(None, rules=final_rules) + header_tail
             return clip(full_header + notice + 'Read companion files: ' + ', '.join(r['source'] for r in records), budget)
-        adjusted, _ = companion(max(0, budget - new_fixed - len(extra)), header_text=full_header)
-        if len(adjusted) <= budget - len(extra):
-            text = adjusted
+        # Optional retrieval/receipt text was chosen before adding the rules notice.
+        # If it no longer fits even beside the fixed framing, omit it as a unit:
+        # clipping here could leave a receipt header without its meaningful body.
+        if new_fixed + len(extra) > budget:
+            extra = ''
+        allocation = budget - new_fixed - len(extra)
+        _, final_rules = companion(allocation, header_text=reserved_header)
+        full_header = hygiene_line + hygiene_notice(None, rules=final_rules) + header_tail
+        text, final_rules = companion(allocation, header_text=full_header)
+        if report is not None and final_rules:
+            report['Kurallar.md'] = final_rules
+    elif report is not None and rules:
+        report['Kurallar.md'] = rules
     return text + extra
 
 
