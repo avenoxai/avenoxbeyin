@@ -43,9 +43,11 @@ Sync çakışması olmaz; bağlantısı kopan makine de güvenlidir.
    (Codex olan makinede ayrıca `--harness codex` ve Codex `/hooks` güven onayı; Codex kotası dar
    olduğu için `--context-chars` düşük tutulur).
 5. Ayarlar: `TERCIHLER.md`'deki onaylı `preferences` satırları.
-6. Global Claude dosyaları (`~/.claude` senkronlanmaz): `beyin-yazici` ajanı, global `CLAUDE.md`
-   kuralı, `orkestra` skill'i. Ana kopyalar vault'ta `_Sistem/Ajan/` altında tutulur, her makinede
-   tek komutla kopyalanır.
+6. Global Claude dosyaları (`~/.claude` senkronlanmaz): hook'lar, `beyin-yazici` ajanı, global
+   `CLAUDE.md` kuralı. Ana kopyalar bu fork'ta durur (`ege/hooks/`, `ege/agents/`, `ege/claude/`,
+   `ege/skills/`), vault'ta değil; her makinede tek komutla, `kur.py` ile kurulur
+   ([KURULUM.md](KURULUM.md)). Aynı komut 4. adımdaki köprüyü de kurar, `--ayarlar` ile 5. adımı da
+   yapar. `orkestra` skill'i henüz fork'ta değil; eklenince aynı komutla gelir.
 7. Doğrulama: o makinede bir deneme kaydı yazdır, başka makinede `recap` ile görünmesini kontrol et.
 
 ## Ev PC'si (beyin sunucusu) ek adımları

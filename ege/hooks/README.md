@@ -177,27 +177,38 @@ Durum: **yazıldı ve test edildi, henüz hiçbir makineye kurulmadı.** Kurulum
   görünen ad repo adıdır. Remote yoksa ya da çözülemiyorsa kimlik `local/<klasör adı>` olur.
   Klasör yolu kimliğe girmez; aynı repo her makinede aynı projedir.
 - Vault klasörü şu sırayla aranır:
-  1. **Eşleme dosyası** `_Sistem/projeler.json` (vault'ta, Sync ile taşınır):
-     `{"sahip/repo": "30 Projeler/Klasör Adı"}`. Anahtar büyük/küçük harfe duyarsızdır. Değer
-     `false` ise "bu repo için klasör istenmiyor" demektir.
-  2. **Ad eşleşmesi:** `30 Projeler/` altında adı repo adına eşit olan klasör. Karşılaştırma
-     büyük/küçük harfe, boşluk, `-` ve `_` farkına bakmaz; `I İ ı i` tek harf sayılır. Bu
-     tutmazsa ikinci denemede Türkçe işaretler de yok sayılır (`ogrenme-kocu` ↔ `Öğrenme Koçu`).
-     Eşleme dosyasında başka bir kimliğe bağlı klasör ad eşleşmesine girmez (iki farklı sahipte
-     aynı adlı repo karışmaz). Birden çok klasör eşleşirse seçim yapılmaz, kullanıcıya sorulur.
+  1. **`Proje.md` bağı:** `30 Projeler/*/Proje.md` dosyalarından frontmatter'ında
+     `proje_id: sahip/repo` yazan klasör (büyük/küçük harfe duyarsız). Dosyayı `init` bir kez
+     yazar; klasörün adı sonradan değişse de bağ klasörle birlikte gider. Bağ Markdown olduğu için
+     Obsidian Sync onu her makineye taşır (`.json` dosyalarını varsayılan ayarda taşımaz).
+     Aynı `proje_id` iki klasörde yazıyorsa seçim yapılmaz, kullanıcıya sorulur.
+  2. **Ad eşleşmesi:** `30 Projeler/` altında adı repo adına eşit olan ve `Proje.md`'si başka bir
+     kimlik söylemeyen klasör. Karşılaştırma büyük/küçük harfe, boşluk, `-` ve `_` farkına bakmaz;
+     `I İ ı i` tek harf sayılır. Bu tutmazsa ikinci denemede Türkçe işaretler de yok sayılır
+     (`ogrenme-kocu` ↔ `Öğrenme Koçu`). Başka bir kimliğe bağlı klasör ad eşleşmesine girmez (iki
+     farklı sahipte aynı adlı repo karışmaz). Birden çok klasör eşleşirse seçim yapılmaz, sorulur.
   3. Bulunamazsa proje **çözülmemiş** sayılır. Hook klasör açmaz; modele "kullanıcıya sor" der.
+- Kullanıcının "hayır, klasör açma" cevabı (`sustur`) vault'a yazılmaz; yalnız o makinede
+  `~/.claude/git-devir/proje/sustur.json` içinde durur. Yani her makine bir kez sorar. Klasör başka
+  makinede açılıp Sync ile gelirse yerel "hayır" yok sayılır.
+- Geriye dönük: vault'ta eski bir `_Sistem/projeler.json` varsa 1 ile 2 arasında yalnız **okunur**;
+  hiçbir komut onu yazmaz.
 
 ## Klasör düzeni
 
 ```text
 30 Projeler/<ad>/
+  Proje.md                               # proje_id: sahip/repo (bir kez yazılır, repo ↔ klasör bağı)
   Oturumlar/2026-11-16-1742-is-5090.md   # iş başına YENİ kart: YYYY-AA-GG-SSDD-<makine>.md
   Oturumlar/2026-11-16-2210-ev.md
   Kararlar.md                            # en yeni karar üstte
   Kurallar.md                            # yalnız bu projenin kuralları
-_Sistem/projeler.json                    # sahip/repo → klasör eşlemesi
+🔮 850-Companion/Kurallar.md             # avenox'un genel kuralları + proje başına bir işaretçi satırı
 ```
 
+- `Proje.md` frontmatter'ı: `proje_id`, `ad` (repo adı), `olusturma` (tarih); gövde tek satır.
+  Proje başına bir kez yazılan yeni dosya olduğu için "yakalama makineleri yalnız yeni dosya
+  ekler" kuralına uyar.
 - **Kart, tek bir `Durum.md` dosyasının yerini alır.** Her makine yalnız yeni dosya ekler, hiçbir
   makine başkasının kartını düzenlemez; bu yüzden Obsidian Sync'te çakışma olmaz.
   "Kaldığım yer" = dosya adına göre en yeni kart.
@@ -216,6 +227,15 @@ _Sistem/projeler.json                    # sahip/repo → klasör eşlemesi
 
   Yeni girdi ilk girdinin önüne eklenir; dosyanın geri kalanı bayt bayt aynı kalır. Dosya okuma ile
   yazma arasında değiştiyse (sha256 farklıysa) yazılmaz ve bildirilir.
+- Kural (`proje.py kural`): `- 2026-11-16 · kural metni` biçiminde tek madde, en çok 400 karakter.
+  - Proje kuralı projenin `Kurallar.md` dosyasının sonuna eklenir. Ayrıca avenox'un genel
+    `Kurallar.md` dosyasında o proje için işaretçi satırı yoksa bir kez eklenir:
+    `- [kapsam: <klasör adı>, <repo adı>] <ad> işinde önce 30 Projeler/<ad>/Kurallar.md dosyasını oku.`
+    (avenox bu etiketi yalnız o projenin oturumlarında bağlama alır).
+  - `--genel` ile kural avenox'un genel `Kurallar.md` dosyasına gider (`## Kurallar` bölümü varsa
+    onun sonuna, yoksa dosyanın sonuna).
+  - Aynı metin ikinci kez yazılmaz. `karar` ile aynı sha256 koruması geçerlidir; dosyanın geri
+    kalanı değişmez. İşaretçi eklenemezse kural yine yazılmış sayılır ve durum bildirilir.
 
 ## Oturum açılırken (`SessionStart` → `proje.py start`)
 
@@ -228,7 +248,9 @@ _Sistem/projeler.json                    # sahip/repo → klasör eşlemesi
     kart başka makinedense `BAŞKA MAKİNEDEN` diye belirtilir
   - `Kararlar.md`'deki son 3 karar, birer satır
   - `Kurallar.md`'de madde varsa: `Bu projenin kuralları: <yol> (işe başlamadan oku)`
-  - kayıtların `beyin-yazici` alt ajanına ham bilgi verilerek yazdırılacağını hatırlatan satır
+  - kayıt satırı: anlamlı iş bitince, ya da avenox köprüsü/Stop hook'u `note-create`/`receipt`
+    çalıştırmayı isteyince, model bunları kendi çalıştırmaz; ham bilgiyi ve `Receipt session=`
+    değerini `beyin-yazici` alt ajanına verir ve hook böyle karşılanır
 - Çözülmediyse tek satır: kullanıcıya `30 Projeler/<ad>` klasörünün açılıp açılmayacağını sor ve
   çalıştırılacak `proje.py init` komutu. **Hook hiçbir zaman klasör oluşturmaz.**
   Git reposu olmayan düz klasörde bu soru hiç sorulmaz.
@@ -246,10 +268,11 @@ _Sistem/projeler.json                    # sahip/repo → klasör eşlemesi
 | `start` | SessionStart hook'u (stdin'de payload) | Claude Code |
 | `context` | Aynı bloğu düz metin yazdırır (kapısız; elle bakmak için) | sen |
 | `resolve` | Kimlik, ad, sunucu, vault klasörü (JSON) | `beyin-yazici` |
-| `init [--ad <klasör>]` | `30 Projeler/<ad>/` altında `Kararlar.md`, `Kurallar.md`, `Oturumlar/` açar, eşlemeyi ekler; var olan dosyanın üstüne yazmaz. `--ad` var olan bir klasörse repoyu ona bağlar | ana model, **kullanıcı "evet" dedikten sonra** |
-| `sustur` | Eşlemeye `false` yazar; bu repo için bir daha klasör sorulmaz | ana model, kullanıcı "hayır" dedikten sonra |
+| `init [--ad <klasör>]` | `30 Projeler/<ad>/` altında `Proje.md`, `Kararlar.md`, `Kurallar.md`, `Oturumlar/` açar; var olan dosyanın üstüne yazmaz. `--ad` var olan bir klasörse repoyu ona bağlar; klasör başka bir projeye bağlıysa reddeder | ana model, **kullanıcı "evet" dedikten sonra** |
+| `sustur` | Bu makinede bu repo için bir daha klasör sorulmaz (vault'a yazmaz) | ana model, kullanıcı "hayır" dedikten sonra |
 | `kart --dosya <json>` | Yeni oturum kartı (`--dosya -` stdin okur; ya da `--hedef --yapilan --acik --sonraki --karar`) | `beyin-yazici` |
 | `karar --karar … --neden … [--alternatif …]` | `Kararlar.md`'ye bir karar ekler (`--sha256` ile ön koşul verilebilir) | `beyin-yazici` |
+| `kural --kural … [--genel]` | Projenin (ya da `--genel` ile avenox'un genel) `Kurallar.md` dosyasına tarihli bir kural ekler | ana model, kullanıcı düzeltince hemen; `beyin-yazici` |
 
 Çıkış kodları: `0` tamam · `1` hata (ayar yok, geçersiz girdi, anahtar/şifre gibi görünen metin) ·
 `2` yazılmadı, yeniden dene (kart sınırı aşıldı ya da dosya arada değişti) · `3` proje çözülemedi.
@@ -257,11 +280,13 @@ _Sistem/projeler.json                    # sahip/repo → klasör eşlemesi
 
 ## Bilinen sınırlar (proje)
 
-- Obsidian Sync `.json` dosyalarını yalnız "diğer tüm dosya türleri" seçeneği açıksa taşır. Kapalıysa
-  `_Sistem/projeler.json` o makinede kalır: ad eşleşmesi yine çalışır, ama özel adlı klasör bağları
-  ve `sustur` kayıtları diğer makinelere gitmez.
-- `Kararlar.md` ve `projeler.json` ortak dosyalardır; iki makine aynı anda çevrimdışı ekleme yaparsa
-  Sync çakışma kopyası oluşturabilir. Kartlar bundan etkilenmez; kararların tek satırlık özeti kartta da durur.
+- **`Kararlar.md` ve iki `Kurallar.md` ortak dosyalardır** (proje başına tek dosya bilinçli bir
+  tercihtir). Komutlar yazmadan önce sha256'yı denetler, ama bu yalnız aynı makinedeki yarışı
+  yakalar: iki makine çevrimdışıyken aynı dosyaya ekleme yaparsa Obsidian Sync çakışma kopyası
+  oluşturabilir ya da iki sürümü birleştirir. Böyle bir kopya görürsen iki dosyadaki girdileri elle
+  birleştir. Kartlar ve `Proje.md` bundan etkilenmez (yeni dosyalar); kararların tek satırlık
+  özeti kartta da durur.
+- Bir proje klasörü tek bir `proje_id` taşır; iki repoyu aynı klasöre bağlamak desteklenmez.
 - Kartın zorunlu olduğunu denetleyen bir Stop kontrolü yoktur; kartı `beyin-yazici` iş kaydıyla birlikte yazar.
 - Receipt'in kendisinde proje ya da makine alanı yoktur (upstream şeması). Bağ, özetin ilk satırı
   (`Proje: <ad>`), `--event-id` ve receipt'in gösterdiği kart üzerinden kurulur.

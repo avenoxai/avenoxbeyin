@@ -26,9 +26,8 @@ Durum: komut yazıldı ve test edildi; **henüz hiçbir makinede çalıştırıl
 1. **Avenox vault'ta kurulu** (resmi release paketinden, bütün makinelerde aynı sürüm). Sıra ve
    ayrıntı: [MAKINELER.md](MAKINELER.md), "Her makinede aynı adımlar" 1–3. Vault kökünde `beyin.py`
    görünmeli. Yoksa `kur.py` ilk dört adımı yapar, köprü adımını atlar ve bunu söyler.
-2. **Obsidian Sync bitmiş** olmalı (`30 Projeler/` ve `_Sistem/` klasörleri gelmiş olsun).
-   - Sync ayarında "diğer tüm dosya türleri" açık olmalı; yoksa `_Sistem/projeler.json` makineler
-     arasında taşınmaz (ayrıntı: [hooks/README.md](hooks/README.md), "Bilinen sınırlar (proje)").
+2. **Obsidian Sync bitmiş** olmalı (`30 Projeler/` klasörü gelmiş olsun). Repo ↔ klasör bağı
+   her proje klasöründeki `Proje.md` dosyasında durur; Markdown olduğu için ek bir Sync ayarı gerekmez.
 3. **Python 3.11+** ve **git** kurulu. Hook'lar, `kur.py`'yi çalıştırdığın Python ile çalışır
    (başka bir Python için `--python <yol>`).
 4. **Claude Code** kurulu ve giriş yapılmış.
@@ -99,6 +98,9 @@ Seçenekler:
 - `--force`: kopyalanan bir ajan/skill dosyasını elle değiştirdiysen `kur.py` ona dokunmaz ve
   bildirir; üzerine yazdırmak için bunu ekle (eskisi yedeğe alınır).
 - git-devir ayarları: `--auto-owner`, `--auto-host`, `--max-file-mb` ([hooks/README.md](hooks/README.md)).
+- `beyin-yazici` tanımındaki `model: sonnet` bir takma addır: o an geçerli Sonnet sürümünü izler,
+  belirli bir sürüme (ör. 5.5) sabitlemez. Sabitlemek istersen `agents/beyin-yazici.md` içindeki
+  satıra tam model kimliğini yaz ve `kur.py`'yi yeniden çalıştır.
 
 Komut her adımı ve köprü için çalıştırdığı her `beyin.py` komutunu sonucuyla yazdırır. Köprü adımı
 başarısız olursa önceki adımlar geri alınmaz; sorunu giderip aynı komutu yeniden çalıştır.
@@ -116,12 +118,32 @@ başarısız olursa önceki adımlar geri alınmaz; sorunu giderip aynı komutu 
    satırını görmelisin.
 3. Açık Claude Code oturumlarını kapat, aynı repoda **yeni** oturum aç. Oturum başında aynı
    `Proje:` satırı gelir; `/agents` listesinde `beyin-yazici` görünür.
-4. Klasör yoksa ajan sana sorar; "evet" de. `30 Projeler/<ad>/` altında `Kararlar.md`,
+4. Klasör yoksa ajan sana sorar; "evet" de. `30 Projeler/<ad>/` altında `Proje.md`, `Kararlar.md`,
    `Kurallar.md` ve `Oturumlar/` oluşur.
 5. Küçük bir değişiklik yaptır ve işi bitir. `30 Projeler/<ad>/Oturumlar/` altında yeni bir kart,
    vault'ta da yeni bir iş kaydı olmalı (vault klasöründe `python beyin.py recap --days 1`).
 6. İkinci makineyi kurduktan ve Sync bittikten sonra aynı repoyu orada aç: oturum başında ilk
    makinenin kartı `BAŞKA MAKİNEDEN` etiketiyle görünmeli.
+
+### İlk kurulumda canlı kontrol: kayıt gerçekten `beyin-yazici`'den mi geçiyor?
+
+Oturumda iki ayrı talimat vardır: avenox köprüsü ve Stop hook'u modele "`note-create` ve `receipt`
+çalıştır" der; global kural ve `proje.py start` satırı ise "bunları kendin çalıştırma, ham bilgiyi
+ve `Receipt session=` değerini `beyin-yazici`'ye ver" der. Modelin ikincisine uyduğu otomatik testle
+doğrulanamaz; **ilk kurulumda bir kez elle bak:**
+
+1. Vault klasörü olan bir repoda yeni oturum aç, tek satırlık bir değişiklik yaptır (ör. README'ye
+   bir cümle) ve başka bir şey söyleme. Model bitirmek isterken avenox onu bir kez durdurur
+   ("no receipt was written").
+2. Modelin ne yaptığına bak: `beyin-yazici` alt ajanını çağırmalı; `beyin.py note-create` ya da
+   `beyin.py receipt` komutunu **kendisi çalıştırmamalı**.
+3. Sonucu kontrol et: vault klasöründe `python beyin.py recap --days 1` tek yeni kayıt göstermeli,
+   özetin ilk satırı `Proje: <ad>` olmalı, kaynaklarında `Oturumlar/` altındaki yeni kart bulunmalı
+   ve oturum ikinci kez durdurulmadan kapanmalı.
+
+Model komutları kendi çalıştırdıysa ya da iki kayıt oluştuysa: `/memory` ile `CLAUDE.md` bloğunun
+yüklendiğine bak ve durumu not et; kural metninin ([claude/CLAUDE-kural.md](claude/CLAUDE-kural.md))
+güçlendirilmesi gerekir.
 
 ## 5. Güncelleme
 
@@ -142,8 +164,8 @@ python ege/kur.py --uninstall
 
 - Kaldırılanlar: git-devir ve proje hook girdileri, `CLAUDE.md`'deki yönetilen blok, bu komutun
   kopyaladığı ve sonradan değişmemiş ajan/skill dosyaları.
-- Bırakılanlar: `git-devir.json`, `~/.claude/git-devir/` (log ve notlar), yedekler, vault'taki her
-  şey (kartlar, kararlar, `projeler.json`, avenox ayarları) ve avenox köprüsü.
+- Bırakılanlar: `git-devir.json`, `~/.claude/git-devir/` (log, notlar, `sustur` listesi), yedekler,
+  vault'taki her şey (`Proje.md`, kartlar, kararlar, kurallar, avenox ayarları) ve avenox köprüsü.
 - Avenox köprüsünü de kaldırmak için vault klasöründe:
   `python beyin.py bridge --harness claude --uninstall`
 
@@ -152,7 +174,8 @@ python ege/kur.py --uninstall
 | Belirti | Bak |
 |---|---|
 | Oturum başında `Proje:` satırı yok | Repo `--project-root` altında mı? Kökünde `.git-devir-off` var mı? `proje.py context` ne diyor? |
-| "vault'ta klasör yok" ama klasör var | Klasör adı repo adından farklıysa: `proje.py init --ad "<klasör adı>"` ile bağla |
+| "vault'ta klasör yok" ama klasör var | Klasör adı repo adından farklıysa: `proje.py init --ad "<klasör adı>"` ile bağla (klasöre `Proje.md` yazar) |
+| Klasör sorusu hiç gelmiyor | Bu makinede daha önce "hayır" denmiş olabilir: `~/.claude/git-devir/proje/sustur.json`; `proje.py init` geri alır |
 | Kart yazılmadı | `beyin-yazici` cevabındaki "Yapılamayan" satırı; `proje.py resolve` çıkış kodu 3 ise klasör yok |
 | Push/fetch notları | 1. adımdaki GitHub girişi; `~/.claude/git-devir/log.txt` |
 | `kur.py` "dokunulmadı" diyor | O dosyayı elle değiştirmişsin; farkı gör, gerekiyorsa `--force` |

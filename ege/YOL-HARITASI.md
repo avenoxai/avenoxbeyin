@@ -22,8 +22,9 @@ kurulmadı) · ✅ bitti
 - 🟡 **[İLK İŞ] Proje kimliği = repo adı / git remote**: aynı repo farklı makinelerde tek proje
   sayılsın (upstream `project_id` = klasör yolu hash'i; proje adı ise repo klasör adının vault'taki
   `30 Projeler/<ad>` klasörüyle veya `.beyin-projects.json` ile eşleşmesinden çözülüyor).
-  [hooks/proje.py](hooks/proje.py): kimlik `sahip/repo`, klasör `_Sistem/projeler.json` ya da ad
-  eşleşmesiyle bulunur ([hooks/README.md](hooks/README.md)). Yazıldı ve test edildi, kurulmadı.
+  [hooks/proje.py](hooks/proje.py): kimlik `sahip/repo`; klasör, içindeki `Proje.md` dosyasının
+  `proje_id` satırıyla ya da ad eşleşmesiyle bulunur ([hooks/README.md](hooks/README.md)). Yazıldı
+  ve test edildi, kurulmadı.
 - 🟡 **Proje bazında "kaldığım yer"**: oturum başında açılan repoya ait son kart
   (`30 Projeler/<ad>/Oturumlar/`, iş başına yeni dosya; `proje.py start`). Yazıldı ve test edildi, kurulmadı.
 - 🟡 **git-devir hook'u** ([hooks/git_devir.py](hooks/git_devir.py)): kapanışta yarım iş `wip/<makine>/<dal>`

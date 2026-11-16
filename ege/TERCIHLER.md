@@ -37,9 +37,9 @@ Durum işaretleri: ✅ karar verildi · ⏳ önerildi, onay bekliyor · ❓ aç�
   - Upstream kayıtlarında proje alanı **yok** (oturum→proje bağı yalnız o makinenin yerel
     veritabanında). Bu yüzden proje bağı vault'a yazılır: kayıt özetinin ilk satırı `Proje: <ad>`
     ve kayıt o işin oturum kartına (`30 Projeler/<ad>/Oturumlar/YYYY-AA-GG-SSDD-<makine>.md`)
-    bağlanır. Her proje klasöründe `Oturumlar/` (iş başına yeni kart dosyası), `Kararlar.md`,
-    `Kurallar.md`. Tek bir `Durum.md` yerine kart kullanılır, çünkü her makine yalnız yeni dosya
-    eklediğinde Obsidian Sync'te çakışma olmaz.
+    bağlanır. Her proje klasöründe `Proje.md` (repo bağı: `proje_id: sahip/repo`), `Oturumlar/`
+    (iş başına yeni kart dosyası), `Kararlar.md`, `Kurallar.md`. Tek bir `Durum.md` yerine kart
+    kullanılır, çünkü her makine yalnız yeni dosya eklediğinde Obsidian Sync'te çakışma olmaz.
 - ✅ (2026-11-16) **Kapanışta otomatik commit+push (wip dalı), açılışta pull — git-devir hook'u.**
   Ayrıntı: [hooks/README.md](hooks/README.md). (Önceki "yalnız uyarı, otomatik push yok" kararının
   yerine geçer.)
