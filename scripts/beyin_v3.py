@@ -2202,8 +2202,19 @@ def main(argv=None, return_result=False):
                 if not isinstance(supplied, dict) or set(supplied) - set(params):
                     raise ValueError("Context JSON contains unsupported fields")
                 params.update(supplied)
+            if args.project is not None:
+                params["project"] = args.project
             if not isinstance(params["query"], str) or not params["query"].strip():
                 raise ValueError("context requires a nonempty query")
+            workspace_files = (vault / ".beyin-workspaces.json", vault / ".beyin-projects.json")
+            if params["project"] is None and any(path.exists() or path.is_symlink() for path in workspace_files):
+                _ensure_scripts_path()
+                from beyin_v3_workspaces import matching_workspace_ids
+                named = matching_workspace_ids(vault, params["query"])
+                if len(named) > 1:
+                    raise ValueError("context query names multiple Workspaces; specify --project")
+                if named:
+                    params["project"] = named[0]
             if read_only_context:
                 result = store.context_for(args.harness, explicit=True, **params)
                 result['source_sync'] = {'status': 'skipped', 'reason': 'explicit_no_sync'}

@@ -651,6 +651,22 @@ def record_scope(record, scopes):
     return BLOCKED_SCOPE if blocked >= 0 else None
 
 
+def workspace_read_grant(record, project, scopes):
+    """An explicit read membership on one canonical record, never a write grant.
+
+    A homepage link merely points to a candidate; it cannot create this membership.
+    The source folder must also survive the current scope file's blocked boundaries.
+    """
+    readers = record.get("workspace_readers")
+    if (record.get("visibility") == "private" or not isinstance(project, str)
+            or not project.strip() or not isinstance(readers, list)
+            or any(not isinstance(value, str) or not value.strip() for value in readers)
+            or len(readers) != len(set(readers))
+            or project not in readers):
+        return False
+    return scopes is None or record_scope({"source": record.get("source")}, scopes) is not BLOCKED_SCOPE
+
+
 # Turkish is agglutinative, so exact token intersection loses "fark" against "farki" and
 # "not" against "notlar". Every token is replaced by ONE canonical stem, with the same
 # function on the query and the document side. Replacement, not expansion: the score stays
@@ -1291,6 +1307,11 @@ class MemoryStore:
         record.setdefault("visibility", "internal")
         if record["visibility"] not in ("public", "internal", "private"):
             raise ValueError("invalid visibility")
+        if "workspace_readers" in record:
+            readers = record["workspace_readers"]
+            if (not isinstance(readers, list) or any(not isinstance(value, str) or not value.strip()
+                                                     for value in readers) or len(set(readers)) != len(readers)):
+                raise ValueError("workspace_readers must be distinct nonempty workspace ids")
         supersedes = record.get("supersedes", [])
         if isinstance(supersedes, str):
             supersedes = [supersedes]
@@ -1808,11 +1829,12 @@ class MemoryStore:
                 continue
             if project is not None:
                 if scopes is None:
-                    if record.get("project") != project:
+                    if record.get("project") != project and not workspace_read_grant(record, project, scopes):
                         continue
                 else:
                     scope = record_scope(record, scopes)
-                    if scope != project and not (scope is None and scopes["shared_unscoped"]):
+                    if (scope != project and not (scope is None and scopes["shared_unscoped"])
+                            and not workspace_read_grant(record, project, scopes)):
                         continue
             try:
                 self._source(record["source"])
@@ -2176,7 +2198,7 @@ def optional_provider(enabled=False, factory=None):
 # created/modified are file dates beside updated_at, and the rest are defaults. Each costs every
 # delivered record its share of the budget, so the envelope leaves them out and the note text
 # keeps that room. A reader that needs a revision (task-update) reads it with `beyin.py context`.
-_BOOKKEEPING = ("source_sha256", "revision", "created", "modified", "visibility", "supersedes")
+_BOOKKEEPING = ("source_sha256", "revision", "created", "modified", "visibility", "supersedes", "workspace_readers")
 _DEFAULTS = {"kind": "note", "facts": {}, "project": None}
 
 
