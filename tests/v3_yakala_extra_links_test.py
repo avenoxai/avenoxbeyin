@@ -1,9 +1,11 @@
 """#486: a local or private extra link is kept as a reference; the capture is not cancelled."""
+from email.message import Message
+import io
 from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
@@ -37,12 +39,25 @@ class LocalExtraLinkTest(unittest.TestCase):
         def fetch(url, *args, **kwargs):
             fetched.append(url)
             return 'Acik makale metni. ' * 20
-        with patch.object(yakala, 'tools', return_value=dict(NO_TOOLS, npx='npx')), \
+        # The completeness check performs its own fetch after the mocked extractor.
+        # Keep that HTTP boundary offline too, while exercising the real check.
+        response = io.BytesIO(('<html><main><p>' + 'Acik makale metni. ' * 20 + '</p></main></html>').encode())
+        response.headers = Message()
+        response.headers['Content-Type'] = 'text/html; charset=utf-8'
+        opener = Mock()
+        opener.open.return_value = response
+        with patch.object(yakala, '_public_opener', return_value=opener), \
+                patch.object(yakala.socket, 'create_connection', side_effect=AssertionError('offline fixture')) as dial, \
+                patch.object(yakala, 'tools', return_value=dict(NO_TOOLS, npx='npx')), \
                 patch.object(yakala, '_safe_network_url', side_effect=lambda url: url), \
                 patch.object(yakala, 'via_defuddle', side_effect=fetch), \
                 patch.object(yakala, 'via_stdlib', side_effect=AssertionError('fallback not needed')):
             entry = yakala.process(self.vault, [new['id']])['kartlar'][0]
         self.assertEqual(fetched, ['https://example.com/makale'])
+        opener.open.assert_called_once()
+        self.assertEqual(opener.open.call_args.args[0].full_url, 'https://example.com/makale')
+        dial.assert_not_called()
+        self.assertTrue(response.closed)
         self.assertEqual((entry['ek_urller'], entry['ek_urller_yerel']), (['https://example.org/kaynak'], local))
         self.assertIn('`ek_urller_yerel`', yakala.SKILL_MD)
 
