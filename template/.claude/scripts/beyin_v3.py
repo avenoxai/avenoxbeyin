@@ -1222,7 +1222,7 @@ class MemoryStore:
         if ".." in Path(value).parts:
             raise ValueError("source traversal rejected")
         path = self.vault_root / value
-        target = _resolved if path.is_relative_to(self.vault_root) else None
+        target = _resolved if _resolved is not None and path.is_relative_to(self.vault_root) else None
         if target is not None:
             # A file or directory can become a symlink after the scan's first read.
             # Reuse the realpath only while its vault-relative components stay real;
