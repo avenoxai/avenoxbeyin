@@ -1300,6 +1300,8 @@ def parser(note_namespace=None, is_json=False):
     note.add_argument("--evidence-ref", action="append", dest="evidence_refs", help="Existing vault source path backing the note; repeatable")
     note_read = sub.add_parser("note-read", help="Read a human Markdown source and its byte SHA-256")
     note_read.add_argument("source")
+    note_read.add_argument("--sha-only", action="store_true",
+                           help="Return source, exists and SHA-256 without the note content")
     note_read.add_argument("--must-exist", action="store_true",
                            help="Report a missing source as an error (exit 1) instead of exists: false")
     note_edit = sub.add_parser("note-edit", help="Edit a human Markdown source with an expected SHA-256")
@@ -2156,6 +2158,9 @@ def main(argv=None, return_result=False):
             if args.must_exist and not result['exists']:
                 # The documented note error: status error, exit 1. Exit 2 stays "conflict".
                 raise FileNotFoundError('note not found: ' + result['source'])
+            if args.sha_only:
+                # Keep the normal read validations; only shorten the output.
+                result = {key: result[key] for key in ('source', 'exists', 'sha256')}
         elif args.command == "note-edit":
             result = sync.note_edit(note_request(args.file, args))
         elif args.command == "note-create":
