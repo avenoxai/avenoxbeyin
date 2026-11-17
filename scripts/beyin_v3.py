@@ -2247,6 +2247,24 @@ def main(argv=None, return_result=False):
                         'warnings': warnings[:20],
                         'truncated': len(warnings) > 20,
                     }
+            # Diagnose only the final delivered payload, never hidden/stale/unselected
+            # records. This is lexical coverage, not evidence that a topic is absent.
+            def delivered_text(value):
+                if isinstance(value, str):
+                    return value
+                if isinstance(value, dict):
+                    return ' '.join(delivered_text(item) for item in value.values())
+                if isinstance(value, list):
+                    return ' '.join(delivered_text(item) for item in value)
+                return str(value) if value is not None else ''
+
+            covered = set()
+            for record in result.get('records', []):
+                covered.update(engine._tokens(' '.join(
+                    delivered_text(record.get(key, ''))
+                    for key in ('text', 'title', 'facts', 'aliases'))))
+            result['unmatched_terms'] = sorted({word for word in re.findall(r'[a-z0-9]+', engine._fold(params['query']))
+                                                 if engine._stem(word) not in engine.STOPWORDS | covered})
         elif args.command in ("jev-review", "jev-answer", "jev-memory"):
             from beyin_v3_jev import review_candidate, verify_answer
             max_chars = 32000 if args.command == "jev-answer" else 24000
