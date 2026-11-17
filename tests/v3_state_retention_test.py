@@ -187,6 +187,131 @@ class StateRetentionTest(unittest.TestCase):
         self.assertFalse(any(path.exists() for path in removed))
         self.assertTrue(all(path.exists() for path in kept))
 
+    @unittest.skipUnless(os.name == 'posix', 'cleanup fails closed without POSIX directory descriptors')
+    def test_jev_cache_sweep_removes_only_expired_entries(self):
+        """#772: expired Jev score entries never leave `.cache/jev` unless the same request returns."""
+        folder = self.state / '.cache' / 'jev'
+        expired = [self.stale(folder / ('a' * 64 + '.json')),
+                   self.stale(folder / ('0123456789abcdef' * 4 + '.json'), age=retention.JEV_CACHE_MAX_AGE_SECONDS + 60)]
+        kept = [self.stale(folder / ('b' * 64 + '.json'), age=60),
+                self.stale(folder / ('c' * 64 + '.json'), age=retention.JEV_CACHE_MAX_AGE_SECONDS - 60),
+                self.stale(folder / 'notlar.json'),
+                self.stale(folder / ('d' * 63 + '.json')),
+                self.stale(folder / ('E' * 64 + '.json')),
+                self.stale(folder / ('f' * 64 + '.json.bak')),
+                self.stale(self.state / '.cache' / 'other' / ('a' * 64 + '.json')),
+                self.stale(self.state / ('a' * 64 + '.json')),
+                self.stale(self.vault / '.cache' / 'jev' / ('a' * 64 + '.json'))]
+        (folder / ('9' * 64 + '.json')).mkdir()
+        if os.name != 'nt':
+            os.symlink(self.vault / 'outside', folder / ('8' * 64 + '.json'))
+        self.assertEqual(retention.expired_jev_cache(self.state), sorted(expired))
+        self.assertEqual(retention.sweep_jev_cache(self.state), len(expired))
+        self.assertFalse(any(path.exists() for path in expired))
+        self.assertTrue(all(path.exists() for path in kept))
+        self.assertEqual(retention.sweep_jev_cache(self.state), 0)
+
+    def test_jev_cache_sweep_ignores_missing_and_linked_folders(self):
+        self.assertEqual(retention.sweep_jev_cache(self.state), 0)
+        self.assertFalse((self.state / '.cache').exists())
+        if os.name == 'nt':
+            self.skipTest('directory symlinks need extra privileges on Windows')
+        outside = self.root / 'outside cache'
+        old = self.stale(outside / 'jev' / ('a' * 64 + '.json'))
+        (self.state / '.cache').symlink_to(outside, target_is_directory=True)
+        self.assertEqual(retention.sweep_jev_cache(self.state), 0)
+        self.assertTrue(old.exists())
+        (self.state / '.cache').unlink()
+        (self.state / '.cache').mkdir()
+        (self.state / '.cache' / 'jev').symlink_to(outside / 'jev', target_is_directory=True)
+        self.assertEqual(retention.sweep_jev_cache(self.state), 0)
+        self.assertTrue(old.exists())
+
+    @unittest.skipUnless(os.name == 'posix', 'cleanup fails closed without POSIX directory descriptors')
+    def test_maintenance_compact_and_doctor_report_the_jev_cache(self):
+        folder = self.state / '.cache' / 'jev'
+        old, fresh = self.stale(folder / ('a' * 64 + '.json')), self.stale(folder / ('b' * 64 + '.json'), age=60)
+        self.assertEqual(retention.storage_report(self.state)['expired_jev_cache'], 1)
+        plan = retention.compact(self.store, dry_run=True)
+        self.assertEqual((plan['status'], plan['expired_jev_cache']), ('planned', 1))
+        self.assertTrue(old.exists())
+        self.assertEqual(retention.maintain(self.store)['jev_cache_removed'], 1)
+        self.assertFalse(old.exists())
+        self.assertTrue(fresh.exists())
+        again = self.stale(folder / ('c' * 64 + '.json'))
+        self.assertEqual(retention.compact(self.store)['jev_cache_removed'], 1)
+        self.assertFalse(again.exists())
+        self.assertTrue(fresh.exists())
+        self.assertEqual(retention.storage_report(self.state)['expired_jev_cache'], 0)
+
+    @unittest.skipUnless(os.name == 'posix', 'descriptor-anchored cleanup is POSIX only')
+    def test_jev_cache_sweep_keeps_fresh_created_at_with_old_mtime(self):
+        path = self.stale(self.state / '.cache' / 'jev' / ('a' * 64 + '.json'))
+        path.write_text(json.dumps({'created_at': time.time()}))
+        os.utime(path, (time.time() - 2 * DAY,) * 2)
+        self.assertEqual(retention.sweep_jev_cache(self.state), 0)
+        self.assertTrue(path.exists())
+
+    @unittest.skipUnless(os.name == 'posix', 'descriptor-anchored cleanup is POSIX only')
+    def test_jev_cache_sweep_anchors_parent_during_symlink_swap(self):
+        folder = self.state / '.cache' / 'jev'
+        old = self.stale(folder / ('a' * 64 + '.json'))
+        outside = self.root / 'outside'
+        outside.mkdir()
+        victim = self.stale(outside / old.name)
+        scan = retention._expired_jev_names
+        def swap(fd, now):
+            names = scan(fd, now)
+            folder.rename(folder.with_name('original'))
+            folder.symlink_to(outside, target_is_directory=True)
+            return names
+        with patch.object(retention, '_expired_jev_names', side_effect=swap):
+            self.assertEqual(retention.sweep_jev_cache(self.state), 1)
+        self.assertTrue(victim.exists())
+        self.assertFalse((folder.with_name('original') / old.name).exists())
+
+    @unittest.skipUnless(os.name == 'posix', 'directory locks are POSIX only')
+    def test_jev_cache_publisher_and_sweep_lock_exclude_each_other(self):
+        old = self.stale(self.state / '.cache' / 'jev' / ('a' * 64 + '.json'))
+        with retention.jev_cache_directory(self.state) as first:
+            self.assertIsNotNone(first)
+            with retention.jev_cache_directory(self.state) as second:
+                self.assertIsNone(second)
+            self.assertEqual(retention.sweep_jev_cache(self.state), 0)
+            self.assertTrue(old.exists())
+        self.assertEqual(retention.sweep_jev_cache(self.state), 1)
+
+    @unittest.skipUnless(os.name == 'posix', 'descriptor-anchored cleanup is POSIX only')
+    def test_jev_cache_malformed_numeric_and_nested_json_do_not_crash(self):
+        folder = self.state / '.cache' / 'jev'
+        future = self.stale(folder / ('a' * 64 + '.json'))
+        ancient = self.stale(folder / ('b' * 64 + '.json'))
+        nested = self.stale(folder / ('c' * 64 + '.json'))
+        future.write_text(json.dumps({'created_at': 10 ** 400}))
+        ancient.write_text(json.dumps({'created_at': -(10 ** 400)}))
+        nested.write_text('[' * 2000 + '0' + ']' * 2000)
+        for path in (future, ancient, nested):
+            os.utime(path, (0, 0))
+        self.assertEqual(retention.sweep_jev_cache(self.state), 2)
+        self.assertTrue(future.exists())
+        self.assertFalse(ancient.exists())
+        self.assertFalse(nested.exists())
+
+    def test_jev_cleanup_unsupported_platform_fails_closed(self):
+        old = self.stale(self.state / '.cache' / 'jev' / ('a' * 64 + '.json'))
+        with patch.object(retention.os, 'name', 'nt'):
+            self.assertEqual(retention.sweep_jev_cache(str(self.state)), 0)
+            self.assertEqual(retention.expired_jev_cache(str(self.state)), [])
+        self.assertTrue(old.exists())
+
+    def test_jev_cache_age_matches_the_longest_accepted_cache_ttl(self):
+        """A file older than any accepted `cache_ttl` can never be a hit, so the sweep may not outlast it."""
+        import beyin_v3_jev_client as client
+        config = dict(client.DEFAULTS, cache_ttl=retention.JEV_CACHE_MAX_AGE_SECONDS)
+        client._validated(config)
+        with self.assertRaises(ValueError):
+            client._validated(dict(config, cache_ttl=retention.JEV_CACHE_MAX_AGE_SECONDS + 1))
+
     def test_hook_atomic_removes_its_temp_when_the_write_fails(self):
         target = self.state / 'hook-health.json'
         with patch.object(hook, '_safe_replace', side_effect=PermissionError(13, 'denied')):

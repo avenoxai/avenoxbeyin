@@ -391,9 +391,11 @@ def human_result(result, command, installed_version=None):
         if status == 'planned':
             return ('Eski olay kaydi: ' + str(result.get('events_prunable', 0)) + ' (yaklasik ' +
                     megabytes(result.get('event_bytes_prunable', 0)) + ' MB), eski gecici dosya: ' +
-                    str(result.get('stale_temp_files', 0)) + '. Hicbir sey degismedi.')
+                    str(result.get('stale_temp_files', 0)) + ', suresi dolmus Jev onbellegi: ' +
+                    str(result.get('expired_jev_cache', 0)) + '. Hicbir sey degismedi.')
         lines = ['Silinen eski olay kaydi: ' + str(result.get('events_removed', 0)) + ', eski gecici dosya: ' +
-                 str(result.get('temp_files_removed', 0)) + '.']
+                 str(result.get('temp_files_removed', 0)) + ', suresi dolmus Jev onbellegi: ' +
+                 str(result.get('jev_cache_removed', 0)) + '.']
         if result.get('vacuum') == 'done':
             lines.append('Yerel indeks ' + megabytes(result.get('database_bytes_before', 0)) + ' MB -> ' +
                          megabytes(result.get('database_bytes_after', 0)) + ' MB.')
