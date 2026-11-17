@@ -595,13 +595,17 @@ def evaluate(vault, query, candidates, *, source_versions=None, scope='user', fa
             try:
                 # Store only validated score output: no prompts, credentials or raw provider metadata.
                 safe=dict(answers=serialize(validated))
-                with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',dir=path.parent,delete=False) as handle:
-                    os.chmod(handle.name,0o600)
-                    json.dump(dict(created_at=time.time(),request_hash=digest,response=safe,
-                                   reported_model=result['reported_model'],confidence_provenance=result['confidence_provenance'],
-                                   quantized_probability_count=result['quantized_probability_count']),handle)
-                    temporary=handle.name
-                os.replace(temporary,path)
+                from beyin_v3_retention import jev_cache_directory
+                with jev_cache_directory(vault) as cache_fd:
+                    if os.name == 'posix' and cache_fd is None:
+                        raise OSError('cache busy or unsafe')
+                    with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',dir=path.parent,delete=False) as handle:
+                        os.chmod(handle.name,0o600)
+                        json.dump(dict(created_at=time.time(),request_hash=digest,response=safe,
+                                       reported_model=result['reported_model'],confidence_provenance=result['confidence_provenance'],
+                                       quantized_probability_count=result['quantized_probability_count']),handle)
+                        temporary=handle.name
+                    os.replace(temporary,path)
             except OSError: result['diagnostics'].append('cache_write_failed')
     except Exception as exc:
         safe_codes={'config_invalid','env_file_invalid','endpoint_invalid','payload_invalid','budget_exceeded','answers_invalid','credentials_missing','deadline_exceeded','purpose_invalid','configuration_changed',

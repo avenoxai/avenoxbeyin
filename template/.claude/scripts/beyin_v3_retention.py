@@ -38,8 +38,9 @@ is replaced only when the same request returns, so entries of requests that neve
 repeat stayed forever. `cache_ttl` is validated to at most JEV_CACHE_MAX_AGE_SECONDS,
 so a file older than that can never be a cache hit under any accepted configuration.
 """
-from contextlib import closing
+from contextlib import closing, contextmanager
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -200,39 +201,94 @@ def sweep_temp_files(state, now=None):
     return removed
 
 
-def expired_jev_cache(state, now=None):
-    """Jev score entries no accepted `cache_ttl` can still hit; never follows a link."""
-    now = time.time() if now is None else now
-    state = Path(state)
-    folder = state / '.cache' / 'jev'
-    found = []
+@contextmanager
+def jev_cache_directory(state):
+    """Lock an anchored POSIX cache directory; unsupported platforms fail closed.
+
+    Lock is shared with the Jev publisher. No lock file is created. Opening each
+    child relative to its parent prevents a swapped directory redirecting deletes.
+    """
+    if os.name != 'posix' or not hasattr(os, 'O_NOFOLLOW'):
+        yield None
+        return
+    descriptors = []
     try:
-        if (state / '.cache').is_symlink() or folder.is_symlink() or not folder.is_dir():
-            return found
-        with os.scandir(folder) as listing:
-            entries = list(listing)
+        import fcntl
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        descriptors.append(os.open(state, flags))
+        for name in ('.cache', 'jev'):
+            descriptors.append(os.open(name, flags, dir_fd=descriptors[-1]))
+        fcntl.flock(descriptors[-1], fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        return found
-    for entry in entries:
-        if not _JEV_CACHE_ENTRY.fullmatch(entry.name):
+        for fd in reversed(descriptors):
+            os.close(fd)
+        yield None
+        return
+    try:
+        yield descriptors[-1]
+    finally:
+        for fd in reversed(descriptors):
+            os.close(fd)
+
+
+def _expired_jev_names(fd, now):
+    found = []
+    for name in os.listdir(fd):
+        if not _JEV_CACHE_ENTRY.fullmatch(name):
             continue
         try:
-            info = os.lstat(entry.path)
+            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode) or now - info.st_mtime <= JEV_CACHE_MAX_AGE_SECONDS:
+                continue
+            # The client uses created_at, not mtime. Copies/restores may preserve
+            # an old mtime; never remove an entry still usable by that client.
+            item = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+            with os.fdopen(item, 'rb') as stream:
+                current = os.fstat(stream.fileno())
+                if not stat.S_ISREG(current.st_mode) or current.st_size > 1024 * 1024:
+                    continue
+                raw = stream.read(1024 * 1024 + 1)
+            try:
+                data = json.loads(raw)
+                created = data.get('created_at') if isinstance(data, dict) else None
+            except (ValueError, UnicodeError, RecursionError):
+                created = None
+            if type(created) is int or (type(created) is float and math.isfinite(created)):
+                if created >= now - JEV_CACHE_MAX_AGE_SECONDS:
+                    continue
+            found.append(name)
         except OSError:
             continue
-        if stat.S_ISREG(info.st_mode) and now - info.st_mtime > JEV_CACHE_MAX_AGE_SECONDS:
-            found.append(Path(entry.path))
     return sorted(found)
 
 
+def expired_jev_cache(state, now=None):
+    """Count only entries that this platform can safely sweep; never writes."""
+    now = time.time() if now is None else now
+    try:
+        with jev_cache_directory(state) as fd:
+            if fd is None:
+                return []
+            return [Path(state) / '.cache' / 'jev' / name for name in _expired_jev_names(fd, now)]
+    except OSError:
+        return []
+
+
 def sweep_jev_cache(state, now=None):
+    now = time.time() if now is None else now
     removed = 0
-    for path in expired_jev_cache(state, now):
-        try:
-            path.unlink()
-            removed += 1
-        except OSError:
-            pass  # gone already, or held open on Windows; the next sweep retries
+    try:
+        with jev_cache_directory(state) as fd:
+            if fd is None:
+                return 0
+            for name in _expired_jev_names(fd, now):
+                try:
+                    os.unlink(name, dir_fd=fd)
+                    removed += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
     return removed
 
 

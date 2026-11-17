@@ -39,6 +39,33 @@ class ClientTests(unittest.TestCase):
             if os.name != 'nt':
                 self.assertEqual(path.stat().st_mode&0o777,0o600)
             self.assertNotIn('test-key',path.read_text());self.assertNotIn('question',path.read_text())
+    @unittest.skipUnless(os.name == 'posix', 'directory locks are POSIX only')
+    def test_cache_publication_and_retention_share_lock(self):
+        import beyin_v3_retention as retention
+        self.config(cache_ttl=1)
+        self.run_client()
+        path = next((self.vault / '.cache/jev').glob('*.json'))
+        cached = json.loads(path.read_text())
+        cached['created_at'] = 0
+        path.write_text(json.dumps(cached))
+        os.utime(path, (0, 0))
+        with retention.jev_cache_directory(self.vault) as fd:
+            self.assertIsNotNone(fd)
+            result = self.run_client()
+            self.assertEqual(result['scores'], {'one': 1.8})
+            self.assertIn('cache_write_failed', result['diagnostics'])
+            self.assertEqual(json.loads(path.read_text())['created_at'], 0)
+        replace = j.os.replace
+        def publish(source, destination):
+            self.assertEqual(retention.sweep_jev_cache(self.vault), 0)
+            self.assertTrue(path.exists())
+            return replace(source, destination)
+        with patch.object(j.os, 'replace', side_effect=publish):
+            result = self.run_client()
+        self.assertNotIn('cache_write_failed', result['diagnostics'])
+        self.assertGreater(json.loads(path.read_text())['created_at'], 0)
+        self.assertEqual(retention.sweep_jev_cache(self.vault), 0)
+
     def test_facets(self):
         self.config()
         r=self.run_client(facets=['A','B']);self.assertEqual(len(r['facet_scores']),2)
