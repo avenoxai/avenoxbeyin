@@ -745,9 +745,9 @@ def stamp(header):
 
 def excerpt(name, text, project=None):
     if name == 'Threads.md':
-        # Same active headings compaction recognizes (beyin_v3_compact.ACTIVE), so a
-        # '## Açık konular' file does not inject its closed threads too (#153).
-        match = re.search(r'(?im)^## (?:(?:Active|Open)(?: Threads)?|Aktif[^\n]*|A[çc][ıi]k(?:[ \t][^\n]*)?)\s*$', text)
+        # Recognize named active/open sections, including custom suffixes (#758).
+        # Keep a word boundary: Açıklama/Opening are not active headings (#153).
+        match = re.search(r'(?im)^## (?:(?:Active|Open)(?:[ \t][^\n]*)?|Aktif[^\n]*|A[çc][ıi]k(?:[ \t][^\n]*)?)\s*$', text)
         if match:
             body = text[match.start():]
             closed = re.search(r'(?im)^## (?:Closed|Kapan|Kapalı)', body)
