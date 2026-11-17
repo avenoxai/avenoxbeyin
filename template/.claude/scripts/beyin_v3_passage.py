@@ -79,6 +79,43 @@ def _particle_stripped_tokens(query):
     return _tokens(re.sub(r"[a-z0-9]+", lambda m: " " if m.group() in _STRICT_PARTICLE_SURFACES else m.group(), _fold(query)))
 
 
+# Hyphenated identifiers (D-68, ADR-0007, CVE-2026-109619): the letters (one character is enough) and
+# the short numbers are dropped by the strict term filter, so such a prompt reaches the index with no term
+# at all. The lowercase hyphenated form and the catenated form (d-68, d68) are emitted on both sides, and a
+# prompt's identifier is one term whose alternative is the catenated form. A Turkish apostrophe suffix
+# (D-68'i) ends the match at the last digit. A one-digit number (utf-8, gpt-4) is an
+# encoding or version designator, not an identifier: the two-term gate stays for it (#430). Plain letter+digit words (d68, s2) and hex ids already tokenize.
+_IDENTIFIER = re.compile(r"(?<![a-z0-9-])[a-z]{1,10}-[0-9]{2,10}(?:-[0-9]{1,10})*(?![a-z0-9])")
+
+
+def _identifier_tokens(text):
+    """Hyphenated identifiers of text, each as its hyphenated and its catenated spelling."""
+    out = set()
+    for match in _IDENTIFIER.finditer(str(text).casefold().replace("\u2010", "-")):
+        out.add(match.group())
+        out.add(match.group().replace("-", ""))
+    return out
+
+
+def _passage_tokens(text):
+    return _tokens(text) | _identifier_tokens(text)
+
+
+def _query_terms(query, ignored):
+    """(terms, compounds) of a strict query: _query_compounds plus the query's hyphenated identifiers."""
+    terms, compounds = _query_compounds(query, _strict_terms(_particle_stripped_tokens(query) - ignored))
+    taken = set(compounds.values())
+    for identifier in sorted(_identifier_tokens(query)):
+        if "-" not in identifier:
+            continue
+        terms.add(identifier)
+        joined = identifier.replace("-", "")
+        if joined not in taken and joined not in terms:
+            compounds[identifier] = joined
+            taken.add(joined)
+    return terms, compounds
+
+
 class IndexPending(RuntimeError):
     """The index is still being built; the caller falls back to the note-level path."""
 
@@ -254,8 +291,8 @@ def _meta(record):
     aliases = aliases if isinstance(aliases, list) else []
     alias_text = " ".join(a[:160] for a in aliases[:32] if isinstance(a, str))
     facts = record.get("facts") or {}
-    return _tokens(record["source"] + " " + str(record.get("title", "")) + " " + alias_text +
-                   (" " + _json(facts) if facts else ""))
+    return _passage_tokens(record["source"] + " " + str(record.get("title", "")) + " " + alias_text +
+                           (" " + _json(facts) if facts else ""))
 
 
 def _key(record):
@@ -276,9 +313,9 @@ def _passages(record):
     text = record["text"]
     out = []
     for head, start, end in split_blocks(text):
-        body = _tokens(text[start:end])
-        out.append([head, start, end, " ".join(sorted(_tokens(head + " " + text[start:end]) | meta)),
-                    " ".join(sorted((_tokens(head) | meta) - body))])
+        body = _passage_tokens(text[start:end])
+        out.append([head, start, end, " ".join(sorted(_passage_tokens(head + " " + text[start:end]) | meta)),
+                    " ".join(sorted((_passage_tokens(head) | meta) - body))])
     meta = " ".join(sorted(meta))
     return out or [["", 0, 0, meta, meta]]  # a title/facts-only record stays findable
 
@@ -297,7 +334,7 @@ def _valid(entry, text):
 # and the later active verb, devir and hyphenated name rules left the 3.12 probe alone.
 _PROBE = ("Kütüphanesindeki notlarımızı güncellediler; running tests quickly İstanbul ŞEHİR 2026 kurulmalı metni claude"
           " çalışıyor devri claude-mem")
-_PARAMS = [BLOCK_TARGET, BLOCK_OVERLAP, hashlib.sha256(" ".join(sorted(_tokens(_PROBE))).encode()).hexdigest()[:16]]
+_PARAMS = [BLOCK_TARGET, BLOCK_OVERLAP, hashlib.sha256(" ".join(sorted(_passage_tokens(_PROBE + " D-68"))).encode()).hexdigest()[:16]]
 
 
 def _read_cache(path):
@@ -419,6 +456,9 @@ def search(index, terms, limit=5, floor=FLOOR, min_shared=MIN_SHARED, ignored=ST
     sources_total = max(1, index.sources)
     wanted = min(len(terms), COVERAGE_CAP)
     probes = [(term, " " + term + " ") for term in sorted(terms)]
+    # One exact identifier (and its catenated spelling) is enough on its own: it names a thing.
+    named = {term for term in terms if _IDENTIFIER.fullmatch(term)}
+    named |= {(compounds or {})[term] for term in named if term in (compounds or {})}
     # A term may also match a shorter root; shared then holds the root, so its own idf weighs it.
     root_of = _query_roots(terms, lambda token: index.source_df.get(token, 0), ignored)
     roots = [(" " + term + " ", root, " " + root + " ") for term, root in sorted(root_of.items())]
@@ -433,12 +473,14 @@ def search(index, terms, limit=5, floor=FLOOR, min_shared=MIN_SHARED, ignored=ST
         if joined:
             shared += [stem for term_probe, root_probe, stem, probe in joined
                        if term_probe not in tokens and root_probe not in tokens and probe in tokens]
-        if len(shared) < min_shared:
+        if len(shared) < min_shared and not named.intersection(shared):
             continue
         size = tokens.count(" ") - 1
         coverage = min(1.0, len(shared) / wanted)
+        if named.intersection(shared):
+            coverage = 1.0  # the identifier names the thing; the other words of the prompt do not dilute it
         # A weight is never negative, so a floor at or below zero admits without computing it.
-        if floor > 0 and _weight(shared, index.block_df, passages_total, size) * coverage < floor:
+        if floor > 0 and not named.intersection(shared) and _weight(shared, index.block_df, passages_total, size) * coverage < floor:
             continue
         rank = _weight(shared, index.source_df, sources_total, size) * coverage
         record = passage[0]
@@ -540,7 +582,7 @@ def context_for(store, harness, query, project=None, audience="internal", status
     # The advisor's loose pool (loose_ranking) reuses this index within the same process.
     store._passage_index = ((audience, project, statuses), index, adjustments)
     ignored = STOPWORDS | _tokens(project or "")
-    terms, compounds = _query_compounds(query, _strict_terms(_particle_stripped_tokens(query) - ignored))
+    terms, compounds = _query_terms(query, ignored)
     if not terms or terms <= ACK_WORDS:
         return pack_context([], limit, budget_chars, stale_count)
     from beyin_v3_evidence import reference, strict_extensions
@@ -586,7 +628,7 @@ def loose_ranking(store, query, project=None, limit=32):
     ignored = STOPWORDS | _tokens(project or "")
     # The strict pass's query terms (#430): a hyphenated name's joined stem only stands in for
     # a missing part, so one hyphenated word never weighs as two terms in this order either.
-    terms, compounds = _query_compounds(query, _strict_terms(_particle_stripped_tokens(query) - ignored))
+    terms, compounds = _query_terms(query, ignored)
     return [passage[0]["id"] for _rank, passage in
             search(index, terms, limit, floor=0.0, min_shared=1, ignored=ignored, rank_adjustments=adjustments,
                    compounds=compounds)]
