@@ -55,6 +55,27 @@ MAX_EXCLUDES = 64
 BUILD_SECONDS = 1.0
 
 
+# Long pasted text (a hand-off, a report, a brief) names every common word of the vault, so some passage always shares MIN_SHARED
+# terms with it and a whole prompt's worth of unrelated notes is injected. A prompt above LONG_CHARS characters or LONG_TERMS strict
+# terms is reduced before matching: terms that more than LONG_SHARE of the sources contain are dropped (they say nothing), only the
+# LONG_KEEP terms with the highest idf are kept (terms no note contains cannot match and are dropped too), and a passage must share
+# LONG_MIN_SHARED of them. Typed prompts stay far below both limits and are unchanged.
+LONG_CHARS = 1500
+LONG_TERMS = 120
+LONG_SHARE = 0.25
+LONG_KEEP = 12
+LONG_MIN_SHARED = 4
+
+
+def _long_prompt_terms(index, terms, compounds):
+    """(terms, compounds) of a long prompt reduced to its rarest terms that still occur in the vault."""
+    total = max(1, index.sources)
+    usable = [term for term in terms if 0 < index.source_df.get(term, 0) <= LONG_SHARE * total]
+    usable.sort(key=lambda term: (index.source_df.get(term, 0), -len(term), term))
+    kept = set(usable[:LONG_KEEP])
+    return kept, {term: joined for term, joined in compounds.items() if term in kept}
+
+
 class IndexPending(RuntimeError):
     """The index is still being built; the caller falls back to the note-level path."""
 
@@ -519,9 +540,15 @@ def context_for(store, harness, query, project=None, audience="internal", status
     terms, compounds = _query_compounds(query, _strict_terms(_tokens(query) - ignored))
     if not terms:
         return pack_context([], limit, budget_chars, stale_count)
+    min_shared = MIN_SHARED
+    if len(query) > LONG_CHARS or len(terms) > LONG_TERMS:
+        terms, compounds = _long_prompt_terms(index, terms, compounds)
+        min_shared = LONG_MIN_SHARED
+        if not terms:
+            return pack_context([], limit, budget_chars, stale_count)
     from beyin_v3_evidence import reference, strict_extensions
     records, wider, evidence, extensions = [], {}, {}, {}
-    for _rank, first, second in search(index, terms, limit, config["floor"], ignored=ignored,
+    for _rank, first, second in search(index, terms, limit, config["floor"], min_shared=min_shared, ignored=ignored,
                                      rank_adjustments=adjustments, with_runner_up=True,
                                      compounds=compounds):
         record = first[0]
