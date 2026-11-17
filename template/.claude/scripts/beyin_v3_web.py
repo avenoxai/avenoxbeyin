@@ -679,12 +679,19 @@ def bind(core, port=None, read_only=False):
     raise WebError(409, f'Port kullanılamıyor: {port}' if port else 'Boş port bulunamadı') from last
 
 
+def _manual_launch_help():
+    return ('Yeni oturum için ayrı bir terminalde beyin.py web ac --no-browser --json çalıştırın. '
+            'JSON adres alanı tek kullanımlık giriş bağlantısı içerir; paylaşmayın veya kaydetmeyin.')
+
+
 def serve(core, port=None, read_only=False, open_browser=True, as_json=False):
     running = read_running(core.state)
     if running and alive(running):
         url = launch_url(running)
+        # Don't expose launch token in human output (#691.1)
+        display_url = f'http://127.0.0.1:{running["port"]}/'
         _say(as_json, {'durum': 'zaten_calisiyor', 'adres': url, 'salt_okunur': bool(running.get('read_only'))},
-             'Web görünümü zaten çalışıyor: ' + url)
+             'Web görünümü zaten çalışıyor: ' + display_url + ('' if open_browser else '\n' + _manual_launch_help()))
         if open_browser:
             webbrowser.open(url)
         return 0
@@ -692,10 +699,14 @@ def serve(core, port=None, read_only=False, open_browser=True, as_json=False):
     try:
         write_running(core.state, server)
         url = f'http://127.0.0.1:{server.port}/?token={server.launch_token}'
+        # Don't expose launch token in human output (#691.1); it's single-use and consumed on first browser visit
+        display_url = f'http://127.0.0.1:{server.port}/'
         _say(as_json, {'durum': 'basladi', 'adres': url, 'salt_okunur': server.read_only},
-             '\n'.join(('Beyin web görünümü açıldı (yalnız bu bilgisayar).', 'Adres: ' + url,
-                        'Mod: ' + ('salt okunur' if server.read_only else 'yazma açık (görev, eşitleme, sıkıştırma)'),
-                        f'{IDLE_SECONDS // 60} dakika kullanılmazsa kapanır. Kapatmak için Ctrl+C ya da beyin.py web durdur.')))
+             '\n'.join(('Beyin web görünümü açıldı (yalnız bu bilgisayar).',
+                         ('Tarayıcıda açılıyor: ' + display_url + ' (tek kullanımlık bağlantı, terminallerde gösterilmiyor)'
+                          if open_browser else 'Tarayıcı açılmadı: ' + display_url + '\n' + _manual_launch_help()),
+                         'Mod: ' + ('salt okunur' if server.read_only else 'yazma açık (görev, eşitleme, sıkıştırma)'),
+                         f'{IDLE_SECONDS // 60} dakika kullanılmazsa kapanır. Kapatmak için Ctrl+C ya da beyin.py web durdur.')))
     except BaseException:
         # A server that never got announced never serves: no open port, no stale running record.
         server.server_close()
@@ -797,7 +808,7 @@ def main(argv=None, vault=None, state=None, cli=None):
     start = sub.add_parser('ac', help='Sunucuyu başlat ve tarayıcıda aç')
     start.add_argument('--port', type=int, help='Tercih edilen port (varsayılan 7373-7393 arası ilk boş port)')
     start.add_argument('--read-only', action='store_true', help='Salt okunur: görev, eşitleme ve sıkıştırma kapalı')
-    start.add_argument('--no-browser', action='store_true', help='Tarayıcıyı açma; adresi yalnız yazdır')
+    start.add_argument('--no-browser', action='store_true', help='Tarayıcıyı açma; manuel tek kullanımlık giriş bağlantısı için --json ekle')
     sub.add_parser('durum', help='Çalışıyor mu?')
     sub.add_parser('durdur', help='Çalışan sunucuyu kapat')
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
