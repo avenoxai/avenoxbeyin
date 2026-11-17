@@ -55,6 +55,14 @@ MAX_EXCLUDES = 64
 BUILD_SECONDS = 1.0
 
 
+# A prompt that is only an acknowledgement or a continuation ("evet", "tamam, devam", "Yes, done") names no topic, yet
+# almost any note shares one of those words. When every strict term left after the usual filtering is one of
+# them, nothing is injected. A single other word (a topic, an identifier, "durum") keeps the prompt alive.
+# Compared as stems; commands that name an object or a tool (kur, sil, commitle, pushla) are not in the list.
+ACK_WORDS = _tokens("evet hayır tamam peki olur devam bitti onayla onaylıyorum hepsi hepsini yap "
+                    "teşekkürler sağol ok okay yes done go continue")
+
+
 # Turkish particles and discourse fillers: in a chat prompt they name no topic, yet almost any note shares two of
 # them with it. Like upstream's _STRICT_FILLER_SURFACES (#722) these are exact folded surfaces, removed from the
 # strict query before stemming, so "yenisi" or "yeniden" stay terms and an explicit topic with the same stem is
@@ -533,7 +541,7 @@ def context_for(store, harness, query, project=None, audience="internal", status
     store._passage_index = ((audience, project, statuses), index, adjustments)
     ignored = STOPWORDS | _tokens(project or "")
     terms, compounds = _query_compounds(query, _strict_terms(_particle_stripped_tokens(query) - ignored))
-    if not terms:
+    if not terms or terms <= ACK_WORDS:
         return pack_context([], limit, budget_chars, stale_count)
     from beyin_v3_evidence import reference, strict_extensions
     records, wider, evidence, extensions = [], {}, {}, {}
