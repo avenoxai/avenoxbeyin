@@ -30,7 +30,7 @@ import tempfile
 import time
 import unicodedata
 
-from beyin_v3 import HARNESSES, STOPWORDS, _allowed_statuses, _json, _name_match_score, _query_compounds, _query_roots, _status_allowed, _strict_terms, _tokens, pack_context, pack_widened
+from beyin_v3 import HARNESSES, STOPWORDS, _allowed_statuses, _fold, _json, _name_match_score, _query_compounds, _query_roots, _status_allowed, _strict_terms, _tokens, pack_context, pack_widened
 
 # #83 chose 0.15 on one 263-note Turkish vault without a coverage cap. With the cap, on a
 # second 1,285-note vault 0.20 is the lowest floor that keeps everyday and agent-command
@@ -53,6 +53,22 @@ MAX_EXCLUDES = 64
 # Tokenising budget per call for records the cache does not know yet. At least one record
 # is always processed, so progress is guaranteed on any machine.
 BUILD_SECONDS = 1.0
+
+
+# Turkish particles and discourse fillers: in a chat prompt they name no topic, yet almost any note shares two of
+# them with it. Like upstream's _STRICT_FILLER_SURFACES (#722) these are exact folded surfaces, removed from the
+# strict query before stemming, so "yenisi" or "yeniden" stay terms and an explicit topic with the same stem is
+# not erased; they are not global STOPWORDS and notes are indexed unchanged. hepsini and isleri are inflected
+# forms of listed particles seen in real chat prompts.
+_STRICT_PARTICLE_SURFACES = frozenset((
+    "da", "de", "ta", "te", "daha", "si", "ya", "dan", "den", "ki", "sey", "gibi", "yeni", "cok", "tamam",
+    "hepsi", "hepsini", "yap", "et", "degil", "isler", "isleri",
+))
+
+
+def _particle_stripped_tokens(query):
+    """_tokens(query) without the particle surfaces (removed before stemming; punctuation is kept)."""
+    return _tokens(re.sub(r"[a-z0-9]+", lambda m: " " if m.group() in _STRICT_PARTICLE_SURFACES else m.group(), _fold(query)))
 
 
 class IndexPending(RuntimeError):
@@ -516,7 +532,7 @@ def context_for(store, harness, query, project=None, audience="internal", status
     # The advisor's loose pool (loose_ranking) reuses this index within the same process.
     store._passage_index = ((audience, project, statuses), index, adjustments)
     ignored = STOPWORDS | _tokens(project or "")
-    terms, compounds = _query_compounds(query, _strict_terms(_tokens(query) - ignored))
+    terms, compounds = _query_compounds(query, _strict_terms(_particle_stripped_tokens(query) - ignored))
     if not terms:
         return pack_context([], limit, budget_chars, stale_count)
     from beyin_v3_evidence import reference, strict_extensions
@@ -562,7 +578,7 @@ def loose_ranking(store, query, project=None, limit=32):
     ignored = STOPWORDS | _tokens(project or "")
     # The strict pass's query terms (#430): a hyphenated name's joined stem only stands in for
     # a missing part, so one hyphenated word never weighs as two terms in this order either.
-    terms, compounds = _query_compounds(query, _strict_terms(_tokens(query) - ignored))
+    terms, compounds = _query_compounds(query, _strict_terms(_particle_stripped_tokens(query) - ignored))
     return [passage[0]["id"] for _rank, passage in
             search(index, terms, limit, floor=0.0, min_shared=1, ignored=ignored, rank_adjustments=adjustments,
                    compounds=compounds)]

@@ -339,6 +339,7 @@ Her mesajda hook'un eklediği bağlam (`context_mode: turn`) strict aramadan gel
 
 - Bölme: başlıklar (kod blokları içindekiler hariç) bölüm açar, boş satırlar paragrafları ayırır, yaklaşık 900 karakteri aşan bloklar cümle sınırından 200 karakter örtüşen pencerelere bölünür. Frontmatter okunmaz; başlık, takma ad ve `facts` alanları her bloğun arama kelimelerine eklenir.
 - Kabul ve sıralama: bir blok en az iki ortak kelime ister. Ağırlık mevcut göreli idf ailesiyle hesaplanır, soru kapsamasıyla (`ortak kelime / soru kelimesi`, payda en fazla 4) çarpılır ve `strict_floor` altında kalırsa blok elenir. Kabul blok frekansıyla, kabul edilen kaynakların sıralaması kaynak frekansıyla yapılır; çok bölüme ayrılmış bir not kendi kelimelerini yaygın göstermez. Uzun, sohbet havasında yazılmış bir mesaj uzunluğu yüzünden elenmez. Proje seçiliyse proje kelimeleri eşleşme sayılmaz.
+- Sorgu ayıklama: sohbet dolgusu olan Türkçe edat ve yardımcı sözcükler (`da`, `daha`, `yeni`, `çok`, `tamam`, ...) tam yüzeyleriyle, köke indirmeden önce sorgudan çıkarılır (#722 ile aynı yöntem). Notlar değişmeden indekslenir; `yenisi`, `yeniden` gibi başka sözcükler terim olarak kalır.
 - Kapılar aynıdır: görünürlük, güven, proje, tazelik ve supersede kuralları not düzeyindeki yolla aynı `_eligible()` fonksiyonundan geçer; bütçe ve citation sözleşmesi aynı `pack_context`'tir.
 - Boş sonuç bir cevaptır. Not düzeyindeki eski yola yalnız gerçek bir hata olduğunda ya da indeks ilk kez kurulurken dönülür.
 
