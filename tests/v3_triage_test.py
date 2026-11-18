@@ -154,6 +154,54 @@ class TriageTest(unittest.TestCase):
         self.assertEqual(report_mixed['stale_threads'][0]['title'], 'Heading thread 2020-01-01')
         self.assertEqual(comp_report_mixed['active_threads'], 1)
 
+    def test_completed_top_level_bullet_does_not_refresh_previous_open_topic(self):
+        for marker in ('-', '*', '+'):
+            for checked in ('x', 'X'):
+                with self.subTest(marker=marker, checked=checked):
+                    source = self.thread_source(
+                        '# Threads\n## Active Threads\n'
+                        '- Open old topic 2026-09-01\n'
+                        f'{marker} [{checked}] Finished topic 2026-10-11\n'
+                        '  Finished detail 2026-10-12\n'
+                        '\nFinished continuation 2026-10-12\n', marker=True)
+                    before = source.read_bytes()
+                    report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+                    self.assertEqual((report['open_count'], report['stale_count']), (1, 1))
+                    self.assertEqual(report['stale_threads'][0]['last_date'], '2026-09-01')
+                    self.assertEqual(report['stale_threads'][0]['title'], 'Open old topic 2026-09-01')
+                    self.assertEqual(triage_module.scan_companion(
+                        self.vault, state=self.state, now=self.now)['active_threads'], 1)
+                    self.assertEqual(source.read_bytes(), before)
+
+    def test_completed_bullets_keep_adjacent_open_topics_separate(self):
+        self.thread_source(
+            '# Threads\n## Active Threads\n'
+            '- [x] Finished first 2026-10-12\n'
+            '  First finished detail 2026-10-12\n'
+            '- Undated open topic\n'
+            '- [X] Finished between topics 2026-10-12\n'
+            '  Finished detail 2026-10-12\n'
+            '- [ ] Other open topic 2026-09-02\n'
+            '  Open detail 2026-09-03\n'
+            '- [x]\n'
+            '  Final finished detail 2026-10-12\n', marker=True)
+        report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+        self.assertEqual((report['open_count'], report['stale_count'], report['undated_count']), (2, 1, 1))
+        self.assertEqual(report['undated_threads'][0]['title'], 'Undated open topic')
+        self.assertEqual(report['stale_threads'][0]['last_date'], '2026-09-03')
+        self.assertEqual(triage_module.scan_companion(
+            self.vault, state=self.state, now=self.now)['active_threads'], 2)
+
+    def test_nested_completed_bullet_remains_part_of_its_open_topic(self):
+        self.thread_source(
+            '# Threads\n## Active Threads\n'
+            '- Open topic 2026-09-01\n'
+            '  - [x] Nested completed step 2026-09-03\n'
+            '  Remaining detail 2026-09-04\n', marker=True)
+        report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+        self.assertEqual((report['open_count'], report['stale_count']), (1, 1))
+        self.assertEqual(report['stale_threads'][0]['last_date'], '2026-09-04')
+
     def test_thread_heading_empty_after_folding_does_not_abort_scan(self):
         self.thread_source('# Threads\n## Active Threads\n### Before 2020-01-01\n'
                            '## \u0307 \u0307\n### Unknown section 2020-01-01\n'

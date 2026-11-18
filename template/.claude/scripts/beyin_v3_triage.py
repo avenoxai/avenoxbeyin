@@ -618,7 +618,13 @@ def _bullet_topics(lines):
     """Yield (title, body) from top-level list items in active lines."""
     item_title, item_body = None, []
     for line in lines:
-        if re.match(r'^[-*+]\s+\[[xX]\](?:\s|$)', line) or re.match(r'^[ \t]+', line):
+        if re.match(r'^[-*+]\s+\[[xX]\](?:\s|$)', line):
+            if item_title is not None:
+                yield item_title, '\n'.join(item_body)
+            # A completed top-level item and its continuation belong to no open topic.
+            item_title, item_body = None, []
+            continue
+        if re.match(r'^[ \t]+', line):
             if item_title is not None:
                 item_body.append(line)
             continue
