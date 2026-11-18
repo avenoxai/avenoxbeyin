@@ -201,6 +201,18 @@ class BridgeTest(unittest.TestCase):
     def queued(self):
         return [json.loads(p.read_text(encoding='utf-8')) for p in (self.state / 'hook-queue').glob('*.json')]
 
+    def write_manual_context_task(self, name, **fields):
+        # Exercise hand-edited Markdown, not task_create's canonical-status validation.
+        record = dict(kind='task', id=name, title=name, status='active',
+                      due_at='2026-09-01', project=self.project.name, owner='user')
+        record.update(fields)
+        path = self.vault / 'tasks' / (name + '.md')
+        path.parent.mkdir(exist_ok=True)
+        metadata = '\n'.join(key + ': ' + json.dumps(value, ensure_ascii=False)
+                             for key, value in record.items() if value is not None)
+        path.write_text('---\n' + metadata + '\n---\nTask body\n', encoding='utf-8')
+        return path
+
     def test_parser_returns_codes_to_embedders_and_preserves_real_cli_output(self):
         script = SCRIPTS / 'beyin_v3_bridge.py'
         cases = [
@@ -785,6 +797,11 @@ class BridgeTest(unittest.TestCase):
         run(self.root / 'package/scripts/install_v3.py', '--vault', self.vault, '--state', self.state)
         installed = self.vault / '.claude/scripts/beyin_v3_bridge.py'
         self.assertTrue(installed.is_file())
+        self.write_manual_context_task('INSTALLED_ACTIVE', status='Active')
+        self.write_manual_context_task('INSTALLED_WAITING', status='waiting - tedarikci')
+        self.write_manual_context_task('INSTALLED_BLOCKED', status='blocked')
+        SyncEngine(self.vault, self.state).sync()
+        bridge.save_project_context(self.state, True)
         for harness in ('codex', 'claude'):
             config = self.invoke(extra=['--print-config'], harness=harness, script=installed)
             self.assertEqual(set(config['hooks']), set(bridge.EVENTS) | {'PostToolUse'})
@@ -793,7 +810,11 @@ class BridgeTest(unittest.TestCase):
             result = subprocess.run(command, shell=True, input=json.dumps(self.payload), capture_output=True,
                                     text=True, encoding='utf-8', env=self.env, cwd=self.project, timeout=20)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn('Receipt session=', json.loads(result.stdout)['hookSpecificOutput']['additionalContext'])
+            text = json.loads(result.stdout)['hookSpecificOutput']['additionalContext']
+            self.assertIn('Receipt session=', text)
+            self.assertIn('- INSTALLED_ACTIVE', text)
+            self.assertIn('- INSTALLED_WAITING', text)
+            self.assertNotIn('INSTALLED_BLOCKED', text)
         self.assertFalse((self.home / '.codex/hooks.json').exists())
         self.assertFalse((self.home / '.claude/settings.json').exists())
 
@@ -838,6 +859,60 @@ class BridgeTest(unittest.TestCase):
         self.assertIn('local-canary', text)
         self.assertNotIn('foreign-canary', text)
         self.assertNotIn('foreign-next', text)
+
+    def test_project_context_status_words_match_vault_due_tasks(self):
+        from beyin_v3 import is_due_task
+        cases = [('active', True), ('waiting', True), ('inbox', True),
+                 ('Active', True), ('WAITING - tedarikci', True), ('  inbox  ', True),
+                 ('INBOX', True), ('İnbox', True), ('I\u0307nbox', True),
+                 ('blocked', False), ('done', False), ('Done - shipped', False),
+                 ('İptal', False), ('Tamamlandı', False), ('resolved', False),
+                 ('archived', False), ('custom', False), ('inactive', False),
+                 ('activeish', False), ('', False), (None, False)]
+        for i, (status, _) in enumerate(cases):
+            self.write_manual_context_task('STATUS_CANARY_%02d' % i, status=status)
+        engine = SyncEngine(self.vault, self.state)
+        engine.sync()
+        with engine.store._connect() as db:
+            records = {row['id']: row for (payload,) in db.execute('SELECT payload FROM records')
+                       for row in [json.loads(payload)]}
+        before = snapshot(self.root)
+        mtimes = {p: p.stat().st_mtime_ns for p in self.root.rglob('*') if p.is_file()}
+        text = bridge.project_context(self.vault, self.state, 'local-project', self.project.name,
+                                      today_iso='2026-09-02')
+        for i, (status, expected) in enumerate(cases):
+            name = 'STATUS_CANARY_%02d' % i
+            with self.subTest(status=status):
+                self.assertEqual(is_due_task(records[name], today='2026-09-02'), expected)
+                self.assertEqual(name in text, expected)
+        self.assertEqual(snapshot(self.root), before, 'project context remains read-only')
+        self.assertEqual({p: p.stat().st_mtime_ns for p in mtimes}, mtimes)
+        self.assertLessEqual(len(text), 1200)
+
+    def test_normalized_due_status_preserves_project_and_source_gates(self):
+        base = dict(status='Active', project_id='local-project')
+        self.write_manual_context_task('VISIBLE_LOCAL', **base)
+        for name, fields in (
+                ('PRIVATE_CANARY', dict(visibility='private')),
+                ('UNTRUSTED_CANARY', dict(trust='untrusted')),
+                ('STALE_CANARY', {}), ('OLD_CANARY', {}),
+                ('FUTURE_CANARY', dict(due_at='2099-09-01')),
+                ('INVALID_DATE_CANARY', dict(due_at='not-a-date')),
+                ('OTHER_CANARY', dict(project_id='other-project', next_action='OTHER_ACTION_CANARY')),
+                ('INVALID_ID_CANARY', dict(project_id=7)),
+                ('LEGACY_OTHER_CANARY', dict(project_id=None, project='Elsewhere'))):
+            self.write_manual_context_task(name, **dict(base, **fields))
+        engine = SyncEngine(self.vault, self.state)
+        engine.note_create('notes/decision.md', 'Old task replaced',
+                           {'id': 'decision', 'supersedes': ['OLD_CANARY']})
+        engine.sync()
+        stale = self.vault / 'tasks/STALE_CANARY.md'
+        stale.write_text(stale.read_text(encoding='utf-8') + 'Changed after indexing\n', encoding='utf-8')
+        text = bridge.project_context(self.vault, self.state, 'local-project', self.project.name,
+                                      today_iso='2026-09-02')
+        self.assertIn('- VISIBLE_LOCAL', text)
+        self.assertIn('(bu proje disinda 3 tarihi gelmis gorev)', text)
+        self.assertNotIn('CANARY', text)
 
     def test_task_create_does_not_invent_canonical_identity_from_display_name(self):
         engine = SyncEngine(self.vault, self.state)

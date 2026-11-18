@@ -153,7 +153,7 @@ def project_context(vault, state, project_id, project_name, budget=1200, today_i
     - Latest receipt of this project_id (receipt_checkpoints session match) by created_at;
       skipped when its source file is gone or it or any ref is private/untrusted. The gate is
       beyin_v3_projections.latest_receipts, shared with the vault SessionStart hook.
-    - Due tasks (due_at <= local today, active/waiting/inbox) of this project, after the retrieval
+    - Due tasks (due_at <= local today, normalized active/waiting/inbox) of this project, after the retrieval
       visibility/trust, supersession and source-freshness gates; sorted by due date, title.
     - Other due tasks: count only, never titles.
     - Whole lines only, within budget; no model call, no write.
@@ -192,10 +192,10 @@ def project_context(vault, state, project_id, project_name, budget=1200, today_i
                     continue
                 if isinstance(record, dict) and _visible(record):
                     records.append(record)
-            from beyin_v3 import resolve_supersedes  # ids, paths and [[links]] alike (#201)
+            from beyin_v3 import _status_word, resolve_supersedes  # ids, paths and [[links]] alike (#201)
             superseded = resolve_supersedes(records)[0]
             for record in records:
-                if record.get('kind') != 'task' or record.get('status') not in ('active', 'waiting', 'inbox') or record.get('id') in superseded:
+                if record.get('kind') != 'task' or _status_word(record) not in ('active', 'waiting', 'inbox') or record.get('id') in superseded:
                     continue
                 try:
                     due = date.fromisoformat(str(record.get('due_at') or '')[:10]).isoformat()
