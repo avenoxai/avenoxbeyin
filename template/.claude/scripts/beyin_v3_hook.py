@@ -49,8 +49,9 @@ KNOWLEDGE_REMINDER = (
 NO_LEARNING_CHALLENGE_REMINDER = (
     "Receipt declared no learnings ('Öğrenilen: yok') but files were edited in this session. "
     "In V3, lasting lessons must be distilled into knowledge/ or staged as candidates: "
-    'python3 beyin.py learn --session {session} --candidate "Lesson". If this edit was purely mechanical/routine '
-    "without new lessons, state that in one sentence to proceed."
+    'python3 beyin.py learn --session {session} --candidate "Lesson" --source PATH. PATH is the vault-relative '
+    "file the lesson comes from; a later receipt of this session that lists it in refs closes the candidate. "
+    "If this edit was purely mechanical/routine without new lessons, state that in one sentence to proceed."
 )
 # Global bridge sessions run in another project, where a relative `beyin.py` does not exist and
 # no vault note may exist yet to cite, so the note comes first (#500). The command line is named
