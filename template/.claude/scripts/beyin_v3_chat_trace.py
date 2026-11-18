@@ -199,11 +199,13 @@ def hint(state, harness, payload):
     return ''
 
 
-def write(vault, state, harness, session, text, *, day=None):
+def write(vault, state, harness, session, text, *, day=None, record=None):
     """Append only the explicitly supplied summary through the existing source writer.
 
     `day` is set only by the explicit backfill (#599): a past session's own first day, so its
-    trace lands in that month instead of the day the summary was written.
+    trace lands in that month instead of the day the summary was written. It also passes `record`
+    (#766): a callable run under this same writer lock once the note is confirmed, so the backfill
+    ledger entry and the note can never be separated by another process taking the lock between them.
     """
     if not settings(state)['enabled']:
         raise ValueError('chat trace is off; explicitly enable it before writing')
@@ -259,6 +261,8 @@ def write(vault, state, harness, session, text, *, day=None):
             # the replay path which performed no write of its own.
             if engine.note_read(source)['content'] != expected:
                 raise NoteConflict('chat trace changed before acknowledgement; checkpoint left open')
+        if record is not None:
+            record()
         # A committed, verified trace closes this checkpoint. Replaying after a crash
         # finds the exact paragraph before acknowledging, so it cannot duplicate it.
         value.update(covered=value['turns'], since=time.time(), next_due=value['turns'] + 2)

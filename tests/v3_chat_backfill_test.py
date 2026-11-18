@@ -1,4 +1,5 @@
 """Explicit Claude Code backfill into chat traces (#599): synthetic transcripts in a temp HOME."""
+import contextlib
 from datetime import date, timedelta
 import hashlib
 import json
@@ -245,6 +246,46 @@ class BackfillTest(unittest.TestCase):
         self.assertEqual((plan['counts']['written'], plan['counts']['skipped']), (1, 1))
         # A later summary is still possible for a skipped session.
         self.assertEqual(self.backfill.write(self.vault, self.state, self.s5, 'Sentetik ikinci özet.')['backfill'], 'written')
+
+    def test_writer_lock_taken_right_after_the_note_write_cannot_leave_the_session_pending(self):
+        # #766: the note and the ledger entry used to be two separately locked steps. A prompt hook or
+        # another writer taking the lock in between made the ledger step fail, the session stayed
+        # "pending" and the agent wrote a second summary for it.
+        self.enable()
+        contender = contextlib.ExitStack()
+        self.addCleanup(contender.close)
+        real_write = self.trace.write
+
+        def write_then_contend(*args, **kwargs):
+            result = real_write(*args, **kwargs)
+            contender.enter_context(self.trace._lock(self.state))
+            return result
+
+        failure = None
+        with patch.object(self.trace, 'write', write_then_contend):
+            try:
+                result = self.backfill.write(self.vault, self.state, self.s1, 'Sentetik özet: ray kararı.')
+            except OSError as error:
+                failure = error
+        contender.close()
+        note = (self.vault / 'knowledge/conversations/2026-09.md').read_text(encoding='utf-8')
+        self.assertEqual(note.count('Sentetik özet: ray kararı.'), 1)
+        self.assertEqual([item['session'] for item in self.plan()['pending']], [self.s5])
+        self.assertIsNone(failure)
+        self.assertEqual(result['backfill'], 'written')
+
+    def test_busy_writer_lock_before_the_note_write_changes_nothing_and_a_retry_succeeds(self):
+        self.enable()
+        before = self.snapshot()
+        with self.trace._lock(self.state):
+            with self.assertRaises(OSError):
+                self.backfill.write(self.vault, self.state, self.s1, 'Sentetik özet: ray kararı.')
+        self.assertFalse((self.vault / 'knowledge').exists())
+        self.assertFalse((self.state / self.backfill.LEDGER).exists())
+        self.assertEqual([item['session'] for item in self.plan()['pending']], [self.s1, self.s5])
+        self.assertEqual({p: b for p, b in self.snapshot().items() if p in before}, before)
+        self.assertEqual(self.backfill.write(self.vault, self.state, self.s1, 'Sentetik özet: ray kararı.')['backfill'],
+                         'written')
 
     def test_opted_out_other_cwd_and_unknown_sessions_are_refused(self):
         self.enable()
