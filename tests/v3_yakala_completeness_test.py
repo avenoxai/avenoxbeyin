@@ -464,15 +464,17 @@ class CompletenessTest(unittest.TestCase):
             "socket.getaddrinfo = dns\nsocket.create_connection = connect\n")
         env.update(PYTHONPATH=str(bin_dir), PATH=isolated_path(bin_dir))
 
-        def cli(*args):
+        def cli(*args, reply=''):
             result = subprocess.run([sys.executable, str(vault / 'beyin.py'), 'yakala', *args],
-                                    cwd=vault, env=env, capture_output=True, text=True, encoding='utf-8', timeout=30)
+                                    cwd=vault, env=env, input=reply, capture_output=True, text=True, encoding='utf-8', timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr)
             return json.loads(result.stdout)
 
         added = cli('ekle', f'http://example.com:{server.server_port}/article')
         self.assertEqual(seen, [])
-        entry = cli('isle', added['id'])['kartlar'][0]
+        # This fixture exercises an approved synthetic helper, not the HTTP fallback.
+        entry = cli('isle', added['id'], reply='yes\n')['kartlar'][0]
+        self.assertTrue(y._defuddle_approval_granted(state))
         self.assertEqual((entry['durum'], entry['yontem']), ('cikarildi', 'defuddle'))
         self.assertIn('not', entry)
         self.assertEqual(seen, ['/article', '/final'])
