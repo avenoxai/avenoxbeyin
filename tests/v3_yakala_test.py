@@ -453,7 +453,7 @@ class YakalaUnitTest(unittest.TestCase):
         broken = yakala.capture(self.vault, url='https://example.com/broken')['id']
         good = yakala.capture(self.vault, text='second safe card')['id']
         text = 'Türkçe 😀 𝗲 ' + '\ud835**\uddf2' + ' tail ' + '\ud835\uddf2' + '\ud800'
-        def extraction(vault, card, found, allow_audio, info):
+        def extraction(vault, card, found, allow_audio, info, state=None):
             if card['id'] == broken:
                 info.update(title='title\ud800', author='author\udfff', uyari='existing warning')
                 return text, 'defuddle', 'extract note'
@@ -1335,6 +1335,18 @@ class YakalaUnitTest(unittest.TestCase):
         st = yakala.status(vault, state)
         self.assertEqual(st['klasor'], '000-Inbox/Yakala')
 
+    def test_defuddle_first_use_approval_required_and_persisted(self):
+        state = Path(self.tmp.name) / 'state'
+        self.assertFalse(yakala._defuddle_approval_granted(state))
+        info = {}
+        with patch('sys.stdin', io.StringIO('')):
+            res = yakala.via_defuddle('https://example.com', {'npx': 'npx'}, info, state=state)
+        self.assertIsNone(res)
+        self.assertEqual(info.get('uyari'), 'Defuddle onayı verilmedi; npx defuddle çalıştırılmadı.')
+        with patch('sys.stdin', io.StringIO('e\n')):
+            self.assertTrue(yakala._prompt_defuddle_approval(state))
+        self.assertTrue(yakala._defuddle_approval_granted(state))
+
 
 class YakalaInboxTest(unittest.TestCase):
     """Which folder holds the cards: the saved choice, the one inbox already in use, the starter, one inbox by word."""
@@ -1883,6 +1895,7 @@ class YakalaInstalledTest(unittest.TestCase):
             encoding='utf-8')
         self.env['PYTHONPATH'] = str(tools)
         self.env['PATH'] = isolated_path(tools)
+        yakala._grant_defuddle_approval(self.state)
         added = self.entry('ekle', VIDEO, '--neden', 'dublaj')
         entry = self.entry('isle', '--ses-yok')['kartlar'][0]
         self.assertEqual((entry['durum'], entry.get('yontem'), entry.get('dil')), ('cikarildi', 'yt-dlp-altyazi', 'en'))
