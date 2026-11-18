@@ -1998,7 +1998,7 @@ def extract(vault, card, found, allow_audio=True, info=None, state=None):
     if url:
         _safe_network_url(url)  # before npx/yt-dlp can make the first request
         info = {} if info is None else info
-        text = via_defuddle(url, found, info)
+        text = via_defuddle(url, found, info, state=state)
         if text:
             check = {}
             try:

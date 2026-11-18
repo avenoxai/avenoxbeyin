@@ -1591,6 +1591,14 @@ Hiçbiri zorunlu değil; varsa işleme genişler, yoksa elde olanla devam edilir
 `python3 beyin.py yakala durum` hangilerinin bulunduğunu söyler.
 
 - **Node.js** (`npx`): Defuddle için. Sabit sürüm (`defuddle@0.19.4`) çalıştırılır.
+  Normal `yakala isle` akışında, web sayfalarında da YouTube yolundaki gibi ilk
+  kullanımdan önce onay istenir. Kabul, yerel state dizinindeki
+  `yakala/defuddle-approval.json` dosyasında sürümle birlikte saklanır; sürüm
+  değiştiğinde yeniden sorulur. Ret veya stdin sonu (EOF), Defuddle'ı çalıştırmaz.
+  Bu yalnız dış `npx` paketinin onayıdır, tüm ağ erişimini kapatan bir tercih
+  değildir: web sayfasında mevcut standart kütüphane HTTP yedeği denenebilir.
+  Video dışı web sayfalarında 200 karakterden uzun hazır Web Clipper metni
+  varsa veya `npx` bulunmuyorsa bu onay istenmez.
 - **yt-dlp**: videoda konuşulan dil, altyazı ve ses.
 - **Whisper**: Mac'te `mlx_whisper`, diğerlerinde `whisper` ya da `whisper-ctranslate2`. Ses indirmeyi istemezsen `isle --ses-yok`.
   Videoda konuşulan dili `yt-dlp` söyleyebildiyse Whisper'a `--language` olarak verilir; dil bilinmiyor ya da video

@@ -292,7 +292,7 @@ class YakalaSecurityTest(unittest.TestCase):
             order.append('dns')
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('8.8.8.8', 443))]
 
-        def helper(*args):
+        def helper(*args, state=None):
             order.append('helper')
             return 'article text'
 
