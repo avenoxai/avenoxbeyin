@@ -248,6 +248,25 @@ def human_result(result, command, installed_version=None):
             return format_human(result)
         except Exception:
             return json.dumps(result, ensure_ascii=False, indent=2)
+    if command == 'selftest':
+        status = result.get('status')
+        if status == 'no_questions':
+            return 'Vault oz-denetim (selftest): soru dosyasi bulunamadi (' + plain_text(result.get('questions_path')) + '). ' + plain_text(result.get('hint', ''))
+        total = result.get('total', 0)
+        passed = result.get('passed', 0)
+        missed = result.get('missed', [])
+        ctrl_total = result.get('controls_total', 0)
+        ctrl_passed = result.get('controls_passed', 0)
+        regressed = result.get('regressed', [])
+        lines = [
+            f'Vault oz-denetim (selftest): toplam {total} soru, gecen {passed}, kacan {len(missed)}.',
+            f'Kontroller: {ctrl_passed}/{ctrl_total} basarili.'
+        ]
+        if regressed:
+            lines.append(f'UYARI: {len(regressed)} soru onceki kosuya gore geriledi (eskiden geciyordu, simdi kacti)!')
+        for m in missed[:3]:
+            lines.append(f'  - Soru: "{m.get("query")}" -> Beklenen: {m.get("expected_source")}')
+        return '\n'.join(lines)
     if command == 'audit':
         try:
             from beyin_v3_audit import format_audit_human

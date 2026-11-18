@@ -1373,6 +1373,13 @@ def parser(note_namespace=None, is_json=False):
     pscope.add_argument("--project", help="Project identifier for the folder")
     pscope.add_argument("--shared-unscoped", choices=["on", "off"],
                         help="add only: toggle whether unassigned notes are visible in project scope")
+    selftest_parser = sub.add_parser("selftest", help="Run vault-local read-only retrieval self-test")
+    selftest_parser.add_argument("--questions", type=Path, help="Questions JSON path inside vault (default knowledge/v3/selftest.json)")
+    selftest_parser.add_argument("--limit", type=int, default=5, help="Candidate retrieval limit (default 5)")
+    selftest_parser.add_argument("--audience", choices=("internal", "public"), default="internal", help="Retrieval audience")
+    selftest_parser.add_argument("--add-question", help="Add a test query")
+    selftest_parser.add_argument("--source", help="Vault-relative source note for --add-question")
+    selftest_parser.add_argument("--sentence", help="Optional expected sentence snippet for --add-question")
     ingest_server = sub.add_parser("ingest-server", help="Local-first HTTP ingest server for mobile captures")
     ingest_server.add_argument("--host", default="127.0.0.1", help="Host interface to bind (default 127.0.0.1)")
     ingest_server.add_argument("--port", type=int, default=8484, help="Port to listen on (default 8484)")
@@ -2153,6 +2160,15 @@ def main(argv=None, return_result=False):
                         exc.batch_ingest = {"failed_index": index,
                                             "written_ids": [item["id"] for item in result]}
                         raise
+        elif args.command == "selftest":
+            _ensure_scripts_path()
+            import beyin_v3_selftest as selftest_mod
+            if args.add_question:
+                if not args.source:
+                    argument_parser.error("--source is required with --add-question")
+                result = selftest_mod.add_question(vault, args.questions, args.add_question, args.source, args.sentence)
+            else:
+                result = selftest_mod.run_selftest(vault, state, args.questions, args.limit, args.audience)
         elif args.command == "note-read":
             result = sync.note_read(args.source)
             if args.must_exist and not result['exists']:
