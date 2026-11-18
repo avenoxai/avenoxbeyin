@@ -22,6 +22,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from v3_package_helpers import inherited_env
+from v3_yakala_defuddle_consent_test import TerminalInput, approved_test_state
 from v3_package_helpers import clean_environ, isolated_path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -432,7 +433,7 @@ class YakalaUnitTest(unittest.TestCase):
                 patch.object(yakala, '_safe_network_url'), patch.object(yakala, '_HelperNetwork') as guard, \
                 patch.object(yakala, '_run', return_value=(0, payload, '')) as run:
             guard.return_value.__enter__.return_value = None
-            result = yakala.process(self.vault, [cid])['kartlar'][0]
+            result = yakala.process(self.vault, [cid], state=approved_test_state(self))['kartlar'][0]
         self.assertEqual(run.call_count, 1)
         self.assertEqual(result['durum'], 'cikarildi')
         raw = (self.vault / result['ham']).read_text(encoding='utf-8')
@@ -453,7 +454,7 @@ class YakalaUnitTest(unittest.TestCase):
         broken = yakala.capture(self.vault, url='https://example.com/broken')['id']
         good = yakala.capture(self.vault, text='second safe card')['id']
         text = 'Türkçe 😀 𝗲 ' + '\ud835**\uddf2' + ' tail ' + '\ud835\uddf2' + '\ud800'
-        def extraction(vault, card, found, allow_audio, info):
+        def extraction(vault, card, found, allow_audio, info, state=None):
             if card['id'] == broken:
                 info.update(title='title\ud800', author='author\udfff', uyari='existing warning')
                 return text, 'defuddle', 'extract note'
@@ -1335,6 +1336,18 @@ class YakalaUnitTest(unittest.TestCase):
         st = yakala.status(vault, state)
         self.assertEqual(st['klasor'], '000-Inbox/Yakala')
 
+    def test_defuddle_first_use_approval_required_and_persisted(self):
+        state = Path(self.tmp.name) / 'state'
+        self.assertFalse(yakala._defuddle_approval_granted(state))
+        info = {}
+        with patch('sys.stdin', io.StringIO('')):
+            res = yakala.via_defuddle('https://example.com', {'npx': 'npx'}, info, state=state)
+        self.assertIsNone(res)
+        self.assertEqual(info.get('uyari'), 'Defuddle onayı verilmedi; npx defuddle çalıştırılmadı.')
+        with patch('sys.stdin', TerminalInput('e\n')):
+            self.assertTrue(yakala._prompt_defuddle_approval(state))
+        self.assertTrue(yakala._defuddle_approval_granted(state))
+
 
 class YakalaInboxTest(unittest.TestCase):
     """Which folder holds the cards: the saved choice, the one inbox already in use, the starter, one inbox by word."""
@@ -1554,7 +1567,7 @@ class YakalaVideoLanguageTest(unittest.TestCase):
         card = next((card['id'] for card in yakala.cards(self.vault) if card['meta'].get('url') == url), None) \
             or yakala.capture(self.vault, url=url)['id']
         with patch.object(yakala, 'tools', return_value=found):
-            entry = yakala.process(self.vault, [card], **options)['kartlar'][0]
+            entry = yakala.process(self.vault, [card], state=approved_test_state(self), **options)['kartlar'][0]
         raw = (self.vault / entry['ham']).read_text(encoding='utf-8') if entry.get('ham') else ''
         return entry, yakala.find_card(self.vault, card)['meta'], raw
 
@@ -1883,6 +1896,7 @@ class YakalaInstalledTest(unittest.TestCase):
             encoding='utf-8')
         self.env['PYTHONPATH'] = str(tools)
         self.env['PATH'] = isolated_path(tools)
+        yakala._grant_defuddle_approval(self.state)
         added = self.entry('ekle', VIDEO, '--neden', 'dublaj')
         entry = self.entry('isle', '--ses-yok')['kartlar'][0]
         self.assertEqual((entry['durum'], entry.get('yontem'), entry.get('dil')), ('cikarildi', 'yt-dlp-altyazi', 'en'))
@@ -2054,8 +2068,10 @@ class YakalaWindowsCommandUnitTest(unittest.TestCase):
         # When _run declines a batch shim it raises an OSError, which via_defuddle already catches;
         # the page path then takes via_stdlib. (os.name is not patched here: pathlib picks its
         # flavour from it, so faking 'nt' off-Windows is unsafe.)
-        with patch.object(yakala, '_run', side_effect=yakala._UnsafeBatchArgument('npx.cmd')):
-            result = yakala.via_defuddle('https://example.test/x?a=1&b=2', {'npx': 'npx.cmd'})
+        state = approved_test_state(self)
+        with patch.object(yakala, '_run', side_effect=yakala._UnsafeBatchArgument('npx.cmd')) as run:
+            result = yakala.via_defuddle('https://example.test/x?a=1&b=2', {'npx': 'npx.cmd'}, state=state)
+        run.assert_called_once()
         self.assertIsNone(result)
 
 
@@ -2211,7 +2227,7 @@ class YakalaWindowsRunTest(unittest.TestCase):
 
     def test_via_defuddle_bypasses_cmd(self):
         npx, _ = self._node_layout()
-        result = yakala.via_defuddle(META_URL, {'npx': str(npx)})
+        result = yakala.via_defuddle(META_URL, {'npx': str(npx)}, state=approved_test_state(self))
         self.assertFalse(self.marker.exists())
         self.assertEqual(result, 'x' * 120)
 
