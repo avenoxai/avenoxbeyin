@@ -1603,6 +1603,9 @@ Hiçbiri zorunlu değil; varsa işleme genişler, yoksa elde olanla devam edilir
   kayıtlı onayı kullanabilir. Kütüphane çağrıları açık `state` geçirmelidir;
   `state=None` npx'i çalıştırmaz, örtük/global onay konumu seçmez.
   Sürüm sabitleme, paket içeriği veya yayıncı doğrulaması değildir.
+  Güncelleme ve geri alma yerel onay kaydını silmez; ancak onay denetiminden önceki
+  bir runtime sürümüne geri dönmek bu korumayı kaldırır. Eski sürümün kaydı denetlediği
+  varsayılmamalıdır.
   Bu yalnız dış `npx` paketinin onayıdır, tüm ağ erişimini kapatan bir tercih
   değildir: web sayfasında mevcut standart kütüphane HTTP yedeği denenebilir.
   Video dışı web sayfalarında 200 karakterden uzun hazır Web Clipper metni
