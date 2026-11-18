@@ -155,7 +155,7 @@ class TriageTest(unittest.TestCase):
         self.assertEqual(comp_report_mixed['active_threads'], 1)
 
     def test_completed_top_level_bullet_does_not_refresh_previous_open_topic(self):
-        for marker in ('-', '*', '+'):
+        for marker in ('-', '*', '+', '1.', '2)'):
             for checked in ('x', 'X'):
                 with self.subTest(marker=marker, checked=checked):
                     source = self.thread_source(
@@ -201,6 +201,49 @@ class TriageTest(unittest.TestCase):
         report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
         self.assertEqual((report['open_count'], report['stale_count']), (1, 1))
         self.assertEqual(report['stale_threads'][0]['last_date'], '2026-09-04')
+
+    def test_bullet_section_boundaries_do_not_refresh_previous_topic(self):
+        source = self.thread_source(
+            '# Threads\n## Active Threads\n- Old open 2026-09-01\n'
+            '## Closed Threads\n- Closed 2026-10-12\n'
+            '## Active Threads\nSection reviewed 2026-10-11\n'
+            '- Another open 2026-09-02\n', marker=True)
+        before = (source.read_bytes(), source.stat().st_mtime_ns)
+        report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+        self.assertEqual((report['open_count'], report['stale_count']), (2, 2))
+        self.assertEqual([row['last_date'] for row in report['stale_threads']],
+                         ['2026-09-01', '2026-09-02'])
+        self.assertEqual(triage_module.scan_companion(
+            self.vault, self.state, self.now)['active_threads'], 2)
+        self.assertEqual((source.read_bytes(), source.stat().st_mtime_ns), before)
+
+    def test_bullet_counters_share_active_section_gates(self):
+        for active in ('Active Threads', 'Open topics', 'Aktif konular', 'Açık konular'):
+            for closed in ('Closed Threads', 'Kapalı konular', 'Kapananlar', 'Other'):
+                with self.subTest(active=active, closed=closed):
+                    self.thread_source(
+                        f'# Threads\n## {active}\n- Open 2026-09-01\n'
+                        f'## {closed}\n- Not open 2026-10-12\n', marker=True)
+                    report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+                    self.assertEqual((report['open_count'], report['stale_count']), (1, 1))
+                    self.assertEqual(triage_module.scan_companion(
+                        self.vault, self.state, self.now)['active_threads'], 1)
+
+    def test_companion_legacy_status_records_take_precedence_over_action_bullets(self):
+        self.thread_source(
+            '# Threads\n## Active Threads\n**First topic**\n**Status:** active\n'
+            '- Next action: email contact\n**Second topic**\n**Durum:** 🟢 Aktif\n',
+            marker=True)
+        self.assertEqual(triage_module.scan_companion(
+            self.vault, self.state, self.now)['active_threads'], 2)
+
+    def test_companion_bullet_fallback_excludes_frontmatter(self):
+        source = self.thread_source(
+            '---\ntags:\n- alpha\n- beta\n---\n# Threads\nNothing open.\n', marker=True)
+        before = (source.read_bytes(), source.stat().st_mtime_ns)
+        self.assertEqual(triage_module.scan_companion(
+            self.vault, self.state, self.now)['active_threads'], 0)
+        self.assertEqual((source.read_bytes(), source.stat().st_mtime_ns), before)
 
     def test_thread_heading_empty_after_folding_does_not_abort_scan(self):
         self.thread_source('# Threads\n## Active Threads\n### Before 2020-01-01\n'

@@ -618,7 +618,7 @@ def _bullet_topics(lines):
     """Yield (title, body) from top-level list items in active lines."""
     item_title, item_body = None, []
     for line in lines:
-        if re.match(r'^[-*+]\s+\[[xX]\](?:\s|$)', line):
+        if re.match(r'^(?:[-*+]|\d+[.)])[ \t]+\[[xX]\](?:\s|$)', line):
             if item_title is not None:
                 yield item_title, '\n'.join(item_body)
             # A completed top-level item and its continuation belong to no open topic.
@@ -643,6 +643,24 @@ def _bullet_topics(lines):
             item_body.append(line)
     if item_title is not None:
         yield item_title, '\n'.join(item_body)
+
+
+def _thread_bullet_topics(lines):
+    """Parse each active container separately so dates cannot cross headings."""
+    active, section = True, []
+    for line in lines:
+        heading = re.match(r'^(#{1,6})[ \t]+(\S.*?)[ \t]*$', line)
+        if heading and len(heading[1]) <= 2:
+            yield from _bullet_topics(section)
+            section = []
+            level, label = len(heading[1]), heading[2]
+            words = fold(label).split()
+            word = words[0] if words else ''
+            active = (word in ('active', 'aktif', 'acik', 'open') if level == 2
+                      else not (word == 'closed' or word.startswith(('kapan', 'kapali'))))
+        elif not heading and active:
+            section.append(line)
+    yield from _bullet_topics(section)
 
 
 def _thread_topics(text):
@@ -680,29 +698,7 @@ def _thread_topics(text):
             yield t, b
         return
 
-    # If no ### headings exist, collect active section lines and parse bullet topics
-    active = True
-    active_lines = []
-    has_active_section = False
-    for line in unfenced:
-        heading = re.match(r'^(#{1,6})[ \t]+(\S.*?)[ \t]*$', line)
-        if heading and len(heading[1]) <= 2:
-            level, label = len(heading[1]), heading[2]
-            words = fold(label).split()
-            word = words[0] if words else ''
-            active = (word in ('active', 'aktif', 'acik', 'open') if level == 2
-                      else not (word == 'closed' or word.startswith(('kapan', 'kapali'))))
-            has_active_section = True
-            continue
-        elif heading and len(heading[1]) > 2:
-            continue
-        if active or not has_active_section:
-            active_lines.append(line)
-
-    bullet_count = 0
-    for t, b in _bullet_topics(active_lines):
-        yield t, b
-        bullet_count += 1
+    yield from _thread_bullet_topics(unfenced)
 
 
 def scan_stale_threads(vault: Path, now: float, stale_days: int = 14, state: Path | None = None) -> dict:
@@ -921,13 +917,19 @@ def scan_companion(vault: Path, state: Path | None = None, now: float | None = N
                 headers = re.findall(r'(?m)^###\s+', active_text)
                 if headers:
                     info['active_threads'] = len(headers)
-                elif bullet_count := sum(1 for _ in _bullet_topics(active_lines)):
-                    info['active_threads'] = bullet_count
                 else:
-                    info['active_threads'] = len(re.findall(
+                    legacy_count = len(re.findall(
                         r'(?i)\*\*(?:status|durum):\*\*[ \t]*(?:[^\w\n]*)[ \t]*(?:active|aktif)',
                         active_text or text
                     ))
+                    if legacy_count:
+                        # Existing headingless records may contain action bullets.
+                        info['active_threads'] = legacy_count
+                    else:
+                        from beyin_v3_compact import _frontmatter_end
+                        source_lines = text.splitlines()
+                        info['active_threads'] = sum(1 for _ in _thread_bullet_topics(
+                            source_lines[_frontmatter_end(source_lines):]))
             except OSError:
                 pass
 
