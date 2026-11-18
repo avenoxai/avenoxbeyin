@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import urlparse
 
+from v3_yakala_defuddle_consent_test import approved_test_state
 from v3_package_helpers import inherited_env
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -459,6 +460,7 @@ class GuardedHelperTest(unittest.TestCase):
     """A real helper process through `_run`: what Defuddle does with ALL_PROXY, end to end."""
 
     def setUp(self):
+        self.state = approved_test_state(self)
         self.pages = Pages(self)
         tmp = tempfile.TemporaryDirectory(prefix='yakala-egress-')
         self.addCleanup(tmp.cleanup)
@@ -480,7 +482,7 @@ class GuardedHelperTest(unittest.TestCase):
         vault.mkdir()
         card = yakala.find_card(vault, yakala.capture(vault, url='http://ornek.example/yonlendir')['id'])
         with dns, dial:
-            text, method, note = yakala.extract(vault, card, dict(NO_TOOLS, npx='npx'))
+            text, method, note = yakala.extract(vault, card, dict(NO_TOOLS, npx='npx'), state=self.state)
         self.assertEqual((text, method), (None, None))
         self.assertIn('yerel veya ozel bir ag adresine yonlendirdi', note)
         self.assertEqual(self.pages.hits['secret'], [])
@@ -490,7 +492,7 @@ class GuardedHelperTest(unittest.TestCase):
         dns, dial = self.pages.network()
         info = {}
         with dns, dial:
-            text = yakala.via_defuddle('http://ornek.example/acik', dict(NO_TOOLS, npx='npx'), info)
+            text = yakala.via_defuddle('http://ornek.example/acik', dict(NO_TOOLS, npx='npx'), info, state=self.state)
         self.assertIn('Acik makale metni.', text)
         self.assertEqual((self.pages.hits['public'], info.get('ag_engeli')), (['/acik'], None))
 
@@ -501,8 +503,8 @@ class GuardedHelperTest(unittest.TestCase):
         dns, dial = self.pages.network()
         info, page = {}, {}
         with dns, dial, patch.dict(os.environ, {'HTTP_PROXY': 'http://127.0.0.1:%d' % upstream.port}):
-            self.assertIsNone(yakala.via_defuddle('http://ornek.example/yonlendir', dict(NO_TOOLS, npx='npx'), info))
-            text = yakala.via_defuddle('http://ornek.example/acik', dict(NO_TOOLS, npx='npx'), page)
+            self.assertIsNone(yakala.via_defuddle('http://ornek.example/yonlendir', dict(NO_TOOLS, npx='npx'), info, state=self.state))
+            text = yakala.via_defuddle('http://ornek.example/acik', dict(NO_TOOLS, npx='npx'), page, state=self.state)
         self.assertEqual((self.pages.hits['secret'], info.get('ag_engeli')), ([], True))
         self.assertIn('Acik makale metni.', text)
         self.assertEqual([item[2] for item in upstream.asked], ['http://ornek.example/yonlendir', 'http://ornek.example/acik'])
@@ -512,7 +514,7 @@ class GuardedHelperTest(unittest.TestCase):
         dns, dial = self.pages.network()
         info = {}
         with dns, dial, patch.dict(os.environ, {'NO_PROXY': 'localhost,127.0.0.1'}):
-            self.assertIsNone(yakala.via_defuddle('http://ornek.example/yonlendir', dict(NO_TOOLS, npx='npx'), info))
+            self.assertIsNone(yakala.via_defuddle('http://ornek.example/yonlendir', dict(NO_TOOLS, npx='npx'), info, state=self.state))
         self.assertEqual((self.pages.hits, info.get('ag_engeli')), ({'public': ['/yonlendir'], 'secret': []}, True))
 
 
@@ -556,6 +558,7 @@ class HelperEnvironmentTest(unittest.TestCase):
                  (yakala.youtube_tracks, (video, {'yt_dlp': 'yt-dlp'}, work.name)),
                  (yakala.via_audio, (video, {'yt_dlp': 'yt-dlp', 'whisper': 'whisper'}, work.name)))
         public = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (PUBLIC, 443))]
+        state = approved_test_state(self)
         envs = {}
         with without_proxies(), patch.dict(os.environ, extra or {}), \
                 patch('urllib.request.getproxies', return_value={}), \
@@ -563,11 +566,11 @@ class HelperEnvironmentTest(unittest.TestCase):
             for function, args in calls:
                 if os.name == 'nt' and sys.platform == 'win32':
                     with patch.object(yakala, '_windows_run', return_value=(1, '', '')) as run:
-                        function(*args)
+                        function(*args, **({'state': state} if function is yakala.via_defuddle else {}))
                     envs[function.__name__] = run.call_args_list[0].args[3]
                 else:
                     with patch('subprocess.run', side_effect=subprocess.TimeoutExpired(cmd='cmd', timeout=1)) as run:
-                        function(*args)
+                        function(*args, **({'state': state} if function is yakala.via_defuddle else {}))
                     envs[function.__name__] = run.call_args_list[0].kwargs['env']
         return envs
 

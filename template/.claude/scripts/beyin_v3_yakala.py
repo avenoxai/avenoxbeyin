@@ -1277,13 +1277,26 @@ def _defuddle_approval_path(state):
 
 def _defuddle_approval_granted(state):
     """Check if user has approved defuddle (npx defuddle@0.19.4) execution."""
-    path = _defuddle_approval_path(state)
-    if not path.is_file():
+    if state is None:
         return False
+    import stat
     try:
-        data = json.loads(path.read_text(encoding='utf-8'))
-        return bool(data.get('approved')) and data.get('version') == DEFUDDLE
-    except (OSError, ValueError):
+        path = _defuddle_approval_path(state)
+        if not stat.S_ISREG(path.lstat().st_mode):
+            return False
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_BINARY', 0) |
+                             getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
+        with os.fdopen(descriptor, 'rb') as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 4096:
+                return False
+            raw = source.read(4097)
+        if len(raw) > 4096:
+            return False
+        data = json.loads(raw.decode('utf-8'))
+        return (isinstance(data, dict) and type(data.get('schema')) is int and data['schema'] == 1
+                and data.get('approved') is True and data.get('version') == DEFUDDLE)
+    except (OSError, ValueError, RecursionError):
         return False
 
 
@@ -1297,19 +1310,25 @@ def _grant_defuddle_approval(state):
 
 def _prompt_defuddle_approval(state):
     """Prompt user for approval to run npx defuddle. Returns True if granted."""
-    import sys
-    print(f'\nYakala, web sayfalarından metin çıkarmak için "npx -y {DEFUDDLE}" paketini indirip çalıştırmak istiyor.', file=sys.stderr)
-    print('Bu işlem: Node.js (npx) gerektirir, defuddle paketini geçici olarak indirir, kullanıcı ayrıcalıklarıyla çalışır.', file=sys.stderr)
-    print(f'Sürüm sabit: {DEFUDDLE} (package-lock.json veya npm registry\'den doğrulanmış).', file=sys.stderr)
-    print('Onay veriyor musunuz? [e/E/yes/Y] ', end='', file=sys.stderr)
-    sys.stderr.flush()
-    try:
-        response = sys.stdin.readline().strip().lower()
-    except (EOFError, KeyboardInterrupt):
+    if state is None:
         return False
-    if response in ('e', 'evet', 'yes', 'y'):
-        _grant_defuddle_approval(state)
-        return True
+    try:
+        # Never consume piped/agent input or wait for an open pipe. Saved consent still
+        # permits headless use; the first approval requires a person's terminal.
+        if sys.stdin is None or not sys.stdin.isatty():
+            print('Defuddle ilk onayı etkileşimli terminal gerektirir; npx çalıştırılmadı.', file=sys.stderr)
+            return False
+        print(f'\nYakala, web sayfalarından metin çıkarmak için "npx -y {DEFUDDLE}" paketini indirip çalıştırmak istiyor.', file=sys.stderr)
+        print('Bu işlem: Node.js (npx) gerektirir, defuddle paketini geçici olarak indirir, kullanıcı ayrıcalıklarıyla çalışır.', file=sys.stderr)
+        print(f'Sürüm sabit: {DEFUDDLE}; bu sabitleme paket içeriğini veya yayıncıyı doğrulamaz.', file=sys.stderr)
+        print('Onay veriyor musunuz? [e/E/yes/Y] ', end='', file=sys.stderr)
+        sys.stderr.flush()
+        response = sys.stdin.readline(129)
+        if len(response) <= 128 and response.strip().lower() in ('e', 'evet', 'yes', 'y'):
+            _grant_defuddle_approval(state)
+            return True
+    except (EOFError, KeyboardInterrupt, OSError, ValueError):
+        return False
     return False
 
 
@@ -1322,13 +1341,15 @@ def via_defuddle(url, found, info=None, lang=None, state=None):
     _safe_source_url(url)
     if not found['npx']:
         return None
-    # Check/require user approval for npx defuddle execution (#691.5)
-    if state is not None:
-        if not _defuddle_approval_granted(state):
-            if not _prompt_defuddle_approval(state):
-                if info is not None:
-                    info['uyari'] = 'Defuddle onayı verilmedi; npx defuddle çalıştırılmadı.'
-                return None
+    if state is None:
+        _safe_network_url(url)  # Retain the public helper's URL/DNS validation contract.
+        if info is not None:
+            info['uyari'] = 'Defuddle için açık state ve kullanıcı onayı gerekli; npx defuddle çalıştırılmadı.'
+        return None
+    if not _defuddle_approval_granted(state) and not _prompt_defuddle_approval(state):
+        if info is not None:
+            info['uyari'] = 'Defuddle onayı verilmedi; npx defuddle çalıştırılmadı.'
+        return None
     _safe_network_url(url)
     try:
         with _HelperNetwork() as guard:  # Defuddle reads ALL_PROXY for the page and each redirect

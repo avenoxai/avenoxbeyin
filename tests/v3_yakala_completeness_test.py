@@ -17,6 +17,7 @@ from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
 import beyin_v3_yakala as y
+from v3_yakala_defuddle_consent_test import approved_test_state
 from v3_package_helpers import inherited_env, isolated_path
 
 HEADINGS = [f'How does synthetic topic {number} work?' for number in range(10)]
@@ -67,13 +68,14 @@ class CompletenessTest(unittest.TestCase):
         self.addCleanup(dns.stop)
 
     def run_capture(self, html, markdown, *, error=None, content_type='text/html; charset=utf-8'):
+        state = approved_test_state(self)
         response = Response(html, content_type)
         self.opener.reset_mock()
         self.opener.open.return_value = response
         self.opener.open.side_effect = error
         with patch.object(y, '_run', return_value=(0, json.dumps({'content': markdown}), '')), \
                 patch.object(y, '_public_opener', return_value=self.opener):
-            result = y.process(self.vault, [self.saved['id']])
+            result = y.process(self.vault, [self.saved['id']], state=state)
         card = y.find_card(self.vault, self.saved['id'])
         return result['kartlar'][0], card['meta'], (self.vault / card['meta']['ham']).read_text(), response
 
@@ -453,7 +455,7 @@ class CompletenessTest(unittest.TestCase):
         self.addCleanup(worker.join, 5)
         self.addCleanup(server.shutdown)
         (bin_dir / 'sitecustomize.py').write_text(
-            "import socket\nreal_connect = socket.create_connection\nreal_dns = socket.getaddrinfo\n"
+            "import socket, sys\nsys.stdin.isatty = lambda: True\nreal_connect = socket.create_connection\nreal_dns = socket.getaddrinfo\n"
             "def dns(host, port, *args, **kwargs):\n"
             "    if host == '127.0.0.1': return real_dns(host, port, *args, **kwargs)\n"
             "    assert host == 'example.com', host\n"

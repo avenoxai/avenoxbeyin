@@ -16,6 +16,7 @@ import unittest
 import warnings
 from unittest.mock import patch
 
+from v3_yakala_defuddle_consent_test import approved_test_state
 from v3_package_helpers import build_package, inherited_env, isolated_env
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -645,6 +646,7 @@ class YakalaSecurityTest(unittest.TestCase):
         the user's proxy. Behind a corporate proxy npx, yt-dlp and whisper have no other way out.
         Defuddle and yt-dlp reach it through the egress guard (#299), which checks each target and
         then connects through the user's proxy; npm keeps it for its registry (npm_config_*)."""
+        state = approved_test_state(self)
         calls = ((yakala.via_defuddle, ('https://example.com/x', {'npx': 'npx'})),
                  (yakala.youtube_tracks, ('https://example.com/x', {'yt_dlp': 'yt-dlp'}, self.root)),
                  (yakala.via_audio, ('https://example.com/x', {'yt_dlp': 'yt-dlp', 'whisper': 'whisper'}, self.root)))
@@ -671,11 +673,11 @@ class YakalaSecurityTest(unittest.TestCase):
                     del seen[:]
                     if os.name == 'nt' and sys.platform == 'win32':
                         with patch.object(yakala, '_windows_run', side_effect=started) as run:
-                            function(*args)
+                            function(*args, **({'state': state} if function is yakala.via_defuddle else {}))
                         env = run.call_args.args[3]
                     else:
                         with patch('subprocess.run', side_effect=started) as run:
-                            function(*args)
+                            function(*args, **({'state': state} if function is yakala.via_defuddle else {}))
                         env = run.call_args.kwargs['env']
                     dns.assert_called_once_with('example.com', 443, type=socket.SOCK_STREAM)
                     # Windows environment names are case-insensitive: os.environ folds

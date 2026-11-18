@@ -1592,9 +1592,17 @@ Hiçbiri zorunlu değil; varsa işleme genişler, yoksa elde olanla devam edilir
 
 - **Node.js** (`npx`): Defuddle için. Sabit sürüm (`defuddle@0.19.4`) çalıştırılır.
   Normal `yakala isle` akışında, web sayfalarında da YouTube yolundaki gibi ilk
-  kullanımdan önce onay istenir. Kabul, yerel state dizinindeki
+  kullanımdan önce **etkileşimli terminalde** onay istenir. Kabul, yerel state dizinindeki
   `yakala/defuddle-approval.json` dosyasında sürümle birlikte saklanır; sürüm
-  değiştiğinde yeniden sorulur. Ret veya stdin sonu (EOF), Defuddle'ı çalıştırmaz.
+  değiştiğinde yeniden sorulur. Yalnız desteklenen `schema: 1`, boolean `approved: true`
+  ve tam sürüm eşleşmesi geçerlidir. Sembolik bağ/özel dosya, bozuk/okunamayan veya
+  4096 bayttan büyük kayıt,
+  ret, stdin sonu (EOF), kesinti veya onayın kaydedilememesi Defuddle'ı çalıştırmaz.
+  İlk onay pipe/etkileşimsiz stdin'den okunmaz; `yes | ...` onay sayılmaz ve açık pipe
+  beklenmez. Aynı state ile terminalde bir kez açık onay verdikten sonra otomasyon
+  kayıtlı onayı kullanabilir. Kütüphane çağrıları açık `state` geçirmelidir;
+  `state=None` npx'i çalıştırmaz, örtük/global onay konumu seçmez.
+  Sürüm sabitleme, paket içeriği veya yayıncı doğrulaması değildir.
   Bu yalnız dış `npx` paketinin onayıdır, tüm ağ erişimini kapatan bir tercih
   değildir: web sayfasında mevcut standart kütüphane HTTP yedeği denenebilir.
   Video dışı web sayfalarında 200 karakterden uzun hazır Web Clipper metni
