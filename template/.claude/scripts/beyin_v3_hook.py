@@ -837,6 +837,14 @@ def main():
                 notice += hint(state, args.harness, payload)
             except Exception:
                 pass  # Optional conversation hints cannot cost a turn or replace its context.
+        if not args.metadata_only and event == 'UserPromptSubmit':
+            try:
+                from beyin_v3_usage import feedback_hint
+                fb_hint = feedback_hint(state, prompt_text(payload))
+                if fb_hint:
+                    notice = (notice + "\n" + fb_hint) if notice else fb_hint
+            except Exception:
+                pass
         inject = settings['context_mode'] == 'turn' or (settings['context_mode'] == 'session' and event == 'SessionStart')
         if not inject or args.metadata_only or (event == 'UserPromptSubmit' and is_synthetic_prompt(payload)):
             print(json.dumps(reminder) if reminder else (json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == 'antigravity' else '{}')))
@@ -1057,6 +1065,12 @@ def main():
                         shown = bool(suffix) and fit_client(args.harness, (notice + text)[:limit]).endswith(suffix.lstrip("\n"))
                         record_delivered(state, args.harness, topic_session, delivered["records"],
                                          receipt=receipt if shown else None)
+                    except Exception:
+                        pass
+                if delivered.get("records"):
+                    try:
+                        from beyin_v3_usage import record_injected
+                        record_injected(state, delivered["records"])
                     except Exception:
                         pass
                 try:
