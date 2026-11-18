@@ -8942,7 +8942,6 @@ def _agent_update_card(vault, job, status, reason='', **fields):
 
 def enqueue_agent(vault, state, card_id, request, delivery_id=None, *, music=None):
     """Durable outbox, then detached wake-up. No URL/DNS/model work on the Tk thread."""
-    import time
     import uuid
     vault, state = Path(vault).resolve(), Path(state).resolve()
     config = agent_settings(vault, state)
