@@ -1809,13 +1809,16 @@ class MemoryStore:
 
         rejected_only inverts the rejection gate alone, for rejected_matches: the same
         scope applies to history that is looked up but never delivered. records lets a
-        caller that also needs the supersession set read the table once.
+        caller narrow the returned set. Homepage dependencies are resolved against
+        the full index, never just that subset. Ordinary subsets need no table scan.
         """
         if audience not in ("public", "internal", "private"):
             raise ValueError("invalid audience")
         if records is None:
             records = self._records()
-        records = self._homepage_policy(records, records)
+            records = self._homepage_policy(records, records)
+        else:
+            records = self._homepage_policy(records)
         allowed = {"public"} if audience == "public" else {"public", "internal"} if audience == "internal" else {"public", "internal", "private"}
         # Read only for an explicit project: the per-turn hook path passes none.
         scopes = read_project_scopes(self.vault_root) if project is not None else None
