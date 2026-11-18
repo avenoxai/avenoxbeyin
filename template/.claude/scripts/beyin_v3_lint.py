@@ -15,6 +15,7 @@ import stat
 import tempfile
 import time
 import unicodedata
+import urllib.parse
 
 # ReDoS-safe wikilink pattern: bounded character class prevents catastrophic backtracking.
 # Matches [[target]], [[target|display]], [[target#heading]], [[target#heading|display]], and embeds ![[...]]
@@ -117,6 +118,72 @@ def extract_wikilinks(text):
             else:
                 file_target = target_part
                 heading_part = None
+
+            results.append({
+                "raw": match.group(0),
+                "file_target": file_target,
+                "heading": heading_part,
+                "display": display_part,
+                "is_embed": is_embed,
+                "line": line_idx,
+            })
+    return results
+
+
+MARKDOWN_LINK_PATTERN = re.compile(r"(!?)\s*\[([^\]\r\n]{1,500})\]\s*\(([^)\r\n]{1,500})\)")
+
+
+def extract_markdown_links(text):
+    """Extract all local markdown links from text safely.
+
+    Returns list of dicts: file_target, heading, display, is_embed, raw, line.
+    """
+    if not isinstance(text, str) or not text:
+        return []
+
+    results = []
+    for line_idx, line in _lines_outside_code(text):
+        for match in MARKDOWN_LINK_PATTERN.finditer(line):
+            is_embed = bool(match.group(1))
+            display_part = match.group(2).strip()
+            raw_target = match.group(3).strip()
+
+            if not raw_target:
+                continue
+
+            # Strip <...> wrapper if present
+            if raw_target.startswith("<") and raw_target.endswith(">") and len(raw_target) >= 2:
+                raw_target = raw_target[1:-1].strip()
+
+            # Trim title attribute if present (e.g. target.md "title")
+            parts = raw_target.split(None, 1)
+            if len(parts) == 2 and (parts[1].startswith('"') or parts[1].startswith("'") or parts[1].startswith("(")):
+                raw_target = parts[0]
+
+            # Ignore pure anchor-only links (#section)
+            if raw_target.startswith("#"):
+                continue
+
+            # Ignore external URLs (http://, https://, mailto:, ftp:, etc., i.e. ^[a-zA-Z][a-zA-Z0-9+.-]*: schemes)
+            parsed_url = urllib.parse.urlparse(raw_target)
+            scheme = parsed_url.scheme
+            if scheme and len(scheme) > 1:
+                continue
+
+            # Separate #heading fragment if present
+            if "#" in raw_target:
+                file_target, heading_part = raw_target.split("#", 1)
+                file_target = file_target.strip()
+                heading_part = heading_part.strip()
+            else:
+                file_target = raw_target
+                heading_part = None
+
+            if not file_target:
+                continue
+
+            # URL-unquote %20 etc. safely
+            file_target = urllib.parse.unquote(file_target)
 
             results.append({
                 "raw": match.group(0),
@@ -362,22 +429,41 @@ def lint_vault(vault_root, folder=None):
             # exception text (which can contain private note bytes).
             raise OSError('lint source read failed') from None
 
-        links = extract_wikilinks(content)
+        wikilinks = extract_wikilinks(content)
+        md_links = extract_markdown_links(content)
         if rel_path in target_set:
-            all_extracted_count += len(links)
+            all_extracted_count += len(wikilinks) + len(md_links)
 
-        for link in links:
-            res = resolve_wikilink(vault_root, link["file_target"], source_file=rel_path, vault_index=vault_index)
-            # An attachment (image, PDF) unless a note itself has a dotted name ("Sürüm v1.2").
-            if (not res["exists"] and Path(link["file_target"]).suffix
-                    and not link["file_target"].lower().endswith(".md")):
-                if not _attachment_exists(vault_index, link["file_target"], rel_path):
+        all_links = [(l, "wikilink") for l in wikilinks] + [(l, "markdown") for l in md_links]
+
+        for link, link_type in all_links:
+            file_target = link["file_target"]
+
+            if link_type == "markdown" and (file_target.startswith("../") or "/../" in file_target or file_target == ".."):
+                source_parent = Path(rel_path).parent.as_posix()
+                base = "" if source_parent in ("", ".") else source_parent + "/"
+                candidate_rel = posixpath.normpath(base + file_target)
+                if candidate_rel.startswith("..") or candidate_rel.startswith("/"):
                     broken_links.append({
                         "source": rel_path,
                         "line": link["line"],
-                        "target": link["file_target"][:MAX_RAW_LINK_CHARS],
+                        "target": file_target[:MAX_RAW_LINK_CHARS],
                         "raw": link["raw"][:MAX_RAW_LINK_CHARS],
-                        "type": "embed" if link["is_embed"] else "wikilink",
+                        "type": link_type,
+                    })
+                    continue
+
+            res = resolve_wikilink(vault_root, file_target, source_file=rel_path, vault_index=vault_index)
+            # An attachment (image, PDF) unless a note itself has a dotted name ("Sürüm v1.2").
+            if (not res["exists"] and Path(file_target).suffix
+                    and not file_target.lower().endswith(".md")):
+                if not _attachment_exists(vault_index, file_target, rel_path):
+                    broken_links.append({
+                        "source": rel_path,
+                        "line": link["line"],
+                        "target": file_target[:MAX_RAW_LINK_CHARS],
+                        "raw": link["raw"][:MAX_RAW_LINK_CHARS],
+                        "type": "embed" if link["is_embed"] else link_type,
                     })
                 continue
 
@@ -398,9 +484,9 @@ def lint_vault(vault_root, folder=None):
                 broken_links.append({
                     "source": rel_path,
                     "line": link["line"],
-                    "target": link["file_target"][:MAX_RAW_LINK_CHARS],
+                    "target": file_target[:MAX_RAW_LINK_CHARS],
                     "raw": link["raw"][:MAX_RAW_LINK_CHARS],
-                    "type": "wikilink",
+                    "type": link_type,
                 })
 
     broken_links = [link for link in broken_links if link["source"] in target_set]
