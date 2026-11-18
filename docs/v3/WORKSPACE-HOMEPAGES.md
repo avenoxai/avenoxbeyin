@@ -5,6 +5,11 @@ kullanıcının düzenlediği Markdown ana sayfasına bağlar. Kurulum bir alan 
 seçtirmez. Görüşme tarihi metin, tarifteki porsiyon sayısı sayı olabilir.
 Yeni servis veya otomatik model çağrısı yoktur.
 
+Web aramasında görünen bir ana sayfa tek kayıt görünümünde de açılır. Tek
+kayıt okunurken bağlı esas notlar tam dizin üzerinden doğrulanır; bu doğrulama
+sonuca başka notlar eklemez. Eksik, değişmiş, özel veya güvenilmeyen bir
+bağımlılık varsa ana sayfa yine gösterilmez.
+
 ## Başka alandaki esas kayıttan devam
 
 Bir ana sayfa başka projedeki tek esas nota bağlanabilir. Kullanıcının seçtiği
