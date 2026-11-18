@@ -330,8 +330,76 @@ APP_JS = r"""
     hafiza();
   }
 
+  // --- gözden geçir -----------------------------------------------------
+  async function gozgecir() {
+    const inboxDiv = bosalt($('gozden-inbox'));
+    const konularList = bosalt($('gozden-konular'));
+    const gorevDiv = bosalt($('gozden-gorevler'));
+    const taslaklarList = bosalt($('gozden-taslaklar'));
+    try {
+      const veri = await api('/api/gozden-gecir');
+      const inbox = veri.inbox || {};
+      inboxDiv.append(el('p', { text: 'Öğe sayısı: ' + (inbox.count ?? 0) + (inbox.status ? ' (' + inbox.status + ')' : '') }));
+      if (inbox.folders && inbox.folders.length) {
+        const ul = el('ul', { class: 'liste' });
+        inbox.folders.forEach(function (f) {
+          ul.append(el('li', {}, el('strong', { text: f.path || f.folder || '' }), el('div', { class: 'ust-bilgi', text: 'Öğe: ' + (f.count ?? 0) })));
+        });
+        inboxDiv.append(ul);
+      }
+      const bayat = veri.bayat_konular || [];
+      if (!bayat.length) {
+        konularList.append(el('li', { class: 'bos', text: 'Bayat konu yok.' }));
+      } else {
+        bayat.forEach(function (k) {
+          konularList.append(el('li', {},
+            el('strong', { text: k.baslik || k.title || k.topic || '' }),
+            el('div', { class: 'ust-bilgi' },
+              el('span', { text: k.kaynak || k.source || '' }),
+              el('span', { text: k.yas_gun !== undefined ? 'Yaş: ' + k.yas_gun + ' gün' : '' }),
+              el('span', { text: k.son_tarih ? 'Son: ' + k.son_tarih : '' }))
+          ));
+        });
+      }
+      const gorevlerData = veri.gorevler || {};
+      gorevDiv.append(el('p', { text: 'Açık: ' + (gorevlerData.open_count ?? 0) + ' · Bayat: ' + (gorevlerData.stale_count ?? 0) }));
+      const staleTasks = gorevlerData.stale_tasks || [];
+      if (staleTasks.length) {
+        const ul = el('ul', { class: 'liste' });
+        staleTasks.forEach(function (st) {
+          ul.append(el('li', {}, el('strong', { text: st.baslik || st.title || st.id }), el('div', { class: 'ust-bilgi', text: st.kaynak || '' })));
+        });
+        gorevDiv.append(ul);
+      }
+      const taslaklar = veri.taslaklar || [];
+      if (!taslaklar.length) {
+        taslaklarList.append(el('li', { class: 'bos', text: 'Taslak not yok.' }));
+      } else {
+        taslaklar.forEach(function (t) {
+          const satir = el('li', { class: 'sonuc', tabIndex: 0 },
+            el('strong', { text: t.baslik }),
+            el('div', { class: 'ust-bilgi' }, el('span', { text: t.durum }), el('span', { text: t.kaynak || '' }), el('span', { text: zaman(t.tarih) }))
+          );
+          const ac = async function () {
+            const alan = $('gozden-onizleme'); const baslik = $('gozden-onizleme-baslik');
+            try {
+              const kayit = await api('/api/kayit?id=' + encodeURIComponent(t.id));
+              baslik.textContent = kayit.baslik + ' (' + kayit.kaynak + ')';
+              alan.textContent = kayit.metin + (kayit.kisaltildi ? '\n\n[Kısaltıldı]' : '');
+            } catch (error) { baslik.textContent = 'Önizleme'; alan.textContent = error.message; }
+          };
+          satir.addEventListener('click', ac);
+          satir.addEventListener('keydown', function (e) { if (e.key === 'Enter') { ac(); } });
+          taslaklarList.append(satir);
+        });
+      }
+    } catch (error) {
+      inboxDiv.append(el('p', { class: 'bos', text: error.message }));
+    }
+  }
+
   // --- gezinme ------------------------------------------------------------
-  const YUKLE = { kokpit: kokpit, gorevler: gorevler, arama: null, makbuzlar: makbuzlar, hafiza: hafiza };
+  const YUKLE = { kokpit: kokpit, gorevler: gorevler, 'gozden-gecir': gozgecir, arama: null, makbuzlar: makbuzlar, hafiza: hafiza };
   function goster() {
     let ad = window.location.hash.replace('#', '');
     if (!(ad in YUKLE)) { ad = 'kokpit'; }
@@ -404,6 +472,7 @@ _INDEX = """<!DOCTYPE html>
     <nav aria-label="Bölümler">
       <a href="#kokpit" data-gorunum="kokpit">Kokpit</a>
       <a href="#gorevler" data-gorunum="gorevler">Görevler</a>
+      <a href="#gozden-gecir" data-gorunum="gozden-gecir">Gözden geçir</a>
       <a href="#arama" data-gorunum="arama">Arama</a>
       <a href="#makbuzlar" data-gorunum="makbuzlar">Receipt'ler</a>
       <a href="#hafiza" data-gorunum="hafiza">Hafıza</a>
@@ -437,6 +506,26 @@ _INDEX = """<!DOCTYPE html>
       <datalist id="proje-onerileri"></datalist>
       <div class="arac-cubugu"><label>Proje <select id="proje-filtre"></select></label><span id="gorev-notu" class="aciklama"></span></div>
       <div id="gorev-pano" class="pano"></div>
+    </section>
+    <section id="gorunum-gozden-gecir" class="gorunum" hidden>
+      <h1>Gözden geçir</h1>
+      <p class="aciklama">Triage raporu ve taslak notlar (salt okunur).</p>
+      <div class="ikili">
+        <div>
+          <h2>Gelen kutusu</h2>
+          <div id="gozden-inbox"></div>
+          <h2>Bayat konular</h2>
+          <ul id="gozden-konular" class="liste"></ul>
+          <h2>Bayat görevler</h2>
+          <div id="gozden-gorevler"></div>
+          <h2>Taslak notlar</h2>
+          <ul id="gozden-taslaklar" class="liste"></ul>
+        </div>
+        <div>
+          <h2 id="gozden-onizleme-baslik">Önizleme</h2>
+          <pre id="gozden-onizleme" class="onizleme">Kayıt seçin…</pre>
+        </div>
+      </div>
     </section>
     <section id="gorunum-arama" class="gorunum" hidden>
       <h1>Arama</h1>

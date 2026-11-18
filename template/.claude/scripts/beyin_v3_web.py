@@ -264,6 +264,34 @@ class Core:
                   'gizlenen': item.get('refs_withheld') or {}} for item in result.get('items', [])]
         return {'makbuzlar': items, 'toplam': result.get('total', 0), 'gun': RECEIPT_DAYS}
 
+    def review(self):
+        triage_res = self.run('triage')
+        store = self.store()
+        records = store._records()
+        superseded = store._superseded_ids(records)
+        eligible, _ = store._eligible('internal', records=records)
+        drafts = []
+        for r in eligible:
+            if r['id'] in superseded:
+                continue
+            status = str(r.get('status') or '').strip().casefold()
+            if status in ('taslak', 'draft', 'proposed'):
+                drafts.append(r)
+        drafts.sort(key=lambda r: str(r.get('created_at') or r.get('updated_at') or '9999'))
+        taslaklar = [{
+            'id': r['id'],
+            'baslik': _title(r),
+            'kaynak': r.get('source'),
+            'durum': _text(r.get('status')),
+            'tarih': _text(r.get('created_at') or r.get('updated_at')),
+        } for r in drafts]
+        return {
+            'inbox': triage_res.get('inbox'),
+            'bayat_konular': triage_res.get('threads', {}).get('stale_threads', []),
+            'gorevler': triage_res.get('tasks'),
+            'taslaklar': taslaklar,
+        }
+
     def doctor(self):
         result = self.run('doctor')
         hygiene = result.get('companion_hygiene') if isinstance(result.get('companion_hygiene'), dict) else {}
@@ -502,6 +530,7 @@ class Handler(BaseHTTPRequestHandler):
             '/api/kayit': lambda: core.record(query.get('id', [''])[0]),
             '/api/makbuzlar': core.receipts,
             '/api/hafiza': core.memory,
+            '/api/gozden-gecir': core.review,
         }
         self._route(routes.get(url.path))
 

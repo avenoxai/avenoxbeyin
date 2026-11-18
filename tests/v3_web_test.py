@@ -740,5 +740,42 @@ class WebInstalledEntryTest(unittest.TestCase):
         self.assertIn("argv[0] == 'web'", entry)
 
 
+class WebReviewTest(WebFixture):
+    read_only = True
+
+    def test_review_endpoint_read_only_and_draft_sorting_and_privacy(self):
+        self.write('notes/taslak1.md', '---\ntitle: İkinci taslak\nstatus: draft\ncreated_at: 2026-11-18T12:00:00\n---\nDraft body\n')
+        self.write('notes/taslak2.md', '---\ntitle: Birinci taslak\nstatus: taslak\ncreated_at: 2026-11-18T10:00:00\n---\nTaslak body\n')
+        self.write('notes/gizli-taslak.md', '---\ntitle: Gizli taslak\nstatus: draft\nvisibility: private\n---\nPrivate draft\n')
+        self.core.run('sync')
+
+        cookie, _ = self.login()
+        status, data = self.get_json('/api/gozden-gecir', cookie)
+        self.assertEqual(status, 200)
+        self.assertIn('inbox', data)
+        self.assertIn('bayat_konular', data)
+        self.assertIn('gorevler', data)
+        self.assertIn('taslaklar', data)
+
+        taslaklar = data['taslaklar']
+        self.assertEqual(len(taslaklar), 2)
+        self.assertEqual(taslaklar[0]['baslik'], 'Birinci taslak')
+        self.assertEqual(taslaklar[1]['baslik'], 'İkinci taslak')
+
+        basliklar = [t['baslik'] for t in taslaklar]
+        self.assertNotIn('Gizli taslak', basliklar)
+
+        response, _ = self.request('GET', '/api/gozden-gecir')
+        self.assertEqual(response.status, 401)
+
+        response, page = self.request('GET', '/', {'Cookie': cookie})
+        self.assertEqual(response.status, 200)
+        self.assertIn(b'G\xc3\xb6zden ge\xc3\xa7ir', page)
+
+        response, js = self.request('GET', '/app.js', {'Cookie': cookie})
+        self.assertEqual(response.status, 200)
+        self.assertIn(b'/api/gozden-gecir', js)
+
+
 if __name__ == '__main__':
     unittest.main()
