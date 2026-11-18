@@ -34,6 +34,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: 4de8635aa8bb7bb2b4988511d7948f6dc15af2da
+      - name: Assert exact candidate before tests
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = 4de8635aa8bb7bb2b4988511d7948f6dc15af2da
+          test "$(git rev-parse HEAD^{tree})" = d6bd40f8a14601d081975b2d1ae6551f3108050e
+          test -z "$(git status --porcelain)"
+          git show -s --format='candidate_commit=%H%ncandidate_tree=%T%nparents=%P'
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.13'
@@ -56,6 +64,13 @@ jobs:
           path: evidence-artifacts/
           retention-days: 14
 
+      - name: Assert candidate source unchanged
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = 4de8635aa8bb7bb2b4988511d7948f6dc15af2da
+          test "$(git rev-parse HEAD^{tree})" = d6bd40f8a14601d081975b2d1ae6551f3108050e
+          git diff --exit-code
+          git diff --cached --exit-code
   installed-optionality:
     name: Installed optionality / ${{ matrix.os }} / Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
@@ -73,6 +88,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: 4de8635aa8bb7bb2b4988511d7948f6dc15af2da
+      - name: Assert exact candidate before tests
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = 4de8635aa8bb7bb2b4988511d7948f6dc15af2da
+          test "$(git rev-parse HEAD^{tree})" = d6bd40f8a14601d081975b2d1ae6551f3108050e
+          test -z "$(git status --porcelain)"
+          git show -s --format='candidate_commit=%H%ncandidate_tree=%T%nparents=%P'
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python }}
@@ -94,3 +117,10 @@ jobs:
           name: installed-jev-${{ matrix.os }}-${{ matrix.python }}-${{ github.sha }}
           path: installed-proof.json
           retention-days: 14
+      - name: Assert candidate source unchanged
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = 4de8635aa8bb7bb2b4988511d7948f6dc15af2da
+          test "$(git rev-parse HEAD^{tree})" = d6bd40f8a14601d081975b2d1ae6551f3108050e
+          git diff --exit-code
+          git diff --cached --exit-code

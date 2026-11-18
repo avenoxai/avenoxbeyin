@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   # Hizli ve belirleyici olanlar. Portun dogru oldugunu bunlar soyler ve
   # birkac dakikada sonuc verir.
@@ -13,6 +16,16 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: 4de8635aa8bb7bb2b4988511d7948f6dc15af2da
+      - name: Assert exact candidate before tests
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = 4de8635aa8bb7bb2b4988511d7948f6dc15af2da
+          test "$(git rev-parse HEAD^{tree})" = d6bd40f8a14601d081975b2d1ae6551f3108050e
+          test -z "$(git status --porcelain)"
+          git show -s --format='candidate_commit=%H%ncandidate_tree=%T%nparents=%P'
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
@@ -48,11 +61,28 @@ jobs:
 
   # Upstream'in motor suite'i ayri job'da kosar; installer veya PowerShell
   # parse hatasi motor regresyonunun sonucunu gizlemez.
+      - name: Assert candidate source unchanged
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = 4de8635aa8bb7bb2b4988511d7948f6dc15af2da
+          test "$(git rev-parse HEAD^{tree})" = d6bd40f8a14601d081975b2d1ae6551f3108050e
+          git diff --exit-code
+          git diff --cached --exit-code
   engine:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: 4de8635aa8bb7bb2b4988511d7948f6dc15af2da
+      - name: Assert exact candidate before tests
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = 4de8635aa8bb7bb2b4988511d7948f6dc15af2da
+          test "$(git rev-parse HEAD^{tree})" = d6bd40f8a14601d081975b2d1ae6551f3108050e
+          test -z "$(git status --porcelain)"
+          git show -s --format='candidate_commit=%H%ncandidate_tree=%T%nparents=%P'
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
@@ -68,11 +98,28 @@ jobs:
         shell: pwsh
         run: python tests/antigravity_test.py
 
+      - name: Assert candidate source unchanged
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = 4de8635aa8bb7bb2b4988511d7948f6dc15af2da
+          test "$(git rev-parse HEAD^{tree})" = d6bd40f8a14601d081975b2d1ae6551f3108050e
+          git diff --exit-code
+          git diff --cached --exit-code
   graph:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: 4de8635aa8bb7bb2b4988511d7948f6dc15af2da
+      - name: Assert exact candidate before tests
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = 4de8635aa8bb7bb2b4988511d7948f6dc15af2da
+          test "$(git rev-parse HEAD^{tree})" = d6bd40f8a14601d081975b2d1ae6551f3108050e
+          test -z "$(git status --porcelain)"
+          git show -s --format='candidate_commit=%H%ncandidate_tree=%T%nparents=%P'
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
@@ -80,3 +127,10 @@ jobs:
 
       - name: POSIX motor ve graf testleri
         run: python3 tests/scripts_test.py
+      - name: Assert candidate source unchanged
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = 4de8635aa8bb7bb2b4988511d7948f6dc15af2da
+          test "$(git rev-parse HEAD^{tree})" = d6bd40f8a14601d081975b2d1ae6551f3108050e
+          git diff --exit-code
+          git diff --cached --exit-code
