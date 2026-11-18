@@ -670,6 +670,16 @@ def human_result(result, command, installed_version=None):
         return '\n'.join(update_lines(result) + ['Yalniz surum bilgisi kontrol edildi; paket kurulumu denenmedi.'])
     if status == 'updated':
         message = 'Beyin guncellendi: ' + str(result.get('from_version', installed_version or '?')) + ' -> ' + str(result['version'])
+        if result.get('after_update_steps'):
+            step_lines = ['Guncelleme sonrasi adimlar:']
+            for step in result['after_update_steps']:
+                text = step.get('text') or step.get('summary', '')
+                cmd = step.get('command')
+                line = '  - ' + text
+                if cmd:
+                    line += f' ({cmd})'
+                step_lines.append(line)
+            message += '\n' + '\n'.join(step_lines)
         if result.get('removed'):
             message += '\nHaric tutulan bilesenler kaldirildi: ' + ', '.join(result['removed']) + '.'
         if result.get('preserved_excluded'):
