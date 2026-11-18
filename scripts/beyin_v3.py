@@ -1312,6 +1312,11 @@ def parser(note_namespace=None, is_json=False):
     homepage.add_argument("--file", default="-", help="JSON {source, expected_sha256, title, project, selections}; - for stdin")
     task = sub.add_parser("task-create", help="Create and verify an explicit new task")
     task.add_argument("--file", default="-", help="JSON {source: tasks/name.md, text, metadata: {id,status,owner}}")
+    checkpoint_p = sub.add_parser("checkpoint", help="Execute unified session checkpoint handoff")
+    checkpoint_p.add_argument("--file", default="-", help="JSON checkpoint payload; - for stdin")
+    checkpoint_p.add_argument("--harness", default=None, help="Client harness identifier")
+    checkpoint_p.add_argument("--session", default=None, help="Session identifier")
+    checkpoint_p.add_argument("--dry-run", action="store_true", help="Plan checkpoint steps without writing")
     mutation_queue = sub.add_parser("mutation-queue", help="Opt-in local offline mutation queue (off by default; machine-local state)")
     queue_action = mutation_queue.add_mutually_exclusive_group()
     queue_action.add_argument("--enable", action="store_true", help="Turn the queue on for this machine")
@@ -1519,7 +1524,7 @@ def main(argv=None, return_result=False):
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
         engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc") else None
         store = engine.MemoryStore(state, vault, read_only=read_only_context) if engine else None
-        sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "homepage-create", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
+        sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "homepage-create", "task-create", "checkpoint", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
         if args.command == "bridge":
             if sum([bool(args.print_config), bool(args.install), bool(args.uninstall)]) > 1:
                 argument_parser.error("--print-config, --install, and --uninstall are mutually exclusive")
@@ -2175,6 +2180,14 @@ def main(argv=None, return_result=False):
         elif args.command == "task-create":
             payload = read_json(args.file)
             result = sync.task_create(payload['source'], payload['text'], payload['metadata'])
+        elif args.command == "checkpoint":
+            payload = read_json(args.file)
+            _ensure_scripts_path()
+            import beyin_v3_checkpoint
+            result = beyin_v3_checkpoint.run_checkpoint(
+                sync, vault, state, payload,
+                harness=args.harness, session=args.session, dry_run=args.dry_run
+            )
         elif args.command == "mutation-queue":
             _ensure_scripts_path()
             import beyin_v3_mutation as mutation
