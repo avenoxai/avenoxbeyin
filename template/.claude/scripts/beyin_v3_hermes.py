@@ -33,6 +33,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 
 HOOK_TIMEOUT = 20 if os.name == "nt" else 6
 PLUGIN_NAME = "beyin-v3"
@@ -48,6 +49,11 @@ VAULT_SETTINGS_FILE = ".beyin-hermes.json"
 # Same cadence as the V2 nudge: remind a long interactive session to write a receipt.
 REMINDER_EVERY = 15
 REMINDER = "[Hafıza] {n}. mesaj. Anlamlı iş bittiyse `beyin.py receipt --harness hermes` ile kaynak bağlantılı makbuz yaz."
+# Per-session turn count and first-turn platform, kept in state so a gateway restart neither
+# resets the reminder cadence nor forgets that a running chat session is unattended.
+TURNS_FILE = "hermes-turns.json"
+TURNS_KEEP_SECONDS = 7 * 86400
+TURNS_KEEP_MAX = 200
 
 
 def _clean_platforms(items):
@@ -159,6 +165,56 @@ def save_platforms(state, attended=None, unattended=None, reset=False):
     }
 
 
+def load_turns(state):
+    """Session turn state from ``state/hermes-turns.json``; a missing or damaged file is empty."""
+    path = Path(state) / TURNS_FILE
+    try:
+        if path.is_symlink():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    sessions = data.get("sessions") if isinstance(data, dict) else None
+    if not isinstance(sessions, dict):
+        return {}
+    clean = {}
+    for session_id, info in sessions.items():
+        if not isinstance(session_id, str) or not isinstance(info, dict):
+            continue
+        turns, platform, at = info.get("turns"), info.get("platform"), info.get("at")
+        if isinstance(turns, bool) or not isinstance(turns, int) or turns < 0:
+            continue
+        clean[session_id] = {"platform": platform if isinstance(platform, str) else None, "turns": turns,
+                             "at": at if isinstance(at, (int, float)) and not isinstance(at, bool) else 0}
+    return clean
+
+
+def save_turns(state, sessions):
+    """Write session turn state atomically, keeping only recent sessions; failures only log."""
+    now = time.time()
+    recent = [(sid, info) for sid, info in sessions.items() if now - info.get("at", 0) <= TURNS_KEEP_SECONDS]
+    recent.sort(key=lambda item: item[1].get("at", 0), reverse=True)
+    data = {"schema": 1, "sessions": dict(recent[:TURNS_KEEP_MAX])}
+    import tempfile
+    temporary = None
+    try:
+        state = Path(state)
+        state.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".hermes-turns-", dir=state)
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            json.dump(data, out, ensure_ascii=False)
+            out.write("\n")
+        os.replace(temporary, state / TURNS_FILE)
+    except OSError as exc:
+        LOGGER.warning("Beyin V3 Hermes turn state not saved (%s)", type(exc).__name__)
+    finally:
+        if temporary and os.path.exists(temporary):
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
 def _runtime(vault):
     """Resolve the state directory from the vault's installer-written runtime file."""
     runtime = Path(vault) / ".beyin-runtime.json"
@@ -210,7 +266,10 @@ def make_hooks(vault, state=None, python=None):
     """Build the Hermes hook callables. Pure function so tests can drive them without Hermes."""
     vault = Path(vault).expanduser().resolve()
     state = Path(state).expanduser().resolve() if state else _runtime(vault)
-    sessions = {}  # session_id -> {"platform": str | None, "turns": int}; process-local, no disk
+    # session_id -> {"platform": str | None, "turns": int, "at": float}. Memory carries the
+    # count when the state file cannot be written; the file carries it across restarts and
+    # Hermes processes. The file is re-read on every turn so another process's sessions stay.
+    sessions = {}
     sessions_lock = threading.Lock()
 
     def before(**kw):
@@ -219,11 +278,15 @@ def make_hooks(vault, state=None, python=None):
             return None
         first = bool(kw.get("is_first_turn"))
         with sessions_lock:
-            info = sessions.setdefault(session_id, {"platform": None, "turns": 0})
+            stored = load_turns(state)
+            info = stored.get(session_id) or sessions.get(session_id) or {"platform": None, "turns": 0}
             if first or info["platform"] is None:
                 platform = kw.get("platform")
                 info["platform"] = platform if isinstance(platform, str) else None
             info["turns"] += 1
+            info["at"] = time.time()
+            sessions[session_id] = stored[session_id] = info
+            save_turns(state, stored)
             turns = info["turns"]
             platform = info["platform"]
         event = "SessionStart" if first else "UserPromptSubmit"
@@ -240,7 +303,10 @@ def make_hooks(vault, state=None, python=None):
         if not isinstance(session_id, str) or not session_id:
             return None
         with sessions_lock:
-            info = sessions.pop(session_id, None)
+            stored = load_turns(state)
+            info = stored.pop(session_id, None) or sessions.get(session_id)
+            sessions.pop(session_id, None)
+            save_turns(state, stored)
         unattended = resolve_unattended_platforms(vault, state)
         if info and info["platform"] in unattended:
             return None
