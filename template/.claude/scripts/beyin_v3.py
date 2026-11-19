@@ -1096,7 +1096,9 @@ def _name_candidates(record):
     return candidates
 
 
-NAME_GENERIC_TERMS = _tokens("durum proje projeler not notlar karar kararlar arsiv sablon genel ozet guncel")
+_STOCK_RULE_TITLE_TERMS = _tokens("kural kurallar")
+_STOCK_RULE_HEADING = re.compile(r"^[ ]{0,3}#{1,6}[ \t]+(?:kural|kurallar)(?:[ \t]+#+)?[ \t]*\r?$", re.I | re.M)
+NAME_GENERIC_TERMS = _tokens("durum proje projeler not notlar karar kararlar arsiv sablon genel ozet guncel") | _STOCK_RULE_TITLE_TERMS
 
 
 def _name_match_score(record, terms):
@@ -1911,7 +1913,17 @@ class MemoryStore:
                            if name_score else "")
             # Without a query term no count can score or reorder a record (snapshots, scoped
             # listings, the advisor's eligibility pass), so the note text is not tokenised.
-            counts = (count_cache.counts(record["text"] + " " + _json(record["facts"]) + " " + str(record.get("title", "")) + " " + alias_text + " " + source_stem)
+            title_text = str(record.get("title", ""))
+            title_terms = _tokens(title_text) if terms else set()
+            if title_terms and title_terms <= _STOCK_RULE_TITLE_TERMS:
+                # The stock heading alone is not a lexical topic (#811).
+                # Preserve actual rule mentions, scoped names and aliases.
+                title_text = ""
+            search_body = record["text"]
+            if terms and _fold(Path(record["source"]).stem) in ("kural", "kurallar"):
+                # The stock Markdown section label is structure, not body evidence.
+                search_body = _STOCK_RULE_HEADING.sub("", search_body)
+            counts = (count_cache.counts(search_body + " " + _json(record["facts"]) + " " + title_text + " " + alias_text + " " + source_stem)
                       if terms else Counter())
             for stopword in STOPWORDS & counts.keys():
                 del counts[stopword]
