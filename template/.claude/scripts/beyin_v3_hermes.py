@@ -43,6 +43,11 @@ LOGGER = logging.getLogger(__name__)
 # reports a generic platform at finalize, so the platform seen on the first turn is kept.
 DEFAULT_UNATTENDED_PLATFORMS = frozenset({"a2a", "cron", "telegram", "discord", "slack", "whatsapp", "signal", "matrix", "email", "sms", "webhook"})
 UNATTENDED_PLATFORMS = DEFAULT_UNATTENDED_PLATFORMS
+# These platforms run inside the gateway, whose process directory is the Hermes install
+# folder: the adapter would record that folder as the session's project. They have no
+# working directory of their own, so the vault the plugin serves stands in for it, even
+# when the user marks the platform attended.
+GATEWAY_PLATFORMS = DEFAULT_UNATTENDED_PLATFORMS
 SETTINGS_FILE = "hermes-platforms.json"
 VAULT_SETTINGS_FILE = ".beyin-hermes.json"
 # Same cadence as the V2 nudge: remind a long interactive session to write a receipt.
@@ -228,7 +233,10 @@ def make_hooks(vault, state=None, python=None):
             platform = info["platform"]
         event = "SessionStart" if first else "UserPromptSubmit"
         prompt = kw.get("user_message") if isinstance(kw.get("user_message"), str) else ""
-        text = run_hook(vault, state, {"hook_event_name": event, "session_id": session_id, "prompt": prompt}, python)
+        payload = {"hook_event_name": event, "session_id": session_id, "prompt": prompt}
+        if platform in GATEWAY_PLATFORMS:
+            payload["cwd"] = str(vault)
+        text = run_hook(vault, state, payload, python)
         parts = [text] if text else []
         unattended = resolve_unattended_platforms(vault, state)
         if turns % REMINDER_EVERY == 0 and platform not in unattended:
@@ -244,7 +252,10 @@ def make_hooks(vault, state=None, python=None):
         unattended = resolve_unattended_platforms(vault, state)
         if info and info["platform"] in unattended:
             return None
-        run_hook(vault, state, {"hook_event_name": "SessionEnd", "session_id": session_id}, python)
+        payload = {"hook_event_name": "SessionEnd", "session_id": session_id}
+        if info and info["platform"] in GATEWAY_PLATFORMS:
+            payload["cwd"] = str(vault)
+        run_hook(vault, state, payload, python)
         return None
 
     return {"pre_llm_call": before, "on_session_finalize": finalize}

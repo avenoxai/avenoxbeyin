@@ -190,6 +190,23 @@ class HermesHarnessTest(unittest.TestCase):
         self.assertIn(('never-seen', 'SessionEnd'), events, 'Unknown platform defaults to tracking')
         self.assertTrue(self.module.UNATTENDED_PLATFORMS >= {'telegram', 'cron', 'a2a'})
 
+    def test_gateway_sessions_run_in_the_vault_not_the_gateway_folder(self):
+        # The gateway's process directory is the Hermes install folder; without a cwd the
+        # adapter records that folder as the project of every chat checkpoint.
+        self.module.save_platforms(self.state, attended=['telegram'])
+        hooks = self.module.make_hooks(self.vault, self.state)
+        with patch.object(self.module, 'run_hook', return_value='') as run:
+            hooks['pre_llm_call'](session_id='tg-k', turn_id='1', user_message='selam', is_first_turn=True, platform='telegram')
+            hooks['on_session_finalize'](session_id='tg-k', platform='gateway')
+            hooks['pre_llm_call'](session_id='cli-k', turn_id='1', user_message='selam', is_first_turn=True, platform='cli')
+            hooks['on_session_finalize'](session_id='cli-k', platform='gateway')
+        payloads = {(c.args[2]['session_id'], c.args[2]['hook_event_name']): c.args[2] for c in run.call_args_list}
+        vault = str(self.vault.resolve())
+        self.assertEqual(payloads[('tg-k', 'SessionStart')]['cwd'], vault)
+        self.assertEqual(payloads[('tg-k', 'SessionEnd')]['cwd'], vault)
+        self.assertNotIn('cwd', payloads[('cli-k', 'SessionStart')], 'a terminal session keeps its own directory')
+        self.assertNotIn('cwd', payloads[('cli-k', 'SessionEnd')])
+
     def test_receipt_reminder_every_nth_user_turn(self):
         hooks = self.module.make_hooks(self.vault, self.state)
         seen = []
