@@ -31,7 +31,8 @@ class HermesTurnStateTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='hermes-state-synthetic-')
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        # make_hooks resolves state; macOS tempfile paths can be under /var -> /private/var.
+        self.root = Path(temporary.name).resolve()
         self.state = self.root / 'state'
         self.state.mkdir()
         self.vault = self.root / 'vault'

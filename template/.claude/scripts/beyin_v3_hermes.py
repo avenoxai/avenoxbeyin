@@ -414,6 +414,8 @@ def make_hooks(vault, state=None, python=None, session_cwd=None):
     state = Path(state).expanduser().resolve() if state else _runtime(vault)
     # Hash-keyed, bounded cache of acknowledged counts and uncommitted deltas.
     sessions = {}
+    # Kept separate from turn state so filesystem paths never go to disk.
+    session_cwds = {}
     sessions_lock = threading.Lock()
 
     def cwd_payload(kw, platform):
@@ -436,6 +438,7 @@ def make_hooks(vault, state=None, python=None, session_cwd=None):
         return {}
 
     def before(**kw):
+        nonlocal session_cwds
         session_id = kw.get("session_id")
         if not isinstance(session_id, str) or not session_id:
             return None
@@ -448,7 +451,8 @@ def make_hooks(vault, state=None, python=None, session_cwd=None):
             # An absent cwd leaves the finalize cache intact, but an explicit invalid
             # cwd or a refused context replaces it so finalize cannot reuse stale data.
             if selected_cwd:
-                info["cwd_payload"] = selected_cwd
+                session_cwds[_session_key(session_id)] = {"at": time.time(), "payload": selected_cwd}
+                session_cwds = _recent_turns(session_cwds, time.time())
         event = "SessionStart" if first else "UserPromptSubmit"
         prompt = kw.get("user_message") if isinstance(kw.get("user_message"), str) else ""
         payload = {"hook_event_name": event, "session_id": session_id, "prompt": prompt}
@@ -466,14 +470,15 @@ def make_hooks(vault, state=None, python=None, session_cwd=None):
             return None
         with sessions_lock:
             info = _update_turns(state, sessions, session_id, finalize=True)
+            cached_cwd = session_cwds.pop(_session_key(session_id), None)
         unattended = resolve_unattended_platforms(vault, state)
         if info and info["platform"] in unattended:
             return None
         payload = {"hook_event_name": "SessionEnd", "session_id": session_id}
         if "cwd" in kw:
             payload.update(cwd_payload(kw, None))
-        elif info:
-            payload.update(info.get("cwd_payload", {}))
+        elif cached_cwd and 0 <= time.time() - cached_cwd["at"] <= TURNS_KEEP_SECONDS:
+            payload.update(cached_cwd["payload"])
         run_hook(vault, state, payload, python)
         return None
 

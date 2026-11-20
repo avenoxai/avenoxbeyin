@@ -270,6 +270,18 @@ class HermesHarnessTest(unittest.TestCase):
         self.assertEqual(len(events), 2)
         self.assertEqual(sorted(e.get('project', '') for e in events), ['', workspace.name])
 
+    def test_finalize_cwd_does_not_persist_and_is_consumed(self):
+        hooks = self.module.make_hooks(self.vault, self.state)
+        with patch.object(self.module, 'run_hook', return_value='') as run:
+            hooks['pre_llm_call'](session_id='desktop-local', platform='desktop', cwd=str(self.vault))
+            stored = json.loads((self.state / self.module.TURNS_FILE).read_text(encoding='utf-8'))
+            [record] = stored['sessions'].values()
+            self.assertEqual(set(record), {'platform', 'turns', 'at'})
+            hooks['on_session_finalize'](session_id='desktop-local')
+            self.assertEqual(run.call_args.args[2]['cwd'], str(self.vault))
+            hooks['on_session_finalize'](session_id='desktop-local')
+            self.assertNotIn('cwd', run.call_args.args[2])
+
     def test_finalize_retains_last_cwd_only_when_later_turn_has_no_cwd(self):
         workspace = Path(self.temp.name) / 'Desktop Workspace'
         workspace.mkdir()
