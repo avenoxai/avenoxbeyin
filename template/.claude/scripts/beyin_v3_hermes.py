@@ -43,6 +43,10 @@ LOGGER = logging.getLogger(__name__)
 # reports a generic platform at finalize, so the platform seen on the first turn is kept.
 DEFAULT_UNATTENDED_PLATFORMS = frozenset({"a2a", "cron", "telegram", "discord", "slack", "whatsapp", "signal", "matrix", "email", "sms", "webhook"})
 UNATTENDED_PLATFORMS = DEFAULT_UNATTENDED_PLATFORMS
+# Only cwd-less gateway sessions use the vault as a project fallback. Attendance
+# configuration can name custom channels, but never makes a local surface a bot.
+GATEWAY_PLATFORMS = DEFAULT_UNATTENDED_PLATFORMS
+LOCAL_PLATFORMS = frozenset({"cli", "tui", "gui", "desktop", "acp", "tool", "oneshot"})
 SETTINGS_FILE = "hermes-platforms.json"
 VAULT_SETTINGS_FILE = ".beyin-hermes.json"
 # Same cadence as the V2 nudge: remind a long interactive session to write a receipt.
@@ -206,12 +210,31 @@ def run_hook(vault, state, payload, python=None, timeout=HOOK_TIMEOUT):
     return text if isinstance(text, str) else ""
 
 
-def make_hooks(vault, state=None, python=None):
+def make_hooks(vault, state=None, python=None, session_cwd=None):
     """Build the Hermes hook callables. Pure function so tests can drive them without Hermes."""
     vault = Path(vault).expanduser().resolve()
     state = Path(state).expanduser().resolve() if state else _runtime(vault)
     sessions = {}  # session_id -> {"platform": str | None, "turns": int}; process-local, no disk
     sessions_lock = threading.Lock()
+
+    def cwd_payload(kw, platform):
+        # Explicit values, including invalid ones, belong to the bridge validator.
+        # Never replace a refused/remote workspace with the gateway launch directory.
+        if "cwd" in kw:
+            return {"cwd": kw["cwd"] if kw["cwd"] is not None else ""}
+        if callable(session_cwd):
+            try:
+                cwd = session_cwd()
+            except Exception:
+                LOGGER.warning("Beyin V3 session cwd unavailable")
+                return {"cwd": ""}
+            if cwd:
+                return {"cwd": cwd}
+        configured, _ = read_platforms(state, vault)
+        gateways = GATEWAY_PLATFORMS | set(configured["attended"]) | set(configured["unattended"])
+        if platform in gateways and platform not in LOCAL_PLATFORMS:
+            return {"cwd": str(vault)}
+        return {}
 
     def before(**kw):
         session_id = kw.get("session_id")
@@ -226,9 +249,16 @@ def make_hooks(vault, state=None, python=None):
             info["turns"] += 1
             turns = info["turns"]
             platform = info["platform"]
+            selected_cwd = cwd_payload(kw, platform)
+            # An absent cwd leaves the finalize cache intact, but an explicit invalid
+            # cwd or a refused context replaces it so finalize cannot reuse stale data.
+            if selected_cwd:
+                info["cwd_payload"] = selected_cwd
         event = "SessionStart" if first else "UserPromptSubmit"
         prompt = kw.get("user_message") if isinstance(kw.get("user_message"), str) else ""
-        text = run_hook(vault, state, {"hook_event_name": event, "session_id": session_id, "prompt": prompt}, python)
+        payload = {"hook_event_name": event, "session_id": session_id, "prompt": prompt}
+        payload.update(selected_cwd)
+        text = run_hook(vault, state, payload, python)
         parts = [text] if text else []
         unattended = resolve_unattended_platforms(vault, state)
         if turns % REMINDER_EVERY == 0 and platform not in unattended:
@@ -244,7 +274,12 @@ def make_hooks(vault, state=None, python=None):
         unattended = resolve_unattended_platforms(vault, state)
         if info and info["platform"] in unattended:
             return None
-        run_hook(vault, state, {"hook_event_name": "SessionEnd", "session_id": session_id}, python)
+        payload = {"hook_event_name": "SessionEnd", "session_id": session_id}
+        if "cwd" in kw:
+            payload.update(cwd_payload(kw, None))
+        elif info:
+            payload.update(info.get("cwd_payload", {}))
+        run_hook(vault, state, payload, python)
         return None
 
     return {"pre_llm_call": before, "on_session_finalize": finalize}
@@ -256,7 +291,10 @@ def register(ctx, vault=None, state=None):
     if not vault or not (Path(vault) / ".beyin-runtime.json").is_file():
         return  # An unmounted or uninstalled vault must leave Hermes fully usable.
     try:
-        hooks = make_hooks(vault, state)
+        # Older Hermes releases expose register_hook only. Resolve the optional API
+        # inside each turn, not at registration (the gateway serves many sessions).
+        cwd_reader = getattr(ctx, "session_cwd", None)
+        hooks = make_hooks(vault, state, session_cwd=(lambda: ctx.session_cwd()) if callable(cwd_reader) else None)
     except (OSError, ValueError, TypeError, KeyError) as exc:
         # Fail open: a damaged runtime file disables this plugin, never Hermes. The
         # class is enough to diagnose; the file contents stay out of the log.
