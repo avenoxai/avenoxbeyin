@@ -743,6 +743,32 @@ class WebInstalledEntryTest(unittest.TestCase):
 class WebReviewTest(WebFixture):
     read_only = True
 
+    def test_review_triage_links_only_existing_eligible_records(self):
+        topic = '🔮 850-Companion/Threads.md'
+        task = 'tasks/eski.md'
+        replaced_task = 'tasks/replaced.md'
+        self.write(topic, '# Threads\n\n## Active Threads\n\n### Thread: Old thread\nOpened 2020-01-01\n')
+        self.write('000-Inbox/first.md', '---\ncreated: 2020-01-01\n---\nFirst capture\n')
+        for source, ident in ((task, 'review-old-task'), (replaced_task, 'review-replaced-task')):
+            self.write(source, f'---\nid: {ident}\nkind: task\ntitle: Old task\nstatus: active\nupdated_at: 2020-01-01\n---\nTask body\n')
+        self.write('notes/successor.md', '---\nsupersedes: [review-replaced-task]\n---\nSuccessor\n')
+        self.core.run('sync')
+        cookie, _ = self.login()
+        status, data = self.get_json('/api/gozden-gecir', cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(data['inbox']['folders'][0]['notes'], 1)
+        [thread] = data['bayat_konular']
+        self.assertEqual((thread['path'], thread['last_date']), (topic, '2020-01-01'))
+        stale = {row['path']: row for row in data['gorevler']['stale_tasks']}
+        self.assertGreater(stale[task]['age_days'], 14)
+        self.assertEqual(stale[task]['record_id'], 'review-old-task')
+        self.assertNotIn('record_id', stale[replaced_task])
+        self.assertEqual(self.get_json('/api/kayit?id=review-replaced-task', cookie)[0], 404)
+        self.assertEqual(thread['record_id'], self.record_ids()[topic])
+        preview_status, preview = self.get_json('/api/kayit?id=review-old-task', cookie)
+        self.assertEqual(preview_status, 200)
+        self.assertEqual(preview['kaynak'], task)
+
     def test_review_endpoint_read_only_and_draft_sorting_and_privacy(self):
         self.write('notes/taslak1.md', '---\ntitle: İkinci taslak\nstatus: draft\ncreated_at: 2026-11-18T12:00:00\n---\nDraft body\n')
         self.write('notes/taslak2.md', '---\ntitle: Birinci taslak\nstatus: taslak\ncreated_at: 2026-11-18T10:00:00\n---\nTaslak body\n')

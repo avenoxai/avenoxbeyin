@@ -331,7 +331,32 @@ APP_JS = r"""
   }
 
   // --- gözden geçir -----------------------------------------------------
+  let sonGozdenOnizleme = 0;
+  async function gozdenOnizle(id) {
+    const istek = ++sonGozdenOnizleme;
+    const alan = $('gozden-onizleme'); const baslik = $('gozden-onizleme-baslik');
+    try {
+      const kayit = await api('/api/kayit?id=' + encodeURIComponent(id));
+      if (istek !== sonGozdenOnizleme) { return; }
+      baslik.textContent = kayit.baslik + ' (' + kayit.kaynak + ')';
+      alan.textContent = kayit.metin + (kayit.kisaltildi ? '\n\n[Kısaltıldı]' : '');
+    } catch (error) {
+      if (istek !== sonGozdenOnizleme) { return; }
+      baslik.textContent = 'Önizleme';
+      alan.textContent = error.message;
+    }
+  }
+  function gozdenKaynak(row) {
+    if (!row.record_id) { return el('span', { text: row.path }); }
+    const dugme = el('button', { type: 'button', text: row.path });
+    dugme.addEventListener('click', function () { gozdenOnizle(row.record_id); });
+    return dugme;
+  }
+
   async function gozgecir() {
+    sonGozdenOnizleme += 1;
+    $('gozden-onizleme-baslik').textContent = 'Önizleme';
+    $('gozden-onizleme').textContent = 'Kayıt seçin…';
     const inboxDiv = bosalt($('gozden-inbox'));
     const konularList = bosalt($('gozden-konular'));
     const gorevDiv = bosalt($('gozden-gorevler'));
@@ -343,7 +368,8 @@ APP_JS = r"""
       if (inbox.folders && inbox.folders.length) {
         const ul = el('ul', { class: 'liste' });
         inbox.folders.forEach(function (f) {
-          ul.append(el('li', {}, el('strong', { text: f.path || f.folder || '' }), el('div', { class: 'ust-bilgi', text: 'Öğe: ' + (f.count ?? 0) })));
+          ul.append(el('li', {}, el('strong', { text: f.folder }), el('div', { class: 'ust-bilgi', text: 'Öğe: ' + (f.notes ?? 0) +
+            (f.oldest_days == null ? '' : ' · En eski: ' + f.oldest_days + ' gün') })));
         });
         inboxDiv.append(ul);
       }
@@ -353,11 +379,11 @@ APP_JS = r"""
       } else {
         bayat.forEach(function (k) {
           konularList.append(el('li', {},
-            el('strong', { text: k.baslik || k.title || k.topic || '' }),
+            el('strong', { text: k.title }),
             el('div', { class: 'ust-bilgi' },
-              el('span', { text: k.kaynak || k.source || '' }),
-              el('span', { text: k.yas_gun !== undefined ? 'Yaş: ' + k.yas_gun + ' gün' : '' }),
-              el('span', { text: k.son_tarih ? 'Son: ' + k.son_tarih : '' }))
+              gozdenKaynak(k),
+              el('span', { text: k.age_days == null ? '' : 'Yaş: ' + k.age_days + ' gün' }),
+              el('span', { text: k.last_date ? 'Son: ' + k.last_date : '' }))
           ));
         });
       }
@@ -367,7 +393,9 @@ APP_JS = r"""
       if (staleTasks.length) {
         const ul = el('ul', { class: 'liste' });
         staleTasks.forEach(function (st) {
-          ul.append(el('li', {}, el('strong', { text: st.baslik || st.title || st.id }), el('div', { class: 'ust-bilgi', text: st.kaynak || '' })));
+          ul.append(el('li', {}, el('strong', { text: st.title }),
+            el('div', { class: 'ust-bilgi' }, gozdenKaynak(st),
+              el('span', { text: st.status }), el('span', { text: st.age_days == null ? '' : 'Yaş: ' + st.age_days + ' gün' }))));
         });
         gorevDiv.append(ul);
       }
@@ -380,14 +408,7 @@ APP_JS = r"""
             el('strong', { text: t.baslik }),
             el('div', { class: 'ust-bilgi' }, el('span', { text: t.durum }), el('span', { text: t.kaynak || '' }), el('span', { text: zaman(t.tarih) }))
           );
-          const ac = async function () {
-            const alan = $('gozden-onizleme'); const baslik = $('gozden-onizleme-baslik');
-            try {
-              const kayit = await api('/api/kayit?id=' + encodeURIComponent(t.id));
-              baslik.textContent = kayit.baslik + ' (' + kayit.kaynak + ')';
-              alan.textContent = kayit.metin + (kayit.kisaltildi ? '\n\n[Kısaltıldı]' : '');
-            } catch (error) { baslik.textContent = 'Önizleme'; alan.textContent = error.message; }
-          };
+          const ac = function () { gozdenOnizle(t.id); };
           satir.addEventListener('click', ac);
           satir.addEventListener('keydown', function (e) { if (e.key === 'Enter') { ac(); } });
           taslaklarList.append(satir);
