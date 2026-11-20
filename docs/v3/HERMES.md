@@ -132,3 +132,22 @@ The unittest suite drives the installed shim and the hook mapping with a fake pl
 it does not establish live model or remote Desktop delivery. Sanitized operator `doctor`
 output for a real Hermes profile is attached to the pull request separately and is not part
 of the synthetic CI canaries.
+
+### Hook çalışma dizini
+
+Hook payload'ındaki açık `cwd` önceliklidir. Desteklenen Hermes sürümlerinde
+`PluginContext.session_cwd()` her turda okunur: oturumun kayıtlı dizini veya profilin
+terminal dizini kullanılır; Desktop/CLI çalışma alanı vault ile değiştirilmez.
+Geçersiz açık dizin ve context okuma hatası başka bir projeye yönlendirilmez.
+Yeni turda dizin yoksa finalize için son seçim saklanır; bu dizin yeni tura taşınmaz.
+Açık geçersiz dizin veya context okuma hatası önceki seçimin yeniden kullanılmasını
+engeller. Finalize başka bir oturumun context'ini okumaz. Bu kayıt yalnız eklenti
+sürecinin belleğindedir; yeniden başlatma sonrası, yeni bir tur görülmeden yapılan
+finalize önceki dizini geri getiremez. Bu seçim yalnız proje ilişkilendirmesidir,
+platform yetkisi değildir.
+
+Dizini olmayan yerleşik gateway kanalları ve `hermes-platforms.json` içindeki özel
+kanallar vault'u kullanır. Yerel `cli/tui/gui/desktop/acp/tool/oneshot` etiketleri bu
+fallback'e dahil değildir; bilinmeyen, yapılandırılmamış etiketler gateway sayılmaz.
+Eski Hermes'te `session_cwd` API'si yoksa mevcut terminal davranışı korunur.
+Katılım/makbuz ayarları değişmez.
