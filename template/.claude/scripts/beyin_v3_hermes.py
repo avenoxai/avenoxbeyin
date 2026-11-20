@@ -26,7 +26,11 @@ logged through Hermes' plugin logger instead and the turn proceeds without conte
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+import errno
+import hashlib
 import json
+import math
 import logging
 import os
 from pathlib import Path
@@ -52,6 +56,8 @@ REMINDER = "[Hafıza] {n}. mesaj. Anlamlı iş bittiyse `beyin.py receipt --harn
 # Per-session turn count and first-turn platform, kept in state so a gateway restart neither
 # resets the reminder cadence nor forgets that a running chat session is unattended.
 TURNS_FILE = "hermes-turns.json"
+TURNS_LOCK = "hermes-turns.lock"
+TURNS_LOCK_TIMEOUT = 1.0
 TURNS_KEEP_SECONDS = 7 * 86400
 TURNS_KEEP_MAX = 200
 
@@ -165,54 +171,190 @@ def save_platforms(state, attended=None, unattended=None, reset=False):
     }
 
 
+def _session_key(session_id):
+    return hashlib.sha256(session_id.encode("utf-8", errors="surrogatepass")).hexdigest()
+
+
+def _recent_turns(sessions, now):
+    recent = [(sid, info) for sid, info in sessions.items()
+              if 0 <= now - info["at"] <= TURNS_KEEP_SECONDS]
+    recent.sort(key=lambda item: item[1]["at"], reverse=True)
+    return dict(recent[:TURNS_KEEP_MAX])
+
+
+@contextmanager
+def _turns_lock(state):
+    """Bounded OS lock, like the learning ledger; never unlink the stable lock inode."""
+    state = Path(state)
+    state.mkdir(parents=True, exist_ok=True)
+    path = state / TURNS_LOCK
+    if path.is_symlink():
+        raise OSError("turn lock must not be a symlink")
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    with os.fdopen(fd, "r+b") as handle:
+        acquired = False
+        try:
+            deadline = time.monotonic() + TURNS_LOCK_TIMEOUT
+            while True:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK) or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.01)
+            yield
+        finally:
+            if acquired:
+                try:
+                    if os.name == "nt":
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError as exc:
+                    # Closing also releases the lock. Do not reapply an already committed delta.
+                    LOGGER.warning("Beyin V3 Hermes turn lock release failed (%s)", type(exc).__name__)
+
+
 def load_turns(state):
-    """Session turn state from ``state/hermes-turns.json``; a missing or damaged file is empty."""
+    """Read hash-keyed records. Missing is empty; damage/refusal must not authorize overwrite.
+
+    Schema 1 was the unmerged PR's raw-key format. Read it only to preserve trial
+    installations' counts; every successful write is schema 2, including temp files.
+    """
     path = Path(state) / TURNS_FILE
+    if path.is_symlink():
+        raise OSError("turn state must not be a symlink")
     try:
-        if path.is_symlink():
-            return {}
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return {}
-    sessions = data.get("sessions") if isinstance(data, dict) else None
-    if not isinstance(sessions, dict):
-        return {}
+    if (not isinstance(data, dict) or type(data.get("schema", 1)) is not int
+            or data.get("schema", 1) not in (1, 2) or not isinstance(data.get("sessions"), dict)):
+        raise ValueError("invalid turn state")
     clean = {}
-    for session_id, info in sessions.items():
+    for session_id, info in data["sessions"].items():
         if not isinstance(session_id, str) or not isinstance(info, dict):
             continue
         turns, platform, at = info.get("turns"), info.get("platform"), info.get("at")
         if isinstance(turns, bool) or not isinstance(turns, int) or turns < 0:
             continue
-        clean[session_id] = {"platform": platform if isinstance(platform, str) else None, "turns": turns,
-                             "at": at if isinstance(at, (int, float)) and not isinstance(at, bool) else 0}
-    return clean
+        if isinstance(at, bool) or not isinstance(at, (int, float)):
+            continue
+        try:
+            if not math.isfinite(at):
+                continue
+        except OverflowError:
+            continue
+        if data.get("schema", 1) == 1:
+            session_id = _session_key(session_id)
+        elif len(session_id) != 64 or any(c not in "0123456789abcdef" for c in session_id):
+            continue
+        clean[session_id] = {"platform": platform if isinstance(platform, str) else None, "turns": turns, "at": at}
+    return _recent_turns(clean, time.time())
 
 
 def save_turns(state, sessions):
-    """Write session turn state atomically, keeping only recent sessions; failures only log."""
-    now = time.time()
-    recent = [(sid, info) for sid, info in sessions.items() if now - info.get("at", 0) <= TURNS_KEEP_SECONDS]
-    recent.sort(key=lambda item: item[1].get("at", 0), reverse=True)
-    data = {"schema": 1, "sessions": dict(recent[:TURNS_KEEP_MAX])}
+    """Caller holds _turns_lock across read/modify/write; errors retain dirty memory."""
+    data = {"schema": 2, "sessions": _recent_turns(sessions, time.time())}
     import tempfile
     temporary = None
+    state = Path(state)
+    if (state / TURNS_FILE).is_symlink():
+        raise OSError("turn state must not be a symlink")
     try:
-        state = Path(state)
-        state.mkdir(parents=True, exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix=".hermes-turns-", dir=state)
         with os.fdopen(fd, "w", encoding="utf-8") as out:
             json.dump(data, out, ensure_ascii=False)
             out.write("\n")
+            out.flush()
+            os.fsync(out.fileno())
         os.replace(temporary, state / TURNS_FILE)
-    except OSError as exc:
-        LOGGER.warning("Beyin V3 Hermes turn state not saved (%s)", type(exc).__name__)
     finally:
         if temporary and os.path.exists(temporary):
             try:
                 os.unlink(temporary)
             except OSError:
                 pass
+
+
+def _update_turns(state, sessions, session_id, platform=None, first=False, finalize=False):
+    """Commit one delta, or keep a bounded local delta if persistence is unavailable.
+
+    Only uncommitted increments are added to a fresh disk snapshot on recovery: a
+    max(memory, disk) merge loses counts when another writer advanced meanwhile.
+    Healthy cached records never resurrect a session another process finalized.
+    """
+    now = time.time()
+    recent = _recent_turns(sessions, now)
+    sessions.clear()
+    sessions.update(recent)
+    key = _session_key(session_id)
+    local = sessions.get(key)
+    pending = (local or {}).get("pending", 0)
+    reset_at = (local or {}).get("reset_at")
+    candidate = None
+    committed = False
+
+    def change(stored, readable=True):
+        # A failed finalize suppresses only the old row, not another writer's
+        # later new session. Keep this boundary until its deletion/reset commits.
+        reopened = stored and reset_at is not None and stored["at"] > reset_at
+        if stored and reset_at is not None and not reopened:
+            stored = None
+        info = dict(stored or {"platform": None, "turns": 0})
+        if not readable and local and not local.get("closed"):
+            info = dict(local)
+        else:
+            info["turns"] += pending
+        if (local and local.get("platform") is not None and not reopened
+                and (pending or (finalize and info["platform"] is None))):
+            info["platform"] = local["platform"]
+        if not finalize:
+            if (first or info["platform"] is None) and isinstance(platform, str):
+                info["platform"] = platform
+            info["turns"] += 1
+        return {"platform": info["platform"], "turns": info["turns"], "at": time.time()}
+
+    try:
+        with _turns_lock(state):
+            stored = load_turns(state)
+            candidate = change(stored.get(key))
+            if finalize:
+                stored.pop(key, None)
+            else:
+                stored[key] = candidate
+            save_turns(state, stored)
+        committed = True
+        pending = 0
+    except (OSError, ValueError, RecursionError) as exc:
+        LOGGER.warning("Beyin V3 Hermes turn state unavailable (%s); using process memory", type(exc).__name__)
+        if candidate is None:
+            # A lock refusal may still allow a committed, atomically written snapshot
+            # to seed memory. Never write it back without successfully taking the lock.
+            try:
+                candidate = change(load_turns(state).get(key))
+            except (OSError, ValueError, RecursionError):
+                candidate = change(None, readable=False)
+        pending = 0 if finalize else pending + 1
+    if committed and finalize:
+        sessions.pop(key, None)
+    else:
+        sessions[key] = dict(candidate, pending=pending, closed=finalize)
+        if not committed and (finalize or reset_at is not None):
+            sessions[key]["reset_at"] = candidate["at"] if finalize else reset_at
+    recent = _recent_turns(sessions, time.time())
+    sessions.clear()
+    sessions.update(recent)
+    return candidate
 
 
 def _runtime(vault):
@@ -266,9 +408,7 @@ def make_hooks(vault, state=None, python=None):
     """Build the Hermes hook callables. Pure function so tests can drive them without Hermes."""
     vault = Path(vault).expanduser().resolve()
     state = Path(state).expanduser().resolve() if state else _runtime(vault)
-    # session_id -> {"platform": str | None, "turns": int, "at": float}. Memory carries the
-    # count when the state file cannot be written; the file carries it across restarts and
-    # Hermes processes. The file is re-read on every turn so another process's sessions stay.
+    # Hash-keyed, bounded cache of acknowledged counts and uncommitted deltas.
     sessions = {}
     sessions_lock = threading.Lock()
 
@@ -278,15 +418,7 @@ def make_hooks(vault, state=None, python=None):
             return None
         first = bool(kw.get("is_first_turn"))
         with sessions_lock:
-            stored = load_turns(state)
-            info = stored.get(session_id) or sessions.get(session_id) or {"platform": None, "turns": 0}
-            if first or info["platform"] is None:
-                platform = kw.get("platform")
-                info["platform"] = platform if isinstance(platform, str) else None
-            info["turns"] += 1
-            info["at"] = time.time()
-            sessions[session_id] = stored[session_id] = info
-            save_turns(state, stored)
+            info = _update_turns(state, sessions, session_id, kw.get("platform"), first)
             turns = info["turns"]
             platform = info["platform"]
         event = "SessionStart" if first else "UserPromptSubmit"
@@ -303,10 +435,7 @@ def make_hooks(vault, state=None, python=None):
         if not isinstance(session_id, str) or not session_id:
             return None
         with sessions_lock:
-            stored = load_turns(state)
-            info = stored.pop(session_id, None) or sessions.get(session_id)
-            sessions.pop(session_id, None)
-            save_turns(state, stored)
+            info = _update_turns(state, sessions, session_id, finalize=True)
         unattended = resolve_unattended_platforms(vault, state)
         if info and info["platform"] in unattended:
             return None

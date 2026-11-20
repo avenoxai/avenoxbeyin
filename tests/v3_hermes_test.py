@@ -1,4 +1,5 @@
 """Hermes harness contract: same adapter, same context, real plugin hook shapes."""
+import hashlib
 import importlib.util
 import json
 import os
@@ -220,7 +221,7 @@ class HermesHarnessTest(unittest.TestCase):
                 seen.append('[Hafıza]' in result['context'])
         self.assertEqual([i + 1 for i, hit in enumerate(seen) if hit], [every])
         stored = json.loads((self.state / self.module.TURNS_FILE).read_text(encoding='utf-8'))
-        self.assertEqual(stored['sessions']['tg-uzun']['turns'], every)
+        self.assertEqual(stored['sessions'][hashlib.sha256(b'tg-uzun').hexdigest()]['turns'], every)
 
     def test_finalize_after_restart_keeps_first_turn_platform(self):
         # Hermes reports a generic platform at finalize; after a restart only the stored
@@ -234,7 +235,7 @@ class HermesHarnessTest(unittest.TestCase):
         events = [(c.args[2]['session_id'], c.args[2]['hook_event_name']) for c in run.call_args_list]
         self.assertNotIn(('tg-2', 'SessionEnd'), events)
         stored = json.loads((self.state / self.module.TURNS_FILE).read_text(encoding='utf-8'))
-        self.assertNotIn('tg-2', stored['sessions'], 'a finalized session leaves the turn file')
+        self.assertNotIn(hashlib.sha256(b'tg-2').hexdigest(), stored['sessions'], 'a finalized session leaves the turn file')
 
     def test_damaged_turn_file_counts_from_memory(self):
         (self.state / self.module.TURNS_FILE).write_text('{bozuk', encoding='utf-8')
@@ -251,7 +252,7 @@ class HermesHarnessTest(unittest.TestCase):
         with patch.object(self.module, 'run_hook', return_value=''):
             hooks['pre_llm_call'](session_id='yeni', turn_id='1', user_message='m', is_first_turn=True)
         stored = json.loads((self.state / self.module.TURNS_FILE).read_text(encoding='utf-8'))
-        self.assertEqual(list(stored['sessions']), ['yeni'])
+        self.assertEqual(list(stored['sessions']), [hashlib.sha256(b'yeni').hexdigest()])
 
 
     def test_unattended_platforms_configuration_and_override(self):
