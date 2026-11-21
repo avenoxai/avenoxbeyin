@@ -225,11 +225,15 @@ def write(vault, state, harness, session, text, *, day=None, record=None):
         if value['suppressed']:
             raise ValueError('chat trace was suppressed for this session by [kaydetme]')
         engine = SyncEngine(vault, state)
-        source = 'knowledge/conversations/' + today[:7] + '.md'
+        recovered_month = value.get('backfill_month') if record is not None and value.get('backfill_digest') else None
+        month = recovered_month or today[:7]
+        if not isinstance(month, str) or not re.fullmatch(r'[0-9]{4}-(0[1-9]|1[0-2])', month):
+            raise ValueError('invalid backfill journal month')
+        source = 'knowledge/conversations/' + month + '.md'
         with locked(engine):
             previous = engine.note_read(source)
             content = previous['content']
-            metadata = {'kind': 'note', 'title': 'Sohbet izleri ' + today[:7],
+            metadata = {'kind': 'note', 'title': 'Sohbet izleri ' + month,
                         'visibility': 'internal', 'remote_allowed': False, 'chat_trace': 1}
             if record is not None:
                 # A process can exit after replacing the note and before updating its
@@ -244,11 +248,14 @@ def write(vault, state, harness, session, text, *, day=None, record=None):
                             paragraph = candidate
                             break
                 digest = hashlib.sha256(paragraph.encode()).hexdigest()
+                if recovered_month and recovered_month != today[:7] and digest != pending:
+                    raise ValueError('backfill session month changed during an interrupted write; review the original trace')
                 if digest != pending:
+                    value['backfill_month'] = today[:7]
                     value['backfill_digest'] = digest
                     atomic(path, json.dumps(value))
             if content is None:
-                body = ('# Sohbet izleri ' + today[:7] + '\n\n'
+                body = ('# Sohbet izleri ' + month + '\n\n'
                         'Kisa oturum ozetleri; ajan beyanidir, dogrulanmis karar kaydi degildir.\n\n' + paragraph + '\n')
                 expected = render(metadata, body)
                 result = engine.note_edit({'source': source, 'expected_sha256': None,
@@ -280,9 +287,11 @@ def write(vault, state, harness, session, text, *, day=None, record=None):
         if record is not None:
             record()
             value.pop('backfill_digest', None)
+            value.pop('backfill_month', None)
         # A committed, verified trace closes this checkpoint. Replaying after a crash
         # finds the exact paragraph before acknowledging, so it cannot duplicate it.
         value.update(covered=value['turns'], since=time.time(), next_due=value['turns'] + 2)
         atomic(path, json.dumps(value))
         return {'status': result['status'], 'source': source, 'paragraph_chars': len(paragraph),
-                'covered_turns': value['covered'], 'remote_allowed': False}
+                'covered_turns': value['covered'], 'remote_allowed': False,
+                **({'session_date': paragraph[:10]} if record is not None else {})}

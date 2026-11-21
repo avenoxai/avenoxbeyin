@@ -283,7 +283,12 @@ class BackfillTest(unittest.TestCase):
         note = self.vault / 'knowledge/conversations/2026-09.md'
         original = note.read_bytes()
         self.assertIn(b'First summary.', original)
+        # A repaired transcript can give the same session hash a different first month.
+        self.first.write_bytes(self.first.read_bytes().replace(b'2026-09-01', b'2026-10-01'))
         retried = self.backfill.write(self.vault, self.state, self.s1, 'Different wording.')
+        self.assertEqual(retried['session_date'], '2026-09-01')
+        self.assertEqual(retried['source'], 'knowledge/conversations/2026-09.md')
+        self.assertFalse((note.parent / '2026-10.md').exists())
         self.assertEqual((retried['status'], retried['backfill']), ('unchanged', 'written'))
         self.assertEqual(note.read_bytes(), original)
 
