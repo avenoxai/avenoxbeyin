@@ -851,6 +851,38 @@ And another link on line 8: [[Components/Auth]].
         self.assertEqual(result["unlinked_count"], 0)
         self.assertEqual(result["total_links_count"], 2)
 
+    def test_markdown_anchor_suffix_collisions(self):
+        self.assertEqual(linter._heading_anchors('# A\n# A\n# A-1\n# A\n'),
+                         {'a', 'a-1', 'a-1-1', 'a-2'})
+        self.assertEqual(linter._heading_anchors('# !!!\n'), set())
+
+    def test_markdown_slug_alone_counts_as_graph_edge(self):
+        self._write_notes(self.vault, {
+            'source.md': '[guide](target.md#deployment-guide)',
+            'target.md': '# Deployment Guide\n',
+        })
+        result = self._lint_cli()
+        self.assertEqual(result['broken_links_count'], 0)
+        self.assertNotIn('target.md', result['orphans'])
+        self.assertNotIn('target.md', result['unlinked'])
+
+    def test_markdown_heading_anchors_preserve_literal_wikilinks(self):
+        self._write_notes(self.vault, {
+            'source.md': '[guide](target.md#deployment-guide) '
+                         '[literal](target.md#Deployment%20Guide) '
+                         '[duplicate](target.md#deployment-guide-1) '
+                         '[punctuation](target.md#release-notes-v20) '
+                         '[[target#Deployment Guide]] [[target#deployment-guide]] '
+                         '[missing](target.md#deployment-guide-2)',
+            'target.md': '# Deployment Guide\n## Deployment Guide\n## Release Notes: v2.0!\n',
+        })
+        result = self._lint_cli()
+        self.assertEqual(result['broken_links_count'], 2)
+        self.assertEqual({link['raw'].strip() for link in result['broken_links']},
+                         {'[[target#deployment-guide]]', '[missing](target.md#deployment-guide-2)'})
+        self.assertNotIn('target.md', result['orphans'])
+        self.assertNotIn('target.md', result['unlinked'])
+
     def test_markdown_links_resolution_and_relative(self):
         (self.vault / "sub").mkdir()
         (self.vault / "sub dir").mkdir()
