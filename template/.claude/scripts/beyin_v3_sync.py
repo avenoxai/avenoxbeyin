@@ -522,6 +522,7 @@ class SyncEngine:
         self.journal.mkdir(exist_ok=True, mode=0o700)
         with self.store._connect() as db:
             db.execute('CREATE TABLE IF NOT EXISTS markdown_sources(id TEXT PRIMARY KEY, source TEXT NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS markdown_task_revisions(id_hash TEXT PRIMARY KEY, revision INTEGER NOT NULL)')
 
     @classmethod
     def reader(cls, store):
@@ -1247,6 +1248,9 @@ class SyncEngine:
                 if previous_payload is not None:
                     old = json.loads(previous_payload)
                     db.execute("INSERT INTO events(event_type,record_id,revision,record) VALUES ('delete',?,?,?)", (id, old['revision'], previous_payload))
+                    if old.get('kind') == 'task':
+                        db.execute('INSERT INTO markdown_task_revisions VALUES (?,?) ON CONFLICT(id_hash) '
+                                   'DO UPDATE SET revision=max(revision,excluded.revision)', (_hash(id), old['revision']))
                     db.execute('DELETE FROM records WHERE id=?', (id,))
                     deleted += 1
                 db.execute('DELETE FROM markdown_sources WHERE id=?', (id,))
@@ -1262,6 +1266,17 @@ class SyncEngine:
                         record['revision'] = max(record['revision'], previous['revision'] + 1)
                     else:
                         record['revision'] = max(record['revision'], previous['revision'])
+                elif previous_payload is None and record.get('kind') == 'task':
+                    # A temporarily unreadable or duplicate source loses its index row.
+                    # Preserve optimistic concurrency even after maintenance prunes events.
+                    key = _hash(id)
+                    high = db.execute('SELECT revision FROM markdown_task_revisions WHERE id_hash=?', (key,)).fetchone()
+                    if high is None:
+                        # Older releases left only the event history.
+                        high = db.execute('SELECT MAX(revision) FROM events WHERE record_id=?', (id,)).fetchone()
+                    if high[0] is not None:
+                        record['revision'] = max(record['revision'], high[0] + 1)
+                        db.execute('DELETE FROM markdown_task_revisions WHERE id_hash=?', (key,))
                 payload = _json(record)
                 if previous_payload is not None and id not in old_owned and previous_payload != payload:
                     conflicts.append({'id': id, 'reason': 'id already owned by another record'})

@@ -488,6 +488,22 @@ class SourceSyncTest(unittest.TestCase):
         self.engine.sync()
         self.assertEqual(self.records()[0]['status'], 'waiting')
 
+    def test_restored_task_rejects_pre_quarantine_revision_after_event_retention(self):
+        self.write()
+        self.engine.sync()
+        self.write(body='Nebula calibration manual edit.')
+        self.engine.sync()
+        before = self.records()[0]['revision']
+        duplicate = self.write('notes/duplicate.md')
+        self.assertTrue(self.engine.sync()['conflicts'])
+        with self.engine.store._connect() as db:
+            db.execute('DELETE FROM events')
+        duplicate.unlink()
+        self.engine.sync()
+        self.assertGreater(self.records()[0]['revision'], before)
+        with self.assertRaises(self.module.RevisionConflict):
+            self.engine.update_task('nebula-task', before, {'status': 'done'})
+
     def test_manual_edit_without_revision_bump_invalidates_old_expected_revision(self):
         self.write()
         self.engine.sync()
