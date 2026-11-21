@@ -475,6 +475,10 @@ def _preflight(stage, files):
 
 def update(vault, state, package=None, check=False):
     vault, state = roots(vault, state)
+    if check:
+        import beyin_v3_releases as releases
+        if releases.pending_transaction(state):
+            return releases.recovery_status()
     with tempfile.TemporaryDirectory(prefix='beyin-release-') as temporary:
         expected = None
         release_meta = None

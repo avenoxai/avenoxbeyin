@@ -32,6 +32,8 @@ python3 beyin.py update
 
 `doctor` yerel kayıtları, bekleyen işleri ve sorunları gösterir. Bir metadata raporu gerçek istemci teslimi veya her notun doğru yorumlandığı kanıtı değildir.
 
+Tamamlanmamış bir güncelleme veya geri alma varsa `doctor`, `update --check` ve `update --check --metadata-only` kurtarma gerektiğini bildirir. Önce devam eden bir güncellemenin bitmesini bekle. İşlem kesildiyse `python3 beyin.py recover` çalıştır, ardından `doctor` ile kontrol et. Açık web görünümü işlem sürerken kapanır.
+
 `update --check` resmi stable release'i inceler ve paketi geçici alanda doğrular. Vault ve mevcut runtime dosyalarını değiştirmez. Paket verilmezse ağ erişimi gerekir. `update` aynı doğrulamadan sonra yeni sürümü uygular. Aynı sürüme ikinci güncelleme no-op'tur; sayısal sürüm sırası kullanılır. Eski bir paketi yükleyerek downgrade yapılmaz; geri dönüş için `rollback` kullanılır.
 
 Varsayılan indirme kaynağı `avenoxai/avenoxbeyin` deposunun resmi GitHub stable release'idir. Preview, hareket eden geliştirme dalı veya üçüncü taraf paket kaynağı otomatik seçilmez. Stable release ya da beklenen ZIP yoksa bunu hata olarak bildirir; yayın varmış gibi sonuç vermez.

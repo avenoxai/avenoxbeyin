@@ -28,6 +28,7 @@ def update_lines(result):
                  'Guncelle: ' + command + ' beyin.py update']
     else:
         messages = {'disabled': 'Surum bildirimleri kapali.', 'unknown': 'Surum kontrolu henuz yapilmadi.',
+                'recovery_required': 'Tamamlanmamis guncelleme veya geri alma var. Kurtarmak icin: beyin.py recover',
                 'unavailable': 'Surum kontrolu yapilamadi; guncellik dogrulanmadi.',
                 'up_to_date': 'Beyin guncel: ' + str(result.get('current_version', '?')),
                 'ahead': 'Kurulu surum resmi stable surumden ileride.'}
@@ -666,6 +667,8 @@ def human_result(result, command, installed_version=None):
         if status in ('needs_attention', 'pending'):
             lines.append('Ajanina "beyin doktor" diyerek ayrintiyi inceletebilirsin.')
         return '\n'.join(lines + update_lines(result.get('updates', {})))
+    if status == 'recovery_required':
+        return '\n'.join(update_lines(result))
     if result.get('verification') == 'metadata_only':
         return '\n'.join(update_lines(result) + ['Yalniz surum bilgisi kontrol edildi; paket kurulumu denenmedi.'])
     if status == 'updated':
@@ -905,7 +908,7 @@ def main(argv=None):
                 parser.error('--dismiss cannot use --check or --package')
             if args.command == 'update':
                 import beyin_v3_releases as releases
-                if args.metadata_only: result = releases.check(vault)
+                if args.metadata_only: result = releases.check(vault, state)
                 elif args.dismiss is not None: result = releases.dismiss(vault, state, args.dismiss)
                 else: result = updater.update(vault, state, args.package, args.check)
             elif args.command == 'rollback': result = updater.rollback(vault, state)

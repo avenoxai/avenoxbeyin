@@ -430,6 +430,15 @@ class WebRuntimeChangeTest(WebFixture):
         self.thread.join(timeout=10)
         self.assertFalse(self.thread.is_alive())  # the server shut itself down
 
+    def test_unfinished_update_stops_reads_before_version_stamp_changes(self):
+        cookie, _ = self.login()
+        (self.state / 'update-journal.json').write_text('{}', encoding='utf-8')
+        status, data = self.get_json('/api/gorevler', cookie)
+        self.assertEqual(status, 409)
+        self.assertIn('beyin.py recover', data['mesaj'])
+        self.thread.join(timeout=10)
+        self.assertFalse(self.thread.is_alive())
+
     def test_reads_stop_too_and_an_unchanged_stamp_keeps_serving(self):
         (self.vault / '.beyin-version').write_text('', encoding='utf-8')  # empty reads as no version
         cookie, _ = self.login()

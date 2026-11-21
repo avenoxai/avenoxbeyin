@@ -33,6 +33,7 @@ import unicodedata
 import urllib.parse
 import webbrowser
 
+import beyin_v3_releases as releases
 import beyin_v3_web_ui as ui
 
 HOST = '127.0.0.1'
@@ -162,7 +163,7 @@ class Core:
 
     def runtime_changed(self):
         """An update or rollback replaced the vault's code while this process holds the old one."""
-        return self.version() != self.started_version
+        return releases.pending_transaction(self.state) or self.version() != self.started_version
 
     def run(self, *arguments):
         """One CLI command in this process, exactly as `beyin.py <command>` would run it.
@@ -443,7 +444,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.server.core.runtime_changed():
             return False
         self._fail(409, 'Beyin güncellendi ya da geri alındı; web görünümü kapanıyor. '
-                        'Yeniden açmak için: beyin.py web ac')
+                        'İşlem yarım kaldıysa beyin.py recover çalıştırın. Yeniden açmak için: beyin.py web ac')
         self.server.stop_soon()
         return True
 
