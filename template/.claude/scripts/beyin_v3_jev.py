@@ -381,10 +381,13 @@ def auto_context(store, harness, query, context, *, budget_chars, timeout_cap=2.
         strict = _unclipped(context)
     known = {r['id'] for r in strict}
     try:
-        from beyin_v3_passage import settings as passage_settings, _path_key, loose_ranking
-        exclude_prefixes = tuple(_path_key(p) for p in passage_settings(store.state_dir).get('exclude', ()))
+        from beyin_v3_passage import settings as passage_settings, _matches_keep, _path_key, loose_ranking
+        config = passage_settings(store.state_dir)
+        exclude_prefixes = tuple(_path_key(p) for p in config.get('exclude', ()))
+        keep_prefixes = config.get('strict_keep', ())
     except ImportError:
         exclude_prefixes = ()
+        keep_prefixes = ()
         _path_key = lambda s: str(s).lower()
         loose_ranking = lambda *args, **kwargs: []
 
@@ -478,7 +481,10 @@ def auto_context(store, harness, query, context, *, budget_chars, timeout_cap=2.
     passed = scores['topical'] >= bar['gate']
     by_record = {r['id']: scores[k] for k, r in keys.items()}
     unscored_strict = known - {r['id'] for r in keys.values()}
-    keep = [r for r in records if r['id'] in unscored_strict or
+    protected_strict = unscored_strict | {
+        r['id'] for r in strict if keep_prefixes and _matches_keep(_path_key(r['source']), keep_prefixes)
+    }
+    keep = [r for r in records if r['id'] in protected_strict or
             (passed and by_record.get(r['id'], 0.0)
              >= (bar['keep'] if r['id'] in known else bar['rescue']))]
     dropped = len([r for r in strict if r not in keep])
@@ -488,13 +494,14 @@ def auto_context(store, harness, query, context, *, budget_chars, timeout_cap=2.
                                            gate_passed=passed, dropped=dropped, rescued=rescued))
     audit_cfg = load_audit_config(store.state_dir)
     if audit_cfg.get('enabled'):
+        kept_ids = {r['id'] for r in keep}
         notes_detail = []
         for k, r in keys.items():
             record_id = r['id']
             is_strict = record_id in known
             score = by_record.get(record_id, 0.0)
             threshold = bar['keep'] if is_strict else bar['rescue']
-            kept = record_id in unscored_strict or (passed and score >= threshold)
+            kept = record_id in kept_ids
             notes_detail.append({
                 'key': k,
                 'source_id': record_id,

@@ -42,8 +42,7 @@ MIN_SHARED = 2  # Multiword queries; one-word queries require one match at the s
 COVERAGE_CAP = 4
 BLOCK_TARGET = 900
 BLOCK_OVERLAP = 200
-# V3's own record paths, always excluded. receipts/ is never indexed by sync; it is listed
-# for explicit callers. Personal archive folders are added through strict_exclude.
+# V3's default strict exclusions. receipts/ remains excluded even with strict_keep.
 DEFAULT_EXCLUDE = ("daily/", "receipts/")
 CONFIG_NAME = "retrieval.json"
 CACHE_NAME = "passages.json"
@@ -178,9 +177,8 @@ def _matches_keep(path_key, prefixes):
 def settings(state_dir):
     """Optional runtime config; an invalid file means defaults, never a broken hook.
 
-    strict_exclude adds prefixes to DEFAULT_EXCLUDE; it cannot remove V3's own paths.
-    strict_keep prefixes override strict exclusion: a source matching a keep prefix is
-    never dropped by the strict gate even if it also matches an exclude prefix.
+    strict_exclude adds prefixes to DEFAULT_EXCLUDE. strict_keep exempts matching strict
+    sources from the path exclusion and Jev score gates. Other eligibility rules still apply.
     """
     result = {"floor": FLOOR, "exclude": DEFAULT_EXCLUDE}
     path = Path(state_dir) / CONFIG_NAME
