@@ -23,14 +23,14 @@ LEARNING_LOCK_FILE = "learning-state.lock"
 
 
 @contextmanager
-def _ledger_lock(state_dir: Path, timeout: float = 10.0, step: float = 0.05):
+def _ledger_lock(state_dir: Path, timeout: float = 10.0, step: float = 0.05, *, lock_name=LEARNING_LOCK_FILE):
     """Serialize ledger writers with an OS advisory lock.
 
     Inline on purpose: the release packages only beyin_v3*.py, so the source tree's
     _portalock.py helper is missing from an installed vault (#151). The lock file stays,
     since unlinking a held lock file lets a later process lock a new inode.
     """
-    lock_file = Path(state_dir) / LEARNING_LOCK_FILE
+    lock_file = Path(state_dir) / lock_name
     lock_file.parent.mkdir(parents=True, exist_ok=True)
     if lock_file.is_symlink():
         raise OSError("learning ledger lock must not be a symlink")

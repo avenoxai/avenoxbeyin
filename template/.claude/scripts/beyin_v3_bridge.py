@@ -1091,6 +1091,7 @@ def _main(argv=None):
         # Stable per-project session namespace prevents identical session IDs in
         # two external projects from satisfying each other's receipt checkpoints.
         payload['cwd'] = str(cwd)
+        original_session = payload['session_id']
         payload['session_id'] = json.dumps([str(cwd), payload.get('session_id', 'unknown')])
         if payload.get('event_id'):
             payload['event_id'] = json.dumps([args.harness, str(cwd), event, payload['event_id']])
@@ -1115,9 +1116,16 @@ def _main(argv=None):
                 hook_main()
         finally:
             sys.argv, sys.stdin = previous_argv, previous_stdin
+        if args.harness == 'claude' and (state / 'context-fill').is_dir() and (
+                event in ('SessionEnd', 'PreCompact') or (event == 'SessionStart' and payload.get('source') == 'compact')):
+            from beyin_v3_context_fill import reset_session_state
+            reset_session_state(state, payload['session_id'])
         if event == 'Stop':
             # After the Stop checkpoint is queued: one block per session when edits have no receipt.
             reminder = receipt_reminder(payload, state, args.harness, event, vault=vault, bridge_cli=command)
+            if not reminder and args.harness == 'claude' and (state / 'context-fill.json').is_file():
+                from beyin_v3_context_fill import context_fill_reminder
+                reminder = context_fill_reminder(payload, state, args.harness, event, transcript_session=original_session)
             if reminder:
                 print(json.dumps(reminder)); return 0
         # Never inject Companion/history into an unrelated repository. The agent

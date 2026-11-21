@@ -13,7 +13,6 @@ import sys
 sys.dont_write_bytecode = True
 import time
 import uuid
-
 EVENTS = {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "PreCompact", "SessionEnd"}
 HOOK_BUDGET = 3.8  # seconds; installed POSIX hooks are killed at 5
 SYNC_WAIT = 1.5  # seconds the prompt hook waits for the source sync before reading the last index
@@ -793,6 +792,10 @@ def main():
                     if (state / 'context-dedupe.json').is_file() or (state / 'session-delivery').is_dir() or os.environ.get('BEYIN_V3_CONTEXT_DEDUPE') == '1':
                         from beyin_v3_dedupe import reset_session
                         reset_session(state, args.harness, payload.get('session_id'))
+                    if args.harness == 'claude' and (state / 'context-fill').is_dir():
+                        from beyin_v3_context_fill import reset_session_state
+                        if isinstance(payload.get('session_id'), str):
+                            reset_session_state(state, payload['session_id'])
             except Exception:
                 pass
         if not settings['auto_sync']:
@@ -839,6 +842,9 @@ def main():
         # (#417); an earlier edit marker must not reopen that path as a block in a state this client
         # cannot write. The writable path keeps its reminder untouched.
         reminder = None if args.metadata_only or sync_note else receipt_reminder(payload, state, args.harness, event, vault=vault)
+        if not args.metadata_only and not sync_note and not reminder and event == 'Stop' and args.harness == 'claude' and (state / 'context-fill.json').is_file():
+            from beyin_v3_context_fill import context_fill_reminder
+            reminder = context_fill_reminder(payload, state, args.harness, event)
         if not args.metadata_only and event == 'UserPromptSubmit' and (state / 'chat-trace.json').is_file():
             try:
                 from beyin_v3_chat_trace import hint

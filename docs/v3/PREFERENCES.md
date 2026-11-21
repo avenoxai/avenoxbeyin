@@ -473,3 +473,7 @@ python3 beyin.py preferences --hermes-reset-platforms
 ```
 
 Ayar runtime klasöründeki `hermes-platforms.json` dosyasında tutulur (`{"schema": 1, "attended": ["slack"], "unattended": []}`); `.beyin-preferences.json` şemasına girmez ve rollback güvenlidir.
+
+### Claude Code bağlam doluluğu
+
+`python3 beyin.py preferences --context-fill on` ile kasa içindeki ve global köprüdeki Claude Code oturumlarında devir kartı hatırlatmasını açabilirsin. Varsayılan olarak kapalıdır. İlk uyarı 150.000 giriş ve önbellek tokeninde gelir. Son uyarıdan itibaren 75.000 token daha birikince tekrarlanır. Eşikleri değiştirmek için `--context-fill-first` ve `--context-fill-repeat` kullan. Sıkıştırma ve oturum sonu sayacı sıfırlar. Stop kaydının son kısmı okunabilirse yalnız sayaç ve zaman makineye özel durumda saklanır.
