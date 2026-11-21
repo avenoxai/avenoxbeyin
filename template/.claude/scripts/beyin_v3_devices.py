@@ -471,26 +471,31 @@ def _merged_block(existing, lines):
     """Return the file text with the managed block holding every wanted line that is not
     already present outside the block. The rest of the file is left byte for byte."""
     newline = '\r\n' if '\r\n' in existing else '\n'
-    body, inside, kept_outside = [], False, set()
-    for row in existing.splitlines():
+    rows = existing.splitlines(keepends=True)
+    start = end = None
+    for index, row in enumerate(rows):
         if row.strip() == BLOCK_START:
-            inside = True
-            continue
-        if row.strip() == BLOCK_END:
-            inside = False
-            continue
-        if not inside:
-            body.append(row)
-            kept_outside.add(row.strip())
-    while body and not body[-1].strip():
-        body.pop()
+            if start is not None:
+                raise DevicesError('Duplicate start marker in the managed block.')
+            start = index
+        elif row.strip() == BLOCK_END:
+            if start is None or end is not None:
+                raise DevicesError('Unexpected end marker in the managed block.')
+            end = index
+    if start is not None and end is None:
+        raise DevicesError('Missing end marker in the managed block.')
+    before = rows if start is None else rows[:start]
+    after = [] if end is None else rows[end + 1:]
+    kept_outside = {row.strip() for row in (*before, *after)}
     wanted = [line for line in lines if line not in kept_outside]
-    if not wanted:
-        merged = body
-    else:
-        merged = body + ([''] if body else []) + [BLOCK_START, *wanted, BLOCK_END]
-    text = newline.join(merged)
-    return text + newline if text else ''
+    prefix = ''.join(before)
+    if wanted and start is None and prefix:
+        if not prefix.endswith(('\r', '\n')):
+            prefix += newline
+        if before[-1].strip():
+            prefix += newline
+    block = newline.join((BLOCK_START, *wanted, BLOCK_END)) + newline if wanted else ''
+    return prefix + block + ''.join(after)
 
 
 def _ignore_lines(vault):
@@ -712,7 +717,8 @@ def plan(vault, state, options, home=None, scheduler_dir=None):
         for name, lines in (('.gitignore', ignore_lines), ('.gitattributes', list(GITATTRIBUTES_LINES))):
             path = vault / name
             try:
-                existing = path.read_text(encoding='utf-8')
+                with path.open(encoding='utf-8', newline='') as handle:
+                    existing = handle.read()
             except FileNotFoundError:
                 existing = ''
             merged = _merged_block(existing, lines)

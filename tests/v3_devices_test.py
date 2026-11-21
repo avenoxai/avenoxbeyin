@@ -157,6 +157,27 @@ class PlanTest(Base):
         planned = devices.plan(vault, state, {"level": "computers", "remote": remote})
         self.assertNotIn("git_remote", [action["kind"] for action in planned["actions"]])
 
+    @unittest.skipUnless(GIT, "git required")
+    def test_apply_preserves_bytes_outside_managed_block(self):
+        vault, state = self.machine("a")
+        ignore = vault / ".gitignore"
+        prefix = b"# comment\r\nkeep/\r\n\r\n"
+        suffix = "# Arşiv".encode("utf-8")
+        ignore.write_bytes(prefix + devices.BLOCK_START.encode() + b"\r\nold/\r\n" +
+                           devices.BLOCK_END.encode() + b"\r\n" + suffix)
+        result = self.apply(vault, state, level="computers", remote="remote.git", init_git=True)
+        self.assertEqual(result["status"], "applied", result)
+        after = ignore.read_bytes()
+        self.assertTrue(after.startswith(prefix), after)
+        self.assertTrue(after.endswith(suffix), after)
+        self.assertIn(b"\r\n.beyin-runtime.json\r\n", after)
+        self.assertNotIn(b"old/", after)
+        self.assertEqual(devices._merged_block(after.decode("utf-8"), devices.GITIGNORE_LINES).encode("utf-8"), after)
+
+    def test_unclosed_managed_block_refuses_to_remove_user_lines(self):
+        with self.assertRaisesRegex(ValueError, "managed block"):
+            devices._merged_block(devices.BLOCK_START + "\nkeep/\n", ["wanted/"])
+
     def test_level_rules(self):
         vault, state = self.machine("a")
         for options, message in (
