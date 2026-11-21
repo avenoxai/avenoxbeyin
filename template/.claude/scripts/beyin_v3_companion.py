@@ -245,16 +245,20 @@ def client_rebudget(harness, budget, text):
     return min(budget, len(text)) * limit[0] // size
 
 
-def fit_client(harness, text):
-    """Last guard after client_budget: an astral character (the companion folder's emoji) counts
-    twice in UTF-16 and four times in UTF-8, so trim the tail until the client's own measure fits."""
-    limit = CLIENT_TEXT_LIMITS.get(harness)
-    over = client_size(harness, text) - limit[0] if limit else 0
+def _fit_client_units(harness, text, units):
+    widest = 2 if CLIENT_TEXT_LIMITS[harness][1] == 'utf-16' else 4
+    over = client_size(harness, text) - units
     while over > 0:
         # A character is one to four units: cut at least one, at most what is over.
-        text = text[:len(text) - max(1, over // (2 if limit[1] == 'utf-16' else 4))]
-        over = client_size(harness, text) - limit[0]
+        text = text[:len(text) - max(1, over // widest)]
+        over = client_size(harness, text) - units
     return text
+
+
+def fit_client(harness, text):
+    """Last guard after client_budget: trim the tail until the client's own measure fits."""
+    limit = CLIENT_TEXT_LIMITS.get(harness)
+    return _fit_client_units(harness, text, limit[0]) if limit else text
 
 
 # Instruction filenames for diagnostic import discovery (#610), from the working
@@ -1149,6 +1153,18 @@ def ends(text, budget):
 
 
 CLIP_MARKER = '\n[truncated: read source]\n'
+
+
+def fit_opening_overflow(harness, text, budget):
+    """When no render fits before the deadline, bound already vetted text with an intact marker."""
+    limit, _ = CLIENT_TEXT_LIMITS[harness]
+    marker = CLIP_MARKER[:max(0, budget)]
+    prefix = _fit_client_units(harness, text[:max(0, budget - len(marker))], limit - len(marker))
+    # Don't leave a partial source label or a partial prior omission marker at the cut.
+    line = prefix.rfind('\n')
+    if line >= 0 and prefix[line + 1:].lstrip().startswith('['):
+        prefix = prefix[:line]
+    return prefix.rstrip() + marker
 
 
 def clip(text, budget, tail=False, both=False):

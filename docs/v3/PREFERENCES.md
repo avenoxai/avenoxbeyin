@@ -122,8 +122,9 @@ tur bağlamı en fazla 9.500 karakterle üretilir (`context_chars` 12.000 olsa d
 (4 baytlık 2.500 yaklaşık token) aşan hook bağlamını dosyaya taşır ve modele yalnız baş ve son
 önizlemeyi verir; ortası düşer (`codex-rs/hooks/src/output_spill.rs`). Türkçe harfler 2 bayt
 tuttuğu için Codex oturumlarında bağlam aynı 9.500 karakter bütçesiyle üretilir, metin 10.000
-baytı geçerse bütçe orantılı küçültülüp yeniden üretilir; bölümler sondan kesilmez. Codex'in
-hook başına `additionalContextLimit` ayarı `.codex/hooks.json` içindedir ve bu dosyayı
+baytı geçerse bütçe orantılı küçültülüp yeniden üretilir. Süre bütçesi içinde sığan bir
+açılış bulunamazsa hook yeni kaynak okumadan eldeki metni sınırlar ve atlanan içeriği
+tam bir `[truncated: read source]` işaretiyle belirtir. Codex'in hook başına `additionalContextLimit` ayarı `.codex/hooks.json` içindedir ve bu dosyayı
 değiştirmek hook güvenini düşürdüğü için Beyin onu kullanmaz. Antigravity, OpenCode, Hermes ve
 OMP için böyle bir sınır ölçülmedi.
 
