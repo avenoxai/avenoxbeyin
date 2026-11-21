@@ -453,6 +453,30 @@ def jev_advice(result):
     return result
 
 
+def jev_audit_config(state: Path, mode: str, include_scores: bool, no_include_scores: bool,
+                     include_topical: bool, no_include_topical: bool) -> dict:
+    """Configure auto_context per-note audit logging (machine-local, opt-in)."""
+    _ensure_scripts_path()
+    import beyin_v3_jev as jev
+    cfg = jev.load_audit_config(state)
+    if mode == "status":
+        return {"audit": cfg, "path": str(jev._audit_config_path(state)), "log_path": str(jev._audit_log_path(state))}
+    if mode == "on":
+        cfg["enabled"] = True
+    elif mode == "off":
+        cfg["enabled"] = False
+    if include_scores:
+        cfg["include_scores"] = True
+    if no_include_scores:
+        cfg["include_scores"] = False
+    if include_topical:
+        cfg["include_topical"] = True
+    if no_include_topical:
+        cfg["include_topical"] = False
+    jev.save_audit_config(state, cfg)
+    return {"audit": cfg, "path": str(jev._audit_config_path(state)), "log_path": str(jev._audit_log_path(state))}
+
+
 HOOK_FILES = (".claude/settings.local.json", ".codex/hooks.json", ".agents/hooks.json",
               ".kiro/hooks/beyin-v3.json")
 
@@ -1349,6 +1373,12 @@ def parser(note_namespace=None, is_json=False):
     jev.add_argument("--base-url", dest="base_url", help="laya only: loopback URL, default http://127.0.0.1:8765")
     jev.add_argument("--model", choices=LAYA_MODELS, help="laya only: pinned checkpoint, default multilingual")
     jev.add_argument("--check", action="store_true", help="with status: one GET /health to the local Laya server")
+    jev_audit = sub.add_parser("jev-audit", help="Configure auto_context per-note audit logging (local, opt-in)")
+    jev_audit.add_argument("mode", choices=("status", "on", "off"), help="Enable, disable, or show audit status")
+    jev_audit.add_argument("--include-scores", action="store_true", help="Include per-note scores in audit log")
+    jev_audit.add_argument("--no-include-scores", action="store_true", help="Exclude per-note scores from audit log")
+    jev_audit.add_argument("--include-topical", action="store_true", help="Include topical gate score in audit log")
+    jev_audit.add_argument("--no-include-topical", action="store_true", help="Exclude topical gate score from audit log")
     answer = sub.add_parser("jev-answer", help="Advisory answer claim verification against exact source quotes")
     answer.add_argument("--file", required=True, help="JSON list of claims (maximum 32,000 characters)")
     answer.add_argument("--project", required=True)
@@ -1754,6 +1784,10 @@ def main(argv=None, return_result=False):
                 result["context_mode"] = jev_context_mode(vault)
                 result = jev_advice(result)
                 result["changed"] = True
+        elif args.command == "jev-audit":
+            result = jev_audit_config(state, args.mode, args.include_scores, args.no_include_scores,
+                                      args.include_topical, args.no_include_topical)
+            result["changed"] = args.mode != "status"
         elif args.command == "hook-reconcile":
             result = hook_reconcile(vault, state, force=getattr(args, 'force', False))
         elif args.command == "doctor":

@@ -291,6 +291,16 @@ def human_result(result, command, installed_version=None):
         if not result.get('config_valid', True):
             lines.append('Ayar dosyasi bozuk; jev.json elle duzeltilmeli.')
         return '\n'.join(lines + jev_lines(result))
+    if command == 'jev-audit':
+        audit = result.get('audit', {})
+        lines = ['Jev auto_context denetimi: ' + ('acik' if audit.get('enabled') else 'kapali'),
+                 'Ayar dosyasi: ' + result.get('path', '?'),
+                 'Log dosyasi: ' + result.get('log_path', '?'),
+                 'Not puanlari: ' + ('dahil' if audit.get('include_scores') else 'haric'),
+                 'Topical puani: ' + ('dahil' if audit.get('include_topical') else 'haric')]
+        if result.get('changed'):
+            lines.insert(0, 'Jev auto_context denetimi ' + ('etkinlestirildi' if audit.get('enabled') else 'devre disi birakildi'))
+        return '\n'.join(lines)
     if command == 'preferences':
         prefs = result['preferences']
         lines = ['Otomatik kontrol: ' + ('acik' if prefs['auto_sync'] else 'kapali'),
