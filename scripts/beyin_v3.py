@@ -1834,12 +1834,13 @@ def main(argv=None, return_result=False):
             health = result['hook-health.json'] or {}
             gaps_info = result['receipt-gaps.json']
             result['potential_missing_receipts'] = gaps_info.get('potential_missing_receipts') if gaps_info is not None else None
-            if gaps_info is not None and store is not None:
-                from beyin_v3_projections import receipt_coverage
+            result['receipt_coverage'] = None
+            if store is not None:
+                from beyin_v3_projections import hermes_without_terminal, receipt_coverage
                 with store._connect() as db:
-                    result['receipt_coverage'] = receipt_coverage(db, now=time.time(), doctor_diagnostics=True)
-            else:
-                result['receipt_coverage'] = None
+                    coverage = receipt_coverage(db, now=time.time(), read_only=True) if gaps_info is not None else {}
+                    coverage['hermes_without_terminal'] = hermes_without_terminal(db)
+                result['receipt_coverage'] = coverage
             from beyin_v3_projections import knowledge_freshness, check_instruction_conflicts
             try:  # a recency report must never hide the rest of doctor, conflicts included
                 if store is not None:

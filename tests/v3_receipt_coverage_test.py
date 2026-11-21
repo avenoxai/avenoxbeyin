@@ -257,6 +257,13 @@ class ReceiptCoverageTest(unittest.TestCase):
         self.assertIn('Hermes: 2 oturumda son tur icin kapanis sinyali gozlenmedi',
                       beyin_entry.human_result(doc, 'doctor'))
 
+        gaps_path.unlink()
+        doc = json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True,
+                                        env=inherited_env()).stdout)
+        self.assertIsNone(doc['potential_missing_receipts'])
+        self.assertEqual(doc['receipt_coverage'], {'hermes_without_terminal': 2})
+        self.assertFalse(gaps_path.exists())
+
     def test_first_prompt_delivered_as_session_start_counts(self):
         """Hermes and OpenCode send the first user prompt as SessionStart; a one-prompt session still counts."""
         flows = {'opencode': ('SessionStart', 'Stop'), 'hermes': ('SessionStart', 'SessionEnd'),
