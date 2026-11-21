@@ -42,6 +42,12 @@ notla geçersiz kılınmış kaynaklar dışarıda kalır. Değişmiş/okunamaya
 geçersiz tarihler ayrı sayılır. Oturum açılışına yeni satır veya otomatik hatırlatma
 eklenmez; `doctor` mevcut tanılama davranışını korur.
 
+Eşlikçi özetinde `Kurallar.md`, `Threads.md` veya `Last-Session.md` okunamazsa
+JSON'da `companion.status: partial` ve `unreadable_sources` listesi döner.
+İnsan çıktısı okunamayan alanı sıfır yerine `taranamadi` olarak gösterir.
+Bulunmayan isteğe bağlı dosyalar hata sayılmaz. Triage çıkış kodu değişmez;
+çıktı, hata metnini ve dosyanın içeriğini kopyalamaz.
+
 ## V2 geçişi
 
 [V2 migration rehberi](MIGRATION.md) eski kaynakların korunmasını ve writer geçişini anlatır. Tanınan V2 özetleyici/derleyici devreden çıkarılır. Modelle bilgi damıtmayı artık aktif ajan, `beyin` skill'i üzerinden bilinçli olarak yapar; deterministic görünümler bunun yerine bilgi uydurmaz. Özelleştirilmiş veya harici eski işler ayrıca değerlendirilir.
