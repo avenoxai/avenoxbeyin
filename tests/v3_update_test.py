@@ -83,6 +83,52 @@ class OfflineUpdateTest(unittest.TestCase):
         self.assertEqual(snapshot(self.state), before_state)
         self.assertEqual(self.version(), '3.0.0')
 
+    def _devices_schedule(self):
+        # A synthetic schedule record as `devices --apply --interval` stores it; no unload command runs.
+        label = 'com.avenox.beyin-devices.synthetic'
+        unit = self.base / (label + '.plist')
+        unit.write_text('synthetic schedule\n', encoding='utf-8')
+        settings = {'schema': 1, 'level': 'computers', 'phone_sync': None, 'role': None,
+                    'remote_name': 'origin', 'branch': 'main', 'interval': 15, 'device_name': None,
+                    'scheduler': {'kind': 'launchd', 'label': label, 'files': [str(unit)], 'unload': []},
+                    'capture': None}
+        (self.state / 'devices.json').write_text(json.dumps(settings), encoding='utf-8')
+        return unit
+
+    def test_rollback_to_engine_without_devices_removes_its_schedule(self):
+        # The schedule runs `beyin.py devices --sync-once`; an engine without the command fails every round.
+        self.module.update(self.vault, self.state, self.package)
+        record = self.state / 'last-update.json'
+        backup = json.loads(record.read_text(encoding='utf-8'))
+        name = '.claude/scripts/beyin_v3_devices.py'
+        entry = next(item for item in backup['operations'] if item['name'] == name)
+        entry['old'] = None  # as if the previous release did not ship the devices module
+        record.write_text(json.dumps(backup), encoding='utf-8')
+        unit = self._devices_schedule()
+        rolled = self.module.rollback(self.vault, self.state)
+        self.assertEqual(rolled['status'], 'rolled_back')
+        self.assertFalse((self.vault / name).exists())
+        self.assertFalse(unit.exists())
+        self.assertEqual(rolled['devices_schedule']['status'], 'removed')
+        settings = json.loads((self.state / 'devices.json').read_text(encoding='utf-8'))
+        self.assertEqual((settings['scheduler'], settings['interval'], settings['level']), (None, 0, 'computers'))
+
+    def test_rollback_to_engine_with_devices_keeps_its_schedule(self):
+        self.module.update(self.vault, self.state, self.package)
+        unit = self._devices_schedule()
+        rolled = self.module.rollback(self.vault, self.state)
+        self.assertEqual(rolled['status'], 'rolled_back')
+        self.assertTrue(unit.exists())
+        self.assertNotIn('devices_schedule', rolled)
+
+    def test_uninstall_removes_devices_schedule(self):
+        unit = self._devices_schedule()
+        result = run_python(ROOT / 'scripts/install_v3.py',
+                            ['--vault', self.vault, '--state', self.state, '--uninstall'], ROOT, self.env)
+        self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
+        self.assertEqual(json.loads(result.stdout)['devices_schedule']['status'], 'removed')
+        self.assertFalse(unit.exists())
+
     def test_update_idempotent_and_rollback_preserves_new_user_note(self):
         core = self.vault / '.claude/scripts/beyin_v3.py'
         original = core.read_bytes()

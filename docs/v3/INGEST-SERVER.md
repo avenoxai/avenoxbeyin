@@ -10,6 +10,9 @@ Bu sunucu, **yerel-first ve mutlak mahremiyet** prensipleriyle tasarlanmıştır
 
 ---
 
+Sunucuyu her zaman açık bir makinede token'ı ve servisiyle birlikte kurmak için
+`beyin.py devices --apply ... --capture` kullanılabilir: [DEVICES.md](DEVICES.md#telefondan-yakalama---capture).
+
 ## 1. Sunucuyu Başlatma
 
 ### Yerel Test (Sadece bu bilgisayar)

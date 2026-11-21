@@ -476,6 +476,19 @@ def unmanaged_toml(text, original):
     return text[:section.end()] + body + text[stop:]
 
 
+def release_devices_schedule(vault, state):
+    """Uninstall removes beyin.py, which a `devices` schedule runs every round: remove the schedule too."""
+    path = ROOT / "template/.claude/scripts/beyin_v3_devices.py"
+    if not path.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("beyin_uninstall_devices", path)
+        devices = importlib.util.module_from_spec(spec); spec.loader.exec_module(devices)
+    except Exception:
+        return None
+    return devices.release_schedule(vault, state)
+
+
 def uninstalled_content(name, item, current, previous, kept):
     """What uninstall leaves at a managed path: the recorded original (None: absent), or, when the
     user added bytes outside the managed part, the file with only that part taken out.
@@ -705,6 +718,9 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
         result = {"status": "uninstalled", "restored": len(manifest["files"])}
         if kept_user_text:
             result["kept_user_text"] = sorted(kept_user_text)
+        released = release_devices_schedule(vault, state)
+        if released:
+            result["devices_schedule"] = released
         return result
     # Before any write and in plan mode too, so `beyin.py update` in a moved vault stops here
     # instead of reporting success over an index that still names the old folder (#593).

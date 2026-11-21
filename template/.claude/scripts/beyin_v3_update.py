@@ -684,8 +684,37 @@ def _merge_json(base, current, target):
     return jbytes(merge(json.loads(base), json.loads(current), json.loads(target)))
 
 
+DEVICES_MODULE = '.claude/scripts/beyin_v3_devices.py'
+
+
+def _devices_module():
+    """Load the devices module before a rollback may delete it, so its schedule can still be released."""
+    path = Path(__file__).with_name('beyin_v3_devices.py')
+    if not path.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location('beyin_rollback_devices', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
+
+
+def _rolled_back(vault, state, devices):
+    installed = (vault / '.beyin-version').exists()
+    result = {'status': 'rolled_back' if installed else 'uninstalled', 'version': current_version(vault) if installed else None}
+    # The restored engine has no `devices` command: a schedule left behind would fail every round.
+    if devices is not None and not (vault / DEVICES_MODULE).exists():
+        released = devices.release_schedule(vault, state)
+        if released:
+            result['devices_schedule'] = released
+    return result
+
+
 def rollback(vault, state):
     vault, state = roots(vault, state)
+    devices = _devices_module()
     with locked(vault, state):
         pending = state / 'update-journal.json'
         backup = pending if pending.exists() else state / 'last-update.json'
@@ -696,7 +725,7 @@ def rollback(vault, state):
         # Reversing it again would restore the upgrade instead of finishing rollback.
         if pending.exists() and original.get('direction') == 'rollback':
             _apply(vault, state, original)
-            return {'status': 'rolled_back' if (vault/'.beyin-version').exists() else 'uninstalled', 'version': current_version(vault) if (vault/'.beyin-version').exists() else None}
+            return _rolled_back(vault, state, devices)
         operations = []
         for item in original['operations']:
             path = _destination(vault, state, item)
@@ -730,4 +759,4 @@ def rollback(vault, state):
             (state / 'release-cache.json').unlink(missing_ok=True)
         except Exception:
             pass
-        return {'status': 'rolled_back' if (vault/'.beyin-version').exists() else 'uninstalled', 'version': current_version(vault) if (vault/'.beyin-version').exists() else None}
+        return _rolled_back(vault, state, devices)

@@ -5,6 +5,10 @@ Beyin yerel önceliklidir: makineler arasında senkron kodu yoktur ve Beyin git 
 eşitliyorsan bu belge hangi dosyaların eşitleneceğini ve iki makinenin aynı gün nasıl
 çalışacağını anlatır ([#112](https://github.com/avenoxai/avenoxbeyin/issues/112)).
 
+Bu kuralları elle uygulamak yerine isteğe bağlı `beyin.py devices` komutuyla kademeli olarak
+kurabilirsin (telefon köprüsü, git ile bilgisayarlar, her zaman açık merkez makine):
+[DEVICES.md](DEVICES.md). Komutu çalıştırmazsan bu belgedeki davranış değişmez.
+
 Her makine Beyin'i kendisi kurar ve günceller. Runtime (SQLite veritabanı) vault dışında,
 makineye özeldir ve eşitlenmez; her makine onu vault'taki Markdown'dan kendisi kurar.
 
