@@ -545,21 +545,8 @@ def tracked_machine_files(vault: Path) -> dict:
 
 
 def _hook_arguments(command: str) -> list:
-    """Arguments of one installed hook command: POSIX shell text or the Windows EncodedCommand."""
-    import base64
-    import re
-    import shlex
-    match = re.search(r"-EncodedCommand\s+([A-Za-z0-9+/=]+)", command, re.I)
-    if match:
-        try:
-            script = base64.b64decode(match.group(1), validate=True).decode("utf-16le")
-        except (ValueError, UnicodeError):
-            return []
-        return [item.replace("''", "'") for item in re.findall(r"'((?:[^']|'')*)'", script)]
-    try:
-        return shlex.split(command)
-    except ValueError:
-        return []
+    from beyin_v3_bridge import hook_arguments
+    return hook_arguments(command)
 
 
 def hook_paths(vault: Path) -> dict:
@@ -636,92 +623,8 @@ def hook_paths(vault: Path) -> dict:
 
 
 def global_bridge_paths(vault: Path, state: Path) -> dict | None:
-    """Read only global bridge paths owned by this state, without executing commands.
-
-    A different vault may legitimately own the user's global bridge. Inspect only
-    commands explicitly bound to this state; absent or invalid settings stay optional.
-    """
-    from beyin_v3_bridge import global_hook_path, global_opencode_settings_path
-    here, owner = vault.resolve(), state.resolve()
-    expected = (here / '.claude/scripts/beyin_v3_bridge.py').resolve()
-    stale, checked = [], 0
-    for harness in ('claude', 'codex', 'antigravity'):
-        try:
-            data = json.loads(global_hook_path(harness).read_text(encoding='utf-8'))
-        except (OSError, ValueError, UnicodeError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        events = data.get('beyin-v3-bridge' if harness == 'antigravity' else 'hooks', {})
-        for event, groups in events.items() if isinstance(events, dict) else ():
-            for group in groups if isinstance(groups, list) else ():
-                if not isinstance(group, dict):
-                    continue
-                handlers = group.get('hooks', [group])
-                for handler in handlers if isinstance(handlers, list) else ():
-                    if not isinstance(handler, dict):
-                        continue
-                    command = (handler.get('commandWindows', handler.get('command'))
-                               if sys.platform == 'win32' else handler.get('command'))
-                    if not isinstance(command, str):
-                        continue
-                    arguments = _hook_arguments(command)
-                    script = next((arg for arg in arguments
-                                   if arg.replace('\\', '/').endswith('/beyin_v3_bridge.py')), None)
-                    if script is None:
-                        continue
-                    values = {}
-                    for flag in ('--state', '--vault'):
-                        if arguments.count(flag) == 1 and arguments.index(flag) < len(arguments) - 1:
-                            values[flag] = arguments[arguments.index(flag) + 1]
-                    if len(values) != 2:
-                        continue
-                    try:
-                        if not Path(values['--state']).is_absolute() or Path(values['--state']).resolve() != owner:
-                            continue
-                        same_vault = Path(values['--vault']).resolve() == here
-                        same_script = Path(script).resolve() == expected
-                    except (OSError, ValueError, RuntimeError):
-                        continue
-                    checked += 1
-                    for reason, same in (('other_vault', same_vault), ('other_script', same_script)):
-                        entry = {'harness': harness, 'event': event, 'reason': reason}
-                        if not same and entry not in stale:
-                            stale.append(entry)
-    # OpenCode's global bridge is a managed plugin plus a JSON settings file,
-    # rather than a hook command embedded in client settings.
-    try:
-        opencode_settings = global_opencode_settings_path()
-        data = json.loads(opencode_settings.read_text(encoding='utf-8'))
-    except (OSError, ValueError, UnicodeError):
-        data = None
-    if isinstance(data, dict) and data.get('managed_by') == 'beyin-v3-bridge':
-        command = data.get('command')
-        if isinstance(command, list) and all(isinstance(value, str) for value in command):
-            values = {}
-            for flag in ('--state', '--vault'):
-                if command.count(flag) == 1 and command.index(flag) < len(command) - 1:
-                    values[flag] = command[command.index(flag) + 1]
-            script = command[0] if command else None
-            if (isinstance(script, str) and len(values) == 2 and
-                    Path(values['--state']).is_absolute() and
-                    Path(values['--state']).resolve() == owner):
-                checked += 1
-                same_vault = Path(values['--vault']).resolve() == here
-                same_script = (Path(script).resolve() == (here / '.claude/scripts/beyin_v3_bridge.py').resolve()
-                                and Path(script).is_file())
-                for reason, same in (('other_vault', same_vault), ('other_script', same_script)):
-                    entry = {'harness': 'opencode', 'event': 'global', 'reason': reason}
-                    if not same and entry not in stale:
-                        stale.append(entry)
-    if not checked:
-        return None
-    result = {'status': 'stale' if stale else 'ok', 'checked': checked}
-    if stale:
-        result['stale'] = stale
-        result['hint'] = ('From this vault, reinstall each affected global bridge with the original '
-                          '--project-root, --event and --context-chars choices. Global settings were not changed.')
-    return result
+    from beyin_v3_bridge import global_bridge_paths as inspect
+    return inspect(vault, state)
 
 
 def _hook_commands(argv):

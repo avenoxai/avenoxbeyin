@@ -131,19 +131,18 @@ def current_version(vault):
 
 
 def _evaluate_condition(condition, vault, state, result):
-    if not condition or condition == 'always':
+    if not isinstance(condition, str):
+        return False
+    if condition == 'always':
         return True
     if condition == 'yakala_installed':
-        return (state / 'yakala.json').exists() or (state / 'yakala').is_dir()
-    if condition.startswith('bridge_installed'):
-        # Check global bridge / vault runtime state safely
-        if condition == 'bridge_installed':
-            return (state / 'bridge.json').exists() or (vault / '.beyin-bridge.json').exists()
-        parts = condition.split(':', 1)
-        if len(parts) == 2:
-            harness = parts[1]
-            return (state / f'bridge-{harness}.json').exists() or (vault / f'.beyin-bridge-{harness}.json').exists()
-        return False
+        return (state / 'yakala.json').is_file()
+    if condition == 'bridge_installed' or condition.startswith('bridge_installed:'):
+        from beyin_v3_bridge import global_bridge_paths
+        harness = condition.partition(':')[2] or None
+        if harness not in (None, 'claude', 'codex', 'antigravity', 'opencode'):
+            return False
+        return bool(global_bridge_paths(vault, state, only_harness=harness))
     if condition == 'vault_in_git':
         return (vault / '.git').exists()
     if condition == 'trust_review_required':
@@ -152,9 +151,16 @@ def _evaluate_condition(condition, vault, state, result):
     if condition.startswith('file_exists:'):
         rel = condition.split(':', 1)[1]
         p = PurePosixPath(rel)
-        if not rel or p.is_absolute() or '..' in p.parts or '\\' in rel:
+        if not rel or p.is_absolute() or '..' in p.parts or '\\' in rel or ':' in rel:
             return False
-        return (vault / rel).exists() or (state / rel).exists()
+        for root in (vault, state):
+            target = root / rel
+            try:
+                if target.resolve().is_relative_to(root) and target.exists():
+                    return True
+            except (OSError, RuntimeError):
+                continue
+        return False
     return False
 
 def _filter_after_update_steps(steps, vault, state, result):
@@ -171,11 +177,8 @@ def _filter_after_update_steps(steps, vault, state, result):
         cond = step.get('condition')
         if cond is None:
             conds = step.get('conditions', ['always'])
-            if isinstance(conds, list):
-                # evaluate all and require all (or any? requirements say "filtered to conditions matching", let's support list as all or any; standard is all or any - let's evaluate all in list to be true)
-                matched = all(_evaluate_condition(c, vault, state, result) for c in conds)
-            else:
-                matched = True
+            matched = isinstance(conds, list) and bool(conds) and all(
+                _evaluate_condition(c, vault, state, result) for c in conds)
         else:
             matched = _evaluate_condition(cond, vault, state, result)
 
