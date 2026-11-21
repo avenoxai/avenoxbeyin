@@ -626,12 +626,13 @@ class SyncEngine:
                                                (record_id is not None and item.get('id') == record_id))]
 
     @staticmethod
-    def _write_blockers(result, source):
+    def _write_blockers(result, source=None, record_ids=()):
         # Another receipt's divergence leaves this write's projection intact; it stays in every sync report (#210).
         # Receipt view conflicts preserve edited or untracked generated views without blocking source writes (#323).
         from beyin_v3_projections import is_receipt_view_conflict
         return [item for item in result.get('conflicts', [])
                 if not (item.get('kind') == 'receipt_divergence' and item.get('source') != source)
+                and not (source is not None and item.get('id') is not None and item['id'] not in record_ids)
                 and not is_receipt_view_conflict(item)]
 
     def _path(self, relative, existing=False):
@@ -866,6 +867,7 @@ class SyncEngine:
         and its value in the returned records is None: sync keeps that record as indexed."""
         records, warnings, conflicts = {}, [], []
         duplicate = set()
+        source_ids = {}
         # Stored by project_receipts with this sync's record deletions, like excluded_dir_keys.
         unreadable = self.unreadable_sources = set()
         # Provenance is independent of editable frontmatter. Prove paths before
@@ -926,6 +928,7 @@ class SyncEngine:
                             # Not decoded: sync leaves an unchanged indexed record as it is.
                             if id in records:
                                 duplicate.add(id)
+                            source_ids[relative] = id
                             records[id] = None
                             continue
                     raw = path.read_bytes()
@@ -949,12 +952,14 @@ class SyncEngine:
                         raise ValueError('source changed while scanning')
                     if record['id'] in records:
                         duplicate.add(record['id'])
+                    source_ids[relative] = record['id']
                     records[record['id']] = record
                     if cache is not None:
                         cache.read(relative, st, record['id'])
                 except (ValueError, OSError, UnicodeError) as exc:
                     warnings.append({'source': relative, 'reason': str(exc)})
                     unreadable.add(relative)
+        self.source_ids = source_ids
         for id in sorted(duplicate):
             records.pop(id, None)
             conflicts.append({'id': id, 'reason': 'duplicate source id; all copies quarantined'})
@@ -1433,7 +1438,7 @@ class SyncEngine:
             intended = render(metadata, body)
             self._intent(record['source'], record['source_sha256'], intended, 'task')
         result = self.sync()
-        if self._write_blockers(result, record['source']):
+        if self._write_blockers(result, record['source'], (id,)):
             raise RevisionConflict('source projection conflict')
         with self.store._connect() as db:
             row = db.execute('SELECT payload FROM records WHERE id=?', (id,)).fetchone()
@@ -1710,7 +1715,12 @@ class SyncEngine:
             else:
                 self._intent(source, None, content, 'receipt', event)
         result = self.sync()
-        if self._write_blockers(result, source):
+        referenced_ids = {self.source_ids.get(ref) for ref in refs}
+        if None in referenced_ids:
+            # An unindexed ref can alias a quarantined source. Keep the old
+            # conservative result when this scan cannot establish its ownership.
+            referenced_ids.update(item.get('id') for item in result.get('conflicts', []))
+        if self._write_blockers(result, source, referenced_ids):
             raise ReceiptConflict('receipt projection conflict')
         if _receipt_lf(self._path(source, existing=True).read_bytes()) != _receipt_lf(content.encode('utf-8')):
             raise ReceiptConflict('receipt source changed before readback')
