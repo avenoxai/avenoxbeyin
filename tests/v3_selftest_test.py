@@ -125,6 +125,13 @@ class V3SelftestTest(unittest.TestCase):
         res = selftest.run_selftest(self.vault, self.state, questions_path="../outside.json")
         self.assertEqual(res["status"], "error")
 
+    def test_add_question_preserves_invalid_file(self):
+        target = self.vault / 'questions.json'
+        target.write_bytes(b'damaged but recoverable')
+        with self.assertRaises(ValueError):
+            selftest.add_question(self.vault, target, 'query', 'projects/alpha.md')
+        self.assertEqual(target.read_bytes(), b'damaged but recoverable')
+
     def test_read_only_vault_immutability(self):
         alpha_path = self.vault / "projects" / "alpha.md"
         content_before = alpha_path.read_text(encoding="utf-8")
