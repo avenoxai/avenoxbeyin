@@ -392,13 +392,13 @@ def analyse(path, roots, scope, errors):
                         errors['unrecognized_tool_inputs'] += 1
                         continue
                     scope.counts['shell_commands'] += 1
-                    if WRITE.search(command):
-                        scope.counts['shell_commands_write_excluded'] += 1
-                        continue
                     attempted = note_read_source(command, roots, cwd, powershell=name == 'PowerShell')
                     if attempted is not None:
                         last_note_read[attempted] = position
                         scope.counts['note_read_attempts'] += 1
+                        continue
+                    if WRITE.search(command):
+                        scope.counts['shell_commands_write_excluded'] += 1
                         continue
                     moves = CHANGES_DIR.search(command) is not None
                     for token in shell_paths(command, powershell=name == 'PowerShell'):

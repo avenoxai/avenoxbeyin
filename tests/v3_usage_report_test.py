@@ -137,6 +137,16 @@ class UsageReport(unittest.TestCase):
         absolute = r'py -3 "c:\users\ada\beyin vault\beyin.py" note-read notes/source.md'
         self.assertEqual(usage.note_read_source(absolute, windows, None, powershell=True), 'notes/source.md')
 
+    def test_note_read_with_write_like_filename_is_counted(self):
+        source = 'knowledge/Set-Content.md'
+        t = Transcript(self.vault).records('SessionStart', source)
+        t.tool('Bash', command=f'python3 beyin.py note-read {source}')
+        t.write(self.folder / 's.jsonl')
+        main = self.report()['main']
+        self.assertEqual(main['note_read_attempts'], 1)
+        self.assertEqual(main['shell_commands_write_excluded'], 0)
+        self.assertEqual(main['ranked']['all']['attempted_note_read'], 1)
+
     def test_folder_name_follows_claude_code_rule(self):
         self.assertEqual(usage.sanitized('/Users/ada/Belgeler/Kasa Şube/🔮 Notlar'), '-Users-ada-Belgeler-Kasa--ube----Notlar')
         self.assertEqual(usage.sanitized('C:\\Users\\ada\\kasa'), 'C--Users-ada-kasa')
