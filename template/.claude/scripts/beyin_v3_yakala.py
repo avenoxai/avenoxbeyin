@@ -5619,10 +5619,19 @@ def popup(vault, context=None, state=None, root=None, session=None):
             _win_dpi()
         root = tk.Tk()
         root.withdraw()
+
+    def leave_window():
+        if windows and session:
+            # The warm owner destroys the root once, after Tk returns from its callback.
+            root.quit()
+        else:
+            root.destroy()
+
     if windows:
         prepared = _windows_prepare(root, context, vault, state, session)
         if prepared is None:
-            root.destroy()
+            if not session:
+                root.destroy()  # the warm owner already gets control without another mainloop
             return {'status': 'vazgecildi'}
         context, clip, image, shot = (prepared[key] for key in ('context', 'clip', 'image', 'shot'))
         sources, sequence = prepared['sources'], prepared['sequence']
@@ -5844,12 +5853,12 @@ def popup(vault, context=None, state=None, root=None, session=None):
         saving['on'] = True
         def fade(alpha):
             if alpha <= 0:
-                root.destroy()
+                leave_window()
                 return
             try:
                 root.attributes('-alpha', alpha)
             except tk.TclError:
-                root.destroy()
+                leave_window()
                 return
             root.after(10, fade, round(alpha - 0.34, 2))
         fade(1.0)
@@ -5921,10 +5930,11 @@ def popup(vault, context=None, state=None, root=None, session=None):
     if agent_button is not None:
         canvas.tag_bind(agent_button, '<Button-1>', send_agent)
     def dismiss(_event=None):
+        saving['on'] = True
         stop_escape()
         if session:
             session.cancel.set()
-        root.destroy()
+        leave_window()
         return 'break'
 
     def escape(event):
@@ -6025,7 +6035,10 @@ def popup(vault, context=None, state=None, root=None, session=None):
             root.destroy()
         root.after(700, shoot)
     try:
-        root.mainloop()
+        # A native close can arrive while the window is being shown; mainloop
+        # resets quit(), so respect an already delivered warm cancellation first.
+        if not (windows and session and session.cancel.is_set()):
+            root.mainloop()
     finally:
         stop_escape()
         if session:
@@ -7637,15 +7650,16 @@ def _windows_warm_popup(vault, state, instance=None):
             pipe.send(_protocol_message('ERROR', instance, reason='Pencere baslatilamadi'))
         return result
     finally:
-        if session:
-            session.finish(result)
-        elif pipe:
-            pipe.finish()
-        if root:
-            try:
+        try:
+            if root:
                 root.destroy()
-            except Exception:
-                pass
+        except Exception:
+            pass
+        finally:
+            if session:
+                session.finish(result)
+            elif pipe:
+                pipe.finish()
 
 
 # ---------------------------------------------------------------- install / remove

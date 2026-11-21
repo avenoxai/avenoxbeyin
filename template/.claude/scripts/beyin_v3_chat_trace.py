@@ -199,11 +199,13 @@ def hint(state, harness, payload):
     return ''
 
 
-def write(vault, state, harness, session, text, *, day=None):
+def write(vault, state, harness, session, text, *, day=None, record=None):
     """Append only the explicitly supplied summary through the existing source writer.
 
     `day` is set only by the explicit backfill (#599): a past session's own first day, so its
-    trace lands in that month instead of the day the summary was written.
+    trace lands in that month instead of the day the summary was written. It also passes `record`
+    (#766): a callable run under this same writer lock once the note is confirmed, so the backfill
+    ledger entry and the note can never be separated by another process taking the lock between them.
     """
     if not settings(state)['enabled']:
         raise ValueError('chat trace is off; explicitly enable it before writing')
@@ -229,6 +231,22 @@ def write(vault, state, harness, session, text, *, day=None):
             content = previous['content']
             metadata = {'kind': 'note', 'title': 'Sohbet izleri ' + today[:7],
                         'visibility': 'internal', 'remote_allowed': False, 'chat_trace': 1}
+            if record is not None:
+                # A process can exit after replacing the note and before updating its
+                # ledger. Keep only a digest in private state so a retry can recognize
+                # that paragraph even when the caller supplied a different summary.
+                pending = value.get('backfill_digest')
+                if pending and content and len(content.encode('utf-8')) <= MAX_NOTE_BYTES:
+                    _, existing_body = parse(content)
+                    for part in existing_body.replace('\r\n', '\n').split('\n\n'):
+                        candidate = part.strip()
+                        if hashlib.sha256(candidate.encode()).hexdigest() == pending:
+                            paragraph = candidate
+                            break
+                digest = hashlib.sha256(paragraph.encode()).hexdigest()
+                if digest != pending:
+                    value['backfill_digest'] = digest
+                    atomic(path, json.dumps(value))
             if content is None:
                 body = ('# Sohbet izleri ' + today[:7] + '\n\n'
                         'Kisa oturum ozetleri; ajan beyanidir, dogrulanmis karar kaydi degildir.\n\n' + paragraph + '\n')
@@ -259,6 +277,9 @@ def write(vault, state, harness, session, text, *, day=None):
             # the replay path which performed no write of its own.
             if engine.note_read(source)['content'] != expected:
                 raise NoteConflict('chat trace changed before acknowledgement; checkpoint left open')
+        if record is not None:
+            record()
+            value.pop('backfill_digest', None)
         # A committed, verified trace closes this checkpoint. Replaying after a crash
         # finds the exact paragraph before acknowledging, so it cannot duplicate it.
         value.update(covered=value['turns'], since=time.time(), next_due=value['turns'] + 2)
