@@ -173,7 +173,11 @@ def record_error(state, exc):
     """hook-error.json is a diagnostic only. A state folder that refuses the write (read-only,
     full disk) must not turn the fail-open handler itself into a traceback (#417)."""
     try:
-        atomic(Path(state) / "hook-error.json", {"at": time.time(), "error": type(exc).__name__})
+        diagnostic = {"at": time.time(), "error": type(exc).__name__}
+        code = getattr(exc, "errno", None) if isinstance(exc, OSError) else None
+        if type(code) is int:
+            diagnostic["errno"] = code
+        atomic(Path(state) / "hook-error.json", diagnostic)
     except OSError:
         pass
 
@@ -959,7 +963,7 @@ def main():
                     except Exception:
                         pass
             from beyin_v3_companion import (context as companion_context, relevant, opening_budget, client_budget,
-                                            client_rebudget, fit_client, receipt_header)
+                                            client_rebudget, fit_client, fit_opening_overflow, receipt_header)
             # Both budgets stop below a client's own cut-off; past it the client files the text away (#175).
             # A text over the client's own measure is rendered once more with a scaled budget.
             limit = client_budget(args.harness, settings['context_chars'])
@@ -984,7 +988,8 @@ def main():
                 # Local import syntax cannot prove client delivery. Keep the normal
                 # companion text, including after resume/compact and continuity questions.
                 # The opening may carry its own machine-local budget (#140); never a vault preference.
-                limit = client_budget(args.harness, opening_budget(state, settings['context_chars']))
+                opening_limit = client_budget(args.harness, opening_budget(state, settings['context_chars']))
+                limit = opening_limit
                 text = companion_context(store, max(0, limit - len(notice)), session, args.harness, query, receipt, warning, project=project,
                                          rules_project=rules_project)
                 smaller = client_rebudget(args.harness, limit, notice + text)
@@ -1010,9 +1015,13 @@ def main():
                             else:
                                 high = trial
                         if low:
-                            # Without any fitting trial (a notice alone over the cap) the
-                            # last render stays and the client guard trims it, as before.
                             limit, text = low, fitting
+                        else:
+                            # No fitting render before the deadline (or a notice alone
+                            # over the cap). Clip only vetted rendered text, without
+                            # another source read, reserving a complete omission marker.
+                            text = fit_opening_overflow(args.harness, notice + text, opening_limit)
+                            notice, limit = '', opening_limit
             else:
                 # Per-turn automatic context is strict: only meaningful lexical matches are
                 # injected, and an empty match injects nothing at all instead of a receipt

@@ -16,6 +16,8 @@ Newly delivered events are checked against both the live markers and this ledger
 
 The ledger intentionally **retains event hashes indefinitely**, because removing old hashes would allow very late event-ID replays. This change bounds the number of individual JSON files during ordinary use; it does not promise bounded SQLite storage or a measured speed-up. A state reset, backup or restore should keep `memory.sqlite3` and `hook-done/` together.
 
+The local `hook-error.json` diagnostic, also available in JSON `doctor` output, records the last hook error's timestamp and exception type. When an `OSError` carries an integer `errno`, the diagnostic records that number too. It does not store exception messages, filenames or prompts. A successful drain can clear the diagnostic; if the state cannot be written, recording the error remains best-effort.
+
 ## Event retention and state size
 
 Every real record change stores a full snapshot in the `events` table, so a vault that is edited daily, or reindexed by an upgrade, grew `memory.sqlite3` without bound before #585. Only `history` reads old snapshots; the receipt-view quarantine stores `MAX(sequence)` as a cutoff, and sync, receipts, `doctor` and the usage report never read old rows. `beyin_v3_retention.py` therefore keeps:
