@@ -76,6 +76,25 @@ class SourceSyncTest(unittest.TestCase):
         self.assertGreaterEqual(deleted['deleted'], 1)
         self.assertEqual(self.records(), [])
 
+    def test_rejected_or_diverged_write_never_replays_after_manual_restore(self):
+        path = self.write()
+        source = 'notes/task.md'
+        original = path.read_bytes()
+        self.engine.sync()
+        old_hash = self.module._hash(original)
+        self.write(body='A different manual edit.')
+        with self.assertRaises(self.module.RevisionConflict):
+            self.engine._intent(source, old_hash, 'rejected text', 'task')
+        self.assertEqual(list(self.engine.journal.glob('*.json')), [])
+        intent = {'source': source, 'old_hash': old_hash, 'content': 'abandoned text', 'kind': 'task'}
+        entry = self.engine.journal / (self.module._hash(source) + '.json')
+        entry.write_text(json.dumps(intent))
+        self.assertTrue(self.engine.sync()['conflicts'])
+        self.assertEqual(len(list(self.engine.journal.glob('*.diverged'))), 1)
+        path.write_bytes(original)
+        self.assertFalse(self.engine.sync()['conflicts'])
+        self.assertEqual(path.read_bytes(), original)
+
     def test_sensitive_folder_sources_are_not_read_or_indexed(self):
         # These directories were already skipped by hygiene, but not by the sync reader.
         safe = self.write('notes/normal.md', id='safe')

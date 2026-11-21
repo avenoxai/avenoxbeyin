@@ -996,7 +996,13 @@ class SyncEngine:
                     if actual == intent['old_hash']:
                         atomic(path, intent['content'])
                     elif actual != desired:
-                        conflicts.append({'source': intent['source'], 'reason': 'recovery conflict; manual edit preserved'})
+                        # A later edit restoring old bytes must never revive this abandoned write.
+                        # Preserve its private journal for inspection outside the replay glob.
+                        from uuid import uuid4
+                        saved = entry.with_suffix('.' + uuid4().hex + '.diverged')
+                        entry.rename(saved)
+                        conflicts.append({'source': intent['source'], 'journal': saved.name,
+                                          'reason': 'recovery conflict; manual edit preserved; review the diverged journal'})
                         continue
                     if note_locks is not None:
                         # Reserve replayed notes until commit AND journal cleanup.
@@ -1351,6 +1357,7 @@ class SyncEngine:
         atomic(entry, _json(intent))
         actual = _hash(path.read_bytes()) if path.exists() else None
         if actual != old_hash:
+            entry.unlink()
             raise RevisionConflict('source changed before replace')
         atomic(path, content)
         return entry
