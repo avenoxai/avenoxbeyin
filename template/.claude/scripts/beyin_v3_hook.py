@@ -173,7 +173,11 @@ def record_error(state, exc):
     """hook-error.json is a diagnostic only. A state folder that refuses the write (read-only,
     full disk) must not turn the fail-open handler itself into a traceback (#417)."""
     try:
-        atomic(Path(state) / "hook-error.json", {"at": time.time(), "error": type(exc).__name__})
+        diagnostic = {"at": time.time(), "error": type(exc).__name__}
+        code = getattr(exc, "errno", None) if isinstance(exc, OSError) else None
+        if type(code) is int:
+            diagnostic["errno"] = code
+        atomic(Path(state) / "hook-error.json", diagnostic)
     except OSError:
         pass
 
