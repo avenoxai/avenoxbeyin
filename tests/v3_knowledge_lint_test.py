@@ -275,6 +275,129 @@ class KnowledgeLintTest(unittest.TestCase):
             linter.extract_wikilinks(line + '\n' + line)
             self.assertLess(time.monotonic() - started, 5)
 
+    def _lint_cli(self, *args):
+        report, code = cli.main(['--vault', str(self.vault), '--state', str(self.state),
+                                 'lint', *args], return_result=True)
+        self.assertEqual(code, 0, report)
+        return report
+
+    def test_cli_lint_index_exclusions_preserve_graph_and_moc(self):
+        from v3_package_helpers import snapshot
+        self._write_notes(self.vault, {
+            'capture/orphan.md': '# Orphan\n',
+            'capture/source.md': '[[knowledge/target]] [[missing]]\n',
+            'capture/target.md': '# Present\n',
+            'capture/private.md': '---\nvisibility: private\n---\n# PrivateCanary\n',
+            'knowledge/target.md': '# Target\n',
+            'knowledge/source.md': '[[capture/target#Present]] [[capture/target#Absent]] '
+                                   '[[capture/private]]\n',
+            'daily/v3/day.md': '# Generated control\n',
+            'knowledge/v3/outcomes.md': '# Generated control\n',
+        })
+        before = self._lint_cli()
+        (self.state / 'index.json').write_text('{"excluded_dirs": ["capture"]}', encoding='utf-8')
+        unchanged = snapshot(Path(self.tmp.name))
+        after = self._lint_cli()
+        self.assertEqual(snapshot(Path(self.tmp.name)), unchanged)
+        for key in ('status', 'scanned_files_count', 'total_links_count',
+                    'broken_links_count', 'broken_links'):
+            self.assertEqual(after[key], before[key], key)
+        self.assertEqual(after['scanned_files_count'], 7)
+        self.assertEqual(after['total_links_count'], 5)
+        self.assertEqual(after['broken_links_count'], 3)
+        self.assertEqual(after['orphans'], ['daily/v3/day.md', 'knowledge/v3/outcomes.md'])
+        self.assertEqual(after['unlinked'], ['knowledge/source.md'])
+        self.assertEqual((before['orphan_count'], after['orphan_count']), (3, 2))
+        self.assertEqual((before['unlinked_count'], after['unlinked_count']), (2, 1))
+        scoped = self._lint_cli('--folder', 'capture')
+        self.assertEqual((scoped['scanned_files_count'], scoped['total_links_count'],
+                          scoped['broken_links_count'], scoped['orphan_count'], scoped['unlinked_count']),
+                         (3, 2, 1, 0, 0))
+        self.assertEqual(scoped['folder_counts'], [
+            {'folder': 'capture', 'broken_links': 1, 'orphans': 0, 'unlinked': 0}])
+        self.assertNotIn('knowledge/target.md', self._lint_cli('--folder', 'knowledge')['orphans'])
+        base = ['--vault', str(self.vault), '--state', str(self.state), 'moc', '--folder', 'capture']
+        result, code = cli.main(base, return_result=True)
+        self.assertEqual((code, result['indexed_notes_count']), (0, 3))
+        moc = (self.vault / 'capture/MOC.md').read_bytes()
+        self.assertIn(b'capture/orphan.md', moc)
+        self.assertNotIn(b'PrivateCanary', moc)
+        (self.state / 'index.json').unlink()
+        result, code = cli.main(base, return_result=True)
+        self.assertEqual((code, result['status']), (0, 'unchanged'))
+        self.assertEqual((self.vault / 'capture/MOC.md').read_bytes(), moc)
+
+    def test_cli_lint_index_exclusions_match_directory_names_at_any_depth(self):
+        self._write_notes(self.vault, {
+            'capture/a.md': '# A', 'projects/CAPTURE/b.md': '# B',
+            'projects/KİŞİSEL/c.md': '# C', 'projects/Cafe\u0301/d.md': '# D',
+            'capture-more/e.md': '# E', 'capture.md': '# Root name',
+        })
+        (self.state / 'index.json').write_text(
+            json.dumps({'excluded_dirs': ['Capture', 'kişisel', 'Café']}), encoding='utf-8')
+        report = self._lint_cli()
+        self.assertEqual(report['scanned_files_count'], 6)
+        self.assertEqual(report['orphans'], ['capture-more/e.md', 'capture.md'])
+        self.assertEqual(report['orphan_count'], 2)
+
+    def test_cli_lint_missing_invalid_and_builtin_exclusions_keep_report(self):
+        from v3_package_helpers import snapshot
+        self._write_notes(self.vault, {'capture/a.md': '# A', 'b.md': '[[capture/a]]'})
+        before = self._lint_cli()
+        for value in ('{', '{"excluded_dirs": ["capture", "projects/capture"]}',
+                      '{"excluded_dirs": ["capture", "knowledge"]}',
+                      '{"excluded_dirs": ["receipts", "node_modules", ".hidden"]}'):
+            with self.subTest(config=value):
+                (self.state / 'index.json').write_text(value, encoding='utf-8')
+                unchanged = snapshot(Path(self.tmp.name))
+                self.assertEqual(self._lint_cli(), before)
+                self.assertEqual(snapshot(Path(self.tmp.name)), unchanged)
+        (self.state / 'index.json').unlink()
+        self.state.rmdir()
+        self.assertEqual(self._lint_cli(), before)
+        self.assertFalse(self.state.exists())
+
+    def test_cli_lint_index_exclusions_precede_report_limits(self):
+        for folder, count in (('capture', 105), ('kept', 101)):
+            self._write_notes(self.vault, {
+                f'{folder}/n{index:03}.md': '# Note\n[[missing]]' for index in range(count)})
+        (self.state / 'index.json').write_text('{"excluded_dirs": ["capture"]}', encoding='utf-8')
+        report = self._lint_cli()
+        self.assertEqual((report['scanned_files_count'], report['total_links_count'],
+                          report['broken_links_count'], report['orphan_count']), (206, 206, 206, 101))
+        self.assertEqual(report['orphans'], [f'kept/n{index:03}.md' for index in range(100)])
+        self.assertEqual(report['truncated'], {'broken_links': 106, 'orphans': 1})
+        self.assertEqual(report['folder_counts'], [
+            {'folder': 'kept', 'broken_links': 101, 'orphans': 101, 'unlinked': 0},
+            {'folder': 'capture', 'broken_links': 105, 'orphans': 0, 'unlinked': 0},
+        ])
+
+    def test_installed_lint_uses_selected_state_exclusions(self):
+        from v3_package_helpers import install, isolated_env, snapshot
+        env = isolated_env(Path(self.tmp.name) / 'home')
+        proc = install(self.vault, self.state, env)
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode('utf-8', errors='replace'))
+        self._write_notes(self.vault, {
+            'capture/a.md': '# A', 'capture/b.md': '[[knowledge/target]]',
+            'knowledge/target.md': '# Target',
+        })
+        command = [sys.executable, str(self.vault / 'beyin.py'), '--json']
+        proc = subprocess.run(command + ['preferences', '--index-exclude-dir', 'capture'],
+                              env=env, capture_output=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode('utf-8', errors='replace'))
+        unchanged = snapshot(Path(self.tmp.name))
+        for state_args, expected in (([], (0, 0)),
+                                     (['--state', str(Path(self.tmp.name) / 'other-state')], (1, 1))):
+            with self.subTest(state_args=state_args):
+                proc = subprocess.run(command + state_args + ['lint', '--folder', 'capture'],
+                                      env=env, capture_output=True, timeout=30)
+                self.assertEqual(proc.returncode, 0, proc.stderr.decode('utf-8', errors='replace'))
+                report = json.loads(proc.stdout)
+                self.assertEqual((report['scanned_files_count'], report['total_links_count'],
+                                  report['broken_links_count']), (2, 1, 0))
+                self.assertEqual((report['orphan_count'], report['unlinked_count']), expected)
+        self.assertEqual(snapshot(Path(self.tmp.name)), unchanged)
+
     def test_moc_omits_sensitive_archived_and_private_notes(self):
         for source, text in [('knowledge/public.md', '# Public'),
                              ('knowledge/secrets/secret.md', '# SecretCanary'),
