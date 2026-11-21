@@ -1504,8 +1504,8 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
             rules_project=None, loaded=None):
     """Budget actual displayed text, not repeated JSON metadata; never cut a record header.
 
-    A dict passed as report receives the companion Kurallar.md share of the returned text
-    (#374); doctor reads it, the hooks pass nothing. project scopes rules and retrieval;
+    A dict passed as report receives the Kurallar.md share (#374) and the retrieved
+    records included in the opening. project scopes rules and retrieval;
     rules_project, the project found from the working directory, scopes the rules alone (#288).
     loaded is accepted for caller compatibility but ignored: filesystem import candidates
     do not establish client delivery, so every source keeps its normal gates and budget."""
@@ -1754,6 +1754,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
     companion_clipped = needed > available
     text, rules = companion(available)
     extra = ''
+    related_records = []
     index = knowledge_map(store)
     shown_map = set()  # map sources retrieval must not repeat below
     if index:
@@ -1766,6 +1767,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
             allowance = min(1500, max(allowance, room // 4))
         if allowance > len(label) + 40:
             extra += label + clip(index['text'], allowance - len(label))
+            related_records.append(index)
             if not query and Path(index['source']).name in ROUTING_CARDS:
                 # The card stands in for the article list (#595): the unqueried snapshot repeats
                 # neither, only a question brings the list back.
@@ -1814,6 +1816,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         if room > 40:
             addition = label + clip(record['text'], room)
             extra += addition
+            related_records.append(record)
             retrieval_used += len(addition)
     # The receipt comes with its whole header, which names the source and calls it a historical
     # claim (#147), plus some body; a narrower room goes back to the companion sources instead.
@@ -1854,6 +1857,8 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
             report['Kurallar.md'] = final_rules
     elif report is not None and rules:
         report['Kurallar.md'] = rules
+    if report is not None and extra:
+        report['related_records'] = related_records
     return text + extra
 
 

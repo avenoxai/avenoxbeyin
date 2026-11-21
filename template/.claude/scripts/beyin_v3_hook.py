@@ -805,8 +805,9 @@ def main():
         if not settings['auto_sync']:
             print(json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == 'antigravity' else '{}'))
             return
+        turn = None
         try:
-            enqueue_event(vault, state, payload, args.harness)
+            turn = enqueue_event(vault, state, payload, args.harness)
         except OSError as exc:
             if not permission_refused(exc):
                 raise
@@ -855,6 +856,18 @@ def main():
                 notice += hint(state, args.harness, payload)
             except Exception:
                 pass  # Optional conversation hints cannot cost a turn or replace its context.
+        fb_hint = ''
+        usage_session = None
+        if not args.metadata_only and turn and event in ('SessionStart', 'UserPromptSubmit') and not is_synthetic_prompt(payload):
+            try:
+                from beyin_v3_usage import feedback_hint, session_key
+                usage_session = session_key(payload.get('session_id'))
+                if event == 'UserPromptSubmit':
+                    fb_hint = feedback_hint(state, prompt_text(payload), session=usage_session)
+                if fb_hint:
+                    notice = (notice + "\n" + fb_hint) if notice else fb_hint
+            except Exception:
+                pass
         inject = settings['context_mode'] == 'turn' or (settings['context_mode'] == 'session' and event == 'SessionStart')
         if not inject or args.metadata_only or (event == 'UserPromptSubmit' and is_synthetic_prompt(payload)):
             print(json.dumps(reminder) if reminder else (json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == 'antigravity' else '{}')))
@@ -968,6 +981,16 @@ def main():
             # A text over the client's own measure is rendered once more with a scaled budget.
             limit = client_budget(args.harness, settings['context_chars'])
             receipt = receipt_context(vault, state)
+            usage_records = []
+
+            def record_usage(records):
+                if turn and (records or not fb_hint) and time.monotonic() - started < HOOK_BUDGET - 0.1:
+                    try:
+                        from beyin_v3_usage import record_injected
+                        record_injected(state, records, session=usage_session, turn=turn)
+                    except Exception:
+                        pass  # Optional counters cannot break context delivery.
+
             if event == 'SessionStart' or relevant(query):
                 # Claude Code and Antigravity send a working directory, not a project (#288, #403).
                 # A project found from it selects the project rules only: as a retrieval scope it
@@ -990,13 +1013,18 @@ def main():
                 # The opening may carry its own machine-local budget (#140); never a vault preference.
                 opening_limit = client_budget(args.harness, opening_budget(state, settings['context_chars']))
                 limit = opening_limit
-                text = companion_context(store, max(0, limit - len(notice)), session, args.harness, query, receipt, warning, project=project,
-                                         rules_project=rules_project)
+                def render_opening(budget):
+                    report = {}
+                    rendered = companion_context(store, max(0, budget - len(notice)), session, args.harness,
+                                                 query, receipt, warning, project=project, report=report,
+                                                 rules_project=rules_project)
+                    return rendered, report.get('related_records', [])
+
+                text, usage_records = render_opening(limit)
                 smaller = client_rebudget(args.harness, limit, notice + text)
                 if smaller is not None and smaller < limit:
                     limit = smaller
-                    text = companion_context(store, max(0, limit - len(notice)), session, args.harness, query, receipt, warning,
-                                             project=project, rules_project=rules_project)
+                    text, usage_records = render_opening(limit)
                     if client_rebudget(args.harness, limit, notice + text) is not None:
                         # Protected sections can change the Unicode ratio after a
                         # render. Bound further work by bisecting integer budgets:
@@ -1004,24 +1032,22 @@ def main():
                         # and none once half the hook budget is spent (the best fitting
                         # render so far stays). Keep a measured fitting rendering, never
                         # trim its tail to make the rules/handoff disappear at the client guard.
-                        low, high, fitting = 0, limit, ''
+                        low, high, fitting, fitting_records = 0, limit, '', []
                         while high - low > 1 and time.monotonic() - started < HOOK_BUDGET / 2:
                             trial = (low + high) // 2
-                            candidate = companion_context(store, max(0, trial - len(notice)), session, args.harness,
-                                                          query, receipt, warning, project=project,
-                                                          rules_project=rules_project)
+                            candidate, candidate_records = render_opening(trial)
                             if client_rebudget(args.harness, trial, notice + candidate) is None:
-                                low, fitting = trial, candidate
+                                low, fitting, fitting_records = trial, candidate, candidate_records
                             else:
                                 high = trial
                         if low:
-                            limit, text = low, fitting
+                            limit, text, usage_records = low, fitting, fitting_records
                         else:
                             # No fitting render before the deadline (or a notice alone
                             # over the cap). Clip only vetted rendered text, without
                             # another source read, reserving a complete omission marker.
                             text = fit_opening_overflow(args.harness, notice + text, opening_limit)
-                            notice, limit = '', opening_limit
+                            notice, limit, usage_records = '', opening_limit, []
             else:
                 # Per-turn automatic context is strict: only meaningful lexical matches are
                 # injected, and an empty match injects nothing at all instead of a receipt
@@ -1082,6 +1108,7 @@ def main():
                                          receipt=receipt if shown else None)
                     except Exception:
                         pass
+                usage_records = delivered.get("records", [])
                 try:
                     # Records held back as already delivered this session still anchor the topic (#363).
                     if duplicates:
@@ -1095,12 +1122,14 @@ def main():
                              inherited=inherited)
                 except (ValueError, OSError):
                     pass
-                if not delivered.get("records") and not receipt_only:
+                if not usage_records and not receipt_only:
+                    record_usage([])
                     diagnostic = fit_client(args.harness, (notice + warning)[:limit])
                     remember_notice(diagnostic)
                     print(json.dumps(output_context(args.harness, event, diagnostic)) if diagnostic else "{}")
                     return
             shown = fit_client(args.harness, (notice + text)[:limit])
+            record_usage(usage_records if shown == notice + text else [])
             remember_notice(shown)
             output = output_context(args.harness, event, shown)
             print(json.dumps(output))

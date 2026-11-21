@@ -390,7 +390,7 @@ class UsageReport(unittest.TestCase):
         self.assertEqual(usage.parse_context(text)[0], ('ranked', 'knowledge/concepts/yedekleme.md', 1))
         self.assertEqual(usage.parse_context(text)[-1], ('receipt', receipt_source, None))
 
-    def test_not_in_release_package(self):
+    def test_release_contains_runtime_usage_but_not_transcript_evaluator(self):
         builder = importlib.util.spec_from_file_location('beyin_release_builder', ROOT / 'scripts/build_v3_release.py')
         module = importlib.util.module_from_spec(builder)
         builder.loader.exec_module(module)
@@ -398,7 +398,9 @@ class UsageReport(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             module.build(target, '3.0.0')
         with zipfile.ZipFile(target) as archive:
-            self.assertFalse([name for name in archive.namelist() if 'usage' in name])
+            names = archive.namelist()
+            self.assertIn('template/.claude/scripts/beyin_v3_usage.py', names)
+            self.assertNotIn('evaluate_v3_usage.py', {Path(name).name for name in names})
 
     def test_utf16_units_converts_ascii_unicode_and_surrogates(self):
         """utf16_units properly extracts 16-bit code units including surrogate pairs (#172)."""
