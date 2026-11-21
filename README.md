@@ -32,7 +32,7 @@ flowchart TB
 
 Asıl kaynak dosyaların. Beyin bunların yerel indeksini tutar ve seçilen bağlamı kullandığın AI istemcisine verir. Sohbet geçmişinin tamamını kendiliğinden bilgiye dönüştürmez; kalıcı olmasını istediğin şeyi nota yazdırırsın.
 
-> **V3.14.0'da yeni:** Yerel web panelinde açık işleri ve taslakları gözden geçirebilir, kendi sorularınla notlarının bulunup bulunmadığını ölçebilirsin. Markdown bağlantıları da kasa denetimine giriyor. [Tüm yenilikler ve güncelleme adımları](docs/v3/releases/3.14.0.md).
+> **V3.14.1'de yeni:** İsteğe bağlı [video motoru](extras/video-motoru/README.md) paketi geldi: boş başlar, her videoda markanı ve düzeltmelerini not alarak gelişir. [Sürüm notu](docs/v3/releases/3.14.1.md). Önceki sürümün yenilikleri: [3.14.0](docs/v3/releases/3.14.0.md).
 
 <a id="kurulum"></a>
 ## Üç adımda kurulum
