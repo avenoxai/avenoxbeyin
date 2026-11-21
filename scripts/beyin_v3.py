@@ -484,7 +484,7 @@ HOOK_FILES = (".claude/settings.local.json", ".codex/hooks.json", ".agents/hooks
 # Fixed machine-local installation paths only, not all managed files/user scripts.
 MACHINE_LOCAL_FILES = tuple(sorted(set(HOOK_FILES + (
     '.beyin-runtime.json', 'Beyni Guncelle.cmd', '.codex/config.toml', '.claude/hermes-plugin/__init__.py',
-    '.opencode/plugins/beyin-v3.js', '.omp/hooks/pre/beyin-v3.ts',
+    '.opencode/plugins/beyin-v3.js', '.omp/hooks/pre/beyin-v3.ts', '.pi/extensions/beyin-v3.ts',
     '.claude/scripts/compile.py', '.claude/scripts/flush.py',
 ) + tuple('.claude/hooks/' + name + suffix
           for name in ('session-start', 'session-end', 'pre-compact', 'prompt-counter')
