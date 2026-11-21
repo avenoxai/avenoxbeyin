@@ -1,6 +1,7 @@
 # Adapted from Forn hafiza-os; see docs/v3/THIRD-PARTY-JEV.txt.
 import json
 import os
+import subprocess
 import tempfile
 import threading
 import time
@@ -10,6 +11,39 @@ from unittest.mock import patch
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'template/.claude/scripts'))
 import beyin_v3_jev_client as j
+from tests.v3_package_helpers import ROOT, inherited_env, isolated_env, run_python
+
+
+class KeyCommandCliTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve()
+        self.vault = self.root / 'Şifre İstanbul vault'
+        self.vault.mkdir()
+        self.state = self.root / 'local state'
+        self.state.mkdir()
+        self.env = inherited_env(**isolated_env(self.root / 'home'))
+        for name in ('TYPESAFE_API_KEY', 'LAYA_API_KEY', 'TYPESAFE_BASE_URL'):
+            self.env.pop(name, None)
+
+    def cli(self, *args):
+        return run_python(ROOT / 'scripts/beyin_v3.py',
+                          ['--vault', self.vault, '--state', self.state, '--json', *args],
+                          ROOT, self.env)
+
+    def test_jev_key_cli_accepts_helper_flags_and_removes_command(self):
+        for argv in ((sys.executable, '-c', 'print(chr(65))'),
+                     ('--', sys.executable, '-c', 'print(chr(65))')):
+            result = self.cli('jev-key', *argv)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(json.loads(result.stdout)['key_command_configured'])
+        result = self.cli('jev-key')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(json.loads(result.stdout)['key_command_configured'])
+        result = self.cli('jev-key', '')
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(result.stderr)['message'], 'key_command_invalid')
 
 class ClientTests(unittest.TestCase):
     def setUp(self):

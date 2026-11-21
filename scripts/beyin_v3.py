@@ -1292,7 +1292,8 @@ def parser(note_namespace=None, is_json=False):
     jev_audit.add_argument("--include-topical", action="store_true", help="Include topical gate score in audit log")
     jev_audit.add_argument("--no-include-topical", action="store_true", help="Exclude topical gate score from audit log")
     jev_key = sub.add_parser("jev-key", help="Configure machine-local key_command for credential retrieval (never in jev.json)")
-    jev_key.add_argument("command", nargs="*", help="argv list (first element absolute path), or empty to remove")
+    jev_key.add_argument("key_argv", nargs=argparse.REMAINDER,
+                         help="argv list (first element absolute path), or empty to remove")
     answer = sub.add_parser("jev-answer", help="Advisory answer claim verification against exact source quotes")
     answer.add_argument("--file", required=True, help="JSON list of claims (maximum 32,000 characters)")
     answer.add_argument("--project", required=True)
@@ -1468,7 +1469,7 @@ def main(argv=None, return_result=False):
         if read_only_context and args.jev:
             raise ValueError("context --no-sync cannot be combined with --jev")
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
-        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc") else None
+        engine = load_engine() if args.command not in ("jev", "jev-key", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc") else None
         store = engine.MemoryStore(state, vault, read_only=read_only_context) if engine else None
         sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "homepage-create", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
         if args.command == "bridge":
@@ -1720,11 +1721,11 @@ def main(argv=None, return_result=False):
                                       args.include_topical, args.no_include_topical)
             result["changed"] = args.mode != "status"
         elif args.command == "jev-key":
-            if not args.command:
-                key_command = None
-            else:
-                key_command = args.command
-            result = jev_client().set_key_command(vault, key_command)
+            key_argv = args.key_argv
+            if key_argv[:1] == ["--"]:
+                key_argv = key_argv[1:]
+            result = jev_client().set_key_command(vault, key_argv or None)
+            result["key_command_configured"] = bool(key_argv)
             result["changed"] = True
         elif args.command == "hook-reconcile":
             result = hook_reconcile(vault, state, force=getattr(args, 'force', False))

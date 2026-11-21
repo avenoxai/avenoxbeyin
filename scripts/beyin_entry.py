@@ -307,15 +307,9 @@ def human_result(result, command, installed_version=None):
             lines.insert(0, 'Jev auto_context denetimi ' + ('etkinlestirildi' if audit.get('enabled') else 'devre disi birakildi'))
         return '\n'.join(lines)
     if command == 'jev-key':
-        key_source = result.get('key_source', 'none')
-        if result.get('changed'):
-            if result.get('key_source') == 'command':
-                return 'Jev key_command ayarlandi (makineye ozel, jev.json dokunulmadi)'
-            else:
-                return 'Jev key_command kaldirildi (makineye ozel, jev.json dokunulmadi)'
-        lines = ['Jev key_command: ' + ('ayarlanmis' if key_source == 'command' else 'yok'),
-                 'Anahtar kaynagi: ' + key_source]
-        return '\n'.join(lines)
+        if result['key_command_configured']:
+            return 'Jev anahtar komutu ayarlandı.'
+        return 'Jev anahtar komutu kaldırıldı.'
     if command == 'preferences':
         prefs = result['preferences']
         lines = ['Otomatik kontrol: ' + ('acik' if prefs['auto_sync'] else 'kapali'),
@@ -882,9 +876,13 @@ def load_cli(directory):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    helper_args = []
+    if next((arg for arg in argv if arg not in ('--human', '--json')), None) == 'jev-key' and '--' in argv:
+        separator = argv.index('--')
+        argv, helper_args = argv[:separator], argv[separator:]
     force_json = '--json' in argv or '--print-config' in argv
     human = ('--human' in argv or sys.stdout.isatty()) and not force_json
-    argv = [arg for arg in argv if arg not in ('--human', '--json')]
+    argv = [arg for arg in argv if arg not in ('--human', '--json')] + helper_args
     if human:
         # A piped or redirected Windows console uses a legacy code page (cp1252 has no s-cedilla);
         # write redirected human output as UTF-8 so stored text and paths survive intact.
