@@ -1248,6 +1248,10 @@ def parser(note_namespace=None, is_json=False):
     homepage.add_argument("--file", default="-", help="JSON {source, expected_sha256, title, project, selections}; - for stdin")
     task = sub.add_parser("task-create", help="Create and verify an explicit new task")
     task.add_argument("--file", default="-", help="JSON {source: tasks/name.md, text, metadata: {id,status,owner}}")
+    feedback_p = sub.add_parser("feedback", help="Record feedback (ok, wrong, stale) for a note or source")
+    feedback_p.add_argument("target", help="Note ID, source path, or identifier")
+    feedback_p.add_argument("verdict", choices=["ok", "wrong", "stale"], help="Feedback verdict")
+
     mutation_queue = sub.add_parser("mutation-queue", help="Opt-in local offline mutation queue (off by default; machine-local state)")
     queue_action = mutation_queue.add_mutually_exclusive_group()
     queue_action.add_argument("--enable", action="store_true", help="Turn the queue on for this machine")
@@ -1468,7 +1472,7 @@ def main(argv=None, return_result=False):
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
         engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc") else None
         store = engine.MemoryStore(state, vault, read_only=read_only_context) if engine else None
-        sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "homepage-create", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
+        sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "homepage-create", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history", "feedback") and not read_only_context else None
         if args.command == "bridge":
             if sum([bool(args.print_config), bool(args.install), bool(args.uninstall)]) > 1:
                 argument_parser.error("--print-config, --install, and --uninstall are mutually exclusive")
@@ -1946,6 +1950,12 @@ def main(argv=None, return_result=False):
                 result['mutation_queue'] = mutation.doctor(state)
             except Exception as exc:
                 result['mutation_queue'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            try:
+                _ensure_scripts_path()
+                import beyin_v3_usage as usage
+                result['note_usage'] = usage.summarize_usage(state)
+            except Exception as exc:
+                result['note_usage'] = {'status': 'unavailable', 'error': type(exc).__name__}
             result['status'] = ('needs_attention' if health.get('sync', {}).get('status') in ('conflict', 'degraded') or result['hook_paths'].get('status') == 'stale' or result['skill_conflicts'] or result.get('instruction_conflicts') or result['hook-error.json'] or result['task_completion']['strict_issue_count'] or result['task_completion'].get('error') or result['validity']['ignored_rejection_count'] or result['validity'].get('error') or result.get('project_scopes', {}).get('status') in ('error', 'warning') else 'pending' if result['pending_events'] else 'observed_metadata' if result['acknowledged_events'] else 'never_seen')
             if result['updates'].get('status') == 'recovery_required':
                 result['status'] = 'needs_attention'
@@ -2177,6 +2187,11 @@ def main(argv=None, return_result=False):
         elif args.command == "task-create":
             payload = read_json(args.file)
             result = sync.task_create(payload['source'], payload['text'], payload['metadata'])
+        elif args.command == "feedback":
+            _ensure_scripts_path()
+            import beyin_v3_usage as usage
+            result = usage.record_feedback(state, args.target, args.verdict, store=sync.store)
+
         elif args.command == "mutation-queue":
             _ensure_scripts_path()
             import beyin_v3_mutation as mutation
@@ -2308,6 +2323,11 @@ def main(argv=None, return_result=False):
             result = sync.receipt(payload["event_id"], payload["summary"],
                                           payload["refs"], args.harness, session=payload.get('session'),
                                           links=payload.get('links'))
+            try:
+                import beyin_v3_usage
+                beyin_v3_usage.record_cited(state, payload.get("refs"))
+            except Exception:
+                pass
         elif args.command == "history":
             # History is source-verified, so refresh first like context: an edit
             # made just before this command must not hide the audit trail.

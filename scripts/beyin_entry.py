@@ -438,6 +438,12 @@ def human_result(result, command, installed_version=None):
         else:
             lines.append('VACUUM tamamlanamadi: ' + ascii_text(result.get('vacuum')))
         return '\n'.join(lines + ['Vault dosyalarina dokunulmadi.'])
+    if command == 'feedback':
+        if result.get('success'):
+            fb = result.get('feedback', {})
+            return f"Geri bildirim kaydedildi ({result.get('target')} -> {result.get('verdict')}): ok={fb.get('ok', 0)}, wrong={fb.get('wrong', 0)}, stale={fb.get('stale', 0)}"
+        return f"Geri bildirim kaydedilemedi: {result.get('error', 'unknown error')}"
+
     if command == 'mutation-queue':
         if isinstance(result.get('enabled'), bool):
             return ('Cevrimdisi mutasyon kuyrugu: ' + ('acik' if result['enabled'] else 'kapali (acmak icin: beyin.py mutation-queue --enable)') +
@@ -628,6 +634,11 @@ def human_result(result, command, installed_version=None):
             lines.append('Oturum ici tekrar onleme: acik (' + str(dedupe.get('sessions', 0)) + ' oturum defteri)')
         elif dedupe.get('valid') is False:
             lines.append('context-dedupe.json gecersiz; oturum ici tekrar onleme kapali sayiliyor.')
+        usage = result.get('note_usage') or {}
+        if isinstance(usage, dict) and usage.get('tracked', 0) > 0:
+            totals = usage.get('feedback_totals', {})
+            lines.append(f"Not kullanim takibi: {usage.get('tracked', 0)} kayit, {usage.get('dead_weight_count', 0)} olu agirlik (dead-weight), geri bildirim [ok: {totals.get('ok', 0)}, wrong: {totals.get('wrong', 0)}, stale: {totals.get('stale', 0)}]")
+
         queue = result.get('mutation_queue') or {}
         if queue.get('valid') is False:
             lines.append('mutation-queue-settings.json gecersiz; cevrimdisi kuyruk kapali sayiliyor.')
