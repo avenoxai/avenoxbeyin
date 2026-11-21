@@ -1724,7 +1724,9 @@ def main(argv=None, return_result=False):
             key_argv = args.key_argv
             if key_argv[:1] == ["--"]:
                 key_argv = key_argv[1:]
-            result = jev_client().set_key_command(state, key_argv or None)
+            elif len(key_argv) == 1 and not Path(key_argv[0]).is_file():
+                key_argv = key_argv[0]
+            result = jev_client().set_key_command(state, None if key_argv == [] else key_argv)
             result["key_command_configured"] = bool(key_argv)
             result["changed"] = True
         elif args.command == "hook-reconcile":

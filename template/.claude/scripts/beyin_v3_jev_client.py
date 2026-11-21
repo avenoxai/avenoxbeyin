@@ -28,6 +28,7 @@ import math
 import statistics
 import os
 import re
+import shlex
 import stat
 import subprocess
 import queue
@@ -323,12 +324,112 @@ def _validated(config):
     return config
 
 
-def _environment(config, state=None):
+KEY_COMMAND_TIMEOUT = 10
+KEY_COMMAND_MAX_BYTES = 8192
+
+
+def _key_command_argv(command):
+    if isinstance(command, str):
+        try:
+            command = shlex.split(command, posix=os.name != 'nt')
+        except ValueError:
+            raise ValueError('key_command_invalid') from None
+        if os.name == 'nt':
+            # Non-POSIX shlex retains quotes around grouped paths and arguments.
+            command = [part[1:-1] if len(part) >= 2 and part[0] == part[-1]
+                       and part[0] in "\"'" else part for part in command]
+    if (not isinstance(command, list) or not command
+            or not all(isinstance(part, str) and part.strip() and '\0' not in part for part in command)
+            or not Path(command[0]).is_absolute()):
+        raise ValueError('key_command_invalid')
+    if os.name == 'nt' and Path(command[0]).suffix.casefold() in ('.bat', '.cmd'):
+        # Windows can launch batch files in a system shell even with shell=False.
+        raise ValueError('key_command_invalid')
+    return command
+
+
+def _key_pipe_reader(pipe):
+    """Read available pipe bytes, returning None when a writer is still pending."""
+    fd = pipe.fileno()
+    if os.name == 'nt':
+        import _winapi
+        import msvcrt
+
+        handle = msvcrt.get_osfhandle(fd)
+
+        def read(size):
+            try:
+                available, _ = _winapi.PeekNamedPipe(handle)
+            except OSError as exc:
+                if exc.winerror == 109:  # ERROR_BROKEN_PIPE: the writer closed its end
+                    return b''
+                raise
+            return os.read(fd, min(size, available)) if available else None
+    else:
+        os.set_blocking(fd, False)
+
+        def read(size):
+            try:
+                return os.read(fd, size)
+            except BlockingIOError:
+                return None
+    return read
+
+
+def _read_key_command(command, timeout):
+    try:
+        argv = _key_command_argv(command)
+        if timeout <= 0:
+            raise ValueError('credentials_missing')
+        deadline = time.monotonic() + timeout
+        with subprocess.Popen(argv, shell=False, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0) as child:
+            try:
+                stdout = _key_pipe_reader(child.stdout)
+                stderr = _key_pipe_reader(child.stderr)
+                output = bytearray()
+                while stdout is not None or stderr is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise ValueError('credentials_missing')
+                    # Probe one byte past the cap. Never keep that byte or truncate.
+                    space = KEY_COMMAND_MAX_BYTES - len(output)
+                    part = stdout(space + 1) if stdout is not None else None
+                    if part == b'':
+                        stdout = None
+                    elif part:
+                        if len(part) > space:
+                            raise ValueError('credentials_missing')
+                        output.extend(part)
+                    # Drain stderr separately in bounded chunks and discard it immediately.
+                    err = stderr(KEY_COMMAND_MAX_BYTES) if stderr is not None else None
+                    if err == b'':
+                        stderr = None
+                    if part is None and err is None:
+                        time.sleep(min(0.01, remaining))
+                if child.wait(timeout=max(0, deadline - time.monotonic())) != 0:
+                    raise ValueError('credentials_missing')
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait()
+        if output.endswith(b'\r\n'):
+            del output[-2:]
+        elif output.endswith(b'\n'):
+            del output[-1:]
+        if output:
+            return output.decode('utf-8')
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    raise ValueError('credentials_missing') from None
+
+
+def _environment(config, state=None, *, command_timeout=KEY_COMMAND_TIMEOUT):
     """Return (values, key_source).
 
     key_source: 'env', 'env_file', 'command', or 'none'.
     key_command runs only when neither env nor env_file supplied a key.
-    Its first stdout line is the key; output is never written to disk or logs.
+    Its bounded stdout, minus one trailing newline, is the key.
     base_url from env/env_file is NOT counted as a key source.
     """
     values = {}
@@ -357,18 +458,9 @@ def _environment(config, state=None):
                 break
     # Try key_command from machine-local state
     if key_source == 'none' and state and state.get('key_command'):
-        cmd = state['key_command']
-        if isinstance(cmd, list) and cmd and all(isinstance(part, str) and part.strip() for part in cmd):
-            if Path(cmd[0]).is_absolute():
-                try:
-                    done = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
-                    if done.returncode == 0 and done.stdout.strip():
-                        first_line = done.stdout.strip().splitlines()[0]
-                        key_name = 'LAYA_API_KEY' if config.get('provider') == 'laya' else 'TYPESAFE_API_KEY'
-                        values[key_name] = first_line
-                        key_source = 'command'
-                except (OSError, subprocess.TimeoutExpired, ValueError):
-                    pass
+        key_name = 'LAYA_API_KEY' if config.get('provider') == 'laya' else 'TYPESAFE_API_KEY'
+        values[key_name] = _read_key_command(state['key_command'], command_timeout)
+        key_source = 'command'
     # Also read base_url from env/env_file if present (but don't count as key_source)
     for name in ('TYPESAFE_BASE_URL',):
         if name in os.environ:
@@ -601,7 +693,8 @@ def evaluate(vault, query, candidates, *, source_versions=None, scope='user', fa
             requests=laya.plan(purpose,body,config['model'])
         if inspect_config(vault) != policy: raise ValueError('configuration_changed')
         state = _load_jev_state(vault)
-        env, _ = _environment(config, state)
+        env, _ = _environment(config, state, command_timeout=min(
+            KEY_COMMAND_TIMEOUT, config['timeout'] - (time.monotonic() - started)))
         # TYPESAFE_BASE_URL and TYPESAFE_API_KEY never apply to the local backend.
         endpoint=laya.endpoint(config['base_url']) if laya else _endpoint(env.get('TYPESAFE_BASE_URL',config['base_url']))
         fingerprint=dict(body=body,scope=scope,sources=source_versions or {},endpoint=endpoint,
@@ -879,17 +972,12 @@ def set_mode(vault, mode=None, enable=(), disable=(), provider=None, laya=None):
 def set_key_command(vault, key_command=None):
     """Configure machine-local key_command for credential retrieval.
 
-    key_command: argv list (first element must be absolute path), or None to remove.
+    key_command: argv list or quoted command line with an absolute executable, or None to remove.
     Stored in machine-local state file (jev-state.json), never in jev.json.
     This preserves rollback compatibility - old readers never see key_command.
     """
     if key_command is not None:
-        if not isinstance(key_command, list) or not key_command:
-            raise ValueError('key_command_invalid')
-        if not all(isinstance(part, str) and part.strip() for part in key_command):
-            raise ValueError('key_command_invalid')
-        if not Path(key_command[0]).is_absolute():
-            raise ValueError('key_command_invalid')
+        key_command = _key_command_argv(key_command)
     state = _load_jev_state(vault)
     if key_command is None:
         state.pop('key_command', None)

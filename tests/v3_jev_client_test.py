@@ -90,12 +90,64 @@ class KeyCommandCliTests(unittest.TestCase):
         self.assertEqual(local.stat().st_mode & 0o777, 0o600)
         self.assertTrue(json.loads(self.cli('jev', 'status').stdout)['key_present'])
 
+    def test_key_command_output_is_bounded_and_preserves_all_but_one_newline(self):
+        cases = (
+            ("b'a' * 8192", 'a' * 8192),
+            ("b'a' * 8193", None),
+            ("b''", None),
+            ("b'\\n'", None),
+            ("b' key \\r\\n\\r\\n'", ' key \r\n'),
+        )
+        config = dict(j.DEFAULTS, mode='shadow')
+        for expression, expected in cases:
+            with self.subTest(expression=expression), patch.dict(os.environ, self.env, clear=True):
+                code = ('import sys; assert not sys.stdin.buffer.read(); '
+                        'sys.stderr.buffer.write(b"x" * 131072); sys.stdout.buffer.write('
+                        + expression + ')')
+                state = {'key_command': [sys.executable, '-c', code]}
+                if expected is None:
+                    with self.assertRaisesRegex(ValueError, '^credentials_missing$') as error:
+                        j._environment(config, state)
+                    self.assertIsNone(error.exception.__context__)
+                else:
+                    values, source = j._environment(config, state)
+                    self.assertEqual(source, 'command')
+                    self.assertEqual(values['TYPESAFE_API_KEY'], expected)
+
+    def test_timed_out_key_command_is_killed_and_reaped(self):
+        children = []
+        popen = subprocess.Popen
+
+        def track(*args, **kwargs):
+            child = popen(*args, **kwargs)
+            children.append(child)
+            return child
+
+        state = {'key_command': [sys.executable, '-c', 'import time; time.sleep(3)']}
+        with patch.dict(os.environ, self.env, clear=True), patch.object(j.subprocess, 'Popen', track):
+            with self.assertRaisesRegex(ValueError, '^credentials_missing$'):
+                j._environment(j.DEFAULTS, state, command_timeout=0.2)
+        self.assertEqual(len(children), 1)
+        self.assertNotIn(children[0].returncode, (None, 0))
+
+    def test_quoted_command_line_uses_argv_without_shell_expansion(self):
+        (self.state / 'jev.json').write_text('{"mode":"shadow"}', encoding='utf-8')
+        command = f'''"{sys.executable}" -c "import sys; print(sys.argv[1])" "Şifre İstanbul &"'''
+        result = self.cli('jev-key', command)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['key_source'], 'command')
+        stored = json.loads((self.state / 'jev-state.json').read_text(encoding='utf-8'))
+        self.assertEqual(stored['key_command'][-1], 'Şifre İstanbul &')
+
 class ClientTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.vault=Path(self.temp.name); None
         self.cards=[dict(id='one',title='A',statement='B',scope='user',domains=['all'],secret_extra='never send')]
         self.calls=[]
+        self.helper_env = inherited_env()
+        for name in ('TYPESAFE_API_KEY', 'LAYA_API_KEY', 'TYPESAFE_BASE_URL'):
+            self.helper_env.pop(name, None)
         self.env=patch.dict(os.environ,{'TYPESAFE_API_KEY':'test-key'},clear=True);self.env.start();self.addCleanup(self.env.stop)
     def config(self,**kw):
         (self.vault/'jev.json').write_text(json.dumps(dict(mode='shadow',**kw)))
@@ -435,29 +487,29 @@ class ClientTests(unittest.TestCase):
 
     def test_set_key_command_and_retrieval(self):
         self.config()
-        py_exe = sys.executable
-        # Absolute path accepted, writes to jev-state.json and not jev.json
-        with patch.dict(os.environ, {}, clear=True):
-            res = j.set_key_command(self.vault, [py_exe, '-c', 'print("secret-key-123")'])
+        token = 'synthetic-' + 'unit-jev-747'
+        helper = [sys.executable, '-c', "print('synthetic-'+'unit-jev-747')"]
+        with patch.dict(os.environ, self.helper_env, clear=True):
+            res = j.set_key_command(self.vault, helper)
             self.assertEqual(res['key_source'], 'command')
             self.assertTrue(res['key_present'])
-        self.assertTrue((j._jev_state_path(self.vault)).exists())
-        self.assertFalse('key_command' in (self.vault / 'jev.json').read_text())
+        self.assertNotIn(token, j._jev_state_path(self.vault).read_text(encoding='utf-8'))
+        self.assertNotIn('key_command', (self.vault / 'jev.json').read_text(encoding='utf-8'))
 
         # Environment retrieval uses key_command when env/env_file are absent
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, self.helper_env, clear=True):
             state = j._load_jev_state(self.vault)
             env, source = j._environment(j.load_config(self.vault), state)
             self.assertEqual(source, 'command')
-            self.assertEqual(env['TYPESAFE_API_KEY'], 'secret-key-123')
+            self.assertEqual(env['TYPESAFE_API_KEY'], token)
 
         # Invalid key_command (relative path, empty, non-list) raises ValueError
         for bad_cmd in ('not-absolute', [], [123], ['relative/path']):
             with self.assertRaises(ValueError):
-                j.set_key_command(self.vault, bad_cmd if isinstance(bad_cmd, list) else bad_cmd) # type: ignore
+                j.set_key_command(self.vault, bad_cmd)
 
         # Remove key_command
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, self.helper_env, clear=True):
             res_removed = j.set_key_command(self.vault, None)
             self.assertEqual(res_removed['key_source'], 'none')
             self.assertFalse(res_removed['key_present'])
