@@ -407,6 +407,52 @@ class InstalledLearnCommandTest(unittest.TestCase):
         self.assertEqual(listed.returncode, 0, listed.stdout + listed.stderr)
         self.assertEqual([c['candidate'] for c in json.loads(listed.stdout)['candidates']], ['Kurulu kasada aday'])
 
+    def test_scoped_list_shows_exactly_the_candidates_the_resolver_selects(self):
+        from v3_package_helpers import install, isolated_env, run_python
+        tmp = tempfile.TemporaryDirectory(prefix='learn-session-scope-')
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        vault, state = root / 'Örnek Beyin', root / 'state'
+        vault.mkdir()
+        env = isolated_env(root / 'home')
+        result = install(vault, state, env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        def learn(*args):
+            result = run_python(vault / 'beyin.py', ['learn', *args], vault, env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+
+        def listed(*args):
+            return {item['id'] for item in learn('--list', *args)['candidates']}
+
+        session = 'synthetic-session-to-normalize-past-24-characters'
+        own = learn('--candidate', 'Target session candidate', '--session', session)['id']
+        other = learn('--candidate', 'Another session candidate', '--session', 'synthetic-other')['id']
+        unscoped = learn('--candidate', 'Unscoped CLI candidate')['id']
+        ledger = state / 'learning-state.jsonl'
+
+        def lines_by_id():
+            return {json.loads(line)['id']: line for line in ledger.read_bytes().splitlines(keepends=True)}
+
+        before = lines_by_id()
+        self.assertEqual(listed(), {own, other, unscoped})
+        self.assertEqual(listed('--session', session, '--all'), {own, other, unscoped})
+        self.assertEqual(listed('--session', 'cli'), {unscoped})
+        selected = listed('--session', session)
+        self.assertEqual(lines_by_id(), before, 'listing must not rewrite the ledger')
+        resolved = learn('--resolve', 'distilled', '--session', session)
+        self.assertEqual(resolved['resolved_count'], len(selected))
+        self.assertEqual(selected, {own})
+        after = lines_by_id()
+        self.assertEqual(json.loads(after[own])['status'], 'distilled')
+        self.assertEqual(after[other], before[other])
+        self.assertEqual(after[unscoped], before[unscoped])
+        self.assertEqual(listed('--session', session), set())
+        self.assertEqual(listed(), {other, unscoped})
+        self.assertEqual(learn('--resolve', 'discarded', '--session', 'cli')['resolved_count'], 1)
+        self.assertEqual(listed(), {other})
+
 
 if __name__ == '__main__':
     unittest.main()
