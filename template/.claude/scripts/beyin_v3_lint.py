@@ -15,6 +15,9 @@ import stat
 import tempfile
 import time
 import unicodedata
+import urllib.parse
+
+from beyin_v3_index import dir_key
 
 # ReDoS-safe wikilink pattern: bounded character class prevents catastrophic backtracking.
 # Matches [[target]], [[target|display]], [[target#heading]], [[target#heading|display]], and embeds ![[...]]
@@ -129,6 +132,70 @@ def extract_wikilinks(text):
     return results
 
 
+MARKDOWN_LINK_PATTERN = re.compile(r"(!?)\s*\[([^\]\r\n]{1,500})\]\s*\(([^)\r\n]{1,500})\)")
+
+
+def extract_markdown_links(text):
+    """Extract all local markdown links from text safely.
+
+    Returns list of dicts: file_target, heading, display, is_embed, raw, line.
+    """
+    if not isinstance(text, str) or not text:
+        return []
+
+    results = []
+    for line_idx, line in _lines_outside_code(text):
+        for match in MARKDOWN_LINK_PATTERN.finditer(line):
+            is_embed = bool(match.group(1))
+            display_part = match.group(2).strip()
+            raw_target = match.group(3).strip()
+
+            if not raw_target:
+                continue
+
+            # Strip <...> wrapper if present
+            if raw_target.startswith("<") and raw_target.endswith(">") and len(raw_target) >= 2:
+                raw_target = raw_target[1:-1].strip()
+
+            # Trim title attribute if present (e.g. target.md "title")
+            parts = raw_target.split(None, 1)
+            if len(parts) == 2 and (parts[1].startswith('"') or parts[1].startswith("'") or parts[1].startswith("(")):
+                raw_target = parts[0]
+
+            # Ignore pure anchor-only links (#section)
+            if raw_target.startswith("#"):
+                continue
+
+            # Ignore external URLs (http://, https://, mailto:, ftp:, etc., i.e. ^[a-zA-Z][a-zA-Z0-9+.-]*: schemes)
+            if raw_target.startswith("//") or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", raw_target):
+                continue
+
+            # Separate #heading fragment if present
+            if "#" in raw_target:
+                file_target, heading_part = raw_target.split("#", 1)
+                file_target = file_target.strip()
+                heading_part = urllib.parse.unquote(heading_part.strip())
+            else:
+                file_target = raw_target
+                heading_part = None
+
+            if not file_target:
+                continue
+
+            # URL-unquote %20 etc. safely
+            file_target = urllib.parse.unquote(file_target)
+
+            results.append({
+                "raw": match.group(0),
+                "file_target": file_target,
+                "heading": heading_part,
+                "display": display_part,
+                "is_embed": is_embed,
+                "line": line_idx,
+            })
+    return results
+
+
 def _archive_folder(name):
     from beyin_v3 import sensitive_fold
     # sensitive_fold keeps Turkish case rules: "ARŞİV" and NFD "Arşiv" both fold to "arsiv".
@@ -141,7 +208,13 @@ def _withheld_path(relative):
     return sensitive_source(relative) or any(_archive_folder(part) for part in Path(relative).parts[:-1])
 
 
-def _note_metadata(vault_root, path):
+def _withheld_metadata(metadata):
+    from beyin_v3 import RETIRED_STATUSES, _status_word
+    return (_norm_key(metadata.get("visibility")) == "private"
+            or _status_word(metadata) in RETIRED_STATUSES)
+
+
+def _note_metadata(vault_root, path, *, include_withheld=False):
     """Frontmatter of a note lint and moc may read; None when the note is withheld."""
     from beyin_v3_sync import parse
     try:
@@ -153,17 +226,14 @@ def _note_metadata(vault_root, path):
         metadata, _ = parse(path.read_text(encoding='utf-8-sig'))
     except (OSError, ValueError, UnicodeError):
         return None
-    if metadata.get('visibility') == 'private' or metadata.get('status') == 'archived':
+    if not include_withheld and _withheld_metadata(metadata):
         return None
     return metadata
 
 
-def _eligible_note(vault_root, path):
-    return _note_metadata(vault_root, path) is not None
-
-
 def build_vault_index(vault_root, target_folder=None):
     """Build fast lookup table of markdown files in the vault."""
+    from beyin_v3_sync import _hash
     vault_root = Path(vault_root)
     start_dir = (vault_root / target_folder) if target_folder else vault_root
     if not start_dir.exists():
@@ -172,6 +242,9 @@ def build_vault_index(vault_root, target_folder=None):
     files_by_rel = {}
     files_by_basename = defaultdict(list)
     attachments = defaultdict(list)
+    records = []
+    withheld_by_rel = {}
+    withheld_by_basename = defaultdict(list)
 
     for root, dirs, files in os.walk(start_dir):
         # Prune excluded dirs
@@ -201,20 +274,35 @@ def build_vault_index(vault_root, target_folder=None):
             except ValueError:
                 continue
 
-            if not _eligible_note(vault_root, full_path):
+            metadata = _note_metadata(vault_root, full_path, include_withheld=True)
+            if metadata is None:
                 continue
-            rel_key = _norm_key(rel_path)
-            files_by_rel[rel_key] = rel_path
+            record = dict(metadata, source=rel_path)
+            if not isinstance(record.get('id'), str) or not record['id']:
+                record['id'] = 'md-' + _hash(rel_path)[:24]
+            records.append(record)
 
-            # Store by basename stem and with .md
-            stem_key = _norm_key(full_path.stem)
-            files_by_basename[stem_key].append(rel_path)
+    # A trusted replacement retires its target even when the replacement belongs to another
+    # scope or is private (#201). Only the resulting eligibility is exposed to the reader.
+    from beyin_v3 import resolve_supersedes
+    candidates = [r for r in records if r.get("generated") is not True and r.get("kind") != "receipt"]
+    retired = resolve_supersedes(candidates)[0]
+    for record in records:
+        rel_path = record['source']
+        if _withheld_metadata(record) or record['id'] in retired:
+            withheld_by_rel[_norm_key(rel_path)] = rel_path
+            withheld_by_basename[_norm_key(Path(rel_path).stem)].append(rel_path)
+        else:
+            files_by_rel[_norm_key(rel_path)] = rel_path
+            files_by_basename[_norm_key(Path(rel_path).stem)].append(rel_path)
 
     return {
         "by_rel": files_by_rel,
         "by_basename": dict(files_by_basename),
         "attachments": dict(attachments),
         "receipts": _receipt_targets(vault_root),
+        "withheld_by_rel": withheld_by_rel,
+        "withheld_by_basename": dict(withheld_by_basename),
     }
 
 
@@ -326,7 +414,7 @@ def resolve_wikilink(vault_root, link_target, source_file=None, vault_index=None
     return {"exists": False, "resolved_path": None}
 
 
-def lint_vault(vault_root, folder=None):
+def lint_vault(vault_root, folder=None, *, state=None):
     """Lint markdown notes in vault for broken wikilinks, orphans, and link graph health."""
     vault_root = Path(vault_root)
     if folder:
@@ -348,6 +436,9 @@ def lint_vault(vault_root, folder=None):
     target_set = set(target_files)
 
     broken_links = []
+    withheld_count = 0
+    withheld_index = {"by_rel": vault_index.get("withheld_by_rel", {}),
+                      "by_basename": vault_index.get("withheld_by_basename", {})}
     outgoing_links = defaultdict(set)
     incoming_links = defaultdict(set)
     all_extracted_count = 0
@@ -362,25 +453,46 @@ def lint_vault(vault_root, folder=None):
             # exception text (which can contain private note bytes).
             raise OSError('lint source read failed') from None
 
-        links = extract_wikilinks(content)
+        wikilinks = extract_wikilinks(content)
+        md_links = extract_markdown_links(content)
         if rel_path in target_set:
-            all_extracted_count += len(links)
+            all_extracted_count += len(wikilinks) + len(md_links)
 
-        for link in links:
-            res = resolve_wikilink(vault_root, link["file_target"], source_file=rel_path, vault_index=vault_index)
+        all_links = [(l, "wikilink") for l in wikilinks] + [(l, "markdown") for l in md_links]
+
+        for link, link_type in all_links:
+            file_target = link["file_target"]
+
+            if link_type == "markdown":
+                target = file_target.replace("\\", "/")
+                relative = target.lstrip("/") if target.startswith("/") else posixpath.join(posixpath.dirname(rel_path), target)
+                key = _norm_key(posixpath.normpath(relative))
+                resolved = vault_index["by_rel"].get(key) or vault_index.get("receipts", {}).get(key)
+                res = {"exists": resolved is not None, "resolved_path": resolved}
+                if not resolved and key in withheld_index["by_rel"]:
+                    withheld_count += int(rel_path in target_set)
+                    continue
+            else:
+                res = resolve_wikilink(vault_root, file_target, source_file=rel_path, vault_index=vault_index)
             # An attachment (image, PDF) unless a note itself has a dotted name ("Sürüm v1.2").
-            if (not res["exists"] and Path(link["file_target"]).suffix
-                    and not link["file_target"].lower().endswith(".md")):
-                if not _attachment_exists(vault_index, link["file_target"], rel_path):
+            if (not res["exists"] and Path(file_target).suffix
+                    and not file_target.lower().endswith(".md")):
+                if link_type == "markdown":
+                    candidates = vault_index["attachments"].get(posixpath.basename(key), ())
+                    exists = any(_norm_key(path) == key for path in candidates)
+                else:
+                    exists = _attachment_exists(vault_index, file_target, rel_path)
+                if not exists:
                     broken_links.append({
                         "source": rel_path,
                         "line": link["line"],
-                        "target": link["file_target"][:MAX_RAW_LINK_CHARS],
+                        "target": file_target[:MAX_RAW_LINK_CHARS],
                         "raw": link["raw"][:MAX_RAW_LINK_CHARS],
-                        "type": "embed" if link["is_embed"] else "wikilink",
+                        "type": "embed" if link["is_embed"] else link_type,
                     })
                 continue
 
+            public_target = res["exists"]
             # Receipt targets prove file existence only; their bodies are never lint input.
             if (res['exists'] and link['heading']
                     and _norm_key(res['resolved_path']) not in vault_index.get('receipts', {})):
@@ -395,25 +507,40 @@ def lint_vault(vault_root, folder=None):
                 outgoing_links[rel_path].add(resolved)
                 incoming_links[resolved].add(rel_path)
             else:
-                broken_links.append({
-                    "source": rel_path,
-                    "line": link["line"],
-                    "target": link["file_target"][:MAX_RAW_LINK_CHARS],
-                    "raw": link["raw"][:MAX_RAW_LINK_CHARS],
-                    "type": "wikilink",
-                })
+                if link_type == "wikilink" and not public_target and resolve_wikilink(vault_root, file_target, rel_path, withheld_index)["exists"]:
+                    withheld_count += int(rel_path in target_set)
+                else:
+                    broken_links.append({
+                        "source": rel_path,
+                        "line": link["line"],
+                        "target": file_target[:MAX_RAW_LINK_CHARS],
+                        "raw": link["raw"][:MAX_RAW_LINK_CHARS],
+                        "type": link_type,
+                    })
 
     broken_links = [link for link in broken_links if link["source"] in target_set]
 
+    # Keep excluded notes in the graph, but omit their orphan/unlinked findings.
+    from beyin_v3_index import applied_keys, exclusions
+    excluded = applied_keys(exclusions(state, vault_root)[0], EXCLUDED_DIR_NAMES) if state is not None else ()
+
+    def classified(path):
+        parts = tuple(dir_key(part) for part in path.split('/')[:-1])
+        if parts[:2] in (('knowledge', 'v3'), ('daily', 'v3')):
+            return False
+        return not any(part in excluded for part in parts)
+
+    classification_files = [path for path in target_files if classified(path)]
+
     # Identify orphans (no incoming and no outgoing)
     orphans = []
-    for f in target_files:
+    for f in classification_files:
         if len(outgoing_links[f]) == 0 and len(incoming_links[f]) == 0:
             orphans.append(f)
 
     # Identify unlinked notes (has outgoing but no incoming)
     unlinked = []
-    for f in target_files:
+    for f in classification_files:
         if len(incoming_links[f]) == 0 and f not in orphans:
             unlinked.append(f)
 
@@ -423,6 +550,7 @@ def lint_vault(vault_root, folder=None):
         "scanned_files_count": len(target_files),
         "total_links_count": all_extracted_count,
         "broken_links_count": len(broken_links),
+        "withheld_targets_count": withheld_count,
         "orphan_count": len(orphans),
         "unlinked_count": len(unlinked),
     }
@@ -709,6 +837,8 @@ def _generate_moc(vault_root, target_folder="knowledge", moc_filename="MOC.md"):
             raise ValueError(f"{moc_rel} frontmatter could not be read; it was left unchanged") from None
     moc_scope, moc_rank = _moc_reader(moc_metadata, moc_rel, scopes)
 
+    withheld_paths = build_vault_index(vault_root)["withheld_by_rel"]
+
     # Collect notes in folder (excluding moc itself)
     notes_by_category = defaultdict(list)
     skipped = {"other_scope": 0, "narrower_visibility": 0, "untrusted": 0}
@@ -725,6 +855,8 @@ def _generate_moc(vault_root, target_folder="knowledge", moc_filename="MOC.md"):
                 continue
 
             rel_to_vault = f_path.relative_to(vault_root).as_posix()
+            if _norm_key(rel_to_vault) in withheld_paths:
+                continue
             reason = _moc_skip_reason(metadata, rel_to_vault, scopes, moc_scope, moc_rank)
             if reason is not None:
                 skipped[reason] += 1
@@ -804,11 +936,11 @@ Bu not, `{target_folder}` altındaki notların navigasyon ve içerik haritasıd�
     }
 
 
-def manage(vault_root, action, folder=None, moc_file="MOC.md"):
+def manage(vault_root, action, folder=None, moc_file="MOC.md", *, state=None):
     """CLI dispatcher for beyin.py lint and moc commands."""
     vault_root = Path(vault_root)
     if action == "lint":
-        return lint_vault(vault_root, folder=folder)
+        return lint_vault(vault_root, folder=folder, state=state)
     elif action == "moc":
         target = folder or "knowledge"
         return generate_moc(vault_root, target_folder=target, moc_filename=moc_file)

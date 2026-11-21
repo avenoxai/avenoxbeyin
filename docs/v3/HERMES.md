@@ -114,9 +114,44 @@ Every `REMINDER_EVERY` (15) user turns of an interactive session the plugin appe
 `[Hafıza]` reminder to write a receipt — the same cadence the V2 Hermes adapter used. It is
 plain text inside the injected context, not an instruction the adapter enforces.
 
-In Beyin 3.13.0, the adapter keeps the turn count and first-turn platform in process memory.
-Restarting the gateway or recreating the hooks loses both. The reminder neither
-writes a receipt nor blocks a turn from finishing.
+The reminder neither writes a receipt nor blocks a turn from finishing.
+
+### Durable turn state
+
+`state/hermes-turns.json` stores only a SHA-256 session key, count, first known platform
+and last-turn timestamp. It stores neither the raw session ID nor prompt. Hashing is
+pseudonymization, not encryption or protection against guessing a known ID. Both disk and
+process-local fallback retain at most 200 sessions, with a seven-day inactivity limit;
+expired, future-dated and invalid timestamps are not resumed. Finalize removes the disk
+record while persistence is available. A missing platform on a later `is_first_turn`
+callback does not erase a known platform; an explicitly supplied first-turn platform still
+updates it. Attended/unattended overrides and the 15-turn reminder remain unchanged.
+
+A stable `hermes-turns.lock` serializes the entire read/modify/write across processes, using
+the same OS-lock pattern as the learning ledger. The JSON is fsynced and atomically replaced;
+the lock file is deliberately not deleted. Lock acquisition waits at most one second before
+falling back, in addition to the adapter subprocess budget. This does not change the main
+memory database or add a dependency/service.
+
+On a lock/read/write error the plugin logs only the exception class and continues from a
+bounded in-process counter. Failed increments are added to the latest committed count when
+that session next succeeds, so a stale readable file cannot repeatedly trigger turn 15.
+Healthy cached state does not recreate a session another process finalized. A failed finalize
+retains a local reset boundary until the same session next succeeds, without suppressing a
+newer disk record. It cannot durably delete anything while storage is unavailable. If the
+process exits before recovery, uncommitted turns and failed finalize deletions are lost;
+concurrent fallback processes cannot promise a globally exact reminder cadence. Catch-up
+does not replay reminders for earlier turns. Corrupt or unreadable files are left untouched
+rather than overwritten with an empty state; repair the file before relying on restart recovery.
+
+Schema 1 was used by the unmerged #821 trial, not a released format. Its raw keys are hashed
+in memory on read and replaced by schema 2 on the next successful mutation; temporary files
+also contain hashes only. The old file remains if persistence fails, so that existing raw-ID
+copy cannot be claimed erased. Stop all older Hermes plugin processes before upgrading a
+trial installation: old and new writers must not share this file. Rolling back to the prior
+main/release ignores this state and resumes process-local counting; no preference migration
+or user-note change is involved. Rolling back to the intermediate schema-1 trial writer is
+not supported against the schema-2 file.
 
 Retrieval semantics are identical to the other harnesses (`tests/v3_hermes_test.py` asserts the
 Claude and Hermes outputs for the same query are byte-equal). Preferences (`beyin.py preferences`)

@@ -1481,6 +1481,27 @@ class HookFailOpenTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         self.assertEqual(result.stdout.strip(), b'{}')
 
+    def test_error_diagnostic_writes_only_numeric_os_metadata(self):
+        hook = load_hook()
+        diagnostic_path = self.state / 'hook-error.json'
+        missing = self.vault / 'synthetic-private-path.md'
+        with self.assertRaises(FileNotFoundError) as caught:
+            missing.read_text(encoding='utf-8')
+        hook.record_error(self.state, caught.exception)
+        diagnostic = json.loads(diagnostic_path.read_text(encoding='utf-8'))
+        self.assertEqual(set(diagnostic), {'at', 'error', 'errno'})
+        self.assertEqual(diagnostic['error'], 'FileNotFoundError')
+        self.assertEqual(diagnostic['errno'], errno.ENOENT)
+
+        invalid = OSError('synthetic private message')
+        invalid.errno = 'synthetic nonnumeric value'
+        for exc in (OSError('no errno'), invalid, ValueError('synthetic private message')):
+            with self.subTest(error=type(exc).__name__, errno=getattr(exc, 'errno', None)):
+                hook.record_error(self.state, exc)
+                diagnostic = json.loads(diagnostic_path.read_text(encoding='utf-8'))
+                self.assertEqual(set(diagnostic), {'at', 'error'})
+                self.assertEqual(diagnostic['error'], type(exc).__name__)
+
     @unittest.skipIf(os.name == 'nt' or (hasattr(os, 'geteuid') and os.geteuid() == 0),
                      'a read-only folder needs POSIX permissions and a non-root user')
     def test_read_only_state_still_answers_the_prompt(self):
@@ -1727,6 +1748,14 @@ hook.main()
         self.assertFalse(list((self.state / 'hook-queue').glob('*.json')))
         self.assertNotIn('state folder is not writable', context)
         self.assertNotIn('Synthetic Reviewer', context)
+
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
+                                 '--state', str(self.state), 'doctor'], capture_output=True, env=self.env, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+        diagnostic = json.loads(result.stdout)['hook-error.json']
+        self.assertEqual(set(diagnostic), {'at', 'error', 'errno'})
+        self.assertEqual(diagnostic['error'], 'OSError')
+        self.assertEqual(diagnostic['errno'], errno.ENOSPC)
 
     @unittest.skipIf(os.name == 'nt' or (hasattr(os, 'geteuid') and os.geteuid() == 0),
                      'a read-only folder needs POSIX permissions and a non-root user')

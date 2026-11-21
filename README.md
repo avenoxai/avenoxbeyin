@@ -32,7 +32,7 @@ flowchart TB
 
 Asıl kaynak dosyaların. Beyin bunların yerel indeksini tutar ve seçilen bağlamı kullandığın AI istemcisine verir. Sohbet geçmişinin tamamını kendiliğinden bilgiye dönüştürmez; kalıcı olmasını istediğin şeyi nota yazdırırsın.
 
-> **V3.13.0'da yeni:** Yakala'dan isteğe bağlı Claude/Codex'e gönderim, Word (.docx) belgelerini okuma, Pi bağlantısı ve OpenCode global köprüsü. Yerel web görünümü ve çalışma alanı araçları da bu sürümde. [Tüm yenilikler](docs/v3/releases/3.13.0.md).
+> **V3.14.0'da yeni:** Yerel web panelinde açık işleri ve taslakları gözden geçirebilir, kendi sorularınla notlarının bulunup bulunmadığını ölçebilirsin. Markdown bağlantıları da kasa denetimine giriyor. [Tüm yenilikler ve güncelleme adımları](docs/v3/releases/3.14.0.md).
 
 <a id="kurulum"></a>
 ## Üç adımda kurulum

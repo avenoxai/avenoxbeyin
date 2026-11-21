@@ -76,6 +76,25 @@ class SourceSyncTest(unittest.TestCase):
         self.assertGreaterEqual(deleted['deleted'], 1)
         self.assertEqual(self.records(), [])
 
+    def test_rejected_or_diverged_write_never_replays_after_manual_restore(self):
+        path = self.write()
+        source = 'notes/task.md'
+        original = path.read_bytes()
+        self.engine.sync()
+        old_hash = self.module._hash(original)
+        self.write(body='A different manual edit.')
+        with self.assertRaises(self.module.RevisionConflict):
+            self.engine._intent(source, old_hash, 'rejected text', 'task')
+        self.assertEqual(list(self.engine.journal.glob('*.json')), [])
+        intent = {'source': source, 'old_hash': old_hash, 'content': 'abandoned text', 'kind': 'task'}
+        entry = self.engine.journal / (self.module._hash(source) + '.json')
+        entry.write_text(json.dumps(intent))
+        self.assertTrue(self.engine.sync()['conflicts'])
+        self.assertEqual(len(list(self.engine.journal.glob('*.diverged'))), 1)
+        path.write_bytes(original)
+        self.assertFalse(self.engine.sync()['conflicts'])
+        self.assertEqual(path.read_bytes(), original)
+
     def test_sensitive_folder_sources_are_not_read_or_indexed(self):
         # These directories were already skipped by hygiene, but not by the sync reader.
         safe = self.write('notes/normal.md', id='safe')
@@ -469,6 +488,22 @@ class SourceSyncTest(unittest.TestCase):
         self.engine.sync()
         self.assertEqual(self.records()[0]['status'], 'waiting')
 
+    def test_restored_task_rejects_pre_quarantine_revision_after_event_retention(self):
+        self.write()
+        self.engine.sync()
+        self.write(body='Nebula calibration manual edit.')
+        self.engine.sync()
+        before = self.records()[0]['revision']
+        duplicate = self.write('notes/duplicate.md')
+        self.assertTrue(self.engine.sync()['conflicts'])
+        with self.engine.store._connect() as db:
+            db.execute('DELETE FROM events')
+        duplicate.unlink()
+        self.engine.sync()
+        self.assertGreater(self.records()[0]['revision'], before)
+        with self.assertRaises(self.module.RevisionConflict):
+            self.engine.update_task('nebula-task', before, {'status': 'done'})
+
     def test_manual_edit_without_revision_bump_invalidates_old_expected_revision(self):
         self.write()
         self.engine.sync()
@@ -765,14 +800,15 @@ class SourceSyncTest(unittest.TestCase):
         original, parsed_body = self.module.parse(source.read_bytes().decode('utf-8'))
         self.assertEqual(parsed_body, body)
         before = source.read_bytes()
+        revision = self.records()[0]['revision']
         for field in ('status', 'visibility'):
             for value in (None, ['waiting']):
                 with self.subTest(field=field, value=value):
                     with self.assertRaises(ValueError):
-                        self.engine.update_task('yaml-task', 1, {field: value})
+                        self.engine.update_task('yaml-task', revision, {field: value})
                     self.assertEqual(source.read_bytes(), before)
-        updated = self.engine.update_task('yaml-task', 1, {'status': 'waiting'})
-        expected = dict(original, status='waiting', revision=2)
+        updated = self.engine.update_task('yaml-task', revision, {'status': 'waiting'})
+        expected = dict(original, status='waiting', revision=revision + 1)
         rendered = source.read_bytes().decode('utf-8')
         self.assertEqual(json.loads(rendered.split('---', 2)[1]), expected)
         self.assertEqual(source.read_bytes(), self.module.render(expected, body).encode('utf-8'))
