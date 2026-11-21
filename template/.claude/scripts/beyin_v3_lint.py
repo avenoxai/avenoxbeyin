@@ -89,6 +89,34 @@ def _headings(text):
     return headings
 
 
+def _heading_anchors(text):
+    """Slug anchors for the ATX headings recognized by lint, in document order.
+
+    Keep literal heading lookup separate: wikilinks must not silently acquire
+    Markdown slug semantics. Duplicate slugs receive the usual numeric suffix.
+    This is not a full Markdown renderer (the existing code/fence rules apply).
+    """
+    anchors, next_suffix = set(), {}
+    for _, line in _lines_outside_code(text):
+        match = HEADING_PATTERN.fullmatch(line)
+        if not match:
+            continue
+        heading = _norm_key(match.group(1).strip().rstrip('#').strip())
+        slug = ''.join(c for c in heading if c in ' -_' or
+                       unicodedata.category(c)[0] in 'LNM').replace(' ', '-')
+        if not slug:
+            continue
+        anchor, suffix = slug, next_suffix.get(slug, 0)
+        if suffix:
+            anchor = f'{slug}-{suffix}'
+        while anchor in anchors:
+            suffix += 1
+            anchor = f'{slug}-{suffix}'
+        next_suffix[slug] = suffix + 1
+        anchors.add(anchor)
+    return anchors
+
+
 def extract_wikilinks(text):
     """Extract all wikilinks from markdown text safely.
 
@@ -498,7 +526,9 @@ def lint_vault(vault_root, folder=None, *, state=None):
                     and _norm_key(res['resolved_path']) not in vault_index.get('receipts', {})):
                 try:
                     target_text = (vault_root / res['resolved_path']).read_text(encoding='utf-8-sig')
-                    if _norm_key(link['heading']) not in _headings(target_text):
+                    heading = _norm_key(link['heading'])
+                    if (heading not in _headings(target_text) and
+                            (link_type != 'markdown' or heading not in _heading_anchors(target_text))):
                         res = {'exists': False, 'resolved_path': None}
                 except (OSError, UnicodeError):
                     res = {'exists': False, 'resolved_path': None}
