@@ -274,6 +274,19 @@ class BackfillTest(unittest.TestCase):
         self.assertIsNone(failure)
         self.assertEqual(result['backfill'], 'written')
 
+    def test_retry_after_ledger_failure_keeps_original_summary(self):
+        from unittest.mock import patch
+        self.enable()
+        with patch.object(self.backfill, '_record_locked', side_effect=OSError('disk unavailable')):
+            with self.assertRaises(OSError):
+                self.backfill.write(self.vault, self.state, self.s1, 'First summary.')
+        note = self.vault / 'knowledge/conversations/2026-09.md'
+        original = note.read_bytes()
+        self.assertIn(b'First summary.', original)
+        retried = self.backfill.write(self.vault, self.state, self.s1, 'Different wording.')
+        self.assertEqual((retried['status'], retried['backfill']), ('unchanged', 'written'))
+        self.assertEqual(note.read_bytes(), original)
+
     def test_busy_writer_lock_before_the_note_write_changes_nothing_and_a_retry_succeeds(self):
         self.enable()
         before = self.snapshot()

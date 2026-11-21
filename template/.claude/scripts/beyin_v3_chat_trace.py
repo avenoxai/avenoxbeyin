@@ -231,6 +231,22 @@ def write(vault, state, harness, session, text, *, day=None, record=None):
             content = previous['content']
             metadata = {'kind': 'note', 'title': 'Sohbet izleri ' + today[:7],
                         'visibility': 'internal', 'remote_allowed': False, 'chat_trace': 1}
+            if record is not None:
+                # A process can exit after replacing the note and before updating its
+                # ledger. Keep only a digest in private state so a retry can recognize
+                # that paragraph even when the caller supplied a different summary.
+                pending = value.get('backfill_digest')
+                if pending and content and len(content.encode('utf-8')) <= MAX_NOTE_BYTES:
+                    _, existing_body = parse(content)
+                    for part in existing_body.replace('\r\n', '\n').split('\n\n'):
+                        candidate = part.strip()
+                        if hashlib.sha256(candidate.encode()).hexdigest() == pending:
+                            paragraph = candidate
+                            break
+                digest = hashlib.sha256(paragraph.encode()).hexdigest()
+                if digest != pending:
+                    value['backfill_digest'] = digest
+                    atomic(path, json.dumps(value))
             if content is None:
                 body = ('# Sohbet izleri ' + today[:7] + '\n\n'
                         'Kisa oturum ozetleri; ajan beyanidir, dogrulanmis karar kaydi degildir.\n\n' + paragraph + '\n')
@@ -263,6 +279,7 @@ def write(vault, state, harness, session, text, *, day=None, record=None):
                 raise NoteConflict('chat trace changed before acknowledgement; checkpoint left open')
         if record is not None:
             record()
+            value.pop('backfill_digest', None)
         # A committed, verified trace closes this checkpoint. Replaying after a crash
         # finds the exact paragraph before acknowledging, so it cannot duplicate it.
         value.update(covered=value['turns'], since=time.time(), next_due=value['turns'] + 2)
