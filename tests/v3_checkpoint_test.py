@@ -132,6 +132,23 @@ class CheckpointTest(unittest.TestCase):
         self.assertEqual(res["steps"]["compact"], "compacted")
         self.assertIn("Eski kayıt.", (self.comp / "Arşiv" / "Last-Session-2026-11.md").read_text(encoding="utf-8"))
 
+    def test_card_retry_recognizes_a_compacted_card(self):
+        limits = self.state / "companion-limits.json"
+        limits.write_text('{"Last-Session.md": 0}', encoding="utf-8")
+        old = {"card": {"body": "Eski kartın sonucu.\n" * 190}, "now": "2026-11-18T12:00:00"}
+        run_checkpoint(self.sync, self.vault, self.state, old, session="older")
+        run_checkpoint(self.sync, self.vault, self.state,
+                       {"card": {"body": "Güncel kart."}, "now": "2026-11-19T12:00:00"}, session="newer")
+        limits.unlink()
+
+        retry = run_checkpoint(self.sync, self.vault, self.state, dict(old, now="2026-11-21T12:00:00"),
+                               session="older")
+        self.assertEqual(retry["steps"]["compact"], "compacted")
+        self.assertEqual(retry["steps"]["card"], "unchanged")
+        content = (self.comp / "Last-Session.md").read_text(encoding="utf-8")
+        self.assertIn("Güncel kart.", content)
+        self.assertNotIn("Eski kartın sonucu.", content)
+
     def test_disabled_compaction_limit_uses_characters_and_stays_off(self):
         limits = self.state / "companion-limits.json"
         limits.write_text(json.dumps({"Last-Session.md": 0, "Threads.md": 1000}),

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from beyin_v3 import _trusted_record
 from beyin_v3_companion import directory as locate_companion, headings
-from beyin_v3_compact import compact as companion_compact
+from beyin_v3_compact import ARCHIVE_DIRECTORY, _archive_history, compact as companion_compact
 from beyin_v3_notes import read as note_read, apply as note_apply, NoteConflict, locked, _index_excluded
 from beyin_v3_learning import stage_candidate
 from beyin_v3_sync import parse
@@ -66,7 +66,8 @@ def _update_card(sync, source, card, session, now):
     content = previous["content"] or ""
     newline = "\r\n" if "\r\n" in content else "\n"
     short = session[:8] if session and re.fullmatch(r"[a-zA-Z0-9_-]+", session) else owner[:8]
-    suffix = f" · {label} · {short} <!-- beyin-checkpoint:{owner}:{revision} -->"
+    marker = f"<!-- beyin-checkpoint:{owner}:{revision} -->"
+    suffix = f" · {label} · {short} {marker}"
     end = f"<!-- /beyin-checkpoint:{owner} -->"
     card_text = (f"## {now:%Y-%m-%d %H:%M}{suffix}" + newline
                  + (body.replace("\n", newline) + newline if body else "") + end + newline)
@@ -82,6 +83,12 @@ def _update_card(sync, source, card, session, now):
             return _confirm_replayed_note(sync, source, previous)
         updated = content[:opening.start()] + card_text + content[opening.end() + ending.end():]
     else:
+        # Automatic compaction can move a completed card before its retry.
+        note = sync.root / previous["source"]
+        if content and (note.parent / ARCHIVE_DIRECTORY).is_dir():
+            moves, _ = _archive_history(note.parent, note.name, sync.root, now=now)
+            if any(marker in moved and end in moved for moved, _ in moves.values()):
+                return _confirm_replayed_note(sync, source, previous)
         # A legacy eight-character suffix cannot prove ownership. Preserve those cards.
         start = starts[0] if starts else len(content)
         preamble = content[:start]
