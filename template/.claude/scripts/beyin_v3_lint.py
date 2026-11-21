@@ -165,16 +165,14 @@ def extract_markdown_links(text):
                 continue
 
             # Ignore external URLs (http://, https://, mailto:, ftp:, etc., i.e. ^[a-zA-Z][a-zA-Z0-9+.-]*: schemes)
-            parsed_url = urllib.parse.urlparse(raw_target)
-            scheme = parsed_url.scheme
-            if scheme and len(scheme) > 1:
+            if raw_target.startswith("//") or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", raw_target):
                 continue
 
             # Separate #heading fragment if present
             if "#" in raw_target:
                 file_target, heading_part = raw_target.split("#", 1)
                 file_target = file_target.strip()
-                heading_part = heading_part.strip()
+                heading_part = urllib.parse.unquote(heading_part.strip())
             else:
                 file_target = raw_target
                 heading_part = None
@@ -453,7 +451,16 @@ def lint_vault(vault_root, folder=None):
                     })
                     continue
 
-            res = resolve_wikilink(vault_root, file_target, source_file=rel_path, vault_index=vault_index)
+            # Prefer the sibling of the referring Markdown file over a same-named root note.
+            res = {"exists": False}
+            if link_type == "markdown" and not file_target.startswith("/"):
+                relative = posixpath.normpath(posixpath.join(posixpath.dirname(rel_path), file_target))
+                note = relative if relative.lower().endswith(".md") else relative + ".md"
+                resolved = vault_index["by_rel"].get(_norm_key(note))
+                if resolved:
+                    res = {"exists": True, "resolved_path": resolved}
+            if not res["exists"]:
+                res = resolve_wikilink(vault_root, file_target, source_file=rel_path, vault_index=vault_index)
             # An attachment (image, PDF) unless a note itself has a dotted name ("Sürüm v1.2").
             if (not res["exists"] and Path(file_target).suffix
                     and not file_target.lower().endswith(".md")):
