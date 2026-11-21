@@ -1833,7 +1833,7 @@ def main(argv=None, return_result=False):
             if gaps_info is not None:
                 from beyin_v3_projections import receipt_coverage
                 with store._connect() as db:
-                    result['receipt_coverage'] = receipt_coverage(db, now=time.time())
+                    result['receipt_coverage'] = receipt_coverage(db, now=time.time(), doctor_diagnostics=True)
             else:
                 result['receipt_coverage'] = None
             from beyin_v3_projections import knowledge_freshness, check_instruction_conflicts

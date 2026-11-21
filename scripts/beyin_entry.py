@@ -500,6 +500,10 @@ def human_result(result, command, installed_version=None):
                                if isinstance(unobserved, int) and unobserved > 0 else '')
             lines.append('Makbuz kapsami: %' + str(pct) + ' (' + str(cov['covered']) + '/' + str(cov['total']) + ' oturum' + d7_text + ')'
                          + unobserved_text)
+        hermes_without_terminal = cov.get('hermes_without_terminal', 0) if isinstance(cov, dict) else 0
+        if hermes_without_terminal > 0:
+            lines.append('Hermes: ' + str(hermes_without_terminal) +
+                         ' oturumda son tur icin kapanis sinyali gozlenmedi (makbuz kapsami disinda).')
         kf = result.get('knowledge_freshness')
         if isinstance(kf, dict) and kf.get('status') == 'unavailable':
             lines.append('Son bilgi damitmasi: olculemedi (' + str(kf.get('error') or 'hata') + ')')
