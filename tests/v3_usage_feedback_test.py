@@ -74,9 +74,9 @@ class TestBeyinV3UsageFeedback(unittest.TestCase):
             env=inherited_env(BEYIN_UPDATES_OFF="1", PYTHONIOENCODING="utf-8", **{"CODEX_THREAD_ID": "", **env}),
         )
 
-    def hook(self, session, event_id, prompt):
+    def hook(self, session, event_id, prompt, event="UserPromptSubmit"):
         script = Path(beyin_v3_hook.__file__)
-        payload = {"hook_event_name": "UserPromptSubmit", "session_id": session,
+        payload = {"hook_event_name": event, "session_id": session,
                    "event_id": event_id, "prompt": prompt}
         result = subprocess.run(
             [sys.executable, str(script), "--vault", str(self.vault_path), "--state", str(self.state_path),
@@ -162,6 +162,14 @@ class TestBeyinV3UsageFeedback(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(beyin_v3_usage.summarize_usage(self.state_path)["tracked"], 1)
         self.assertEqual(self.rows(), {"artemis": (0, 1, 0, 0, 0)})
+
+    def test_opening_counts_the_related_note_it_delivers(self):
+        source = "knowledge/Artemis.md"
+        self.note(source, "artemis", "Artemis calibration owner: synthetic note body")
+        self.assertEqual(self.cli("sync").returncode, 0)
+        self.assertIn(source, self.hook("session-a", "a1", "Artemis calibration owner", event="SessionStart"))
+        self.assertEqual(beyin_v3_usage.summarize_usage(self.state_path)["tracked"], 1)
+        self.assertIn(source, self.hook("session-a", "a2", "yanlış"))
 
     def test_usage_doctor_reads_without_writing_and_hook_fails_open_under_lock(self):
         self.note("knowledge/Artemis.md", "artemis", "Artemis calibration owner: synthetic note body")

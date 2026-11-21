@@ -40,6 +40,24 @@ Ingesting the exact same record is idempotent. Reusing an existing ID for differ
 
 `submit_receipt(event_id, summary, refs, harness)` requires existing source references. Replaying the same semantic payload, including from the other harness, returns the original receipt. Changing summary or references under an existing event ID fails. First-writer harness attribution is retained. Receipts are stored locally and do not automatically append to daily notes or project views.
 
+### Not kullanımı ve geri bildirim
+
+Otomatik bağlamda sunulan uygun notlar ve receipt'te kaynak gösterilen uygun notlar
+makineye özel `state/note-usage.sqlite3` dosyasında sayılır. Özel, dahili,
+güvenilmeyen ve hassas kayıtlar kapsam dışıdır. Sayaçlar not kimliği, kaynak yolu,
+sayılar ve ilişkilendirme için gerekli yerel zaman ve oturum bilgilerini tutar.
+Not metni ve istem metni tutulmaz. Son 20.000 hook olayından birinin veya bir receipt'in tekrarı sayacı yeniden artırmaz. Hook, kullanım veritabanı kilitliyse o kaydı atlayıp bağlamı sunar.
+
+`doctor` özetinde son 30 günde en az 10 kez sunulan, hiç receipt atfı ve `ok`
+geri bildirimi almayan notların sayısı ile toplam geri bildirim sayıları görünür.
+Özet kullanım veritabanını oluşturmaz veya güncellemez.
+
+`python3 beyin.py feedback <not-kimliği-veya-yolu> <ok|wrong|stale> --session <oturum>`
+komutunda hook'un `Receipt session` değerini veya istemcinin oturum kimliğini kullanın.
+Komut `--session` verilmezse geçerli istemci sürecinin oturum kimliğini kullanır.
+Oturum belirsizse veya hedef o oturumda sunulan notlardan biriyle tekil olarak
+eşleşmiyorsa komut hata verir. Geri bildirim notu düzenlemez, yerel sayacı artırır.
+
 Codex reports edits when its PostToolUse event names an editor matched by the installed hook. In code-mode hosts that report only the outer `exec` call, an inner `apply_patch` can change Markdown without opening the edit window. Receipt coverage can then undercount edits. Record a receipt explicitly after meaningful work. SessionStart context and the Stop event have separate triggers.
 
 The Claude/Codex Stop learning reminder treats knowledge references as citations, not proof that a note was updated. Its filesystem evidence accepts either a distilled Markdown note cited in the receipt's `refs` with modification time at or after the edit window began, or a PostToolUse editor write of such a note (Claude file path, Codex apply_patch header) in the same window, since that write precedes the hook that opens the window. The editor check examines all parsed paths in the hook's bounded input payload, rather than only the first five. File symlinks are rejected, and resolved paths must remain inside the vault and within the existing distillation roots, outside generated-file exclusions; the mtime check also requires the cited path itself to name a distilled note. An unrelated recent note elsewhere in the vault no longer satisfies the receipt's learning claim, and citing an older note alone does not suppress the reminder. Candidates staged for this session in the current edit window can also satisfy the separate candidate-ledger check. Filesystem evidence remains a time heuristic, not content-hash verification, proof of authorship or a semantic check that the declared learning was saved; a sync tool can change modification times without changing content.
