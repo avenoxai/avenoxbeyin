@@ -136,6 +136,16 @@ class OfflineUpdateTest(unittest.TestCase):
         self.assertEqual(result['devices_schedule']['status'], 'removed')
         self.assertFalse(unit.exists())
 
+    def test_human_rollback_reports_ownership_refusal(self):
+        spec = importlib.util.spec_from_file_location('devices_entry_test', ROOT / 'scripts/beyin_entry.py')
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        result = {'status': 'rolled_back', 'version': '3.0.0',
+                  'devices_schedule': {'status': 'failed', 'reason': 'Scheduler ownership refused: changed file.'}}
+        shown = entry.human_result(result, 'rollback')
+        self.assertIn('Zamanlama kaldırılamadı', shown)
+        self.assertIn('changed file', shown)
+
     def test_update_idempotent_and_rollback_preserves_new_user_note(self):
         core = self.vault / '.claude/scripts/beyin_v3.py'
         original = core.read_bytes()

@@ -3,6 +3,7 @@
 Synthetic vaults and local bare repositories only; no network, no real scheduler is touched
 (scheduler files go to a temporary home and the load commands are stubbed).
 """
+import importlib.util
 import json
 import hashlib
 import os
@@ -147,6 +148,15 @@ class DetectTest(Base):
 
 
 class PlanTest(Base):
+    def test_human_entry_prints_device_plan_and_failure_details(self):
+        spec = importlib.util.spec_from_file_location("devices_entry_test", ROOT / "scripts/beyin_entry.py")
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        plan = {"actions": [{"kind": "scheduler"}], "manual_steps": ["Review the file"]}
+        self.assertEqual(json.loads(entry.human_result(plan, "devices")), plan)
+        failed = {"status": "failed", "failed": {"error": "Scheduler ownership refused: changed file."}}
+        self.assertEqual(json.loads(entry.human_result(failed, "devices")), failed)
+
     @unittest.skipUnless(GIT, "git required")
     def test_plan_keeps_remote_paths_with_spaces_idempotent(self):
         vault, state = self.machine("a")

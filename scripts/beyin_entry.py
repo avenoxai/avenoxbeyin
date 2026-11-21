@@ -226,6 +226,8 @@ def human_result(result, command, installed_version=None):
     if result.get('error'):
         return ('Islem tamamlanamadi: ' + str(result.get('message', result['error'])) +
                 ('\n' + ascii_text(result['hint']) if result.get('hint') else ''))
+    if command == 'devices':
+        return json.dumps(result, ensure_ascii=False, indent=2)
     if command == 'hook-reconcile':
         status = result.get('status')
         if status in ('ok', 'noop'):
@@ -831,6 +833,11 @@ def human_result(result, command, installed_version=None):
             message = '\n'.join([message] + index_exclusion_lines(result.get('index_exclusions'), pruned=True) +
                                 (sync_copy_lines(result) if command == 'sync' else []) +
                                 supersedes_lines(result.get('supersedes_issues'), result.get('supersedes_issue_count')))
+    schedule = result.get('devices_schedule') or {}
+    if schedule.get('status') == 'failed':
+        message += '\nZamanlama kaldırılamadı. ' + plain_text(schedule.get('reason', ''))
+    elif schedule.get('status') == 'removed':
+        message += '\nÇoklu cihaz zamanlaması kaldırıldı.'
     if result.get('trust_review_required'):
         message += '\n' + trust_review_line(result.get('trust_review_files'))
     if result.get('view_conflicts'):
