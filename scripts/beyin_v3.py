@@ -1564,10 +1564,6 @@ def main(argv=None, return_result=False):
                 if not 1000 <= args.context_fill_repeat <= 1000000:
                     raise ValueError('--context-fill-repeat must be between 1000 and 1000000')
                 fill_changes['repeat_threshold'] = args.context_fill_repeat
-            if fill_changes:
-                cfg = context_fill.load_config(state)
-                cfg.update(fill_changes)
-                context_fill.save_config(state, cfg)
             changes = {key: getattr(args, key) for key in ('interval_minutes', 'context_mode', 'context_chars') if getattr(args, key) is not None}
             if args.auto_sync is not None:
                 changes['auto_sync'] = args.auto_sync == 'on'
@@ -1594,6 +1590,10 @@ def main(argv=None, return_result=False):
             result = {'status': 'saved' if changes or args.profile or (args.exclude_component or args.include_component) else 'current',
                       'preferences': settings, 'excluded_components': result_excluded,
                       'model_calls': False, 'timer_installed': False}
+            if fill_changes:
+                cfg = dict(context_fill.load_config(state), **fill_changes)
+                context_fill.save_config(state, cfg)
+                result.update(status="saved", context_fill=cfg)
             result['daily_layout'] = daily_layout
             if args.daily_layout is not None:
                 result['daily_layout'] = preferences.save_daily_layout(vault, args.daily_layout)

@@ -150,6 +150,71 @@ class ContextFillTest(unittest.TestCase):
             result = cf.context_fill_reminder(payload, tmp, 'claude', 'Stop')
             self.assertIsNone(result)  # Should be silenced
 
+    def test_installed_stop_and_global_bridge_read_only_their_own_main_chain(self):
+        from v3_package_helpers import install, isolated_env, run_python
+        base = self.state
+        vault, project, state = base / 'vault', base / 'project', base / 'runtime'
+        vault.mkdir()
+        project.mkdir()
+        env = isolated_env(base / 'home')
+        self.assertEqual(install(vault, state, env).returncode, 0)
+        configured = run_python(vault / 'beyin.py', ['preferences', '--context-fill', 'on'],
+                                vault, env)
+        self.assertEqual(configured.returncode, 0, configured.stderr)
+        transcript = base / 'session.jsonl'
+        def append(message, **fields):
+            row = dict(sessionId='session', type=message['role'], message=message)
+            with transcript.open('a', encoding='utf-8') as out:
+                out.write(json.dumps(dict(row, **fields)) + chr(10))
+        def send(hook, cwd, event):
+            script = vault / '.claude/scripts' / ('beyin_v3_' + hook + '.py')
+            args = ['--vault', vault, '--state', state, '--harness', 'claude']
+            if hook == 'bridge':
+                args.extend(['--project-root', project])
+            result = run_python(script, args, cwd, env, dict(cwd=str(cwd), session_id='session',
+                hook_event_name=event, transcript_path=str(transcript)))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout).get('decision')
+        for hook, cwd in [('hook', vault), ('bridge', project)]:
+            transcript.write_text('', encoding='utf-8')
+            append({'role': 'user', 'content': 'first turn'})
+            append({'role': 'assistant', 'usage': {'input_tokens': 10000, 'cache_read_input_tokens': 140001}})
+            append({'role': 'assistant', 'usage': {'input_tokens': 1}}, isSidechain=True)
+            append({'role': 'assistant', 'usage': {'input_tokens': 1}}, sessionId='another')
+            self.assertEqual(send(hook, cwd, 'Stop'), 'block')
+            self.assertIsNone(send(hook, cwd, 'Stop'))
+            append({'role': 'assistant', 'usage': {'input_tokens': 225001}})
+            self.assertEqual(send(hook, cwd, 'Stop'), 'block')
+            append({'role': 'user', 'content': '[kaydetme]'})
+            append({'role': 'assistant', 'usage': {'input_tokens': 400000}})
+            self.assertIsNone(send(hook, cwd, 'Stop'))
+            send(hook, cwd, 'PreCompact')
+            append({'role': 'user', 'content': 'new turn'})
+            append({'role': 'assistant', 'usage': {'input_tokens': 150001}})
+            self.assertEqual(send(hook, cwd, 'Stop'), 'block')
+            send(hook, cwd, 'SessionEnd')
+        self.assertEqual(list((state / 'context-fill').glob('*.json')), [])
+
+    def test_concurrent_stops_claim_a_threshold_once(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        cf.save_config(self.state, dict(enabled=True, first_threshold=150000, repeat_threshold=75000))
+        payload = dict(session_id='same', usage={'input_tokens': 175000})
+        barrier = Barrier(8)
+        def stop(_):
+            barrier.wait()
+            return cf.context_fill_reminder(payload, self.state, 'claude', 'Stop')
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            responses = list(pool.map(stop, range(8)))
+        self.assertEqual(sum(bool(response) for response in responses), 1)
+
+    def test_disabled_configuration_does_not_open_transcript_or_create_state(self):
+        from unittest.mock import patch
+        with patch.object(cf, '_extract_context_tokens', side_effect=AssertionError) as reader:
+            self.assertIsNone(cf.context_fill_reminder({'session_id': 'session'}, self.state, 'claude', 'Stop'))
+        reader.assert_not_called()
+        self.assertEqual(list(self.state.iterdir()), [])
+
     def test_reset_session_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp)

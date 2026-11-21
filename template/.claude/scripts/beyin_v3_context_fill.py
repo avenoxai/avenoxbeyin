@@ -6,8 +6,12 @@ handoff card and receipt before the context window fills up.
 import hashlib
 import json
 import os
+import re
 import time
 from pathlib import Path
+
+from beyin_v3_notes import _unlinked
+from beyin_v3_learning import _ledger_lock
 
 CONTEXT_FILL_FILE = "context-fill.json"
 CONTEXT_FILL_DIR = "context-fill"
@@ -53,19 +57,14 @@ def load_config(state_dir):
 
 def save_config(state_dir, config):
     """Save context-fill configuration atomically."""
-    path = _config_path(state_dir)
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with open(path.with_suffix(".tmp"), "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False)
-    os.replace(path.with_suffix(".tmp"), path)
-    os.chmod(path, 0o600)
+    from beyin_v3_releases import atomic_json
+    atomic_json(_config_path(state_dir), config)
 
 
 def _session_state_path(state_dir, session_digest):
-    """Return path to the session's context-fill state file."""
-    state_dir = _state_dir(state_dir)
-    state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    return state_dir / f"{session_digest}.json"
+    folder = _state_dir(state_dir)
+    _unlinked(folder)
+    return folder / f"{session_digest}.json"
 
 
 def load_session_state(state_dir, session_digest):
@@ -77,23 +76,17 @@ def load_session_state(state_dir, session_digest):
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             return dict(tokens=0, last_reminded_at=0, reminders_sent=0)
-        return dict(
-            tokens=data.get("tokens", 0),
-            last_reminded_at=data.get("last_reminded_at", 0),
-            reminders_sent=data.get("reminders_sent", 0),
-        )
+        return {key: value for key, value in data.items()
+                if key in ("tokens", "last_reminded_at", "last_reminded_tokens", "reminders_sent")
+                and type(value) in (float, int) and value >= 0}
     except (json.JSONDecodeError, UnicodeDecodeError, OSError):
         return dict(tokens=0, last_reminded_at=0, reminders_sent=0)
 
 
 def save_session_state(state_dir, session_digest, state):
     """Save per-session context-fill state atomically."""
-    path = _session_state_path(state_dir, session_digest)
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with open(path.with_suffix(".tmp"), "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False)
-    os.replace(path.with_suffix(".tmp"), path)
-    os.chmod(path, 0o600)
+    from beyin_v3_releases import atomic_json
+    atomic_json(_session_state_path(state_dir, session_digest), state)
 
 
 def _cleanup_old_states(state_dir):
@@ -104,7 +97,7 @@ def _cleanup_old_states(state_dir):
     now = time.time()
     files = []
     for path in state_dir.glob("*.json"):
-        if path.is_symlink():
+        if path.is_symlink() or not re.fullmatch(r"[a-f0-9]{24}\.json", path.name):
             continue
         try:
             if path.stat().st_mtime < now - STATE_TTL_SECONDS:
@@ -119,44 +112,52 @@ def _cleanup_old_states(state_dir):
             path.unlink(missing_ok=True)
 
 
-def _extract_context_tokens(payload):
-    """Extract total context tokens from the last main-chain assistant message.
+def _usage_tokens(usage):
+    if not isinstance(usage, dict):
+        return 0
+    keys = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+    return sum(usage[k] for k in keys if type(usage.get(k)) is int and usage[k] > 0)
 
-    Returns sum of input_tokens + cache_creation_input_tokens + cache_read_input_tokens
-    from the last assistant message, or 0 if not found.
-    """
-    # The payload for Stop event may contain transcript info in various forms.
-    # We look for the last assistant message with usage info.
-    try:
-        # First check if payload has a direct transcript reference
-        transcript = payload.get("transcript")
-        if isinstance(transcript, list):
-            for msg in reversed(transcript):
-                if not isinstance(msg, dict):
-                    continue
-                if msg.get("role") == "assistant":
-                    usage = msg.get("usage")
-                    if isinstance(usage, dict):
-                        total = 0
-                        for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
-                            val = usage.get(key)
-                            if isinstance(val, int) and val > 0:
-                                total += val
-                        if total > 0:
-                            return total
-        # Fallback: check for usage at top level (some hook formats)
-        usage = payload.get("usage")
-        if isinstance(usage, dict):
-            total = 0
-            for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
-                val = usage.get(key)
-                if isinstance(val, int) and val > 0:
-                    total += val
-            if total > 0:
-                return total
-    except Exception:
-        pass
-    return 0
+
+def _extract_context_tokens(payload, transcript_session=None):
+    """Read only the bounded tail of this session. Never persist transcript content."""
+    filename = payload.get("transcript_path")
+    if filename:
+        from beyin_v3_shell_edits import _tail, _is_prompt
+        path = Path(filename)
+        if not path.is_file():
+            return 0
+        session = transcript_session or payload.get("session_id")
+        tokens = 0
+        for raw in reversed(_tail(filename) or ()):
+            if not raw.strip():
+                continue
+            try:
+                row = json.loads(raw)
+            except (ValueError, UnicodeError):
+                continue
+            if not isinstance(row, dict) or row.get("isSidechain") or row.get("sessionId") != session:
+                continue
+            if row.get("type") == "system" and row.get("subtype") == "compact_boundary":
+                break
+            if row.get("type") == "user" and _is_prompt(row):
+                content = row["message"].get("content")
+                texts = ([content] if isinstance(content, str) else
+                         [part.get("text", "") for part in content if isinstance(part, dict)])
+                if any(isinstance(text, str) and "[kaydetme]" in text for text in texts):
+                    return 0
+                break
+            if not tokens and row.get("type") == "assistant" and not row.get("isApiErrorMessage"):
+                message = row.get("message")
+                if isinstance(message, dict):
+                    tokens = _usage_tokens(message.get("usage"))
+        return tokens
+    transcript = payload.get("transcript")
+    if isinstance(transcript, list):
+        for row in reversed(transcript):
+            if isinstance(row, dict) and row.get("role") == "assistant" and not row.get("isSidechain"):
+                return _usage_tokens(row.get("usage"))
+    return _usage_tokens(payload.get("usage"))
 
 
 def _session_digest(session_id):
@@ -174,7 +175,6 @@ def should_remind(state_dir, session_id, config, state):
     if os.environ.get("BEYIN_V3_NO_RECEIPT_REMINDER") == "1":
         return False, state, None
 
-    session_digest = _session_digest(session_id)
     first_threshold = config.get("first_threshold", DEFAULT_FIRST_THRESHOLD)
     repeat_threshold = config.get("repeat_threshold", DEFAULT_REPEAT_THRESHOLD)
 
@@ -184,10 +184,11 @@ def should_remind(state_dir, session_id, config, state):
     if reminders_sent == 0:
         threshold = first_threshold
     else:
-        threshold = repeat_threshold
+        threshold = state.get("last_reminded_tokens", first_threshold) + repeat_threshold
 
     if tokens >= threshold:
         new_state = dict(state)
+        new_state["last_reminded_tokens"] = tokens
         new_state["last_reminded_at"] = time.time()
         new_state["reminders_sent"] = reminders_sent + 1
         return True, new_state, "context_fill_threshold"
@@ -195,7 +196,7 @@ def should_remind(state_dir, session_id, config, state):
     return False, state, None
 
 
-def context_fill_reminder(payload, state_dir, harness, event):
+def context_fill_reminder(payload, state_dir, harness, event, *, transcript_session=None):
     """Main entry point for context-fill reminder at Stop event.
 
     Returns a dict with {"decision": "block", "reason": "..."} if reminder should fire,
@@ -218,6 +219,8 @@ def context_fill_reminder(payload, state_dir, harness, event):
 
         # Load config
         config = load_config(state_dir)
+        if not config["enabled"]:
+            return None
 
         # Check for [kaydetme] opt-out in prompt (same as receipt_reminder)
         prompt = payload.get("prompt") or ""
@@ -225,26 +228,23 @@ def context_fill_reminder(payload, state_dir, harness, event):
             return None
 
         # Extract context tokens from the last assistant message
-        tokens = _extract_context_tokens(payload)
+        tokens = _extract_context_tokens(payload, transcript_session)
         if tokens == 0:
             return None
 
         # Load session state
         session_digest = _session_digest(session_id)
-        state = load_session_state(state_dir, session_digest)
-
-        # Update accumulated tokens (take max to handle non-monotonic reports)
-        state["tokens"] = max(state.get("tokens", 0), tokens)
-
-        # Check if reminder should fire
-        remind, new_state, reason = should_remind(state_dir, session_id, config, state)
-        if not remind:
+        folder = _state_dir(state_dir)
+        _unlinked(folder)
+        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with _ledger_lock(folder, timeout=0, lock_name="writer.lock"):
+            state = load_session_state(state_dir, session_digest)
+            state["tokens"] = tokens
+            remind, new_state, _ = should_remind(state_dir, session_id, config, state)
+            if not remind:
+                return None
             save_session_state(state_dir, session_digest, new_state)
-            return None
-
-        # Save updated state
-        save_session_state(state_dir, session_digest, new_state)
-        _cleanup_old_states(state_dir)
+            _cleanup_old_states(state_dir)
 
         # Return blocking decision
         return {
@@ -259,10 +259,12 @@ def context_fill_reminder(payload, state_dir, harness, event):
 def reset_session_state(state_dir, session_id):
     """Reset context-fill state for a session (called on PreCompact, SessionEnd, SessionStart)."""
     session_digest = _session_digest(session_id)
-    path = _session_state_path(state_dir, session_digest)
     try:
-        path.unlink(missing_ok=True)
-    except OSError:
+        path = _session_state_path(state_dir, session_digest)
+        if path.is_file():
+            with _ledger_lock(path.parent, timeout=0.25, lock_name="writer.lock"):
+                path.unlink(missing_ok=True)
+    except (OSError, ValueError):
         pass
 
 
