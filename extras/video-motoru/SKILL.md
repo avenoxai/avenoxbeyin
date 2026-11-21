@@ -57,9 +57,13 @@ varsayılan olduğunu söyle. İlk önizlemeye gelen tepki defterin ilk gerçek 
 
 ## Her işte
 
-**Başlarken.** `Marka.md` dosyasının tamamını, `Dersler.md` dosyasının `[kalıcı]` satırlarını ve
-son yirmi satırını, `Acik-Isler.md` dosyasını oku. `Sahne-Envanteri.md` içinde yapacağın sahneye
-benzeyen varsa sıfırdan yazma: kopyala, uyarla. Kuracağın ana benzer bir mekanizma
+**Başlarken.** `Marka.md` dosyasının tamamını ve `Acik-Isler.md` dosyasını oku. `Dersler.md`
+içindeki `[kalıcı]` işaretli satırları ayrıca oku; bunlar 20 kayıt sınırına tabi değil.
+Güncel dersler için yalnız `## Dersler` başlığı altında yukarıdan aşağıya ilerle (en yeniler
+üstte) ve en çok 20 tarihli ders kaydı oku. Her tarihli liste maddesini devam satırlarıyla
+birlikte tek kayıt olarak say. `## Arşiv` başlığına gelince güncel ders listesini okumayı bırak.
+`Sahne-Envanteri.md` içinde yapacağın sahneye benzeyen varsa sıfırdan yazma: kopyala, uyarla.
+Kuracağın ana benzer bir mekanizma
 `Referanslar.md` içinde varsa ona bak. Alt ajan kullanıyorsan ilgili dersleri ve örnek
 sahne yollarını brifine koy, "deftere bak" deme.
 
