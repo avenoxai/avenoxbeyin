@@ -904,6 +904,23 @@ And another link on line 8: [[Components/Auth]].
         self.assertNotIn('target.md', result['orphans'])
         self.assertNotIn('target.md', result['unlinked'])
 
+    def test_markdown_anchor_keeps_inline_code_text_outside_fences(self):
+        self._write_notes(self.vault, {
+            'source.md': '[Kılavuz](target.md#use-beyin-lint-v20)\n'
+                         '[Komut](target.md#beyin-run)\n'
+                         '[Tekrar](target.md#use-beyin-lint-v20-1)\n'
+                         '[Eksik](target.md#use-beyin-lint-v20-2)\n'
+                         '[Çit içi](target.md#fenced-heading)\n'
+                         '[[target#use-beyin-lint-v20]]\n',
+            'target.md': '## Use `beyin lint`: v2.0!\n'
+                         '## ``beyin-run``\n'
+                         '## Use `beyin lint`: v2.0!\n'
+                         '```md\n## Fenced heading\n```\n',
+        })
+        result = self._lint_cli()
+        self.assertEqual({(link['line'], link['type']) for link in result['broken_links']},
+                         {(4, 'markdown'), (5, 'markdown'), (6, 'wikilink')})
+
     def test_markdown_links_resolution_and_relative(self):
         (self.vault / "sub").mkdir()
         (self.vault / "sub dir").mkdir()

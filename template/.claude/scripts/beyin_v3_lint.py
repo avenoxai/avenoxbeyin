@@ -64,8 +64,8 @@ def _norm_key(text):
     return unicodedata.normalize("NFC", text.replace("\\", "/")).strip().casefold()
 
 
-def _lines_outside_code(text):
-    """(line number, line) pairs outside fenced code; inline code spans are blanked."""
+def _lines_outside_code(text, *, blank_inline_code=True):
+    """Yield (line number, line) pairs outside fences, masking inline code by default."""
     fence = None
     for line_idx, line in enumerate(text.splitlines(), 1):
         opener = FENCE_PATTERN.match(line)
@@ -77,7 +77,9 @@ def _lines_outside_code(text):
         if opener:
             fence = opener.group(1)
             continue
-        yield line_idx, INLINE_CODE_PATTERN.sub(lambda match: " " * len(match.group(0)), line)
+        if blank_inline_code:
+            line = INLINE_CODE_PATTERN.sub(lambda match: " " * len(match.group(0)), line)
+        yield line_idx, line
 
 
 def _headings(text):
@@ -94,10 +96,10 @@ def _heading_anchors(text):
 
     Keep literal heading lookup separate: wikilinks must not silently acquire
     Markdown slug semantics. Duplicate slugs receive the usual numeric suffix.
-    This is not a full Markdown renderer (the existing code/fence rules apply).
+    Keep inline code text for slugs and skip fenced code.
     """
     anchors, next_suffix = set(), {}
-    for _, line in _lines_outside_code(text):
+    for _, line in _lines_outside_code(text, blank_inline_code=False):
         match = HEADING_PATTERN.fullmatch(line)
         if not match:
             continue
