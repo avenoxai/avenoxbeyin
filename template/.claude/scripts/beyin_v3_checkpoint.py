@@ -159,34 +159,18 @@ def run_checkpoint(sync, vault, state, request, harness=None, session=None, dry_
 
     steps = {}
 
-    # 1. Locate companion directory and run companion-compact automatically if limits exceeded
+    # Use the same character limits, opt-outs and archive policy as the standalone command.
     companion_dir = locate_companion(vault, strict=False)
-    compact_res = None
     try:
-        limits_file = state / "companion-limits.json"
-        limits = {}
-        if limits_file.is_file():
-            try:
-                limits = json.loads(limits_file.read_text(encoding="utf-8"))
-            except Exception:
-                limits = {}
-        max_last = limits.get("Last-Session.md", 40960)
-        max_threads = limits.get("Threads.md", 40960)
-
-        last_session_path = companion_dir / "Last-Session.md"
-        threads_path = companion_dir / "Threads.md"
-
-        run_compaction = False
-        if last_session_path.is_file() and len(last_session_path.read_bytes()) > max_last:
-            run_compaction = True
-        if threads_path.is_file() and len(threads_path.read_bytes()) > max_threads:
-            run_compaction = True
-
-        if run_compaction and not dry_run:
-            compact_res = companion_compact(vault, state, dry_run=False, now=now_dt)
-            steps["compact"] = compact_res.get("status", "compacted")
-        else:
+        preview = companion_compact(vault, state, dry_run=True, now=now_dt)
+        needs_work = any(item["status"] in ("planned", "needs_rewrite") for item in preview["files"].values())
+        if needs_work:
+            steps["compact"] = ("planned" if dry_run else
+                                companion_compact(vault, state, now=now_dt)["status"])
+        elif preview["status"] == "dry_run":
             steps["compact"] = "skipped_within_limit"
+        else:
+            steps["compact"] = preview["status"]
     except Exception as exc:
         steps["compact"] = {"status": "error", "message": str(exc)}
 
@@ -274,11 +258,11 @@ def run_checkpoint(sync, vault, state, request, harness=None, session=None, dry_
             except Exception as exc:
                 steps["chat_trace"] = {"status": "error", "message": str(exc)}
 
-    has_error = any(
-        isinstance(v, dict) and (v.get("status") in ("error", "conflict") or v.get("error")) or v == "error"
-        for v in steps.values()
-    )
-    status = "failed" if has_error and len(steps) == 1 else ("partial" if has_error else "succeeded")
+    failures = {"error", "conflict", "needs_attention", "needs_rewrite"}
+    statuses = [value["status"] if isinstance(value, dict) else value for value in steps.values()]
+    has_error = any(status in failures for status in statuses)
+    has_success = any(status not in failures and status != "skipped_within_limit" for status in statuses)
+    status = ("partial" if has_success else "failed") if has_error else "succeeded"
 
     return {
         "status": status,

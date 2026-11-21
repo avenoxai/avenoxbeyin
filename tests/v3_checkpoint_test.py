@@ -112,17 +112,41 @@ class CheckpointTest(unittest.TestCase):
         self.assertEqual(card.read_text(encoding="utf-8"), content)
 
     def test_automatic_compaction(self):
-        limits_file = self.state / "companion-limits.json"
-        limits_file.write_text(json.dumps({"schema": 1, "Last-Session.md": 20, "Threads.md": 20000}), encoding="utf-8")
-
-        (self.comp / "Last-Session.md").write_text("# Long Last-Session\n\n## 2026-11-01 10:00 · uzun oturum · 12345678\nÇok uzun içerik metni burada yer alıyor ve limiti aşıyor.\n", encoding="utf-8")
+        card = self.comp / "Last-Session.md"
+        card.write_text("# Last-Session\n\n## 2026-11-02 10:00 · yeni\n" + "Güncel kart.\n" +
+                        "\n## 2026-11-01 10:00 · eski\n" + "Eski kayıt.\n" * 320,
+                        encoding="utf-8", newline="\n")
+        before = card.read_bytes()
 
         req = {
             "card": {"label": "compaction test", "body": "Test kompaksiyon."},
         }
+        req["now"] = "2026-11-21T10:00:00"
+        preview = run_checkpoint(None, self.vault, self.state, req, dry_run=True)
+        self.assertEqual(preview["steps"]["compact"], "planned")
+        self.assertEqual(card.read_bytes(), before)
         res = run_checkpoint(self.sync, self.vault, self.state, req, harness="claude", session="session-compaction")
         self.assertEqual(res["status"], "succeeded")
-        self.assertIn("compact", res["steps"])
+        self.assertEqual(res["steps"]["compact"], "compacted")
+        self.assertIn("Eski kayıt.", (self.comp / "Arşiv" / "Last-Session-2026-11.md").read_text(encoding="utf-8"))
+
+    def test_disabled_compaction_limit_uses_characters_and_stays_off(self):
+        limits = self.state / "companion-limits.json"
+        limits.write_text(json.dumps({"Last-Session.md": 0, "Threads.md": 1000}),
+                          encoding="utf-8", newline="\n")
+        (self.comp / "Last-Session.md").write_text("a" * 5000, encoding="utf-8")
+        (self.comp / "Threads.md").write_text("Ş" * 900, encoding="utf-8")
+        result = run_checkpoint(self.sync, self.vault, self.state, {})
+        self.assertEqual(result["steps"]["compact"], "skipped_within_limit")
+        self.assertFalse((self.comp / ".beyin-compact.lock").exists())
+
+    def test_invalid_limits_report_partial_without_archiving(self):
+        (self.state / "companion-limits.json").write_text('{"Last-Session.md": "yanlış"}', encoding="utf-8")
+        result = run_checkpoint(self.sync, self.vault, self.state, {"card": {"body": "İş tamamlandı"}})
+        self.assertEqual(result["steps"]["compact"], "needs_attention")
+        self.assertEqual(result["steps"]["card"], "written")
+        self.assertEqual(result["status"], "partial")
+        self.assertFalse((self.comp / "Arşiv").exists())
 
     def test_partial_error_handling(self):
         req = {
