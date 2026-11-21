@@ -87,7 +87,8 @@ class ThreadsExcerptTest(unittest.TestCase):
     """Active threads end at the closed section under every heading the engine writes."""
     def test_turkish_and_english_active_headings_stop_at_closed(self):
         for active in ('## Active Threads', '## Aktif konular', '## Açık konular', '## AÇIK KONULAR',
-                       '## Acik konular', '## Açık', '## Open'):
+                       '## Acik konular', '## Açık', '## Open', '## Active topics',
+                       '## Open questions', '## ACTIVE TOPICS'):
             for closed in ('## Closed Threads', '## Kapanan konular', '## Kapalı'):
                 with self.subTest(active=active, closed=closed):
                     text = f'# Konular\n\n{active}\n### ACTIVE_THREAD\n\n{closed}\n### CLOSED_THREAD\n'
@@ -97,8 +98,10 @@ class ThreadsExcerptTest(unittest.TestCase):
                     self.assertNotIn('CLOSED_THREAD', excerpt)
 
     def test_heading_that_only_starts_like_open_is_not_the_active_section(self):
-        text = '# Konular\n## Açıklama\nINTRO\n## Kapanan konular\n### CLOSED_THREAD\n'
-        self.assertEqual(companion.excerpt('Threads.md', text), text)
+        for heading in ('Açıklama', 'Activity', 'Opening'):
+            with self.subTest(heading=heading):
+                text = f'# Konular\n## {heading}\nINTRO\n## Kapanan konular\n### CLOSED_THREAD\n'
+                self.assertEqual(companion.excerpt('Threads.md', text), text)
 
 if __name__ == '__main__':
     unittest.main()

@@ -106,6 +106,31 @@ class CompanionFenceSummaryTest(unittest.TestCase):
         self.assertEqual(before, {p.relative_to(self.vault): p.read_bytes()
                                  for p in self.vault.rglob('*') if p.is_file()})
 
+    def test_installed_bullet_counters_preserve_dates_and_notes(self):
+        self.source.write_text(
+            '# Threads\n## Active Threads\n- [ ] Old topic 2020-01-01\n'
+            '1. [x] Finished topic 2099-01-01\n  Finished detail 2099-01-02\n'
+            '## Kapalı konular\n- Closed topic 2099-01-03\n'
+            '## Open topics\nSection reviewed 2099-01-04\n'
+            '2. [ ] Other topic 2020-01-02\n', encoding='utf-8')
+        env = isolated_env(self.root / 'home')
+        for key, directory in (('XDG_CONFIG_HOME', 'config'), ('XDG_DATA_HOME', 'data'),
+                               ('XDG_CACHE_HOME', 'cache'), ('XDG_STATE_HOME', 'xdg-state')):
+            env[key] = str(self.root / directory)
+        installed = install(self.vault, self.state, env)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        before = (self.source.read_bytes(), self.source.stat().st_mtime_ns)
+        result = subprocess.run([sys.executable, str(self.vault / 'beyin.py'), 'triage', '--json'],
+                                cwd=self.vault, env=env, capture_output=True,
+                                text=True, encoding='utf-8', timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['companion']['active_threads'], 2)
+        self.assertEqual((report['threads']['open_count'], report['threads']['stale_count']), (2, 2))
+        self.assertEqual([row['last_date'] for row in report['threads']['stale_threads']],
+                         ['2020-01-01', '2020-01-02'])
+        self.assertEqual((self.source.read_bytes(), self.source.stat().st_mtime_ns), before)
+
 
 if __name__ == '__main__':
     unittest.main()

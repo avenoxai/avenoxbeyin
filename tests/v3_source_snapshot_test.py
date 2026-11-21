@@ -138,6 +138,17 @@ class SourceSnapshotTest(unittest.TestCase):
         with self.store._connect() as db:
             db.execute('CREATE TABLE IF NOT EXISTS markdown_sources(id TEXT PRIMARY KEY, source TEXT NOT NULL)')
 
+    def test_source_without_cached_target_checks_only_resolved_boundary(self):
+        (self.vault / 'note.md').write_text('synthetic note', encoding='utf-8')
+        original = Path.is_relative_to
+        calls = []
+        def counted(path, *other):
+            calls.append(path)
+            return original(path, *other)
+        with patch.object(Path, 'is_relative_to', counted):
+            self.assertEqual('note.md', self.store._source('note.md'))
+        self.assertEqual([self.vault / 'note.md'], calls)
+
     def own(self, id, source):
         with self.store._connect() as db:
             db.execute('INSERT OR REPLACE INTO markdown_sources VALUES (?,?)', (id, source))

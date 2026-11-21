@@ -17,6 +17,7 @@ from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
 import beyin_v3_yakala as y
+from v3_yakala_defuddle_consent_test import approved_test_state
 from v3_package_helpers import inherited_env, isolated_path
 
 HEADINGS = [f'How does synthetic topic {number} work?' for number in range(10)]
@@ -67,13 +68,14 @@ class CompletenessTest(unittest.TestCase):
         self.addCleanup(dns.stop)
 
     def run_capture(self, html, markdown, *, error=None, content_type='text/html; charset=utf-8'):
+        state = approved_test_state(self)
         response = Response(html, content_type)
         self.opener.reset_mock()
         self.opener.open.return_value = response
         self.opener.open.side_effect = error
         with patch.object(y, '_run', return_value=(0, json.dumps({'content': markdown}), '')), \
                 patch.object(y, '_public_opener', return_value=self.opener):
-            result = y.process(self.vault, [self.saved['id']])
+            result = y.process(self.vault, [self.saved['id']], state=state)
         card = y.find_card(self.vault, self.saved['id'])
         return result['kartlar'][0], card['meta'], (self.vault / card['meta']['ham']).read_text(), response
 
@@ -293,7 +295,7 @@ class CompletenessTest(unittest.TestCase):
         worker.start()
         self.addCleanup(worker.join, 10)
         self.addCleanup(server.shutdown)
-        dns, connect, opener = socket.getaddrinfo, socket.create_connection, urllib.request.build_opener
+        dns, connect = socket.getaddrinfo, socket.create_connection
 
         def answer(host, port, *args, **kwargs):
             if host == 'example.com':
@@ -307,8 +309,7 @@ class CompletenessTest(unittest.TestCase):
         card = {'meta': {'url': f'http://example.com:{server.server_port}/slow'}, 'body': ''}
         with patch.object(socket, 'getaddrinfo', side_effect=answer), \
                 patch.object(socket, 'create_connection', side_effect=local_transport), \
-                patch.object(urllib.request, 'build_opener', side_effect=lambda *handlers:
-                             opener(urllib.request.ProxyHandler({}), *handlers)), \
+                patch.object(urllib.request, 'getproxies', return_value={}), \
                 patch.object(y, 'CHECK_BUDGET', 1), patch.object(y, 'CHECK_TIMEOUT', 1), \
                 patch.object(y, 'via_defuddle', return_value=extracted(HEADINGS[:6])):
             started = time.monotonic()
@@ -453,7 +454,7 @@ class CompletenessTest(unittest.TestCase):
         self.addCleanup(worker.join, 5)
         self.addCleanup(server.shutdown)
         (bin_dir / 'sitecustomize.py').write_text(
-            "import socket\nreal_connect = socket.create_connection\nreal_dns = socket.getaddrinfo\n"
+            "import socket, sys\nsys.stdin.isatty = lambda: True\nreal_connect = socket.create_connection\nreal_dns = socket.getaddrinfo\n"
             "def dns(host, port, *args, **kwargs):\n"
             "    if host == '127.0.0.1': return real_dns(host, port, *args, **kwargs)\n"
             "    assert host == 'example.com', host\n"
@@ -464,15 +465,17 @@ class CompletenessTest(unittest.TestCase):
             "socket.getaddrinfo = dns\nsocket.create_connection = connect\n")
         env.update(PYTHONPATH=str(bin_dir), PATH=isolated_path(bin_dir))
 
-        def cli(*args):
+        def cli(*args, reply=''):
             result = subprocess.run([sys.executable, str(vault / 'beyin.py'), 'yakala', *args],
-                                    cwd=vault, env=env, capture_output=True, text=True, encoding='utf-8', timeout=30)
+                                    cwd=vault, env=env, input=reply, capture_output=True, text=True, encoding='utf-8', timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr)
             return json.loads(result.stdout)
 
         added = cli('ekle', f'http://example.com:{server.server_port}/article')
         self.assertEqual(seen, [])
-        entry = cli('isle', added['id'])['kartlar'][0]
+        # This fixture exercises an approved synthetic helper, not the HTTP fallback.
+        entry = cli('isle', added['id'], reply='yes\n')['kartlar'][0]
+        self.assertTrue(y._defuddle_approval_granted(state))
         self.assertEqual((entry['durum'], entry['yontem']), ('cikarildi', 'defuddle'))
         self.assertIn('not', entry)
         self.assertEqual(seen, ['/article', '/final'])

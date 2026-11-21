@@ -51,6 +51,14 @@ class PreferencesTest(unittest.TestCase):
         self.assertFalse(result['model_calls'])
         self.assertFalse(result['timer_installed'])
 
+    def test_doctor_setup_summary_reports_effective_profile(self):
+        self.cli('preferences', '--profile', 'manual')
+        summary = self.cli('doctor')['setup_summary']
+        self.assertEqual(summary['profile'], 'manual')
+        self.assertEqual(summary['context_mode'], 'off')
+        self.cli('preferences', '--context-chars', '4000')
+        self.assertEqual(self.cli('doctor')['setup_summary']['profile'], 'custom')
+
     def test_secret_filter_is_explicit_and_survives_profile_changes(self):
         self.assertFalse(self.cli('preferences')['preferences']['secret_filter'])
         self.assertTrue(self.cli('preferences', '--secret-filter', 'on')['preferences']['secret_filter'])

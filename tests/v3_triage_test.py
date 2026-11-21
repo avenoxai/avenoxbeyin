@@ -116,6 +116,135 @@ class TriageTest(unittest.TestCase):
         self.assertEqual(report['open_count'], 2)
         self.assertEqual([r['last_date'] for r in report['stale_threads']], ['2026-09-01', '2026-09-02'])
 
+    def test_bullet_threads_counting_and_parsing_issue_783(self):
+        # Test counting top-level list items when no ### headings exist, respecting active sections, ignoring - [x], counting - [ ] and plain bullets, merging nested sub-bullets into body, mixed ### + bullets counting ONLY ###, and fenced code blocks ignored.
+        content = (
+            '# Threads\n'
+            '## Active Threads\n'
+            '- [x] Closed task 2026-10-01\n'
+            '- [ ] Open task with checkbox 2026-10-02\n'
+            '- **Örnek konu:** Açık iş 2026-10-03\n'
+            '  - Nested sub-bullet detail 2026-10-04\n'
+            '  - Another detail line\n'
+            '```markdown\n'
+            '- [ ] Fenced bullet should be ignored 2026-10-05\n'
+            '```\n'
+            '## Closed / Kapananlar\n'
+            '- Closed section bullet 2026-10-06\n'
+        )
+        source = self.thread_source(content, 'Personal Echo', marker=True)
+        report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+        comp_report = triage_module.scan_companion(self.vault, state=self.state, now=self.now)
+
+        # Should count exactly 2 threads (- [ ] and - **Örnek konu:**), ignoring - [x] and closed section
+        self.assertEqual(report['open_count'], 2)
+        self.assertEqual(comp_report['active_threads'], 2)
+
+        # Test mixed ### headings + bullets: should count ONLY ### headings
+        content_mixed = (
+            '# Threads\n'
+            '## Active Threads\n'
+            '- Unindented bullet 2026-10-01\n'
+            '### Heading thread 2020-01-01\n'
+        )
+        self.thread_source(content_mixed, 'Personal Echo', marker=True)
+        report_mixed = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+        comp_report_mixed = triage_module.scan_companion(self.vault, state=self.state, now=self.now)
+        self.assertEqual(report_mixed['open_count'], 1)
+        self.assertEqual(report_mixed['stale_threads'][0]['title'], 'Heading thread 2020-01-01')
+        self.assertEqual(comp_report_mixed['active_threads'], 1)
+
+    def test_completed_top_level_bullet_does_not_refresh_previous_open_topic(self):
+        for marker in ('-', '*', '+', '1.', '2)'):
+            for checked in ('x', 'X'):
+                with self.subTest(marker=marker, checked=checked):
+                    source = self.thread_source(
+                        '# Threads\n## Active Threads\n'
+                        '- Open old topic 2026-09-01\n'
+                        f'{marker} [{checked}] Finished topic 2026-10-11\n'
+                        '  Finished detail 2026-10-12\n'
+                        '\nFinished continuation 2026-10-12\n', marker=True)
+                    before = source.read_bytes()
+                    report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+                    self.assertEqual((report['open_count'], report['stale_count']), (1, 1))
+                    self.assertEqual(report['stale_threads'][0]['last_date'], '2026-09-01')
+                    self.assertEqual(report['stale_threads'][0]['title'], 'Open old topic 2026-09-01')
+                    self.assertEqual(triage_module.scan_companion(
+                        self.vault, state=self.state, now=self.now)['active_threads'], 1)
+                    self.assertEqual(source.read_bytes(), before)
+
+    def test_completed_bullets_keep_adjacent_open_topics_separate(self):
+        self.thread_source(
+            '# Threads\n## Active Threads\n'
+            '- [x] Finished first 2026-10-12\n'
+            '  First finished detail 2026-10-12\n'
+            '- Undated open topic\n'
+            '- [X] Finished between topics 2026-10-12\n'
+            '  Finished detail 2026-10-12\n'
+            '- [ ] Other open topic 2026-09-02\n'
+            '  Open detail 2026-09-03\n'
+            '- [x]\n'
+            '  Final finished detail 2026-10-12\n', marker=True)
+        report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+        self.assertEqual((report['open_count'], report['stale_count'], report['undated_count']), (2, 1, 1))
+        self.assertEqual(report['undated_threads'][0]['title'], 'Undated open topic')
+        self.assertEqual(report['stale_threads'][0]['last_date'], '2026-09-03')
+        self.assertEqual(triage_module.scan_companion(
+            self.vault, state=self.state, now=self.now)['active_threads'], 2)
+
+    def test_nested_completed_bullet_remains_part_of_its_open_topic(self):
+        self.thread_source(
+            '# Threads\n## Active Threads\n'
+            '- Open topic 2026-09-01\n'
+            '  - [x] Nested completed step 2026-09-03\n'
+            '  Remaining detail 2026-09-04\n', marker=True)
+        report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+        self.assertEqual((report['open_count'], report['stale_count']), (1, 1))
+        self.assertEqual(report['stale_threads'][0]['last_date'], '2026-09-04')
+
+    def test_bullet_section_boundaries_do_not_refresh_previous_topic(self):
+        source = self.thread_source(
+            '# Threads\n## Active Threads\n- Old open 2026-09-01\n'
+            '## Closed Threads\n- Closed 2026-10-12\n'
+            '## Active Threads\nSection reviewed 2026-10-11\n'
+            '- Another open 2026-09-02\n', marker=True)
+        before = (source.read_bytes(), source.stat().st_mtime_ns)
+        report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+        self.assertEqual((report['open_count'], report['stale_count']), (2, 2))
+        self.assertEqual([row['last_date'] for row in report['stale_threads']],
+                         ['2026-09-01', '2026-09-02'])
+        self.assertEqual(triage_module.scan_companion(
+            self.vault, self.state, self.now)['active_threads'], 2)
+        self.assertEqual((source.read_bytes(), source.stat().st_mtime_ns), before)
+
+    def test_bullet_counters_share_active_section_gates(self):
+        for active in ('Active Threads', 'Open topics', 'Aktif konular', 'Açık konular'):
+            for closed in ('Closed Threads', 'Kapalı konular', 'Kapananlar', 'Other'):
+                with self.subTest(active=active, closed=closed):
+                    self.thread_source(
+                        f'# Threads\n## {active}\n- Open 2026-09-01\n'
+                        f'## {closed}\n- Not open 2026-10-12\n', marker=True)
+                    report = triage_module.scan_stale_threads(self.vault, self.now, state=self.state)
+                    self.assertEqual((report['open_count'], report['stale_count']), (1, 1))
+                    self.assertEqual(triage_module.scan_companion(
+                        self.vault, self.state, self.now)['active_threads'], 1)
+
+    def test_companion_legacy_status_records_take_precedence_over_action_bullets(self):
+        self.thread_source(
+            '# Threads\n## Active Threads\n**First topic**\n**Status:** active\n'
+            '- Next action: email contact\n**Second topic**\n**Durum:** 🟢 Aktif\n',
+            marker=True)
+        self.assertEqual(triage_module.scan_companion(
+            self.vault, self.state, self.now)['active_threads'], 2)
+
+    def test_companion_bullet_fallback_excludes_frontmatter(self):
+        source = self.thread_source(
+            '---\ntags:\n- alpha\n- beta\n---\n# Threads\nNothing open.\n', marker=True)
+        before = (source.read_bytes(), source.stat().st_mtime_ns)
+        self.assertEqual(triage_module.scan_companion(
+            self.vault, self.state, self.now)['active_threads'], 0)
+        self.assertEqual((source.read_bytes(), source.stat().st_mtime_ns), before)
+
     def test_thread_heading_empty_after_folding_does_not_abort_scan(self):
         self.thread_source('# Threads\n## Active Threads\n### Before 2020-01-01\n'
                            '## \u0307 \u0307\n### Unknown section 2020-01-01\n'
