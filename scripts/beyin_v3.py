@@ -1481,8 +1481,15 @@ def main(argv=None, return_result=False):
         engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc", "triage", "feedback", "checkpoint") else None
         database = state / "memory.sqlite3"
         doctor_without_index = read_only_doctor and not (database.exists() or database.is_symlink())
-        store = (engine.MemoryStore(state, vault, read_only=read_only_context or read_only_doctor)
-                 if engine and not doctor_without_index else None)
+        store = None
+        if engine and not doctor_without_index:
+            try:
+                store = engine.MemoryStore(state, vault, read_only=read_only_context or read_only_doctor)
+            except ValueError as exc:
+                # A database file that exists but was never initialized is reported like a
+                # missing index; doctor must not create the schema to answer.
+                if not read_only_doctor or str(exc) != "read-only runtime is not initialized":
+                    raise
         sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "homepage-create", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
         if args.command == "bridge":
             if sum([bool(args.print_config), bool(args.install), bool(args.uninstall)]) > 1:
