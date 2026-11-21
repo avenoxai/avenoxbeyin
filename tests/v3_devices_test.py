@@ -147,6 +147,16 @@ class DetectTest(Base):
 
 
 class PlanTest(Base):
+    @unittest.skipUnless(GIT, "git required")
+    def test_plan_keeps_remote_paths_with_spaces_idempotent(self):
+        vault, state = self.machine("a")
+        remote = str(self.tmp / "Arşiv Deposu.git")
+        git(vault, "init", "-q", "-b", "main")
+        git(vault, "remote", "add", "origin", remote)
+        self.assertEqual(devices.detect(vault, state)["git"]["remotes"]["origin"]["url"], remote)
+        planned = devices.plan(vault, state, {"level": "computers", "remote": remote})
+        self.assertNotIn("git_remote", [action["kind"] for action in planned["actions"]])
+
     def test_level_rules(self):
         vault, state = self.machine("a")
         for options, message in (

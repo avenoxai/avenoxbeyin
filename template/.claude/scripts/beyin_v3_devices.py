@@ -262,9 +262,9 @@ def _remotes(vault):
     remotes = {}
     if done.returncode == 0:
         for line in done.stdout.splitlines():
-            parts = line.split()
-            if len(parts) >= 2:
-                remotes.setdefault(parts[0], parts[1])
+            name, separator, address = line.partition('\t')
+            if separator and address.endswith(' (fetch)'):
+                remotes[name] = address.removesuffix(' (fetch)')
     return remotes
 
 
