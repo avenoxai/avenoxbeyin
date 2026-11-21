@@ -1339,7 +1339,7 @@ def parser(note_namespace=None, is_json=False):
     learn.add_argument("--source", default="", help="Source file or note path linking to this learning")
     learn.add_argument("--scope", default=None, help="Scope of the learning: global or project name")
     learn.add_argument("--session", default="", help="Session ID associated with candidate")
-    learn.add_argument("--list", action="store_true", help="List active candidate learnings")
+    learn.add_argument("--list", action="store_true", help="List active candidates; --session limits the list to that session")
     learn.add_argument("--resolve", choices=("distilled", "discarded"), default=None,
                        help="Resolve candidates for session as distilled or discarded")
     learn.add_argument("--all", action="store_true", help="When resolving or listing, apply across all sessions")
@@ -2337,7 +2337,8 @@ def main(argv=None, return_result=False):
                 result = stage_candidate(state, sess, args.candidate, source=args.source, scope=args.scope or "global")
             elif args.list:
                 list_sess = None if getattr(args, "all", False) else (args.session or None)
-                result = {"candidates": list_candidates(state, session=list_sess, scope=args.scope, strict=True)}
+                result = {"candidates": list_candidates(state, session=list_sess, scope=args.scope, strict=True,
+                                                         include_cli_fallback=False)}
             else:
                 raise ValueError("one of --candidate, --list, or --resolve is required")
         elif args.command == "workspace":
