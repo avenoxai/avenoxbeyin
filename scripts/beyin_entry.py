@@ -251,6 +251,10 @@ def human_result(result, command, installed_version=None):
             return json.dumps(result, ensure_ascii=False, indent=2)
     if command == 'selftest':
         status = result.get('status')
+        if status == 'error':
+            return 'Oz-denetim tamamlanamadi: ' + plain_text(result.get('message', ''))
+        if result.get('added'):
+            return 'Soru eklendi: ' + plain_text(result.get('questions_path', ''))
         if status == 'no_questions':
             return 'Vault oz-denetim (selftest): soru dosyasi bulunamadi (' + plain_text(result.get('questions_path')) + '). ' + plain_text(result.get('hint', ''))
         total = result.get('total', 0)

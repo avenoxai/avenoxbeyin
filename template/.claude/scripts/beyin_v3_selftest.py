@@ -1,19 +1,18 @@
 """Vault-local read-only retrieval self-test command (#675)."""
 from __future__ import annotations
 
-import argparse
 import json
-import os
 from pathlib import Path
 import stat
 import sys
-import tempfile
 
 _MODULE_DIR = str(Path(__file__).resolve().parent)
 if _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
 import beyin_v3 as runtime
+from beyin_v3_notes import vault_locked
+from beyin_v3_sync import atomic
 
 
 def _safe_vault_path(vault_root, path_arg, must_exist=True):
@@ -49,29 +48,19 @@ def add_question(vault, questions_path, query, source, sentence=None):
     src_resolved = _safe_vault_path(vault, source, must_exist=True)
     rel_source = src_resolved.relative_to(vault).as_posix()
 
-    data = {"questions": [], "controls": []}
-    if resolved.is_file():
-        data = json.loads(resolved.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or not isinstance(data.get("questions"), list):
-            raise ValueError("invalid questions file")
+    with vault_locked(vault):
+        data = {"questions": [], "controls": []}
+        if resolved.is_file():
+            data = json.loads(resolved.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or not isinstance(data.get("questions"), list):
+                raise ValueError("invalid questions file")
 
-    q_item = {"query": str(query), "source": rel_source}
-    if sentence:
-        q_item["sentence"] = str(sentence)
-    data["questions"].append(q_item)
+        q_item = {"query": str(query), "source": rel_source}
+        if sentence:
+            q_item["sentence"] = str(sentence)
+        data["questions"].append(q_item)
 
-    resolved.parent.mkdir(parents=True, exist_ok=True)
-    temp_fd, temp_path = tempfile.mkstemp(dir=str(resolved.parent), prefix="selftest-")
-    try:
-        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(temp_path, resolved)
-    finally:
-        if os.path.exists(temp_path):
-            try:
-                os.unlink(temp_path)
-            except OSError:
-                pass
+        atomic(resolved, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
     return {"status": "ok", "questions_path": resolved.relative_to(vault).as_posix(), "added": q_item}
 
 
@@ -174,7 +163,7 @@ def run_selftest(vault, state, questions_path=None, limit=5, audience="internal"
     # Compare with previous run stored in state / selftest-last.json
     last_file = state / "selftest-last.json"
     previous_data = None
-    if last_file.is_file():
+    if last_file.is_file() and not last_file.is_symlink():
         try:
             previous_data = json.loads(last_file.read_text(encoding="utf-8"))
         except Exception:
@@ -182,26 +171,22 @@ def run_selftest(vault, state, questions_path=None, limit=5, audience="internal"
 
     previous_passed_queries = set()
     if isinstance(previous_data, dict) and isinstance(previous_data.get("passed_queries"), list):
-        previous_passed_queries = set(previous_data["passed_queries"])
+        previous_passed_queries = {query for query in previous_data["passed_queries"] if isinstance(query, str)}
 
     passed_query_set = {q.get("query") for q in questions if q.get("query") not in [m["query"] for m in missed]}
     regressed = [m for m in missed if m["query"] in previous_passed_queries]
 
     current_state_payload = {
         "timestamp": runtime._utc_now() if hasattr(runtime, "_utc_now") else "",
-        "passed_queries": list(passed_query_set),
+        "passed_queries": sorted(passed_query_set),
         "passed": passed,
         "total": total
     }
 
     try:
-        state.mkdir(parents=True, exist_ok=True)
-        temp_fd, temp_path = tempfile.mkstemp(dir=str(state), prefix="selftest-last-")
-        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
-            json.dump(current_state_payload, f, ensure_ascii=False, indent=2)
-        os.replace(temp_path, last_file)
-    except Exception:
-        pass
+        atomic(last_file, json.dumps(current_state_payload, ensure_ascii=False, indent=2))
+    except OSError:
+        return {"status": "error", "message": "failed to save selftest result"}
 
     return {
         "status": "ok",
