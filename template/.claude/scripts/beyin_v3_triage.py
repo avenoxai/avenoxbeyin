@@ -719,7 +719,7 @@ def scan_stale_threads(vault: Path, now: float, stale_days: int = 14, state: Pat
             return dict(report, status='absent')
         if not _scan_allowed(source, vault, _scan_keys(vault, state)):
             return dict(report, status='unavailable', reason='excluded_or_unreadable_source')
-        text = source.read_text(encoding='utf-8', errors='replace').lstrip('\ufeff')
+        text = source.read_text(encoding='utf-8').lstrip('\ufeff')
         # The fast scanner reads 4096 chars. Recheck the full normalized header so
         # BOM-prefixed or long privacy metadata cannot leak topic titles/dates.
         values = _front_values(text, ('visibility', 'trust', 'trusted'))
@@ -860,6 +860,20 @@ def scan_companion(vault: Path, state: Path | None = None, now: float | None = N
     """
     vault = Path(vault).resolve()
     info = {'rules_count': 0, 'active_threads': 0, 'last_session': None, 'active_presence': 0}
+    unreadable = set()
+
+    def eligible(path):
+        try:
+            mode = path.lstat().st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+        except OSError:
+            unreadable.add(path.name)
+            return False
+        if stat.S_ISDIR(mode):
+            unreadable.add(path.name)
+        return stat.S_ISREG(mode)
+
     comp_dir = None
     companions = companion_names(vault, state)
 
@@ -878,17 +892,17 @@ def scan_companion(vault: Path, state: Path | None = None, now: float | None = N
 
     if comp_dir:
         rules_file = comp_dir / 'Kurallar.md'
-        if _is_safe_file(rules_file):
+        if eligible(rules_file):
             try:
-                text = rules_file.read_text(encoding='utf-8', errors='replace')
+                text = rules_file.read_text(encoding='utf-8')
                 info['rules_count'] = sum(1 for line in text.splitlines() if re.match(r'^(?:[-*+]|\d+[.)])[ \t]', line.strip()))
-            except OSError:
-                pass
+            except (OSError, UnicodeDecodeError):
+                unreadable.add(rules_file.name)
 
         threads_file = comp_dir / 'Threads.md'
-        if _is_safe_file(threads_file):
+        if eligible(threads_file):
             try:
-                text = threads_file.read_text(encoding='utf-8', errors='replace')
+                text = threads_file.read_text(encoding='utf-8')
                 lines = list(_unfenced_thread_lines(text.splitlines()))
                 text = '\n'.join(lines)
                 in_active = False
@@ -930,18 +944,21 @@ def scan_companion(vault: Path, state: Path | None = None, now: float | None = N
                         source_lines = text.splitlines()
                         info['active_threads'] = sum(1 for _ in _thread_bullet_topics(
                             source_lines[_frontmatter_end(source_lines):]))
-            except OSError:
-                pass
+            except (OSError, UnicodeDecodeError):
+                unreadable.add(threads_file.name)
 
         session_file = comp_dir / 'Last-Session.md'
-        if _is_safe_file(session_file):
+        if eligible(session_file):
             try:
-                text = session_file.read_text(encoding='utf-8', errors='replace')
+                text = session_file.read_text(encoding='utf-8')
                 m = re.search(r'##\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})', text)
                 if m:
                     info['last_session'] = m.group(1)
-            except OSError:
-                pass
+            except (OSError, UnicodeDecodeError):
+                unreadable.add(session_file.name)
+
+    if unreadable:
+        info.update(status='partial', unreadable_sources=sorted(unreadable))
 
     # Presence check for active sessions across devices
     presence_dir = vault / '.presence'
@@ -1167,9 +1184,20 @@ def format_human(report: dict) -> str:
 
     comp = report.get('companion', {})
     lines.append('[Eslikci ve Akis]')
-    lines.append(f"  Kurallar: {comp.get('rules_count', 0)} kural")
-    lines.append(f"  Acik is parcaciklari: {comp.get('active_threads', 0)} thread")
-    if comp.get('last_session'):
+    unreadable = comp.get('unreadable_sources', [])
+    if comp.get('status') == 'partial':
+        lines.append('  Eslikci taramasi eksik; okunamayan kaynaklar sayilmadi.')
+    if 'Kurallar.md' in unreadable:
+        lines.append('  Kurallar: taranamadi')
+    else:
+        lines.append(f"  Kurallar: {comp.get('rules_count', 0)} kural")
+    if 'Threads.md' in unreadable:
+        lines.append('  Acik is parcaciklari: taranamadi')
+    else:
+        lines.append(f"  Acik is parcaciklari: {comp.get('active_threads', 0)} thread")
+    if 'Last-Session.md' in unreadable:
+        lines.append('  Son oturum: taranamadi')
+    elif comp.get('last_session'):
         lines.append(f"  Son oturum: {comp.get('last_session')}")
     if comp.get('active_presence', 0) > 0:
         lines.append(f"  Aktif diger cihaz oturumlari: {comp.get('active_presence')}")
