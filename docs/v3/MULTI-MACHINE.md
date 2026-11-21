@@ -96,6 +96,7 @@ Beyni Guncelle.cmd
 .kiro/skills/beyin-kontrol/
 .opencode/plugins/beyin-v3.js
 .omp/hooks/pre/beyin-v3.ts
+.pi/extensions/beyin-v3.ts
 # companion-compact süreçler arası kilidi; kalıcıdır ama kullanıcı verisi değildir
 **/.beyin-compact.lock
 # Aynı makinedeki not yazarlarının yerel kilidi, istekleri ve tam bayt yedekleri
