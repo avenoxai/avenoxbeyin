@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -810,6 +811,17 @@ class WebReviewTest(WebFixture):
         response, js = self.request('GET', '/app.js', {'Cookie': cookie})
         self.assertEqual(response.status, 200)
         self.assertIn(b'/api/gozden-gecir', js)
+
+
+class WebReviewNavigationTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is only needed for this browser-side test')
+    def test_review_panel_ignores_obsolete_navigation_responses(self):
+        script = Path(__file__).with_name('v3_web_review_navigation_test.js')
+        completed = subprocess.run(
+            ['node', str(script)], input=ui.APP_JS, encoding='utf-8',
+            capture_output=True, timeout=15,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
 
 if __name__ == '__main__':

@@ -331,6 +331,7 @@ APP_JS = r"""
   }
 
   // --- gözden geçir -----------------------------------------------------
+  let sonGozdenYukleme = 0;
   let sonGozdenOnizleme = 0;
   async function gozdenOnizle(id) {
     const istek = ++sonGozdenOnizleme;
@@ -354,6 +355,7 @@ APP_JS = r"""
   }
 
   async function gozgecir() {
+    const istek = ++sonGozdenYukleme;
     sonGozdenOnizleme += 1;
     $('gozden-onizleme-baslik').textContent = 'Önizleme';
     $('gozden-onizleme').textContent = 'Kayıt seçin…';
@@ -363,6 +365,7 @@ APP_JS = r"""
     const taslaklarList = bosalt($('gozden-taslaklar'));
     try {
       const veri = await api('/api/gozden-gecir');
+      if (istek !== sonGozdenYukleme) { return; }
       const inbox = veri.inbox || {};
       inboxDiv.append(el('p', { text: 'Öğe sayısı: ' + (inbox.count ?? 0) + (inbox.status ? ' (' + inbox.status + ')' : '') }));
       if (inbox.folders && inbox.folders.length) {
@@ -415,7 +418,9 @@ APP_JS = r"""
         });
       }
     } catch (error) {
-      inboxDiv.append(el('p', { class: 'bos', text: error.message }));
+      if (istek === sonGozdenYukleme) {
+        inboxDiv.append(el('p', { class: 'bos', text: error.message }));
+      }
     }
   }
 
@@ -424,6 +429,10 @@ APP_JS = r"""
   function goster() {
     let ad = window.location.hash.replace('#', '');
     if (!(ad in YUKLE)) { ad = 'kokpit'; }
+    if (ad !== 'gozden-gecir') {
+      sonGozdenYukleme += 1;
+      sonGozdenOnizleme += 1;
+    }
     document.querySelectorAll('.gorunum').forEach(function (g) { g.hidden = g.id !== 'gorunum-' + ad; });
     document.querySelectorAll('.yan nav a').forEach(function (a) { a.classList.toggle('secili', a.dataset.gorunum === ad); });
     if (YUKLE[ad]) { YUKLE[ad]().catch(function (error) { bildir(error.message, true); }); }
