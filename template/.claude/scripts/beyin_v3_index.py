@@ -78,6 +78,8 @@ def check(value, vault=None):
     """The validated name list, first spelling of each name kept; ValueError says what is wrong.
 
     All or nothing: one bad entry refuses the file, so a typo is reported instead of half applied.
+    Entries containing '/' are vault-root-relative paths (e.g. 'projects/dukkan/research');
+    bare names (e.g. 'research') match at any depth as before.
     """
     if not isinstance(value, dict) or set(value) - {'schema', 'excluded_dirs'} or value.get('schema', 1) != 1:
         raise ValueError('index settings accept only excluded_dirs')
@@ -88,9 +90,16 @@ def check(value, vault=None):
     for name in names:
         if not isinstance(name, str) or not name.strip() or name != name.strip() or len(name) > MAX_NAME_CHARS:
             raise ValueError('excluded_dirs entries must be directory names without surrounding spaces: ' + repr(name)[:80])
-        if '/' in name or '\\' in name or name in ('.', '..') or any(ord(char) < 32 or ord(char) == 127 for char in name):
-            raise ValueError('excluded_dirs takes bare directory names, matched at any depth, not paths: ' + repr(name)[:80])
-        key = dir_key(name)
+        if name in ('.', '..') or any(ord(char) < 32 or ord(char) == 127 for char in name):
+            raise ValueError('excluded_dirs entries must not be "." or ".." or contain control chars: ' + repr(name)[:80])
+        if '/' in name or '\\' in name:
+            # Vault-root-relative path: normalize to forward slashes, reject '..' components.
+            parts = name.replace('\\', '/').split('/')
+            if any(p in ('', '.', '..') for p in parts):
+                raise ValueError('excluded_dirs path entries must not contain empty, ".", or ".." components: ' + repr(name)[:80])
+            key = tuple(dir_key(p) for p in parts)
+        else:
+            key = dir_key(name)
         if key not in seen:
             seen[key] = name
             result.append(name)
@@ -136,7 +145,11 @@ def exclusions(state, vault=None):
     report = {'excluded_dirs': names, 'pruned': 0, 'pruned_dirs': []}
     if error is not None:
         report['error'] = error
-    return frozenset(dir_key(name) for name in names), report
+    key_set = set()
+    for name in names:
+        key = tuple(dir_key(p) for p in name.replace('\\', '/').split('/')) if '/' in name or '\\' in name else dir_key(name)
+        key_set.add(key)
+    return frozenset(key_set), report
 
 
 def applied_keys(keys, walk_skips=()):
@@ -147,19 +160,33 @@ def applied_keys(keys, walk_skips=()):
     that withhold a path under an excluded directory either: `receipts` in the list would hide
     every receipt.
     """
-    return frozenset(key for key in keys if not key.startswith('.') and key not in walk_skips)
+    def _is_dot_or_skip(key):
+        if isinstance(key, str):
+            return key.startswith('.') or key in walk_skips
+        return key[0].startswith('.') or key in walk_skips
+    return frozenset(key for key in keys if not _is_dot_or_skip(key))
 
 
 def prune(root, directory, dirs, keys, report):
     """Drop the excluded names from one os.walk level and note what was skipped."""
     kept = []
+    root_key = tuple(dir_key(part) for part in Path(directory).relative_to(root).as_posix().split('/')) if directory != str(root) else ()
     for name in dirs:
-        if dir_key(name) not in keys:
-            kept.append(name)
+        key = dir_key(name)
+        # Bare name key matches at any depth → exclude.
+        if key in keys:
+            report['pruned'] += 1
+            if len(report['pruned_dirs']) < REPORT_LIMIT:
+                report['pruned_dirs'].append((Path(directory) / name).relative_to(root).as_posix())
             continue
-        report['pruned'] += 1
-        if len(report['pruned_dirs']) < REPORT_LIMIT:
-            report['pruned_dirs'].append((Path(directory) / name).relative_to(root).as_posix())
+        # Path key matches only the exact vault-root-relative path → exclude.
+        candidate = root_key + (key,)
+        if candidate in keys:
+            report['pruned'] += 1
+            if len(report['pruned_dirs']) < REPORT_LIMIT:
+                report['pruned_dirs'].append((Path(directory) / name).relative_to(root).as_posix())
+            continue
+        kept.append(name)
     return kept
 
 
