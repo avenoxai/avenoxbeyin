@@ -1640,6 +1640,43 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout.strip().splitlines()[-1]), {'a': 1, 'b': 0, 'c': 1, 'd': 0})
         self.assertEqual(sorted(event['project'] for event in self.queued()), sorted([self.project.name, other.name]))
 
+    def test_write_global_json_preserves_symlink(self):
+        # Create a settings file as a dotfile / target file, and a symlink pointing to it
+        target_file = self.root / 'real_settings.json'
+        target_file.write_text('{"initial": true}\n', encoding='utf-8')
+        link_file = self.root / 'symlink_settings.json'
+        try:
+            link_file.symlink_to(target_file)
+        except OSError:
+            raise self.skipTest('Symlinks not supported or permitted on this system/user')
+
+        bridge._write_global_json(link_file, {"updated": True})
+        self.assertTrue(link_file.is_symlink())
+        self.assertEqual(link_file.resolve(), target_file.resolve())
+        data = json.loads(target_file.read_text(encoding='utf-8'))
+        self.assertEqual(data, {"updated": True})
+
+
+
+    def test_install_and_uninstall_preserve_symlinked_global_settings(self):
+        target = bridge.global_hook_path('claude', home=self.home)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        dotfiles_target = self.root / 'dotfiles_settings.json'
+        dotfiles_target.write_text(json.dumps({"hooks": {}}), encoding='utf-8')
+        try:
+            target.symlink_to(dotfiles_target)
+        except OSError:
+            raise self.skipTest('Symlinks not supported or permitted on this system/user')
+
+        bridge.install_bridge(self.vault, self.state, 'claude', [self.project], home=self.home)
+        self.assertTrue(target.is_symlink())
+        installed_data = json.loads(dotfiles_target.read_text(encoding='utf-8'))
+        self.assertIn('hooks', installed_data)
+
+        bridge.uninstall_bridge('claude', home=self.home)
+        self.assertTrue(target.is_symlink())
+        uninstalled_data = json.loads(dotfiles_target.read_text(encoding='utf-8'))
+        self.assertEqual(uninstalled_data, {})
 
 if __name__ == '__main__':
     unittest.main()
