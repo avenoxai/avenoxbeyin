@@ -555,6 +555,7 @@ def hook_paths(vault: Path) -> dict:
     A vault moved to another account or machine together with its hook files keeps commands
     such as C:\\Users\\<old>\\...\\beyin_v3_hook.py; every lifecycle hook then fails with a
     generic error. Reads only managed hook files; never writes and never walks the vault."""
+    _ensure_scripts_path()  # The source installer also calls hook_reconcile directly.
     stale, checked = [], 0
     try:
         here = vault.resolve()
@@ -623,6 +624,7 @@ def hook_paths(vault: Path) -> dict:
 
 
 def global_bridge_paths(vault: Path, state: Path) -> dict | None:
+    _ensure_scripts_path()
     from beyin_v3_bridge import global_bridge_paths as inspect
     return inspect(vault, state)
 
