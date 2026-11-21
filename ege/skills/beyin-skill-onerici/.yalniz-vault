@@ -1,0 +1,2 @@
+Bu skill global kurulmaz: yalnız editör makinede, vault içine kopyalanır (bkz. ege/skills/README.md).
+ege/kur.py bu dosyayı gören skill klasörünü atlar.
