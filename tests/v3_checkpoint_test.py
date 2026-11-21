@@ -199,6 +199,24 @@ class CheckpointTest(unittest.TestCase):
         self.assertEqual(health(self.state)["total"], 1)
         self.assertEqual(retry["steps"]["learn"], {"status": "unchanged", "count": 0})
 
+    def test_retry_repairs_threads_projection_after_note_replacement(self):
+        request = {"threads": [{"heading": "Aktif İşler", "next_step": "İndeks onarılsın"}]}
+        with patch.object(self.sync, "sync", side_effect=OSError("injected failure during readback")):
+            interrupted = run_checkpoint(self.sync, self.vault, self.state, request, session="repair")
+        self.assertEqual(interrupted["steps"]["threads"]["status"], "error")
+        note = self.comp / "Threads.md"
+        committed = note.read_bytes()
+        self.assertIn("İndeks onarılsın".encode("utf-8"), committed)
+        retry = run_checkpoint(self.sync, self.vault, self.state, request, session="repair")
+        self.assertEqual(retry["steps"]["threads"], "unchanged")
+        self.assertEqual(note.read_bytes(), committed)
+        with self.sync.store._connect() as db:
+            payload, = db.execute(
+                "SELECT r.payload FROM records r JOIN markdown_sources m ON r.id=m.id WHERE m.source=?",
+                (note.relative_to(self.vault).as_posix(),),
+            ).fetchone()
+        self.assertEqual(json.loads(payload)["source_sha256"], hashlib.sha256(committed).hexdigest())
+
     def test_threads_matches_exact_headings_and_applies_a_batch(self):
         threads = self.comp / "Threads.md"
         initial = "# Threads\r\n\r\n### Müşteri Arşivi Eski\r\n- Eski\r\n"

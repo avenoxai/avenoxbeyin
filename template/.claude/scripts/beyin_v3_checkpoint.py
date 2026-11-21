@@ -13,7 +13,7 @@ from pathlib import Path
 from beyin_v3 import _trusted_record
 from beyin_v3_companion import directory as locate_companion, headings
 from beyin_v3_compact import compact as companion_compact
-from beyin_v3_notes import read as note_read, apply as note_apply, NoteConflict
+from beyin_v3_notes import read as note_read, apply as note_apply, NoteConflict, locked, _index_excluded
 from beyin_v3_learning import stage_candidate
 from beyin_v3_sync import parse
 import beyin_v3_chat_trace
@@ -32,6 +32,26 @@ def _update_note(sync, source, previous, updated):
     else:
         request["edits"] = [{"old": previous["content"], "new": updated}]
     return note_apply(sync, request)["status"]
+
+
+def _confirm_replayed_note(sync, source, previous):
+    # The key and source bytes commit together. A crash can still precede the
+    # SQLite projection, so verify or repair the readback without rewriting the note.
+    def indexed_hash():
+        with sync.store._connect() as db:
+            row = db.execute("SELECT r.payload FROM records r JOIN markdown_sources m ON r.id=m.id "
+                             "WHERE m.source=?", (previous["source"],)).fetchone()
+            return json.loads(row[0]).get("source_sha256") if row else None
+
+    with locked(sync):
+        if note_read(sync, source)["sha256"] != previous["sha256"]:
+            raise NoteConflict("checkpoint source changed; reread and retry")
+        if not _index_excluded(sync, previous["source"]) and indexed_hash() != previous["sha256"]:
+            result = sync.sync()
+            if (sync._source_issues(result, previous["source"]) or indexed_hash() != previous["sha256"]
+                    or note_read(sync, source)["sha256"] != previous["sha256"]):
+                raise NoteConflict("checkpoint source is written but index readback failed")
+    return "unchanged"
 
 
 def _update_card(sync, source, card, session, now):
@@ -59,7 +79,7 @@ def _update_card(sync, source, card, session, now):
         if not ending:
             raise ValueError("checkpoint card end marker missing")
         if opening.group(1) == revision:
-            return "unchanged"
+            return _confirm_replayed_note(sync, source, previous)
         updated = content[:opening.start()] + card_text + content[opening.end() + ending.end():]
     else:
         # A legacy eight-character suffix cannot prove ownership. Preserve those cards.
@@ -78,13 +98,17 @@ def _update_threads(sync, source, threads, session):
     applied = set(re.findall(r"^<!-- beyin-checkpoint-thread:([a-f0-9]{64}) -->\r?$",
                              content, re.MULTILINE))
     markers = []
+    replayed = False
     for item in threads:
         old, new = item.get("old"), item.get("new")
         if old and new:
             old = old.replace("\r\n", "\n").replace("\r", "\n")
             new = new.replace("\r\n", "\n").replace("\r", "\n")
             key = _step_key(session, "thread-replace", old, new)
-            if key in applied or old == new:
+            if key in applied:
+                replayed = True
+                continue
+            if old == new:
                 continue
             anchor = old.replace("\n", newline)
             start = content.find(anchor)
@@ -100,6 +124,7 @@ def _update_threads(sync, source, threads, session):
                 raise ValueError("Threads heading and next step must each be one line")
             key = _step_key(session, "thread-next-step", heading, next_step)
             if key in applied:
+                replayed = True
                 continue
             starts = headings(content, 3)
             pattern = re.compile(rf"### {re.escape(heading)}[ \t]*(?:\r?\n|\Z)")
@@ -126,7 +151,7 @@ def _update_threads(sync, source, threads, session):
         markers.append(f"<!-- beyin-checkpoint-thread:{key} -->")
 
     if not markers:
-        return "unchanged"
+        return _confirm_replayed_note(sync, source, previous) if replayed else "unchanged"
     # Commit the keys and their edits together. A crash after replacement can be
     # recognized without a second file or a state directory shared across clients.
     # Keep the keys in the preamble so archiving a closed thread cannot move them.
