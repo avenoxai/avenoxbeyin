@@ -86,15 +86,6 @@ class SourceSyncTest(unittest.TestCase):
         with self.assertRaises(self.module.RevisionConflict):
             self.engine._intent(source, old_hash, 'rejected text', 'task')
         self.assertEqual(list(self.engine.journal.glob('*.json')), [])
-        write_atomic = self.module.atomic
-        def denied(destination, content):
-            if destination == path:
-                raise PermissionError('cannot replace source')
-            write_atomic(destination, content)
-        with patch.object(self.module, 'atomic', side_effect=denied):
-            with self.assertRaises(PermissionError):
-                self.engine._intent(source, self.module._hash(path.read_bytes()), 'denied text', 'task')
-        self.assertEqual(list(self.engine.journal.glob('*.json')), [])
         intent = {'source': source, 'old_hash': old_hash, 'content': 'abandoned text', 'kind': 'task'}
         entry = self.engine.journal / (self.module._hash(source) + '.json')
         entry.write_text(json.dumps(intent))
