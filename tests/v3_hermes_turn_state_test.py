@@ -234,7 +234,9 @@ class HermesTurnStateTest(unittest.TestCase):
         self.assertNotIn(key('synthetic-209'), self.stored())
         self.assertNotIn(key('nan'), self.stored())
         self.assertNotIn(key('inf'), self.stored())
-        with patch.object(self.module, 'load_turns', side_effect=PermissionError()), \
+        # Windows can return the same wall time for many turns in a burst.
+        with patch.object(self.module.time, 'time', return_value=time.time()), \
+                patch.object(self.module, 'load_turns', side_effect=PermissionError()), \
                 self.assertLogs(self.module.LOGGER, level='WARNING'):
             for i in range(self.module.TURNS_KEEP_MAX + 1):
                 self.turn(hooks, 'synthetic-dirty-' + str(i), is_first_turn=True, platform='cli')
@@ -242,6 +244,31 @@ class HermesTurnStateTest(unittest.TestCase):
             self.turn(hooks, 'synthetic-dirty-0')
         self.turn(hooks, 'synthetic-dirty-0')
         self.assertEqual(self.stored()[key('synthetic-dirty-0')]['turns'], 2)
+
+    def test_same_tick_persistence_keeps_most_recent_touches_across_restart(self):
+        with patch.object(self.module.time, 'time', return_value=time.time()), \
+                patch.object(self.module, 'TURNS_KEEP_MAX', 2):
+            hooks = self.module.make_hooks(self.vault, self.state)
+            for session in ('synthetic-first', 'synthetic-second', 'synthetic-first'):
+                self.turn(hooks, session)
+            # The stored order must break ties even after the process-local cache is gone.
+            self.turn(self.module.make_hooks(self.vault, self.state), 'synthetic-third')
+        records = self.stored()
+        self.assertEqual(set(records), {key('synthetic-first'), key('synthetic-third')})
+        self.assertEqual(records[key('synthetic-first')]['turns'], 2)
+        self.assertEqual(records[key('synthetic-third')]['turns'], 1)
+
+    def test_same_tick_cwd_cache_keeps_most_recent_touches(self):
+        with patch.object(self.module.time, 'time', return_value=time.time()), \
+                patch.object(self.module, 'TURNS_KEEP_MAX', 2):
+            hooks = self.module.make_hooks(self.vault, self.state)
+            for session in ('synthetic-first', 'synthetic-second', 'synthetic-first', 'synthetic-third'):
+                self.turn(hooks, session, platform='desktop', cwd=str(self.vault / session))
+            hooks['on_session_finalize'](session_id='synthetic-second')
+            self.assertNotIn('cwd', self.run.call_args.args[2])
+            for session in ('synthetic-first', 'synthetic-third'):
+                hooks['on_session_finalize'](session_id=session)
+                self.assertEqual(self.run.call_args.args[2]['cwd'], str(self.vault / session))
 
     def test_first_turn_without_platform_does_not_forget_known_unattended_platform(self):
         self.seed(platform='telegram')
