@@ -851,6 +851,76 @@ And another link on line 8: [[Components/Auth]].
         self.assertEqual(result["unlinked_count"], 0)
         self.assertEqual(result["total_links_count"], 2)
 
+    def test_markdown_anchor_suffix_collisions(self):
+        self.assertEqual(linter._heading_anchors('# A\n# A\n# A-1\n# A\n'),
+                         {'a', 'a-1', 'a-1-1', 'a-2'})
+        self.assertEqual(linter._heading_anchors('# !!!\n'), set())
+
+    def test_markdown_slug_alone_counts_as_graph_edge(self):
+        self._write_notes(self.vault, {
+            'source.md': '[guide](target.md#deployment-guide)',
+            'target.md': '# Deployment Guide\n',
+        })
+        result = self._lint_cli()
+        self.assertEqual(result['broken_links_count'], 0)
+        self.assertNotIn('target.md', result['orphans'])
+        self.assertNotIn('target.md', result['unlinked'])
+
+    def test_markdown_anchor_unicode_lowercase_and_dotted_i_alias(self):
+        self._write_notes(self.vault, {
+            'source.md': '[Şifre](target%20note.md#şifre-yönetimi)\n'
+                         '[İlk](target%20note.md#i%CC%87lk-kurulum)\n'
+                         '[Alt](target%20note.md#ilk-kurulum)\n'
+                         '[Tekrar](target%20note.md#i%CC%87lk-kurulum-1)\n'
+                         '[Alt tekrar](target%20note.md#ilk-kurulum-1)\n'
+                         '[IŞIK](target%20note.md#işik)\n'
+                         '[Çıktı](target%20note.md#çıktı--sonuç)\n'
+                         '[Straße](target%20note.md#stra%C3%9Fe-guide)\n'
+                         '[Strasse](target%20note.md#strasse-guide)\n'
+                         '[Yanlış tekrar](target%20note.md#strasse-guide-1)\n'
+                         '[Noktasız](target%20note.md#ışık)\n'
+                         '[[target note#İlk Kurulum]] [[target note#ilk-kurulum]]\n',
+            'target note.md': '## Şifre Yönetimi\n## İlk Kurulum\n## İlk Kurulum\n'
+                              '## IŞIK\n## Çıktı & Sonuç\n## Straße Guide\n## Strasse Guide\n',
+        })
+        result = self._lint_cli()
+        self.assertEqual({(link['line'], link['type']) for link in result['broken_links']},
+                         {(10, 'markdown'), (11, 'markdown'), (12, 'wikilink')})
+
+    def test_markdown_heading_anchors_preserve_literal_wikilinks(self):
+        self._write_notes(self.vault, {
+            'source.md': '[guide](target.md#deployment-guide) '
+                         '[literal](target.md#Deployment%20Guide) '
+                         '[duplicate](target.md#deployment-guide-1) '
+                         '[punctuation](target.md#release-notes-v20) '
+                         '[[target#Deployment Guide]] [[target#deployment-guide]] '
+                         '[missing](target.md#deployment-guide-2)',
+            'target.md': '# Deployment Guide\n## Deployment Guide\n## Release Notes: v2.0!\n',
+        })
+        result = self._lint_cli()
+        self.assertEqual(result['broken_links_count'], 2)
+        self.assertEqual({link['raw'].strip() for link in result['broken_links']},
+                         {'[[target#deployment-guide]]', '[missing](target.md#deployment-guide-2)'})
+        self.assertNotIn('target.md', result['orphans'])
+        self.assertNotIn('target.md', result['unlinked'])
+
+    def test_markdown_anchor_keeps_inline_code_text_outside_fences(self):
+        self._write_notes(self.vault, {
+            'source.md': '[Kılavuz](target.md#use-beyin-lint-v20)\n'
+                         '[Komut](target.md#beyin-run)\n'
+                         '[Tekrar](target.md#use-beyin-lint-v20-1)\n'
+                         '[Eksik](target.md#use-beyin-lint-v20-2)\n'
+                         '[Çit içi](target.md#fenced-heading)\n'
+                         '[[target#use-beyin-lint-v20]]\n',
+            'target.md': '## Use `beyin lint`: v2.0!\n'
+                         '## ``beyin-run``\n'
+                         '## Use `beyin lint`: v2.0!\n'
+                         '```md\n## Fenced heading\n```\n',
+        })
+        result = self._lint_cli()
+        self.assertEqual({(link['line'], link['type']) for link in result['broken_links']},
+                         {(4, 'markdown'), (5, 'markdown'), (6, 'wikilink')})
+
     def test_markdown_links_resolution_and_relative(self):
         (self.vault / "sub").mkdir()
         (self.vault / "sub dir").mkdir()

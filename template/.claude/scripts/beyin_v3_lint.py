@@ -64,8 +64,8 @@ def _norm_key(text):
     return unicodedata.normalize("NFC", text.replace("\\", "/")).strip().casefold()
 
 
-def _lines_outside_code(text):
-    """(line number, line) pairs outside fenced code; inline code spans are blanked."""
+def _lines_outside_code(text, *, blank_inline_code=True):
+    """Yield (line number, line) pairs outside fences, masking inline code by default."""
     fence = None
     for line_idx, line in enumerate(text.splitlines(), 1):
         opener = FENCE_PATTERN.match(line)
@@ -77,7 +77,9 @@ def _lines_outside_code(text):
         if opener:
             fence = opener.group(1)
             continue
-        yield line_idx, INLINE_CODE_PATTERN.sub(lambda match: " " * len(match.group(0)), line)
+        if blank_inline_code:
+            line = INLINE_CODE_PATTERN.sub(lambda match: " " * len(match.group(0)), line)
+        yield line_idx, line
 
 
 def _headings(text):
@@ -87,6 +89,35 @@ def _headings(text):
         if match:
             headings.add(_norm_key(match.group(1).strip().rstrip("#").strip()))
     return headings
+
+
+def _heading_anchors(text):
+    """Slug anchors for the ATX headings recognized by lint, in document order.
+
+    Keep literal heading lookup separate: wikilinks must not silently acquire
+    Markdown slug semantics. Duplicate slugs receive the usual numeric suffix.
+    Keep inline code text for slugs and skip fenced code.
+    """
+    anchors, next_suffix = set(), {}
+    for _, line in _lines_outside_code(text, blank_inline_code=False):
+        match = HEADING_PATTERN.fullmatch(line)
+        if not match:
+            continue
+        heading = match.group(1).strip().rstrip('#').strip().lower()
+        slug = ''.join(c for c in heading if c in ' -_' or
+                       unicodedata.category(c)[0] in 'LNM').replace(' ', '-')
+        if not slug:
+            continue
+        anchor, suffix = slug, next_suffix.get(slug, 0)
+        if suffix:
+            anchor = f'{slug}-{suffix}'
+        while anchor in anchors:
+            suffix += 1
+            anchor = f'{slug}-{suffix}'
+        next_suffix[slug] = suffix + 1
+        anchors.add(anchor)
+    # Add plain-i aliases after assigning suffixes to the Unicode slugs.
+    return anchors | {anchor.replace('i\u0307', 'i') for anchor in anchors if 'i\u0307' in anchor}
 
 
 def extract_wikilinks(text):
@@ -498,7 +529,10 @@ def lint_vault(vault_root, folder=None, *, state=None):
                     and _norm_key(res['resolved_path']) not in vault_index.get('receipts', {})):
                 try:
                     target_text = (vault_root / res['resolved_path']).read_text(encoding='utf-8-sig')
-                    if _norm_key(link['heading']) not in _headings(target_text):
+                    heading = _norm_key(link['heading'])
+                    if (heading not in _headings(target_text) and
+                            (link_type != 'markdown' or
+                             link['heading'].lower() not in _heading_anchors(target_text))):
                         res = {'exists': False, 'resolved_path': None}
                 except (OSError, UnicodeError):
                     res = {'exists': False, 'resolved_path': None}

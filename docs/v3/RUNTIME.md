@@ -176,6 +176,11 @@ görmek için bayraksız `project-scope list` kullan.
   Excluded notes still supply link targets and backlinks, and their broken links
   remain visible. Scan and link counts, privacy filters and MOC behavior are unchanged.
   Generated files have no separate exemption.
+  Yerel Markdown bağlantıları `[Kılavuz](not.md#kurulum-kılavuzu)` biçiminde,
+  `# Kurulum Kılavuzu` gibi bir başlıktan üretilen kısa adresi de kabul eder.
+  Aynı kısa adresi üreten başlıklar `-1`, `-2` ekleriyle ayrılır.
+  Başlıktaki satır içi kodun metni kısa adrese katılır. `İ` harfi için hem
+  noktalı Unicode `i̇` hem düz `i` kabul edilir. Wikilinkler başlık metniyle eşleşir.
 - `moc [--folder knowledge] [--file MOC.md]` yalnız hedef klasördeki düz bir `.md` dosyasına
   yazar. `CLAUDE.md`, `AGENTS.md`, `Kurallar.md` gibi talimat, companion veya kural dosyası
   adları kabul edilmez. Dosya yoksa oluşturur. Varsa yalnız tek bir `<!-- beyin-moc:start -->` ve
