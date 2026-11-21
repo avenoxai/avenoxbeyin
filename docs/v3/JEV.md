@@ -51,7 +51,24 @@ Her çağrı state dizinindeki `jev-calls.jsonl` dosyasına tek satırlık saya�
 {"mode":"shadow","model":"jev-1.13.0","provider":"typesafe","timeout":3,"max_candidates":32,"max_questions":96,"max_input_chars":24000,"cache_ttl":3600}
 ```
 
-`TYPESAFE_API_KEY` ortam değişkeninde olmalıdır. Anahtarı Markdown'a, sürüm kontrolüne veya komut argümanına yazmayın. `env_file` kullanılırsa mutlak yol gerekir. Sağlayıcı URL'si `base_url` veya `TYPESAFE_BASE_URL` ile seçilir; HTTPS ve yerel HTTP desteklenir. Yerel adreslere (`localhost`, `127.0.0.1`, `::1`) giden çağrılar `HTTP_PROXY`, `ALL_PROXY` veya sistem proxy ayarlarını kullanmaz; uzak HTTPS adresleri tanımlı proxy üzerinden gitmeye devam eder. Vercel uyumlu bir köprü kullanılıyorsa `provider: "vercel"` seçilebilir; bu bir Vercel hesap/anahtar kurucusu değildir. Anahtarsız, yerelde çalışan açık ağırlıklı model için [Laya bölümüne](#yerel-laya-arka-ucu-isteğe-bağlı) bakın.
+`TYPESAFE_API_KEY` önce ortam değişkeninde, ardından `env_file` içinde aranır. Anahtarı Markdown'a, sürüm kontrolüne veya komut argümanına yazmayın. `env_file` kullanılırsa mutlak yol gerekir. Sağlayıcı URL'si `base_url` veya `TYPESAFE_BASE_URL` ile seçilir; HTTPS ve yerel HTTP desteklenir. Yerel adreslere (`localhost`, `127.0.0.1`, `::1`) giden çağrılar `HTTP_PROXY`, `ALL_PROXY` veya sistem proxy ayarlarını kullanmaz; uzak HTTPS adresleri tanımlı proxy üzerinden gitmeye devam eder. Vercel uyumlu bir köprü kullanılıyorsa `provider: "vercel"` seçilebilir; bu bir Vercel hesap/anahtar kurucusu değildir. Anahtarsız, yerelde çalışan açık ağırlıklı model için [Laya bölümüne](#yerel-laya-arka-ucu-isteğe-bağlı) bakın.
+
+
+### Anahtarı yerel bir komutla okuma
+
+Etkin sağlayıcının anahtarı ortamda ve `env_file` içinde boşsa Beyin, `jev-key` ile kaydedilen komutu çalıştırır. Aşağıdaki macOS örneğinde `mykey`, Keychain'de kayıtlı öğenin servis adıdır.
+
+```sh
+python beyin.py jev-key -- /usr/bin/security find-generic-password -s mykey -w
+python beyin.py --json jev status
+python beyin.py jev-key
+```
+
+İlk argüman çalıştırılabilir dosyanın mutlak yolu olmalıdır. Komut kabuksuz çalışır. Windows'ta `.exe` yolunu kullanın. Komut anahtarı UTF-8 olarak standart çıktıya yazmalıdır. Okuma en fazla 8.192 bayt ve 10 saniye ile sınırlıdır. Sondaki tek satır sonu kaldırılır. Boş çıktı, sınır aşımı veya başarısız çıkış anahtar eksikliği olarak görünür. `jev status` ve `doctor` komutu çalıştırabilir. JSON çıktısında yalnızca anahtarın varlığı ve kaynağı gösterilir (`env`, `env_file`, `command` veya `none`).
+
+`jev-key` yalnızca komutun argümanlarını yerel state dizinindeki `jev-state.json` dosyasına kaydeder. Argümansız `jev-key` komutu kaldırır. `jev.json` eski sürümlerle uyumlu kalır. POSIX sistemlerde `jev-state.json` 0600 izinle yazılır ve grup ya da diğer kullanıcılar dosyaya yazabiliyorsa komut çalışmaz. Windows'ta dosyayı korumak için kullanıcıya özel bir yerel state dizini kullanın.
+
+### Komutla danışma
 
 ```sh
 python scripts/beyin_v3.py --vault /path/to/vault --state /path/to/state context "kısa notlar" --project demo --jev

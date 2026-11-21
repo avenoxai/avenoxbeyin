@@ -877,9 +877,15 @@ def load_cli(directory):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     helper_args = []
-    if next((arg for arg in argv if arg not in ('--human', '--json')), None) == 'jev-key' and '--' in argv:
-        separator = argv.index('--')
-        argv, helper_args = argv[:separator], argv[separator:]
+    for index, arg in enumerate(argv):
+        if arg in ('--human', '--json'):
+            continue
+        if arg == 'jev-key':
+            start = index + 1
+            while start < len(argv) and argv[start] in ('--human', '--json'):
+                start += 1
+            argv, helper_args = argv[:start], argv[start:]
+        break
     force_json = '--json' in argv or '--print-config' in argv
     human = ('--human' in argv or sys.stdout.isatty()) and not force_json
     argv = [arg for arg in argv if arg not in ('--human', '--json')] + helper_args

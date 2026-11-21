@@ -11,7 +11,7 @@ from unittest.mock import patch
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'template/.claude/scripts'))
 import beyin_v3_jev_client as j
-from tests.v3_package_helpers import ROOT, inherited_env, isolated_env, run_python
+from tests.v3_package_helpers import ROOT, inherited_env, install, isolated_env, run_python
 
 
 class KeyCommandCliTests(unittest.TestCase):
@@ -159,6 +159,17 @@ class KeyCommandCliTests(unittest.TestCase):
             values, source = j._environment(config, state)
             self.assertEqual(source, 'command')
             self.assertEqual(values['TYPESAFE_API_KEY'], 'from-child')
+
+    def test_installed_jev_key_preserves_child_flags(self):
+        installed = install(self.vault, self.state, self.env)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        result = run_python(self.vault / 'beyin.py',
+                            ['--human', 'jev-key', sys.executable, '-c', 'pass', '--json'],
+                            self.vault, self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('anahtar komutu ayarlandı', result.stdout.decode('utf-8'))
+        saved = json.loads((self.state / 'jev-state.json').read_text(encoding='utf-8'))
+        self.assertEqual(saved['key_command'][-1], '--json')
 
 class ClientTests(unittest.TestCase):
     def setUp(self):
