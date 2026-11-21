@@ -7,7 +7,9 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 PACK = ROOT / "extras/video-motoru"
-NOTEBOOK = ("Marka.md", "Dersler.md", "Sahne-Envanteri.md", "Araclar.md", "Acik-Isler.md")
+NOTEBOOK = ("Marka.md", "Dersler.md", "Sahne-Envanteri.md", "Araclar.md", "Acik-Isler.md",
+            "Referanslar.md", "Kutuphane.md")
+GUIDES = ("KURULUM.md", "REFERANS.md", "KUTUPHANE.md")
 
 
 def skills_module():
@@ -25,7 +27,8 @@ class VideoMotoruPackTest(unittest.TestCase):
             for side in (".agents", ".claude"):
                 root = vault / side / "skills/video-motoru"
                 self.assertTrue((root / "SKILL.md").is_file(), side)
-                self.assertTrue((root / "KURULUM.md").is_file(), side)
+                for name in GUIDES:
+                    self.assertTrue((root / name).is_file(), f"{side}/{name}")
                 for name in NOTEBOOK + ("KURGU-NOTU.md",):
                     self.assertEqual((root / "sablonlar" / name).read_bytes(),
                                      (PACK / "sablonlar" / name).read_bytes(), name)
@@ -41,6 +44,8 @@ class VideoMotoruPackTest(unittest.TestCase):
                 self.assertTrue((path.parent / target).exists(), f"{path.name}: {target}")
         for name in NOTEBOOK:
             self.assertIn(f"`{name}`", text, name)
+        for name in GUIDES:
+            self.assertIn(f"]({name})", text, name)
 
     def test_notebook_starts_blank(self):
         # The pack ships no brand: every list field under Marka.md is empty and no lesson is dated.
@@ -49,7 +54,7 @@ class VideoMotoruPackTest(unittest.TestCase):
         self.assertTrue(fields)
         for line in fields:
             self.assertTrue(line.endswith(":"), line)
-        for name in ("Dersler.md", "Acik-Isler.md"):
+        for name in ("Dersler.md", "Acik-Isler.md", "Kutuphane.md", "Referanslar.md"):
             for line in (PACK / "sablonlar" / name).read_text(encoding="utf-8").splitlines():
                 self.assertNotRegex(line, r"^- \d{4}-\d{2}-\d{2}", f"{name}: {line}")
 

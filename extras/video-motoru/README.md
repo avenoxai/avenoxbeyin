@@ -5,12 +5,16 @@ video üretir ve her işte senin markanı, düzeltmelerini ve çalışan sahnele
 deftere yazar. İlk videoda hiçbir şey bilmez. Onuncu videoda renklerini, tempoyu, neyi sevmediğini
 ve hangi sahneyi yeniden kullanabileceğini bilir.
 
-Hazır bir stil ya da marka içermez. Paketin içinde yalnız üç şey var:
+Hazır bir stil, marka, ses ya da görsel içermez. Paketin içinde yalnız yönergeler ve boş şablonlar var:
 
 - `SKILL.md`: ajanın ne zaman okuyacağını, ne zaman yazacağını ve nasıl not alacağını anlatır.
 - `KURULUM.md`: ajan için kurulum notları (Node.js, FFmpeg, HyperFrames, skill paketi, telemetri).
+- `REFERANS.md`: beğendiğin bir videodan öğrenme standardı. Ajan videoya kare kare bakar, onu iyi
+  yapan mekanizmaları adlandırır, karesini saklar ve onayladıklarını kurala çevirir.
+- `KUTUPHANE.md`: ses, müzik, üretilmiş video, görsel ve logo için etiketli kütüphane. Ajan her
+  varlığı üretildiği anda etiketler ve yenisini üretmeden önce kütüphanede arar.
 - `sablonlar/`: boş defter dosyaları (`Marka`, `Dersler`, `Sahne-Envanteri`, `Araclar`,
-  `Acik-Isler`) ve video başına doldurulan `KURGU-NOTU`.
+  `Acik-Isler`, `Referanslar`, `Kutuphane`) ve video başına doldurulan `KURGU-NOTU`.
 
 ## Kurulum
 

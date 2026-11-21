@@ -1,6 +1,6 @@
 ---
 name: video-motoru
-description: Boş başlayan, her videoda senin markanı ve geri bildirimini not alarak gelişen video motoru (HyperFrames ile HTML'den video). Tetik - "video yap", "motion video", "grafik yap", "videoyu kurgula", "video motorunu kur", "marka defteri", "kurgu notu". Kullanma - tek not kaydetmek veya kasada aramak (beyin), kurulum sorunu (beyin-doktor).
+description: Boş başlayan, her videoda senin markanı ve geri bildirimini not alarak gelişen video motoru (HyperFrames ile HTML'den video). Tetik - "video yap", "motion video", "grafik yap", "videoyu kurgula", "video motorunu kur", "marka defteri", "kurgu notu", "bu videodan öğren", "referans video", "ses kütüphanesi", "varlık kütüphanesi". Kullanma - tek not kaydetmek veya kasada aramak (beyin), kurulum sorunu (beyin-doktor).
 ---
 
 # Video motoru
@@ -26,6 +26,8 @@ vault'ta `Video-Motoru/Marka.md` dosyasını ara. Yoksa "İlk çalıştırma" b�
 | `Sahne-Envanteri.md` | Yapılmış sahne türleri ve dosya yolları | Yeniden kullanılabilir bir sahne çıkınca |
 | `Araclar.md` | Kurulu araçlar, sürümler, yazılan betikler | Bir şey kurunca ya da betik yazınca |
 | `Acik-Isler.md` | "Bir dahaki sefere" kalanlar | İş biterken |
+| `Referanslar.md` | Beğenilen videolar ve onlardan çıkan mekanizmalar | Kullanıcı örnek video gösterince |
+| `Kutuphane.md` | Ses, müzik, üretilmiş video, görsel ve logo kayıtları, etiketleriyle | Bir varlık üretilince ya da indirilince |
 
 Her video ayrıca kendi iş klasöründe bir `KURGU-NOTU.md` taşır.
 
@@ -39,13 +41,15 @@ Defter yoksa sırayla:
 1. [KURULUM.md](KURULUM.md) adımlarını uygula. Eksik olanı kullanıcıya söyle, onun adımı olanı
    onun yerine yapma.
 2. Kullanıcıya iki şeyi sor: defter vault'ta nereye kurulsun, iş klasörleri diskte nerede dursun.
-   Cevaba göre `Video-Motoru` klasörünü aç ve bu skill'in `sablonlar/` klasöründeki beş dosyayı
-   oraya kopyala. İş klasörü kökünü `Araclar.md` içine yaz.
+   Cevaba göre `Video-Motoru` klasörünü aç ve bu skill'in `sablonlar/` klasöründeki defter dosyalarını
+   (`KURGU-NOTU.md` dışındakileri) oraya kopyala. İş klasörü kökünü `Araclar.md`, kütüphane
+   kökünü `Kutuphane.md` içine yaz.
 3. Marka görüşmesini yap. Soruları `Marka.md` içindeki başlıklardan al, bir seferde en çok üç
    soru sor. Kullanıcının cevaplamadığı başlığı boş bırak. Tahminle doldurma: boş başlık dürüst,
    uydurulmuş marka kuralı zararlıdır.
-4. Kullanıcının elinde beğendiği bir video, site ya da görsel varsa iste. Ondan çıkardığın her
-   kuralı kullanıcıya göster, onayladığını `Marka.md` içine yaz.
+4. Kullanıcının elinde beğendiği bir video varsa iste ve [REFERANS.md](REFERANS.md) adımlarını
+   uygula. Site ya da görsel verdiyse ondan çıkardığın her kuralı kullanıcıya göster, onayladığını
+   `Marka.md` içine yaz.
 5. Kurduğun sürümleri ve tarihi `Araclar.md` içine yaz.
 
 Marka boşken de video yapılır. O durumda sade bir varsayılanla başla ve kullanıcıya bunun
@@ -55,7 +59,8 @@ varsayılan olduğunu söyle. İlk önizlemeye gelen tepki defterin ilk gerçek 
 
 **Başlarken.** `Marka.md` dosyasının tamamını, `Dersler.md` dosyasının `[kalıcı]` satırlarını ve
 son yirmi satırını, `Acik-Isler.md` dosyasını oku. `Sahne-Envanteri.md` içinde yapacağın sahneye
-benzeyen varsa sıfırdan yazma: kopyala, uyarla. Alt ajan kullanıyorsan ilgili dersleri ve örnek
+benzeyen varsa sıfırdan yazma: kopyala, uyarla. Kuracağın ana benzer bir mekanizma
+`Referanslar.md` içinde varsa ona bak. Alt ajan kullanıyorsan ilgili dersleri ve örnek
 sahne yollarını brifine koy, "deftere bak" deme.
 
 **Üretirken.** HyperFrames'in kendi skill'lerini izle (`hyperframes`, `hyperframes-cli`). Bu skill
@@ -71,7 +76,26 @@ unutulur.
 
 **Bitince.** İş klasörüne `sablonlar/KURGU-NOTU.md` dosyasını kopyalayıp doldur. Yeni sahneleri
 `Sahne-Envanteri.md` içine, yazdığın betikleri `Araclar.md` içine, yarım kalanları `Acik-Isler.md`
-içine taşı. Alt ajanlar deftere kendileri yazmaz, bulgularını raporlar. Defteri tek el yazar.
+içine taşı. Bu işte üretilen ve yeniden kullanılabilecek varlıkları kütüphaneye kopyala, kullandığın
+varlıkların "Kullanıldığı" sütununu güncelle. Alt ajanlar deftere kendileri yazmaz, bulgularını raporlar. Defteri tek el yazar.
+
+## Referanstan öğrenme
+
+Kullanıcı bir örnek video gösterip "böyle olsun" ya da "bundan öğren" dediğinde
+[REFERANS.md](REFERANS.md) adımlarını izle: videoya karelerle bak, mekanizmaları zaman damgası ve
+ölçüyle adlandır, her birinin karesini sakla, kullanıcıya göster, onayladığını deftere yaz.
+Mekanizmayı al, içeriği alma.
+
+## Varlık kütüphanesi
+
+Ses efekti, müzik, üretilmiş video, görsel ve logo [KUTUPHANE.md](KUTUPHANE.md) kurallarıyla
+tutulur. İki kural her işte geçerlidir:
+
+- **Önce ara, sonra üret.** Yeni bir varlık üretmeden ya da indirmeden önce `Kutuphane.md` içinde
+  etiketle ara.
+- **Üretince aynı turda etiketle.** Kabul edilen her varlık kimliği, sözlükten etiketleri,
+  kaynağı (hangi model, hangi girdi), lisansı ve kullanıldığı videoyla kaydedilir. Reddedilen
+  üretimin girdisi ve reddedilme nedeni de tek satırla yazılır.
 
 ## Not alma kuralları
 

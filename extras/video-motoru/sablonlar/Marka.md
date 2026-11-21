@@ -53,6 +53,7 @@ Boş kalan başlık "henüz bilmiyoruz" demektir.
 
 Kullanıcının "bunu bir daha yapma" dediği her şey, tarihiyle.
 
-## Referanslar
+## Referanslardan gelen kurallar
 
-Kullanıcının beğendiği videolar, siteler, görseller ve her birinden alınan kural.
+Referans videolardan alınıp kullanıcının onayladığı, her videoda geçerli kurallar. Kaynağın
+kendisi ve ayrıntısı `Referanslar.md` içinde.
