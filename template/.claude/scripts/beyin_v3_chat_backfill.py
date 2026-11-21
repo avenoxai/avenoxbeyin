@@ -587,7 +587,6 @@ def write(vault, state, session, text, projects_dir=None):
     result = trace.write(vault, state, 'claude', session, text, day=info['date'],
                          record=lambda: recorded.update(status=_record_locked(state, session, 'written')))
     result['backfill'] = recorded['status']
-    result['session_date'] = info['date'].isoformat()
     return result
 
 
