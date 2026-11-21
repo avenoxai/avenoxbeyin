@@ -229,26 +229,9 @@ def killed(vault):
     return os.environ.get('BEYIN_JEV_DISABLE') == '1' or (Path(vault) / 'jev.disabled').exists()
 
 
-def _jev_state_path(vault):
-    """Return the path to the machine-local Jev state file (jev-state.json).
-
-    The state directory is outside the vault so it is never synced across machines.
-    Uses the same convention as beyin_v3_yakala.resolve_state.
-    """
-    import sys
-    try:
-        if sys.platform == 'win32':
-            base = Path(os.environ.get('LOCALAPPDATA', str(Path.home() / 'AppData/Local')))
-        elif sys.platform == 'darwin':
-            base = Path.home() / 'Library/Application Support'
-        else:
-            base = Path(os.environ.get('XDG_STATE_HOME', str(Path.home() / '.local/state')))
-    except RuntimeError:
-        # Path.home() fails when HOME/USERPROFILE is not set (e.g., in tests with cleared env).
-        # Fall back to a temporary directory.
-        base = Path(tempfile.gettempdir()) / 'beyin-v3-fallback'
-    state_dir = base / 'beyin-v3' / hashlib.sha256(str(vault).encode()).hexdigest()[:16]
-    return state_dir / 'jev-state.json'
+def _jev_state_path(state_dir):
+    """Executable settings live alongside jev.json in the resolved local runtime."""
+    return Path(state_dir) / 'jev-state.json'
 
 
 def _load_jev_state(vault):

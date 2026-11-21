@@ -45,6 +45,34 @@ class KeyCommandCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(json.loads(result.stderr)['message'], 'key_command_invalid')
 
+    def test_status_and_doctor_read_command_from_local_state_without_exposing_key(self):
+        config = self.state / 'jev.json'
+        config.write_text('{"mode":"shadow"}\n', encoding='utf-8', newline='\n')
+        token = 'synthetic-' + 'jev-credential-747'
+        # Build the token at runtime so the stored argv contains only the retrieval recipe.
+        helper = [sys.executable, '-c',
+                  "import sys; v='synthetic-'+'jev-credential-747'; print(v); print(v, file=sys.stderr)"]
+        result = self.cli('jev-key', *helper)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(token.encode(), result.stdout + result.stderr)
+        local = self.state / 'jev-state.json'
+        before = local.read_bytes()
+        self.assertNotIn(token.encode(), before)
+        self.assertNotIn('key_command', config.read_text(encoding='utf-8'))
+        self.assertEqual(list(self.vault.iterdir()), [])
+        for args in (('jev', 'status'), ('jev', 'status'), ('doctor',)):
+            result = self.cli(*args)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn(token.encode(), result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            jev = report if args[0] == 'jev' else report['jev']
+            self.assertTrue(jev['key_present'])
+            self.assertEqual(jev['key_source'], 'command')
+        self.assertEqual(local.read_bytes(), before)
+        for path in self.state.iterdir():
+            if path.is_file():
+                self.assertNotIn(token.encode(), path.read_bytes())
+
 class ClientTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
