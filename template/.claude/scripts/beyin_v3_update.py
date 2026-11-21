@@ -40,7 +40,7 @@ def version(value):
 
 
 def allowed(name):
-    return name in ('scripts/install_v3.py', 'scripts/beyin_v3.py', 'scripts/beyin_entry.py') or bool(re.fullmatch(r'template/\.claude/scripts/beyin_v3(?:_[a-z]+)*\.py', name)) or bool(re.fullmatch(r'template/\.agents/skills/(beyin|beyin-doktor|beyin-guncelle)/SKILL\.md', name))
+    return name in ('scripts/install_v3.py', 'scripts/beyin_v3.py', 'scripts/beyin_entry.py', 'after-update.json') or bool(re.fullmatch(r'template/\.claude/scripts/beyin_v3(?:_[a-z]+)*\.py', name)) or bool(re.fullmatch(r'template/\.agents/skills/(beyin|beyin-doktor|beyin-guncelle)/SKILL\.md', name))
 
 
 def _read_only(path):
@@ -128,6 +128,67 @@ def current_version(vault):
     return value
 
 
+
+
+def _evaluate_condition(condition, vault, state, result):
+    if not condition or condition == 'always':
+        return True
+    if condition == 'yakala_installed':
+        return (state / 'yakala.json').exists() or (state / 'yakala').is_dir()
+    if condition.startswith('bridge_installed'):
+        # Check global bridge / vault runtime state safely
+        if condition == 'bridge_installed':
+            return (state / 'bridge.json').exists() or (vault / '.beyin-bridge.json').exists()
+        parts = condition.split(':', 1)
+        if len(parts) == 2:
+            harness = parts[1]
+            return (state / f'bridge-{harness}.json').exists() or (vault / f'.beyin-bridge-{harness}.json').exists()
+        return False
+    if condition == 'vault_in_git':
+        return (vault / '.git').exists()
+    if condition == 'trust_review_required':
+        return bool(result.get('trust_review_required'))
+    # Check other marker files safely
+    if condition.startswith('file_exists:'):
+        rel = condition.split(':', 1)[1]
+        p = PurePosixPath(rel)
+        if not rel or p.is_absolute() or '..' in p.parts or '\\' in rel:
+            return False
+        return (vault / rel).exists() or (state / rel).exists()
+    return False
+
+def _filter_after_update_steps(steps, vault, state, result):
+    if not isinstance(steps, list):
+        return []
+    filtered = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        step_id = step.get('id')
+        text = step.get('text') or step.get('summary')
+        if not step_id or not isinstance(step_id, str) or not text or not isinstance(text, str):
+            continue
+        cond = step.get('condition')
+        if cond is None:
+            conds = step.get('conditions', ['always'])
+            if isinstance(conds, list):
+                # evaluate all and require all (or any? requirements say "filtered to conditions matching", let's support list as all or any; standard is all or any - let's evaluate all in list to be true)
+                matched = all(_evaluate_condition(c, vault, state, result) for c in conds)
+            else:
+                matched = True
+        else:
+            matched = _evaluate_condition(cond, vault, state, result)
+
+        if matched:
+            clean_step = {'id': step_id, 'text': text}
+            if 'command' in step and isinstance(step['command'], str):
+                clean_step['command'] = step['command']
+            if 'requires_user' in step:
+                clean_step['requires_user'] = bool(step['requires_user'])
+            filtered.append(clean_step)
+    return filtered
+
+
 def validate_package(package):
     with zipfile.ZipFile(package) as archive:
         infos = archive.infolist()
@@ -163,6 +224,36 @@ def validate_package(package):
             if not isinstance(expected, str) or digest(data) != expected:
                 raise ValueError('package checksum mismatch')
             files[name] = data
+        after_update_steps = None
+        if 'after-update.json' in names:
+            try:
+                raw_au = json.loads(archive.read('after-update.json'))
+                if isinstance(raw_au, list):
+                    after_update_steps = raw_au
+                elif isinstance(raw_au, dict) and isinstance(raw_au.get('steps'), list):
+                    after_update_steps = raw_au.get('steps')
+                else:
+                    raise ValueError('invalid after-update schema')
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ValueError('invalid after-update json') from exc
+        elif manifest.get('after_update_steps') is not None:
+            steps_val = manifest.get('after_update_steps')
+            if not isinstance(steps_val, list):
+                raise ValueError('invalid after-update schema')
+            after_update_steps = steps_val
+
+        if after_update_steps is not None:
+            validated_steps = []
+            for step in after_update_steps:
+                if not isinstance(step, dict):
+                    raise ValueError('invalid after-update step schema')
+                step_id = step.get('id')
+                text = step.get('text') or step.get('summary')
+                if not step_id or not isinstance(step_id, str) or not text or not isinstance(text, str):
+                    raise ValueError('invalid after-update step schema')
+                validated_steps.append(step)
+            manifest['after_update_steps'] = validated_steps
+
         required = {'scripts/install_v3.py', 'scripts/beyin_entry.py', 'scripts/beyin_v3.py', 'template/.claude/scripts/beyin_v3.py', 'template/.claude/scripts/beyin_v3_update.py'}
         if not required <= files.keys():
             raise ValueError('incomplete release package')
@@ -541,6 +632,11 @@ def update(vault, state, package=None, check=False):
                 except Exception:
                     pass
         result = {'status': 'updated', 'from_version': old, 'version': new, 'trust_review_required': bool(trust_review)}
+        raw_steps = manifest.get('after_update_steps')
+        if raw_steps:
+            matching_steps = _filter_after_update_steps(raw_steps, vault, state, result)
+            if matching_steps:
+                result['after_update_steps'] = matching_steps
         if trust_review:
             # Which client's hook definitions changed, so the message names only the review it needs.
             result['trust_review_files'] = trust_review
