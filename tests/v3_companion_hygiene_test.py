@@ -195,6 +195,62 @@ class HygieneCliTest(unittest.TestCase):
         self.assertIn('Memory hygiene: Last-Session.md is 3024 chars (limit 3000).', self.hook())
         self.assertNotIn('Threads.md is', self.hook())
 
+    def test_post_tool_use_reports_the_handoff_limit_at_write_time(self):
+        # #707: the agent that wrote the card sees the limit now, not at the next session start.
+        path = self.write('Last-Session.md', '# Son oturum\n' + 'x' * 3100)
+        threads = self.write('Threads.md', '# Threads\n## Active Threads\n### Thread: A\n**Status:** active\n')
+        self.run_cli('sync')
+        text = self.hook('PostToolUse', tool_name='Edit', tool_input={'file_path': str(path)})
+        self.assertTrue(text.startswith('Memory hygiene: Last-Session.md is 3113 chars (limit 3000).'), text[:300])
+        self.assertIn('companion-compact', text)
+        self.assertNotIn('Threads.md is', text)
+        # A note elsewhere, a companion file without a limit and a file within its limit stay silent.
+        other = self.vault / 'not.md'
+        other.write_text('# not\n', encoding='utf-8')
+        for target in (other, self.directory / 'Journal.md', threads):
+            self.assertNotIn('Memory hygiene', self.hook('PostToolUse', tool_name='Edit',
+                                                         tool_input={'file_path': str(target)}))
+        # A same-named file outside the companion directory is not the handoff file.
+        project = self.vault / 'projects' / 'ornek'
+        project.mkdir(parents=True)
+        (project / 'Last-Session.md').write_text('x' * 3500, encoding='utf-8')
+        self.assertNotIn('Memory hygiene', self.hook('PostToolUse', tool_name='Edit',
+                                                     tool_input={'file_path': str(project / 'Last-Session.md')}))
+
+    def test_codex_apply_patch_reports_the_handoff_limit_at_write_time(self):
+        # Codex sends apply_patch as tool_input.command; the header path is relative to cwd.
+        path = self.write('Last-Session.md', '# Son oturum\n' + 'x' * 3100)
+        self.run_cli('sync')
+        relative = path.relative_to(self.vault).as_posix()
+
+        def patch(*headers):
+            body = ''.join('*** %s\n@@\n-x\n+x\n' % header for header in headers)
+            return {'command': '*** Begin Patch\n' + body + '*** End Patch\n'}
+
+        text = self.hook('PostToolUse', tool_name='apply_patch', cwd=str(self.vault),
+                         tool_input=patch('Update File: ' + relative))
+        self.assertTrue(text.startswith('Memory hygiene: Last-Session.md is 3113 chars (limit 3000).'), text[:300])
+        # The companion file found among several headers of one patch still reports.
+        self.assertIn('Memory hygiene', self.hook('PostToolUse', tool_name='apply_patch', cwd=str(self.vault),
+                                                  tool_input=patch('Add File: not.md', 'Update File: ' + relative)))
+        # Without an absolute cwd a relative header cannot be resolved, so nothing is reported.
+        self.assertNotIn('Memory hygiene', self.hook('PostToolUse', tool_name='apply_patch',
+                                                     tool_input=patch('Update File: ' + relative)))
+        # A deleted companion file is not measured.
+        self.assertNotIn('Memory hygiene', self.hook('PostToolUse', tool_name='apply_patch', cwd=str(self.vault),
+                                                     tool_input=patch('Delete File: ' + relative)))
+
+    def test_post_tool_use_limit_notice_is_harness_gated(self):
+        path = self.write('Last-Session.md', '# Son oturum\n' + 'x' * 3100)
+        payload = {'hook_event_name': 'PostToolUse', 'tool_input': {'file_path': str(path)}}
+        self.state.mkdir(parents=True, exist_ok=True)
+        for harness in ('claude', 'codex', 'pi'):
+            self.assertIn('Memory hygiene', companion_module.hook_limit_notice(self.vault, self.state, payload, harness))
+        for harness in ('antigravity', 'opencode', 'omp', 'hermes'):
+            self.assertEqual(companion_module.hook_limit_notice(self.vault, self.state, payload, harness), '')
+        self.assertEqual(companion_module.hook_limit_notice(
+            self.vault, self.state, dict(payload, hook_event_name='Stop'), 'claude'), '')
+
     def test_parallel_last_session_notice_preserves_other_cards_and_offers_limit(self):
         path = self.write('Last-Session.md', '# Son oturum\n' + 'x' * 3958)
         self.run_cli('sync')

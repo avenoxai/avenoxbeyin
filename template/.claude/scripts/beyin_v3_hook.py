@@ -745,6 +745,14 @@ def main():
                 notice += scheduled_notice(state)
             except Exception:
                 pass
+        if not args.metadata_only and event == 'PostToolUse':
+            # Companion handoff limit at write time (#707): the same line SessionStart shows, so the
+            # writing agent sees it now. Harness-gated inside; a size check never costs the turn.
+            try:
+                from beyin_v3_companion import hook_limit_notice
+                notice += hook_limit_notice(vault, state, payload, harness=args.harness)
+            except Exception:
+                pass
         if not args.metadata_only and event in ('SessionStart', 'PostToolUse') and (state / 'hygiene.json').is_file():
             # Opt-in hygiene signals (#130), machine-local in state/hygiene.json. Independent of the
             # performance profile, and never able to cost the session or the turn itself.

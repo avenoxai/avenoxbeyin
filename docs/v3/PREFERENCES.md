@@ -182,7 +182,7 @@ python3 beyin.py preferences --folder-questions on
 python3 beyin.py preferences --promotion on
 ```
 
-- `--word-cap-warning`: Claude veya Codex bir notu yazdıktan sonra (PostToolUse) not tavanı aşıyorsa tek satırlık bir bölme sinyali verir. Bu bir sinyaldir, dosya bölünmez ya da taşınmaz. Tavan `--max-words` ile 10 ile 100000 arasında ayarlanır (varsayılan 500). Codex'in `apply_patch` düzenlemeleri de ölçülür. Antigravity, OpenCode, OMP ve Hermes'te bu sinyal gösterilmez.
+- `--word-cap-warning`: Claude veya Codex bir notu yazdıktan sonra (PostToolUse) not tavanı aşıyorsa tek satırlık bir bölme sinyali verir. Bu bir sinyaldir, dosya bölünmez ya da taşınmaz. Companion dışındaki devir dosyalarında (`Threads.md`, `Last-Session.md`, örneğin proje klasöründeki `Threads.md`) sinyal bölmeyi değil, kapanan bölümleri aynı klasörün `Arsiv/` alt klasörüne taşımayı önerir (#707). Tavan `--max-words` ile 10 ile 100000 arasında ayarlanır (varsayılan 500). Codex'in `apply_patch` düzenlemeleri de ölçülür. Antigravity, OpenCode, OMP ve Hermes'te bu sinyal gösterilmez.
 - `--folder-questions`: oturum başında 14 günden uzun süredir sessiz üst klasörler için en fazla üç soru ekler. Yalnız klasörün kendisine ve doğrudan içeriğine bakılır, vault taranmaz. Aynı klasör, yeniden hareketlenene kadar bir kez sorulur.
 - `--promotion`: düzenlenen notların vault içi yollarını runtime klasöründeki `touch-log.tsv` dosyasına yazar; `doctor` bunlardan sıcak ve soğuk klasör raporu çıkarır. Taşıma kararı her zaman senindir.
 

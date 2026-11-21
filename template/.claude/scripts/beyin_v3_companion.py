@@ -679,6 +679,40 @@ def hygiene(vault, state, names=NAMES, target=None):
     return report
 
 
+def hook_limit_notice(vault, state, payload, harness=None):
+    """PostToolUse notice when this write left a companion handoff file over its limit (#707).
+
+    SessionStart already reports it; without this the agent that wrote the card learns it only
+    in the next session. Only edited companion handoff files are measured, so any other write
+    costs no read. Same harness gate as the word-cap signal (claude, codex, pi).
+    """
+    if harness is not None and harness not in ('claude', 'codex', 'pi'):
+        return ''
+    if payload.get('hook_event_name') != 'PostToolUse':
+        return ''
+    from beyin_v3_hygiene import edited_paths
+    edited = []
+    for path in edited_paths(payload):
+        try:
+            resolved = path.resolve()
+        except (OSError, ValueError):
+            continue
+        if resolved.name in LIMITS:
+            edited.append(resolved)
+    if not edited:
+        return ''
+    vault = Path(vault).resolve()
+    target = directory(vault)
+    if target is None:
+        return ''
+    target = target.resolve()
+    names = tuple(name for name in LIMITS if any(path == target / name for path in edited))
+    if not names:
+        return ''
+    from beyin_v3_parallel import enabled as parallel_enabled
+    return hygiene_notice(hygiene(vault, state, names, target), parallel=parallel_enabled(state))
+
+
 def hygiene_notice(report, rules=None, *, parallel=False):
     """Lines at the top of the session context for handoff files over limit or clipped rules."""
     if rules is None and isinstance(report, dict) and 'rules' in report:
