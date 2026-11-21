@@ -16,6 +16,8 @@ import tempfile
 import time
 import unicodedata
 
+from beyin_v3_index import dir_key
+
 # ReDoS-safe wikilink pattern: bounded character class prevents catastrophic backtracking.
 # Matches [[target]], [[target|display]], [[target#heading]], [[target#heading|display]], and embeds ![[...]]
 WIKILINK_PATTERN = re.compile(r"!?\[\[([^\[\]\r\n]{1,500})\]\]")
@@ -453,13 +455,16 @@ def lint_vault(vault_root, folder=None, *, state=None):
     withheld_targets = [link for link in withheld_targets if link["source"] in target_set]
 
     # Keep excluded notes in the graph, but omit their orphan/unlinked findings.
-    classification_files = target_files
-    if state is not None:
-        from beyin_v3_index import applied_keys, dir_key, exclusions
-        excluded, _report = exclusions(state, vault_root)
-        excluded = applied_keys(excluded, EXCLUDED_DIR_NAMES)
-        classification_files = [f for f in target_files
-                                if not any(dir_key(part) in excluded for part in f.split('/')[:-1])]
+    from beyin_v3_index import applied_keys, exclusions
+    excluded = applied_keys(exclusions(state, vault_root)[0], EXCLUDED_DIR_NAMES) if state is not None else ()
+
+    def classified(path):
+        parts = tuple(dir_key(part) for part in path.split('/')[:-1])
+        if parts[:2] in (('knowledge', 'v3'), ('daily', 'v3')):
+            return False
+        return not any(part in excluded or parts[:i + 1] in excluded for i, part in enumerate(parts))
+
+    classification_files = [path for path in target_files if classified(path)]
 
     # Identify orphans (no incoming and no outgoing)
     orphans = []
