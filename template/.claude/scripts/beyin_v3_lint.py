@@ -16,6 +16,8 @@ import tempfile
 import time
 import unicodedata
 
+from beyin_v3_index import dir_key
+
 # ReDoS-safe wikilink pattern: bounded character class prevents catastrophic backtracking.
 # Matches [[target]], [[target|display]], [[target#heading]], [[target#heading|display]], and embeds ![[...]]
 WIKILINK_PATTERN = re.compile(r"!?\[\[([^\[\]\r\n]{1,500})\]\]")
@@ -141,7 +143,7 @@ def _withheld_path(relative):
     return sensitive_source(relative) or any(_archive_folder(part) for part in Path(relative).parts[:-1])
 
 
-def _note_metadata(vault_root, path):
+def _note_metadata(vault_root, path, *, include_withheld=False):
     """Frontmatter of a note lint and moc may read; None when the note is withheld."""
     from beyin_v3_sync import parse
     try:
@@ -153,13 +155,9 @@ def _note_metadata(vault_root, path):
         metadata, _ = parse(path.read_text(encoding='utf-8-sig'))
     except (OSError, ValueError, UnicodeError):
         return None
-    if metadata.get('visibility') == 'private' or metadata.get('status') == 'archived':
+    if not include_withheld and (metadata.get('visibility') == 'private' or metadata.get('status') == 'archived'):
         return None
     return metadata
-
-
-def _eligible_note(vault_root, path):
-    return _note_metadata(vault_root, path) is not None
 
 
 def build_vault_index(vault_root, target_folder=None):
@@ -172,6 +170,8 @@ def build_vault_index(vault_root, target_folder=None):
     files_by_rel = {}
     files_by_basename = defaultdict(list)
     attachments = defaultdict(list)
+    withheld_by_rel = {}
+    withheld_by_basename = defaultdict(list)
 
     for root, dirs, files in os.walk(start_dir):
         # Prune excluded dirs
@@ -201,7 +201,12 @@ def build_vault_index(vault_root, target_folder=None):
             except ValueError:
                 continue
 
-            if not _eligible_note(vault_root, full_path):
+            metadata = _note_metadata(vault_root, full_path, include_withheld=True)
+            if metadata is None:
+                continue
+            if metadata.get('visibility') == 'private' or metadata.get('status') == 'archived':
+                withheld_by_rel[_norm_key(rel_path)] = rel_path
+                withheld_by_basename[_norm_key(full_path.stem)].append(rel_path)
                 continue
             rel_key = _norm_key(rel_path)
             files_by_rel[rel_key] = rel_path
@@ -215,6 +220,8 @@ def build_vault_index(vault_root, target_folder=None):
         "by_basename": dict(files_by_basename),
         "attachments": dict(attachments),
         "receipts": _receipt_targets(vault_root),
+        "withheld_by_rel": withheld_by_rel,
+        "withheld_by_basename": dict(withheld_by_basename),
     }
 
 
@@ -326,7 +333,7 @@ def resolve_wikilink(vault_root, link_target, source_file=None, vault_index=None
     return {"exists": False, "resolved_path": None}
 
 
-def lint_vault(vault_root, folder=None):
+def lint_vault(vault_root, folder=None, *, state=None):
     """Lint markdown notes in vault for broken wikilinks, orphans, and link graph health."""
     vault_root = Path(vault_root)
     if folder:
@@ -348,6 +355,9 @@ def lint_vault(vault_root, folder=None):
     target_set = set(target_files)
 
     broken_links = []
+    withheld_count = 0
+    withheld_index = {"by_rel": vault_index.get("withheld_by_rel", {}),
+                      "by_basename": vault_index.get("withheld_by_basename", {})}
     outgoing_links = defaultdict(set)
     incoming_links = defaultdict(set)
     all_extracted_count = 0
@@ -381,6 +391,7 @@ def lint_vault(vault_root, folder=None):
                     })
                 continue
 
+            public_target = res["exists"]
             # Receipt targets prove file existence only; their bodies are never lint input.
             if (res['exists'] and link['heading']
                     and _norm_key(res['resolved_path']) not in vault_index.get('receipts', {})):
@@ -395,25 +406,40 @@ def lint_vault(vault_root, folder=None):
                 outgoing_links[rel_path].add(resolved)
                 incoming_links[resolved].add(rel_path)
             else:
-                broken_links.append({
-                    "source": rel_path,
-                    "line": link["line"],
-                    "target": link["file_target"][:MAX_RAW_LINK_CHARS],
-                    "raw": link["raw"][:MAX_RAW_LINK_CHARS],
-                    "type": "wikilink",
-                })
+                if not public_target and resolve_wikilink(vault_root, link["file_target"], rel_path, withheld_index)["exists"]:
+                    withheld_count += int(rel_path in target_set)
+                else:
+                    broken_links.append({
+                        "source": rel_path,
+                        "line": link["line"],
+                        "target": link["file_target"][:MAX_RAW_LINK_CHARS],
+                        "raw": link["raw"][:MAX_RAW_LINK_CHARS],
+                        "type": "wikilink",
+                    })
 
     broken_links = [link for link in broken_links if link["source"] in target_set]
 
+    # Keep excluded notes in the graph, but omit their orphan/unlinked findings.
+    from beyin_v3_index import applied_keys, exclusions
+    excluded = applied_keys(exclusions(state, vault_root)[0], EXCLUDED_DIR_NAMES) if state is not None else ()
+
+    def classified(path):
+        parts = tuple(dir_key(part) for part in path.split('/')[:-1])
+        if parts[:2] in (('knowledge', 'v3'), ('daily', 'v3')):
+            return False
+        return not any(part in excluded for part in parts)
+
+    classification_files = [path for path in target_files if classified(path)]
+
     # Identify orphans (no incoming and no outgoing)
     orphans = []
-    for f in target_files:
+    for f in classification_files:
         if len(outgoing_links[f]) == 0 and len(incoming_links[f]) == 0:
             orphans.append(f)
 
     # Identify unlinked notes (has outgoing but no incoming)
     unlinked = []
-    for f in target_files:
+    for f in classification_files:
         if len(incoming_links[f]) == 0 and f not in orphans:
             unlinked.append(f)
 
@@ -423,6 +449,7 @@ def lint_vault(vault_root, folder=None):
         "scanned_files_count": len(target_files),
         "total_links_count": all_extracted_count,
         "broken_links_count": len(broken_links),
+        "withheld_targets_count": withheld_count,
         "orphan_count": len(orphans),
         "unlinked_count": len(unlinked),
     }
@@ -804,11 +831,11 @@ Bu not, `{target_folder}` altındaki notların navigasyon ve içerik haritasıd�
     }
 
 
-def manage(vault_root, action, folder=None, moc_file="MOC.md"):
+def manage(vault_root, action, folder=None, moc_file="MOC.md", *, state=None):
     """CLI dispatcher for beyin.py lint and moc commands."""
     vault_root = Path(vault_root)
     if action == "lint":
-        return lint_vault(vault_root, folder=folder)
+        return lint_vault(vault_root, folder=folder, state=state)
     elif action == "moc":
         target = folder or "knowledge"
         return generate_moc(vault_root, target_folder=target, moc_filename=moc_file)

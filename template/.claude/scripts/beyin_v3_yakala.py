@@ -123,19 +123,41 @@ def _public_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_a
 
 
 def _public_opener(*handlers):
-    """urllib opener whose direct connections go through _public_connection. Through a configured
-    proxy the proxy resolves the target, so the connection to the proxy itself is left as it is."""
+    """Keep origin Host/TLS identity while pinning every direct or proxied destination.
+
+    Proxy selection and NO_PROXY retain urllib's OS/environment behavior, but a selected proxy
+    gets a checked numeric tunnel target, never a hostname to resolve a second time.
+    """
     import http.client
-    from urllib.request import HTTPHandler, HTTPSHandler, build_opener
+    from urllib.request import HTTPHandler, HTTPSHandler, ProxyHandler, build_opener, proxy_bypass
+
+    class PinnedProxy(ProxyHandler):
+        def proxy_open(self, request, proxy, type):
+            if request.host and proxy_bypass(request.host):
+                return None
+            request._beyin_proxy = _proxy_address(proxy)
+            # Do not set_proxy(): retain the origin URL, request target and Host header.
+            return None
 
     def pinned(base, request):
-        direct = not request.has_proxy() and not getattr(request, '_tunnel_host', None)
+        proxy = getattr(request, '_beyin_proxy', None)
 
         class Connection(base):
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-                if direct:
+            def connect(self):
+                if proxy is None:
                     self._create_connection = _public_connection
+                    return super().connect()
+                answers = _public_answers(self.host, self.port)
+                sock, early = _proxy_open(proxy, True, self.host, self.port, answers, timeout=self.timeout)
+                try:
+                    if early:
+                        raise OSError('Yakala: proxy tunel cevabindan sonra beklenmeyen veri.')
+                    if isinstance(self, http.client.HTTPSConnection):
+                        sock = self._context.wrap_socket(sock, server_hostname=self.host)
+                    self.sock = sock
+                except BaseException:
+                    sock.close()
+                    raise
         return Connection
 
     class PublicHTTP(HTTPHandler):
@@ -147,7 +169,7 @@ def _public_opener(*handlers):
             extra = {'check_hostname': self._check_hostname} if hasattr(self, '_check_hostname') else {}
             return self.do_open(pinned(http.client.HTTPSConnection, request), request, context=self._context, **extra)
 
-    return build_opener(PublicHTTP(), PublicHTTPS(), *handlers)
+    return build_opener(PinnedProxy(), PublicHTTP(), PublicHTTPS(), *handlers)
 
 
 # ---------------------------------------------------------------- helper egress guard
@@ -281,32 +303,30 @@ def _socks_tunnel(sock, scheme, name, port, user, password):
     _recv_exact(sock, size + 2)
 
 
-def _proxy_open(proxy, tunnel, host, port, answers):
-    """(socket through the user's proxy, bytes it sent past its answer) for a target that already passed
-    the public-address gate (`answers`). socks5 and socks4 get a checked address, as their clients
-    resolve names themselves; an HTTP proxy, socks5h and socks4a get the name and resolve it, as on the
-    stdlib path. `tunnel` is the CONNECT authority, or None for plain HTTP, which an HTTP proxy takes
-    as an absolute-form request instead. Every failure here is an OSError: no address was refused."""
+def _proxy_open(proxy, tunnel, host, port, answers, timeout=30):
+    """Open a tunnel to a checked numeric address through the user's proxy.
+
+    Even remote-DNS proxy schemes receive only IP literals: resolving host again at the proxy
+    would invalidate the gate. HTTP uses CONNECT for plain HTTP too, never absolute-form URLs.
+    A proxy that cannot tunnel the checked target fails closed; no direct/name-based fallback.
+    Host and TLS/SNI remain in the caller's untouched application stream.
+    """
     scheme, proxy_host, proxy_port, user, password = proxy
-    try:
-        ipaddress.ip_address(host)
-        names = [host]
-    except ValueError:
-        if scheme in ('socks5', 'socks4'):
-            family = (socket.AF_INET,) if scheme == 'socks4' else (socket.AF_INET, socket.AF_INET6)
-            names = list(dict.fromkeys(item[4][0].split('%')[0] for item in answers if item[0] in family))
-        else:
-            names = [host]
-    error = OSError('Yakala: SOCKS4 icin IPv4 adresi yok.')
+    family = (socket.AF_INET,) if scheme.startswith('socks4') else (socket.AF_INET, socket.AF_INET6)
+    names = list(dict.fromkeys(item[4][0].split('%')[0] for item in answers if item[0] in family))
+    error = OSError('Yakala: proxy icin uygun denetlenmis IP adresi yok.')
     for name in names:
-        sock = socket.create_connection((proxy_host, proxy_port), 30)  # the user's own proxy, not gated
+        sock = None
         try:
+            sock = socket.create_connection((proxy_host, proxy_port), timeout)  # user's proxy, not gated
             if scheme != 'http':
                 _socks_tunnel(sock, scheme, name, port, user, password)
                 return sock, b''
-            return sock, (_http_tunnel(sock, tunnel, user, password) if tunnel else b'')
+            authority = ('[' + name + ']' if ':' in name else name) + ':' + str(port)
+            return sock, _http_tunnel(sock, authority, user, password)
         except OSError as exc:
-            sock.close()
+            if sock is not None:
+                sock.close()
             error = exc
     raise error
 
@@ -420,11 +440,9 @@ class _EgressGuard:
             return upstream, None, early
         path = (parsed.path or '/') + ('?' + parsed.query if parsed.query else '')
         headers = [line for line in lines[1:] if line and line.split(':', 1)[0].strip().lower() not in _HOP_HEADERS]
-        line, login = method + ' ' + path, []
-        if proxy is not None and proxy[0] == 'http':  # an HTTP proxy takes the absolute form
-            line, login = method + ' http://' + parsed.netloc + path, _proxy_login(*proxy[3:])
-        start = '\r\n'.join([line + ' HTTP/1.1', 'Host: ' + parsed.netloc, *headers, *login, 'Connection: close', '', ''])
-        return upstream, start.encode('latin-1'), b''
+        line = method + ' ' + path
+        start = '\r\n'.join([line + ' HTTP/1.1', 'Host: ' + parsed.netloc, *headers, 'Connection: close', '', ''])
+        return upstream, start.encode('latin-1'), early
 
     def _serve(self, client):
         upstream = None
@@ -441,6 +459,8 @@ class _EgressGuard:
                 client.sendall(_proxy_reply(502, 'hedefe baglanilamadi.'))
                 return
             self._track(upstream)
+            if start is not None and early:
+                client.sendall(early)
             if start is None:
                 client.sendall(b'HTTP/1.1 200 Connection established\r\n\r\n' + early)
                 start = b''

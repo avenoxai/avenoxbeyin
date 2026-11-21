@@ -1797,7 +1797,25 @@ def main(argv=None, return_result=False):
                 result['pending_exclusions'] = sorted(set(configured_excluded) ^ set(result['excluded_components']))
                 result['exclusions_pending'] = True
             import beyin_v3_preferences as preferences
-            result['preferences'] = preferences.read(vault)
+            prefs = preferences.read(vault)
+            result['preferences'] = prefs
+            # First-use setup summary: context budget, secret filter, remote transmission (#691.3)
+            result['setup_summary'] = {
+                'profile': next((name for name, values in preferences.PROFILES.items() if values == prefs), 'custom'),
+                'context_mode': prefs['context_mode'],
+                'context_chars': prefs['context_chars'],
+                'secret_filter': prefs['secret_filter'],
+                'auto_sync': prefs['auto_sync'],
+                'interval_minutes': prefs['interval_minutes'],
+                'warnings': []
+            }
+            if prefs['context_mode'] != 'off' and not prefs['secret_filter']:
+                result['setup_summary']['warnings'].append(
+                    'Automatic context may reach the configured model provider without secret filtering. '
+                    'Enable with: beyin.py preferences --secret-filter on')
+            if prefs['context_mode'] == 'off':
+                result['setup_summary']['warnings'].append(
+                    'Automatic context injection is off.')
             import beyin_v3_releases as releases
             result['updates'] = releases.status(vault, state)
             from beyin_v3_secrets import health as secret_filter_health
@@ -1805,7 +1823,7 @@ def main(argv=None, return_result=False):
             result['secrets_redacted'] = result['secret_filter']['total']
             try:
                 import beyin_v3_companion as companion
-                result['companion_hygiene'] = companion.hygiene(vault, state)
+                result['companion_hygiene'] = companion.hygiene(vault, state, include_projects=True)
             except Exception as exc:  # a size report must never hide the rest of doctor
                 result['companion_hygiene'] = {'status': 'unavailable', 'error': type(exc).__name__}
             # Information only (#374): how much of Kurallar.md the Claude Code opening shows whole.
@@ -2359,7 +2377,7 @@ def main(argv=None, return_result=False):
         elif args.command == "lint":
             _ensure_scripts_path()
             import beyin_v3_lint as linter
-            result = linter.manage(vault, "lint", folder=args.folder)
+            result = linter.manage(vault, "lint", folder=args.folder, state=state)
         elif args.command == "moc":
             _ensure_scripts_path()
             import beyin_v3_lint as linter
