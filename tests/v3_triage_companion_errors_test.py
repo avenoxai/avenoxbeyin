@@ -56,14 +56,29 @@ class CompanionScanErrorsTest(unittest.TestCase):
         self.assertIn('Son oturum: taranamadi', human)
         self.assertNotIn('PRIVATE-ERROR-CANARY', json.dumps(result) + human)
 
-    def test_absent_nonregular_and_healthy_summary_shape_is_unchanged(self):
-        (self.companion / 'Kurallar.md').mkdir()
+    def test_absent_empty_and_healthy_summary_shape_is_unchanged(self):
         expected = {'rules_count': 0, 'active_threads': 0, 'last_session': None, 'active_presence': 0}
         self.assertEqual(triage.scan_companion(self.vault, self.state), expected)
-        (self.companion / 'Kurallar.md').rmdir()
+        for filename in ('Kurallar.md', 'Threads.md', 'Last-Session.md'):
+            (self.companion / filename).write_bytes(b'')
+        self.assertEqual(triage.scan_companion(self.vault, self.state), expected)
         self.seed()
         expected.update(rules_count=2, active_threads=1, last_session='2026-11-10 12:30')
         self.assertEqual(triage.scan_companion(self.vault, self.state), expected)
+
+    def test_directories_in_place_of_sources_are_unreadable(self):
+        for filename, label in (('Kurallar.md', 'Kurallar'), ('Threads.md', 'Acik is parcaciklari'),
+                                ('Last-Session.md', 'Son oturum')):
+            with self.subTest(filename=filename):
+                directory = self.companion / filename
+                directory.mkdir()
+                try:
+                    result = triage.triage(self.vault, self.state)
+                    self.assertEqual(result['companion'].get('status'), 'partial')
+                    self.assertEqual(result['companion']['unreadable_sources'], [filename])
+                    self.assertIn(f'{label}: taranamadi', triage.format_human(result))
+                finally:
+                    directory.rmdir()
 
     def test_invalid_utf8_is_unreadable_without_reporting_content(self):
         sources = (

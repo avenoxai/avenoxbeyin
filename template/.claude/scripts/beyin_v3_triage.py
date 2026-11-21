@@ -863,10 +863,16 @@ def scan_companion(vault: Path, state: Path | None = None, now: float | None = N
     unreadable = set()
 
     def eligible(path):
-        def stat_failed(exc):
-            if not isinstance(exc, (FileNotFoundError, NotADirectoryError)):
-                unreadable.add(path.name)
-        return _is_safe_file(path, onerror=stat_failed)
+        try:
+            mode = path.lstat().st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+        except OSError:
+            unreadable.add(path.name)
+            return False
+        if stat.S_ISDIR(mode):
+            unreadable.add(path.name)
+        return stat.S_ISREG(mode)
 
     comp_dir = None
     companions = companion_names(vault, state)
