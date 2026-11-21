@@ -131,7 +131,8 @@ LONG_MIN_SHARED = 4
 def _long_prompt_terms(index, terms, compounds):
     """(terms, compounds) of a long prompt reduced to its rarest terms that still occur in the vault."""
     total = max(1, index.sources)
-    usable = [term for term in terms if 0 < index.source_df.get(term, 0) <= LONG_SHARE * total]
+    max_sources = max(1, int(LONG_SHARE * total))
+    usable = [term for term in terms if 0 < index.source_df.get(term, 0) <= max_sources]
     usable.sort(key=lambda term: (index.source_df.get(term, 0), -len(term), term))
     kept = set(usable[:LONG_KEEP])
     return kept, {term: joined for term, joined in compounds.items() if term in kept}

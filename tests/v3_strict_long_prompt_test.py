@@ -50,6 +50,14 @@ class LongPromptTest(unittest.TestCase):
         self.assertEqual(self.ids(paste), [])
         self.assertIn("target", self.ids("kuvars gözlemevi konu0z konu1z"))  # the same words typed short: two shared terms suffice
 
+    def test_long_prompt_in_a_new_vault_can_find_its_only_matching_source(self):
+        # Limit the strict pool to one source, as in a newly created vault.
+        from beyin_v3_passage import _long_prompt_terms
+        from types import SimpleNamespace
+        index = SimpleNamespace(sources=1, source_df={"kuvars": 1, "kalibrasyon": 1})
+        kept, _ = _long_prompt_terms(index, {"kuvars", "kalibrasyon", "absent"}, {})
+        self.assertEqual(kept, {"kuvars", "kalibrasyon"})
+
     def test_short_prompts_are_unchanged(self):
         short = " ".join(COMMON[:6]) + " kuvars"
         self.assertEqual(self.ids(short)[0], "target")
