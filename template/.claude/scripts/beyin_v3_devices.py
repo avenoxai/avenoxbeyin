@@ -424,7 +424,8 @@ def normalize(options, vault, state):
                                                'capture_host')}
     extra['init_git'] = bool(options.get('init_git'))
     extra['capture'] = bool(options.get('capture'))
-    extra['capture_port'] = options.get('capture_port') or DEFAULT_PORT
+    capture_port = options.get('capture_port')
+    extra['capture_port'] = DEFAULT_PORT if capture_port is None else capture_port
     if not 1024 <= extra['capture_port'] <= 65535:
         raise DevicesError('--capture-port must be between 1024 and 65535')
     if level in ('solo', 'phone'):

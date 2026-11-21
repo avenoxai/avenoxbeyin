@@ -157,6 +157,11 @@ class PlanTest(Base):
         failed = {"status": "failed", "failed": {"error": "Scheduler ownership refused: changed file."}}
         self.assertEqual(json.loads(entry.human_result(failed, "devices")), failed)
 
+    def test_explicit_capture_port_zero_is_rejected(self):
+        vault, state = self.machine("a")
+        with self.assertRaisesRegex(ValueError, "--capture-port"):
+            devices.plan(vault, state, {"level": "phone", "phone_sync": "other", "capture_port": 0})
+
     @unittest.skipUnless(GIT, "git required")
     def test_plan_keeps_remote_paths_with_spaces_idempotent(self):
         vault, state = self.machine("a")
