@@ -1,4 +1,5 @@
 """Hermes harness contract: same adapter, same context, real plugin hook shapes."""
+import hashlib
 import importlib.util
 import json
 import os
@@ -269,6 +270,18 @@ class HermesHarnessTest(unittest.TestCase):
         self.assertEqual(len(events), 2)
         self.assertEqual(sorted(e.get('project', '') for e in events), ['', workspace.name])
 
+    def test_finalize_cwd_does_not_persist_and_is_consumed(self):
+        hooks = self.module.make_hooks(self.vault, self.state)
+        with patch.object(self.module, 'run_hook', return_value='') as run:
+            hooks['pre_llm_call'](session_id='desktop-local', platform='desktop', cwd=str(self.vault))
+            stored = json.loads((self.state / self.module.TURNS_FILE).read_text(encoding='utf-8'))
+            [record] = stored['sessions'].values()
+            self.assertEqual(set(record), {'platform', 'turns', 'at'})
+            hooks['on_session_finalize'](session_id='desktop-local')
+            self.assertEqual(run.call_args.args[2]['cwd'], str(self.vault))
+            hooks['on_session_finalize'](session_id='desktop-local')
+            self.assertNotIn('cwd', run.call_args.args[2])
+
     def test_finalize_retains_last_cwd_only_when_later_turn_has_no_cwd(self):
         workspace = Path(self.temp.name) / 'Desktop Workspace'
         workspace.mkdir()
@@ -327,7 +340,7 @@ class HermesHarnessTest(unittest.TestCase):
                 seen.append('[Hafıza]' in result['context'])
         self.assertEqual([i + 1 for i, hit in enumerate(seen) if hit], [every])
         stored = json.loads((self.state / self.module.TURNS_FILE).read_text(encoding='utf-8'))
-        self.assertEqual(stored['sessions']['tg-uzun']['turns'], every)
+        self.assertEqual(stored['sessions'][hashlib.sha256(b'tg-uzun').hexdigest()]['turns'], every)
 
     def test_finalize_after_restart_keeps_first_turn_platform(self):
         # Hermes reports a generic platform at finalize; after a restart only the stored
@@ -341,7 +354,7 @@ class HermesHarnessTest(unittest.TestCase):
         events = [(c.args[2]['session_id'], c.args[2]['hook_event_name']) for c in run.call_args_list]
         self.assertNotIn(('tg-2', 'SessionEnd'), events)
         stored = json.loads((self.state / self.module.TURNS_FILE).read_text(encoding='utf-8'))
-        self.assertNotIn('tg-2', stored['sessions'], 'a finalized session leaves the turn file')
+        self.assertNotIn(hashlib.sha256(b'tg-2').hexdigest(), stored['sessions'], 'a finalized session leaves the turn file')
 
     def test_damaged_turn_file_counts_from_memory(self):
         (self.state / self.module.TURNS_FILE).write_text('{bozuk', encoding='utf-8')
@@ -358,7 +371,7 @@ class HermesHarnessTest(unittest.TestCase):
         with patch.object(self.module, 'run_hook', return_value=''):
             hooks['pre_llm_call'](session_id='yeni', turn_id='1', user_message='m', is_first_turn=True)
         stored = json.loads((self.state / self.module.TURNS_FILE).read_text(encoding='utf-8'))
-        self.assertEqual(list(stored['sessions']), ['yeni'])
+        self.assertEqual(list(stored['sessions']), [hashlib.sha256(b'yeni').hexdigest()])
 
 
     def test_unattended_platforms_configuration_and_override(self):
