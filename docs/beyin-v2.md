@@ -5,7 +5,7 @@
 > This file is your complete, self-contained build spec. Read it once, top to bottom, then execute
 > it phase by phase. You need no other context.
 >
-> Source: https://avenox.lol/beyin.md · Repo: https://github.com/avenoxai/avenoxbeyin
+> Source: https://avenox.io/beyin.md · Repo: https://github.com/avenoxai/avenoxbeyin
 
 ---
 
@@ -821,7 +821,7 @@ Then give the user this report, in Turkish:
 - 💸 **Maliyet:** Ekstra ücret yok; arka plan özetleyici ve derleyici mevcut Claude aboneliğinin
   günlük limitinden küçük bir pay kullanır (özet: her oturum sonunda küçük bir Haiku çağrısı;
   derleme: günde bir Sonnet çağrısı).
-- 🔗 Bu sistemi sen de kurdun: bir arkadaşına `avenox.lol/beyin.md` gönder.
+- 🔗 Bu sistemi sen de kurdun: bir arkadaşına `avenox.io/beyin.md` gönder.
 
 ---
 

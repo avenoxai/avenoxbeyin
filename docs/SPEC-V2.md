@@ -43,7 +43,7 @@ avenoxbeyin/
 ├── README.md                      (v2 rewrite — lane D)
 ├── SETUP.md                       (v2 rewrite: fresh install + upgrade — lane D)
 ├── docs/
-│   └── beyin-v2.md                (new public spec for avenox.lol/beyin.md — lane D)
+│   └── beyin-v2.md                (new public spec for avenox.io/beyin.md — lane D)
 └── template/
     ├── CLAUDE.md                  (v2 router-style — lane O1)
     ├── .beyin-version             (single line: `2.3.0` — graph-integrity release)
@@ -214,7 +214,7 @@ Turkish skill "geçmiş import", "takeout", "chatgpt geçmişi". Handles ChatGPT
 Two entry modes, decided FIRST: **(A) Fresh install** — v1 flow (interview → copy template → personalize placeholders) + NEW steps: `git init` + first commit in the vault; verify hooks executable; run a first `beyin-doktor`. **(B) Upgrade from v1** — detection: existing vault with `CLAUDE.md` + `🔮 850-Companion/` but no `.beyin-version`. Rules: NEVER touch existing 🔮 850-Companion/*.md, Dashboard, or user content; ADD `daily/`, `knowledge/`, `.claude/scripts/`, skills, Kurallar.md (seed only if absent), `.beyin-version`; REPLACE `.claude/hooks/*.sh` and MERGE `settings.json` hook entries idempotently (if a hook event already has the entry, skip); keep the user's chosen companion name inside file contents (folder stays `850-Companion`); end with doctor run. Both paths end with the same "sihri göster" demo: talk, exit, relaunch, next morning knowledge/ has articles.
 Keep v1's rules (Turkish default, interview first, never destroy, resolve placeholders, verify each phase). Include the "be the demo" narration rule that was dropped from v1's SETUP (restore it).
 
-### 6.2 docs/beyin-v2.md (new avenox.lol/beyin.md)
+### 6.2 docs/beyin-v2.md (new avenox.io/beyin.md)
 Same self-contained structure as v1's public spec but v2: FAST PATH = clone repo + SETUP.md (unchanged mechanism); adds an early branch: "Mevcut beyin var mı?" → upgrade path; the from-scratch fallback phases updated to include scripts/skills (may reference the repo as required for scripts — from-scratch no longer duplicates the python code inline; instead instruct fallback users to fetch the two script files from the repo raw URLs, or degrade to v1-style hooks-only with a note). Keep: Turkish narration rule, skip-the-video framing, placeholders table, mem0 as optional free add-on (unchanged wording about free tier), final report format. Add honest cost paragraph: "Ekstra ücret yok; arka plan özetleyici ve derleyici mevcut Claude aboneliğinin günlük limitinden küçük bir pay kullanır (özet: her oturum sonunda küçük bir Haiku çağrısı; derleme: günde bir Sonnet çağrısı)."
 
 ### 6.3 README.md v2
