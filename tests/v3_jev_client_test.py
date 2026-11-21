@@ -73,6 +73,23 @@ class KeyCommandCliTests(unittest.TestCase):
             if path.is_file():
                 self.assertNotIn(token.encode(), path.read_bytes())
 
+    @unittest.skipUnless(os.name == 'posix', 'POSIX file modes')
+    def test_writable_key_command_state_is_ignored_until_rewritten_privately(self):
+        (self.state / 'jev.json').write_text('{"mode":"shadow"}', encoding='utf-8')
+        helper = (sys.executable, '-c', 'print(chr(65))')
+        self.assertEqual(self.cli('jev-key', *helper).returncode, 0)
+        local = self.state / 'jev-state.json'
+        self.assertEqual(local.stat().st_mode & 0o777, 0o600)
+        for mode in (0o620, 0o602):
+            local.chmod(mode)
+            result = self.cli('jev', 'status')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(json.loads(result.stdout)['key_present'])
+            self.assertEqual(local.stat().st_mode & 0o777, mode)
+        self.assertEqual(self.cli('jev-key', *helper).returncode, 0)
+        self.assertEqual(local.stat().st_mode & 0o777, 0o600)
+        self.assertTrue(json.loads(self.cli('jev', 'status').stdout)['key_present'])
+
 class ClientTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)

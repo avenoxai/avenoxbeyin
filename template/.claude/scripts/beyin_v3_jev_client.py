@@ -28,6 +28,7 @@ import math
 import statistics
 import os
 import re
+import stat
 import subprocess
 import queue
 import threading
@@ -237,10 +238,19 @@ def _jev_state_path(state_dir):
 def _load_jev_state(vault):
     """Load machine-local Jev state (key_command, etc.). Returns empty dict if missing/invalid."""
     path = _jev_state_path(vault)
-    if not path.exists() or path.is_symlink():
-        return {}
     try:
-        data = json.loads(path.read_text(encoding='utf-8'))
+        opener = None
+        if os.name == 'posix':
+            # Validate the actual descriptor we read, even if the path is replaced.
+            def opener(name, flags):
+                return os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK)
+        elif path.is_symlink() or not path.is_file():
+            return {}
+        with open(path, encoding='utf-8', opener=opener) as handle:
+            mode = os.fstat(handle.fileno()).st_mode
+            if not stat.S_ISREG(mode) or (os.name == 'posix' and mode & 0o022):
+                return {}
+            data = json.load(handle)
         if not isinstance(data, dict):
             return {}
         return data
@@ -252,12 +262,17 @@ def _save_jev_state(vault, state):
     """Save machine-local Jev state atomically."""
     path = _jev_state_path(vault)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent, delete=False) as handle:
-        os.chmod(handle.name, 0o600)
-        json.dump(state, handle, ensure_ascii=False)
-        temporary = handle.name
-    os.replace(temporary, path)
-    os.chmod(path, 0o600)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent, delete=False) as handle:
+            temporary = Path(handle.name)
+            if os.name == 'posix':
+                os.fchmod(handle.fileno(), 0o600)
+            json.dump(state, handle, ensure_ascii=False)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _supplied(vault):
