@@ -60,11 +60,16 @@ def save_audit_config(state_dir, config):
 def _write_audit_log(state_dir, entry):
     """Write per-note audit entry to local log file (no prompt or note body)."""
     path = _audit_log_path(state_dir)
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
-        with path.open('a', encoding='utf-8') as handle:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            return
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0)
+        fd = os.open(path, flags, 0o600)
+        with os.fdopen(fd, 'a', encoding='utf-8') as handle:
+            if hasattr(os, 'fchmod'):
+                os.fchmod(handle.fileno(), 0o600)
             handle.write(json.dumps(entry, ensure_ascii=False) + '\n')
-        os.chmod(path, 0o600)
     except OSError:
         pass
 
