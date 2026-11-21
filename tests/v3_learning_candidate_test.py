@@ -76,6 +76,11 @@ class LearningCandidateLedgerTest(unittest.TestCase):
         distilled = learning.list_candidates(self.state, session=session, status="distilled")
         self.assertEqual(len(distilled), 2)
 
+    def test_legacy_list_treats_a_whitespace_session_as_no_filter(self):
+        record = learning.stage_candidate(self.state, 'session-x', 'Existing learning')
+
+        self.assertEqual(learning.list_candidates(self.state, session='   '), [record])
+
     def test_cli_learn_command(self):
         res = subprocess.run([
             sys.executable, str(ROOT / 'scripts/beyin_v3.py'),

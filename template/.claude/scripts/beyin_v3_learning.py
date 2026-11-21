@@ -201,6 +201,9 @@ def list_candidates(state: Path, session: str | None = None, status: str = "cand
     elif not ledger.is_file():
         return []
     target_sess = _normalize_session(session) if session else None
+    # Legacy callers treated a session that normalizes to empty as unfiltered.
+    if include_cli_fallback and target_sess == "":
+        target_sess = None
     results = []
     try:
         with open(ledger, "r", encoding="utf-8") as f:
