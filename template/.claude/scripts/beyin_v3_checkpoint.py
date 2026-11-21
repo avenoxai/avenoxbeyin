@@ -12,7 +12,7 @@ from pathlib import Path
 
 from beyin_v3_companion import directory as locate_companion
 from beyin_v3_compact import compact as companion_compact
-from beyin_v3_notes import read as note_read, apply as note_apply
+from beyin_v3_notes import read as note_read, apply as note_apply, NoteConflict
 from beyin_v3_learning import stage_candidate
 import beyin_v3_chat_trace
 
@@ -66,6 +66,70 @@ def _update_card(sync, source, card, session, now):
             preamble += newline if preamble.endswith(newline) else newline * 2
         updated = preamble + card_text + (newline + content[start:] if first else "")
     return _update_note(sync, source, previous, updated)
+
+
+def _update_threads(sync, source, threads, session):
+    previous = note_read(sync, source)
+    content = previous["content"] or ""
+    newline = "\r\n" if "\r\n" in content else "\n"
+    applied = set(re.findall(r"^<!-- beyin-checkpoint-thread:([a-f0-9]{64}) -->\r?$",
+                             content, re.MULTILINE))
+    markers = []
+    for item in threads:
+        old, new = item.get("old"), item.get("new")
+        if old and new:
+            old = old.replace("\r\n", "\n").replace("\r", "\n")
+            new = new.replace("\r\n", "\n").replace("\r", "\n")
+            key = _step_key(session, "thread-replace", old, new)
+            if key in applied or old == new:
+                continue
+            anchor = old.replace("\n", newline)
+            start = content.find(anchor)
+            if start < 0 or content.find(anchor, start + 1) >= 0:
+                raise NoteConflict("Threads edit anchor must occur exactly once")
+            content = content.replace(anchor, new.replace("\n", newline), 1)
+        else:
+            heading = (item.get("heading") or "").strip()
+            next_step = (item.get("next_step") or "").strip()
+            if not heading or not next_step:
+                continue
+            if heading.splitlines() != [heading] or next_step.splitlines() != [next_step]:
+                raise ValueError("Threads heading and next step must each be one line")
+            key = _step_key(session, "thread-next-step", heading, next_step)
+            if key in applied:
+                continue
+            pattern = rf"^###[ \t]+{re.escape(heading)}[ \t]*(?:\r?\n|\Z)"
+            matches = list(re.finditer(pattern, content, re.MULTILINE))
+            if len(matches) > 1:
+                raise NoteConflict("Threads heading must occur at most once")
+            line = f"- {next_step}"
+            if matches:
+                start = matches[0].end()
+                boundary = re.search(r"^(?:#{1,3}[ \t]|<!-- beyin-checkpoint-thread:)",
+                                     content[start:], re.MULTILINE)
+                end = start + boundary.start() if boundary else len(content)
+                body = content[start:end]
+                if line in body.splitlines():
+                    continue
+                trimmed = body.rstrip("\r\n")
+                prefix = content[:start] + trimmed
+                separator = "" if prefix.endswith(newline) else newline
+                content = prefix + separator + line + newline + body[len(trimmed):] + content[end:]
+            else:
+                separator = "" if not content or content.endswith(newline * 2) else (
+                    newline if content.endswith(newline) else newline * 2)
+                content += separator + f"### {heading}" + newline + line + newline
+        applied.add(key)
+        markers.append(f"<!-- beyin-checkpoint-thread:{key} -->")
+
+    if not markers:
+        return "unchanged"
+    # Commit the keys and their edits together. A crash after replacement can be
+    # recognized without a second file or a state directory shared across clients.
+    if not content.endswith(newline):
+        content += newline
+    content += newline.join(markers) + newline
+    return _update_note(sync, source, previous, content)
 
 
 def run_checkpoint(sync, vault, state, request, harness=None, session=None, dry_run=False):
@@ -146,40 +210,7 @@ def run_checkpoint(sync, vault, state, request, harness=None, session=None, dry_
         else:
             try:
                 threads_rel = (companion_dir / "Threads.md").relative_to(vault).as_posix()
-                read_res = note_read(sync, threads_rel)
-                content = read_res.get("content") or ""
-                expected_sha = read_res.get("sha256")
-
-                edits = []
-                for t in threads_data:
-                    old_text = t.get("old")
-                    new_text = t.get("new")
-                    heading = t.get("heading")
-                    next_step = t.get("next_step")
-
-                    if old_text and new_text:
-                        edits.append({"old": old_text, "new": new_text})
-                    elif heading and next_step:
-                        pattern = rf"(###\s+{re.escape(heading)}[^\n]*\n)(.*?)(?=\n###\s+|\Z)"
-                        m = re.search(pattern, content, re.DOTALL)
-                        if m:
-                            sec_header = m.group(1)
-                            sec_body = m.group(2)
-                            updated_body = sec_body.strip() + f"\n- {next_step}\n"
-                            edits.append({"old": sec_header + sec_body, "new": sec_header + updated_body})
-                        else:
-                            edits.append({"old": content, "new": content.strip() + f"\n\n### {heading}\n- {next_step}\n"})
-
-                if edits:
-                    edit_req = {
-                        "source": threads_rel,
-                        "expected_sha256": expected_sha,
-                        "edits": edits
-                    }
-                    edit_res = note_apply(sync, edit_req)
-                    steps["threads"] = edit_res.get("status", "written")
-                else:
-                    steps["threads"] = "unchanged"
+                steps["threads"] = _update_threads(sync, threads_rel, threads_data, session)
             except Exception as exc:
                 steps["threads"] = {"status": "error", "message": str(exc)}
 
@@ -197,7 +228,7 @@ def run_checkpoint(sync, vault, state, request, harness=None, session=None, dry_
                     scp = item.get("scope", "global")
                     sess_id = session or "cli"
                     if cand:
-                        res = stage_candidate(state, sess_id, cand, source=src, scope=scp)
+                        res = stage_candidate(state, sess_id, cand, source=src, scope=scp, deduplicate=True)
                         recorded_candidates.append(res)
                 steps["learn"] = {"status": "recorded", "count": len(recorded_candidates)}
             except Exception as exc:

@@ -6,11 +6,13 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "template" / ".claude" / "scripts"))
 
 from beyin_v3_checkpoint import run_checkpoint
+from beyin_v3_learning import stage_candidate
 from beyin_v3_sync import SyncEngine
 import beyin_v3_chat_trace
 from tests.v3_package_helpers import inherited_env
@@ -135,6 +137,60 @@ class CheckpointTest(unittest.TestCase):
         self.assertEqual(res["status"], "partial")
         self.assertIsInstance(res["steps"]["receipt"], dict)
         self.assertEqual(res["steps"]["receipt"]["status"], "error")
+
+    def test_retry_after_interrupted_candidate_does_not_duplicate_writes(self):
+        request = {
+            "threads": [{"heading": "Aktif İşler", "next_step": "Şifreyi yenile"}],
+            "learn": [{"candidate": "İstanbul ılık", "source": "knowledge/test.md"}],
+        }
+
+        def write_then_fail(*args, **kwargs):
+            stage_candidate(*args, **kwargs)
+            raise OSError("injected interruption after candidate append")
+
+        with patch("beyin_v3_checkpoint.stage_candidate", side_effect=write_then_fail):
+            result = run_checkpoint(self.sync, self.vault, self.state, request, session="checkpoint-retry")
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["steps"]["threads"], "written")
+        self.assertEqual(result["steps"]["learn"]["status"], "error")
+        request["threads"][0]["next_step"] = " Şifreyi yenile "
+        request["learn"][0]["candidate"] = " İstanbul ılık "
+        retry = run_checkpoint(self.sync, self.vault, self.state, request, session="checkpoint-retry")
+        self.assertEqual(retry["status"], "succeeded")
+        threads = (self.comp / "Threads.md").read_text(encoding="utf-8")
+        records = [json.loads(line) for line in
+                   (self.state / "learning-state.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual((threads.count("Şifreyi yenile"), len(records)), (1, 1))
+        self.assertEqual(records[0]["candidate"], "İstanbul ılık")
+
+    def test_threads_matches_exact_headings_and_applies_a_batch(self):
+        threads = self.comp / "Threads.md"
+        initial = "# Threads\r\n\r\n### Müşteri Arşivi Eski\r\n- Eski\r\n"
+        threads.write_bytes(initial.encode("utf-8"))
+        request = {"threads": [
+            {"heading": "Müşteri Arşivi", "next_step": "İlk iş"},
+            {"heading": "Müşteri Arşivi", "next_step": "Ilık"},
+            {"old": "- Ilık", "new": "- ılık"},
+        ]}
+        first = run_checkpoint(self.sync, self.vault, self.state, request, session="threads")
+        self.assertEqual(first["steps"]["threads"], "written")
+        written = threads.read_bytes()
+        self.assertTrue(written.startswith(initial.encode("utf-8")))
+        self.assertIn("### Müşteri Arşivi\r\n- İlk iş\r\n".encode("utf-8"), written)
+        self.assertEqual(written.count("- ılık\r\n".encode("utf-8")), 1)
+        self.assertNotIn(b"\n", written.replace(b"\r\n", b""))
+        second = run_checkpoint(self.sync, self.vault, self.state, request, session="threads")
+        self.assertEqual(second["steps"]["threads"], "unchanged")
+        self.assertEqual(threads.read_bytes(), written)
+
+    def test_threads_can_create_missing_note(self):
+        (self.comp / "Threads.md").unlink()
+        result = run_checkpoint(self.sync, self.vault, self.state, {
+            "threads": [{"heading": "Müşteri Arşivi", "next_step": "İlk iş"}],
+        }, session="threads")
+        self.assertEqual(result["steps"]["threads"], "written")
+        self.assertIn("### Müşteri Arşivi\n- İlk iş\n",
+                      (self.comp / "Threads.md").read_text(encoding="utf-8"))
 
     def test_cli_checkpoint_and_human_result(self):
         req_file = Path(self.test_dir) / "checkpoint_req.json"
