@@ -154,7 +154,9 @@ görmek için bayraksız `project-scope list` kullan.
   `reconciliation` nesnesi neyin kaldığını söyler ve kayıt `provision.status: failed` olarak
   kalır; aynı `workspace provision <id>` komutu kaydı kaldığı yerden tamamlar.
 - `lint [--folder <klasör>]` kırık wikilink, eksik başlık veya ek, yetim ve gelen bağlantısı
-  olmayan notları raporlar. Kısmi yol (`[[klasör/not]]`) ve ekler Obsidian gibi ad ve yol
+  olmayan notları raporlar. Satır içi Markdown bağlantısında `]` ile `(` bitişik olmalıdır:
+  `[etiket] (açıklama)` düz metindir; içindeki ayrı wikilink yine sayılır. Kısmi yol
+  (`[[klasör/not]]`) ve ekler Obsidian gibi ad ve yol
   sonuyla çözülür; kod blokları ve satır içi kod sayılmaz. Hassas, arşiv (`📦 900-Archive`,
   `Arşiv` gibi), `visibility: private` ve kurulum klasörlerindeki notlar taranmaz; böyle bir nota
   giden bağlantı da kırık görünür. İstisna: kökteki `receipts/` klasörünün üst seviyesinde

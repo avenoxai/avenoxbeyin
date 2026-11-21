@@ -864,6 +864,29 @@ And another link on line 8: [[Components/Auth]].
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["broken_links_count"], 0)
 
+    def test_inline_markdown_link_requires_an_adjacent_open_parenthesis(self):
+        self._write_notes(self.vault, {
+            'notes/a.md': '# A\n'
+                          '- Esneme [YORUM] ([[b]])\n'
+                          '- Etiket [KAYNAK] (not-a-link.md)\n'
+                          '- Sekme [KAYNAK]\t(orphan.md)\n'
+                          '- Görsel etiketi ![GÖRSEL] (not-an-image.png)\n'
+                          '- Gerçek [b](b.md) ve [komşu]( target.md "Başlık")\n'
+                          '- Bozuk [eksik](genuinely-missing.md)\n',
+            'notes/b.md': '[[a]]\n',
+            'notes/target.md': '# Target\n',
+            'notes/orphan.md': '# Orphan\n',
+        })
+        report = self._lint_cli()
+        self.assertEqual([(link['source'], link['line'], link['target'], link['type'])
+                          for link in report['broken_links']],
+                         [('notes/a.md', 7, 'genuinely-missing.md', 'markdown')])
+        self.assertEqual(report['broken_links_count'], 1)
+        # Nested wikilink and adjacent links all still count; prose must not
+        # create an edge even if its parenthetical text names a real file.
+        self.assertEqual(report['total_links_count'], 5)
+        self.assertEqual(report['orphans'], ['notes/orphan.md'])
+
     def test_markdown_exact_relative_paths_and_private_targets(self):
         self._write_notes(self.vault, {
             'same.md': '# Root', 'sub/same.md': '# Sibling', 'only-root.md': '# Root only',
