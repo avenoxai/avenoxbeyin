@@ -505,7 +505,10 @@ def context_for(store, harness, query, project=None, audience="internal", status
     eligible, stale_count = store._eligible(audience, project, records=records)
     candidates = pool(store, eligible, statuses, config["exclude"], superseded=store._superseded_ids(records))
     store._passage_index = None  # an earlier pass's index must not outlive a failed build
-    index = build(store.state_dir, candidates, write=not store.read_only,
+    # passages.json is derived data, written atomically and ignored when stale or unwritable. A read-only
+    # store (the hook while a sync is pending or deferred) protects the database, not this cache: without
+    # its progress every such turn would rebuild the index from nothing and fall back to whole notes.
+    index = build(store.state_dir, candidates, write=True,
                   deadline=time.monotonic() + BUILD_SECONDS)
     if candidates and not index.passages:
         raise RuntimeError("passage index is empty")  # a failure, not an answer: caller falls back
