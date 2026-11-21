@@ -147,6 +147,20 @@ class UsageReport(unittest.TestCase):
         self.assertEqual(main['shell_commands_write_excluded'], 0)
         self.assertEqual(main['ranked']['all']['attempted_note_read'], 1)
 
+    def test_note_read_does_not_normalize_a_different_launcher_into_this_vault(self):
+        roots = usage.Roots(self.vault)
+        roots.home = usage.slash(self.vault)
+        for command, powershell in (
+            ('python3 " ./beyin.py" note-read notes/source.md', False),
+            ("python3 '.\\beyin.py' note-read notes/source.md", False),
+            ("'.\\python3' beyin.py note-read notes/source.md", False),
+            ('python3 "~/beyin.py" note-read notes/source.md', False),
+            ('"py" beyin.py note-read notes/source.md', True),
+            ('py "beyin.py"note-read notes/source.md', True),
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(usage.note_read_source(command, roots, str(self.vault), powershell=powershell))
+
     def test_folder_name_follows_claude_code_rule(self):
         self.assertEqual(usage.sanitized('/Users/ada/Belgeler/Kasa Şube/🔮 Notlar'), '-Users-ada-Belgeler-Kasa--ube----Notlar')
         self.assertEqual(usage.sanitized('C:\\Users\\ada\\kasa'), 'C--Users-ada-kasa')

@@ -243,6 +243,8 @@ def note_read_source(command, roots, cwd, powershell=False):
     """Recognize a single literal invocation of this vault's CLI, not its outcome."""
     if re.search(r'[;&|()<>\r\n`$#*?\[\]{}]', command):
         return None  # don't interpret shell syntax, expansions or globbing
+    if powershell and not re.fullmatch(r"""[^\s'"]+(?:[ \t]+(?:[^\s'"]+|'[^']*'|"[^"]*"))*""", command.strip(' \t')):
+        return None  # a bare command followed by whitespace-separated literals
     try:
         tokens = shlex.split(command, posix=not powershell)
     except ValueError:
@@ -251,7 +253,8 @@ def note_read_source(command, roots, cwd, powershell=False):
         tokens = [t[1:-1] if len(t) > 1 and t[0] == t[-1] and t[0] in '"\'' else t for t in tokens]
     if not tokens:
         return None
-    python = posixpath.basename(slash(tokens.pop(0))).lower()
+    interpreter = tokens.pop(0)
+    python = posixpath.basename(slash(interpreter)).lower()
     if not re.fullmatch(r'(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?', python):
         return None
     if python in ('py', 'py.exe') and tokens[:1] == ['-3']:
@@ -261,6 +264,8 @@ def note_read_source(command, roots, cwd, powershell=False):
     if len(tokens) != 3 or tokens[1] != 'note-read':
         return None
     launch, _, source = tokens
+    if launch != launch.strip() or launch.startswith('~') or (not powershell and '\\' in interpreter + launch):
+        return None  # preserve literal POSIX paths; don't trim or expand the launcher
     # A relative launcher belongs to this vault only when the transcript gives a cwd.
     if not cwd and not ABSOLUTE.match(slash(launch)):
         return None
