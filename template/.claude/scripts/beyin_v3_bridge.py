@@ -360,11 +360,35 @@ def _backup_file(path):
 
 
 def _write_global_json(path, data):
-    """Durably replace a global JSON configuration without exposing a partial file."""
+    """Update global settings through symlinks and keep shared inodes intact."""
     from beyin_v3_sync import atomic
-    # Global settings may be symlinked into a user's dotfiles directory.
-    # Replace the referent, not the link, matching the previous write_bytes semantics.
-    atomic(Path(path).resolve(), json.dumps(data, indent=2, ensure_ascii=False) + '\n')
+    target = Path(path).resolve()
+    text = json.dumps(data, indent=2, ensure_ascii=False) + '\n'
+    try:
+        current = target.lstat()
+    except FileNotFoundError:
+        current = None
+    if current is not None and current.st_nlink > 1:
+        payload = text.encode('utf-8')
+        with target.open('r+b', buffering=0) as handle:
+            if not os.path.samestat(current, os.fstat(handle.fileno())):
+                raise OSError('Global settings changed before write')
+            original = handle.read()
+            handle.seek(0)
+            handle.truncate(0)
+            try:
+                if handle.write(payload) != len(payload):
+                    raise OSError('Incomplete global settings write')
+                os.fsync(handle.fileno())
+            except OSError:
+                handle.seek(0)
+                if handle.write(original) != len(original):
+                    raise OSError('Incomplete global settings rollback')
+                handle.truncate()
+                os.fsync(handle.fileno())
+                raise
+        return
+    atomic(target, text)
 
 
 def hook_arguments(command: str) -> list:

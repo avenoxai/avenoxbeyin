@@ -22,6 +22,18 @@ import beyin_v3_bridge as bridge
 import beyin_v3_hook as hook
 from beyin_v3_sync import SyncEngine
 
+
+def _supports_file_operation(operation):
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / 'settings.json'
+        path.touch()
+        try:
+            operation(path)
+        except (AttributeError, OSError, NotImplementedError):
+            return False
+        return True
+
+
 # Drives the generated global plugin the way OpenCode 2.x does: setup(ctx), prompt,
 # request-time context, then the event stream. Prints one JSON line.
 OPENCODE_DRIVER = r"""
@@ -527,6 +539,29 @@ class BridgeTest(unittest.TestCase):
             bridge.uninstall_bridge('claude', home=self.home)
         self.assertEqual(atomic.call_count, 2)
         self.assertEqual(json.loads(target.read_text(encoding='utf-8')), {})
+
+    @unittest.skipUnless(_supports_file_operation(lambda path: os.link(path, path.with_suffix('.link'))),
+                         'hardlinks unavailable')
+    def test_global_json_updates_preserve_hardlinks(self):
+        target = bridge.global_hook_path('claude', home=self.home)
+        target.parent.mkdir(parents=True)
+        alias = target.with_suffix('.link')
+        original = {'keep': 'Şifre'}
+        target.write_text(json.dumps(original), encoding='utf-8')
+        os.link(target, alias)
+        inode = target.stat().st_ino
+
+        bridge.install_bridge(self.vault, self.state, 'claude', [self.project], home=self.home)
+        self.assertEqual(target.stat().st_ino, inode)
+        self.assertEqual(alias.stat().st_ino, inode)
+        self.assertEqual(alias.read_bytes(), target.read_bytes())
+        self.assertIn('SessionStart', json.loads(alias.read_text(encoding='utf-8'))['hooks'])
+
+        bridge.uninstall_bridge('claude', home=self.home)
+        self.assertEqual(target.stat().st_ino, inode)
+        self.assertEqual(alias.stat().st_ino, inode)
+        self.assertEqual(alias.read_bytes(), target.read_bytes())
+        self.assertEqual(json.loads(alias.read_text(encoding='utf-8')), original)
 
     def test_cli_print_config_keeps_the_selected_events(self):
         base = [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault), '--state', str(self.state),
