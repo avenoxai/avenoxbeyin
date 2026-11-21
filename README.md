@@ -106,6 +106,8 @@ Kaydı dosyada, geri çağırmayı yeni oturumda kontrol et. Böylece kendi iste
 
 Ortak kaynak `.agents/skills` içindedir; Claude ve Kiro kendi proje kopyalarını kullanır. Mevcut kişisel skill'ler sessizce ezilmez.
 
+**İsteğe bağlı paket:** [Video motoru](extras/video-motoru/README.md), boş başlayıp her videoda markanı ve düzeltmelerini not alarak gelişen bir video skill'i. Kurucu onu getirmez; istersen `skill-import` ile alırsın.
+
 </details>
 
 <a id="istemciler"></a>
