@@ -151,6 +151,23 @@ class ReceiptCoverageTest(unittest.TestCase):
         self.assertIsNone(doc.get('receipt_coverage'))
         # Doctor reads through its own store; it must not build a SyncEngine and its journal.
         self.assertFalse((self.state / 'markdown-journal').exists())
+        self.assertEqual(list(self.state.iterdir()), [])
+
+    def test_doctor_does_not_migrate_legacy_checkpoint_schema(self):
+        engine = SyncEngine(self.vault, self.state)
+        engine.sync()
+        with engine.store._connect() as db:
+            db.execute('DROP TABLE receipt_checkpoints')
+            db.execute('CREATE TABLE receipt_checkpoints(harness TEXT, session TEXT, at REAL, '
+                       'PRIMARY KEY(harness, session))')
+            db.execute("INSERT INTO receipt_checkpoints VALUES ('hermes', 'legacy', 0)")
+        before = engine.store.database.read_bytes()
+        cmd = [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
+               '--state', str(self.state), 'doctor']
+        doc = json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True,
+                                        env=inherited_env()).stdout)
+        self.assertEqual(doc['receipt_coverage']['hermes_without_terminal'], 0)
+        self.assertEqual(engine.store.database.read_bytes(), before)
 
     def test_doctor_dynamic_coverage_and_human_output(self):
         """Review Point 5 & Human Rendering: doctor computes coverage dynamically at invocation time."""

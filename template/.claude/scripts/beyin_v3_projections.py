@@ -465,7 +465,16 @@ def receipt_coverage(db, now=None, state=None, *, doctor_diagnostics=False):
         now = time.time()
     seven_days = now - 7 * 86400
     thirty_days = now - 30 * 86400
-    _checkpoint_schema(db, state=state)
+    fields = ('harness', 'session', 'at', 'turn_at', 'project', 'project_id', 'prompt_at', 'edit_at')
+    if doctor_diagnostics:
+        # An old index may still need a migration. Use the schema defaults for
+        # absent observations until a writer performs it.
+        columns = {row[1] for row in db.execute('PRAGMA table_info(receipt_checkpoints)')}
+    else:
+        _checkpoint_schema(db, state=state)
+        columns = set(fields)
+    select_fields = ','.join(field if field in columns else '0' for field in fields)
+    checkpoints = db.execute(f'SELECT {select_fields} FROM receipt_checkpoints') if columns else ()
     latest = _latest_receipts(db)
     windows = {
         'all_time': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0, 'missing_no_observed_edit': 0, 'without_prompt': 0, 'without_prompt_with_receipt': 0},
@@ -473,7 +482,7 @@ def receipt_coverage(db, now=None, state=None, *, doctor_diagnostics=False):
         'last_30d': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0, 'missing_no_observed_edit': 0, 'without_prompt': 0, 'without_prompt_with_receipt': 0},
     }
     hermes_without_terminal = 0
-    for row in db.execute('SELECT harness,session,at,turn_at,project,project_id,prompt_at,edit_at FROM receipt_checkpoints'):
+    for row in checkpoints:
         if not row[2] or row[2] < row[3]:
             # A missing or older terminal signal says nothing about whether a session is open.
             if doctor_diagnostics and row[0] == 'hermes' and row[6]:

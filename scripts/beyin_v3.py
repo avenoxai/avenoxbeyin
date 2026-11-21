@@ -1459,7 +1459,8 @@ def main(argv=None, return_result=False):
         if state == vault or vault in state.parents:
             raise ValueError("--state must be outside the vault")
         read_only_context = args.command == "context" and args.no_sync
-        if read_only_context:
+        read_only_doctor = args.command == "doctor"
+        if read_only_context or read_only_doctor:
             # The source CLI can run without the installed entry point, which
             # already disables bytecode. Importing the engine must not write.
             sys.dont_write_bytecode = True
@@ -1467,7 +1468,10 @@ def main(argv=None, return_result=False):
             raise ValueError("context --no-sync cannot be combined with --jev")
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
         engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc") else None
-        store = engine.MemoryStore(state, vault, read_only=read_only_context) if engine else None
+        database = state / "memory.sqlite3"
+        doctor_without_index = read_only_doctor and not (database.exists() or database.is_symlink())
+        store = (engine.MemoryStore(state, vault, read_only=read_only_context or read_only_doctor)
+                 if engine and not doctor_without_index else None)
         sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "homepage-create", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
         if args.command == "bridge":
             if sum([bool(args.print_config), bool(args.install), bool(args.uninstall)]) > 1:
@@ -1830,7 +1834,7 @@ def main(argv=None, return_result=False):
             health = result['hook-health.json'] or {}
             gaps_info = result['receipt-gaps.json']
             result['potential_missing_receipts'] = gaps_info.get('potential_missing_receipts') if gaps_info is not None else None
-            if gaps_info is not None:
+            if gaps_info is not None and store is not None:
                 from beyin_v3_projections import receipt_coverage
                 with store._connect() as db:
                     result['receipt_coverage'] = receipt_coverage(db, now=time.time(), doctor_diagnostics=True)
@@ -1838,8 +1842,9 @@ def main(argv=None, return_result=False):
                 result['receipt_coverage'] = None
             from beyin_v3_projections import knowledge_freshness, check_instruction_conflicts
             try:  # a recency report must never hide the rest of doctor, conflicts included
-                with store._connect() as db:
-                    result['knowledge_freshness'] = knowledge_freshness(vault, db, now=time.time())
+                if store is not None:
+                    with store._connect() as db:
+                        result['knowledge_freshness'] = knowledge_freshness(vault, db, now=time.time())
             except Exception as exc:
                 result['knowledge_freshness'] = {'status': 'unavailable', 'error': type(exc).__name__}
             result['instruction_conflicts'] = check_instruction_conflicts(vault)
@@ -1850,8 +1855,16 @@ def main(argv=None, return_result=False):
             view_sync = health.get('sync', {})
             result['receipt_view_conflicts'] = [c for c in view_sync.get('conflicts', []) + view_sync.get('warnings', [])
                                                 if is_receipt_view_conflict(c)]
+            if store is None:
+                result['task_completion'] = {'strict_issue_count': 0, 'strict_issues': [], 'legacy_done_count': 0,
+                                             'legacy_done': [], 'truncated': False}
+                result['validity'] = {'ignored_rejection_count': 0, 'ignored_rejections': [],
+                                      'rejected_dependent_count': 0, 'rejected_dependents': [],
+                                      'ambiguous_rejected_link_count': 0, 'ambiguous_rejected_links': [],
+                                      'truncated': False}
             try:
-                result['task_completion'] = load_sync().reader(store).completion_health()
+                if store is not None:
+                    result['task_completion'] = load_sync().reader(store).completion_health()
             except Exception as exc:
                 result['task_completion'] = {
                     'strict_issue_count': 0, 'strict_issues': [], 'legacy_done_count': 0,
@@ -1862,7 +1875,8 @@ def main(argv=None, return_result=False):
             # Notes that link to a rejected inference are listed for review only and never raise
             # the doctor status: citing a rejected claim can be legitimate (explaining why it fell).
             try:
-                result['validity'] = load_sync().reader(store).validity_health()
+                if store is not None:
+                    result['validity'] = load_sync().reader(store).validity_health()
             except Exception as exc:
                 result['validity'] = {'ignored_rejection_count': 0, 'ignored_rejections': [], 'truncated': False,
                                       'rejected_dependent_count': 0, 'rejected_dependents': [],
@@ -1871,12 +1885,14 @@ def main(argv=None, return_result=False):
             # Information only: a supersedes link that retires nothing keeps the old note in
             # context, as before #206; it never raises the doctor status.
             try:
-                result['supersedes'] = load_sync().reader(store).supersedes_health()
+                if store is not None:
+                    result['supersedes'] = load_sync().reader(store).supersedes_health()
             except Exception as exc:
                 result['supersedes'] = {'status': 'unavailable', 'error': type(exc).__name__}
             # Information only: a note's own review_at date has come; never raises the doctor status.
             try:
-                result['review'] = load_sync().reader(store).review_health()
+                if store is not None:
+                    result['review'] = load_sync().reader(store).review_health()
             except Exception as exc:
                 result['review'] = {'status': 'unavailable', 'error': type(exc).__name__}
             # Read-only information: each scan fails alone and never hides the rest of doctor.
@@ -1914,12 +1930,13 @@ def main(argv=None, return_result=False):
             # indexed trees that look vendored. Reads the index and one small file; no vault walk.
             try:
                 import beyin_v3_index as index_settings
-                with store._connect() as db:
-                    # Before the first sync this table may legitimately be absent. Any
-                    # other query or payload error must reach the unavailable report below.
-                    rows = []
-                    if db.execute("SELECT 1 FROM sqlite_master WHERE name = 'markdown_sources' COLLATE NOCASE").fetchone():
-                        rows = db.execute('SELECT m.source, r.payload FROM markdown_sources m LEFT JOIN records r ON r.id = m.id').fetchall()
+                # Before the first sync this table may legitimately be absent. Any
+                # other query or payload error must reach the unavailable report below.
+                rows = []
+                if store is not None:
+                    with store._connect() as db:
+                        if db.execute("SELECT 1 FROM sqlite_master WHERE name = 'markdown_sources' COLLATE NOCASE").fetchone():
+                            rows = db.execute('SELECT m.source, r.payload FROM markdown_sources m LEFT JOIN records r ON r.id = m.id').fetchall()
                 indexed_sources = [row[0] for row in rows]
                 indexed_records = [json.loads(row[1]) if row[1] else {'source': row[0]} for row in rows]
                 result['index_exclusions'] = index_settings.doctor(state, vault, indexed_sources, records=indexed_records)
