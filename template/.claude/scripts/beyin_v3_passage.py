@@ -170,6 +170,8 @@ def settings(state_dir):
     """Optional runtime config; an invalid file means defaults, never a broken hook.
 
     strict_exclude adds prefixes to DEFAULT_EXCLUDE; it cannot remove V3's own paths.
+    strict_keep prefixes override strict exclusion: a source matching a keep prefix is
+    never dropped by the strict gate even if it also matches an exclude prefix.
     """
     result = {"floor": FLOOR, "exclude": DEFAULT_EXCLUDE}
     path = Path(state_dir) / CONFIG_NAME
@@ -189,6 +191,10 @@ def settings(state_dir):
             all(isinstance(item, str) and 0 < len(item.strip()) and len(item) <= 256 for item in exclude)):
         extra = tuple(item.replace("\\", "/") for item in exclude)
         result["exclude"] = DEFAULT_EXCLUDE + tuple(item for item in extra if item not in DEFAULT_EXCLUDE)
+    keep = value.get("strict_keep")
+    if (isinstance(keep, list) and 0 < len(keep) <= MAX_EXCLUDES and
+            all(isinstance(item, str) and 0 < len(item.strip()) and len(item) <= 256 for item in keep)):
+        result["strict_keep"] = tuple(item.replace("\\", "/") for item in keep)
     return result
 
 
@@ -559,17 +565,19 @@ def _runner_up(siblings, probes, frequency, total, roots=(), joined=()):
     return best
 
 
-def pool(store, eligible, statuses=None, exclude=DEFAULT_EXCLUDE, superseded=None):
-    """The strict candidate set of MemoryStore._retrieve, minus configured record paths."""
+def pool(store, eligible, statuses=None, exclude=DEFAULT_EXCLUDE, superseded=None, strict_keep=()):
     if superseded is None:
         superseded = store._superseded_ids()
     prefixes = tuple(_path_key(prefix) for prefix in exclude)
+    keep_prefixes = tuple(_path_key(prefix) for prefix in strict_keep)
     allowed_statuses = _allowed_statuses(statuses)
     result = []
     for record in eligible:
         source = str(record.get("source", ""))
+        key = _path_key(source)
+        excluded = source.startswith(store.STRICT_EXCLUDE) or key.startswith(prefixes)
         if (record["id"] in superseded or not _status_allowed(record, allowed_statuses) or
-                source.startswith(store.STRICT_EXCLUDE) or _path_key(source).startswith(prefixes)):
+                key.startswith("receipts/") or (excluded and not key.startswith(keep_prefixes))):
             continue
         result.append(record)
     return result
@@ -591,7 +599,7 @@ def context_for(store, harness, query, project=None, audience="internal", status
     config = settings(store.state_dir)
     records = store._records()
     eligible, stale_count = store._eligible(audience, project, records=records)
-    candidates = pool(store, eligible, statuses, config["exclude"], superseded=store._superseded_ids(records))
+    candidates = pool(store, eligible, statuses, config["exclude"], superseded=store._superseded_ids(records), strict_keep=config.get("strict_keep", ()))
     store._passage_index = None  # an earlier pass's index must not outlive a failed build
     # passages.json is derived data, written atomically and ignored when stale or unwritable. A read-only
     # store (the hook while a sync is pending or deferred) protects the database, not this cache: without
