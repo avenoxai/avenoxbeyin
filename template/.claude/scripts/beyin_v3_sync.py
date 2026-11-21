@@ -1375,11 +1375,16 @@ class SyncEngine:
         if event:
             intent['event'] = event
         atomic(entry, _json(intent))
-        actual = _hash(path.read_bytes()) if path.exists() else None
-        if actual != old_hash:
-            entry.unlink()
-            raise RevisionConflict('source changed before replace')
-        atomic(path, content)
+        try:
+            actual = _hash(path.read_bytes()) if path.exists() else None
+            if actual != old_hash:
+                raise RevisionConflict('source changed before replace')
+            atomic(path, content)
+        except (OSError, RevisionConflict):
+            # The caller receives a refusal. Only an interrupted process should
+            # leave a pending intent that a later sync can commit on its behalf.
+            entry.unlink(missing_ok=True)
+            raise
         return entry
 
     def update_task(self, id, expected_revision, changes):
