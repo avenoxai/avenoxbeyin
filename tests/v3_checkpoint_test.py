@@ -211,7 +211,9 @@ class CheckpointTest(unittest.TestCase):
         first = run_checkpoint(self.sync, self.vault, self.state, request, session="threads")
         self.assertEqual(first["steps"]["threads"], "written")
         written = threads.read_bytes()
-        self.assertTrue(written.startswith(initial.encode("utf-8")))
+        visible = b"".join(line for line in written.splitlines(keepends=True)
+                           if not line.startswith(b"<!-- beyin-checkpoint-thread:"))
+        self.assertTrue(visible.startswith(initial.encode("utf-8")))
         self.assertIn("### Müşteri Arşivi\r\n- İlk iş\r\n".encode("utf-8"), written)
         self.assertEqual(written.count("- ılık\r\n".encode("utf-8")), 1)
         self.assertNotIn(b"\n", written.replace(b"\r\n", b""))
@@ -227,6 +229,37 @@ class CheckpointTest(unittest.TestCase):
         self.assertEqual(result["steps"]["threads"], "written")
         self.assertIn("### Müşteri Arşivi\n- İlk iş\n",
                       (self.comp / "Threads.md").read_text(encoding="utf-8"))
+
+    def test_checkpoint_preserves_fenced_heading_examples(self):
+        card = self.comp / "Last-Session.md"
+        threads = self.comp / "Threads.md"
+        example = "```md\n## Örnek kart\n### Aktif İşler\n- örnek\n```\n"
+        card.write_text("# Son oturum\n\n" + example, encoding="utf-8", newline="\n")
+        threads.write_text("# Threads\n\n" + example + "\n### Aktif İşler\n- gerçek\n",
+                           encoding="utf-8", newline="\n")
+        result = run_checkpoint(self.sync, self.vault, self.state, {
+            "card": {"body": "Güncel kart."},
+            "threads": [{"heading": "Aktif İşler", "next_step": "Güncel iş."}],
+        }, session="example-session")
+        self.assertEqual(result["status"], "succeeded")
+        self.assertIn(example, card.read_text(encoding="utf-8"))
+        self.assertIn(example + "\n### Aktif İşler\n- gerçek\n- Güncel iş.\n",
+                      threads.read_text(encoding="utf-8"))
+
+    def test_threads_retry_keeps_replacement_key_after_closed_threads_are_compacted(self):
+        limits = self.state / "companion-limits.json"
+        limits.write_text('{"Threads.md": 0}', encoding="utf-8")
+        threads = self.comp / "Threads.md"
+        threads.write_text("# Threads\n\n## Active Threads\n### Açık iş\n- önceki adım\n"
+                           "\n## Closed Threads\n" + "- eski not\n" * 1000,
+                           encoding="utf-8", newline="\n")
+        request = {"threads": [{"old": "- önceki adım", "new": "- güncel adım"}]}
+        first = run_checkpoint(self.sync, self.vault, self.state, request, session="archive")
+        self.assertEqual(first["steps"]["threads"], "written")
+        limits.unlink()
+        retry = run_checkpoint(self.sync, self.vault, self.state, request, session="archive")
+        self.assertEqual(retry["steps"]["compact"], "compacted")
+        self.assertEqual(retry["steps"]["threads"], "unchanged")
 
     def test_trace_retry_across_month_boundary(self):
         beyin_v3_chat_trace.configure(self.state, True)

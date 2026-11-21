@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 from beyin_v3 import _trusted_record
-from beyin_v3_companion import directory as locate_companion
+from beyin_v3_companion import directory as locate_companion, headings
 from beyin_v3_compact import compact as companion_compact
 from beyin_v3_notes import read as note_read, apply as note_apply, NoteConflict
 from beyin_v3_learning import stage_candidate
@@ -50,8 +50,10 @@ def _update_card(sync, source, card, session, now):
     end = f"<!-- /beyin-checkpoint:{owner} -->"
     card_text = (f"## {now:%Y-%m-%d %H:%M}{suffix}" + newline
                  + (body.replace("\n", newline) + newline if body else "") + end + newline)
-    opening = re.search(rf"^## [^\r\n]+ <!-- beyin-checkpoint:{owner}:([a-f0-9]{{64}}) -->\r?$",
-                        content, re.MULTILINE)
+    starts = headings(content, 2)
+    pattern = re.compile(rf"^## [^\r\n]+ <!-- beyin-checkpoint:{owner}:([a-f0-9]{{64}}) -->\r?$",
+                         re.MULTILINE)
+    opening = next((match for start in starts if (match := pattern.match(content, start))), None)
     if opening:
         ending = re.search(rf"^{re.escape(end)}\r?\n?", content[opening.end():], re.MULTILINE)
         if not ending:
@@ -61,12 +63,11 @@ def _update_card(sync, source, card, session, now):
         updated = content[:opening.start()] + card_text + content[opening.end() + ending.end():]
     else:
         # A legacy eight-character suffix cannot prove ownership. Preserve those cards.
-        first = re.search(r"^## ", content, re.MULTILINE)
-        start = first.start() if first else len(content)
+        start = starts[0] if starts else len(content)
         preamble = content[:start]
         if preamble and not preamble.endswith(newline * 2):
             preamble += newline if preamble.endswith(newline) else newline * 2
-        updated = preamble + card_text + (newline + content[start:] if first else "")
+        updated = preamble + card_text + (newline + content[start:] if starts else "")
     return _update_note(sync, source, previous, updated)
 
 
@@ -100,23 +101,23 @@ def _update_threads(sync, source, threads, session):
             key = _step_key(session, "thread-next-step", heading, next_step)
             if key in applied:
                 continue
-            pattern = rf"^###[ \t]+{re.escape(heading)}[ \t]*(?:\r?\n|\Z)"
-            matches = list(re.finditer(pattern, content, re.MULTILINE))
+            starts = headings(content, 3)
+            pattern = re.compile(rf"### {re.escape(heading)}[ \t]*(?:\r?\n|\Z)")
+            matches = [match for start in starts if (match := pattern.match(content, start))]
             if len(matches) > 1:
                 raise NoteConflict("Threads heading must occur at most once")
             line = f"- {next_step}"
             if matches:
                 start = matches[0].end()
-                boundary = re.search(r"^(?:#{1,3}[ \t]|<!-- beyin-checkpoint-thread:)",
-                                     content[start:], re.MULTILINE)
-                end = start + boundary.start() if boundary else len(content)
+                boundaries = starts + headings(content, 2) + headings(content, 1)
+                end = min((pos for pos in boundaries if pos >= start), default=len(content))
                 body = content[start:end]
                 if line in body.splitlines():
                     continue
                 trimmed = body.rstrip("\r\n")
                 prefix = content[:start] + trimmed
                 separator = "" if prefix.endswith(newline) else newline
-                content = prefix + separator + line + newline + body[len(trimmed):] + content[end:]
+                content = prefix + separator + line + (body[len(trimmed):] or newline) + content[end:]
             else:
                 separator = "" if not content or content.endswith(newline * 2) else (
                     newline if content.endswith(newline) else newline * 2)
@@ -128,9 +129,15 @@ def _update_threads(sync, source, threads, session):
         return "unchanged"
     # Commit the keys and their edits together. A crash after replacement can be
     # recognized without a second file or a state directory shared across clients.
-    if not content.endswith(newline):
-        content += newline
-    content += newline.join(markers) + newline
+    # Keep the keys in the preamble so archiving a closed thread cannot move them.
+    _, body = parse(content)
+    start = len(content) - len(body)
+    title = re.match(r"\ufeff?# [^\r\n]*\r?\n", body)
+    if title:
+        start += title.end()
+    elif body.startswith("\ufeff"):
+        start += 1
+    content = content[:start] + newline.join(markers) + newline + content[start:]
     return _update_note(sync, source, previous, content)
 
 
