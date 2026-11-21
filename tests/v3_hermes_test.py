@@ -310,6 +310,56 @@ class HermesHarnessTest(unittest.TestCase):
             result = hooks['pre_llm_call'](session_id='long', turn_id='x', user_message='devam', is_first_turn=False)
         self.assertIsNone(result, 'No adapter context and no reminder due means no injection')
 
+    def test_reminder_cadence_survives_gateway_restart(self):
+        # A gateway restart rebuilds the hooks; the session's turn count must carry over, or a
+        # chat that spans restarts never reaches the reminder turn.
+        self.module.save_platforms(self.state, attended=['telegram'])  # a personal chat (#350)
+        every = self.module.REMINDER_EVERY
+        seen = []
+        with patch.object(self.module, 'run_hook', return_value='ctx'):
+            for turn in range(1, every + 1):
+                if turn in (2, every - 1):
+                    hooks = self.module.make_hooks(self.vault, self.state)  # restart
+                elif turn == 1:
+                    hooks = self.module.make_hooks(self.vault, self.state)
+                result = hooks['pre_llm_call'](session_id='tg-uzun', turn_id=str(turn), user_message='devam',
+                                               is_first_turn=turn == 1, platform='telegram')
+                seen.append('[Hafıza]' in result['context'])
+        self.assertEqual([i + 1 for i, hit in enumerate(seen) if hit], [every])
+        stored = json.loads((self.state / self.module.TURNS_FILE).read_text(encoding='utf-8'))
+        self.assertEqual(stored['sessions']['tg-uzun']['turns'], every)
+
+    def test_finalize_after_restart_keeps_first_turn_platform(self):
+        # Hermes reports a generic platform at finalize; after a restart only the stored
+        # first-turn platform can tell that the session is an unattended chat.
+        before = self.module.make_hooks(self.vault, self.state)
+        with patch.object(self.module, 'run_hook', return_value=''):
+            before['pre_llm_call'](session_id='tg-2', turn_id='1', user_message='selam', is_first_turn=True, platform='telegram')
+        after = self.module.make_hooks(self.vault, self.state)  # restart
+        with patch.object(self.module, 'run_hook', return_value='') as run:
+            after['on_session_finalize'](session_id='tg-2', platform='gateway')
+        events = [(c.args[2]['session_id'], c.args[2]['hook_event_name']) for c in run.call_args_list]
+        self.assertNotIn(('tg-2', 'SessionEnd'), events)
+        stored = json.loads((self.state / self.module.TURNS_FILE).read_text(encoding='utf-8'))
+        self.assertNotIn('tg-2', stored['sessions'], 'a finalized session leaves the turn file')
+
+    def test_damaged_turn_file_counts_from_memory(self):
+        (self.state / self.module.TURNS_FILE).write_text('{bozuk', encoding='utf-8')
+        hooks = self.module.make_hooks(self.vault, self.state)
+        with patch.object(self.module, 'run_hook', return_value='ctx'):
+            for turn in range(1, self.module.REMINDER_EVERY + 1):
+                result = hooks['pre_llm_call'](session_id='x', turn_id=str(turn), user_message='m', is_first_turn=turn == 1)
+        self.assertIn('[Hafıza]', result['context'])
+
+    def test_turn_file_keeps_only_recent_sessions(self):
+        old = {'sessions': {'eski': {'platform': 'cli', 'turns': 3, 'at': 1.0}}}
+        (self.state / self.module.TURNS_FILE).write_text(json.dumps(old), encoding='utf-8')
+        hooks = self.module.make_hooks(self.vault, self.state)
+        with patch.object(self.module, 'run_hook', return_value=''):
+            hooks['pre_llm_call'](session_id='yeni', turn_id='1', user_message='m', is_first_turn=True)
+        stored = json.loads((self.state / self.module.TURNS_FILE).read_text(encoding='utf-8'))
+        self.assertEqual(list(stored['sessions']), ['yeni'])
+
 
     def test_unattended_platforms_configuration_and_override(self):
         # 1. Default: slack is unattended
