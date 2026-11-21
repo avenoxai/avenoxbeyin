@@ -531,6 +531,32 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(os.readlink(target), link)
         self.assertEqual(json.loads(real.read_text(encoding='utf-8')), original)
 
+    def test_global_json_update_refuses_a_symlink_retargeted_after_read(self):
+        target = bridge.global_hook_path('claude', home=self.home)
+        target.parent.mkdir(parents=True)
+        original = self.home / 'original.json'
+        other = self.home / 'other.json'
+        original.write_bytes(b'{"original": true}')
+        other.write_bytes(b'{"other": true}')
+        try:
+            target.symlink_to(original)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f'symlinks unavailable: {exc}')
+        read_settings = bridge._read_global_settings
+
+        def read_then_retarget(path):
+            data = read_settings(path)
+            target.unlink()
+            target.symlink_to(other)
+            return data
+
+        with patch.object(bridge, '_read_global_settings', side_effect=read_then_retarget):
+            with self.assertRaisesRegex(OSError, 'Global settings changed before write'):
+                bridge.install_bridge(self.vault, self.state, 'claude', [self.project], home=self.home)
+        self.assertEqual(original.read_bytes(), b'{"original": true}')
+        self.assertEqual(other.read_bytes(), b'{"other": true}')
+        self.assertEqual(list(target.parent.iterdir()), [target])
+
     def test_global_json_updates_use_the_atomic_writer(self):
         target = bridge.global_hook_path('claude', home=self.home)
         target.parent.mkdir(parents=True)

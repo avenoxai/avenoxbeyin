@@ -343,10 +343,11 @@ def gemini_md_content(vault, roots):
     )
 
 
-def _backup_file(path):
-    if not path.is_file():
+def _backup_file(path, *, source=None):
+    source = path if source is None else source
+    if not source.is_file():
         return None
-    raw = path.read_bytes()
+    raw = source.read_bytes()
     index = 0
     while True:
         backup = path.with_name(path.name + '.bak' + ('.' + str(index) if index else ''))
@@ -450,7 +451,12 @@ def _global_json_stamp(current):
             current.st_mtime_ns, current.st_ctime_ns, current.st_size)
 
 
-def _write_global_json(path, data):
+def _global_json_snapshot(path):
+    resolved = path.resolve()
+    return resolved, _global_json_stamp(_global_json_stat(resolved))
+
+
+def _write_global_json(path, data, *, expected=None):
     """Update global settings through symlinks and keep shared inodes intact."""
     from beyin_v3_sync import atomic
     path = Path(path)
@@ -460,8 +466,14 @@ def _write_global_json(path, data):
     stamp = _global_json_stamp(current)
 
     def check_target():
-        if path.resolve() != target or _global_json_stamp(_global_json_stat(target)) != stamp:
+        if _global_json_snapshot(path) != (target, stamp):
             raise OSError('Global settings changed before write')
+
+    if expected is not None:
+        if expected != (target, stamp):
+            raise OSError('Global settings changed before write')
+        _backup_file(path, source=target)
+        check_target()
 
     if current is not None and current.st_nlink > 1:
         payload = text.encode('utf-8')
@@ -963,7 +975,9 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
     for event in events:
         command.extend(['--event', event])
 
-    data = _read_global_settings(target)
+    snapshot = _global_json_snapshot(target)
+    settings_file = snapshot[0]
+    data = _read_global_settings(settings_file)
     if harness != 'antigravity':
         hooks = data.get('hooks', {})
         if not isinstance(hooks, dict) or any(not isinstance(groups, list) for groups in hooks.values()):
@@ -993,9 +1007,8 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
             hooks_map.setdefault(event, []).append(group)
 
     new_bytes = (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode('utf-8')
-    if not target.is_file() or target.read_bytes() != new_bytes:
-        _backup_file(target)
-        _write_global_json(target, data)
+    if not settings_file.is_file() or settings_file.read_bytes() != new_bytes:
+        _write_global_json(target, data, expected=snapshot)
 
     gemini_path = None
     if harness == 'antigravity':
@@ -1028,8 +1041,9 @@ def uninstall_bridge(harness, home=None):
             'hook_file': str(target),
             'removed_count': removed_count,
         }
-    if target.is_file():
-        data = _read_global_settings(target)
+    snapshot = _global_json_snapshot(target)
+    if snapshot[1] is not None:
+        data = _read_global_settings(snapshot[0])
         if isinstance(data, dict):
             modified = False
             if harness == 'antigravity':
@@ -1056,8 +1070,7 @@ def uninstall_bridge(harness, home=None):
                     if modified and not hooks_map:
                         del data['hooks']
             if modified:
-                _backup_file(target)
-                _write_global_json(target, data)
+                _write_global_json(target, data, expected=snapshot)
 
     if harness == 'antigravity':
         removed_count += remove_gemini_md(home=home)
