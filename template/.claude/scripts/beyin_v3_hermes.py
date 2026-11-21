@@ -179,11 +179,17 @@ def _session_key(session_id):
     return hashlib.sha256(session_id.encode("utf-8", errors="surrogatepass")).hexdigest()
 
 
+def _touch_turn(sessions, key, info):
+    # Dict order (also preserved by JSON) breaks equal wall-clock ties by last touch.
+    sessions.pop(key, None)
+    sessions[key] = info
+
+
 def _recent_turns(sessions, now):
     recent = [(sid, info) for sid, info in sessions.items()
               if 0 <= now - info["at"] <= TURNS_KEEP_SECONDS]
-    recent.sort(key=lambda item: item[1]["at"], reverse=True)
-    return dict(recent[:TURNS_KEEP_MAX])
+    recent.sort(key=lambda item: item[1]["at"])
+    return dict(recent[-TURNS_KEEP_MAX:])
 
 
 @contextmanager
@@ -335,7 +341,7 @@ def _update_turns(state, sessions, session_id, platform=None, first=False, final
             if finalize:
                 stored.pop(key, None)
             else:
-                stored[key] = candidate
+                _touch_turn(stored, key, candidate)
             save_turns(state, stored)
         committed = True
         pending = 0
@@ -352,9 +358,10 @@ def _update_turns(state, sessions, session_id, platform=None, first=False, final
     if committed and finalize:
         sessions.pop(key, None)
     else:
-        sessions[key] = dict(candidate, pending=pending, closed=finalize)
+        cached = dict(candidate, pending=pending, closed=finalize)
         if not committed and (finalize or reset_at is not None):
-            sessions[key]["reset_at"] = candidate["at"] if finalize else reset_at
+            cached["reset_at"] = candidate["at"] if finalize else reset_at
+        _touch_turn(sessions, key, cached)
     recent = _recent_turns(sessions, time.time())
     sessions.clear()
     sessions.update(recent)
@@ -451,7 +458,7 @@ def make_hooks(vault, state=None, python=None, session_cwd=None):
             # An absent cwd leaves the finalize cache intact, but an explicit invalid
             # cwd or a refused context replaces it so finalize cannot reuse stale data.
             if selected_cwd:
-                session_cwds[_session_key(session_id)] = {"at": time.time(), "payload": selected_cwd}
+                _touch_turn(session_cwds, _session_key(session_id), {"at": time.time(), "payload": selected_cwd})
                 session_cwds = _recent_turns(session_cwds, time.time())
         event = "SessionStart" if first else "UserPromptSubmit"
         prompt = kw.get("user_message") if isinstance(kw.get("user_message"), str) else ""
