@@ -1,0 +1,10 @@
+{
+  "steps": [
+    {
+      "id": "refresh-yakala",
+      "condition": "yakala_installed",
+      "text": "Yakala dinleyicisini ve skill kopyasını yenile. Kısayol kurmadan kullanıyorsan önceki --kisayol-yok seçimini koru.",
+      "command": "beyin.py yakala kur"
+    }
+  ]
+}

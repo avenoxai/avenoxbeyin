@@ -123,19 +123,41 @@ def _public_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_a
 
 
 def _public_opener(*handlers):
-    """urllib opener whose direct connections go through _public_connection. Through a configured
-    proxy the proxy resolves the target, so the connection to the proxy itself is left as it is."""
+    """Keep origin Host/TLS identity while pinning every direct or proxied destination.
+
+    Proxy selection and NO_PROXY retain urllib's OS/environment behavior, but a selected proxy
+    gets a checked numeric tunnel target, never a hostname to resolve a second time.
+    """
     import http.client
-    from urllib.request import HTTPHandler, HTTPSHandler, build_opener
+    from urllib.request import HTTPHandler, HTTPSHandler, ProxyHandler, build_opener, proxy_bypass
+
+    class PinnedProxy(ProxyHandler):
+        def proxy_open(self, request, proxy, type):
+            if request.host and proxy_bypass(request.host):
+                return None
+            request._beyin_proxy = _proxy_address(proxy)
+            # Do not set_proxy(): retain the origin URL, request target and Host header.
+            return None
 
     def pinned(base, request):
-        direct = not request.has_proxy() and not getattr(request, '_tunnel_host', None)
+        proxy = getattr(request, '_beyin_proxy', None)
 
         class Connection(base):
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-                if direct:
+            def connect(self):
+                if proxy is None:
                     self._create_connection = _public_connection
+                    return super().connect()
+                answers = _public_answers(self.host, self.port)
+                sock, early = _proxy_open(proxy, True, self.host, self.port, answers, timeout=self.timeout)
+                try:
+                    if early:
+                        raise OSError('Yakala: proxy tunel cevabindan sonra beklenmeyen veri.')
+                    if isinstance(self, http.client.HTTPSConnection):
+                        sock = self._context.wrap_socket(sock, server_hostname=self.host)
+                    self.sock = sock
+                except BaseException:
+                    sock.close()
+                    raise
         return Connection
 
     class PublicHTTP(HTTPHandler):
@@ -147,7 +169,7 @@ def _public_opener(*handlers):
             extra = {'check_hostname': self._check_hostname} if hasattr(self, '_check_hostname') else {}
             return self.do_open(pinned(http.client.HTTPSConnection, request), request, context=self._context, **extra)
 
-    return build_opener(PublicHTTP(), PublicHTTPS(), *handlers)
+    return build_opener(PinnedProxy(), PublicHTTP(), PublicHTTPS(), *handlers)
 
 
 # ---------------------------------------------------------------- helper egress guard
@@ -281,32 +303,30 @@ def _socks_tunnel(sock, scheme, name, port, user, password):
     _recv_exact(sock, size + 2)
 
 
-def _proxy_open(proxy, tunnel, host, port, answers):
-    """(socket through the user's proxy, bytes it sent past its answer) for a target that already passed
-    the public-address gate (`answers`). socks5 and socks4 get a checked address, as their clients
-    resolve names themselves; an HTTP proxy, socks5h and socks4a get the name and resolve it, as on the
-    stdlib path. `tunnel` is the CONNECT authority, or None for plain HTTP, which an HTTP proxy takes
-    as an absolute-form request instead. Every failure here is an OSError: no address was refused."""
+def _proxy_open(proxy, tunnel, host, port, answers, timeout=30):
+    """Open a tunnel to a checked numeric address through the user's proxy.
+
+    Even remote-DNS proxy schemes receive only IP literals: resolving host again at the proxy
+    would invalidate the gate. HTTP uses CONNECT for plain HTTP too, never absolute-form URLs.
+    A proxy that cannot tunnel the checked target fails closed; no direct/name-based fallback.
+    Host and TLS/SNI remain in the caller's untouched application stream.
+    """
     scheme, proxy_host, proxy_port, user, password = proxy
-    try:
-        ipaddress.ip_address(host)
-        names = [host]
-    except ValueError:
-        if scheme in ('socks5', 'socks4'):
-            family = (socket.AF_INET,) if scheme == 'socks4' else (socket.AF_INET, socket.AF_INET6)
-            names = list(dict.fromkeys(item[4][0].split('%')[0] for item in answers if item[0] in family))
-        else:
-            names = [host]
-    error = OSError('Yakala: SOCKS4 icin IPv4 adresi yok.')
+    family = (socket.AF_INET,) if scheme.startswith('socks4') else (socket.AF_INET, socket.AF_INET6)
+    names = list(dict.fromkeys(item[4][0].split('%')[0] for item in answers if item[0] in family))
+    error = OSError('Yakala: proxy icin uygun denetlenmis IP adresi yok.')
     for name in names:
-        sock = socket.create_connection((proxy_host, proxy_port), 30)  # the user's own proxy, not gated
+        sock = None
         try:
+            sock = socket.create_connection((proxy_host, proxy_port), timeout)  # user's proxy, not gated
             if scheme != 'http':
                 _socks_tunnel(sock, scheme, name, port, user, password)
                 return sock, b''
-            return sock, (_http_tunnel(sock, tunnel, user, password) if tunnel else b'')
+            authority = ('[' + name + ']' if ':' in name else name) + ':' + str(port)
+            return sock, _http_tunnel(sock, authority, user, password)
         except OSError as exc:
-            sock.close()
+            if sock is not None:
+                sock.close()
             error = exc
     raise error
 
@@ -420,11 +440,9 @@ class _EgressGuard:
             return upstream, None, early
         path = (parsed.path or '/') + ('?' + parsed.query if parsed.query else '')
         headers = [line for line in lines[1:] if line and line.split(':', 1)[0].strip().lower() not in _HOP_HEADERS]
-        line, login = method + ' ' + path, []
-        if proxy is not None and proxy[0] == 'http':  # an HTTP proxy takes the absolute form
-            line, login = method + ' http://' + parsed.netloc + path, _proxy_login(*proxy[3:])
-        start = '\r\n'.join([line + ' HTTP/1.1', 'Host: ' + parsed.netloc, *headers, *login, 'Connection: close', '', ''])
-        return upstream, start.encode('latin-1'), b''
+        line = method + ' ' + path
+        start = '\r\n'.join([line + ' HTTP/1.1', 'Host: ' + parsed.netloc, *headers, 'Connection: close', '', ''])
+        return upstream, start.encode('latin-1'), early
 
     def _serve(self, client):
         upstream = None
@@ -441,6 +459,8 @@ class _EgressGuard:
                 client.sendall(_proxy_reply(502, 'hedefe baglanilamadi.'))
                 return
             self._track(upstream)
+            if start is not None and early:
+                client.sendall(early)
             if start is None:
                 client.sendall(b'HTTP/1.1 200 Connection established\r\n\r\n' + early)
                 start = b''
@@ -1270,13 +1290,85 @@ def tools():
             'pdftotext': _which('pdftotext'), 'ffmpeg': _which('ffmpeg')}
 
 
-def via_defuddle(url, found, info=None, lang=None):
+def _defuddle_approval_path(state):
+    """Path to the defuddle approval file in state directory."""
+    return Path(state) / 'yakala' / 'defuddle-approval.json'
+
+
+def _defuddle_approval_granted(state):
+    """Check if user has approved defuddle (npx defuddle@0.19.4) execution."""
+    if state is None:
+        return False
+    import stat
+    try:
+        path = _defuddle_approval_path(state)
+        if not stat.S_ISREG(path.lstat().st_mode):
+            return False
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_BINARY', 0) |
+                             getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
+        with os.fdopen(descriptor, 'rb') as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 4096:
+                return False
+            raw = source.read(4097)
+        if len(raw) > 4096:
+            return False
+        data = json.loads(raw.decode('utf-8'))
+        return (isinstance(data, dict) and type(data.get('schema')) is int and data['schema'] == 1
+                and data.get('approved') is True and data.get('version') == DEFUDDLE)
+    except (OSError, ValueError, RecursionError):
+        return False
+
+
+def _grant_defuddle_approval(state):
+    """Persist user's approval for defuddle execution."""
+    path = _defuddle_approval_path(state)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    from beyin_v3_sync import atomic
+    atomic(path, json.dumps({'schema': 1, 'approved': True, 'version': DEFUDDLE}, ensure_ascii=False))
+
+
+def _prompt_defuddle_approval(state):
+    """Prompt user for approval to run npx defuddle. Returns True if granted."""
+    if state is None:
+        return False
+    try:
+        # Never consume piped/agent input or wait for an open pipe. Saved consent still
+        # permits headless use; the first approval requires a person's terminal.
+        if sys.stdin is None or not sys.stdin.isatty():
+            print('Defuddle ilk onayı etkileşimli terminal gerektirir; npx çalıştırılmadı.', file=sys.stderr)
+            return False
+        print(f'\nYakala, web sayfalarından metin çıkarmak için "npx -y {DEFUDDLE}" paketini indirip çalıştırmak istiyor.', file=sys.stderr)
+        print('Bu işlem: Node.js (npx) gerektirir, defuddle paketini geçici olarak indirir, kullanıcı ayrıcalıklarıyla çalışır.', file=sys.stderr)
+        print(f'Sürüm sabit: {DEFUDDLE}; bu sabitleme paket içeriğini veya yayıncıyı doğrulamaz.', file=sys.stderr)
+        print('Onay veriyor musunuz? [e/E/yes/Y] ', end='', file=sys.stderr)
+        sys.stderr.flush()
+        response = sys.stdin.readline(129)
+        if len(response) <= 128 and response.strip().lower() in ('e', 'evet', 'yes', 'y'):
+            _grant_defuddle_approval(state)
+            return True
+    except (EOFError, KeyboardInterrupt, OSError, ValueError):
+        return False
+    return False
+
+
+def via_defuddle(url, found, info=None, lang=None, state=None):
     """Main text as Markdown; title, author, date and language go into `info` when given.
 
     `lang` asks for a video transcript in that language; `language` in the answer is the track it took.
+    Requires user approval for npx defuddle execution on first use (#691.5).
     """
     _safe_source_url(url)
     if not found['npx']:
+        return None
+    if state is None:
+        _safe_network_url(url)  # Retain the public helper's URL/DNS validation contract.
+        if info is not None:
+            info['uyari'] = 'Defuddle için açık state ve kullanıcı onayı gerekli; npx defuddle çalıştırılmadı.'
+        return None
+    if not _defuddle_approval_granted(state) and not _prompt_defuddle_approval(state):
+        if info is not None:
+            info['uyari'] = 'Defuddle onayı verilmedi; npx defuddle çalıştırılmadı.'
         return None
     _safe_network_url(url)
     try:
@@ -1485,7 +1577,7 @@ def via_audio(url, found, workdir, lang=None, problems=None):
                 path.unlink(missing_ok=True)
 
 
-def via_youtube(url, found, allow_audio=True, info=None):
+def via_youtube(url, found, allow_audio=True, info=None, state=None):
     """(text, method, note) for a video, the transcript in the spoken language where that can be told.
 
     yt-dlp names the spoken language, Defuddle is asked for that language and its answer is checked.
@@ -1502,7 +1594,7 @@ def via_youtube(url, found, allow_audio=True, info=None):
         tracks = youtube_tracks(url, found, workdir)
         spoken = tracks['dil'] if tracks else None
         unsure = 'Video dublajli gorunuyor ve konusulan dil belirlenemedi; ' if tracks and tracks['dublaj'] and not spoken else None
-        text = via_defuddle(url, found, info, spoken)
+        text = via_defuddle(url, found, info, spoken, state)
         section = re.search(r'^## Transcript', text or '', re.M)
         took = info.get('language', '')[:20] if section else None
         if section and (not spoken or _base(took) == _base(spoken)):
@@ -1879,7 +1971,7 @@ def _docx_reader():
     return module
 
 
-def extract(vault, card, found, allow_audio=True, info=None):
+def extract(vault, card, found, allow_audio=True, info=None, state=None):
     """Return (text, method, note). Prefer what is already captured, then the cheapest fetch."""
     meta, body = card['meta'], card['body']
     url, kind = meta.get('url'), meta.get('kaynak_turu') or kind_of(meta.get('url'))
@@ -1892,7 +1984,7 @@ def extract(vault, card, found, allow_audio=True, info=None):
         return clipped, 'web-clipper', None
     if kind == 'youtube' and url:
         _safe_network_url(url)
-        return via_youtube(url, found, allow_audio, info)
+        return via_youtube(url, found, allow_audio, info, state)
     if kind == 'mail':
         selected = _section(body, 'Secim')
         if selected:
@@ -1947,7 +2039,7 @@ def extract(vault, card, found, allow_audio=True, info=None):
     if url:
         _safe_network_url(url)  # before npx/yt-dlp can make the first request
         info = {} if info is None else info
-        text = via_defuddle(url, found, info)
+        text = via_defuddle(url, found, info, state=state)
         if text:
             check = {}
             try:
@@ -2004,7 +2096,7 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
             continue
         try:
             info = {}
-            text, method, note = extract(vault, card, found, allow_audio, info)
+            text, method, note = extract(vault, card, found, allow_audio, info, state)
         except Exception as exc:  # one broken source must not stop the queue
             text, method, note, info = None, None, type(exc).__name__ + ': ' + _extracted_unicode(str(exc))[:200], {}
         cleaned = _extracted_unicode(text)
@@ -5547,10 +5639,19 @@ def popup(vault, context=None, state=None, root=None, session=None):
             _win_dpi()
         root = tk.Tk()
         root.withdraw()
+
+    def leave_window():
+        if windows and session:
+            # The warm owner destroys the root once, after Tk returns from its callback.
+            root.quit()
+        else:
+            root.destroy()
+
     if windows:
         prepared = _windows_prepare(root, context, vault, state, session)
         if prepared is None:
-            root.destroy()
+            if not session:
+                root.destroy()  # the warm owner already gets control without another mainloop
             return {'status': 'vazgecildi'}
         context, clip, image, shot = (prepared[key] for key in ('context', 'clip', 'image', 'shot'))
         sources, sequence = prepared['sources'], prepared['sequence']
@@ -5772,12 +5873,12 @@ def popup(vault, context=None, state=None, root=None, session=None):
         saving['on'] = True
         def fade(alpha):
             if alpha <= 0:
-                root.destroy()
+                leave_window()
                 return
             try:
                 root.attributes('-alpha', alpha)
             except tk.TclError:
-                root.destroy()
+                leave_window()
                 return
             root.after(10, fade, round(alpha - 0.34, 2))
         fade(1.0)
@@ -5849,10 +5950,11 @@ def popup(vault, context=None, state=None, root=None, session=None):
     if agent_button is not None:
         canvas.tag_bind(agent_button, '<Button-1>', send_agent)
     def dismiss(_event=None):
+        saving['on'] = True
         stop_escape()
         if session:
             session.cancel.set()
-        root.destroy()
+        leave_window()
         return 'break'
 
     def escape(event):
@@ -5953,7 +6055,10 @@ def popup(vault, context=None, state=None, root=None, session=None):
             root.destroy()
         root.after(700, shoot)
     try:
-        root.mainloop()
+        # A native close can arrive while the window is being shown; mainloop
+        # resets quit(), so respect an already delivered warm cancellation first.
+        if not (windows and session and session.cancel.is_set()):
+            root.mainloop()
     finally:
         stop_escape()
         if session:
@@ -7565,15 +7670,16 @@ def _windows_warm_popup(vault, state, instance=None):
             pipe.send(_protocol_message('ERROR', instance, reason='Pencere baslatilamadi'))
         return result
     finally:
-        if session:
-            session.finish(result)
-        elif pipe:
-            pipe.finish()
-        if root:
-            try:
+        try:
+            if root:
                 root.destroy()
-            except Exception:
-                pass
+        except Exception:
+            pass
+        finally:
+            if session:
+                session.finish(result)
+            elif pipe:
+                pipe.finish()
 
 
 # ---------------------------------------------------------------- install / remove
@@ -8942,7 +9048,6 @@ def _agent_update_card(vault, job, status, reason='', **fields):
 
 def enqueue_agent(vault, state, card_id, request, delivery_id=None, *, music=None):
     """Durable outbox, then detached wake-up. No URL/DNS/model work on the Tk thread."""
-    import time
     import uuid
     vault, state = Path(vault).resolve(), Path(state).resolve()
     config = agent_settings(vault, state)

@@ -42,6 +42,22 @@ class GlobalBridgeDiagnosticsTest(unittest.TestCase):
                           self.root, self.env)
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    def test_update_reports_only_the_installed_bridge(self):
+        from v3_package_helpers import build_package, rewrite_zip
+        self.bridge(self.old, 'claude')
+        release = build_package(self.root / 'release.zip', '3.0.1', self.env)
+
+        def describe_steps(files):
+            manifest = json.loads(files['manifest.json'])
+            manifest['after_update_steps'] = [
+                {'id': name, 'text': name, 'condition': 'bridge_installed:' + name}
+                for name in ('claude', 'codex')]
+            files['manifest.json'] = json.dumps(manifest).encode()
+
+        package = rewrite_zip(release, self.root / 'update.zip', describe_steps)
+        result = json.loads(self.cli(self.old, 'update', '--package', package, '--json'))
+        self.assertEqual([row['id'] for row in result['after_update_steps']], ['claude'])
+
     def test_installed_bridge_move_and_explicit_reinstall(self):
         for harness in ('claude', 'codex', 'antigravity', 'opencode'):
             self.bridge(self.old, harness)

@@ -63,6 +63,34 @@ class TitleMatchSearchTest(unittest.TestCase):
         self.ingest('current', 'projelerin durumu ' * 8, 'Guncel-Ozet.md', title='Guncel Ozet')
         self.assertEqual(self.ids('projelerin durumu')[0], 'current')
 
+    def test_stock_rules_names_do_not_crowd_out_body_matches(self):
+        for index in range(5):
+            body = "# Kurallar\n\n## Kurallar ###\nFarklı proje ve ilgisiz içerik."
+            if index % 2:
+                body = body.replace("\n", "\r\n")
+            self.ingest(
+                f"stock-{index}", body,
+                f"Project-{index}/Kurallar.md", title="Kurallar",
+            )
+        self.ingest(
+            "actual", "Yedekleme için kural: haftalık denetim.",
+            "Yedekleme.md", title="Yedekleme",
+        )
+        result = self.store.context_for("claude", "kural", limit=5, explicit=True)
+        self.assertEqual([record["id"] for record in result["records"]], ["actual"])
+
+    def test_intentional_rules_queries_keep_content_and_specific_titles(self):
+        self.ingest(
+            "rules-with-content", "## Mimari Kurallar\n\nKurallar: mimari kararlar belgelenir.",
+            "Falcon/Kurallar.md", title="Kurallar",
+        )
+        self.ingest(
+            "specific-rules", "Uçuş kontrol sistemi.",
+            "Falcon/Falcon Kuralları.md", title="Falcon Kuralları",
+        )
+        self.assertIn("rules-with-content", self.ids("kurallar"))
+        self.assertEqual(self.ids("Falcon kuralları")[0], "specific-rules")
+
     def test_project_note_outranks_hub_with_frequent_mentions(self):
         """<A>/<A>.md outranks a MOC mentioning <A> and 'projesi' 30+ times (#354)."""
         self.ingest(

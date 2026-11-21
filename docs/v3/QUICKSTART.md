@@ -366,6 +366,16 @@ The Companion summary also ignores fenced examples when counting active threads,
 including legacy headingless `Status`/`Durum` entries. Existing counting behavior
 outside fences is unchanged.
 
+When there are no active `###` topics, the stale-thread report also accepts
+top-level list topics (`-`, `*`, `+`, `1.` or `1)`) and open `[ ]` checkboxes.
+Completed `[x]`/`[X]` items are excluded; indented details belong to the preceding
+open topic, not separate topics. Dates do not carry across section boundaries or
+from completed top-level items. Bullet topics use the same active-section rules
+in both counters. The Companion summary preserves its existing precedence:
+headings first, then legacy active `Status`/`Durum` records, then list topics.
+In mixed legacy-status/list documents, the legacy count wins; use one topic format
+consistently. Code fences and frontmatter are never list topics.
+
 Task triage ignores fenced examples when reading body-level `status:` lines and
 fallback headings. An example `status: done` cannot hide an open task, and an
 example heading cannot replace its title. Frontmatter and unfenced legacy status

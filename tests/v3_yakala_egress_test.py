@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import urlparse
 
+from v3_yakala_defuddle_consent_test import approved_test_state
 from v3_package_helpers import inherited_env
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +39,7 @@ class Pages:
 
     def __init__(self, test):
         self.hits = {'public': [], 'secret': []}
+        self.headers = []
         self.public = self._serve(test, 'public')
         self.secret = self._serve(test, 'secret')
 
@@ -47,6 +49,7 @@ class Pages:
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 pages.hits[name].append(self.path)
+                pages.headers.append(dict(self.headers.items()))
                 if name == 'public' and self.path.startswith('/yonlendir'):
                     self.send_response(302)
                     self.send_header('Location', 'http://127.0.0.1:%d/gizli' % pages.secret)
@@ -288,6 +291,8 @@ class EgressGuardTest(unittest.TestCase):
         self.assertIn(b'Acik makale metni.', tunnel)
         self.assertIn(b'Acik makale metni.', forward)
         self.assertEqual(self.pages.hits['public'], ['/acik', '/duz?a=1'])
+        self.assertEqual([h['Host'] for h in self.pages.headers], ['ornek.example', 'ornek.example'])
+        self.assertTrue(all('Proxy-Authorization' not in h for h in self.pages.headers))
         for reply in refused:
             self.assertTrue(reply.startswith(b'HTTP/1.1 403'), reply[:80])
         self.assertEqual(self.pages.hits['secret'], [])
@@ -314,6 +319,76 @@ class EgressGuardTest(unittest.TestCase):
             self.guard.close()
             client.settimeout(5)
             self.assertEqual(client.recv(4096), b'')  # the idle tunnel was ended, not left behind
+
+
+class PinnedProxyWireTest(unittest.TestCase):
+    class Wire:
+        def __init__(self, replies=b'HTTP/1.1 200 Connection established\r\n\r\n'):
+            self.replies, self.sent, self.closed = replies, b'', False
+
+        def sendall(self, value):
+            self.sent += value
+
+        def recv(self, size):
+            value, self.replies = self.replies[:size], self.replies[size:]
+            return value
+
+        def close(self):
+            self.closed = True
+
+    def answer(self, address):
+        family = socket.AF_INET6 if ':' in address else socket.AF_INET
+        return (family, socket.SOCK_STREAM, 6, '', (address, 443))
+
+    def test_ipv6_numeric_tunnel_and_socks_wire(self):
+        address = '2606:4700:4700::1111'
+        for scheme in ('http', 'socks5', 'socks5h'):
+            with self.subTest(scheme=scheme):
+                wire = self.Wire() if scheme == 'http' else self.Wire(b'\x05\x00\x05\x00\x00\x01' + bytes(6))
+                with patch.object(socket, 'create_connection', return_value=wire) as dial:
+                    result, early = yakala._proxy_open((scheme, 'proxy.example', 1234, '', ''),
+                                                       'origin.example:443', 'origin.example', 443,
+                                                       [self.answer(address)], timeout=7)
+                self.assertIs(result, wire)
+                self.assertEqual(early, b'')
+                dial.assert_called_once_with(('proxy.example', 1234), 7)
+                if scheme == 'http':
+                    self.assertIn(b'CONNECT [2606:4700:4700::1111]:443 HTTP/1.1', wire.sent)
+                else:
+                    self.assertEqual(wire.sent, b'\x05\x01\x00\x05\x01\x00\x04'
+                                     + socket.inet_pton(socket.AF_INET6, address) + (443).to_bytes(2, 'big'))
+                self.assertNotIn(b'origin.example', wire.sent)
+
+    def test_socks4a_with_only_ipv6_fails_before_proxy_dial(self):
+        with patch.object(socket, 'create_connection') as dial:
+            with self.assertRaises(OSError):
+                yakala._proxy_open(('socks4a', 'proxy.example', 1234, '', ''), None,
+                                   'origin.example', 80, [self.answer('2606:4700:4700::1111')])
+        dial.assert_not_called()
+
+    def test_rejected_numeric_tunnels_try_only_other_validated_addresses(self):
+        first, second = self.Wire(b'HTTP/1.1 403 Denied\r\n\r\n'), self.Wire()
+        with patch.object(socket, 'create_connection', side_effect=[first, second]) as dial:
+            result, _ = yakala._proxy_open(('http', 'proxy.example', 1234, '', ''), None,
+                                           'origin.example', 80,
+                                           [self.answer(PUBLIC), self.answer('1.1.1.1')])
+        self.assertIs(result, second)
+        self.assertTrue(first.closed)
+        self.assertEqual(dial.call_count, 2)
+        self.assertIn(b'CONNECT 8.8.8.8:80 ', first.sent)
+        self.assertIn(b'CONNECT 1.1.1.1:80 ', second.sent)
+        self.assertNotIn(b'origin.example', first.sent + second.sent)
+
+    def test_plain_http_refused_tunnel_has_no_forward_or_direct_fallback(self):
+        wire = self.Wire(b'HTTP/1.1 403 Denied\r\n\r\n')
+        with patch.object(socket, 'create_connection', return_value=wire) as dial:
+            with self.assertRaises(OSError):
+                yakala._proxy_open(('http', 'proxy.example', 1234, '', ''), None,
+                                   'origin.example', 80, [self.answer(PUBLIC)])
+        self.assertTrue(wire.closed)
+        dial.assert_called_once()
+        self.assertNotIn(b'GET ', wire.sent)
+        self.assertNotIn(b'origin.example', wire.sent)
 
 
 class UserProxyChainTest(unittest.TestCase):
@@ -345,21 +420,22 @@ class UserProxyChainTest(unittest.TestCase):
         self.assertIn(b'Acik makale metni.', tunnel)
         self.assertIn(b'Acik makale metni.', forward)
         login = 'Basic ' + base64.b64encode(b'kullanici:p@ss').decode()  # the user's proxy login goes along
-        self.assertEqual(self.upstream.asked, [('http', 'CONNECT', 'ornek.example:443', login),
-                                               ('http', 'GET', 'http://ornek.example/duz?a=1', login)])
+        self.assertEqual(self.upstream.asked, [('http', 'CONNECT', PUBLIC + ':443', login),
+                                               ('http', 'CONNECT', PUBLIC + ':80', login)])
+        self.assertEqual([h['Host'] for h in self.pages.headers], ['ornek.example', 'ornek.example'])
+        self.assertTrue(all('Proxy-Authorization' not in h for h in self.pages.headers))
         for reply in refused:
             self.assertTrue(reply.startswith(b'HTTP/1.1 403'), reply[:80])
         self.assertEqual(self.pages.hits, {'public': ['/tunel', '/duz?a=1'], 'secret': []})
         self.assertIn('https://ic-ag.example:443/', guard.blocked)
 
-    def test_socks_proxies_get_the_checked_address_or_the_name(self):
-        """socks5/socks4 clients resolve names themselves: the guard hands them the checked address.
-        socks5h/socks4a resolve at the proxy: the name goes, as through an HTTP proxy."""
+    def test_socks_proxies_always_get_the_checked_address(self):
+        """Remote-DNS settings also receive a numeric destination, never a second name lookup."""
         cases = (('socks5://127.0.0.1:%d', ('socks5', 1, PUBLIC, 443, None)),
-                 ('socks5h://127.0.0.1:%d', ('socks5', 3, 'ornek.example', 443, None)),
-                 ('socks5h://kim:gizli@127.0.0.1:%d', ('socks5', 3, 'ornek.example', 443, 'kim:gizli')),
+                 ('socks5h://127.0.0.1:%d', ('socks5', 1, PUBLIC, 443, None)),
+                 ('socks5h://kim:gizli@127.0.0.1:%d', ('socks5', 1, PUBLIC, 443, 'kim:gizli')),
                  ('socks4://127.0.0.1:%d', ('socks4', PUBLIC, 443, '')),
-                 ('socks4a://127.0.0.1:%d', ('socks4', 'ornek.example', 443, '')))
+                 ('socks4a://127.0.0.1:%d', ('socks4', PUBLIC, 443, '')))
         for proxy, expected in cases:
             with self.subTest(proxy=proxy.split(':')[0]):
                 del self.upstream.asked[:], self.pages.hits['public'][:]
@@ -376,6 +452,28 @@ class UserProxyChainTest(unittest.TestCase):
                 self.assertEqual(self.upstream.asked, [expected, expected[:-2] + (80, expected[-1])])
                 self.assertEqual((self.pages.hits['public'], guard.blocked), (['/socks', '/duz'], ['https://ic-ag.example:443/']))
         self.assertEqual(self.pages.hits['secret'], [])
+
+    def test_remote_dns_proxies_never_resolve_rebound_target_again(self):
+        """Real proxy sockets: a second hostname resolution would hit the secret server."""
+        for scheme in ('http', 'socks4a', 'socks5h'):
+            for method in ('GET', 'CONNECT'):
+                with self.subTest(scheme=scheme, method=method):
+                    self.upstream.asked.clear()
+                    self.pages.hits['public'].clear()
+                    self.pages.hits['secret'].clear()
+                    port, _ = self.guard({'all': '%s://127.0.0.1:%d' % (scheme, self.upstream.port)})
+                    dns, dial = self.pages.network(rebound=('rebind.example',))
+                    authority = 'rebind.example:%d' % self.pages.secret
+                    request = ('GET http://%s/rebind HTTP/1.1\r\n\r\n' % authority).encode()
+                    follow = b''
+                    if method == 'CONNECT':
+                        request = ('CONNECT %s HTTP/1.1\r\n\r\n' % authority).encode()
+                        follow = b'GET /rebind HTTP/1.1\r\nHost: rebind.example\r\nConnection: close\r\n\r\n'
+                    with dns, dial:
+                        reply = ask(port, request, follow)
+                    self.assertEqual(self.pages.hits['secret'], [], self.upstream.asked)
+                    self.assertIn(b'Acik makale metni.', reply)
+                    self.assertEqual(self.pages.hits['public'], ['/rebind'])
 
     def test_bypass_list_goes_direct_and_still_through_the_gate(self):
         port, _ = self.guard({'http': 'http://127.0.0.1:%d' % self.upstream.port, 'no': 'ornek.example,127.0.0.1'})
@@ -400,7 +498,7 @@ class UserProxyChainTest(unittest.TestCase):
                     reply = ask(port, b'CONNECT ornek.example:443 HTTP/1.1\r\n\r\n')
                 self.assertTrue(reply.startswith(b'HTTP/1.1 502'), reply[:80])
                 self.assertEqual(guard.blocked, [])
-        self.assertEqual(self.upstream.asked, [('http', 'CONNECT', 'ornek.example:443', None)])  # only the refusing one
+        self.assertEqual(self.upstream.asked, [('http', 'CONNECT', PUBLIC + ':443', None)])  # only the refusing one
         self.assertEqual(self.pages.hits, {'public': [], 'secret': []})
 
 
@@ -459,6 +557,7 @@ class GuardedHelperTest(unittest.TestCase):
     """A real helper process through `_run`: what Defuddle does with ALL_PROXY, end to end."""
 
     def setUp(self):
+        self.state = approved_test_state(self)
         self.pages = Pages(self)
         tmp = tempfile.TemporaryDirectory(prefix='yakala-egress-')
         self.addCleanup(tmp.cleanup)
@@ -480,7 +579,7 @@ class GuardedHelperTest(unittest.TestCase):
         vault.mkdir()
         card = yakala.find_card(vault, yakala.capture(vault, url='http://ornek.example/yonlendir')['id'])
         with dns, dial:
-            text, method, note = yakala.extract(vault, card, dict(NO_TOOLS, npx='npx'))
+            text, method, note = yakala.extract(vault, card, dict(NO_TOOLS, npx='npx'), state=self.state)
         self.assertEqual((text, method), (None, None))
         self.assertIn('yerel veya ozel bir ag adresine yonlendirdi', note)
         self.assertEqual(self.pages.hits['secret'], [])
@@ -490,7 +589,7 @@ class GuardedHelperTest(unittest.TestCase):
         dns, dial = self.pages.network()
         info = {}
         with dns, dial:
-            text = yakala.via_defuddle('http://ornek.example/acik', dict(NO_TOOLS, npx='npx'), info)
+            text = yakala.via_defuddle('http://ornek.example/acik', dict(NO_TOOLS, npx='npx'), info, state=self.state)
         self.assertIn('Acik makale metni.', text)
         self.assertEqual((self.pages.hits['public'], info.get('ag_engeli')), (['/acik'], None))
 
@@ -501,18 +600,18 @@ class GuardedHelperTest(unittest.TestCase):
         dns, dial = self.pages.network()
         info, page = {}, {}
         with dns, dial, patch.dict(os.environ, {'HTTP_PROXY': 'http://127.0.0.1:%d' % upstream.port}):
-            self.assertIsNone(yakala.via_defuddle('http://ornek.example/yonlendir', dict(NO_TOOLS, npx='npx'), info))
-            text = yakala.via_defuddle('http://ornek.example/acik', dict(NO_TOOLS, npx='npx'), page)
+            self.assertIsNone(yakala.via_defuddle('http://ornek.example/yonlendir', dict(NO_TOOLS, npx='npx'), info, state=self.state))
+            text = yakala.via_defuddle('http://ornek.example/acik', dict(NO_TOOLS, npx='npx'), page, state=self.state)
         self.assertEqual((self.pages.hits['secret'], info.get('ag_engeli')), ([], True))
         self.assertIn('Acik makale metni.', text)
-        self.assertEqual([item[2] for item in upstream.asked], ['http://ornek.example/yonlendir', 'http://ornek.example/acik'])
+        self.assertEqual([item[2] for item in upstream.asked], [PUBLIC + ':80', PUBLIC + ':80'])
 
     def test_no_proxy_list_cannot_send_the_helper_around_the_guard(self):
         # Kept, NO_PROXY would send the redirect hop to 127.0.0.1 straight past the guard.
         dns, dial = self.pages.network()
         info = {}
         with dns, dial, patch.dict(os.environ, {'NO_PROXY': 'localhost,127.0.0.1'}):
-            self.assertIsNone(yakala.via_defuddle('http://ornek.example/yonlendir', dict(NO_TOOLS, npx='npx'), info))
+            self.assertIsNone(yakala.via_defuddle('http://ornek.example/yonlendir', dict(NO_TOOLS, npx='npx'), info, state=self.state))
         self.assertEqual((self.pages.hits, info.get('ag_engeli')), ({'public': ['/yonlendir'], 'secret': []}, True))
 
 
@@ -556,6 +655,7 @@ class HelperEnvironmentTest(unittest.TestCase):
                  (yakala.youtube_tracks, (video, {'yt_dlp': 'yt-dlp'}, work.name)),
                  (yakala.via_audio, (video, {'yt_dlp': 'yt-dlp', 'whisper': 'whisper'}, work.name)))
         public = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (PUBLIC, 443))]
+        state = approved_test_state(self)
         envs = {}
         with without_proxies(), patch.dict(os.environ, extra or {}), \
                 patch('urllib.request.getproxies', return_value={}), \
@@ -563,11 +663,11 @@ class HelperEnvironmentTest(unittest.TestCase):
             for function, args in calls:
                 if os.name == 'nt' and sys.platform == 'win32':
                     with patch.object(yakala, '_windows_run', return_value=(1, '', '')) as run:
-                        function(*args)
+                        function(*args, **({'state': state} if function is yakala.via_defuddle else {}))
                     envs[function.__name__] = run.call_args_list[0].args[3]
                 else:
                     with patch('subprocess.run', side_effect=subprocess.TimeoutExpired(cmd='cmd', timeout=1)) as run:
-                        function(*args)
+                        function(*args, **({'state': state} if function is yakala.via_defuddle else {}))
                     envs[function.__name__] = run.call_args_list[0].kwargs['env']
         return envs
 

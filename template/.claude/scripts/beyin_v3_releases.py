@@ -151,7 +151,18 @@ def compare(current, metadata):
                 verification='metadata_only')
 
 
-def check(vault):
+def pending_transaction(state):
+    # The journal may contain copies of managed files. Its presence is sufficient.
+    return os.path.lexists(Path(state) / 'update-journal.json')
+
+
+def recovery_status():
+    return {'status': 'recovery_required', 'command': 'beyin.py recover'}
+
+
+def check(vault, state=None):
+    if state is not None and pending_transaction(state):
+        return recovery_status()
     metadata, _ = fetch_metadata()
     if metadata is None: raise ReleaseError('unexpected_not_modified')
     return compare(installed_version(vault), metadata)
@@ -238,6 +249,7 @@ def predates_install(vault, value, now, key='checked_at'):
 def status(vault, state, now=None):
     now = time.time() if now is None else now
     try:
+        if pending_transaction(state): return recovery_status()
         if not preferences(state)['effective']: return {'status': 'disabled'}
         value = cache(state)
         if not value: return {'status': 'unknown'}
@@ -271,7 +283,7 @@ def coordination(state):
 def claim_worker(state, now=None, vault=None):
     now = time.time() if now is None else now
     try:
-        if not preferences(state)['effective']: return False
+        if pending_transaction(state) or not preferences(state)['effective']: return False
         value = cache(state)
         # Clock reversal resets cadence, never suppresses checks indefinitely.
         due = value.get('next_check_at', 0)

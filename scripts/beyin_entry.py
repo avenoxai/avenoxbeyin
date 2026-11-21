@@ -28,6 +28,7 @@ def update_lines(result):
                  'Guncelle: ' + command + ' beyin.py update']
     else:
         messages = {'disabled': 'Surum bildirimleri kapali.', 'unknown': 'Surum kontrolu henuz yapilmadi.',
+                'recovery_required': 'Tamamlanmamis guncelleme veya geri alma var. Kurtarmak icin: beyin.py recover',
                 'unavailable': 'Surum kontrolu yapilamadi; guncellik dogrulanmadi.',
                 'up_to_date': 'Beyin guncel: ' + str(result.get('current_version', '?')),
                 'ahead': 'Kurulu surum resmi stable surumden ileride.'}
@@ -248,6 +249,29 @@ def human_result(result, command, installed_version=None):
             return format_human(result)
         except Exception:
             return json.dumps(result, ensure_ascii=False, indent=2)
+    if command == 'selftest':
+        status = result.get('status')
+        if status == 'error':
+            return 'Oz-denetim tamamlanamadi: ' + plain_text(result.get('message', ''))
+        if result.get('added'):
+            return 'Soru eklendi: ' + plain_text(result.get('questions_path', ''))
+        if status == 'no_questions':
+            return 'Vault oz-denetim (selftest): soru dosyasi bulunamadi (' + plain_text(result.get('questions_path')) + '). ' + plain_text(result.get('hint', ''))
+        total = result.get('total', 0)
+        passed = result.get('passed', 0)
+        missed = result.get('missed', [])
+        ctrl_total = result.get('controls_total', 0)
+        ctrl_passed = result.get('controls_passed', 0)
+        regressed = result.get('regressed', [])
+        lines = [
+            f'Vault oz-denetim (selftest): toplam {total} soru, gecen {passed}, kacan {len(missed)}.',
+            f'Kontroller: {ctrl_passed}/{ctrl_total} basarili.'
+        ]
+        if regressed:
+            lines.append(f'UYARI: {len(regressed)} soru onceki kosuya gore geriledi (eskiden geciyordu, simdi kacti)!')
+        for m in missed[:3]:
+            lines.append(f'  - Soru: "{m.get("query")}" -> Beklenen: {m.get("expected_source")}')
+        return '\n'.join(lines)
     if command == 'audit':
         try:
             from beyin_v3_audit import format_audit_human
@@ -272,6 +296,16 @@ def human_result(result, command, installed_version=None):
         if not result.get('config_valid', True):
             lines.append('Ayar dosyasi bozuk; jev.json elle duzeltilmeli.')
         return '\n'.join(lines + jev_lines(result))
+    if command == 'jev-audit':
+        audit = result.get('audit', {})
+        lines = ['Jev auto_context denetimi: ' + ('acik' if audit.get('enabled') else 'kapali'),
+                 'Ayar dosyasi: ' + result.get('path', '?'),
+                 'Log dosyasi: ' + result.get('log_path', '?'),
+                 'Not puanlari: ' + ('dahil' if audit.get('include_scores') else 'haric'),
+                 'Topical puani: ' + ('dahil' if audit.get('include_topical') else 'haric')]
+        if result.get('changed'):
+            lines.insert(0, 'Jev auto_context denetimi ' + ('etkinlestirildi' if audit.get('enabled') else 'devre disi birakildi'))
+        return '\n'.join(lines)
     if command == 'preferences':
         prefs = result['preferences']
         lines = ['Otomatik kontrol: ' + ('acik' if prefs['auto_sync'] else 'kapali'),
@@ -447,6 +481,15 @@ def human_result(result, command, installed_version=None):
                 cm = ascii_text(jev.get('context_mode', (result.get('preferences') or {}).get('context_mode', '?')))
                 lines.append("Jev otomatik baglam yalniz 'context_mode: turn' ile calisir; su an '" +
                              cm + "' modunda. Etkinlestirmek icin: beyin.py preferences --context-mode turn")
+        # Context-fill reminder (issue #685)
+        ctx_fill = result.get('context_fill') or {}
+        if ctx_fill.get('enabled'):
+            lines.append('Bağlam doluluk hatırlatması: aktif (ilk eşik ' + str(ctx_fill.get('first_threshold', 150000)) +
+                         ', tekrar ' + str(ctx_fill.get('repeat_threshold', 75000)) + ' token)')
+        elif ctx_fill.get('enabled') is False:
+            lines.append('Bağlam doluluk hatırlatması: kapali')
+        elif ctx_fill.get('status') == 'invalid':
+            lines.append('Bağlam doluluk hatırlatması: ayar gecersiz (' + str(ctx_fill.get('error', 'unknown')) + ')')
         if result.get('secrets_redacted'):
             lines.append('Sir suzgeci ' + str(result['secrets_redacted']) + ' eslesmeyi [REDACTED] olarak yazdi.')
         cov = result.get('receipt_coverage')
@@ -672,10 +715,22 @@ def human_result(result, command, installed_version=None):
         if status in ('needs_attention', 'pending'):
             lines.append('Ajanina "beyin doktor" diyerek ayrintiyi inceletebilirsin.')
         return '\n'.join(lines + update_lines(result.get('updates', {})))
+    if status == 'recovery_required':
+        return '\n'.join(update_lines(result))
     if result.get('verification') == 'metadata_only':
         return '\n'.join(update_lines(result) + ['Yalniz surum bilgisi kontrol edildi; paket kurulumu denenmedi.'])
     if status == 'updated':
         message = 'Beyin guncellendi: ' + str(result.get('from_version', installed_version or '?')) + ' -> ' + str(result['version'])
+        if result.get('after_update_steps'):
+            step_lines = ['Guncelleme sonrasi adimlar:']
+            for step in result['after_update_steps']:
+                text = step.get('text') or step.get('summary', '')
+                cmd = step.get('command')
+                line = '  - ' + text
+                if cmd:
+                    line += f' ({cmd})'
+                step_lines.append(line)
+            message += '\n' + '\n'.join(step_lines)
         if result.get('removed'):
             message += '\nHaric tutulan bilesenler kaldirildi: ' + ', '.join(result['removed']) + '.'
         if result.get('preserved_excluded'):
@@ -911,7 +966,7 @@ def main(argv=None):
                 parser.error('--dismiss cannot use --check or --package')
             if args.command == 'update':
                 import beyin_v3_releases as releases
-                if args.metadata_only: result = releases.check(vault)
+                if args.metadata_only: result = releases.check(vault, state)
                 elif args.dismiss is not None: result = releases.dismiss(vault, state, args.dismiss)
                 else: result = updater.update(vault, state, args.package, args.check)
             elif args.command == 'rollback': result = updater.rollback(vault, state)
