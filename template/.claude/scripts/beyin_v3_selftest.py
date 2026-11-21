@@ -19,24 +19,18 @@ import beyin_v3 as runtime
 def _safe_vault_path(vault_root, path_arg, must_exist=True):
     vault = Path(vault_root).expanduser().resolve()
     raw = Path(path_arg)
-    if raw.is_absolute():
-        resolved = raw.resolve()
-    else:
-        resolved = (vault / raw).resolve()
+    resolved = raw if raw.is_absolute() else vault / raw
     if not resolved.is_relative_to(vault) or ".." in resolved.parts:
         raise ValueError("path traversal or outside vault rejected")
-
     cursor = resolved
-    boundary = vault.parent
-    while cursor != boundary and cursor != cursor.parent:
+    while cursor != vault:
         try:
-            info = os.lstat(cursor)
-            if stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_reparse_tag", 0)):
-                raise ValueError("symlink path rejected")
-        except OSError:
+            info = cursor.lstat()
+        except FileNotFoundError:
             pass
-        if cursor == vault:
-            break
+        else:
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
+                raise ValueError("symlink path rejected")
         cursor = cursor.parent
 
     if must_exist and not resolved.is_file():
@@ -50,44 +44,16 @@ def _normal(text):
 
 def add_question(vault, questions_path, query, source, sentence=None):
     vault = Path(vault).expanduser().resolve()
-    if questions_path is None:
-        q_path = vault / "knowledge/v3/selftest.json"
-    else:
-        q_path = Path(questions_path)
-        if not q_path.is_absolute():
-            q_path = vault / q_path
-    resolved = q_path.resolve()
-    if not resolved.is_relative_to(vault) or ".." in resolved.parts:
-        raise ValueError("questions path traversal rejected")
-
-    cursor = resolved
-    boundary = vault.parent
-    while cursor != boundary and cursor != cursor.parent:
-        try:
-            info = os.lstat(cursor)
-            if stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_reparse_tag", 0)):
-                raise ValueError("symlink questions path rejected")
-        except OSError:
-            pass
-        if cursor == vault:
-            break
-        cursor = cursor.parent
-
+    resolved = _safe_vault_path(vault, questions_path or "knowledge/v3/selftest.json", False)
     # Validate source safely
     src_resolved = _safe_vault_path(vault, source, must_exist=True)
     rel_source = src_resolved.relative_to(vault).as_posix()
 
     data = {"questions": [], "controls": []}
     if resolved.is_file():
-        try:
-            data = json.loads(resolved.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                data = {"questions": [], "controls": []}
-        except Exception:
-            data = {"questions": [], "controls": []}
-
-    if "questions" not in data or not isinstance(data["questions"], list):
-        data["questions"] = []
+        data = json.loads(resolved.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not isinstance(data.get("questions"), list):
+            raise ValueError("invalid questions file")
 
     q_item = {"query": str(query), "source": rel_source}
     if sentence:
@@ -113,29 +79,8 @@ def run_selftest(vault, state, questions_path=None, limit=5, audience="internal"
     vault = Path(vault).expanduser().resolve()
     state = Path(state).expanduser().resolve()
 
-    if questions_path is None:
-        q_path = vault / "knowledge/v3/selftest.json"
-    else:
-        q_path = Path(questions_path)
-        if not q_path.is_absolute():
-            q_path = vault / q_path
-
     try:
-        resolved_q = q_path.resolve()
-        if not resolved_q.is_relative_to(vault) or ".." in resolved_q.parts:
-            return {"status": "error", "message": "invalid questions path traversal"}
-        cursor = resolved_q
-        boundary = vault.parent
-        while cursor != boundary and cursor != cursor.parent:
-            try:
-                info = os.lstat(cursor)
-                if stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_reparse_tag", 0)):
-                    return {"status": "error", "message": "symlink questions path rejected"}
-            except OSError:
-                pass
-            if cursor == vault:
-                break
-            cursor = cursor.parent
+        resolved_q = _safe_vault_path(vault, questions_path or "knowledge/v3/selftest.json", False)
     except Exception as exc:
         return {"status": "error", "message": str(exc)}
 
@@ -151,6 +96,11 @@ def run_selftest(vault, state, questions_path=None, limit=5, audience="internal"
     except Exception as exc:
         return {"status": "error", "message": f"failed to parse questions JSON: {exc}"}
 
+    if not isinstance(data, dict) or not isinstance(data.get("questions"), list):
+        return {"status": "error", "message": "invalid questions file"}
+    if any(not isinstance(q, dict) or not isinstance(q.get("query"), str)
+           or not isinstance(q.get("source"), str) for q in data["questions"]):
+        return {"status": "error", "message": "invalid question"}
     questions = data.get("questions", [])
     controls = data.get("controls", [])
 
@@ -170,8 +120,8 @@ def run_selftest(vault, state, questions_path=None, limit=5, audience="internal"
 
         try:
             candidates = store.candidates(query, audience=audience, limit=limit)
-        except Exception:
-            candidates = []
+        except Exception as exc:
+            return {"status": "error", "message": f"retrieval failed: {exc}"}
 
         got_sources = [c.get("source") for c in candidates]
         found = expected_source in got_sources
@@ -211,8 +161,8 @@ def run_selftest(vault, state, questions_path=None, limit=5, audience="internal"
         ctrl_total += 1
         try:
             candidates = store.candidates(ctrl_query, audience=audience, limit=limit)
-        except Exception:
-            candidates = []
+        except Exception as exc:
+            return {"status": "error", "message": f"retrieval failed: {exc}"}
         if not candidates:
             ctrl_passed += 1
         else:
@@ -231,7 +181,7 @@ def run_selftest(vault, state, questions_path=None, limit=5, audience="internal"
             pass
 
     previous_passed_queries = set()
-    if previous_data and isinstance(previous_data.get("passed_queries"), list):
+    if isinstance(previous_data, dict) and isinstance(previous_data.get("passed_queries"), list):
         previous_passed_queries = set(previous_data["passed_queries"])
 
     passed_query_set = {q.get("query") for q in questions if q.get("query") not in [m["query"] for m in missed]}
