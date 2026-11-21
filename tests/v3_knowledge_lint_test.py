@@ -857,12 +857,46 @@ And another link on line 8: [[Components/Auth]].
         (self.vault / "sub dir/target note.md").write_text("# Target\n## Heading\n", encoding="utf-8")
         (self.vault / "sub/sibling.md").write_text("# Sibling\n", encoding="utf-8")
         (self.vault / "sub/source.md").write_text(
-            "# Source\n[Not](sub%20dir/target%20note.md#Heading)\n[Sibling](../sub/sibling.md)\n",
+            "# Source\n[Not](../sub%20dir/target%20note.md#Heading)\n[Sibling](../sub/sibling.md)\n",
             encoding="utf-8",
         )
         result = linter.lint_vault(self.vault)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["broken_links_count"], 0)
+
+    def test_markdown_exact_relative_paths_and_private_targets(self):
+        self._write_notes(self.vault, {
+            'same.md': '# Root', 'sub/same.md': '# Sibling', 'only-root.md': '# Root only',
+            'hidden.md': '# Public root', 'sub/hidden.md': '---\nvisibility: private\n---\n# Canary',
+            'sub/source.md': '[a](same.md#Sibling) [b](/same.md#Root) [c](only-root.md) '
+                             '[d](missing/other.md) [e](../only-root.md) [f](../../same.md) '
+                             '[g](hidden.md) [h](photo.png) [i](/photo.png)',
+            'other.md': '# Other'
+        })
+        (self.vault / 'photo.png').write_bytes(b'picture')
+        result = self._lint_cli()
+        self.assertEqual({link['target'] for link in result['broken_links']},
+                         {'only-root.md', 'missing/other.md', '../../same.md', 'photo.png'})
+        self.assertEqual(result['withheld_targets_count'], 1)
+        self.assertNotIn('sub/hidden.md', json.dumps(result))
+
+    def test_lint_and_moc_apply_retirement_without_exposing_replacements(self):
+        self._write_notes(self.vault, {
+            'knowledge/old.md': '---\nid: old-id\n---\n# OldCanary',
+            'knowledge/retired.md': '---\nstatus: ArŞİv\n---\n# RetiredCanary',
+            'knowledge/private.md': '---\nvisibility: Private\n---\n# PrivateCanary',
+            'knowledge/active.md': '# Current',
+            'knowledge/current.md': '[[old]] [history](retired.md) [[private]] [[active]]',
+            'projects/other/new.md': '---\nproject: other\nvisibility: private\nsupersedes: old-id\n---\n# NewCanary',
+            'projects/other/fake.md': '---\ntrust: untrusted\nsupersedes: active\n---\n# FakeCanary',
+        })
+        result = self._lint_cli('--folder', 'knowledge')
+        self.assertEqual((result['broken_links_count'], result['withheld_targets_count']), (0, 3))
+        self.assertNotIn('old.md', json.dumps(result))
+        linter.generate_moc(self.vault, 'knowledge')
+        moc = (self.vault / 'knowledge/MOC.md').read_text(encoding='utf-8')
+        self.assertIn('knowledge/active.md', moc)
+        self.assertNotIn('Canary', moc)
 
     def test_markdown_links_ignored_external_anchors_and_code(self):
         (self.vault / "a.md").write_text(
