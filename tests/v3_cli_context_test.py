@@ -33,6 +33,53 @@ class ContextRefreshTest(unittest.TestCase):
     def run_cli(self, *args):
         return subprocess.run([sys.executable,str(ROOT/'scripts/beyin_v3.py'),'--vault',str(self.vault),'--state',str(self.state),*args],capture_output=True,text=True,encoding='utf-8',env=inherited_env())
 
+    def test_context_reports_unmatched_terms_without_changing_admission(self):
+        self.write('Synthetic supplier imports products and sells them.')
+        for flags in ([], ['--no-sync']):
+            output = json.loads(self.run_cli('context', 'melamin supplier', *flags).stdout)
+            self.assertFalse(output['abstained'])
+            self.assertEqual(output['unmatched_terms'], ['melamin'])
+            self.assertEqual([r['id'] for r in output['records']], ['calibration'])
+
+    def test_unmatched_terms_are_about_delivered_records_not_hidden_vault(self):
+        self.write('Synthetic supplier.')
+        private = self.vault / 'notes/private.md'
+        private.write_text('---\n{"visibility":"private"}\n---\nmelamin supplier', encoding='utf-8')
+        output = json.loads(self.run_cli('context', 'melamin supplier').stdout)
+        self.assertEqual(output['unmatched_terms'], ['melamin'])
+        output = json.loads(self.run_cli('context', 'melamin supplier', '--budget-chars', '0').stdout)
+        self.assertTrue(output['abstained'])
+        self.assertEqual(output['unmatched_terms'], ['melamin', 'supplier'])
+
+    def test_unmatched_terms_do_not_use_clipped_text(self):
+        self.write('supplier ' * 2000 + ' zircon')
+        output = json.loads(self.run_cli('context', 'supplier zircon', '--budget-chars', '1500').stdout)
+        self.assertTrue(output['records'][0]['text_truncated'])
+        self.assertNotIn('zircon', output['records'][0]['text'])
+        self.assertEqual(output['unmatched_terms'], ['zircon'])
+
+    def test_unmatched_terms_cover_raw_multiline_text(self):
+        self.write('supplier\nzircon\tmelamin\n')
+        output = json.loads(self.run_cli('context', 'supplier zircon melamin').stdout)
+        self.assertEqual(output['unmatched_terms'], [])
+
+    def test_unmatched_terms_cover_delivered_metadata_values(self):
+        metadata = {'id': 'calibration', 'kind': 'fact', 'project': 'demo',
+                    'visibility': 'internal', 'title': 'zircon',
+                    'aliases': ['cobalt'], 'facts': {'material': 'copper\nnickel'}}
+        self.source.write_text('---\n' + json.dumps(metadata) + '\n---\nsupplier\n',
+                               encoding='utf-8')
+        result = self.run_cli('context', 'supplier zircon cobalt copper nickel melamin')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual([r['id'] for r in output['records']], ['calibration'])
+        self.assertEqual(output['unmatched_terms'], ['melamin'])
+
+    def test_unmatched_terms_use_normalized_tokens_and_ignore_stopwords(self):
+        self.write('İTHAL supplier.')
+        output = json.loads(self.run_cli('context', 'ithal supplier and melamin melamin').stdout)
+        self.assertEqual(output['unmatched_terms'], ['melamin'])
+
     def test_context_refreshes_external_edit_without_hook(self):
         self.write('Current synthetic calibration value CHANGED.')
         result = self.run_cli('context','synthetic calibration','--project','demo')

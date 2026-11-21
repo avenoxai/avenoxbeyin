@@ -651,6 +651,22 @@ def record_scope(record, scopes):
     return BLOCKED_SCOPE if blocked >= 0 else None
 
 
+def workspace_read_grant(record, project, scopes):
+    """An explicit read membership on one canonical record, never a write grant.
+
+    A homepage link merely points to a candidate; it cannot create this membership.
+    The source folder must also survive the current scope file's blocked boundaries.
+    """
+    readers = record.get("workspace_readers")
+    if (record.get("visibility") == "private" or not isinstance(project, str)
+            or not project.strip() or not isinstance(readers, list)
+            or any(not isinstance(value, str) or not value.strip() for value in readers)
+            or len(readers) != len(set(readers))
+            or project not in readers):
+        return False
+    return scopes is None or record_scope({"source": record.get("source")}, scopes) is not BLOCKED_SCOPE
+
+
 # Turkish is agglutinative, so exact token intersection loses "fark" against "farki" and
 # "not" against "notlar". Every token is replaced by ONE canonical stem, with the same
 # function on the query and the document side. Replacement, not expansion: the score stays
@@ -1080,7 +1096,9 @@ def _name_candidates(record):
     return candidates
 
 
-NAME_GENERIC_TERMS = _tokens("durum proje projeler not notlar karar kararlar arsiv sablon genel ozet guncel")
+_STOCK_RULE_TITLE_TERMS = _tokens("kural kurallar")
+_STOCK_RULE_HEADING = re.compile(r"^[ ]{0,3}#{1,6}[ \t]+(?:kural|kurallar)(?:[ \t]+#+)?[ \t]*\r?$", re.I | re.M)
+NAME_GENERIC_TERMS = _tokens("durum proje projeler not notlar karar kararlar arsiv sablon genel ozet guncel") | _STOCK_RULE_TITLE_TERMS
 
 
 def _name_match_score(record, terms):
@@ -1206,7 +1224,7 @@ class MemoryStore:
         if ".." in Path(value).parts:
             raise ValueError("source traversal rejected")
         path = self.vault_root / value
-        target = _resolved if path.is_relative_to(self.vault_root) else None
+        target = _resolved if _resolved is not None and path.is_relative_to(self.vault_root) else None
         if target is not None:
             # A file or directory can become a symlink after the scan's first read.
             # Reuse the realpath only while its vault-relative components stay real;
@@ -1291,6 +1309,11 @@ class MemoryStore:
         record.setdefault("visibility", "internal")
         if record["visibility"] not in ("public", "internal", "private"):
             raise ValueError("invalid visibility")
+        if "workspace_readers" in record:
+            readers = record["workspace_readers"]
+            if (not isinstance(readers, list) or any(not isinstance(value, str) or not value.strip()
+                                                     for value in readers) or len(set(readers)) != len(readers)):
+                raise ValueError("workspace_readers must be distinct nonempty workspace ids")
         supersedes = record.get("supersedes", [])
         if isinstance(supersedes, str):
             supersedes = [supersedes]
@@ -1788,13 +1811,16 @@ class MemoryStore:
 
         rejected_only inverts the rejection gate alone, for rejected_matches: the same
         scope applies to history that is looked up but never delivered. records lets a
-        caller that also needs the supersession set read the table once.
+        caller narrow the returned set. Homepage dependencies are resolved against
+        the full index, never just that subset. Ordinary subsets need no table scan.
         """
         if audience not in ("public", "internal", "private"):
             raise ValueError("invalid audience")
         if records is None:
             records = self._records()
-        records = self._homepage_policy(records, records)
+            records = self._homepage_policy(records, records)
+        else:
+            records = self._homepage_policy(records)
         allowed = {"public"} if audience == "public" else {"public", "internal"} if audience == "internal" else {"public", "internal", "private"}
         # Read only for an explicit project: the per-turn hook path passes none.
         scopes = read_project_scopes(self.vault_root) if project is not None else None
@@ -1808,11 +1834,12 @@ class MemoryStore:
                 continue
             if project is not None:
                 if scopes is None:
-                    if record.get("project") != project:
+                    if record.get("project") != project and not workspace_read_grant(record, project, scopes):
                         continue
                 else:
                     scope = record_scope(record, scopes)
-                    if scope != project and not (scope is None and scopes["shared_unscoped"]):
+                    if (scope != project and not (scope is None and scopes["shared_unscoped"])
+                            and not workspace_read_grant(record, project, scopes)):
                         continue
             try:
                 self._source(record["source"])
@@ -1886,7 +1913,17 @@ class MemoryStore:
                            if name_score else "")
             # Without a query term no count can score or reorder a record (snapshots, scoped
             # listings, the advisor's eligibility pass), so the note text is not tokenised.
-            counts = (count_cache.counts(record["text"] + " " + _json(record["facts"]) + " " + str(record.get("title", "")) + " " + alias_text + " " + source_stem)
+            title_text = str(record.get("title", ""))
+            title_terms = _tokens(title_text) if terms else set()
+            if title_terms and title_terms <= _STOCK_RULE_TITLE_TERMS:
+                # The stock heading alone is not a lexical topic (#811).
+                # Preserve actual rule mentions, scoped names and aliases.
+                title_text = ""
+            search_body = record["text"]
+            if terms and _fold(Path(record["source"]).stem) in ("kural", "kurallar"):
+                # The stock Markdown section label is structure, not body evidence.
+                search_body = _STOCK_RULE_HEADING.sub("", search_body)
+            counts = (count_cache.counts(search_body + " " + _json(record["facts"]) + " " + title_text + " " + alias_text + " " + source_stem)
                       if terms else Counter())
             for stopword in STOPWORDS & counts.keys():
                 del counts[stopword]
@@ -2176,7 +2213,7 @@ def optional_provider(enabled=False, factory=None):
 # created/modified are file dates beside updated_at, and the rest are defaults. Each costs every
 # delivered record its share of the budget, so the envelope leaves them out and the note text
 # keeps that room. A reader that needs a revision (task-update) reads it with `beyin.py context`.
-_BOOKKEEPING = ("source_sha256", "revision", "created", "modified", "visibility", "supersedes")
+_BOOKKEEPING = ("source_sha256", "revision", "created", "modified", "visibility", "supersedes", "workspace_readers")
 _DEFAULTS = {"kind": "note", "facts": {}, "project": None}
 
 

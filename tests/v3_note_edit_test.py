@@ -263,6 +263,33 @@ class NoteEditTest(unittest.TestCase):
                 self.engine.note_edit(request)
         self.assertEqual(path.read_bytes(), b'external after')
 
+    def test_cli_sha_only_omits_content_and_preserves_exact_hash(self):
+        raw = 'alpha\r\nçığ\n'.encode('utf-8')
+        self.write(raw=raw)
+        result = self.run_cli('note-read', None, 'Threads.md', '--sha-only')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {
+            'source': 'Threads.md', 'exists': True,
+            'sha256': hashlib.sha256(raw).hexdigest()})
+        default = self.run_cli('note-read', None, 'Threads.md')
+        self.assertEqual(json.loads(default.stdout)['content'], raw.decode('utf-8'))
+
+    def test_cli_sha_only_missing_and_must_exist(self):
+        result = self.run_cli('note-read', None, 'missing.md', '--sha-only')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {
+            'source': 'missing.md', 'exists': False, 'sha256': None})
+        result = self.run_cli('note-read', None, 'missing.md', '--sha-only', '--must-exist')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['status'], 'error')
+
+    def test_cli_sha_only_does_not_bypass_source_validation(self):
+        self.write(raw=b'\xff')
+        for source in ('Threads.md', '../outside.md'):
+            result = self.run_cli('note-read', None, source, '--sha-only')
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertEqual(json.loads(result.stdout)['status'], 'error')
+
     def test_cli_json_file_stdin_and_exit_codes(self):
         self.write()
         read = self.run_cli('note-read', None, 'Threads.md')
@@ -301,6 +328,11 @@ class NoteEditTest(unittest.TestCase):
         read = run('note-read', source, '--human')
         self.assertEqual(read.returncode, 0, read.stderr)
         self.assertEqual(json.loads(read.stdout)['content'], request['content'])
+        sha = run('note-read', source, '--sha-only', '--human')
+        self.assertEqual(sha.returncode, 0, sha.stderr)
+        expected = json.loads(read.stdout)
+        del expected['content']
+        self.assertEqual(json.loads(sha.stdout), expected)
         stale = run('note-edit', '--file', '-', payload=request)
         self.assertEqual(stale.returncode, 2, stale.stdout + stale.stderr)
         self.assertEqual(json.loads(stale.stdout)['status'], 'conflict')

@@ -522,6 +522,16 @@ class ReceiptViewIsolationTest(unittest.TestCase):
             self.assertIsNone(db.execute("SELECT 1 FROM sqlite_master WHERE name='receipt_views'").fetchone())
         self.assertEqual(before, {p: p.read_bytes() for p in self.vault.rglob('*') if p.is_file()})
 
+    def test_unrelated_duplicate_id_does_not_mask_committed_task_and_receipt(self):
+        text = subject.render({'id': 'duplicate', 'kind': 'note'}, 'Synthetic copy.')
+        self.write('notes/one.md', text)
+        self.write('notes/two.md', text)
+        task = self.engine.update_task('calibration-task', 1, {'status': 'waiting'})
+        receipt = self.engine.receipt('independent', 'Independent outcome.', ['notes/task.md'], 'codex')
+        self.assertEqual((task['status'], task['revision'], receipt['status']), ('waiting', 2, 'succeeded'))
+        for result in (task, receipt):
+            self.assertEqual([issue['id'] for issue in result['source_sync']['conflicts']], ['duplicate'])
+
     def test_unrelated_receipt_divergence_writes_keep_conflict_diagnostics(self):
         self.damage_view()
         source = self.vault / ('receipts/' + hashlib.sha256(b'initial').hexdigest() + '.md')
@@ -534,6 +544,12 @@ class ReceiptViewIsolationTest(unittest.TestCase):
             self.assertTrue(any(w.get('kind') == 'receipt_view' for w in result['source_sync']['warnings']))
         self.assertNotEqual(self.cli('context', 'Nebula calibration').returncode, 0)
         self.assertNotEqual(self.cli('history', 'calibration-task').returncode, 0)
+        import beyin_v3_hook as hook
+        hook.enqueue_event(self.vault, self.state, {'hook_event_name': 'SessionStart', 'session_id': 'local'}, 'codex')
+        drained = hook.drain_queue(self.vault, self.state)
+        self.assertEqual((drained['processed'], drained['pending']), (1, 0))
+        health = json.loads((self.state / 'hook-health.json').read_text(encoding='utf-8'))
+        self.assertEqual(health['sync']['conflicts'][0]['kind'], 'receipt_divergence')
 
     def test_retired_view_receipt_stays_hidden_after_clean_path_reuse(self):
         from beyin_v3_projections import latest_receipts, recent_receipts

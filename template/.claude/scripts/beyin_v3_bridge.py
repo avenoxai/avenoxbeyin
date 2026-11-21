@@ -153,7 +153,7 @@ def project_context(vault, state, project_id, project_name, budget=1200, today_i
     - Latest receipt of this project_id (receipt_checkpoints session match) by created_at;
       skipped when its source file is gone or it or any ref is private/untrusted. The gate is
       beyin_v3_projections.latest_receipts, shared with the vault SessionStart hook.
-    - Due tasks (due_at <= local today, active/waiting/inbox) of this project, after the retrieval
+    - Due tasks (due_at <= local today, normalized active/waiting/inbox) of this project, after the retrieval
       visibility/trust, supersession and source-freshness gates; sorted by due date, title.
     - Other due tasks: count only, never titles.
     - Whole lines only, within budget; no model call, no write.
@@ -192,10 +192,10 @@ def project_context(vault, state, project_id, project_name, budget=1200, today_i
                     continue
                 if isinstance(record, dict) and _visible(record):
                     records.append(record)
-            from beyin_v3 import resolve_supersedes  # ids, paths and [[links]] alike (#201)
+            from beyin_v3 import _status_word, resolve_supersedes  # ids, paths and [[links]] alike (#201)
             superseded = resolve_supersedes(records)[0]
             for record in records:
-                if record.get('kind') != 'task' or record.get('status') not in ('active', 'waiting', 'inbox') or record.get('id') in superseded:
+                if record.get('kind') != 'task' or _status_word(record) not in ('active', 'waiting', 'inbox') or record.get('id') in superseded:
                     continue
                 try:
                     due = date.fromisoformat(str(record.get('due_at') or '')[:10]).isoformat()
@@ -203,7 +203,13 @@ def project_context(vault, state, project_id, project_name, budget=1200, today_i
                     continue
                 if due > today or not _fresh(vault, record):
                     continue
-                if wanted and str(record.get('project') or '').strip().casefold() == wanted:
+                # An explicit identity is authoritative, including a mismatch or invalid value.
+                # Display-name fallback is only for legacy records without this field.
+                if 'project_id' in record:
+                    match = isinstance(record['project_id'], str) and record['project_id'] == project_id
+                else:
+                    match = bool(wanted and str(record.get('project') or '').strip().casefold() == wanted)
+                if match:
                     title = _one_line(record.get('title'), 160)
                     if title:
                         current.append((due, title, _one_line(record.get('next_action'), 200)))
@@ -360,6 +366,112 @@ def _write_global_json(path, data):
     # Replace the referent, not the link, matching the previous write_bytes semantics.
     atomic(Path(path).resolve(), json.dumps(data, indent=2, ensure_ascii=False) + '\n')
 
+
+def hook_arguments(command: str) -> list:
+    """Arguments of one installed hook command: POSIX shell text or the Windows EncodedCommand."""
+    import base64
+    import re
+    import shlex
+    match = re.search(r"-EncodedCommand\s+([A-Za-z0-9+/=]+)", command, re.I)
+    if match:
+        try:
+            script = base64.b64decode(match.group(1), validate=True).decode("utf-16le")
+        except (ValueError, UnicodeError):
+            return []
+        return [item.replace("''", "'") for item in re.findall(r"'((?:[^']|'')*)'", script)]
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return []
+
+def global_bridge_paths(vault: Path, state: Path, only_harness=None) -> dict | None:
+    """Read only global bridge paths owned by this state, without executing commands.
+
+    A different vault may legitimately own the user's global bridge. Inspect only
+    commands explicitly bound to this state; absent or invalid settings stay optional.
+    """
+    here, owner = vault.resolve(), state.resolve()
+    expected = (here / '.claude/scripts/beyin_v3_bridge.py').resolve()
+    stale, checked = [], 0
+    for harness in ('claude', 'codex', 'antigravity'):
+        if only_harness and harness != only_harness:
+            continue
+        try:
+            data = json.loads(global_hook_path(harness).read_text(encoding='utf-8'))
+        except (OSError, ValueError, UnicodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        events = data.get('beyin-v3-bridge' if harness == 'antigravity' else 'hooks', {})
+        for event, groups in events.items() if isinstance(events, dict) else ():
+            for group in groups if isinstance(groups, list) else ():
+                if not isinstance(group, dict):
+                    continue
+                handlers = group.get('hooks', [group])
+                for handler in handlers if isinstance(handlers, list) else ():
+                    if not isinstance(handler, dict):
+                        continue
+                    command = (handler.get('commandWindows', handler.get('command'))
+                               if sys.platform == 'win32' else handler.get('command'))
+                    if not isinstance(command, str):
+                        continue
+                    arguments = hook_arguments(command)
+                    script = next((arg for arg in arguments
+                                   if arg.replace('\\', '/').endswith('/beyin_v3_bridge.py')), None)
+                    if script is None:
+                        continue
+                    values = {}
+                    for flag in ('--state', '--vault'):
+                        if arguments.count(flag) == 1 and arguments.index(flag) < len(arguments) - 1:
+                            values[flag] = arguments[arguments.index(flag) + 1]
+                    if len(values) != 2:
+                        continue
+                    try:
+                        if not Path(values['--state']).is_absolute() or Path(values['--state']).resolve() != owner:
+                            continue
+                        same_vault = Path(values['--vault']).resolve() == here
+                        same_script = Path(script).resolve() == expected
+                    except (OSError, ValueError, RuntimeError):
+                        continue
+                    checked += 1
+                    for reason, same in (('other_vault', same_vault), ('other_script', same_script)):
+                        entry = {'harness': harness, 'event': event, 'reason': reason}
+                        if not same and entry not in stale:
+                            stale.append(entry)
+    # OpenCode's global bridge is a managed plugin plus a JSON settings file,
+    # rather than a hook command embedded in client settings.
+    try:
+        opencode_settings = global_opencode_settings_path()
+        data = json.loads(opencode_settings.read_text(encoding='utf-8'))
+    except (OSError, ValueError, UnicodeError):
+        data = None
+    if only_harness in (None, 'opencode') and isinstance(data, dict) and data.get('managed_by') == 'beyin-v3-bridge':
+        command = data.get('command')
+        if isinstance(command, list) and all(isinstance(value, str) for value in command):
+            values = {}
+            for flag in ('--state', '--vault'):
+                if command.count(flag) == 1 and command.index(flag) < len(command) - 1:
+                    values[flag] = command[command.index(flag) + 1]
+            script = command[0] if command else None
+            if (isinstance(script, str) and len(values) == 2 and
+                    Path(values['--state']).is_absolute() and
+                    Path(values['--state']).resolve() == owner):
+                checked += 1
+                same_vault = Path(values['--vault']).resolve() == here
+                same_script = (Path(script).resolve() == (here / '.claude/scripts/beyin_v3_bridge.py').resolve()
+                                and Path(script).is_file())
+                for reason, same in (('other_vault', same_vault), ('other_script', same_script)):
+                    entry = {'harness': 'opencode', 'event': 'global', 'reason': reason}
+                    if not same and entry not in stale:
+                        stale.append(entry)
+    if not checked:
+        return None
+    result = {'status': 'stale' if stale else 'ok', 'checked': checked}
+    if stale:
+        result['stale'] = stale
+        result['hint'] = ('From this vault, reinstall each affected global bridge with the original '
+                          '--project-root, --event and --context-chars choices. Global settings were not changed.')
+    return result
 
 def _decoded_command(command):
     if not isinstance(command, str):
@@ -987,6 +1099,7 @@ def _main(argv=None):
         # Stable per-project session namespace prevents identical session IDs in
         # two external projects from satisfying each other's receipt checkpoints.
         payload['cwd'] = str(cwd)
+        original_session = payload['session_id']
         payload['session_id'] = json.dumps([str(cwd), payload.get('session_id', 'unknown')])
         if payload.get('event_id'):
             payload['event_id'] = json.dumps([args.harness, str(cwd), event, payload['event_id']])
@@ -1011,9 +1124,16 @@ def _main(argv=None):
                 hook_main()
         finally:
             sys.argv, sys.stdin = previous_argv, previous_stdin
+        if args.harness == 'claude' and (state / 'context-fill').is_dir() and (
+                event in ('SessionEnd', 'PreCompact') or (event == 'SessionStart' and payload.get('source') == 'compact')):
+            from beyin_v3_context_fill import reset_session_state
+            reset_session_state(state, payload['session_id'])
         if event == 'Stop':
             # After the Stop checkpoint is queued: one block per session when edits have no receipt.
             reminder = receipt_reminder(payload, state, args.harness, event, vault=vault, bridge_cli=command)
+            if not reminder and args.harness == 'claude' and (state / 'context-fill.json').is_file():
+                from beyin_v3_context_fill import context_fill_reminder
+                reminder = context_fill_reminder(payload, state, args.harness, event, transcript_session=original_session)
             if reminder:
                 print(json.dumps(reminder)); return 0
         # Never inject Companion/history into an unrelated repository. The agent

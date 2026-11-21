@@ -415,21 +415,26 @@ def _read_ledger(state):
     return sessions
 
 
-def _record(state, session, status):
-    import beyin_v3_chat_trace as trace
+def _record_locked(state, session, status):
+    """Ledger update; the caller already holds the chat trace writer lock."""
     from beyin_v3_notes import _unlinked
     from beyin_v3_sync import atomic
+    sessions = _read_ledger(state)
+    if sessions.get(session) in ('written', status):
+        return sessions[session]
+    if session not in sessions and len(sessions) >= MAX_LEDGER:
+        raise ValueError('chat trace backfill ledger is full')
+    sessions[session] = status
+    path = Path(state) / LEDGER
+    _unlinked(path)
+    atomic(path, json.dumps({'schema': 1, 'sessions': dict(sorted(sessions.items()))}) + '\n')
+    return status
+
+
+def _record(state, session, status):
+    import beyin_v3_chat_trace as trace
     with trace._lock(state):
-        sessions = _read_ledger(state)
-        if sessions.get(session) in ('written', status):
-            return sessions[session]
-        if session not in sessions and len(sessions) >= MAX_LEDGER:
-            raise ValueError('chat trace backfill ledger is full')
-        sessions[session] = status
-        path = Path(state) / LEDGER
-        _unlinked(path)
-        atomic(path, json.dumps({'schema': 1, 'sessions': dict(sorted(sessions.items()))}) + '\n')
-        return status
+        return _record_locked(state, session, status)
 
 
 def _marker_suppressed(state, stem, session):
@@ -577,9 +582,11 @@ def write(vault, state, session, text, projects_dir=None):
         raise ValueError('summary contains a secret-like value, an e-mail address or a phone number; '
                          'remove it and retry')
     info = _locate(vault, state, session, projects_dir, collect=False)
-    result = trace.write(vault, state, 'claude', session, text, day=info['date'])
-    result['backfill'] = _record(state, session, 'written')
-    result['session_date'] = info['date'].isoformat()
+    # #766: the ledger entry is made under the note write's own lock, so another process cannot slip in between.
+    recorded = {}
+    result = trace.write(vault, state, 'claude', session, text, day=info['date'],
+                         record=lambda: recorded.update(status=_record_locked(state, session, 'written')))
+    result['backfill'] = recorded['status']
     return result
 
 

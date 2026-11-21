@@ -271,7 +271,10 @@ def _backup_record(backup, source, current, newline):
         _, versions, base_id, _ = _records(current, source)
         parts = _delta_parts(versions[base_id], backup) if base_id is not None else None
         if parts is not None:
-            delta = json.dumps(dict(base=base_id, parts=parts), ensure_ascii=False)
+            # Separate the outer list brackets from numeric range brackets so
+            # Markdown does not see a wikilink. JSON string contents stay intact.
+            encoded_parts = json.dumps(parts, ensure_ascii=False)
+            delta = '{"base": ' + json.dumps(base_id) + ', "parts": [ ' + encoded_parts[1:-1] + ' ]}'
             if 2 * len(delta) <= len(backup):
                 return 'delta', _record('delta', source, identity, delta, newline)
     return 'full', _record('full', source, identity, backup, newline)
@@ -657,7 +660,7 @@ def _compact_lock(target, timeout=10.0, step=0.1):
 
 def compact(vault, state, dry_run=False, now=None):
     vault = Path(vault).resolve()
-    target = directory(vault)
+    target = directory(vault, strict=True)
     if target is None:
         return {'status': 'needs_attention', 'reason': 'Multiple companion directories; nothing moved.', 'files': {}}
     configured, valid = read_limits(state)

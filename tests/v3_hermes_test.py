@@ -1,4 +1,5 @@
 """Hermes harness contract: same adapter, same context, real plugin hook shapes."""
+import hashlib
 import importlib.util
 import json
 import os
@@ -190,6 +191,125 @@ class HermesHarnessTest(unittest.TestCase):
         self.assertIn(('never-seen', 'SessionEnd'), events, 'Unknown platform defaults to tracking')
         self.assertTrue(self.module.UNATTENDED_PLATFORMS >= {'telegram', 'cron', 'a2a'})
 
+    def test_gateway_sessions_run_in_the_vault_not_the_gateway_folder(self):
+        # The gateway's process directory is the Hermes install folder; without a cwd the
+        # adapter records that folder as the project of every chat checkpoint.
+        self.module.save_platforms(self.state, attended=['telegram'])
+        hooks = self.module.make_hooks(self.vault, self.state)
+        with patch.object(self.module, 'run_hook', return_value='') as run:
+            hooks['pre_llm_call'](session_id='tg-k', turn_id='1', user_message='selam', is_first_turn=True, platform='telegram')
+            hooks['on_session_finalize'](session_id='tg-k', platform='gateway')
+            hooks['pre_llm_call'](session_id='cli-k', turn_id='1', user_message='selam', is_first_turn=True, platform='cli')
+            hooks['on_session_finalize'](session_id='cli-k', platform='gateway')
+        payloads = {(c.args[2]['session_id'], c.args[2]['hook_event_name']): c.args[2] for c in run.call_args_list}
+        vault = str(self.vault.resolve())
+        self.assertEqual(payloads[('tg-k', 'SessionStart')]['cwd'], vault)
+        self.assertEqual(payloads[('tg-k', 'SessionEnd')]['cwd'], vault)
+        self.assertNotIn('cwd', payloads[('cli-k', 'SessionStart')], 'a terminal session keeps its own directory')
+        self.assertNotIn('cwd', payloads[('cli-k', 'SessionEnd')])
+
+    def test_custom_gateway_and_local_labels_keep_distinct_cwd_policy(self):
+        self.module.save_platforms(self.state, attended=['custom-bot', 'desktop', 'cli'])
+        hooks = self.module.make_hooks(self.vault, self.state)
+        with patch.object(self.module, 'run_hook', return_value='') as run:
+            for platform in ('custom-bot', 'desktop', 'cli', 'unknown'):
+                hooks['pre_llm_call'](session_id=platform, platform=platform, is_first_turn=True)
+                hooks['on_session_finalize'](session_id=platform, platform='gateway')
+        for call in run.call_args_list:
+            payload = call.args[2]
+            if payload['session_id'] == 'custom-bot':
+                self.assertEqual(payload['cwd'], str(self.vault.resolve()))
+            else:
+                self.assertNotIn('cwd', payload)
+
+    def test_context_workspace_and_explicit_cwd_survive_finalize(self):
+        ctx = FakeHermesContext()
+        workspace = Path(self.temp.name) / 'Workspace'
+        workspace.mkdir()
+        ctx.session_cwd = lambda: str(workspace)
+        self.module.register(ctx, vault=self.vault, state=self.state)
+        before, end = ctx.hooks['pre_llm_call'][0], ctx.hooks['on_session_finalize'][0]
+        self.module.save_platforms(self.state, attended=['telegram'])
+        with patch.object(self.module, 'run_hook', return_value='') as run:
+            for platform in ('telegram', 'desktop', 'cli'):
+                before(session_id=platform, platform=platform, is_first_turn=True)
+            before(session_id='explicit', platform='telegram', cwd=str(self.vault), is_first_turn=True)
+            before(session_id='invalid', platform='telegram', cwd='relative/path', is_first_turn=True)
+            ctx.session_cwd = lambda: str(self.vault)  # finalize is outside the original turn
+            for sid in ('telegram', 'desktop', 'cli', 'explicit', 'invalid'):
+                end(session_id=sid, platform='gateway')
+        for call in run.call_args_list:
+            payload = call.args[2]
+            expected = {'explicit': str(self.vault), 'invalid': 'relative/path'}.get(payload['session_id'], str(workspace))
+            self.assertEqual(payload['cwd'], expected)
+
+    def test_configured_bot_real_hook_metadata_uses_vault(self):
+        self.module.save_platforms(self.state, attended=['custom-bot'])
+        hooks = self.module.make_hooks(self.vault, self.state)
+        hooks['pre_llm_call'](session_id='custom', platform='custom-bot', is_first_turn=True, user_message='hello')
+        hooks['on_session_finalize'](session_id='custom', platform='gateway')
+        events = [json.loads(p.read_text(encoding='utf-8')) for p in (self.state / 'hook-queue').glob('*.json')]
+        self.assertEqual({e['event'] for e in events}, {'SessionStart', 'SessionEnd'})
+        for event in events:
+            self.assertEqual(event.get('project'), self.vault.name)
+
+    def test_context_cwd_real_hook_metadata_and_refusal(self):
+        workspace = Path(self.temp.name) / 'Desktop Workspace'
+        workspace.mkdir()
+        ctx = FakeHermesContext()
+        ctx.session_cwd = lambda: str(workspace)
+        self.module.register(ctx, vault=self.vault, state=self.state)
+        before = ctx.hooks['pre_llm_call'][0]
+        before(session_id='desktop-work', platform='desktop', is_first_turn=True)
+        def refused():
+            raise RuntimeError('scope refused')
+        ctx.session_cwd = refused
+        with self.assertLogs(self.module.LOGGER, level='WARNING'):
+            before(session_id='refused', platform='telegram', is_first_turn=True)
+        events = [json.loads(p.read_text(encoding='utf-8')) for p in (self.state / 'hook-queue').glob('*.json')]
+        self.assertEqual(len(events), 2)
+        self.assertEqual(sorted(e.get('project', '') for e in events), ['', workspace.name])
+
+    def test_finalize_cwd_does_not_persist_and_is_consumed(self):
+        hooks = self.module.make_hooks(self.vault, self.state)
+        with patch.object(self.module, 'run_hook', return_value='') as run:
+            hooks['pre_llm_call'](session_id='desktop-local', platform='desktop', cwd=str(self.vault))
+            stored = json.loads((self.state / self.module.TURNS_FILE).read_text(encoding='utf-8'))
+            [record] = stored['sessions'].values()
+            self.assertEqual(set(record), {'platform', 'turns', 'at'})
+            hooks['on_session_finalize'](session_id='desktop-local')
+            self.assertEqual(run.call_args.args[2]['cwd'], str(self.vault))
+            hooks['on_session_finalize'](session_id='desktop-local')
+            self.assertNotIn('cwd', run.call_args.args[2])
+
+    def test_finalize_retains_last_cwd_only_when_later_turn_has_no_cwd(self):
+        workspace = Path(self.temp.name) / 'Desktop Workspace'
+        workspace.mkdir()
+
+        def refused():
+            raise RuntimeError('scope refused')
+
+        for last, explicit, expected in (
+            (lambda: None, {}, str(workspace)),
+            (lambda: '', {}, str(workspace)),
+            (lambda: None, {'cwd': 'relative/path'}, 'relative/path'),
+            (refused, {}, ''),
+        ):
+            with self.subTest(last=last, explicit=explicit):
+                ctx = FakeHermesContext()
+                ctx.session_cwd = lambda: str(workspace)
+                self.module.register(ctx, vault=self.vault, state=self.state)
+                before, end = ctx.hooks['pre_llm_call'][0], ctx.hooks['on_session_finalize'][0]
+                with patch.object(self.module, 'run_hook', return_value='') as run:
+                    before(session_id='desk', platform='desktop', is_first_turn=True)
+                    ctx.session_cwd = last
+                    before(session_id='desk', platform='desktop', **explicit)
+                    end(session_id='desk', platform='gateway')
+                later, final = (call.args[2] for call in run.call_args_list[-2:])
+                if not explicit and last is not refused:
+                    self.assertNotIn('cwd', later, 'Retain the last cwd for finalize only')
+                self.assertEqual(final['cwd'], expected)
+
     def test_receipt_reminder_every_nth_user_turn(self):
         hooks = self.module.make_hooks(self.vault, self.state)
         seen = []
@@ -202,6 +322,56 @@ class HermesHarnessTest(unittest.TestCase):
         with patch.object(self.module, 'run_hook', return_value=''):
             result = hooks['pre_llm_call'](session_id='long', turn_id='x', user_message='devam', is_first_turn=False)
         self.assertIsNone(result, 'No adapter context and no reminder due means no injection')
+
+    def test_reminder_cadence_survives_gateway_restart(self):
+        # A gateway restart rebuilds the hooks; the session's turn count must carry over, or a
+        # chat that spans restarts never reaches the reminder turn.
+        self.module.save_platforms(self.state, attended=['telegram'])  # a personal chat (#350)
+        every = self.module.REMINDER_EVERY
+        seen = []
+        with patch.object(self.module, 'run_hook', return_value='ctx'):
+            for turn in range(1, every + 1):
+                if turn in (2, every - 1):
+                    hooks = self.module.make_hooks(self.vault, self.state)  # restart
+                elif turn == 1:
+                    hooks = self.module.make_hooks(self.vault, self.state)
+                result = hooks['pre_llm_call'](session_id='tg-uzun', turn_id=str(turn), user_message='devam',
+                                               is_first_turn=turn == 1, platform='telegram')
+                seen.append('[Hafıza]' in result['context'])
+        self.assertEqual([i + 1 for i, hit in enumerate(seen) if hit], [every])
+        stored = json.loads((self.state / self.module.TURNS_FILE).read_text(encoding='utf-8'))
+        self.assertEqual(stored['sessions'][hashlib.sha256(b'tg-uzun').hexdigest()]['turns'], every)
+
+    def test_finalize_after_restart_keeps_first_turn_platform(self):
+        # Hermes reports a generic platform at finalize; after a restart only the stored
+        # first-turn platform can tell that the session is an unattended chat.
+        before = self.module.make_hooks(self.vault, self.state)
+        with patch.object(self.module, 'run_hook', return_value=''):
+            before['pre_llm_call'](session_id='tg-2', turn_id='1', user_message='selam', is_first_turn=True, platform='telegram')
+        after = self.module.make_hooks(self.vault, self.state)  # restart
+        with patch.object(self.module, 'run_hook', return_value='') as run:
+            after['on_session_finalize'](session_id='tg-2', platform='gateway')
+        events = [(c.args[2]['session_id'], c.args[2]['hook_event_name']) for c in run.call_args_list]
+        self.assertNotIn(('tg-2', 'SessionEnd'), events)
+        stored = json.loads((self.state / self.module.TURNS_FILE).read_text(encoding='utf-8'))
+        self.assertNotIn(hashlib.sha256(b'tg-2').hexdigest(), stored['sessions'], 'a finalized session leaves the turn file')
+
+    def test_damaged_turn_file_counts_from_memory(self):
+        (self.state / self.module.TURNS_FILE).write_text('{bozuk', encoding='utf-8')
+        hooks = self.module.make_hooks(self.vault, self.state)
+        with patch.object(self.module, 'run_hook', return_value='ctx'):
+            for turn in range(1, self.module.REMINDER_EVERY + 1):
+                result = hooks['pre_llm_call'](session_id='x', turn_id=str(turn), user_message='m', is_first_turn=turn == 1)
+        self.assertIn('[Hafıza]', result['context'])
+
+    def test_turn_file_keeps_only_recent_sessions(self):
+        old = {'sessions': {'eski': {'platform': 'cli', 'turns': 3, 'at': 1.0}}}
+        (self.state / self.module.TURNS_FILE).write_text(json.dumps(old), encoding='utf-8')
+        hooks = self.module.make_hooks(self.vault, self.state)
+        with patch.object(self.module, 'run_hook', return_value=''):
+            hooks['pre_llm_call'](session_id='yeni', turn_id='1', user_message='m', is_first_turn=True)
+        stored = json.loads((self.state / self.module.TURNS_FILE).read_text(encoding='utf-8'))
+        self.assertEqual(list(stored['sessions']), [hashlib.sha256(b'yeni').hexdigest()])
 
 
     def test_unattended_platforms_configuration_and_override(self):
@@ -241,6 +411,7 @@ class HermesHarnessTest(unittest.TestCase):
             hooks['on_session_finalize'](session_id='bot-1', platform='gateway')
         events = [(c.args[2]['session_id'], c.args[2]['hook_event_name']) for c in run.call_args_list]
         self.assertNotIn(('bot-1', 'SessionEnd'), events, 'Custom unattended bot must not be receipt-tracked')
+        self.assertEqual(run.call_args.args[2]['cwd'], str(self.vault.resolve()))
 
         # 4. Corrupt state file fails open safely
         (self.state / 'hermes-platforms.json').write_text('{broken json', encoding='utf-8')

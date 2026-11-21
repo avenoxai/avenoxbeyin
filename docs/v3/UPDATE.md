@@ -32,6 +32,8 @@ python3 beyin.py update
 
 `doctor` yerel kayıtları, bekleyen işleri ve sorunları gösterir. Bir metadata raporu gerçek istemci teslimi veya her notun doğru yorumlandığı kanıtı değildir.
 
+Tamamlanmamış bir güncelleme veya geri alma varsa `doctor`, `update --check` ve `update --check --metadata-only` kurtarma gerektiğini bildirir. Önce devam eden bir güncellemenin bitmesini bekle. İşlem kesildiyse `python3 beyin.py recover` çalıştır, ardından `doctor` ile kontrol et. Açık web görünümü işlem sürerken kapanır.
+
 `update --check` resmi stable release'i inceler ve paketi geçici alanda doğrular. Vault ve mevcut runtime dosyalarını değiştirmez. Paket verilmezse ağ erişimi gerekir. `update` aynı doğrulamadan sonra yeni sürümü uygular. Aynı sürüme ikinci güncelleme no-op'tur; sayısal sürüm sırası kullanılır. Eski bir paketi yükleyerek downgrade yapılmaz; geri dönüş için `rollback` kullanılır.
 
 Varsayılan indirme kaynağı `avenoxai/avenoxbeyin` deposunun resmi GitHub stable release'idir. Preview, hareket eden geliştirme dalı veya üçüncü taraf paket kaynağı otomatik seçilmez. Stable release ya da beklenen ZIP yoksa bunu hata olarak bildirir; yayın varmış gibi sonuç vermez.
@@ -71,6 +73,32 @@ python3 beyin.py rollback
 Yönetilen dosyada araya giren kullanıcı değişikliği varsa işlem bunu ezmek yerine conflict ile durur. Desteklenen JSON ayarlarında ilgisiz değişiklikler korunur; çakışan yönetilen bölüm için inceleme gerekir. Kilitli/aktif bir writer varsa tamamlanmasını bekleyip tekrar dene. Kaybolmuş bir işin kilit/sentinel dosyasını gelişigüzel silme.
 
 Yalnız satır sonu farkı değişiklik sayılmaz: `core.autocrlf` ya da bir editör yönetilen dosyayı CRLF'e çevirmişse güncelleme, kaldırma ve rollback durmaz, dosya yeniden yazılırken stok LF biçimine döner. Conflict mesajı sebebi söyler: `content differs` gerçek bir düzenleme, `deleted` silinmiş dosya demektir.
+
+## Tam kaldırma: kalan bileşenleri kontrol et
+
+`python3 beyin.py rollback` ya da kurucunun `--uninstall` seçeneği vault içindeki
+yönetilen dosyaları geri alır. Bilerek **notları, receipt'leri ve vault dışındaki state
+klasörünü silmez**. Ek olarak açılmış isteğe bağlı bileşenleri şu sırayla kapat:
+
+1. Önce `python3 beyin.py doctor` veya `.beyin-runtime.json` üzerinden state
+   klasörünün tam yolunu kaydet; saklamak istediğin verileri yedekle. Vault kaldırılınca
+   bu CLI ve runtime dosyası artık bulunmayabilir.
+2. Her etkin global köprü için, vault içindeki güncel CLI ile örneğin
+   `python3 beyin.py bridge --harness codex --uninstall` çalıştır (etkin her harness adı
+   için tekrarla). Bu adımı vault adaptörünü kaldırmadan önce yap; global ayarda olmayan bir
+   vault betiği kalırsa istemci başlangıçta hata verebilir.
+3. Yakala kuruluysa `python3 beyin.py yakala kaldir` çalıştır. Bu; kısayol, başlangıç
+   entegrasyonu ve Yakala skill'ini kaldırır; kartlar, indirilen dosyalar ve tanı kayıtları
+   yerinde kalır.
+4. Sonra vault kurulumunu `python3 scripts/install_v3.py --vault "<vault>" --uninstall`
+   ile kaldır veya önceki sürüme dönüyorsan `python3 beyin.py rollback` çalıştır.
+5. En son, saklamak istemediğin makine-yerel indeks/geçmiş varsa önceden kaydettiğin
+   state yolunu ve yedeğini doğrula; state klasörünü **ayrı, açık bir karar** olarak
+   sil. Bu işlem geri alınamaz; varsayılan kaldırmanın parçası değildir.
+
+Birden çok harness veya Yakala kurulumu varsa 2. ve 3. adımları her etkin bileşen için tekrarla.
+Köprü ya da Yakala hiç kurulmadıysa o adımı geç. Kaldırmadan önce `beyin.py doctor`, işlem
+sonrasında `git status --short` ile kalan dosyaları incele; kullanıcıya ait ayarları topluca silme.
 
 
 ## Bağlı ana sayfalardan eski sürüme dönüş
@@ -275,7 +303,7 @@ Kullanıcı gereksinim duymadığı bileşenleri (`skills/<ad>`, `adapters/<ad>`
 Repo kökünde:
 
 ```sh
-python3 scripts/build_v3_release.py --output "/tmp/beyin-v3-3.13.0.zip" --version 3.13.0
+python3 scripts/build_v3_release.py --output "/tmp/beyin-v3-3.14.1.zip" --version 3.14.1
 ```
 
 Bu komut yalnız yerel ZIP oluşturur, GitHub'a yayınlamaz. Paket `manifest.json`, izin verilen installer/giriş dosyaları, runtime modülleri ve üç skill'i içerir. Manifest sürüm, schema/runtime schema, minimum Python, dosya hashleri ve tanınan legacy hashlerini taşır. Release yayınlama ve final platform CI ayrı işlemlerdir.
