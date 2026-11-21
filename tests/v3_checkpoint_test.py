@@ -231,6 +231,24 @@ class CheckpointTest(unittest.TestCase):
         self.assertEqual([path.name for path in traces], ["2026-10.md"])
         self.assertEqual(traces[0].read_text(encoding="utf-8").count("Sohbet özeti"), 1)
 
+    def test_learning_rejects_private_and_sensitive_sources_before_sync(self):
+        sources = {
+            "Müşteri Kayıtları/not.md": "# Dizin adı korunmalı",
+            "knowledge/özel not.md": "---\nvisibility: private\n---\n# Not korunmalı",
+        }
+        for source, body in sources.items():
+            with self.subTest(source=source):
+                path = self.vault / source
+                path.parent.mkdir(exist_ok=True)
+                path.write_text(body, encoding="utf-8", newline="\n")
+                result = run_checkpoint(self.sync, self.vault, self.state, {
+                    "learn": [{"candidate": "KORUNAN_İÇERİK", "source": source}],
+                })
+                self.assertEqual(result["steps"]["learn"]["status"], "error")
+                self.assertNotIn(source, json.dumps(result, ensure_ascii=False))
+                self.assertNotIn("KORUNAN_İÇERİK", json.dumps(result, ensure_ascii=False))
+                self.assertFalse((self.state / "learning-state.jsonl").exists())
+
     def test_cli_checkpoint_and_human_result(self):
         req_file = Path(self.test_dir) / "checkpoint_req.json"
         req_file.write_text(json.dumps({"card": {"label": "cli", "body": "CLI testi."}}),

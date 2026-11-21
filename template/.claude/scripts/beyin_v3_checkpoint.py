@@ -10,10 +10,12 @@ import json
 import re
 from pathlib import Path
 
+from beyin_v3 import _trusted_record
 from beyin_v3_companion import directory as locate_companion
 from beyin_v3_compact import compact as companion_compact
 from beyin_v3_notes import read as note_read, apply as note_apply, NoteConflict
 from beyin_v3_learning import stage_candidate
+from beyin_v3_sync import parse
 import beyin_v3_chat_trace
 
 def _step_key(session, step, *content):
@@ -132,6 +134,17 @@ def _update_threads(sync, source, threads, session):
     return _update_note(sync, source, previous, content)
 
 
+def _learning_source(sync, source):
+    path = sync._path(source, existing=True)
+    relative = path.resolve().relative_to(sync.root).as_posix()
+    sync._refuse_excluded(relative)
+    if path.suffix.casefold() == ".md":
+        metadata, _ = parse(path.read_text(encoding="utf-8"))
+        if metadata.get("visibility", "internal") not in ("internal", "public") or not _trusted_record(metadata):
+            raise ValueError("checkpoint learning source is private or untrusted")
+    return relative
+
+
 def run_checkpoint(sync, vault, state, request, harness=None, session=None, dry_run=False):
     """Execute a unified session checkpoint handoff.
 
@@ -208,15 +221,18 @@ def run_checkpoint(sync, vault, state, request, harness=None, session=None, dry_
                 recorded_candidates = []
                 for item in learn_data:
                     cand = item.get("candidate")
-                    src = item.get("source", "")
+                    src = (item.get("source") or "").strip()
                     scp = item.get("scope", "global")
                     sess_id = session or "cli"
                     if cand:
+                        if src:
+                            src = _learning_source(sync, src)
                         res = stage_candidate(state, sess_id, cand, source=src, scope=scp, deduplicate=True)
                         recorded_candidates.append(res)
                 steps["learn"] = {"status": "recorded", "count": len(recorded_candidates)}
-            except Exception as exc:
-                steps["learn"] = {"status": "error", "message": str(exc)}
+            except Exception:
+                steps["learn"] = {"status": "error", "message":
+                                  "Learning candidate was not confirmed; check its text and source visibility."}
 
     # 5. Receipt submission
     receipt_data = request.get("receipt")
