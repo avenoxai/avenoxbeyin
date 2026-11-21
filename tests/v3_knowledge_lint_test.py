@@ -679,6 +679,54 @@ And another link on line 8: [[Components/Auth]].
         self.assertEqual(parsed["indexed_notes_count"], 2)
         self.assertTrue((self.vault / "knowledge/MOC.md").is_file())
 
+    def test_markdown_links_graph_integration(self):
+        (self.vault / "birinci.md").write_text("# Birinci\n[İkinci](ikinci.md)\n", encoding="utf-8")
+        (self.vault / "ikinci.md").write_text("# İkinci\n[Birinci](birinci.md)\n", encoding="utf-8")
+        result = linter.lint_vault(self.vault)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["orphan_count"], 0)
+        self.assertEqual(result["unlinked_count"], 0)
+        self.assertEqual(result["total_links_count"], 2)
+
+    def test_markdown_links_resolution_and_relative(self):
+        (self.vault / "sub").mkdir()
+        (self.vault / "sub dir").mkdir()
+        (self.vault / "sub dir/target note.md").write_text("# Target\n## Heading\n", encoding="utf-8")
+        (self.vault / "sub/sibling.md").write_text("# Sibling\n", encoding="utf-8")
+        (self.vault / "sub/source.md").write_text(
+            "# Source\n[Not](sub%20dir/target%20note.md#Heading)\n[Sibling](../sub/sibling.md)\n",
+            encoding="utf-8",
+        )
+        result = linter.lint_vault(self.vault)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["broken_links_count"], 0)
+
+    def test_markdown_links_ignored_external_anchors_and_code(self):
+        (self.vault / "a.md").write_text(
+            "# A\n"
+            "[External](https://example.com/a.md)\n"
+            "[Anchor](#only-anchor)\n"
+            "`[Fake](fake.md)`\n"
+            "```\n"
+            "[CodeFence](fake2.md)\n"
+            "```\n",
+            encoding="utf-8",
+        )
+        result = linter.lint_vault(self.vault)
+        self.assertEqual(result["orphan_count"], 1)
+        self.assertEqual(result["total_links_count"], 0)
+
+    def test_markdown_links_broken_and_traversal(self):
+        (self.vault / "a.md").write_text(
+            "# A\n[Eksik](yok.md)\n[bad](../../outside.md)\n",
+            encoding="utf-8",
+        )
+        result = linter.lint_vault(self.vault)
+        self.assertEqual(result["status"], "issues_found")
+        self.assertEqual(result["broken_links_count"], 2)
+        self.assertEqual({link["target"] for link in result["broken_links"]}, {"yok.md", "../../outside.md"})
+        self.assertTrue(all(link["type"] == "markdown" for link in result["broken_links"]))
+
 
 if __name__ == "__main__":
     unittest.main()
