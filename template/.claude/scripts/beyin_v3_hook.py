@@ -13,10 +13,18 @@ import sys
 sys.dont_write_bytecode = True
 import time
 import uuid
+# Context-fill reminder integration (#685)
+try:
+    import beyin_v3_context_fill as context_fill
+except Exception:
+    context_fill = None
 
 EVENTS = {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "PreCompact", "SessionEnd"}
 HOOK_BUDGET = 3.8  # seconds; installed POSIX hooks are killed at 5
 SYNC_WAIT = 1.5  # seconds the prompt hook waits for the source sync before reading the last index
+# Context-fill reminder threshold settings (issue #685).
+CONTEXT_FILL_FIRST_THRESHOLD = 150000
+CONTEXT_FILL_REPEAT_THRESHOLD = 75000
 # A client that sandboxes its hook commands (a workspace-write profile, a read-only home) can read
 # the vault and the index the previous sync committed, but not the runtime state. Both refusals
 # below therefore keep the turn's context: it comes from that index with one line saying why it will
@@ -794,6 +802,11 @@ def main():
                     if (state / 'context-dedupe.json').is_file() or (state / 'session-delivery').is_dir() or os.environ.get('BEYIN_V3_CONTEXT_DEDUPE') == '1':
                         from beyin_v3_dedupe import reset_session
                         reset_session(state, args.harness, payload.get('session_id'))
+                    # Reset context-fill state (issue #685)
+                    if context_fill:
+                        session_id = payload.get('session_id')
+                        if isinstance(session_id, str) and session_id:
+                            context_fill.reset_session_state(state, session_id)
             except Exception:
                 pass
         if not settings['auto_sync']:
@@ -840,6 +853,11 @@ def main():
         # (#417); an earlier edit marker must not reopen that path as a block in a state this client
         # cannot write. The writable path keeps its reminder untouched.
         reminder = None if args.metadata_only or sync_note else receipt_reminder(payload, state, args.harness, event, vault=vault)
+        # Context-fill reminder (issue #685): only for claude at Stop, after receipt_reminder check.
+        if reminder is None and not args.metadata_only and event == "Stop" and args.harness == "claude" and context_fill:
+            cf_reminder = context_fill.context_fill_reminder(payload, state, args.harness, event)
+            if cf_reminder:
+                reminder = cf_reminder
         if not args.metadata_only and event == 'UserPromptSubmit' and (state / 'chat-trace.json').is_file():
             try:
                 from beyin_v3_chat_trace import hint
