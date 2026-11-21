@@ -75,7 +75,7 @@ def _safe_replace(source, destination):
             time.sleep(0.015 * (2 ** attempt))
 
 
-def atomic(path, text):
+def atomic(path, text, *, prepare_replace=None, before_replace=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix='.beyin-', dir=path.parent)
@@ -83,7 +83,11 @@ def atomic(path, text):
         with os.fdopen(fd, 'w', encoding='utf-8', newline='') as handle:
             handle.write(text)
             handle.flush()
+            if prepare_replace is not None:
+                prepare_replace(Path(name))
             os.fsync(handle.fileno())
+        if before_replace is not None:
+            before_replace()
         _safe_replace(name, path)
         try:
             directory = os.open(path.parent, os.O_RDONLY)
