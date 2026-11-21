@@ -163,6 +163,18 @@ class TestBeyinV3UsageFeedback(unittest.TestCase):
         self.assertEqual(beyin_v3_usage.summarize_usage(self.state_path)["tracked"], 1)
         self.assertEqual(self.rows(), {"artemis": (0, 1, 0, 0, 0)})
 
+    def test_receipt_case_alias_counts_the_indexed_note(self):
+        source = "knowledge/İstanbul Guide.md"
+        alias = "knowledge/İstanbul guide.md"
+        self.note(source, "artemis", "Artemis calibration owner: synthetic note body")
+        if not (self.vault_path / alias).is_file():
+            self.skipTest("requires a case-insensitive filesystem")
+        result = self.cli("receipt", "--harness", "claude", "--event-id", "alias", "--summary", "Fixture",
+                          "--ref", alias)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(beyin_v3_usage.summarize_usage(self.state_path)["tracked"], 1)
+        self.assertEqual(self.rows(), {"artemis": (0, 1, 0, 0, 0)})
+
     def test_opening_counts_the_related_note_it_delivers(self):
         source = "knowledge/Artemis.md"
         self.note(source, "artemis", "Artemis calibration owner: synthetic note body")

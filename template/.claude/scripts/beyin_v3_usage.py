@@ -118,10 +118,20 @@ def record_injected(state, records, *, session, turn, now=None):
 def record_cited(state, event_id, refs, sync):
     # The receipt has already validated the paths and synced the source index.
     sources = {Path(ref).as_posix() for ref in refs}
+    ids = {sync.source_ids[source] for source in sources if source in sync.source_ids}
+    aliases = {}
+    for source in sources.difference(sync.source_ids):
+        aliases.setdefault(sensitive_fold(source), set()).add(sync._source_identity(sync.root / source))
+    if aliases:
+        for source, note_id in sync.source_ids.items():
+            candidates = aliases.get(sensitive_fold(source))
+            if candidates and sync._source_identity(sync.root / source) in candidates:
+                ids.add(note_id)
+
     with sync.store._connect() as db:
         records = []
-        for source in sources:
-            row = db.execute("SELECT payload FROM records WHERE id=?", (sync.source_ids.get(source),)).fetchone()
+        for note_id in ids:
+            row = db.execute("SELECT payload FROM records WHERE id=?", (note_id,)).fetchone()
             if row:
                 records.append(json.loads(row[0]))
     targets = _targets(records)
