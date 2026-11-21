@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -430,6 +431,15 @@ class WebRuntimeChangeTest(WebFixture):
         self.thread.join(timeout=10)
         self.assertFalse(self.thread.is_alive())  # the server shut itself down
 
+    def test_unfinished_update_stops_reads_before_version_stamp_changes(self):
+        cookie, _ = self.login()
+        (self.state / 'update-journal.json').write_text('{}', encoding='utf-8')
+        status, data = self.get_json('/api/gorevler', cookie)
+        self.assertEqual(status, 409)
+        self.assertIn('beyin.py recover', data['mesaj'])
+        self.thread.join(timeout=10)
+        self.assertFalse(self.thread.is_alive())
+
     def test_reads_stop_too_and_an_unchanged_stamp_keeps_serving(self):
         (self.vault / '.beyin-version').write_text('', encoding='utf-8')  # empty reads as no version
         cookie, _ = self.login()
@@ -670,12 +680,34 @@ class WebInstalledEntryTest(unittest.TestCase):
             code, output, error = run('durum')
             self.assertEqual(code, 0, error)
             self.assertTrue(output.startswith('Web görünümü çal???yor: http://127.0.0.1:'), output)
+            # Explicit JSON is the opt-in manual bootstrap. It must remain usable and one-use.
+            code, manual, error = run('ac', '--no-browser', '--json')
+            self.assertEqual(code, 0, error)
+            from urllib.parse import urlsplit
+            address = urlsplit(json.loads(manual)['adres'])
+            for expected in (303, 401):
+                connection = http.client.HTTPConnection(address.hostname, address.port, timeout=5)
+                try:
+                    connection.request('GET', address.path + '?' + address.query)
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, expected)
+                    response.read()
+                finally:
+                    connection.close()
+            code, manual_help, error = run('ac', '--no-browser')
+            self.assertEqual(code, 0, error)
+            self.assertIn('beyin.py web ac --no-browser --json', manual_help)
+            self.assertNotIn('token=', manual_help)
             self.assertEqual(run('durdur')[:2], (0, 'Web görünümü durduruldu.' + os.linesep))
             output, error = server.communicate(timeout=30)
             self.assertEqual(server.returncode, 0, error.decode('cp1252', 'replace'))
-            lines = output.decode('cp1252').splitlines()
+            lines = output.decode('cp1252', 'replace').splitlines()
             self.assertEqual(lines[0], 'Beyin web görünümü aç?ld? (yaln?z bu bilgisayar).')
-            self.assertTrue(lines[1].startswith('Adres: http://127.0.0.1:'))
+            # Line 1 should mention the URL but NOT the launch token (single-use, not shown in terminal)
+            self.assertIn('http://127.0.0.1:', lines[1])
+            self.assertNotIn('token=', lines[1])
+            self.assertNotIn('Taray?c?da aç?l?yor', lines[1])
+            self.assertIn('beyin.py web ac --no-browser --json', output.decode('cp1252', 'replace'))
             self.assertEqual(lines[-1], 'Web görünümü kapand?.')
             self.assertIsNone(web.read_running(state))
             # JSON stays ASCII under the legacy code page, Turkish messages included.
@@ -716,6 +748,80 @@ class WebInstalledEntryTest(unittest.TestCase):
         entry = (ROOT / 'scripts/beyin_entry.py').read_text(encoding='utf-8')
         self.assertEqual(entry.count('import beyin_v3_web'), 1)
         self.assertIn("argv[0] == 'web'", entry)
+
+
+class WebReviewTest(WebFixture):
+    read_only = True
+
+    def test_review_triage_links_only_existing_eligible_records(self):
+        topic = '🔮 850-Companion/Threads.md'
+        task = 'tasks/eski.md'
+        replaced_task = 'tasks/replaced.md'
+        self.write(topic, '# Threads\n\n## Active Threads\n\n### Thread: Old thread\nOpened 2020-01-01\n')
+        self.write('000-Inbox/first.md', '---\ncreated: 2020-01-01\n---\nFirst capture\n')
+        for source, ident in ((task, 'review-old-task'), (replaced_task, 'review-replaced-task')):
+            self.write(source, f'---\nid: {ident}\nkind: task\ntitle: Old task\nstatus: active\nupdated_at: 2020-01-01\n---\nTask body\n')
+        self.write('notes/successor.md', '---\nsupersedes: [review-replaced-task]\n---\nSuccessor\n')
+        self.core.run('sync')
+        cookie, _ = self.login()
+        status, data = self.get_json('/api/gozden-gecir', cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(data['inbox']['folders'][0]['notes'], 1)
+        [thread] = data['bayat_konular']
+        self.assertEqual((thread['path'], thread['last_date']), (topic, '2020-01-01'))
+        stale = {row['path']: row for row in data['gorevler']['stale_tasks']}
+        self.assertGreater(stale[task]['age_days'], 14)
+        self.assertEqual(stale[task]['record_id'], 'review-old-task')
+        self.assertNotIn('record_id', stale[replaced_task])
+        self.assertEqual(self.get_json('/api/kayit?id=review-replaced-task', cookie)[0], 404)
+        self.assertEqual(thread['record_id'], self.record_ids()[topic])
+        preview_status, preview = self.get_json('/api/kayit?id=review-old-task', cookie)
+        self.assertEqual(preview_status, 200)
+        self.assertEqual(preview['kaynak'], task)
+
+    def test_review_endpoint_read_only_and_draft_sorting_and_privacy(self):
+        self.write('notes/taslak1.md', '---\ntitle: İkinci taslak\nstatus: draft\ncreated_at: 2026-11-18T12:00:00\n---\nDraft body\n')
+        self.write('notes/taslak2.md', '---\ntitle: Birinci taslak\nstatus: taslak\ncreated_at: 2026-11-18T10:00:00\n---\nTaslak body\n')
+        self.write('notes/gizli-taslak.md', '---\ntitle: Gizli taslak\nstatus: draft\nvisibility: private\n---\nPrivate draft\n')
+        self.core.run('sync')
+
+        cookie, _ = self.login()
+        status, data = self.get_json('/api/gozden-gecir', cookie)
+        self.assertEqual(status, 200)
+        self.assertIn('inbox', data)
+        self.assertIn('bayat_konular', data)
+        self.assertIn('gorevler', data)
+        self.assertIn('taslaklar', data)
+
+        taslaklar = data['taslaklar']
+        self.assertEqual(len(taslaklar), 2)
+        self.assertEqual(taslaklar[0]['baslik'], 'Birinci taslak')
+        self.assertEqual(taslaklar[1]['baslik'], 'İkinci taslak')
+
+        basliklar = [t['baslik'] for t in taslaklar]
+        self.assertNotIn('Gizli taslak', basliklar)
+
+        response, _ = self.request('GET', '/api/gozden-gecir')
+        self.assertEqual(response.status, 401)
+
+        response, page = self.request('GET', '/', {'Cookie': cookie})
+        self.assertEqual(response.status, 200)
+        self.assertIn(b'G\xc3\xb6zden ge\xc3\xa7ir', page)
+
+        response, js = self.request('GET', '/app.js', {'Cookie': cookie})
+        self.assertEqual(response.status, 200)
+        self.assertIn(b'/api/gozden-gecir', js)
+
+
+class WebReviewNavigationTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is only needed for this browser-side test')
+    def test_review_panel_ignores_obsolete_navigation_responses(self):
+        script = Path(__file__).with_name('v3_web_review_navigation_test.js')
+        completed = subprocess.run(
+            ['node', str(script)], input=ui.APP_JS, encoding='utf-8',
+            capture_output=True, timeout=15,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
 
 if __name__ == '__main__':

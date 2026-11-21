@@ -126,6 +126,35 @@ class LearningCandidateLedgerTest(unittest.TestCase):
         res2 = hook.receipt_reminder(payload_stop, self.state, 'claude', 'Stop', vault=self.vault)
         self.assertIsNone(res2)
 
+    def test_candidate_staged_as_the_no_learning_reminder_says_is_resolved_by_a_later_receipt(self):
+        # #757: the told command had no --source, so the candidate was stored with source ""
+        # and no later receipt (resolve_candidates matches the source against refs) closed it.
+        session_id = 'told-command-resolves'
+        session_hash = hashlib.sha256(session_id.encode('utf-8')).hexdigest()[:24]
+        hook.receipt_reminder({'session_id': session_id}, self.state, 'claude', 'PostToolUse', vault=self.vault)
+        time.sleep(0.02)
+        self.engine.receipt('told-1', 'Refactored auth module.\nÖğrenilen: yok', ['notes/task.md'], 'claude',
+                            session=session_hash)
+        res = hook.receipt_reminder({'session_id': session_id}, self.state, 'claude', 'Stop', vault=self.vault)
+        self.assertEqual(res['decision'], 'block')
+
+        # Run the command exactly as told, filling in the two placeholders the agent owns.
+        told = 'learn --session ' + session_hash + ' --candidate "Lesson" --source PATH'
+        self.assertIn(told, res['reason'])
+        staged = subprocess.run([
+            sys.executable, str(ROOT / 'scripts/beyin_v3.py'),
+            '--vault', str(self.vault), '--state', str(self.state),
+            'learn', '--session', session_hash, '--candidate', 'Sentetik ders', '--source', 'notes/task.md'
+        ], capture_output=True, text=True, check=True, env=self.env, timeout=30)
+        self.assertEqual(json.loads(staged.stdout)['source'], 'notes/task.md')
+        self.assertEqual(len(learning.list_candidates(self.state, session=session_hash)), 1)
+
+        # The session's next receipt cites the same source and closes the candidate.
+        later = self.engine.receipt('told-2', 'Notu damıttım.\nÖğrenilen: yok (rutin)', ['notes/task.md'],
+                                    'claude', session=session_hash)
+        self.assertEqual(later.get('candidates_resolved'), 1)
+        self.assertEqual(learning.list_candidates(self.state, session=session_hash), [])
+
     def test_an_empty_label_heading_a_list_is_not_challenged_as_no_learning(self):
         session_id = 'list-under-label'
         session_hash = hashlib.sha256(session_id.encode('utf-8')).hexdigest()[:24]

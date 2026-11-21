@@ -49,7 +49,7 @@ def check(candidate, baseline):
             status = cli('jev', 'status')
             assert status['mode'] == 'off' and not status['key_checked']
             # Exercise the ACTUAL newly installed command and Markdown synchronization.
-            note = cli('note-create', '--file', '-', payload=dict(source='notes/proof.md',
+            cli('note-create', '--file', '-', payload=dict(source='notes/proof.md',
                 text='Quartz kararı kesinleşti.', metadata=dict(id='proof', kind='fact', project='demo',
                 aliases=['proof-alias'], remote_allowed=False)))
             found = cli('context', 'proof-alias', '--project', 'demo')
