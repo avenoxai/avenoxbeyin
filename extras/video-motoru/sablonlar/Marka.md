@@ -3,6 +3,13 @@
 Bu dosya boş başlar. Kullanıcının söylediği ya da onayladığı şeyler yazılır, tahmin yazılmaz.
 Boş kalan başlık "henüz bilmiyoruz" demektir.
 
+## Tarz özeti
+
+Kullanıcının bugünkü tarzı, beş ile on satır. Her video bittiğinde yeniden yazılır. Kullanıcının
+söylediği düz yazılır, ajanın gözlemlediği satırın sonuna "(gözlem)" eklenir.
+
+Son güncelleme:
+
 ## Kim, kime
 
 - Kanal ya da marka adı:

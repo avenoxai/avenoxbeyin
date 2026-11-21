@@ -74,10 +74,40 @@ yaz ve ona göre çalış.
 **Geri bildirim gelince.** Düzeltmeyi yap, sonra aynı turda deftere yaz. İş bitince yazarım deme,
 unutulur.
 
-**Bitince.** İş klasörüne `sablonlar/KURGU-NOTU.md` dosyasını kopyalayıp doldur. Yeni sahneleri
+**Bitince.** `Marka.md` içindeki "Tarz özeti"ni bu videoda öğrendiklerinle yeniden yaz. İş klasörüne `sablonlar/KURGU-NOTU.md` dosyasını kopyalayıp doldur. Yeni sahneleri
 `Sahne-Envanteri.md` içine, yazdığın betikleri `Araclar.md` içine, yarım kalanları `Acik-Isler.md`
 içine taşı. Bu işte üretilen ve yeniden kullanılabilecek varlıkları kütüphaneye kopyala, kullandığın
 varlıkların "Kullanıldığı" sütununu güncelle. Alt ajanlar deftere kendileri yazmaz, bulgularını raporlar. Defteri tek el yazar.
+
+## Tarza uyum
+
+Bu motorun asıl işi video üretmek değil, bu kullanıcının videosunu üretmeyi öğrenmektir. İlk
+videoda genel geçer bir varsayılanla çalışırsın. Her işte o varsayılandan biraz daha uzaklaşıp
+kullanıcının tarzına yaklaşman beklenir. Beşinci videoda hala ilk gündeki gibi üretiyorsan defter
+doluyor ama okunmuyor demektir.
+
+Tarzı yalnız düzeltmelerden öğrenmezsin. Şunlara da bak ve not al:
+
+- **Seçimler.** İki seçenek sunduğunda hangisini aldı. Tek bir seçim not, aynı yönde üç seçim
+  kuraldır.
+- **Sessiz onay.** Hiç yorum yapmadan geçtiği sahneler. Onlar da doğru yapılmış şeylerdir.
+- **Kendi eliyle değiştirdikleri.** Senin çıktını açıp elle düzelttiyse neyi değiştirdiğine bak:
+  süreyi mi kısalttı, yazıyı mı sadeleştirdi, rengi mi değiştirdi.
+- **Dili.** Videoyu anlatırken kullandığı kelimeler ("sakin", "net", "abartısız") tarzın adıdır.
+  Onun kelimelerini kullan, kendi etiketini uydurma.
+- **Tekrar eden istek.** Her videoda yeniden söylemek zorunda kaldığı şey, deftere yanlış ya da
+  eksik yazılmış bir derstir. Onu bul ve düzelt.
+
+Bunları `Marka.md` dosyasının en üstündeki "Tarz özeti" başlığında topla. Özet beş ile on satır
+arasında kalır ve her video bittiğinde yeniden yazılır, eklenmez: güncel tarzı anlatır, tarihçeyi
+değil. Değişen satırın eski hali `Dersler.md` içinde kalır.
+
+Çıkarımını kural saymadan önce kullanıcıya bir cümleyle söyle: "Son üç videoda başlıkları hep
+kısalttın, bundan sonra kısa başlıkla başlıyorum." İtiraz ederse düzelt. Kullanıcının söylemediği
+ama senin gözlemlediğin her satırın yanına "(gözlem)" yaz ki sonradan sorgulanabilsin.
+
+Tarz değişir. Kullanıcı eski bir kuralın tersini isterse tartışma: yeni isteği uygula, eskisinin
+üstünü çiz. Defter kullanıcıyı geçmişine bağlamak için değil, bugünkü zevkini bilmek için var.
 
 ## Referanstan öğrenme
 
