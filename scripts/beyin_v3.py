@@ -1464,16 +1464,17 @@ def main(argv=None, return_result=False):
         if state == vault or vault in state.parents:
             raise ValueError("--state must be outside the vault")
         read_only_context = args.command == "context" and args.no_sync
-        if read_only_context:
+        dry_checkpoint = args.command == "checkpoint" and args.dry_run
+        if read_only_context or dry_checkpoint:
             # The source CLI can run without the installed entry point, which
             # already disables bytecode. Importing the engine must not write.
             sys.dont_write_bytecode = True
         if read_only_context and args.jev:
             raise ValueError("context --no-sync cannot be combined with --jev")
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
-        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc") else None
+        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc", "checkpoint") else None
         store = engine.MemoryStore(state, vault, read_only=read_only_context) if engine else None
-        sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "homepage-create", "task-create", "checkpoint", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
+        sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "homepage-create", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
         if args.command == "bridge":
             if sum([bool(args.print_config), bool(args.install), bool(args.uninstall)]) > 1:
                 argument_parser.error("--print-config, --install, and --uninstall are mutually exclusive")
@@ -2187,7 +2188,7 @@ def main(argv=None, return_result=False):
             _ensure_scripts_path()
             import beyin_v3_checkpoint
             result = beyin_v3_checkpoint.run_checkpoint(
-                sync, vault, state, payload,
+                None if dry_checkpoint else load_sync()(vault, state), vault, state, payload,
                 harness=args.harness, session=args.session, dry_run=args.dry_run
             )
         elif args.command == "mutation-queue":

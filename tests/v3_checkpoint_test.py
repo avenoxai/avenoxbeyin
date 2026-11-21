@@ -1,8 +1,10 @@
 """Unit tests for unified session checkpoint handoff (Issue #767)."""
 import unittest
 import tempfile
+import hashlib
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import sys
@@ -11,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "template" / ".c
 from beyin_v3_checkpoint import run_checkpoint
 from beyin_v3_sync import SyncEngine
 import beyin_v3_chat_trace
+from tests.v3_package_helpers import inherited_env
 
 class CheckpointTest(unittest.TestCase):
     def setUp(self):
@@ -130,6 +133,59 @@ class CheckpointTest(unittest.TestCase):
         import beyin_entry
         human_text = beyin_entry.human_result(data, "checkpoint")
         self.assertIn("Oturum kontrol noktasi (succeeded):", human_text)
+
+    def test_dry_run_leaves_entire_tree_unchanged(self):
+        root = Path(self.test_dir)
+        source = Path(__file__).resolve().parents[1]
+        installed_scripts = self.vault / ".claude" / "scripts"
+        shutil.copytree(source / "template" / ".claude" / "scripts", installed_scripts,
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copyfile(source / "scripts" / "beyin_v3.py", installed_scripts / "beyin_v3_cli.py")
+        entry = self.vault / "beyin.py"
+        shutil.copyfile(source / "scripts" / "beyin_entry.py", entry)
+        scratch = root / "temp"
+        scratch.mkdir()
+        payload = {
+            "card": {"body": "Müşteri notu"},
+            "threads": [{"heading": "Aktif İşler", "next_step": "Şifreyi yenile"}],
+            "learn": [{"candidate": "İstanbul ılık"}],
+            "receipt": {"event_id": "dry", "summary": "deneme", "refs": ["knowledge/test.md"]},
+            "chat_trace": "Sohbet özeti",
+        }
+
+        def snapshot():
+            entries = {}
+            for path in [root, *root.rglob("*")]:
+                stat = path.stat()
+                digest = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+                entries[path.relative_to(root)] = (stat.st_size, stat.st_mtime_ns, digest)
+            return entries
+
+        empty_state = root / "Boş durum"
+        empty_state.mkdir()
+        for state in (root / "missing", empty_state, self.state):
+            with self.subTest(state=state.name):
+                (self.vault / ".beyin-runtime.json").write_text(
+                    json.dumps({"state": str(state)}), encoding="utf-8", newline="\n")
+                for command in ([str(entry), "--json"], [
+                    str(installed_scripts / "beyin_v3_cli.py"), "--vault", str(self.vault), "--state", str(state)
+                ]):
+                    with self.subTest(entry=command[0]):
+                        before = snapshot()
+                        proc = subprocess.run(
+                            [sys.executable, *command, "checkpoint", "--dry-run"], cwd=self.vault,
+                            input=json.dumps(payload), capture_output=True, text=True, encoding="utf-8",
+                            env=inherited_env(TMPDIR=str(scratch), TMP=str(scratch), TEMP=str(scratch)),
+                            timeout=30,
+                        )
+                        self.assertEqual(proc.returncode, 0, proc.stderr)
+                        steps = json.loads(proc.stdout)["steps"]
+                        self.assertTrue(all(steps[key] == "planned" for key in payload))
+                        after = snapshot()
+                        changed = {str(path) for path in before.keys() | after.keys()
+                                   if before.get(path) != after.get(path)}
+                        self.assertEqual(changed, set())
+                        self.assertEqual(after, before)
 
 if __name__ == "__main__":
     unittest.main()
