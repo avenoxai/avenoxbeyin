@@ -521,14 +521,14 @@ def lint_vault(vault_root, folder=None, *, state=None):
     broken_links = [link for link in broken_links if link["source"] in target_set]
 
     # Keep excluded notes in the graph, but omit their orphan/unlinked findings.
-    from beyin_v3_index import applied_keys, exclusions
+    from beyin_v3_index import applied_keys, exclusions, is_excluded
     excluded = applied_keys(exclusions(state, vault_root)[0], EXCLUDED_DIR_NAMES) if state is not None else ()
 
     def classified(path):
         parts = tuple(dir_key(part) for part in path.split('/')[:-1])
         if parts[:2] in (('knowledge', 'v3'), ('daily', 'v3')):
             return False
-        return not any(part in excluded for part in parts)
+        return not is_excluded(path, excluded)
 
     classification_files = [path for path in target_files if classified(path)]
 

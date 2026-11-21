@@ -10,7 +10,7 @@ is what keeps a source out of context.
 """
 import json
 import os
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePath, PureWindowsPath
 import stat
 import tempfile
 import unicodedata
@@ -166,33 +166,35 @@ def applied_keys(keys, walk_skips=()):
     that withhold a path under an excluded directory either: `receipts` in the list would hide
     every receipt.
     """
-    def _is_dot_or_skip(key):
-        if isinstance(key, str):
-            return key.startswith('.') or key in walk_skips
-        return key[0].startswith('.') or key in walk_skips
-    return frozenset(key for key in keys if not _is_dot_or_skip(key))
+    return frozenset(key for key in keys if not any(
+        part.startswith('.') or part in walk_skips
+        for part in (key if isinstance(key, tuple) else (key,))
+    ))
+
+
+def is_excluded(relative, keys, *, directory=False):
+    """Match the directory components of a vault-relative note or directory path."""
+    if not keys:
+        return False
+    parts = relative.parts if isinstance(relative, PurePath) else relative.replace('\\', '/').split('/')
+    if not directory:
+        parts = parts[:-1]
+    folded = tuple(dir_key(part) for part in parts)
+    return any(part in keys or folded[:end] in keys for end, part in enumerate(folded, 1))
 
 
 def prune(root, directory, dirs, keys, report):
     """Drop the excluded names from one os.walk level and note what was skipped."""
     kept = []
-    root_key = tuple(dir_key(part) for part in Path(directory).relative_to(root).as_posix().split('/')) if directory != str(root) else ()
+    parent = Path(directory).relative_to(root)
     for name in dirs:
-        key = dir_key(name)
-        # Bare name key matches at any depth → exclude.
-        if key in keys:
-            report['pruned'] += 1
-            if len(report['pruned_dirs']) < REPORT_LIMIT:
-                report['pruned_dirs'].append((Path(directory) / name).relative_to(root).as_posix())
+        relative = parent / name
+        if not is_excluded(relative, keys, directory=True):
+            kept.append(name)
             continue
-        # Path key matches only the exact vault-root-relative path → exclude.
-        candidate = root_key + (key,)
-        if candidate in keys:
-            report['pruned'] += 1
-            if len(report['pruned_dirs']) < REPORT_LIMIT:
-                report['pruned_dirs'].append((Path(directory) / name).relative_to(root).as_posix())
-            continue
-        kept.append(name)
+        report['pruned'] += 1
+        if len(report['pruned_dirs']) < REPORT_LIMIT:
+            report['pruned_dirs'].append(relative.as_posix())
     return kept
 
 
@@ -308,15 +310,14 @@ def doctor(state, vault, sources=(), records=None):
               'status': 'invalid' if error is not None else 'active' if names else 'none'}
     if error is not None:
         report['error'] = error
-    keys = {dir_key(name) for name in names}
-    active_sources = [source for source in sources
-                      if not any(dir_key(part) in keys for part in source.split('/')[:-1])]
+    keys = frozenset(_entry_key(name) for name in names)
+    active_sources = [source for source in sources if not is_excluded(source, keys)]
     hint = vendored_hint(active_sources)
     if hint:
         report['vendored_hint'] = hint
     if records is not None:
-        active_records = [r for r in records
-                          if not any(dir_key(part) in keys for part in (r.get('source', '') if isinstance(r, dict) else str(r)).split('/')[:-1])]
+        active_records = [record for record in records if not is_excluded(
+            record.get('source', '') if isinstance(record, dict) else str(record), keys)]
     else:
         active_records = active_sources
     arch_hint = archive_hint(active_sources, records=active_records)

@@ -242,24 +242,24 @@ def save_settings(state, changes):
 
 
 def _index_excluded(state, vault):
-    """Predicate for directory names the user keeps out of the index (state/index.json).
+    """Predicate for paths the user keeps out of the index (state/index.json).
 
     Such a tree is not the user's notes, so the word cap leaves it alone like a code folder.
     Without a state, a list or a valid file nothing is skipped, as before the setting existed.
     """
     if state is None:
-        return lambda name: False
+        return lambda relative, *, directory=False: False
     try:
         directory = str(Path(__file__).resolve().parent)
         if directory not in sys.path:  # loaded by file path: keep the adjacent module importable
             sys.path.insert(0, directory)
-        from beyin_v3_index import dir_key, exclusions
+        from beyin_v3_index import exclusions, is_excluded
         keys = exclusions(state, vault)[0]
     except Exception:  # a report or a hook signal never fails on this setting
         keys = frozenset()
     if not keys:
-        return lambda name: False
-    return lambda name: dir_key(name) in keys
+        return lambda relative, *, directory=False: False
+    return lambda relative, *, directory=False: is_excluded(relative, keys, directory=directory)
 
 
 def companion_names(vault, state=None):
@@ -414,7 +414,7 @@ def file_over_cap(vault, path, cap=DEFAULT_CAP, state=None):
     if relative is None or _excluded(relative, companion_names(vault, state)):
         return None
     skipped = _index_excluded(state, vault)
-    if any(skipped(part) for part in relative.split('/')[:-1]):
+    if skipped(relative):
         return None
     try:
         text = path.read_text(encoding='utf-8', errors='replace')
@@ -441,9 +441,10 @@ def cap_scan(vault, cap=DEFAULT_CAP, limit=20, state=None):
         if not top and ('.git' in folders or '.git' in files):
             folders[:] = []  # a nested repository is code, not notes
             continue
+        relative_dir = Path(directory).relative_to(vault)
         folders[:] = [name for name in folders if not name.startswith('.') and name not in CAP_EXCLUDED_DIRS
                       and name not in CODE_DIRS and _nfc(name) not in companions and not _archive(name)
-                      and not (top and sensitive_excluded(name)) and not skipped(name)]
+                      and not (top and sensitive_excluded(name)) and not skipped(relative_dir / name, directory=True)]
         for name in files:
             if SKILL_OR_INDEX.search(name) or not name.endswith('.md') or name.startswith('.'):
                 continue

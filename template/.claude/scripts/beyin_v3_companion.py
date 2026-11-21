@@ -672,12 +672,14 @@ def _project_companion_dirs(vault, state=None):
     try:
         from beyin_v3_projects import candidate_project_folders
         from beyin_v3_hygiene import sensitive_source
-        from beyin_v3_index import dir_key
+        from beyin_v3_index import is_excluded
         for parent_name in candidate_project_folders(vault):
             parent = vault / parent_name
             if parent.is_symlink() or not parent.is_dir():
                 continue
             if not parent.resolve().is_relative_to(vault):
+                continue
+            if is_excluded(parent.relative_to(vault), excluded_keys, directory=True):
                 continue
             identity = (parent.stat().st_dev, parent.stat().st_ino)
             if identity in seen_parents:
@@ -689,9 +691,7 @@ def _project_companion_dirs(vault, state=None):
                 resolved_entry = entry.resolve()
                 if not resolved_entry.is_relative_to(vault):
                     continue
-                rel_parts = resolved_entry.relative_to(vault).parts
-                key_parts = tuple(dir_key(p) for p in rel_parts)
-                if any(dir_key(p) in excluded_keys for p in rel_parts) or key_parts in excluded_keys:
+                if is_excluded(resolved_entry.relative_to(vault), excluded_keys, directory=True):
                     continue
                 if sensitive_source((resolved_entry / 'Threads.md').relative_to(vault).as_posix()):
                     continue

@@ -182,15 +182,15 @@ def parse_date_to_timestamp(val: str | None) -> float | None:
 
 def _index_excluded_predicate(state: Path | None, vault: Path):
     if state is None:
-        return lambda name: False
+        return lambda relative: False
     try:
-        from beyin_v3_index import dir_key, exclusions
+        from beyin_v3_index import exclusions, is_excluded
         keys = exclusions(state, vault)[0]
     except Exception:
         keys = frozenset()
     if not keys:
-        return lambda name: False
-    return lambda name: dir_key(name) in keys
+        return lambda relative: False
+    return lambda relative: is_excluded(relative, keys, directory=True)
 
 
 def scan_audit_candidates(vault: Path, state: Path | None = None, *, strict: bool = False) -> list[dict]:
@@ -205,7 +205,8 @@ def scan_audit_candidates(vault: Path, state: Path | None = None, *, strict: boo
         pruned_dirs = []
         for d in dirs:
             dfold = fold(d)
-            if d.startswith('.') or dfold in SYSTEM_EXCLUDED_DIRS or sensitive_excluded(d) or is_index_excluded(d):
+            if (d.startswith('.') or dfold in SYSTEM_EXCLUDED_DIRS or sensitive_excluded(d)
+                    or is_index_excluded((root_path / d).relative_to(vault))):
                 pruned_dirs.append(d)
         for d in pruned_dirs:
             dirs.remove(d)

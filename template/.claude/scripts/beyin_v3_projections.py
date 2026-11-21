@@ -34,6 +34,8 @@ def _record_excluded_dirs(engine, db):
     is committed together with the record deletions (or re-indexing) the list caused, so it
     always describes the records the same reader sees. A release without the row ignores it.
     """
+    # Older readonly receipt readers recognize only bare strings. Withhold a
+    # same-named sibling too so those readers cannot expose a pruned note's receipt.
     keys = getattr(engine, 'excluded_dir_keys', None)
     projected = None if keys is None else {key[-1] if isinstance(key, tuple) else key for key in keys}
     _record_names(db, EXCLUDED_DIRS_ROW, projected)
@@ -53,9 +55,7 @@ def _record_names(db, key, names):
     if names is None:
         return  # no scan ran on this engine; the stored row still describes the index
     stored = db.execute('SELECT value FROM metadata WHERE key=?', (key,)).fetchone()
-    # names may contain str (bare names) and tuple (path keys); sort by string form.
-    ordered = sorted(names, key=lambda k: '/'.join(k) if isinstance(k, tuple) else k)
-    value = json.dumps(ordered, ensure_ascii=False) if names else None
+    value = json.dumps(sorted(names), ensure_ascii=False) if names else None
     if value is None:
         if stored:
             db.execute('DELETE FROM metadata WHERE key=?', (key,))
@@ -88,7 +88,7 @@ def _hidden_ref_sources(db, refs):
     """
     refs = sorted(set(refs))
     from beyin_v3_hygiene import sensitive_source
-    from beyin_v3_index import dir_key
+    from beyin_v3_index import dir_key, is_excluded
 
     def ref_key(ref):
         # Same fold as excluded directory names: NFC, Turkish i, not str.casefold() alone.
@@ -107,9 +107,7 @@ def _hidden_ref_sources(db, refs):
     unreadable = {ref_key(name) for name in _stored_names(db, UNREADABLE_SOURCES_ROW)}
     hidden.update(ref for ref in refs if ref_key(ref) in unreadable)
     excluded = _excluded_dir_keys(db)
-    if excluded:
-        hidden.update(ref for ref in refs
-                      if any(dir_key(part) in excluded for part in ref.replace('\\', '/').split('/')[:-1]))
+    hidden.update(ref for ref in refs if is_excluded(ref, excluded))
     for start in range(0, len(refs), 500):
         chunk = refs[start:start + 500]
         try:

@@ -539,9 +539,9 @@ def evidence_refs(engine, refs, own_source=None, existing=True):
 
 
 def _index_excluded(engine, source):
-    from beyin_v3_index import dir_key, exclusions as index_exclusions
+    from beyin_v3_index import exclusions as index_exclusions, is_excluded
     excluded_keys = index_exclusions(engine.state, engine.root)[0] if engine.state else frozenset()
-    return bool(excluded_keys and any(dir_key(part) in excluded_keys for part in Path(source).parts[:-1]))
+    return is_excluded(source, excluded_keys)
 
 
 def _idempotency_path(folder, key):

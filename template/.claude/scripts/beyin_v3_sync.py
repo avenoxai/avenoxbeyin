@@ -24,7 +24,7 @@ if _MODULE_DIR not in sys.path:
 from beyin_v3 import (HARNESSES, MAX_RECEIPT_LINKS, RECEIPT_CLIENT_NAME, RECEIPT_CLIENTS, REJECTED_AT, RETIRED_STATUSES, MemoryStore, ReceiptConflict, RevisionConflict, _json,
                       _receipt_lf, _receipt_same_summary,
                       _path_redirected, _plain_link, _rejected_inference, _status_word, rejected_dependents, resolve_supersedes)
-from beyin_v3_index import applied_keys, dir_key, exclusions as index_exclusions, prune as prune_excluded
+from beyin_v3_index import applied_keys, exclusions as index_exclusions, is_excluded, prune as prune_excluded
 from beyin_v3_hygiene import sensitive_excluded, sensitive_source
 from beyin_v3_projections import (is_receipt_view_source, is_receipt_view_conflict, project_receipts,
                                   quarantine_receipt_view_history, archived_receipt_view_aliases,
@@ -887,8 +887,8 @@ class SyncEngine:
         # Read once per sync, not per directory: the config cannot change mid-walk.
         excluded, self.index_exclusions = index_exclusions(self.state, self.root)
         # A listed name the walk skips anyway is a no-op. One set prunes below and is stored by
-        # project_receipts in this sync's transaction, so the receipt readers withhold exactly
-        # what the list took out of the index.
+        # project_receipts in this sync's transaction, so receipt readers can withhold sources
+        # that lost their index record.
         excluded = self.excluded_dir_keys = applied_keys(excluded, EXCLUDED_DIRS)
         for directory, dirs, files in os.walk(self.root, followlinks=False):
             dirs[:] = sorted(d for d in dirs if not d.startswith('.') and d.casefold() not in EXCLUDED_DIRS
@@ -1363,7 +1363,7 @@ class SyncEngine:
         if sensitive_source(source):
             raise ValueError('source is under a sensitive directory excluded from the memory index')
         excluded = index_exclusions(self.state, self.root)[0]
-        if excluded and any(dir_key(part) in excluded for part in Path(source).parts[:-1]):
+        if is_excluded(source, excluded):
             raise ValueError('source is under a directory excluded from the index (excluded_dirs in index.json)')
 
     def _intent(self, relative, old_hash, content, kind, event=None):

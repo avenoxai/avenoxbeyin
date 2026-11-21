@@ -369,10 +369,10 @@ def _scan_front_values(path, keys):
 
 
 def _scan_allowed(path, vault, excluded, onerror=None):
-    from beyin_v3_index import dir_key
+    from beyin_v3_index import is_excluded
     try:
-        parts = path.relative_to(vault).parts[:-1]
-        if any(sensitive_excluded(part) or dir_key(part) in excluded for part in parts):
+        relative = path.relative_to(vault)
+        if any(sensitive_excluded(part) for part in relative.parts[:-1]) or is_excluded(relative, excluded):
             return False
         if not _is_safe_file(path, onerror=onerror):
             return False
@@ -405,7 +405,7 @@ def scan_stale_tasks(vault: Path, now: float, stale_days: int = 14, state: Path 
     undated (age_days: None) rather than inventing an age from file mtime.
     Open tasks include active, waiting, and blocked tasks.
     """
-    from beyin_v3_index import dir_key
+    from beyin_v3_index import is_excluded
     vault = Path(vault).resolve()
     excluded = _scan_keys(vault, state)
     open_tasks = []
@@ -423,7 +423,7 @@ def scan_stale_tasks(vault: Path, now: float, stale_days: int = 14, state: Path 
         errors.append(type(exc).__name__)
 
     def is_task_dir(name: str, folded: str) -> bool:
-        return dir_key(name) not in excluded and ('task' in folded or 'gorev' in folded)
+        return not is_excluded(name, excluded, directory=True) and ('task' in folded or 'gorev' in folded)
 
     for folder in _find_top_matching_dirs(vault, is_task_dir, onerror=scan_error):
         try:
@@ -436,7 +436,7 @@ def scan_stale_tasks(vault: Path, now: float, stale_days: int = 14, state: Path 
             scan_error(exc)
 
     for starter in ('tasks', '500-Tasks', 'Görevler', '✅ 500-Tasks'):
-        if dir_key(starter) in excluded:
+        if is_excluded(starter, excluded, directory=True):
             continue
         f = vault / starter
         try:
@@ -452,13 +452,14 @@ def scan_stale_tasks(vault: Path, now: float, stale_days: int = 14, state: Path 
             scan_error(exc)
 
     for folder in task_folders:
-        if dir_key(folder.name) in excluded:
+        if is_excluded(folder.relative_to(vault), excluded, directory=True):
             continue
         for root, dirs, files in os.walk(folder, onerror=scan_error):
+            relative_dir = Path(root).relative_to(vault)
             readable_dirs = []
             for name in dirs:
                 if (name.startswith('.') or name in CODE_DIRS or sensitive_excluded(name)
-                        or dir_key(name) in excluded):
+                        or is_excluded(relative_dir / name, excluded, directory=True)):
                     continue
                 try:
                     if stat.S_ISDIR((Path(root) / name).lstat().st_mode):
@@ -750,6 +751,7 @@ def scan_stale_threads(vault: Path, now: float, stale_days: int = 14, state: Pat
 
 
 def scan_knowledge_digest(vault: Path, now: float, digest_days: int = 7, state: Path | None = None) -> dict:
+    from beyin_v3_index import is_excluded
     vault = Path(vault).resolve()
     excluded = _scan_keys(vault, state)
     recent_items = []
@@ -786,9 +788,13 @@ def scan_knowledge_digest(vault: Path, now: float, digest_days: int = 7, state: 
                 pass
 
     for folder in knowledge_folders:
+        if is_excluded(folder.relative_to(vault), excluded, directory=True):
+            continue
         for root, dirs, files in os.walk(folder):
+            relative_dir = Path(root).relative_to(vault)
             dirs[:] = [d for d in dirs if not d.startswith('.') and d not in CODE_DIRS
-                       and not sensitive_excluded(d) and not (Path(root) / d).is_symlink()]
+                       and not sensitive_excluded(d) and not (Path(root) / d).is_symlink()
+                       and not is_excluded(relative_dir / d, excluded, directory=True)]
             for f in files:
                 file_path = Path(root) / f
                 if not _scan_allowed(file_path, vault, excluded) or file_path.suffix.lower() != '.md':

@@ -14,6 +14,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
 import unittest
 from unittest import mock
@@ -847,6 +848,77 @@ class PathListTest(EngineFixture):
         self.assertEqual(result['index_exclusions']['pruned'], 2)
         self.assertEqual(set(result['index_exclusions']['pruned_dirs']),
                          {'projects/dukkan/research', 'proje/3rdparty'})
+
+
+class PathConsumersTest(EngineFixture):
+    def setUp(self):
+        super().setUp()
+        self.config({'excluded_dirs': ['projects/drafts', 'tasks/drafts', 'knowledge/drafts',
+                                        'local/Arşiv Belgeleri', 'vendored', 'node_modules']})
+        self.hidden = self.note('projects/drafts/deep/hidden.md', 'Synthetic source for review.\n', metadata=False)
+        self.siblings = ['projects/draftsmanship/visible.md', 'local/drafts/visible.md']
+        for source in (*self.siblings, 'local/vendored/hidden.md', 'local/node_modules/hidden.md',
+                       'local/Arşiv Belgeleri/hidden.md'):
+            self.note(source, 'Synthetic source for review.\n', metadata=False)
+
+    def test_source_creates_refuse_a_path_before_writing(self):
+        source = 'knowledge/drafts/new.md'
+        with self.assertRaisesRegex(ValueError, 'excluded from the index'):
+            self.engine.note_create(source, 'Synthetic note.')
+        self.assertFalse((self.vault / source).exists())
+        task = 'tasks/drafts/task.md'
+        with self.assertRaisesRegex(ValueError, 'excluded from the index'):
+            self.engine.task_create(task, 'Synthetic task.', {'id': 'fixture-task', 'status': 'active'})
+        self.assertFalse((self.vault / task).exists())
+
+    def test_note_edit_and_retry_verify_a_source_outside_the_index(self):
+        source = self.hidden.relative_to(self.vault).as_posix()
+        request = {'source': source, 'expected_sha256': hashlib.sha256(self.hidden.read_bytes()).hexdigest(),
+                   'edits': [{'old': 'Synthetic source', 'new': 'Edited source'}], 'idempotency_key': 'excluded-path'}
+        self.assertEqual(self.engine.note_edit(request)['status'], 'written')
+        self.assertTrue(self.engine.note_edit(request)['idempotent'])
+        self.assertEqual(self.hidden.read_bytes(), b'Edited source for review.\n')
+        self.assertNotIn(source, self.sources())
+
+    def test_audit_and_cap_skip_the_paths_and_keep_siblings(self):
+        audit = load_file('path_consumer_audit', SCRIPTS / 'beyin_v3_audit.py')
+        hygiene = load_file('path_consumer_hygiene', SCRIPTS / 'beyin_v3_hygiene.py')
+        for surface, sources in (
+            ('audit', [row['path'] for row in audit.scan_audit_candidates(self.vault, self.state)]),
+            ('cap', [row['file'] for row in hygiene.cap_scan(self.vault, cap=1, state=self.state)['over']])):
+            with self.subTest(surface=surface):
+                self.assertEqual(sorted(sources), sorted(self.siblings))
+        self.assertIsNone(hygiene.file_over_cap(self.vault, self.hidden, state=self.state))
+
+    def test_lint_classification_uses_path_components(self):
+        lint = load_file('path_consumer_lint', SCRIPTS / 'beyin_v3_lint.py')
+        report = lint.lint_vault(self.vault, state=self.state)
+        self.assertEqual(report['orphans'], sorted(self.siblings))
+
+    def test_triage_skips_excluded_tasks_and_digest_sources(self):
+        triage = load_file('path_consumer_triage', SCRIPTS / 'beyin_v3_triage.py')
+        for source in ('tasks/drafts/task.md', 'tasks/draftsmanship/task.md',
+                       'knowledge/drafts/note.md', 'knowledge/draftsmanship/note.md'):
+            self.note(source, 'Synthetic source for review.\n', metadata=False)
+        now = time.time()
+        tasks = triage.scan_stale_tasks(self.vault, now, state=self.state)
+        digest = triage.scan_knowledge_digest(self.vault, now, state=self.state)
+        self.assertEqual(tasks['open_count'], 1)
+        self.assertEqual([row['path'] for row in digest['items']], ['knowledge/draftsmanship/note.md'])
+
+    def test_doctor_omits_stale_index_entries_under_listed_paths(self):
+        self.config({'excluded_dirs': ['projects/vendor', 'projects/Arşiv']})
+        sources = ['projects/vendor/README.md', 'projects/Arşiv/old.md',
+                   'local/vendor/README.md', 'local/Arşiv/old.md']
+        report = index_settings.doctor(self.state, self.vault, sources,
+                                       records=[{'source': source} for source in sources])
+        self.assertEqual(report['vendored_hint']['dirs'], [{'dir': 'local/vendor', 'notes': 1}])
+        self.assertEqual(report['archive_hint']['dirs'], [{'dir': 'local/Arşiv', 'notes': 1}])
+
+    def test_path_under_builtin_skip_does_not_add_a_receipt_exclusion(self):
+        self.config({'excluded_dirs': ['projects/receipts/drafts', 'projects/.hidden/drafts']})
+        self.engine.sync()
+        self.assertEqual(self.engine.excluded_dir_keys, frozenset())
 
 
 
