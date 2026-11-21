@@ -657,11 +657,12 @@ def _project_companion_dirs(vault, state=None):
     """Find project directories that contain companion files (Threads.md, Last-Session.md, etc.)."""
     vault = Path(vault).resolve()
     dirs = []
+    seen_parents = set()
     excluded_keys = frozenset()
     if state is not None:
         try:
             from beyin_v3_index import exclusions
-            excluded_keys, _ = exclusions(state)
+            excluded_keys, _ = exclusions(state, vault)
         except Exception:
             excluded_keys = frozenset()
     try:
@@ -674,6 +675,10 @@ def _project_companion_dirs(vault, state=None):
                 continue
             if not parent.resolve().is_relative_to(vault):
                 continue
+            identity = (parent.stat().st_dev, parent.stat().st_ino)
+            if identity in seen_parents:
+                continue
+            seen_parents.add(identity)
             for entry in sorted(parent.iterdir()):
                 if not entry.is_dir() or entry.is_symlink():
                     continue
@@ -684,8 +689,7 @@ def _project_companion_dirs(vault, state=None):
                 key_parts = tuple(dir_key(p) for p in rel_parts)
                 if any(dir_key(p) in excluded_keys for p in rel_parts) or key_parts in excluded_keys:
                     continue
-                rel_posix = resolved_entry.relative_to(vault).as_posix() + '/'
-                if sensitive_source(rel_posix):
+                if sensitive_source((resolved_entry / 'Threads.md').relative_to(vault).as_posix()):
                     continue
                 if any((entry / name).is_file() and not (entry / name).is_symlink()
                        for name in ('Threads.md', 'Last-Session.md', 'Core.md', 'Soul.md')):

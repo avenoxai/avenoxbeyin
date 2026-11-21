@@ -1239,7 +1239,12 @@ class CompactionRaceTest(unittest.TestCase):
         self.state.mkdir(parents=True, exist_ok=True)
         (self.state / 'index.json').write_text(json.dumps({'schema': 1, 'excluded_dirs': ['secret_proj']}), encoding='utf-8')
 
+        private_project = self.vault / 'projects' / 'Şifre'
+        private_project.mkdir()
+        (private_project / 'Threads.md').write_text('Private', encoding='utf-8')
         rep = companion_module.hygiene(self.vault, self.state, include_projects=True)
+        self.assertNotIn('projects/Şifre', rep['project_directories'])
+        self.assertEqual(rep['project_directories'].count('projects/demo'), 1)
         self.assertEqual(rep['status'], 'over_limit')
         self.assertIn('projects/demo/Threads.md', rep['over_limit'])
         self.assertNotIn('projects/secret_proj', rep['project_directories'])
