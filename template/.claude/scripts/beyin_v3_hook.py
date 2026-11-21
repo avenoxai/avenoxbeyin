@@ -805,8 +805,9 @@ def main():
         if not settings['auto_sync']:
             print(json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == 'antigravity' else '{}'))
             return
+        turn = None
         try:
-            enqueue_event(vault, state, payload, args.harness)
+            turn = enqueue_event(vault, state, payload, args.harness)
         except OSError as exc:
             if not permission_refused(exc):
                 raise
@@ -855,10 +856,13 @@ def main():
                 notice += hint(state, args.harness, payload)
             except Exception:
                 pass  # Optional conversation hints cannot cost a turn or replace its context.
-        if not args.metadata_only and event == 'UserPromptSubmit':
+        fb_hint = ''
+        usage_session = None
+        if not args.metadata_only and turn and event == 'UserPromptSubmit' and not is_synthetic_prompt(payload):
             try:
-                from beyin_v3_usage import feedback_hint
-                fb_hint = feedback_hint(state, prompt_text(payload))
+                from beyin_v3_usage import feedback_hint, session_key
+                usage_session = session_key(payload.get('session_id'))
+                fb_hint = feedback_hint(state, prompt_text(payload), session=usage_session)
                 if fb_hint:
                     notice = (notice + "\n" + fb_hint) if notice else fb_hint
             except Exception:
@@ -1090,12 +1094,6 @@ def main():
                                          receipt=receipt if shown else None)
                     except Exception:
                         pass
-                if delivered.get("records"):
-                    try:
-                        from beyin_v3_usage import record_injected
-                        record_injected(state, delivered["records"])
-                    except Exception:
-                        pass
                 try:
                     # Records held back as already delivered this session still anchor the topic (#363).
                     if duplicates:
@@ -1109,7 +1107,14 @@ def main():
                              inherited=inherited)
                 except (ValueError, OSError):
                     pass
-                if not delivered.get("records") and not receipt_only:
+                shown_records = delivered.get("records", [])
+                if turn and (shown_records or not fb_hint) and time.monotonic() - started < HOOK_BUDGET - 0.1:
+                    try:
+                        from beyin_v3_usage import record_injected
+                        record_injected(state, shown_records, session=usage_session, turn=turn)
+                    except Exception:
+                        pass  # Optional counters cannot break context delivery.
+                if not shown_records and not receipt_only:
                     diagnostic = fit_client(args.harness, (notice + warning)[:limit])
                     remember_notice(diagnostic)
                     print(json.dumps(output_context(args.harness, event, diagnostic)) if diagnostic else "{}")

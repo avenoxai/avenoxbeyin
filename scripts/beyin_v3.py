@@ -1251,6 +1251,7 @@ def parser(note_namespace=None, is_json=False):
     feedback_p = sub.add_parser("feedback", help="Record feedback (ok, wrong, stale) for a note or source")
     feedback_p.add_argument("target", help="Note ID, source path, or identifier")
     feedback_p.add_argument("verdict", choices=["ok", "wrong", "stale"], help="Feedback verdict")
+    feedback_p.add_argument("--session", help="Session identifier or the receipt session value shown by the hook")
 
     mutation_queue = sub.add_parser("mutation-queue", help="Opt-in local offline mutation queue (off by default; machine-local state)")
     queue_action = mutation_queue.add_mutually_exclusive_group()
@@ -1463,16 +1464,16 @@ def main(argv=None, return_result=False):
         if state == vault or vault in state.parents:
             raise ValueError("--state must be outside the vault")
         read_only_context = args.command == "context" and args.no_sync
-        if read_only_context:
+        if read_only_context or args.command == "feedback":
             # The source CLI can run without the installed entry point, which
-            # already disables bytecode. Importing the engine must not write.
+            # already disables bytecode. Merely importing runtime code must not write.
             sys.dont_write_bytecode = True
         if read_only_context and args.jev:
             raise ValueError("context --no-sync cannot be combined with --jev")
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
-        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc") else None
+        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc", "feedback") else None
         store = engine.MemoryStore(state, vault, read_only=read_only_context) if engine else None
-        sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "homepage-create", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history", "feedback") and not read_only_context else None
+        sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "homepage-create", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
         if args.command == "bridge":
             if sum([bool(args.print_config), bool(args.install), bool(args.uninstall)]) > 1:
                 argument_parser.error("--print-config, --install, and --uninstall are mutually exclusive")
@@ -2190,7 +2191,14 @@ def main(argv=None, return_result=False):
         elif args.command == "feedback":
             _ensure_scripts_path()
             import beyin_v3_usage as usage
-            result = usage.record_feedback(state, args.target, args.verdict, store=sync.store)
+            if args.session is not None:
+                session = args.session if re.fullmatch(r"[0-9a-f]{24}", args.session) else usage.session_key(args.session)
+            else:
+                identities = {os.environ[name] for name in (
+                    "BEYIN_V3_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "PI_SESSION_ID", "CODEX_THREAD_ID"
+                ) if os.environ.get(name)}
+                session = usage.session_key(identities.pop()) if len(identities) == 1 else None
+            result = usage.record_feedback(state, args.target, args.verdict, session=session)
 
         elif args.command == "mutation-queue":
             _ensure_scripts_path()
@@ -2325,7 +2333,7 @@ def main(argv=None, return_result=False):
                                           links=payload.get('links'))
             try:
                 import beyin_v3_usage
-                beyin_v3_usage.record_cited(state, payload.get("refs"))
+                beyin_v3_usage.record_cited(state, payload["event_id"], payload["refs"], sync)
             except Exception:
                 pass
         elif args.command == "history":

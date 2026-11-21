@@ -442,7 +442,7 @@ def human_result(result, command, installed_version=None):
         if result.get('success'):
             fb = result.get('feedback', {})
             return f"Geri bildirim kaydedildi ({result.get('target')} -> {result.get('verdict')}): ok={fb.get('ok', 0)}, wrong={fb.get('wrong', 0)}, stale={fb.get('stale', 0)}"
-        return f"Geri bildirim kaydedilemedi: {result.get('error', 'unknown error')}"
+        return f"Geri bildirim kaydedilemedi: {result.get('message') or result.get('error', 'unknown error')}"
 
     if command == 'mutation-queue':
         if isinstance(result.get('enabled'), bool):
