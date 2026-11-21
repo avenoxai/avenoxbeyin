@@ -32,7 +32,7 @@ flowchart TB
 
 Asıl kaynak dosyaların. Beyin bunların yerel indeksini tutar ve seçilen bağlamı kullandığın AI istemcisine verir. Sohbet geçmişinin tamamını kendiliğinden bilgiye dönüştürmez; kalıcı olmasını istediğin şeyi nota yazdırırsın.
 
-> **V3.13.0'da yeni:** Yakala'dan isteğe bağlı Claude/Codex'e gönderim, Word (.docx) belgelerini okuma, Pi bağlantısı ve OpenCode global köprüsü. Yerel web görünümü ve çalışma alanı araçları da bu sürümde. [Tüm yenilikler](docs/v3/releases/3.13.0.md).
+> **V3.14.1'de yeni:** İsteğe bağlı [video motoru](extras/video-motoru/README.md) paketi geldi: boş başlar, her videoda markanı ve düzeltmelerini not alarak gelişir. [Sürüm notu](docs/v3/releases/3.14.1.md). Önceki sürümün yenilikleri: [3.14.0](docs/v3/releases/3.14.0.md).
 
 <a id="kurulum"></a>
 ## Üç adımda kurulum
@@ -105,6 +105,8 @@ Kaydı dosyada, geri çağırmayı yeni oturumda kontrol et. Böylece kendi iste
 | **beyin-kontrol** | Hafızadaki bilginin hala doğru olup olmadığını denetleme; yalnız sen istediğinde çalışır, onayın olmadan yazmaz |
 
 Ortak kaynak `.agents/skills` içindedir; Claude ve Kiro kendi proje kopyalarını kullanır. Mevcut kişisel skill'ler sessizce ezilmez.
+
+**İsteğe bağlı paket:** [Video motoru](extras/video-motoru/README.md), boş başlayıp her videoda markanı ve düzeltmelerini not alarak gelişen bir video skill'i. Kurucu onu getirmez; istersen `skill-import` ile alırsın.
 
 </details>
 

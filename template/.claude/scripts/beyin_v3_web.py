@@ -33,6 +33,7 @@ import unicodedata
 import urllib.parse
 import webbrowser
 
+import beyin_v3_releases as releases
 import beyin_v3_web_ui as ui
 
 HOST = '127.0.0.1'
@@ -162,7 +163,7 @@ class Core:
 
     def runtime_changed(self):
         """An update or rollback replaced the vault's code while this process holds the old one."""
-        return self.version() != self.started_version
+        return releases.pending_transaction(self.state) or self.version() != self.started_version
 
     def run(self, *arguments):
         """One CLI command in this process, exactly as `beyin.py <command>` would run it.
@@ -263,6 +264,40 @@ class Core:
                   'ozet_gizli': bool(item.get('summary_withheld')), 'kaynaklar': list(item.get('refs') or [])[:20],
                   'gizlenen': item.get('refs_withheld') or {}} for item in result.get('items', [])]
         return {'makbuzlar': items, 'toplam': result.get('total', 0), 'gun': RECEIPT_DAYS}
+
+    def review(self):
+        triage_res = self.run('triage')
+        store = self.store()
+        records = store._records()
+        superseded = store._superseded_ids(records)
+        eligible, _ = store._eligible('internal', records=records)
+        eligible = [record for record in eligible if record['id'] not in superseded]
+        by_source = {record['source']: record['id'] for record in eligible if record.get('source')}
+
+        def with_preview(rows):
+            return [dict(row, record_id=by_source[row['path']]) if row.get('path') in by_source else row
+                    for row in rows]
+
+        drafts = []
+        for r in eligible:
+            status = str(r.get('status') or '').strip().casefold()
+            if status in ('taslak', 'draft', 'proposed'):
+                drafts.append(r)
+        drafts.sort(key=lambda r: str(r.get('created_at') or r.get('updated_at') or '9999'))
+        taslaklar = [{
+            'id': r['id'],
+            'baslik': _title(r),
+            'kaynak': r.get('source'),
+            'durum': _text(r.get('status')),
+            'tarih': _text(r.get('created_at') or r.get('updated_at')),
+        } for r in drafts]
+        tasks = triage_res.get('tasks') or {}
+        return {
+            'inbox': triage_res.get('inbox'),
+            'bayat_konular': with_preview(triage_res.get('threads', {}).get('stale_threads', [])),
+            'gorevler': dict(tasks, stale_tasks=with_preview(tasks.get('stale_tasks', []))),
+            'taslaklar': taslaklar,
+        }
 
     def doctor(self):
         result = self.run('doctor')
@@ -443,7 +478,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.server.core.runtime_changed():
             return False
         self._fail(409, 'Beyin güncellendi ya da geri alındı; web görünümü kapanıyor. '
-                        'Yeniden açmak için: beyin.py web ac')
+                        'İşlem yarım kaldıysa beyin.py recover çalıştırın. Yeniden açmak için: beyin.py web ac')
         self.server.stop_soon()
         return True
 
@@ -502,6 +537,7 @@ class Handler(BaseHTTPRequestHandler):
             '/api/kayit': lambda: core.record(query.get('id', [''])[0]),
             '/api/makbuzlar': core.receipts,
             '/api/hafiza': core.memory,
+            '/api/gozden-gecir': core.review,
         }
         self._route(routes.get(url.path))
 
@@ -679,12 +715,19 @@ def bind(core, port=None, read_only=False):
     raise WebError(409, f'Port kullanılamıyor: {port}' if port else 'Boş port bulunamadı') from last
 
 
+def _manual_launch_help():
+    return ('Yeni oturum için ayrı bir terminalde beyin.py web ac --no-browser --json çalıştırın. '
+            'JSON adres alanı tek kullanımlık giriş bağlantısı içerir; paylaşmayın veya kaydetmeyin.')
+
+
 def serve(core, port=None, read_only=False, open_browser=True, as_json=False):
     running = read_running(core.state)
     if running and alive(running):
         url = launch_url(running)
+        # Don't expose launch token in human output (#691.1)
+        display_url = f'http://127.0.0.1:{running["port"]}/'
         _say(as_json, {'durum': 'zaten_calisiyor', 'adres': url, 'salt_okunur': bool(running.get('read_only'))},
-             'Web görünümü zaten çalışıyor: ' + url)
+             'Web görünümü zaten çalışıyor: ' + display_url + ('' if open_browser else '\n' + _manual_launch_help()))
         if open_browser:
             webbrowser.open(url)
         return 0
@@ -692,10 +735,14 @@ def serve(core, port=None, read_only=False, open_browser=True, as_json=False):
     try:
         write_running(core.state, server)
         url = f'http://127.0.0.1:{server.port}/?token={server.launch_token}'
+        # Don't expose launch token in human output (#691.1); it's single-use and consumed on first browser visit
+        display_url = f'http://127.0.0.1:{server.port}/'
         _say(as_json, {'durum': 'basladi', 'adres': url, 'salt_okunur': server.read_only},
-             '\n'.join(('Beyin web görünümü açıldı (yalnız bu bilgisayar).', 'Adres: ' + url,
-                        'Mod: ' + ('salt okunur' if server.read_only else 'yazma açık (görev, eşitleme, sıkıştırma)'),
-                        f'{IDLE_SECONDS // 60} dakika kullanılmazsa kapanır. Kapatmak için Ctrl+C ya da beyin.py web durdur.')))
+             '\n'.join(('Beyin web görünümü açıldı (yalnız bu bilgisayar).',
+                         ('Tarayıcıda açılıyor: ' + display_url + ' (tek kullanımlık bağlantı, terminallerde gösterilmiyor)'
+                          if open_browser else 'Tarayıcı açılmadı: ' + display_url + '\n' + _manual_launch_help()),
+                         'Mod: ' + ('salt okunur' if server.read_only else 'yazma açık (görev, eşitleme, sıkıştırma)'),
+                         f'{IDLE_SECONDS // 60} dakika kullanılmazsa kapanır. Kapatmak için Ctrl+C ya da beyin.py web durdur.')))
     except BaseException:
         # A server that never got announced never serves: no open port, no stale running record.
         server.server_close()
@@ -797,7 +844,7 @@ def main(argv=None, vault=None, state=None, cli=None):
     start = sub.add_parser('ac', help='Sunucuyu başlat ve tarayıcıda aç')
     start.add_argument('--port', type=int, help='Tercih edilen port (varsayılan 7373-7393 arası ilk boş port)')
     start.add_argument('--read-only', action='store_true', help='Salt okunur: görev, eşitleme ve sıkıştırma kapalı')
-    start.add_argument('--no-browser', action='store_true', help='Tarayıcıyı açma; adresi yalnız yazdır')
+    start.add_argument('--no-browser', action='store_true', help='Tarayıcıyı açma; manuel tek kullanımlık giriş bağlantısı için --json ekle')
     sub.add_parser('durum', help='Çalışıyor mu?')
     sub.add_parser('durdur', help='Çalışan sunucuyu kapat')
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))

@@ -2,12 +2,76 @@
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import os
+from pathlib import Path
 import re
+import tempfile
 import time
 
 import beyin_v3_jev_client as client
 from beyin_v3_secrets import redact
 from beyin_v3 import PackedContext, pack_context, pack_widened
+
+
+AUTO_CONTEXT_AUDIT_FILE = 'jev-auto-context-audit.json'
+AUTO_CONTEXT_AUDIT_LOG = 'jev-auto-context.log'
+AUTO_AUDIT_DEFAULTS = dict(enabled=False, include_scores=True, include_topical=True)
+
+
+def _audit_config_path(state_dir):
+    return Path(state_dir) / AUTO_CONTEXT_AUDIT_FILE
+
+
+def _audit_log_path(state_dir):
+    return Path(state_dir) / AUTO_CONTEXT_AUDIT_LOG
+
+
+def load_audit_config(state_dir):
+    path = _audit_config_path(state_dir)
+    if not path.exists() or path.is_symlink():
+        return dict(AUTO_AUDIT_DEFAULTS)
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+        if not isinstance(data, dict):
+            return dict(AUTO_AUDIT_DEFAULTS)
+        result = dict(AUTO_AUDIT_DEFAULTS, **data)
+        if type(result.get('enabled')) is not bool:
+            result['enabled'] = False
+        if type(result.get('include_scores')) is not bool:
+            result['include_scores'] = True
+        if type(result.get('include_topical')) is not bool:
+            result['include_topical'] = True
+        return result
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        return dict(AUTO_AUDIT_DEFAULTS)
+
+
+def save_audit_config(state_dir, config):
+    path = _audit_config_path(state_dir)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent, delete=False) as handle:
+        os.chmod(handle.name, 0o600)
+        json.dump(config, handle, ensure_ascii=False)
+        temporary = handle.name
+    os.replace(temporary, path)
+    os.chmod(path, 0o600)
+
+
+def _write_audit_log(state_dir, entry):
+    """Write per-note audit entry to local log file (no prompt or note body)."""
+    path = _audit_log_path(state_dir)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            return
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0)
+        fd = os.open(path, flags, 0o600)
+        with os.fdopen(fd, 'a', encoding='utf-8') as handle:
+            if hasattr(os, 'fchmod'):
+                os.fchmod(handle.fileno(), 0o600)
+            handle.write(json.dumps(entry, ensure_ascii=False) + '\n')
+    except OSError:
+        pass
 
 
 def _strings(value):
@@ -422,6 +486,45 @@ def auto_context(store, harness, query, context, *, budget_chars, timeout_cap=2.
     # Laya never reaches `on` (client.SHADOW_ONLY); unmeasured thresholds would only log as well.
     client.log_event(store.state_dir, dict(outcome, outcome='scored' if bar['verified'] else 'scored_unverified',
                                            gate_passed=passed, dropped=dropped, rescued=rescued))
+    audit_cfg = load_audit_config(store.state_dir)
+    if audit_cfg.get('enabled'):
+        notes_detail = []
+        for k, r in keys.items():
+            record_id = r['id']
+            is_strict = record_id in known
+            score = by_record.get(record_id, 0.0)
+            threshold = bar['keep'] if is_strict else bar['rescue']
+            kept = record_id in unscored_strict or (passed and score >= threshold)
+            notes_detail.append({
+                'key': k,
+                'source_id': record_id,
+                'strict': is_strict,
+                'score': score if audit_cfg.get('include_scores') else None,
+                'threshold': threshold if audit_cfg.get('include_scores') else None,
+                'kept': kept,
+                'outcome': 'rescued' if (not is_strict and kept) else ('kept' if kept else 'dropped'),
+            })
+        topical_score = scores.get('topical')
+        audit_entry = {
+            'at': time.time(),
+            'query_hash': hashlib.sha256(query.encode('utf-8')).hexdigest()[:16],
+            'mode': mode['mode'],
+            'gate_passed': passed,
+            'topical_score': topical_score if audit_cfg.get('include_topical') else None,
+            'gate_threshold': bar['gate'],
+            'keep_threshold': bar['keep'],
+            'rescue_threshold': bar['rescue'],
+            'verified': bar['verified'],
+            'notes': notes_detail,
+            'summary': {
+                'strict_sent': sent_strict,
+                'loose_sent': sent_loose,
+                'kept': len(keep),
+                'dropped': dropped,
+                'rescued': rescued,
+            },
+        }
+        _write_audit_log(store.state_dir, audit_entry)
     if advice['mode'] != 'on' or not bar['verified'] or not (dropped or rescued):
         return context
     if not _fresh(store, records) or client.inspect_config(store.state_dir) != mode:

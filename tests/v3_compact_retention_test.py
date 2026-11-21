@@ -390,6 +390,49 @@ c.compact(Path(sys.argv[2]), Path(sys.argv[3]), now=datetime(2026,10,26,tzinfo=t
         self.archive().write_bytes(b'\xff')
         self.assertEqual(set(self.history()[1].values()), set(versions[2:]))
 
+    def test_delta_structural_brackets_do_not_form_wikilinks(self):
+        source = '850-Companion/Threads.md'
+        prefix = 'Common first line.\n' * 80
+        suffix = 'Common last line.\n' * 80
+        base = prefix + 'Old line.\n' + suffix
+        changed = prefix + 'Keep [[Gerçek Not]] and literal [[1, 2]] here.\n' + suffix
+        _, full = compact._backup_record(base, source, None, '\n')
+        kind, new = compact._backup_record(changed, source, full, '\n')
+        self.assertEqual(kind, 'delta')
+        payload = new.splitlines()[1]
+        self.assertNotIn('"parts": [[', payload)
+        self.assertFalse(payload.endswith(']]}'))
+        self.assertIn('[[Gerçek Not]]', payload)
+        self.assertIn('[[1, 2]]', payload)
+        parts = compact._delta_parts(base, changed)
+        self.assertEqual(json.loads(payload), dict(base=compact._hash(base), parts=parts))
+        old = compact._record('delta', source, compact._hash(changed),
+                              json.dumps(dict(base=compact._hash(base), parts=parts),
+                                         ensure_ascii=False), '\n')
+        self.assertIn('"parts": [[', old)
+        for record in (old, new):
+            self.assertEqual(compact._records(full + record, source)[1][compact._hash(changed)], changed)
+        damaged = new.replace('"parts": [ ', '"parts": [\t', 1)
+        self.assertNotIn(compact._hash(changed), compact._records(full + damaged, source)[1])
+
+    def test_delta_cutoff_counts_the_actual_serialized_payload(self):
+        source = '850-Companion/Threads.md'
+        base = 'A\n' * 500
+        _, full = compact._backup_record(base, source, None, '\n')
+        seen = set()
+        for n in range(180, 260, 2):
+            changed = 'A\n' * (n // 4) + 'B\n' + 'A\n' * (n // 2 - n // 4 - 1)
+            parts = compact._delta_parts(base, changed)
+            legacy_payload = json.dumps(dict(base=compact._hash(base), parts=parts))
+            actual_length = len(legacy_payload) + 2
+            kind, record = compact._backup_record(changed, source, full, '\n')
+            self.assertEqual(kind, 'delta' if 2 * actual_length <= len(changed) else 'full')
+            seen.add((kind, len(changed) - 2 * actual_length))
+            if kind == 'delta':
+                self.assertEqual(len(record.splitlines()[1]), actual_length)
+        self.assertIn(('full', -2), seen)
+        self.assertIn(('delta', 0), seen)
+
     def test_bad_delta_ranges_hash_and_metadata_never_suppress_backup(self):
         text = oversized_threads()
         self.write('Threads.md', text)

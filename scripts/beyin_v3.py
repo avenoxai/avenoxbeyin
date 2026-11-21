@@ -453,6 +453,30 @@ def jev_advice(result):
     return result
 
 
+def jev_audit_config(state: Path, mode: str, include_scores: bool, no_include_scores: bool,
+                     include_topical: bool, no_include_topical: bool) -> dict:
+    """Configure auto_context per-note audit logging (machine-local, opt-in)."""
+    _ensure_scripts_path()
+    import beyin_v3_jev as jev
+    cfg = jev.load_audit_config(state)
+    if mode == "status":
+        return {"audit": cfg, "path": str(jev._audit_config_path(state)), "log_path": str(jev._audit_log_path(state))}
+    if mode == "on":
+        cfg["enabled"] = True
+    elif mode == "off":
+        cfg["enabled"] = False
+    if include_scores:
+        cfg["include_scores"] = True
+    if no_include_scores:
+        cfg["include_scores"] = False
+    if include_topical:
+        cfg["include_topical"] = True
+    if no_include_topical:
+        cfg["include_topical"] = False
+    jev.save_audit_config(state, cfg)
+    return {"audit": cfg, "path": str(jev._audit_config_path(state)), "log_path": str(jev._audit_log_path(state))}
+
+
 HOOK_FILES = (".claude/settings.local.json", ".codex/hooks.json", ".agents/hooks.json",
               ".kiro/hooks/beyin-v3.json")
 
@@ -521,21 +545,8 @@ def tracked_machine_files(vault: Path) -> dict:
 
 
 def _hook_arguments(command: str) -> list:
-    """Arguments of one installed hook command: POSIX shell text or the Windows EncodedCommand."""
-    import base64
-    import re
-    import shlex
-    match = re.search(r"-EncodedCommand\s+([A-Za-z0-9+/=]+)", command, re.I)
-    if match:
-        try:
-            script = base64.b64decode(match.group(1), validate=True).decode("utf-16le")
-        except (ValueError, UnicodeError):
-            return []
-        return [item.replace("''", "'") for item in re.findall(r"'((?:[^']|'')*)'", script)]
-    try:
-        return shlex.split(command)
-    except ValueError:
-        return []
+    from beyin_v3_bridge import hook_arguments
+    return hook_arguments(command)
 
 
 def hook_paths(vault: Path) -> dict:
@@ -544,6 +555,7 @@ def hook_paths(vault: Path) -> dict:
     A vault moved to another account or machine together with its hook files keeps commands
     such as C:\\Users\\<old>\\...\\beyin_v3_hook.py; every lifecycle hook then fails with a
     generic error. Reads only managed hook files; never writes and never walks the vault."""
+    _ensure_scripts_path()  # The source installer also calls hook_reconcile directly.
     stale, checked = [], 0
     try:
         here = vault.resolve()
@@ -612,92 +624,9 @@ def hook_paths(vault: Path) -> dict:
 
 
 def global_bridge_paths(vault: Path, state: Path) -> dict | None:
-    """Read only global bridge paths owned by this state, without executing commands.
-
-    A different vault may legitimately own the user's global bridge. Inspect only
-    commands explicitly bound to this state; absent or invalid settings stay optional.
-    """
-    from beyin_v3_bridge import global_hook_path, global_opencode_settings_path
-    here, owner = vault.resolve(), state.resolve()
-    expected = (here / '.claude/scripts/beyin_v3_bridge.py').resolve()
-    stale, checked = [], 0
-    for harness in ('claude', 'codex', 'antigravity'):
-        try:
-            data = json.loads(global_hook_path(harness).read_text(encoding='utf-8'))
-        except (OSError, ValueError, UnicodeError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        events = data.get('beyin-v3-bridge' if harness == 'antigravity' else 'hooks', {})
-        for event, groups in events.items() if isinstance(events, dict) else ():
-            for group in groups if isinstance(groups, list) else ():
-                if not isinstance(group, dict):
-                    continue
-                handlers = group.get('hooks', [group])
-                for handler in handlers if isinstance(handlers, list) else ():
-                    if not isinstance(handler, dict):
-                        continue
-                    command = (handler.get('commandWindows', handler.get('command'))
-                               if sys.platform == 'win32' else handler.get('command'))
-                    if not isinstance(command, str):
-                        continue
-                    arguments = _hook_arguments(command)
-                    script = next((arg for arg in arguments
-                                   if arg.replace('\\', '/').endswith('/beyin_v3_bridge.py')), None)
-                    if script is None:
-                        continue
-                    values = {}
-                    for flag in ('--state', '--vault'):
-                        if arguments.count(flag) == 1 and arguments.index(flag) < len(arguments) - 1:
-                            values[flag] = arguments[arguments.index(flag) + 1]
-                    if len(values) != 2:
-                        continue
-                    try:
-                        if not Path(values['--state']).is_absolute() or Path(values['--state']).resolve() != owner:
-                            continue
-                        same_vault = Path(values['--vault']).resolve() == here
-                        same_script = Path(script).resolve() == expected
-                    except (OSError, ValueError, RuntimeError):
-                        continue
-                    checked += 1
-                    for reason, same in (('other_vault', same_vault), ('other_script', same_script)):
-                        entry = {'harness': harness, 'event': event, 'reason': reason}
-                        if not same and entry not in stale:
-                            stale.append(entry)
-    # OpenCode's global bridge is a managed plugin plus a JSON settings file,
-    # rather than a hook command embedded in client settings.
-    try:
-        opencode_settings = global_opencode_settings_path()
-        data = json.loads(opencode_settings.read_text(encoding='utf-8'))
-    except (OSError, ValueError, UnicodeError):
-        data = None
-    if isinstance(data, dict) and data.get('managed_by') == 'beyin-v3-bridge':
-        command = data.get('command')
-        if isinstance(command, list) and all(isinstance(value, str) for value in command):
-            values = {}
-            for flag in ('--state', '--vault'):
-                if command.count(flag) == 1 and command.index(flag) < len(command) - 1:
-                    values[flag] = command[command.index(flag) + 1]
-            script = command[0] if command else None
-            if (isinstance(script, str) and len(values) == 2 and
-                    Path(values['--state']).is_absolute() and
-                    Path(values['--state']).resolve() == owner):
-                checked += 1
-                same_vault = Path(values['--vault']).resolve() == here
-                same_script = (Path(script).resolve() == (here / '.claude/scripts/beyin_v3_bridge.py').resolve()
-                                and Path(script).is_file())
-                for reason, same in (('other_vault', same_vault), ('other_script', same_script)):
-                    entry = {'harness': 'opencode', 'event': 'global', 'reason': reason}
-                    if not same and entry not in stale:
-                        stale.append(entry)
-    if not checked:
-        return None
-    result = {'status': 'stale' if stale else 'ok', 'checked': checked}
-    if stale:
-        result['stale'] = stale
-        result['hint'] = ('From this vault, reinstall each affected global bridge with the original '
-                          '--project-root, --event and --context-chars choices. Global settings were not changed.')
-    return result
+    _ensure_scripts_path()
+    from beyin_v3_bridge import global_bridge_paths as inspect
+    return inspect(vault, state)
 
 
 def _hook_commands(argv):
@@ -1229,6 +1158,13 @@ def parser(note_namespace=None, is_json=False):
     settings.add_argument("--context-chars", type=int)
     settings.add_argument("--companion-context-chars", type=int,
                           help="Opening context budget (SessionStart, continuity questions), 1000..24000; 0 uses --context-chars")
+    # Context-fill reminder (issue #685): machine-local, opt-in, never in preferences file.
+    settings.add_argument("--context-fill", choices=("on", "off"),
+                          help="Opt-in reminder at Stop when context tokens exceed threshold; never a preferences key")
+    settings.add_argument("--context-fill-first", type=int,
+                          help="First threshold in tokens for context-fill reminder (default 150000)")
+    settings.add_argument("--context-fill-repeat", type=int,
+                          help="Repeat threshold in tokens for context-fill reminder (default 75000)")
     settings.add_argument("--secret-filter", choices=("on", "off"))
     settings.add_argument("--daily-layout", choices=("flat", "v3"),
                           help="Vault-wide daily receipt view layout (default v3); applied by the next sync")
@@ -1300,6 +1236,8 @@ def parser(note_namespace=None, is_json=False):
     note.add_argument("--evidence-ref", action="append", dest="evidence_refs", help="Existing vault source path backing the note; repeatable")
     note_read = sub.add_parser("note-read", help="Read a human Markdown source and its byte SHA-256")
     note_read.add_argument("source")
+    note_read.add_argument("--sha-only", action="store_true",
+                           help="Return source, exists and SHA-256 without the note content")
     note_read.add_argument("--must-exist", action="store_true",
                            help="Report a missing source as an error (exit 1) instead of exists: false")
     note_edit = sub.add_parser("note-edit", help="Edit a human Markdown source with an expected SHA-256")
@@ -1347,6 +1285,12 @@ def parser(note_namespace=None, is_json=False):
     jev.add_argument("--base-url", dest="base_url", help="laya only: loopback URL, default http://127.0.0.1:8765")
     jev.add_argument("--model", choices=LAYA_MODELS, help="laya only: pinned checkpoint, default multilingual")
     jev.add_argument("--check", action="store_true", help="with status: one GET /health to the local Laya server")
+    jev_audit = sub.add_parser("jev-audit", help="Configure auto_context per-note audit logging (local, opt-in)")
+    jev_audit.add_argument("mode", choices=("status", "on", "off"), help="Enable, disable, or show audit status")
+    jev_audit.add_argument("--include-scores", action="store_true", help="Include per-note scores in audit log")
+    jev_audit.add_argument("--no-include-scores", action="store_true", help="Exclude per-note scores from audit log")
+    jev_audit.add_argument("--include-topical", action="store_true", help="Include topical gate score in audit log")
+    jev_audit.add_argument("--no-include-topical", action="store_true", help="Exclude topical gate score from audit log")
     answer = sub.add_parser("jev-answer", help="Advisory answer claim verification against exact source quotes")
     answer.add_argument("--file", required=True, help="JSON list of claims (maximum 32,000 characters)")
     answer.add_argument("--project", required=True)
@@ -1371,6 +1315,13 @@ def parser(note_namespace=None, is_json=False):
     pscope.add_argument("--project", help="Project identifier for the folder")
     pscope.add_argument("--shared-unscoped", choices=["on", "off"],
                         help="add only: toggle whether unassigned notes are visible in project scope")
+    selftest_parser = sub.add_parser("selftest", help="Run vault-local read-only retrieval self-test")
+    selftest_parser.add_argument("--questions", type=Path, help="Questions JSON path inside vault (default knowledge/v3/selftest.json)")
+    selftest_parser.add_argument("--limit", type=int, default=5, help="Candidate retrieval limit (default 5)")
+    selftest_parser.add_argument("--audience", choices=("internal", "public"), default="internal", help="Retrieval audience")
+    selftest_parser.add_argument("--add-question", help="Add a test query")
+    selftest_parser.add_argument("--source", help="Vault-relative source note for --add-question")
+    selftest_parser.add_argument("--sentence", help="Optional expected sentence snippet for --add-question")
     ingest_server = sub.add_parser("ingest-server", help="Local-first HTTP ingest server for mobile captures")
     ingest_server.add_argument("--host", default="127.0.0.1", help="Host interface to bind (default 127.0.0.1)")
     ingest_server.add_argument("--port", type=int, default=8484, help="Port to listen on (default 8484)")
@@ -1602,6 +1553,19 @@ def main(argv=None, return_result=False):
                 if not limits_valid:
                     raise ValueError('companion-limits.json in the runtime state is invalid; fix or remove it first')
                 companion.check_limits(dict(current_limits, **limits))
+            # Context-fill config (issue #685): machine-local in state/context-fill.json
+            import beyin_v3_context_fill as context_fill
+            fill_changes = {}
+            if args.context_fill is not None:
+                fill_changes['enabled'] = args.context_fill == 'on'
+            if args.context_fill_first is not None:
+                if not 1000 <= args.context_fill_first <= 1000000:
+                    raise ValueError('--context-fill-first must be between 1000 and 1000000')
+                fill_changes['first_threshold'] = args.context_fill_first
+            if args.context_fill_repeat is not None:
+                if not 1000 <= args.context_fill_repeat <= 1000000:
+                    raise ValueError('--context-fill-repeat must be between 1000 and 1000000')
+                fill_changes['repeat_threshold'] = args.context_fill_repeat
             changes = {key: getattr(args, key) for key in ('interval_minutes', 'context_mode', 'context_chars') if getattr(args, key) is not None}
             if args.auto_sync is not None:
                 changes['auto_sync'] = args.auto_sync == 'on'
@@ -1628,6 +1592,10 @@ def main(argv=None, return_result=False):
             result = {'status': 'saved' if changes or args.profile or (args.exclude_component or args.include_component) else 'current',
                       'preferences': settings, 'excluded_components': result_excluded,
                       'model_calls': False, 'timer_installed': False}
+            if fill_changes:
+                cfg = dict(context_fill.load_config(state), **fill_changes)
+                context_fill.save_config(state, cfg)
+                result.update(status="saved", context_fill=cfg)
             result['daily_layout'] = daily_layout
             if args.daily_layout is not None:
                 result['daily_layout'] = preferences.save_daily_layout(vault, args.daily_layout)
@@ -1745,6 +1713,10 @@ def main(argv=None, return_result=False):
                 result["context_mode"] = jev_context_mode(vault)
                 result = jev_advice(result)
                 result["changed"] = True
+        elif args.command == "jev-audit":
+            result = jev_audit_config(state, args.mode, args.include_scores, args.no_include_scores,
+                                      args.include_topical, args.no_include_topical)
+            result["changed"] = args.mode != "status"
         elif args.command == "hook-reconcile":
             result = hook_reconcile(vault, state, force=getattr(args, 'force', False))
         elif args.command == "doctor":
@@ -1795,7 +1767,25 @@ def main(argv=None, return_result=False):
                 result['pending_exclusions'] = sorted(set(configured_excluded) ^ set(result['excluded_components']))
                 result['exclusions_pending'] = True
             import beyin_v3_preferences as preferences
-            result['preferences'] = preferences.read(vault)
+            prefs = preferences.read(vault)
+            result['preferences'] = prefs
+            # First-use setup summary: context budget, secret filter, remote transmission (#691.3)
+            result['setup_summary'] = {
+                'profile': next((name for name, values in preferences.PROFILES.items() if values == prefs), 'custom'),
+                'context_mode': prefs['context_mode'],
+                'context_chars': prefs['context_chars'],
+                'secret_filter': prefs['secret_filter'],
+                'auto_sync': prefs['auto_sync'],
+                'interval_minutes': prefs['interval_minutes'],
+                'warnings': []
+            }
+            if prefs['context_mode'] != 'off' and not prefs['secret_filter']:
+                result['setup_summary']['warnings'].append(
+                    'Automatic context may reach the configured model provider without secret filtering. '
+                    'Enable with: beyin.py preferences --secret-filter on')
+            if prefs['context_mode'] == 'off':
+                result['setup_summary']['warnings'].append(
+                    'Automatic context injection is off.')
             import beyin_v3_releases as releases
             result['updates'] = releases.status(vault, state)
             from beyin_v3_secrets import health as secret_filter_health
@@ -1803,7 +1793,7 @@ def main(argv=None, return_result=False):
             result['secrets_redacted'] = result['secret_filter']['total']
             try:
                 import beyin_v3_companion as companion
-                result['companion_hygiene'] = companion.hygiene(vault, state)
+                result['companion_hygiene'] = companion.hygiene(vault, state, include_projects=True)
             except Exception as exc:  # a size report must never hide the rest of doctor
                 result['companion_hygiene'] = {'status': 'unavailable', 'error': type(exc).__name__}
             # Information only (#374): how much of Kurallar.md the Claude Code opening shows whole.
@@ -1834,6 +1824,9 @@ def main(argv=None, return_result=False):
                 result['jev']['context_mode'] = result['preferences'].get('context_mode')
                 result['jev'] = jev_advice(result['jev'])
             result['automatic_model_calls'] = result['jev'].get('automatic_model_calls', False)
+            # Context-fill reminder (issue #685)
+            import beyin_v3_context_fill as context_fill
+            result['context_fill'] = context_fill.get_doctor_status(state)
             health = result['hook-health.json'] or {}
             gaps_info = result['receipt-gaps.json']
             result['potential_missing_receipts'] = gaps_info.get('potential_missing_receipts') if gaps_info is not None else None
@@ -1954,6 +1947,8 @@ def main(argv=None, return_result=False):
             except Exception as exc:
                 result['mutation_queue'] = {'status': 'unavailable', 'error': type(exc).__name__}
             result['status'] = ('needs_attention' if health.get('sync', {}).get('status') in ('conflict', 'degraded') or result['hook_paths'].get('status') == 'stale' or result['skill_conflicts'] or result.get('instruction_conflicts') or result['hook-error.json'] or result['task_completion']['strict_issue_count'] or result['task_completion'].get('error') or result['validity']['ignored_rejection_count'] or result['validity'].get('error') or result.get('project_scopes', {}).get('status') in ('error', 'warning') else 'pending' if result['pending_events'] else 'observed_metadata' if result['acknowledged_events'] else 'never_seen')
+            if result['updates'].get('status') == 'recovery_required':
+                result['status'] = 'needs_attention'
             # Information only: a leftover global OMP hook copy predates the vault-owned plan
             # (OMP.md says the installer never updates or removes it). After an engine update the
             # copy can be older than the installed vault hook, so a session outside the vault can
@@ -2151,11 +2146,23 @@ def main(argv=None, return_result=False):
                         exc.batch_ingest = {"failed_index": index,
                                             "written_ids": [item["id"] for item in result]}
                         raise
+        elif args.command == "selftest":
+            _ensure_scripts_path()
+            import beyin_v3_selftest as selftest_mod
+            if args.add_question:
+                if not args.source:
+                    argument_parser.error("--source is required with --add-question")
+                result = selftest_mod.add_question(vault, args.questions, args.add_question, args.source, args.sentence)
+            else:
+                result = selftest_mod.run_selftest(vault, state, args.questions, args.limit, args.audience)
         elif args.command == "note-read":
             result = sync.note_read(args.source)
             if args.must_exist and not result['exists']:
                 # The documented note error: status error, exit 1. Exit 2 stays "conflict".
                 raise FileNotFoundError('note not found: ' + result['source'])
+            if args.sha_only:
+                # Keep the normal read validations; only shorten the output.
+                result = {key: result[key] for key in ('source', 'exists', 'sha256')}
         elif args.command == "note-edit":
             result = sync.note_edit(note_request(args.file, args))
         elif args.command == "note-create":
@@ -2242,6 +2249,24 @@ def main(argv=None, return_result=False):
                         'warnings': warnings[:20],
                         'truncated': len(warnings) > 20,
                     }
+            # Diagnose only the final delivered payload, never hidden/stale/unselected
+            # records. This is lexical coverage, not evidence that a topic is absent.
+            def delivered_text(value):
+                if isinstance(value, str):
+                    return value
+                if isinstance(value, dict):
+                    return ' '.join(delivered_text(item) for item in value.values())
+                if isinstance(value, list):
+                    return ' '.join(delivered_text(item) for item in value)
+                return str(value) if value is not None else ''
+
+            covered = set()
+            for record in result.get('records', []):
+                covered.update(engine._tokens(' '.join(
+                    delivered_text(record.get(key, ''))
+                    for key in ('text', 'title', 'facts', 'aliases'))))
+            result['unmatched_terms'] = sorted({word for word in re.findall(r'[a-z0-9]+', engine._fold(params['query']))
+                                                 if engine._stem(word) not in engine.STOPWORDS | covered})
         elif args.command in ("jev-review", "jev-answer", "jev-memory"):
             from beyin_v3_jev import review_candidate, verify_answer
             max_chars = 32000 if args.command == "jev-answer" else 24000
@@ -2334,7 +2359,7 @@ def main(argv=None, return_result=False):
         elif args.command == "lint":
             _ensure_scripts_path()
             import beyin_v3_lint as linter
-            result = linter.manage(vault, "lint", folder=args.folder)
+            result = linter.manage(vault, "lint", folder=args.folder, state=state)
         elif args.command == "moc":
             _ensure_scripts_path()
             import beyin_v3_lint as linter

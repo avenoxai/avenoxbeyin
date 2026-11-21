@@ -32,9 +32,15 @@ free pages to the file system.
 Stale temp files are removed only in the state root and the two hook folders, only
 when their names match a temp name this runtime itself writes there, and only when
 they are older than TEMP_MAX_AGE_SECONDS.
+
+Expired Jev score entries (#772) go the same way: `<state>/.cache/jev/<sha256>.json`
+is replaced only when the same request returns, so entries of requests that never
+repeat stayed forever. `cache_ttl` is validated to at most JEV_CACHE_MAX_AGE_SECONDS,
+so a file older than that can never be a cache hit under any accepted configuration.
 """
-from contextlib import closing
+from contextlib import closing, contextmanager
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -49,6 +55,7 @@ COMPACT_BATCH = 5000
 CHECK_INTERVAL_SECONDS = 86400
 MARK_INTERVAL_SECONDS = 86400
 TEMP_MAX_AGE_SECONDS = 86400
+JEV_CACHE_MAX_AGE_SECONDS = 86400  # the cache_ttl cap in beyin_v3_jev_client._validated
 INCREMENTAL_VACUUM_PAGES = 1024
 COMPACT_HINT_BYTES = 64 * 1024 * 1024
 MARKS_KEY = 'event_retention_marks'
@@ -60,12 +67,14 @@ AUTO_VACUUM = {0: 'none', 1: 'full', 2: 'incremental'}
 # (prefix + 8 characters of [a-z0-9_]) of the writers whose targets live there.
 _ROOT_TEMP = re.compile(
     r'hook-(?:error|health)\.json\.[0-9a-f]{32}\.tmp'
-    r'|\.(?:beyin|beyin-update|index|inbox|hygiene|hermes-platforms|parallel-sessions|scheduled|release)-[a-z0-9_]{8}'
+    r'|\.(?:beyin|beyin-update|index|inbox|hygiene|hermes-platforms|hermes-turns|parallel-sessions|scheduled|release)-[a-z0-9_]{8}'
     r'|\.(?:token-counts|passages)-[a-z0-9_]{8}\.tmp')
 _FOLDER_TEMP = {
     'hook-queue': re.compile(r'[0-9a-f]{64}\.json\.[0-9a-f]{32}\.tmp'),
     'receipt-reminders': re.compile(r'[0-9a-f]{64}\.edited\.[0-9a-f]{32}\.tmp'),
 }
+
+_JEV_CACHE_ENTRY = re.compile(r'[0-9a-f]{64}\.json')
 
 # An event may go when it is not the table's newest row, is old or beyond its
 # record's newest EVENTS_PER_RECORD, and is not the newest event of a current record.
@@ -192,10 +201,102 @@ def sweep_temp_files(state, now=None):
     return removed
 
 
+@contextmanager
+def jev_cache_directory(state):
+    """Lock an anchored POSIX cache directory; unsupported platforms fail closed.
+
+    Lock is shared with the Jev publisher. No lock file is created. Opening each
+    child relative to its parent prevents a swapped directory redirecting deletes.
+    """
+    if os.name != 'posix' or not hasattr(os, 'O_NOFOLLOW'):
+        yield None
+        return
+    descriptors = []
+    try:
+        import fcntl
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        descriptors.append(os.open(state, flags))
+        for name in ('.cache', 'jev'):
+            descriptors.append(os.open(name, flags, dir_fd=descriptors[-1]))
+        fcntl.flock(descriptors[-1], fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        for fd in reversed(descriptors):
+            os.close(fd)
+        yield None
+        return
+    try:
+        yield descriptors[-1]
+    finally:
+        for fd in reversed(descriptors):
+            os.close(fd)
+
+
+def _expired_jev_names(fd, now):
+    found = []
+    for name in os.listdir(fd):
+        if not _JEV_CACHE_ENTRY.fullmatch(name):
+            continue
+        try:
+            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode) or now - info.st_mtime <= JEV_CACHE_MAX_AGE_SECONDS:
+                continue
+            # The client uses created_at, not mtime. Copies/restores may preserve
+            # an old mtime; never remove an entry still usable by that client.
+            item = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+            with os.fdopen(item, 'rb') as stream:
+                current = os.fstat(stream.fileno())
+                if not stat.S_ISREG(current.st_mode) or current.st_size > 1024 * 1024:
+                    continue
+                raw = stream.read(1024 * 1024 + 1)
+            try:
+                data = json.loads(raw)
+                created = data.get('created_at') if isinstance(data, dict) else None
+            except (ValueError, UnicodeError, RecursionError):
+                created = None
+            if type(created) is int or (type(created) is float and math.isfinite(created)):
+                if created >= now - JEV_CACHE_MAX_AGE_SECONDS:
+                    continue
+            found.append(name)
+        except OSError:
+            continue
+    return sorted(found)
+
+
+def expired_jev_cache(state, now=None):
+    """Count only entries that this platform can safely sweep; never writes."""
+    now = time.time() if now is None else now
+    try:
+        with jev_cache_directory(state) as fd:
+            if fd is None:
+                return []
+            return [Path(state) / '.cache' / 'jev' / name for name in _expired_jev_names(fd, now)]
+    except OSError:
+        return []
+
+
+def sweep_jev_cache(state, now=None):
+    now = time.time() if now is None else now
+    removed = 0
+    try:
+        with jev_cache_directory(state) as fd:
+            if fd is None:
+                return 0
+            for name in _expired_jev_names(fd, now):
+                try:
+                    os.unlink(name, dir_fd=fd)
+                    removed += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return removed
+
+
 def maintain(store, now=None, batch=PRUNE_BATCH):
     """Bounded background maintenance for the queue worker; throttled to once a day."""
     now = time.time() if now is None else now
-    result = {'status': 'done', 'events_removed': 0, 'pages_freed': 0, 'temp_files_removed': 0}
+    result = {'status': 'done', 'events_removed': 0, 'pages_freed': 0, 'temp_files_removed': 0,
+              'jev_cache_removed': 0}
     try:
         with store._connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -216,6 +317,7 @@ def maintain(store, now=None, batch=PRUNE_BATCH):
             raise
         return dict(result, status='busy')
     result['temp_files_removed'] = sweep_temp_files(store.state_dir, now)
+    result['jev_cache_removed'] = sweep_jev_cache(store.state_dir, now)
     return result
 
 
@@ -237,7 +339,8 @@ def compact(store, dry_run=False, now=None):
         with store._connect() as db:
             count, size = prunable_events(db, now)
         return dict(before, status='planned', events_prunable=count, event_bytes_prunable=size,
-                    stale_temp_files=len(stale_temp_files(store.state_dir, now)))
+                    stale_temp_files=len(stale_temp_files(store.state_dir, now)),
+                    expired_jev_cache=len(expired_jev_cache(store.state_dir, now)))
     result = {'status': 'compacted', 'events_removed': 0, 'database_bytes_before': before['database_bytes']}
     try:
         while True:
@@ -255,6 +358,7 @@ def compact(store, dry_run=False, now=None):
             raise
         result.update(status='busy', vacuum='skipped')  # the uncommitted batch rolled back whole
     result['temp_files_removed'] = sweep_temp_files(store.state_dir, now)
+    result['jev_cache_removed'] = sweep_jev_cache(store.state_dir, now)
     if result['status'] == 'compacted':
         try:
             with closing(sqlite3.connect(store.database, timeout=store.busy_timeout, isolation_level=None)) as db:
@@ -276,6 +380,7 @@ def storage_report(state, now=None):
     state = Path(state)
     database = state / 'memory.sqlite3'
     report = {'stale_temp_files': len(stale_temp_files(state, now)),
+              'expired_jev_cache': len(expired_jev_cache(state, now)),
               'event_retention': {'days': EVENT_RETENTION_DAYS, 'per_record': EVENTS_PER_RECORD}}
     if database.is_symlink() or not database.is_file():
         return dict(report, status='absent')

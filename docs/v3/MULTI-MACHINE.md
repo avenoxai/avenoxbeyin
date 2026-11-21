@@ -270,6 +270,8 @@ python3 beyin.py note-read "proje/Threads.md"
 python3 beyin.py note-edit --file istek.json
 ```
 
+Yalnız mevcut notun SHA-256 değerini almak için `note-read "proje/Threads.md" --sha-only` kullanabilirsin. Bu seçenek JSON çıktısında `source`, `exists`, `sha256` alanlarını korur; `content` alanını göndermez. Dosya okuma ve kaynak doğrulamaları değişmez. Eksik kaynak için `exists: false`, `sha256: null` döner; `--must-exist` ile birlikte de kullanılabilir. Bu seçenek güncel içeriği okumadan eski düzenlemeleri güvenli hale getirmez; bir çakışma sonrası hedef metni yeniden oku.
+
 Windows'ta `python3` yerine `py -3` kullan. `note-read` JSON olarak `source`,
 `exists`, `sha256`, `content` verir; dosya yoksa `exists: false` olur, son iki alan
 `null` olur ve çıkış 0'dır, böylece not `note-edit` ile oluşturulabilir. Dosyanın
