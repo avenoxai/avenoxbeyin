@@ -253,7 +253,10 @@ def run_checkpoint(sync, vault, state, request, harness=None, session=None, dry_
             try:
                 sess_id = session or "cli"
                 harness_val = harness or "claude"
-                trace_res = beyin_v3_chat_trace.write(vault, state, harness_val, sess_id, chat_trace_data)
+                key = _step_key(sess_id, "chat-trace", harness_val, " ".join(chat_trace_data.split()))
+                trace_res = beyin_v3_chat_trace.write(
+                    vault, state, harness_val, sess_id, chat_trace_data, checkpoint_key=key
+                )
                 steps["chat_trace"] = trace_res.get("status", "written")
             except Exception as exc:
                 steps["chat_trace"] = {"status": "error", "message": str(exc)}

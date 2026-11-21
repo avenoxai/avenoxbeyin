@@ -5,6 +5,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -215,6 +216,20 @@ class CheckpointTest(unittest.TestCase):
         self.assertEqual(result["steps"]["threads"], "written")
         self.assertIn("### Müşteri Arşivi\n- İlk iş\n",
                       (self.comp / "Threads.md").read_text(encoding="utf-8"))
+
+    def test_trace_retry_across_month_boundary(self):
+        beyin_v3_chat_trace.configure(self.state, True)
+        request = {"chat_trace": "Sohbet özeti"}
+        for day in (datetime(2026, 10, 31, 12), datetime(2026, 11, 1, 12)):
+            with patch("beyin_v3_chat_trace.datetime") as clock:
+                clock.now.return_value = day
+                result = run_checkpoint(self.sync, self.vault, self.state, request,
+                                        session="123456789012345678901234")
+            self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(result["steps"]["chat_trace"], "unchanged")
+        traces = sorted((self.vault / "knowledge" / "conversations").glob("*.md"))
+        self.assertEqual([path.name for path in traces], ["2026-10.md"])
+        self.assertEqual(traces[0].read_text(encoding="utf-8").count("Sohbet özeti"), 1)
 
     def test_cli_checkpoint_and_human_result(self):
         req_file = Path(self.test_dir) / "checkpoint_req.json"
