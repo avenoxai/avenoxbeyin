@@ -4,6 +4,7 @@ Synthetic vaults and local bare repositories only; no network, no real scheduler
 (scheduler files go to a temporary home and the load commands are stubbed).
 """
 import json
+import hashlib
 import os
 from pathlib import Path
 import plistlib
@@ -24,6 +25,14 @@ CLI = ROOT / "scripts/beyin_v3.py"
 GIT = shutil.which("git")
 
 
+def fake_scheduler(argv):
+    if argv[:2] in (["launchctl", "print"], ["schtasks", "/Query"]):
+        return 1, ""
+    if "--property=LoadState" in argv:
+        return 0, "not-found"
+    return 0, ""
+
+
 def git(folder, *args):
     env = inherited_env(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
                         GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid",
@@ -39,6 +48,7 @@ class Base(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="beyin-devices-test-")).resolve()
         self.home = self.tmp / "home"
         self.home.mkdir()
+        self.scheduler_dir = self.tmp / "Scheduler Ölçüm"
         # Commits need an identity and must not read the developer's own git configuration.
         patcher = mock.patch.dict(os.environ, {
             "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid", "GIT_COMMITTER_NAME": "t",
@@ -54,8 +64,8 @@ class Base(unittest.TestCase):
         return vault, state
 
     def apply(self, vault, state, **options):
-        with mock.patch.object(devices, "_run", return_value=(0, "")):
-            return devices.apply(vault, state, options, home=self.home)
+        return devices.apply(vault, state, options, home=self.home,
+                             scheduler_dir=self.scheduler_dir, runner=fake_scheduler)
 
 
 class SettingsTest(Base):
@@ -253,15 +263,57 @@ class SchedulerTest(Base):
         self.assertIn("sleep 900", self.spec("none")["manual"])
         self.assertEqual(self.spec("none")["files"], {})
 
-    def test_remove_ignores_records_that_do_not_look_like_ours(self):
-        victim = self.tmp / "keep.txt"
-        victim.write_text("x", encoding="utf-8")
-        with mock.patch.object(devices, "_run") as run:
-            devices._remove_scheduler({"label": "beyin-devices-abc", "files": [str(victim)],
-                                       "unload": [["rm", "-rf", "/"], ["systemctl", "--user", "disable", "other.timer"]]})
-            devices._remove_scheduler({"label": "x", "files": [str(victim)], "unload": [["launchctl", "bootout", "x"]]})
+    def test_invalid_labels_are_rejected_before_path_or_command(self):
+        vault, state = self.machine("a")
+        run = mock.Mock()
+        for label in ("", "beyin-devices-İstanbul", "beyin-devices-a b", "beyin-devices-../abc"):
+            settings = {**devices.default_settings(), "scheduler": {"kind": "systemd-user", "label": label}}
+            (state / devices.SETTINGS_FILE).write_text(json.dumps(settings), encoding="utf-8")
+            with self.subTest(label=label), self.assertRaisesRegex(ValueError, "invalid label"), \
+                    mock.patch.object(devices, "_vault_key", side_effect=AssertionError("vault lookup")):
+                devices._scheduler_paths(vault, state, "systemd-user", label, self.scheduler_dir)
+            with self.assertRaisesRegex(ValueError, "invalid label"):
+                devices.remove_scheduler(vault, state, scheduler_dir=self.scheduler_dir, runner=run)
         run.assert_not_called()
-        self.assertTrue(victim.exists())
+        self.assertFalse(self.scheduler_dir.exists())
+
+    def test_matching_name_without_ownership_leaves_file_and_runner_untouched(self):
+        vault, state = self.machine("a")
+        spec = devices.scheduler_spec(vault, state, 15, kind="launchd", scheduler_dir=self.scheduler_dir)
+        (path, content), = spec["files"].items()
+        path = Path(path)
+        path.parent.mkdir(parents=True)
+        path.write_text(content, encoding="utf-8")
+        settings = {**devices.default_settings(), "scheduler": {
+            "kind": "launchd", "label": spec["label"], "files": [str(path)], "unload": spec["unload"]}}
+        state_file = state / devices.SETTINGS_FILE
+        state_file.write_text(json.dumps(settings), encoding="utf-8")
+        run = mock.Mock()
+        with self.assertRaisesRegex(ValueError, "ownership"):
+            devices.remove_scheduler(vault, state, scheduler_dir=self.scheduler_dir, runner=run)
+        run.assert_not_called()
+        self.assertTrue(path.exists())
+        self.assertEqual(json.loads(state_file.read_text(encoding="utf-8")), settings)
+
+    def test_windows_refuses_to_delete_replaced_task(self):
+        vault, state = self.machine("a")
+        spec = devices.scheduler_spec(vault, state, 15, kind="schtasks", scheduler_dir=self.scheduler_dir)
+        runner = mock.Mock(side_effect=[(1, ""), (0, ""), (0, "<Task>ours</Task>")])
+        devices._install_scheduler(vault, state, spec, self.scheduler_dir, runner, self.home)
+        path = Path(next(iter(spec["files"])))
+        record = devices._read_ownership(state)[spec["label"]]
+        self.assertEqual(record["files"][path.name], hashlib.sha256(path.read_bytes()).hexdigest())
+        runner.reset_mock(side_effect=True)
+        runner.return_value = (0, "<Task>replacement</Task>")
+        with self.assertRaisesRegex(ValueError, "task definition changed"):
+            devices.remove_scheduler(vault, state, scheduler_dir=self.scheduler_dir, runner=runner)
+        runner.assert_called_once_with(["schtasks", "/Query", "/TN", spec["label"], "/XML"])
+        self.assertTrue(path.exists())
+        runner.reset_mock()
+        runner.return_value = (0, "<Task>ours</Task>")
+        self.assertEqual(devices.remove_scheduler(vault, state, scheduler_dir=self.scheduler_dir, runner=runner)["status"], "removed")
+        self.assertIn(mock.call(["schtasks", "/Delete", "/F", "/TN", spec["label"]]), runner.call_args_list)
+        self.assertFalse(path.exists())
 
 
 @unittest.skipUnless(GIT, "git required")
@@ -404,25 +456,47 @@ class SyncRoundTest(Base):
         with mock.patch.object(devices, "scheduler_kind", return_value="systemd-user"):
             result = self.apply(self.b, self.b_state, level="computers", interval=15)
             self.assertEqual(result["status"], "applied", result)
-            units = sorted(p.name for p in (self.home / ".config/systemd/user").iterdir())
+            units = sorted(self.scheduler_dir.iterdir())
             self.assertEqual(len(units), 2)
             stored = devices.status(self.b, self.b_state)
             self.assertEqual((stored["interval"], stored["scheduler"]["kind"]), (15, "systemd-user"))
-            with mock.patch.object(devices, "_run", return_value=(0, "")) as run:
-                removed = devices.remove_scheduler(self.b, self.b_state)
+            run = mock.Mock(return_value=(0, ""))
+            repeated = devices.apply(self.b, self.b_state, {"level": "computers", "interval": 15},
+                                     scheduler_dir=self.scheduler_dir, runner=run)
+            self.assertEqual(repeated["status"], "applied", repeated)
+            run.assert_not_called()
+            content = units[0].read_bytes()
+            units[0].write_bytes(content + b"# changed\n")
+            with self.assertRaisesRegex(ValueError, "changed file"):
+                devices.remove_scheduler(self.b, self.b_state, scheduler_dir=self.scheduler_dir, runner=run)
+            run.assert_not_called()
+            self.assertEqual(sorted(self.scheduler_dir.iterdir()), units)
+            units[0].write_bytes(content)
+            removed = devices.remove_scheduler(self.b, self.b_state, scheduler_dir=self.scheduler_dir, runner=run)
             self.assertEqual(removed["status"], "removed")
             self.assertEqual(run.call_args_list[0].args[0][:4], ["systemctl", "--user", "disable", "--now"])
-        self.assertEqual(list((self.home / ".config/systemd/user").iterdir()), [])
+        self.assertEqual(list(self.scheduler_dir.iterdir()), [])
         self.assertEqual(devices.status(self.b, self.b_state)["interval"], 0)
 
     def test_failed_action_leaves_settings_unchanged(self):
         before = (self.b_state / devices.SETTINGS_FILE).read_text(encoding="utf-8")
-        with mock.patch.object(devices, "scheduler_kind", return_value="systemd-user"), \
-                mock.patch.object(devices, "_run", return_value=(1, "Failed to connect to bus")):
-            result = devices.apply(self.b, self.b_state, {"level": "computers", "interval": 15}, home=self.home)
+        with mock.patch.object(devices, "scheduler_kind", return_value="systemd-user"):
+            result = devices.apply(self.b, self.b_state, {"level": "computers", "interval": 15},
+                                   scheduler_dir=self.scheduler_dir, runner=lambda argv: (1, "Failed to connect to bus"))
         self.assertEqual(result["status"], "failed")
         self.assertIn("Failed to connect to bus", result["failed"]["error"])
         self.assertEqual((self.b_state / devices.SETTINGS_FILE).read_text(encoding="utf-8"), before)
+
+    def test_capture_service_uses_ownership_and_solo_removes_it(self):
+        with mock.patch.object(devices, "scheduler_kind", return_value="systemd-user"):
+            result = self.apply(self.a, self.a_state, level="hub", role="hub", capture=True, capture_host="127.0.0.1")
+            self.assertEqual(result["status"], "applied", result)
+            unit, = self.scheduler_dir.iterdir()
+            record = devices._read_ownership(self.a_state)[unit.stem]
+            self.assertEqual(record["files"][unit.name], hashlib.sha256(unit.read_bytes()).hexdigest())
+            result = self.apply(self.a, self.a_state, level="solo")
+        self.assertEqual(result["status"], "applied", result)
+        self.assertFalse(unit.exists())
 
     def test_capture_token_is_private_and_never_printed(self):
         with mock.patch.object(devices, "scheduler_kind", return_value="none"), \

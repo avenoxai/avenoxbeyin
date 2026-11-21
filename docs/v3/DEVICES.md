@@ -193,9 +193,15 @@ adı mesaja yazılmaz.
 `python3 beyin.py devices --remove-schedule` kurulan zamanlamayı kaldırır. Zamanlama yönetici
 yetkisi istemez ve sistem geneline bir şey kurmaz.
 
+Kurulum, her zamanlayıcı tanımının adını ve SHA-256 özetini yerel state içindeki
+`devices-schedulers.json` dosyasına kaydeder. Silme ve değiştirme için dosyaların bu kayıtla
+eşleşmesi gerekir. Windows'ta Görev Zamanlayıcı'daki kayıtlı tanım da doğrulanır.
+Dosyalar değişmişse veya önceki deneme sürümünden kalan zamanlamanın sahiplik kaydı yoksa
+komut durur. Zamanlayıcıyı işletim sisteminin arayüzünde doğrulayıp elle kaldırabilirsin.
+
 `devices` komutunu içermeyen bir sürüme `rollback` ve `uninstall` zamanlamayı kendiliğinden
-kaldırır ve çıktıda `devices_schedule` alanıyla bildirir; aksi halde eski motor her turu
-reddederdi. Ayarın geri kalanı state klasöründe kalır; yeniden güncelledikten sonra
+kaldırmayı dener ve sonucu `devices_schedule` alanında bildirir. Ayarın geri kalanı
+state klasöründe kalır. Yeniden güncelledikten sonra
 `devices --apply ... --interval <dakika>` ile zamanlamayı yeniden kur.
 
 **macOS + iCloud:** macOS, iCloud Drive, Belgeler ve Masaüstü klasörlerini arka plan işlerine

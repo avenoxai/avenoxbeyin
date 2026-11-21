@@ -1,5 +1,6 @@
 """Tests-first offline semver package update and recovery contract."""
 import hashlib
+from functools import partial
 import importlib.util
 import json
 import os
@@ -84,16 +85,19 @@ class OfflineUpdateTest(unittest.TestCase):
         self.assertEqual(self.version(), '3.0.0')
 
     def _devices_schedule(self):
-        # A synthetic schedule record as `devices --apply --interval` stores it; no unload command runs.
-        label = 'com.avenox.beyin-devices.synthetic'
-        unit = self.base / (label + '.plist')
-        unit.write_text('synthetic schedule\n', encoding='utf-8')
-        settings = {'schema': 1, 'level': 'computers', 'phone_sync': None, 'role': None,
-                    'remote_name': 'origin', 'branch': 'main', 'interval': 15, 'device_name': None,
-                    'scheduler': {'kind': 'launchd', 'label': label, 'files': [str(unit)], 'unload': []},
-                    'capture': None}
-        (self.state / 'devices.json').write_text(json.dumps(settings), encoding='utf-8')
-        return unit
+        devices = self.module._devices_module()
+        folder = self.base / 'scheduler'
+        runner = lambda argv: (1, '') if argv[1] == 'print' else (0, '')
+        vault = self.vault.resolve()
+        spec = devices.scheduler_spec(vault, self.state, 15, kind='launchd', scheduler_dir=folder)
+        devices._install_scheduler(vault, self.state, spec, folder, runner, None)
+        settings = {**devices.default_settings(), 'level': 'computers', 'interval': 15,
+                    'scheduler': {'kind': 'launchd', 'label': spec['label']}}
+        (self.state / 'devices.json').write_text(json.dumps(settings), encoding='utf-8', newline='\n')
+        self.enterContext(patch.object(devices, 'release_schedule', partial(
+            devices.release_schedule, scheduler_dir=folder, runner=runner)))
+        self.enterContext(patch.object(self.module, '_devices_module', return_value=devices))
+        return Path(next(iter(spec['files']))), folder, runner
 
     def test_rollback_to_engine_without_devices_removes_its_schedule(self):
         # The schedule runs `beyin.py devices --sync-once`; an engine without the command fails every round.
@@ -104,7 +108,7 @@ class OfflineUpdateTest(unittest.TestCase):
         entry = next(item for item in backup['operations'] if item['name'] == name)
         entry['old'] = None  # as if the previous release did not ship the devices module
         record.write_text(json.dumps(backup), encoding='utf-8')
-        unit = self._devices_schedule()
+        unit, _, _ = self._devices_schedule()
         rolled = self.module.rollback(self.vault, self.state)
         self.assertEqual(rolled['status'], 'rolled_back')
         self.assertFalse((self.vault / name).exists())
@@ -115,18 +119,21 @@ class OfflineUpdateTest(unittest.TestCase):
 
     def test_rollback_to_engine_with_devices_keeps_its_schedule(self):
         self.module.update(self.vault, self.state, self.package)
-        unit = self._devices_schedule()
+        unit, _, _ = self._devices_schedule()
         rolled = self.module.rollback(self.vault, self.state)
         self.assertEqual(rolled['status'], 'rolled_back')
         self.assertTrue(unit.exists())
         self.assertNotIn('devices_schedule', rolled)
 
     def test_uninstall_removes_devices_schedule(self):
-        unit = self._devices_schedule()
-        result = run_python(ROOT / 'scripts/install_v3.py',
-                            ['--vault', self.vault, '--state', self.state, '--uninstall'], ROOT, self.env)
-        self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
-        self.assertEqual(json.loads(result.stdout)['devices_schedule']['status'], 'removed')
+        unit, folder, runner = self._devices_schedule()
+        spec = importlib.util.spec_from_file_location('devices_uninstall_test', ROOT / 'scripts/install_v3.py')
+        installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer)
+        with patch.object(installer, 'release_devices_schedule', partial(
+                installer.release_devices_schedule, scheduler_dir=folder, runner=runner)):
+            result = installer.install(self.vault, self.state, uninstall=True)
+        self.assertEqual(result['devices_schedule']['status'], 'removed')
         self.assertFalse(unit.exists())
 
     def test_update_idempotent_and_rollback_preserves_new_user_note(self):

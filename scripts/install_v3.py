@@ -476,7 +476,7 @@ def unmanaged_toml(text, original):
     return text[:section.end()] + body + text[stop:]
 
 
-def release_devices_schedule(vault, state):
+def release_devices_schedule(vault, state, scheduler_dir=None, runner=None):
     """Uninstall removes beyin.py, which a `devices` schedule runs every round: remove the schedule too."""
     path = ROOT / "template/.claude/scripts/beyin_v3_devices.py"
     if not path.is_file():
@@ -486,7 +486,7 @@ def release_devices_schedule(vault, state):
         devices = importlib.util.module_from_spec(spec); spec.loader.exec_module(devices)
     except Exception:
         return None
-    return devices.release_schedule(vault, state)
+    return devices.release_schedule(vault, state, scheduler_dir=scheduler_dir, runner=runner)
 
 
 def uninstalled_content(name, item, current, previous, kept):

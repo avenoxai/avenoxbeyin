@@ -31,6 +31,7 @@ Rules this module keeps:
 - Standard library only.
 """
 import calendar
+from contextlib import contextmanager, nullcontext
 import hashlib
 import json
 import os
@@ -44,6 +45,8 @@ import sys
 import time
 
 SETTINGS_FILE = 'devices.json'
+OWNERSHIP_FILE = 'devices-schedulers.json'
+SCHEDULER_LOCK = 'devices-schedulers.lock'
 RECORD_FILE = 'devices-sync.json'
 LOCK_FILE = 'devices-sync.lock'
 LOG_FILE = 'devices-sync.log'
@@ -526,17 +529,37 @@ def _systemd_quote(argument):
     return '"' + argument.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%').replace('$', '$$') + '"'
 
 
-def scheduler_spec(vault, state, interval, kind=None, home=None, command=None):
+_SCHEDULER_FILES = {
+    'launchd': ('com.avenox.beyin-devices.', ('.plist',)),
+    'systemd-user': ('beyin-devices-', ('.service', '.timer')),
+    'systemd-capture': ('beyin-capture-', ('.service',)),
+    'schtasks': ('BeyinDevices-', ('.json',)),
+}
+
+
+def _scheduler_paths(vault, state, kind, label, scheduler_dir=None, home=None):
+    prefix, suffixes = _SCHEDULER_FILES.get(kind, ('', ())) if isinstance(kind, str) else ('', ())
+    if (not suffixes or not isinstance(label, str)
+            or not re.fullmatch(re.escape(prefix) + r'[a-z0-9-]+', label)
+            or label != prefix + _vault_key(vault)):
+        raise DevicesError('Scheduler ownership refused: invalid label for this vault.')
+    if scheduler_dir is None:
+        home = Path(home) if home is not None else Path.home()
+        scheduler_dir = (home / 'Library/LaunchAgents' if kind == 'launchd' else
+                         Path(state) / 'scheduler' if kind == 'schtasks' else home / '.config/systemd/user')
+    return [Path(scheduler_dir) / (label + suffix) for suffix in suffixes]
+
+
+def scheduler_spec(vault, state, interval, kind=None, home=None, command=None, scheduler_dir=None):
     """Files and commands that run one sync round every `interval` minutes on this platform.
     Pure: returns the plan, runs nothing."""
     kind = kind or scheduler_kind()
-    home = Path(home) if home else Path.home()
     command = command or _sync_command(vault, state)
     key = _vault_key(vault)
     log = str(Path(state) / LOG_FILE)
     if kind == 'launchd':
         label = 'com.avenox.beyin-devices.' + key
-        path = home / 'Library/LaunchAgents' / (label + '.plist')
+        path, = _scheduler_paths(vault, state, kind, label, scheduler_dir, home)
         content = plistlib.dumps({
             'Label': label, 'ProgramArguments': command, 'StartInterval': interval * 60, 'RunAtLoad': True,
             'ProcessType': 'Background', 'StandardOutPath': log, 'StandardErrorPath': log,
@@ -547,24 +570,26 @@ def scheduler_spec(vault, state, interval, kind=None, home=None, command=None):
                 'load': [['launchctl', 'bootstrap', domain, str(path)]]}
     if kind == 'systemd-user':
         unit = 'beyin-devices-' + key
-        folder = home / '.config/systemd/user'
+        service_path, timer_path = _scheduler_paths(vault, state, kind, unit, scheduler_dir, home)
         service = ('[Unit]\nDescription=Beyin devices sync round\n\n[Service]\nType=oneshot\n'
                    'ExecStart=' + ' '.join(_systemd_quote(item) for item in command) + '\n')
         timer = ('[Unit]\nDescription=Beyin devices sync timer\n\n[Timer]\nOnBootSec=2min\n'
                  'OnUnitActiveSec=' + str(interval) + 'min\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n')
         return {'kind': kind, 'label': unit,
-                'files': {str(folder / (unit + '.service')): service, str(folder / (unit + '.timer')): timer},
+                'files': {str(service_path): service, str(timer_path): timer},
                 'unload': [['systemctl', '--user', 'disable', '--now', unit + '.timer']],
                 'load': [['systemctl', '--user', 'daemon-reload'],
                          ['systemctl', '--user', 'enable', '--now', unit + '.timer']]}
     if kind == 'schtasks':
         name = 'BeyinDevices-' + key
+        path, = _scheduler_paths(vault, state, kind, name, scheduler_dir, home)
         windowless = Path(command[0]).with_name('pythonw.exe')
         argv = [str(windowless) if windowless.is_file() else command[0], *command[1:]]
         line = subprocess.list2cmdline(argv)
-        return {'kind': kind, 'label': name, 'files': {},
+        create = ['schtasks', '/Create', '/SC', 'MINUTE', '/MO', str(interval), '/TN', name, '/TR', line]
+        return {'kind': kind, 'label': name, 'files': {str(path): json.dumps(create) + '\n'},
                 'unload': [['schtasks', '/Delete', '/F', '/TN', name]],
-                'load': [['schtasks', '/Create', '/F', '/SC', 'MINUTE', '/MO', str(interval), '/TN', name, '/TR', line]]}
+                'load': [create]}
     quoted = ' '.join("'" + item.replace("'", "'\\''") + "'" for item in command)
     if kind == 'cron':
         manual = ('Add this line with `crontab -e`: */' + str(interval) + ' * * * * ' + quoted + ' >> ' +
@@ -588,7 +613,7 @@ def _tailscale_ip():
     return address if re.fullmatch(r'\d{1,3}(\.\d{1,3}){3}', address) else None
 
 
-def _capture_plan(vault, state, extra, home=None):
+def _capture_plan(vault, state, extra, home=None, scheduler_dir=None):
     host = extra.get('capture_host') or _tailscale_ip()
     warnings = []
     if not host:
@@ -606,15 +631,15 @@ def _capture_plan(vault, state, extra, home=None):
     kind = scheduler_kind()
     if kind == 'systemd-user':
         unit = 'beyin-capture-' + _vault_key(vault)
-        path = (Path(home) if home else Path.home()) / '.config/systemd/user' / (unit + '.service')
+        path, = _scheduler_paths(vault, state, 'systemd-capture', unit, scheduler_dir, home)
         content = ('[Unit]\nDescription=Beyin capture server (append-only inbox)\n\n[Service]\n'
                    'EnvironmentFile=' + str(token_file) + '\nExecStart=' +
                    ' '.join(_systemd_quote(item) for item in command) + '\nRestart=on-failure\nRestartSec=15\n\n'
                    '[Install]\nWantedBy=default.target\n')
-        actions.append(_action('service', 'Install and start the capture server as a user service',
-                               files={str(path): content},
-                               load=[['systemctl', '--user', 'daemon-reload'],
-                                     ['systemctl', '--user', 'enable', '--now', unit + '.service']]))
+        spec = {'kind': 'systemd-capture', 'label': unit, 'files': {str(path): content},
+                'load': [['systemctl', '--user', 'daemon-reload'],
+                         ['systemctl', '--user', 'enable', '--now', unit + '.service']]}
+        actions.append(_action('scheduler', 'Install and start the capture server as a user service', spec=spec))
         manual.append('Keep the service running after logout on a server: sudo loginctl enable-linger "$USER"')
     else:
         manual.append('Start the capture server from your own service manager or startup script; it reads the token '
@@ -626,7 +651,7 @@ def _capture_plan(vault, state, extra, home=None):
     return {'host': host, 'port': extra['capture_port'], 'actions': actions, 'manual': manual, 'warnings': warnings}
 
 
-def plan(vault, state, options, home=None):
+def plan(vault, state, options, home=None, scheduler_dir=None):
     """Everything `--apply` would do for these options. Writes nothing."""
     vault, state = Path(vault), Path(state)
     chosen, extra = normalize(options, vault, state)
@@ -718,7 +743,7 @@ def plan(vault, state, options, home=None):
             warnings.append('The remote uses HTTPS. A scheduled round cannot type a password: set up a git credential '
                             'helper or use an SSH remote. Use a private repository; the vault holds personal notes.')
         if chosen['interval']:
-            scheduler = scheduler_spec(vault, state, chosen['interval'], home=home)
+            scheduler = scheduler_spec(vault, state, chosen['interval'], home=home, scheduler_dir=scheduler_dir)
             if scheduler['files'] or scheduler['load']:
                 actions.append(_action('scheduler', 'Run a sync round every ' + str(chosen['interval']) + ' minutes (' +
                                        scheduler['kind'] + ')', spec=scheduler))
@@ -744,19 +769,21 @@ def plan(vault, state, options, home=None):
                 manual.append('Check the connection once by hand: ssh ' + (_redact(url).split('://', 1)[-1].split('/', 1)[0] or '<hub>') +
                               ' true. The first connection asks to trust the host key; a scheduled round cannot answer that.')
 
-    stale = stored.get('scheduler')
-    if stale and (not scheduler or scheduler.get('label') != stale.get('label') or not chosen['interval']):
-        actions.insert(0, _action('scheduler_remove', 'Remove the previous sync schedule', spec=stale))
+    for stale in _recorded_schedules(vault, state, stored):
+        if isinstance(stale, dict) and stale.get('kind') == 'systemd-capture':
+            if level == 'solo':
+                actions.insert(0, _action('scheduler_remove', 'Remove the capture service', spec=stale))
+        elif not isinstance(stale, dict) or not scheduler or scheduler.get('label') != stale.get('label'):
+            actions.insert(0, _action('scheduler_remove', 'Remove the previous sync schedule', spec=stale))
     capture = None
     if extra['capture']:
-        capture = _capture_plan(vault, state, extra, home=home)
+        capture = _capture_plan(vault, state, extra, home=home, scheduler_dir=scheduler_dir)
         actions += capture['actions']
         manual += capture['manual']
         warnings += capture['warnings']
     installed = scheduler if scheduler and (scheduler['files'] or scheduler['load']) else None
     settings = {**chosen, 'schema': 1,
-                'scheduler': {'kind': installed['kind'], 'label': installed['label'],
-                              'files': sorted(installed['files']), 'unload': installed['unload']} if installed else None,
+                'scheduler': {'kind': installed['kind'], 'label': installed['label']} if installed else None,
                 'capture': {'host': capture['host'], 'port': capture['port']} if capture else stored.get('capture')}
     if level == 'solo':
         settings['capture'] = None
@@ -774,7 +801,7 @@ def public_plan(result):
             if key in action:
                 item[key] = action[key]
         spec = action.get('spec')
-        if spec:
+        if isinstance(spec, dict):
             item['scheduler'] = spec.get('kind')
             item['files'] = sorted(spec.get('files') or [])
         if 'files' in action:
@@ -787,12 +814,13 @@ def public_plan(result):
 
 def _run(argv, timeout=60):
     try:
-        done = subprocess.run(argv, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout)
+        done = subprocess.run(argv, shell=False, stdin=subprocess.DEVNULL, capture_output=True,
+                              text=True, errors='replace', timeout=timeout)
     except FileNotFoundError:
         return 127, argv[0] + ' not found'
     except subprocess.TimeoutExpired:
         return 124, 'timeout'
-    return done.returncode, _tail(done.stderr or done.stdout)
+    return done.returncode, (done.stdout if done.returncode == 0 else done.stderr or done.stdout)
 
 
 def _require(done, what):
@@ -800,7 +828,7 @@ def _require(done, what):
         raise DevicesError(what + ' failed: ' + _tail(done.stderr or done.stdout))
 
 
-def _execute(vault, state, action):
+def _execute(vault, state, action, scheduler_dir=None, runner=None, home=None):
     kind = action['kind']
     if kind == 'git_init':
         _require(_git(vault, 'init', '-b', action['branch']), 'git init')
@@ -826,63 +854,205 @@ def _execute(vault, state, action):
         path = Path(action['path'])
         if not path.exists():
             _atomic(path, 'BEYIN_INGEST_TOKEN=' + secrets.token_urlsafe(32) + '\n', private=True)
-    elif kind in ('scheduler', 'service'):
-        spec = action['spec'] if kind == 'scheduler' else action
-        for argv in spec.get('unload', []):
-            _run(argv)  # a previous copy may not exist; replacing it is the point
-        for path, content in spec['files'].items():
-            _atomic(path, content)
-        for argv in spec['load']:
-            code, output = _run(argv)
-            if code != 0:
-                raise DevicesError(' '.join(argv[:3]) + ' failed: ' + output)
+    elif kind == 'scheduler':
+        _install_scheduler(vault, state, action['spec'], scheduler_dir, runner, home)
     elif kind == 'scheduler_remove':
-        _remove_scheduler(action['spec'])
+        _remove_scheduler(vault, state, action['spec'], scheduler_dir, runner, home)
     else:
         raise DevicesError('unknown action: ' + kind)
 
 
-def _remove_scheduler(spec):
-    """Undo a schedule this module installed. The record comes from the runtime state; anything
-    that does not look like what scheduler_spec writes is ignored instead of executed."""
-    if not isinstance(spec, dict) or not isinstance(spec.get('label'), str) or 'eyin' not in spec['label']:
-        return
-    label = spec['label']
-    for argv in spec.get('unload') or []:
-        if (isinstance(argv, list) and argv and all(isinstance(item, str) for item in argv)
-                and argv[0] in ('launchctl', 'systemctl', 'schtasks') and any(label in item for item in argv)):
-            _run(argv)
-    for path in spec.get('files') or []:
-        if not isinstance(path, str) or label not in Path(path).name:
-            continue
+def _read_ownership(state):
+    try:
+        records = json.loads((Path(state) / OWNERSHIP_FILE).read_text(encoding='utf-8'))
+        if isinstance(records, dict):
+            return records
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        pass
+    raise DevicesError('Scheduler ownership file is unreadable or invalid.')
+
+
+def _write_ownership(state, records):
+    _atomic(Path(state) / OWNERSHIP_FILE, json.dumps(records, indent=2) + '\n', private=True)
+
+
+def _scheduler_command(runner, argv):
+    code, output = (runner or _run)(argv)
+    if code:
+        raise DevicesError(' '.join(argv[:3]) + ' failed: ' + _tail(output))
+    return output
+
+
+def _task_hash(label, runner):
+    output = _scheduler_command(runner, ['schtasks', '/Query', '/TN', label, '/XML'])
+    if not output.strip():
+        raise DevicesError('Scheduler ownership refused: the registered task definition was empty.')
+    return hashlib.sha256(output.encode('utf-8')).hexdigest()
+
+
+def _verify_ownership(records, kind, label, paths):
+    record = records.get(label)
+    if not isinstance(record, dict) or record.get('kind') != kind or not isinstance(record.get('files'), dict):
+        raise DevicesError('Scheduler ownership refused: no creation record for ' + label + '.')
+    files = record['files']
+    if record.get('directory') != str(paths[0].parent.resolve()):
+        raise DevicesError('Scheduler ownership refused: the scheduler directory changed.')
+    if set(files) != {path.name for path in paths}:
+        raise DevicesError('Scheduler ownership refused: unexpected file list for ' + label + '.')
+    for path in paths:
+        if (path.is_symlink() or not path.is_file()
+                or hashlib.sha256(path.read_bytes()).hexdigest() != files[path.name]):
+            raise DevicesError('Scheduler ownership refused: missing or changed file ' + path.name + '.')
+    return record
+
+
+def _scheduler_available(kind, label, paths, runner):
+    run = runner or _run
+    if kind == 'schtasks':
+        code, _ = run(['schtasks', '/Query', '/TN', label, '/XML'])
+        if code == 0:
+            raise DevicesError('Scheduler ownership refused: a task already exists for ' + label + '.')
+    elif kind == 'launchd':
+        code, _ = run(['launchctl', 'print', 'gui/' + str(os.getuid() if hasattr(os, 'getuid') else 0) + '/' + label])
+        if code == 0:
+            raise DevicesError('Scheduler ownership refused: a LaunchAgent already exists for ' + label + '.')
+    else:
+        for path in paths:
+            _, output = run(['systemctl', '--user', 'show', '--property=LoadState', '--value', path.name])
+            if output.strip() != 'not-found':
+                raise DevicesError('Scheduler ownership refused: could not verify that ' + path.name +
+                                   ' is absent. ' + _tail(output))
+
+
+def _remove_scheduler(vault, state, spec, scheduler_dir=None, runner=None, home=None):
+    kind, label = (spec.get('kind'), spec.get('label')) if isinstance(spec, dict) else (None, None)
+    paths = _scheduler_paths(vault, state, kind, label, scheduler_dir, home)
+    records = _read_ownership(state)
+    record = _verify_ownership(records, kind, label, paths)
+    if not record.get('active'):
+        raise DevicesError('Scheduler ownership refused: registration of ' + label + ' was not confirmed.')
+    if kind == 'schtasks':
+        if not record.get('task_hash') or _task_hash(label, runner) != record['task_hash']:
+            raise DevicesError('Scheduler ownership refused: the registered task definition changed.')
+        unload = ['schtasks', '/Delete', '/F', '/TN', label]
+    elif kind == 'launchd':
+        unload = ['launchctl', 'bootout', 'gui/' + str(os.getuid() if hasattr(os, 'getuid') else 0) + '/' + label]
+    else:
+        unload = ['systemctl', '--user', 'disable', '--now', paths[-1].name]
+    _scheduler_command(runner, unload)
+    _verify_ownership(records, kind, label, paths)
+    for path in paths:
+        path.unlink()
+    del records[label]
+    _write_ownership(state, records)
+    if kind.startswith('systemd-'):
+        _scheduler_command(runner, ['systemctl', '--user', 'daemon-reload'])
+
+
+def _install_scheduler(vault, state, spec, scheduler_dir, runner, home):
+    kind, label = spec['kind'], spec['label']
+    paths = _scheduler_paths(vault, state, kind, label, scheduler_dir, home)
+    content = {path: spec['files'][str(path)].encode('utf-8') for path in paths}
+    hashes = {path.name: hashlib.sha256(data).hexdigest() for path, data in content.items()}
+    records = _read_ownership(state)
+    if label in records:
+        record = _verify_ownership(records, kind, label, paths)
+        if record.get('active') and hashes == record['files']:
+            if kind == 'schtasks' and _task_hash(label, runner) != record.get('task_hash'):
+                raise DevicesError('Scheduler ownership refused: the registered task definition changed.')
+            return
+        if hashes != record['files']:
+            _remove_scheduler(vault, state, spec, scheduler_dir, runner, home)
+            records = _read_ownership(state)
+    if label not in records:
+        if any(os.path.lexists(path) for path in paths):
+            raise DevicesError('Scheduler ownership refused: a file already exists for ' + label + '.')
+        _scheduler_available(kind, label, paths, runner)
+        created = []
         try:
-            Path(path).unlink()
+            for path, data in content.items():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open('xb') as handle:
+                    created.append(path)
+                    handle.write(data)
+            records[label] = {'kind': kind, 'directory': str(paths[0].parent.resolve()),
+                              'files': hashes, 'active': False}
+            _write_ownership(state, records)
         except OSError:
-            pass
+            for path in created:
+                path.unlink()
+            raise
+    for argv in spec['load']:
+        _scheduler_command(runner, argv)
+    if kind == 'schtasks':
+        records[label]['task_hash'] = _task_hash(label, runner)
+    records[label]['active'] = True
+    _write_ownership(state, records)
 
 
-def release_schedule(vault, state):
+def _recorded_schedules(vault, state, settings):
+    records = _read_ownership(state)
+    configured = settings.get('scheduler')
+    specs = [configured] if configured else []
+    for kind, (prefix, _) in _SCHEDULER_FILES.items():
+        label = prefix + _vault_key(vault)
+        spec = {'kind': kind, 'label': label}
+        if label in records and not any(isinstance(item, dict) and item.get('label') == label for item in specs):
+            specs.append(spec)
+    return specs
+
+
+@contextmanager
+def _scheduler_guard(state):
+    state = Path(state)
+    state.mkdir(parents=True, exist_ok=True)
+    with (state / SCHEDULER_LOCK).open('a+b') as handle:
+        if not _lock(handle):
+            raise DevicesError('Another scheduler change is in progress. Try again after it finishes.')
+        yield
+
+
+def release_schedule(vault, state, scheduler_dir=None, runner=None):
     """Remove the recorded schedule when the engine that runs it goes away: a rollback to a release
     without this module, or an uninstall. The schedule would otherwise call `devices --sync-once`
     on an engine that rejects the command, every round. Settings stay; never raises."""
     try:
         settings, valid = read_settings(state)
-        if not valid or not settings.get('scheduler'):
+        if not valid or not _recorded_schedules(vault, state, settings):
             return None
-        result = remove_scheduler(vault, state)
+        with _scheduler_guard(state):
+            settings, valid = read_settings(state)
+            if not valid:
+                raise DevicesError('Scheduler ownership refused: devices settings are invalid.')
+            specs = _recorded_schedules(vault, state, settings)
+            for spec in specs:
+                _remove_scheduler(vault, state, spec, scheduler_dir, runner)
+                if spec == settings.get('scheduler'):
+                    _clear_schedule(state, settings)
+            result = {'status': 'removed' if specs else 'unchanged'}
     except Exception as exc:
         return {'status': 'failed', 'reason': str(exc)[:200]}
     return {**result, 'next': 'after updating to a release with devices, run devices --apply with --interval again'}
 
 
-def apply(vault, state, options, home=None):
+def apply(vault, state, options, home=None, scheduler_dir=None, runner=None):
     """Run the plan in order and store the settings last. Stops at the first failed action."""
     vault, state = Path(vault), Path(state)
-    planned = plan(vault, state, options, home=home)
+    planned = plan(vault, state, options, home=home, scheduler_dir=scheduler_dir)
+    changes_scheduler = any(action['kind'].startswith('scheduler') for action in planned['actions'])
+    with _scheduler_guard(state) if changes_scheduler else nullcontext():
+        if changes_scheduler:
+            planned = plan(vault, state, options, home=home, scheduler_dir=scheduler_dir)
+        return _apply_plan(vault, state, planned, home, scheduler_dir, runner)
+
+
+def _apply_plan(vault, state, planned, home, scheduler_dir, runner):
     done = []
     for action in planned['actions']:
         try:
-            _execute(vault, state, action)
+            _execute(vault, state, action, scheduler_dir, runner, home)
         except (DevicesError, OSError) as exc:
             return {**public_plan(planned), 'status': 'failed', 'applied': done,
                     'failed': {'summary': action['summary'], 'error': str(exc)},
@@ -995,14 +1165,26 @@ def sync_once(vault, state):
         return result
 
 
-def remove_scheduler(vault, state):
+def _clear_schedule(state, settings):
+    settings.update({'scheduler': None, 'interval': 0})
+    _atomic(Path(state) / SETTINGS_FILE, json.dumps(settings, ensure_ascii=False, indent=2) + '\n')
+
+
+def remove_scheduler(vault, state, scheduler_dir=None, runner=None):
     settings, valid = read_settings(state)
     if not valid:
         raise DevicesError(SETTINGS_FILE + ' in the runtime state is invalid; fix or remove it first')
-    spec = settings.get('scheduler')
-    if not spec:
+    specs = [spec for spec in _recorded_schedules(vault, state, settings)
+             if not isinstance(spec, dict) or spec.get('kind') != 'systemd-capture']
+    if not specs:
         return {'status': 'unchanged', 'scheduler': None}
-    _remove_scheduler(spec)
-    settings.update({'scheduler': None, 'interval': 0})
-    _atomic(Path(state) / SETTINGS_FILE, json.dumps(settings, ensure_ascii=False, indent=2) + '\n')
-    return {'status': 'removed', 'scheduler': spec.get('kind'), 'label': spec.get('label')}
+    with _scheduler_guard(state):
+        settings, valid = read_settings(state)
+        if not valid:
+            raise DevicesError('Scheduler ownership refused: devices settings are invalid.')
+        for spec in [item for item in _recorded_schedules(vault, state, settings)
+                     if not isinstance(item, dict) or item.get('kind') != 'systemd-capture']:
+            _remove_scheduler(vault, state, spec, scheduler_dir, runner)
+            _clear_schedule(state, settings)
+            return {'status': 'removed', 'scheduler': spec['kind'], 'label': spec['label']}
+    return {'status': 'unchanged', 'scheduler': None}
