@@ -328,6 +328,14 @@ class OfflineUpdateTest(unittest.TestCase):
                 self.module.update(self.vault, self.state, self.package)
         self.assertEqual(self.version(), '3.0.0', 'Version stamp must be the last successful step')
         self.assertEqual(self.note.read_text(), 'Synthetic original user note.\n')
+        for arguments in (['update', '--check'], ['update', '--check', '--metadata-only'], ['doctor']):
+            probe = run_python(self.vault / 'beyin.py', ['--json', *arguments], self.vault, self.env)
+            self.assertEqual(probe.returncode, 0, probe.stderr)
+            status = json.loads(probe.stdout)
+            if arguments == ['doctor']:
+                self.assertEqual(status['status'], 'needs_attention')
+                status = status['updates']
+            self.assertEqual(status, {'status': 'recovery_required', 'command': 'beyin.py recover'})
         recovered = self.module.recover(self.vault, self.state)
         self.assertEqual(recovered['status'], 'recovered')
         self.assertEqual(self.version(), '3.0.1')

@@ -25,6 +25,11 @@ def build(output, version='3.0.0'):
     paths += [ROOT / 'template/.agents/skills' / name / 'SKILL.md' for name in ('beyin', 'beyin-doktor', 'beyin-guncelle')]
     files = {p.relative_to(ROOT).as_posix(): p.read_bytes() for p in paths}
     manifest = {'schema': 1, 'version': version, 'min_python': '3.11', 'runtime_schema': 1, 'migrations': [], 'files': {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}}
+    steps_file = ROOT / 'after-update.json'
+    if steps_file.is_file():
+        # The manifest field also works with old updaters that reject new archive paths.
+        steps = json.loads(steps_file.read_text(encoding='utf-8'))
+        manifest['after_update_steps'] = steps['steps'] if isinstance(steps, dict) else steps
     legacy = [ROOT/'template/.claude/scripts'/name for name in ('flush.py','compile.py')] + [ROOT/'template/.claude/hooks'/(name+suffix) for name in ('session-start','session-end','pre-compact','prompt-counter') for suffix in ('.sh','.ps1')]
     manifest['legacy_hashes'] = {p.relative_to(ROOT/'template').as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in legacy if p.exists()}
     # cad7953-era updaters reject every other key before they can load the new
