@@ -132,7 +132,7 @@ def extract_wikilinks(text):
     return results
 
 
-MARKDOWN_LINK_PATTERN = re.compile(r"(!?)\s*\[([^\]\r\n]{1,500})\]\s*\(([^)\r\n]{1,500})\)")
+MARKDOWN_LINK_PATTERN = re.compile(r"(!?)\s*\[([^\]\r\n]{1,500})\]\(([^)\r\n]{1,500})\)")
 
 
 def extract_markdown_links(text):
