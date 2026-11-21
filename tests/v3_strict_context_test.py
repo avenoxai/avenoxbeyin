@@ -75,6 +75,22 @@ class StrictRetrieveTest(unittest.TestCase):
             json.dumps({'strict_exclude': ['knowledge/'], 'strict_keep': ['knowledge/']}), encoding='utf-8')
         self.assertEqual(self.sources('why is the GoPlus quota wasted', strict=True), ['knowledge/goplus-quota.md'])
 
+    def test_strict_keep_matches_whole_path_components(self):
+        kept = 'proj/İstanbul Arşivi/Kurallar.md'
+        sibling = 'project/Kurallar.md'
+        self.ingest('project-rules', 'Quartz rollback uses the amber switch.', kept)
+        self.ingest('sibling-rules', 'Quartz rollback uses the violet switch.', sibling)
+        for prefix in ('proj', 'proj\\İstanbul Arşivi\\', kept, ''):
+            with self.subTest(prefix=prefix):
+                (self.store.state_dir / 'retrieval.json').write_text(json.dumps({
+                    'strict_exclude': ['proj/', 'project/'], 'strict_keep': [prefix],
+                }, ensure_ascii=False), encoding='utf-8')
+                expected = [kept] if prefix else []
+                query = 'quartz rollback switch'
+                self.assertEqual(self.sources(query, strict=True), expected)
+                context = self.store.context_for('claude', query, strict=True)
+                self.assertEqual([record['source'] for record in context['records']], expected)
+
     def test_strict_abstains_when_nothing_relates(self):
         result = self.store.retrieve('thanks that was great', strict=True)
         self.assertEqual(result['records'], [])

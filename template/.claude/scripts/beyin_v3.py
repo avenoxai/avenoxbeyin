@@ -1870,17 +1870,17 @@ class MemoryStore:
             try:
                 if _MODULE_DIR not in sys.path:
                     sys.path.insert(0, _MODULE_DIR)
-                from beyin_v3_passage import _path_key, settings
+                from beyin_v3_passage import _matches_keep, _path_key, settings
             except ImportError:
                 # Without the exclusion policy, strict fallback must not deliver sources.
                 return [] if candidate_only else pack_context([], limit, budget_chars, stale_count)
             _settings = settings(self.state_dir)
             prefixes = tuple(_path_key(prefix) for prefix in _settings["exclude"])
-            strict_keep_prefixes = tuple(_path_key(prefix) for prefix in _settings.get("strict_keep", ()))
+            strict_keep_prefixes = _settings.get("strict_keep", ())
             eligible = [record for record in eligible
                         if not _path_key(str(record.get("source", ""))).startswith("receipts/")
                         and (not _path_key(str(record.get("source", ""))).startswith(prefixes)
-                             or _path_key(str(record.get("source", ""))).startswith(strict_keep_prefixes))]
+                             or _matches_keep(_path_key(str(record.get("source", ""))), strict_keep_prefixes))]
         query_tokens = _tokens(query)
         project_tokens = _tokens(project or "")
         terms = query_tokens - STOPWORDS - project_tokens
@@ -1907,7 +1907,7 @@ class MemoryStore:
             if strict:
                 source = str(record.get("source", ""))
                 key = _path_key(source)
-                if source.startswith(self.STRICT_EXCLUDE) and (key.startswith("receipts/") or not key.startswith(strict_keep_prefixes)):
+                if source.startswith(self.STRICT_EXCLUDE) and not _matches_keep(key, strict_keep_prefixes):
                     continue
             # Aliases are source metadata, never a shortcut around eligibility gates.
             aliases = record.get("aliases", [])

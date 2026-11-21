@@ -166,6 +166,15 @@ def _path_key(value):
     return unicodedata.normalize("NFC", value.replace("\\", "/")).casefold()
 
 
+def _matches_keep(path_key, prefixes):
+    """Match a normalized source against whole configured path components."""
+    for value in prefixes:
+        prefix = _path_key(value).rstrip("/")
+        if prefix and (path_key == prefix or path_key.startswith(prefix + "/")):
+            return True
+    return False
+
+
 def settings(state_dir):
     """Optional runtime config; an invalid file means defaults, never a broken hook.
 
@@ -569,7 +578,6 @@ def pool(store, eligible, statuses=None, exclude=DEFAULT_EXCLUDE, superseded=Non
     if superseded is None:
         superseded = store._superseded_ids()
     prefixes = tuple(_path_key(prefix) for prefix in exclude)
-    keep_prefixes = tuple(_path_key(prefix) for prefix in strict_keep)
     allowed_statuses = _allowed_statuses(statuses)
     result = []
     for record in eligible:
@@ -577,7 +585,7 @@ def pool(store, eligible, statuses=None, exclude=DEFAULT_EXCLUDE, superseded=Non
         key = _path_key(source)
         excluded = source.startswith(store.STRICT_EXCLUDE) or key.startswith(prefixes)
         if (record["id"] in superseded or not _status_allowed(record, allowed_statuses) or
-                key.startswith("receipts/") or (excluded and not key.startswith(keep_prefixes))):
+                key.startswith("receipts/") or (excluded and not _matches_keep(key, strict_keep))):
             continue
         result.append(record)
     return result
