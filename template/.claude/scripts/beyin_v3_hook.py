@@ -850,7 +850,7 @@ def main():
             except subprocess.TimeoutExpired:
                 pending = True
             if process is not None and not pending and process.returncode:
-                raise RuntimeError("Source sync failed; metadata remains queued")
+                raise RuntimeError("Source sync worker failed")
             # Context only reads the store. SyncEngine adds the Markdown journal and the
             # markdown_sources table, which the sync worker creates and every reader tolerates
             # missing, so the foreground skips importing the sync engine.
@@ -1096,7 +1096,7 @@ def main():
             return
         record_error(state, exc)
         if not args.metadata_only and locals().get("event") in ("SessionStart", "UserPromptSubmit"):
-            print(json.dumps(output_context(args.harness, event, notice + "V3 source sync failed or conflicted; metadata remains queued. Run the local CLI doctor and verify current Markdown sources.")))
+            print(json.dumps(output_context(args.harness, event, notice + "V3 source sync failed or conflicted. Run the local CLI doctor and verify current Markdown sources.")))
         else:
             print("{}")
 

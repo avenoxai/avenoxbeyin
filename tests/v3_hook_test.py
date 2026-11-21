@@ -1722,6 +1722,9 @@ hook.main()
                                               'prompt': 'Nebula calibration owner'},
                                              script=self.failed_enqueue_hook(errno.ENOSPC, 'enospc')))
         self.assertIn('V3 source sync failed', context)
+        self.assertIn('Run the local CLI doctor', context)
+        self.assertNotIn('metadata remains queued', context)
+        self.assertFalse(list((self.state / 'hook-queue').glob('*.json')))
         self.assertNotIn('state folder is not writable', context)
         self.assertNotIn('Synthetic Reviewer', context)
 
