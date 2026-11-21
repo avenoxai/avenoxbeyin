@@ -262,7 +262,7 @@ class RefusedConfigTest(EngineFixture):
         # only malformed entries refuse the whole list.
         for bad in ('../gizli', '', ' 3rdparty ', '.', '..', 7, None, 'x' * 256, 'satir\nsonu',
                     'projects/../gizli', 'projects/./research', 'projects//dukkan',
-                    './projects/dukkan', 'projects/dukkan/'):
+                    '/projects/dukkan', 'C:/projects/dukkan'):
             with self.subTest(entry=bad):
                 self.config({'excluded_dirs': ['3rdparty', bad]})
                 self.refused('excluded_dirs')
@@ -343,12 +343,29 @@ class SettingsFileTest(unittest.TestCase):
         self.assertEqual(index_settings.save(self.state, self.vault, remove=['3RDPARTY', 'absent']), ['Target', 'Önbellek'])
         self.assertEqual(index_settings.read(self.state, self.vault), (['Target', 'Önbellek'], None, True))
 
+    def test_paths_are_normalized_when_saved_and_removed(self):
+        entries = ['.\\projects\\Araştırma Çıktısı\\', 'PROJECTS/ARAŞTIRMA ÇIKTISI']
+        self.assertEqual(index_settings.save(self.state, self.vault, entries), ['projects/Araştırma Çıktısı'])
+        self.assertEqual(json.loads((self.state / 'index.json').read_text(encoding='utf-8')),
+                         {'schema': 1, 'excluded_dirs': ['projects/Araştırma Çıktısı']})
+        self.assertEqual(index_settings.save(self.state, self.vault,
+                                             remove=['./PROJECTS\\ARAŞTIRMA ÇIKTISI/']), [])
+
+    def test_invalid_path_cannot_be_added_or_removed(self):
+        for name in ('/projects/drafts', 'C:/projects/drafts', 'C:projects/drafts',
+                     r'\\server\share', './C:/projects/drafts', 'projects/../drafts'):
+            for action in ('add', 'remove'):
+                with self.subTest(name=name, action=action):
+                    with self.assertRaisesRegex(ValueError, r'absolute|\.\.'):
+                        index_settings.save(self.state, self.vault, **{action: [name]})
+                    self.assertFalse((self.state / 'index.json').exists())
+
     def test_a_refused_change_writes_nothing(self):
         index_settings.save(self.state, self.vault, ['3rdparty'])
         before = (self.state / 'index.json').read_bytes()
         for name in ('notes', 'knowledge', 'tasks', '🔮 850-Companion', '..', '',
                      'projects/../gizli', 'projects/./research', 'projects//dukkan',
-                     './projects/dukkan', 'projects/dukkan/'):
+                     '/projects/dukkan', 'C:/projects/dukkan'):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 index_settings.save(self.state, self.vault, [name])
         # Path entries like 'a/b' are now accepted.
@@ -801,7 +818,7 @@ class PathListTest(EngineFixture):
 
     def test_path_entry_with_dot_or_dotdot_is_refused(self):
         for bad in ('projects/../gizli', 'projects/./research', 'projects//dukkan',
-                    './projects/dukkan', 'projects/dukkan/'):
+                    '/projects/dukkan', 'C:/projects/dukkan'):
             with self.subTest(entry=bad):
                 self.config({'excluded_dirs': ['3rdparty', bad]})
                 self.refused('excluded_dirs')

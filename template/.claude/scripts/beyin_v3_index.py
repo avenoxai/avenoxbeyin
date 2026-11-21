@@ -1,7 +1,7 @@
 """Directory names the user keeps out of the source index. Machine-local, no models.
 
-`<state>/index.json` holds `{"excluded_dirs": ["3rdparty", "target"]}`: bare directory names
-that the sync walk never descends into, at any depth. The engine prunes nothing by name on
+`<state>/index.json` holds `{"excluded_dirs": ["3rdparty", "projects/drafts"]}`: bare names
+match at any depth and paths match from the vault root. The engine prunes nothing by name on
 its own beyond beyin_v3_sync.EXCLUDED_DIRS: "Vendor" or "External" is a vendored code tree
 in one vault and a folder of supplier notes in another, so the user decides and every active
 name is shown by `sync` and `doctor`. This is an index setting, not a privacy boundary: a
@@ -10,7 +10,7 @@ is what keeps a source out of context.
 """
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import stat
 import tempfile
 import unicodedata
@@ -74,6 +74,26 @@ def companion_key(vault, keys):
     return key if key in keys else None
 
 
+def _normalize_entry(name):
+    if not isinstance(name, str) or not name.strip() or name != name.strip() or len(name) > MAX_NAME_CHARS:
+        raise ValueError('excluded_dirs entries must be directory names without surrounding spaces: ' + repr(name)[:80])
+    if any(ord(char) < 32 or ord(char) == 127 for char in name):
+        raise ValueError('excluded_dirs entries must not contain control chars: ' + repr(name)[:80])
+    path = name.replace('\\', '/')
+    while path.startswith('./'):
+        path = path[2:]
+    if path.startswith('/') or PureWindowsPath(path).drive:
+        raise ValueError('excluded_dirs entries must be vault-root-relative, not absolute or drive-qualified: ' + repr(name)[:80])
+    path = path.rstrip('/')
+    if any(part in ('', '.', '..') for part in path.split('/')):
+        raise ValueError('excluded_dirs entries must not contain empty, ".", or ".." components: ' + repr(name)[:80])
+    return path
+
+
+def _entry_key(name):
+    return tuple(dir_key(part) for part in name.split('/')) if '/' in name else dir_key(name)
+
+
 def check(value, vault=None):
     """The validated name list, first spelling of each name kept; ValueError says what is wrong.
 
@@ -88,18 +108,8 @@ def check(value, vault=None):
         raise ValueError(f'excluded_dirs must be a list of at most {MAX_EXCLUDED_DIRS} directory names')
     result, seen = [], {}
     for name in names:
-        if not isinstance(name, str) or not name.strip() or name != name.strip() or len(name) > MAX_NAME_CHARS:
-            raise ValueError('excluded_dirs entries must be directory names without surrounding spaces: ' + repr(name)[:80])
-        if name in ('.', '..') or any(ord(char) < 32 or ord(char) == 127 for char in name):
-            raise ValueError('excluded_dirs entries must not be "." or ".." or contain control chars: ' + repr(name)[:80])
-        if '/' in name or '\\' in name:
-            # Vault-root-relative path: normalize to forward slashes, reject '..' components.
-            parts = name.replace('\\', '/').split('/')
-            if any(p in ('', '.', '..') for p in parts):
-                raise ValueError('excluded_dirs path entries must not contain empty, ".", or ".." components: ' + repr(name)[:80])
-            key = tuple(dir_key(p) for p in parts)
-        else:
-            key = dir_key(name)
+        name = _normalize_entry(name)
+        key = _entry_key(name)
         if key not in seen:
             seen[key] = name
             result.append(name)
@@ -145,11 +155,7 @@ def exclusions(state, vault=None):
     report = {'excluded_dirs': names, 'pruned': 0, 'pruned_dirs': []}
     if error is not None:
         report['error'] = error
-    key_set = set()
-    for name in names:
-        key = tuple(dir_key(p) for p in name.replace('\\', '/').split('/')) if '/' in name or '\\' in name else dir_key(name)
-        key_set.add(key)
-    return frozenset(key_set), report
+    return frozenset(_entry_key(name) for name in names), report
 
 
 def applied_keys(keys, walk_skips=()):
@@ -195,8 +201,8 @@ def plan(state, vault, add=(), remove=()):
     names, error, _present = read(state, vault)
     if error is not None:
         raise ValueError(CONFIG_NAME + ' in the runtime state is invalid (' + error + '); fix or remove it first')
-    dropped = {dir_key(name) for name in remove}
-    names = [name for name in names if dir_key(name) not in dropped]
+    dropped = {_entry_key(_normalize_entry(name)) for name in remove}
+    names = [name for name in names if _entry_key(name) not in dropped]
     names += [unicodedata.normalize('NFC', name) for name in add]
     return check({'excluded_dirs': names}, vault)
 
