@@ -800,14 +800,15 @@ class SourceSyncTest(unittest.TestCase):
         original, parsed_body = self.module.parse(source.read_bytes().decode('utf-8'))
         self.assertEqual(parsed_body, body)
         before = source.read_bytes()
+        revision = self.records()[0]['revision']
         for field in ('status', 'visibility'):
             for value in (None, ['waiting']):
                 with self.subTest(field=field, value=value):
                     with self.assertRaises(ValueError):
-                        self.engine.update_task('yaml-task', 1, {field: value})
+                        self.engine.update_task('yaml-task', revision, {field: value})
                     self.assertEqual(source.read_bytes(), before)
-        updated = self.engine.update_task('yaml-task', 1, {'status': 'waiting'})
-        expected = dict(original, status='waiting', revision=2)
+        updated = self.engine.update_task('yaml-task', revision, {'status': 'waiting'})
+        expected = dict(original, status='waiting', revision=revision + 1)
         rendered = source.read_bytes().decode('utf-8')
         self.assertEqual(json.loads(rendered.split('---', 2)[1]), expected)
         self.assertEqual(source.read_bytes(), self.module.render(expected, body).encode('utf-8'))
