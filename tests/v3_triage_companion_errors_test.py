@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tests.v3_package_helpers import install, isolated_env, run_python, snapshot
+from tests.v3_package_helpers import inherited_env, install, isolated_env, run_python, snapshot
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
@@ -104,38 +104,57 @@ class CompanionScanErrorsTest(unittest.TestCase):
                 self.assertIn(f'{label}: taranamadi', human)
                 self.assertNotIn('PRIVATE-CONTENT-CANARY', json.dumps(result) + human)
 
-    @unittest.skipUnless(os.name == 'posix', 'POSIX permission fixture')
-    def test_installed_cli_reports_unreadable_rules_without_writing(self):
-        self.seed()
-        env = isolated_env(self.root / 'home')
+    def install_cli(self):
+        env = inherited_env(**isolated_env(self.root / 'home'))
         installed = install(self.vault, self.state, env)
         self.assertEqual(installed.returncode, 0, installed.stderr)
-        cli = self.vault / 'beyin.py'
-        seeded = run_python(cli, ['triage'], self.vault, env)
-        self.assertEqual(seeded.returncode, 0, seeded.stderr)
+        return self.vault / 'beyin.py', env
+
+    def test_first_installed_triage_does_not_initialize_runtime(self):
+        self.seed()
+        cli, env = self.install_cli()
         before = snapshot(self.vault), snapshot(self.state)
-        rules = self.companion / 'Kurallar.md'
-        mode = rules.stat().st_mode & 0o777
-        rules.chmod(0)
-        try:
-            try:
-                rules.read_bytes()
-            except PermissionError:
-                pass
-            else:
-                self.skipTest('Current executor bypasses POSIX permissions')
+        for _ in range(2):
             result = run_python(cli, ['triage', '--json'], self.vault, env)
             self.assertEqual((result.returncode, result.stderr), (0, b''))
             report = json.loads(result.stdout)['companion']
-            self.assertEqual((report['status'], report['unreadable_sources']), ('partial', ['Kurallar.md']))
-            self.assertEqual(report['active_threads'], 1)
-            human = run_python(cli, ['triage', '--human'], self.vault, env)
-            self.assertEqual((human.returncode, human.stderr), (0, b''))
-            self.assertIn(b'Eslikci taramasi eksik', human.stdout)
-            self.assertIn(b'Kurallar: taranamadi', human.stdout)
-        finally:
-            rules.chmod(mode)
-        self.assertEqual((snapshot(self.vault), snapshot(self.state)), before)
+            self.assertEqual(report, {'rules_count': 2, 'active_threads': 1,
+                                      'last_session': '2026-11-10 12:30', 'active_presence': 0})
+            self.assertEqual((snapshot(self.vault), snapshot(self.state)), before)
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX permission fixture')
+    def test_installed_cli_reports_unreadable_sources_without_writing(self):
+        if os.geteuid() == 0:
+            self.skipTest('Root bypasses file read permissions')
+        self.seed()
+        cli, env = self.install_cli()
+        before = snapshot(self.vault), snapshot(self.state)
+        labels = {'Kurallar.md': b'Kurallar', 'Threads.md': b'Acik is parcaciklari',
+                  'Last-Session.md': b'Son oturum'}
+        for filename, label in labels.items():
+            with self.subTest(filename=filename):
+                source = self.companion / filename
+                mode = source.stat().st_mode & 0o777
+                source.chmod(0)
+                try:
+                    try:
+                        source.read_bytes()
+                    except PermissionError:
+                        pass
+                    else:
+                        self.skipTest('chmod cannot remove read permission for the current executor')
+                    result = run_python(cli, ['triage', '--json'], self.vault, env)
+                    self.assertEqual((result.returncode, result.stderr), (0, b''))
+                    report = json.loads(result.stdout)['companion']
+                    self.assertEqual((report['status'], report['unreadable_sources']), ('partial', [filename]))
+                    human = run_python(cli, ['triage', '--human'], self.vault, env)
+                    self.assertEqual((human.returncode, human.stderr), (0, b''))
+                    self.assertIn(b'Eslikci taramasi eksik', human.stdout)
+                    self.assertIn(label + b': taranamadi', human.stdout)
+                    self.assertEqual(source.stat().st_mode & 0o777, 0)
+                finally:
+                    source.chmod(mode)
+                self.assertEqual((snapshot(self.vault), snapshot(self.state)), before)
 
 
 if __name__ == '__main__':

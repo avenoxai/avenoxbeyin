@@ -1459,14 +1459,14 @@ def main(argv=None, return_result=False):
         if state == vault or vault in state.parents:
             raise ValueError("--state must be outside the vault")
         read_only_context = args.command == "context" and args.no_sync
-        if read_only_context:
+        if read_only_context or args.command == "triage":
             # The source CLI can run without the installed entry point, which
             # already disables bytecode. Importing the engine must not write.
             sys.dont_write_bytecode = True
         if read_only_context and args.jev:
             raise ValueError("context --no-sync cannot be combined with --jev")
-        # The advisor switch reads and writes one small file; it needs no index or sync engine.
-        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc") else None
+        # Triage opens the optional review index read-only in its own branch.
+        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc", "triage") else None
         store = engine.MemoryStore(state, vault, read_only=read_only_context) if engine else None
         sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "homepage-create", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
         if args.command == "bridge":
@@ -2090,7 +2090,8 @@ def main(argv=None, return_result=False):
             _ensure_scripts_path()
             import beyin_v3_triage as triage_module
             try:
-                review = load_sync().reader(store).review_health(source_verified=True)
+                review_store = load_engine().MemoryStore(state, vault, read_only=True)
+                review = load_sync().reader(review_store).review_health(source_verified=True)
             except Exception as exc:
                 review = {'status': 'unavailable', 'error': type(exc).__name__}
             result = triage_module.triage(vault, state=state, stale_days=args.stale_days,

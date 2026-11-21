@@ -41,6 +41,8 @@ notla geçersiz kılınmış kaynaklar dışarıda kalır. Değişmiş/okunamaya
 önce `python beyin.py sync` çalıştırın. Boş veya şablon tarihleri atlanır;
 geçersiz tarihler ayrı sayılır. Oturum açılışına yeni satır veya otomatik hatırlatma
 eklenmez; `doctor` mevcut tanılama davranışını korur.
+İndeks henüz oluşturulmamışsa triage diğer taramaları yapar ve bu bölümü
+taranamadı olarak gösterir. Kasa ve yerel çalışma durumu salt okunur kalır.
 
 Eşlikçi özetinde `Kurallar.md`, `Threads.md` veya `Last-Session.md` okunamazsa
 JSON'da `companion.status: partial` ve `unreadable_sources` listesi döner.
