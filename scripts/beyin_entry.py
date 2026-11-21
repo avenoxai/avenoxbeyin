@@ -249,6 +249,25 @@ def human_result(result, command, installed_version=None):
             return format_human(result)
         except Exception:
             return json.dumps(result, ensure_ascii=False, indent=2)
+    if command == 'selftest':
+        status = result.get('status')
+        if status == 'no_questions':
+            return 'Vault oz-denetim (selftest): soru dosyasi bulunamadi (' + plain_text(result.get('questions_path')) + '). ' + plain_text(result.get('hint', ''))
+        total = result.get('total', 0)
+        passed = result.get('passed', 0)
+        missed = result.get('missed', [])
+        ctrl_total = result.get('controls_total', 0)
+        ctrl_passed = result.get('controls_passed', 0)
+        regressed = result.get('regressed', [])
+        lines = [
+            f'Vault oz-denetim (selftest): toplam {total} soru, gecen {passed}, kacan {len(missed)}.',
+            f'Kontroller: {ctrl_passed}/{ctrl_total} basarili.'
+        ]
+        if regressed:
+            lines.append(f'UYARI: {len(regressed)} soru onceki kosuya gore geriledi (eskiden geciyordu, simdi kacti)!')
+        for m in missed[:3]:
+            lines.append(f'  - Soru: "{m.get("query")}" -> Beklenen: {m.get("expected_source")}')
+        return '\n'.join(lines)
     if command == 'audit':
         try:
             from beyin_v3_audit import format_audit_human
@@ -273,6 +292,16 @@ def human_result(result, command, installed_version=None):
         if not result.get('config_valid', True):
             lines.append('Ayar dosyasi bozuk; jev.json elle duzeltilmeli.')
         return '\n'.join(lines + jev_lines(result))
+    if command == 'jev-audit':
+        audit = result.get('audit', {})
+        lines = ['Jev auto_context denetimi: ' + ('acik' if audit.get('enabled') else 'kapali'),
+                 'Ayar dosyasi: ' + result.get('path', '?'),
+                 'Log dosyasi: ' + result.get('log_path', '?'),
+                 'Not puanlari: ' + ('dahil' if audit.get('include_scores') else 'haric'),
+                 'Topical puani: ' + ('dahil' if audit.get('include_topical') else 'haric')]
+        if result.get('changed'):
+            lines.insert(0, 'Jev auto_context denetimi ' + ('etkinlestirildi' if audit.get('enabled') else 'devre disi birakildi'))
+        return '\n'.join(lines)
     if command == 'preferences':
         prefs = result['preferences']
         lines = ['Otomatik kontrol: ' + ('acik' if prefs['auto_sync'] else 'kapali'),
@@ -673,6 +702,16 @@ def human_result(result, command, installed_version=None):
         return '\n'.join(update_lines(result) + ['Yalniz surum bilgisi kontrol edildi; paket kurulumu denenmedi.'])
     if status == 'updated':
         message = 'Beyin guncellendi: ' + str(result.get('from_version', installed_version or '?')) + ' -> ' + str(result['version'])
+        if result.get('after_update_steps'):
+            step_lines = ['Guncelleme sonrasi adimlar:']
+            for step in result['after_update_steps']:
+                text = step.get('text') or step.get('summary', '')
+                cmd = step.get('command')
+                line = '  - ' + text
+                if cmd:
+                    line += f' ({cmd})'
+                step_lines.append(line)
+            message += '\n' + '\n'.join(step_lines)
         if result.get('removed'):
             message += '\nHaric tutulan bilesenler kaldirildi: ' + ', '.join(result['removed']) + '.'
         if result.get('preserved_excluded'):

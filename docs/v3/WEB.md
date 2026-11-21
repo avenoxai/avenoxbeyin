@@ -27,6 +27,7 @@ reddeder ve kapanır; yeni sürümle `beyin.py web ac` ile yeniden açılır.
 | Kokpit | `doctor` özeti, açık görev sayıları, son receipt'ler | yok |
 | Görevler | `tasks/` altındaki görev kayıtları (`kind: task`) | yeni görev `task-create`, durum değişikliği `task-update` |
 | Arama | ajanların bağlam için kullandığı dizin | yok |
+| Gözden geçir | Gelen Kutusu klasör sayıları, bayat konular/görevler ve taslaklar | yok |
 | Receipt'ler | son 14 günün receipt'leri | yok |
 | Hafıza | `companion-compact --dry-run` planı | `companion-compact` (eski girdileri arşive aynen taşır, silmez) |
 
@@ -34,6 +35,10 @@ reddeder ve kapanır; yeni sürümle `beyin.py web ac` ile yeniden açılır.
 başına dosya yazmaz: her yazma, CLI komutunun kendisi aynı süreçte çalıştırılarak yapılır; revizyon
 denetimi, kilitler, sır süzgeci ve projeksiyon doğrulaması CLI'dakiyle aynıdır. Eşzamanlı bir
 değişiklikte görev güncellemesi `revision conflict` ile reddedilir; sayfa yenilenip yeniden denenir.
+
+**Gözden geçir** görünümünde bayat konu veya görevin kaynağı dizinde görünmeye uygunsa
+mevcut salt okunur kayıt önizlemesi açılır; aksi halde kaynak yolu yalnız metin olarak
+gösterilir. Gelen Kutusu bu görünümde notları tek tek değil, klasör bazında özetler.
 
 ## Gizlilik
 
