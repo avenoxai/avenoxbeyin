@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "template" / ".c
 
 from beyin_v3_checkpoint import run_checkpoint
 from beyin_v3_learning import stage_candidate
+from beyin_v3_secrets import health
 from beyin_v3_sync import SyncEngine
 import beyin_v3_chat_trace
 from tests.v3_package_helpers import inherited_env
@@ -182,11 +183,21 @@ class CheckpointTest(unittest.TestCase):
         request["learn"][0]["candidate"] = " İstanbul ılık "
         retry = run_checkpoint(self.sync, self.vault, self.state, request, session="checkpoint-retry")
         self.assertEqual(retry["status"], "succeeded")
+        self.assertEqual(retry["steps"]["learn"], {"status": "unchanged", "count": 0})
         threads = (self.comp / "Threads.md").read_text(encoding="utf-8")
         records = [json.loads(line) for line in
                    (self.state / "learning-state.jsonl").read_text(encoding="utf-8").splitlines()]
         self.assertEqual((threads.count("Şifreyi yenile"), len(records)), (1, 1))
         self.assertEqual(records[0]["candidate"], "İstanbul ılık")
+
+    def test_redacted_candidate_retry_counts_only_the_stored_entry(self):
+        request = {"learn": [{"candidate": "OPENAI_API_KEY=sk-" + "x" * 32}]}
+        first = run_checkpoint(self.sync, self.vault, self.state, request, session="redaction")
+        self.assertEqual(first["steps"]["learn"], {"status": "recorded", "count": 1})
+        self.assertEqual(health(self.state)["total"], 1)
+        retry = run_checkpoint(self.sync, self.vault, self.state, request, session="redaction")
+        self.assertEqual(health(self.state)["total"], 1)
+        self.assertEqual(retry["steps"]["learn"], {"status": "unchanged", "count": 0})
 
     def test_threads_matches_exact_headings_and_applies_a_batch(self):
         threads = self.comp / "Threads.md"

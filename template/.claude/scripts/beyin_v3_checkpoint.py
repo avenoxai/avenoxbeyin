@@ -218,7 +218,7 @@ def run_checkpoint(sync, vault, state, request, harness=None, session=None, dry_
             steps["learn"] = "planned"
         else:
             try:
-                recorded_candidates = []
+                recorded = 0
                 for item in learn_data:
                     cand = item.get("candidate")
                     src = (item.get("source") or "").strip()
@@ -228,8 +228,9 @@ def run_checkpoint(sync, vault, state, request, harness=None, session=None, dry_
                         if src:
                             src = _learning_source(sync, src)
                         res = stage_candidate(state, sess_id, cand, source=src, scope=scp, deduplicate=True)
-                        recorded_candidates.append(res)
-                steps["learn"] = {"status": "recorded", "count": len(recorded_candidates)}
+                        if not res.get("idempotent"):
+                            recorded += 1
+                steps["learn"] = {"status": "recorded" if recorded else "unchanged", "count": recorded}
             except Exception:
                 steps["learn"] = {"status": "error", "message":
                                   "Learning candidate was not confirmed; check its text and source visibility."}

@@ -82,7 +82,7 @@ def _atomic_append(file_path: Path, record: dict, *, deduplicate: bool = False) 
                         except ValueError:
                             continue
                         if isinstance(existing, dict) and existing.get("id") == record["id"]:
-                            return existing
+                            return dict(existing, idempotent=True)
             except FileNotFoundError:
                 pass
         with open(file_path, "a", encoding="utf-8", newline="\n") as f:
@@ -152,12 +152,6 @@ def stage_candidate(state: Path, session: str, candidate: str, source: str = "",
     # candidate instead of storing it raw. Only the aggregate health counter is best effort.
     from beyin_v3_secrets import redact, record as record_redactions
     cand_text, count = redact(cand_text, state)
-    if count > 0:
-        try:
-            record_redactions(state, count)
-        except Exception:
-            pass
-
     norm_session = _normalize_session(session)
     scope = str(scope).strip() or "global"
     if deduplicate:
@@ -177,7 +171,13 @@ def stage_candidate(state: Path, session: str, candidate: str, source: str = "",
         "status": "candidate"
     }
     ledger = state / LEARNING_STATE_FILE
-    return _atomic_append(ledger, record, deduplicate=deduplicate)
+    result = _atomic_append(ledger, record, deduplicate=deduplicate)
+    if count > 0 and not result.get("idempotent"):
+        try:
+            record_redactions(state, count)
+        except Exception:
+            pass
+    return result
 
 
 def _created_at(item: dict) -> float | None:
