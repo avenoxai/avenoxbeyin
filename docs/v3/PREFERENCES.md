@@ -351,14 +351,15 @@ Her mesajda hook'un eklediği bağlam (`context_mode: turn`) strict aramadan gel
 
 ### `retrieval.json`
 
-Runtime klasöründeki (konumu için bkz. QUICKSTART) isteğe bağlı `retrieval.json` iki ayar taşır:
+Runtime klasöründeki (konumu için bkz. QUICKSTART) isteğe bağlı `retrieval.json` örneği:
 
 ```json
-{"strict_floor": 0.2, "strict_exclude": ["📦 900-Archive/", "Arsiv/Oturumlar/"]}
+{"strict_floor": 0.2, "strict_exclude": ["📦 900-Archive/", "Arsiv/Oturumlar/"], "strict_keep": ["projects/İstanbul Arşivi/Kurallar.md"]}
 ```
 
 - `strict_floor`: 0 ile 2 arası sayı, varsayılan 0,20. Yükseltmek yanlış eklemeyi azaltır, cevabı bulma oranını da düşürür.
-- `strict_exclude`: vault köküne göre en fazla 64 yol öneki. `daily/` ve `receipts/` her zaman dışarıdadır, liste bunlara eklenir. Karşılaştırma büyük/küçük harfe ve Unicode biçimine (NFC/NFD) duyarsızdır, `\` ayırıcısı da kabul edilir. Arşiv ya da oturum dökümü klasörleri için uygundur. Bu ayar strict arama yollarında, not düzeyi yedek arama dahil, sonuçları eler. `context_mode: session` açılışındaki companion kaynak seçimine uygulanmaz ve açık non-strict geçmiş aramasını engellemez. Arşiv klasörünü indeksten tamamen uzak tutmak için aşağıda anlatılan `--index-exclude-dir` tercih edilmelidir.
+- `strict_exclude`: vault köküne göre en fazla 64 yol öneki. Liste varsayılan `daily/` ve `receipts/` öneklerine eklenir. Karşılaştırma büyük/küçük harfe ve Unicode biçimine (NFC/NFD) duyarsızdır, `\` ayırıcısı da kabul edilir. Arşiv ya da oturum dökümü klasörleri için uygundur. Bu ayar strict arama yollarında, not düzeyi yedek arama dahil, sonuçları eler. `context_mode: session` açılışındaki companion kaynak seçimine uygulanmaz ve açık non-strict geçmiş aramasını engellemez. Arşiv klasörünü indeksten tamamen uzak tutmak için aşağıda anlatılan `--index-exclude-dir` tercih edilmelidir.
+- `strict_keep`: varsayılanı boş olan, vault köküne göre en fazla 64 dosya veya klasör yolu. Önek tam yol bileşenleriyle eşleşir. Örneğin `proj`, `proj/x.md` ile eşleşir. Strict aramada eşleşen bir notu `strict_exclude` ve Jev `auto_context` puan elemelerinden korur. Jev, uzak değerlendirmeye uygun notları puanlamaya devam eder. `receipts/` dışarıda kalır. Görünürlük, güven, proje kapsamı, tazelik, supersede ve bağlam bütçesi kuralları uygulanmaya devam eder.
 - `unscoped_min_shared` (1 ya da 2, varsayılan 1) ve `unscoped_dominant_weight` (0'dan büyük, en fazla 1; varsayılan 1): yalnız `--project` verilmeden çalışan açık `beyin.py context` aramasına iki isteğe bağlı kural ekler. İkisi de varsayılan olarak kapalıdır; ayrıntı aşağıdaki bölümde.
 - Dosya bozuksa ya da bir değer geçersizse varsayılanlar kullanılır; hook bozulmaz.
 
