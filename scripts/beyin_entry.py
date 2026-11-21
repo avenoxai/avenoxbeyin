@@ -443,6 +443,11 @@ def human_result(result, command, installed_version=None):
             fb = result.get('feedback', {})
             return f"Geri bildirim kaydedildi ({result.get('target')} -> {result.get('verdict')}): ok={fb.get('ok', 0)}, wrong={fb.get('wrong', 0)}, stale={fb.get('stale', 0)}"
         return f"Geri bildirim kaydedilemedi: {result.get('message') or result.get('error', 'unknown error')}"
+    if command == 'checkpoint':
+        steps = result.get('steps') or {}
+        parts = [f"{k}={v.get('status') if isinstance(v, dict) else v}" for k, v in steps.items()]
+        summary = ', '.join(parts) if parts else 'adim yok'
+        return f"Oturum kontrol noktasi ({result.get('status', 'tamamlandi')}): {summary}."
 
     if command == 'mutation-queue':
         if isinstance(result.get('enabled'), bool):

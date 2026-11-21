@@ -1253,6 +1253,11 @@ def parser(note_namespace=None, is_json=False):
     feedback_p.add_argument("verdict", choices=["ok", "wrong", "stale"], help="Feedback verdict")
     feedback_p.add_argument("--session", help="Session identifier or the receipt session value shown by the hook")
 
+    checkpoint_p = sub.add_parser("checkpoint", help="Execute unified session checkpoint handoff")
+    checkpoint_p.add_argument("--file", default="-", help="JSON checkpoint payload; - for stdin")
+    checkpoint_p.add_argument("--harness", default=None, help="Client harness identifier")
+    checkpoint_p.add_argument("--session", default=None, help="Session identifier")
+    checkpoint_p.add_argument("--dry-run", action="store_true", help="Plan checkpoint steps without writing")
     mutation_queue = sub.add_parser("mutation-queue", help="Opt-in local offline mutation queue (off by default; machine-local state)")
     queue_action = mutation_queue.add_mutually_exclusive_group()
     queue_action.add_argument("--enable", action="store_true", help="Turn the queue on for this machine")
@@ -1465,14 +1470,15 @@ def main(argv=None, return_result=False):
             raise ValueError("--state must be outside the vault")
         read_only_context = args.command == "context" and args.no_sync
         read_only_doctor = args.command == "doctor"
-        if read_only_context or read_only_doctor or args.command == "triage" or args.command == "feedback":
+        dry_checkpoint = args.command == "checkpoint" and args.dry_run
+        if read_only_context or read_only_doctor or args.command == "triage" or args.command == "feedback" or dry_checkpoint:
             # The source CLI can run without the installed entry point, which
             # already disables bytecode. Merely importing runtime code must not write.
             sys.dont_write_bytecode = True
         if read_only_context and args.jev:
             raise ValueError("context --no-sync cannot be combined with --jev")
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
-        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc", "triage", "feedback") else None
+        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc", "triage", "feedback", "checkpoint") else None
         database = state / "memory.sqlite3"
         doctor_without_index = read_only_doctor and not (database.exists() or database.is_symlink())
         store = (engine.MemoryStore(state, vault, read_only=read_only_context or read_only_doctor)
@@ -2223,6 +2229,15 @@ def main(argv=None, return_result=False):
                 session = usage.session_key(identities.pop()) if len(identities) == 1 else None
             result = usage.record_feedback(state, args.target, args.verdict, session=session)
 
+        elif args.command == "checkpoint":
+            payload = read_json(args.file)
+            _ensure_scripts_path()
+            import beyin_v3_checkpoint
+            result = beyin_v3_checkpoint.run_checkpoint(
+                None if dry_checkpoint else load_sync()(vault, state), vault, state, payload,
+                harness=args.harness, session=args.session or env_session(args.harness),
+                dry_run=args.dry_run
+            )
         elif args.command == "mutation-queue":
             _ensure_scripts_path()
             import beyin_v3_mutation as mutation

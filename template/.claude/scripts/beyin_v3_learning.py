@@ -69,14 +69,27 @@ def _ledger_lock(state_dir: Path, timeout: float = 10.0, step: float = 0.05, *, 
         handle.close()
 
 
-def _atomic_append(file_path: Path, record: dict) -> None:
+def _atomic_append(file_path: Path, record: dict, *, deduplicate: bool = False) -> dict:
     file_path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(record, ensure_ascii=False) + "\n"
     with _ledger_lock(file_path.parent):
-        with open(file_path, "a", encoding="utf-8") as f:
+        if deduplicate:
+            try:
+                with file_path.open(encoding="utf-8") as ledger:
+                    for previous in ledger:
+                        try:
+                            existing = json.loads(previous)
+                        except ValueError:
+                            continue
+                        if isinstance(existing, dict) and existing.get("id") == record["id"]:
+                            return dict(existing, idempotent=True)
+            except FileNotFoundError:
+                pass
+        with open(file_path, "a", encoding="utf-8", newline="\n") as f:
             f.write(line)
             f.flush()
             os.fsync(f.fileno())
+    return record
 
 
 def _normalize_session(session: str | None) -> str:
@@ -125,7 +138,8 @@ def _check_source_trust(state: Path, source: str) -> None:
             raise ValueError(f"trust check failed: {e}")
 
 
-def stage_candidate(state: Path, session: str, candidate: str, source: str = "", scope: str = "global") -> dict:
+def stage_candidate(state: Path, session: str, candidate: str, source: str = "", scope: str = "global",
+                    *, deduplicate: bool = False) -> dict:
     """Stage a learning candidate into learning-state.jsonl."""
     state = Path(state)
     source = str(source).strip()
@@ -138,14 +152,14 @@ def stage_candidate(state: Path, session: str, candidate: str, source: str = "",
     # candidate instead of storing it raw. Only the aggregate health counter is best effort.
     from beyin_v3_secrets import redact, record as record_redactions
     cand_text, count = redact(cand_text, state)
-    if count > 0:
-        try:
-            record_redactions(state, count)
-        except Exception:
-            pass
-
     norm_session = _normalize_session(session)
-    record_id = hashlib.sha256(f"{norm_session}:{time.time()}:{cand_text}".encode("utf-8")).hexdigest()[:16]
+    scope = str(scope).strip() or "global"
+    if deduplicate:
+        cand_text = cand_text.replace("\r\n", "\n").replace("\r", "\n")
+        identity = json.dumps(["checkpoint-learn", session, cand_text, source, scope], ensure_ascii=False)
+    else:
+        identity = f"{norm_session}:{time.time()}:{cand_text}"
+    record_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
     now = datetime.now(timezone.utc).isoformat()
     record = {
         "id": record_id,
@@ -153,12 +167,17 @@ def stage_candidate(state: Path, session: str, candidate: str, source: str = "",
         "session": norm_session,
         "candidate": cand_text,
         "source": str(source).strip(),
-        "scope": str(scope).strip() or "global",
+        "scope": scope,
         "status": "candidate"
     }
     ledger = state / LEARNING_STATE_FILE
-    _atomic_append(ledger, record)
-    return record
+    result = _atomic_append(ledger, record, deduplicate=deduplicate)
+    if count > 0 and not result.get("idempotent"):
+        try:
+            record_redactions(state, count)
+        except Exception:
+            pass
+    return result
 
 
 def _created_at(item: dict) -> float | None:

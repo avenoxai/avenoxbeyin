@@ -195,6 +195,44 @@ It does not establish broad natural-language intelligence, installed lifecycle
 parity, remote synchronization, or automatic third-party memory integration.
 See [the frozen test contract](SEMANTIC-TEST-CONTRACT.md) for the bounded gates.
 
+### Oturum kontrol noktası
+
+Kurulu vault'ta bu örneği `kontrol.json` olarak kaydet ve kaynak yolunu kendi notunla değiştir.
+
+```json
+{
+  "card": {"label": "Müşteri görüşmesi", "body": "Toplantı notu doğrulandı."},
+  "threads": [{"heading": "Aktif İşler", "next_step": "Toplantı notunu gözden geçir."}],
+  "learn": [{"candidate": "Kararı kaynak notuna bağla.", "source": "knowledge/toplanti.md"}],
+  "receipt": {"event_id": "toplanti-2026-11-21", "summary": "Toplantı notu doğrulandı.", "refs": ["knowledge/toplanti.md"]}
+}
+```
+
+```sh
+python3 beyin.py checkpoint --file kontrol.json --harness claude --session OTURUM_KIMLIGI --dry-run
+python3 beyin.py checkpoint --file kontrol.json --harness claude --session OTURUM_KIMLIGI --json
+```
+
+`--file -` JSON'u standart girdiden okur. Her adım isteğe bağlıdır.
+Varsa gerçek oturum kimliğini kullan. Oturum kimliği komut satırında verilmezse
+CLI, desteklenen istemcinin ortam değişkeninden türetir. Oturum kimliği olmadan
+aynı kart metni tekrar kullanılabilir. Kart güncellemelerini aynı oturuma bağlamak
+için sonraki çağrılarda aynı kimliği ver.
+
+`threads` tam başlık eşleşmesiyle bir `next_step` ekler. Bir metni değiştirmek için
+`{"old": "eski metin", "new": "yeni metin"}` kullan. `learn` içindeki `source`
+verildiyse mevcut bir vault dosyasını göstermelidir. `chat_trace` seçeneği bir
+kısa metin alır ve sohbet izi açıkken geçerlidir. Bunun için Claude veya Codex'in
+24 karakterli Receipt oturum kimliği gerekir.
+
+Önizleme, sıkıştırma gerekip gerekmediğini ve istenen adımları gösterir.
+Vault, çalışma durumu ve SQLite dosyalarına yazmaz. Yazma çağrısında her adımın
+durumu `steps` alanındadır. `partial` sonucu bazı adımların tamamlandığını,
+`failed` sonucu hiçbir adımın tamamlanmadığını bildirir. Geçici bir hatadan
+sonra aynı oturum kimliği ve aynı istekle tekrar çalıştır. Receipt için aynı
+`event_id` değerini koru. Kart ve Threads içindeki görünmez Markdown işaretleri
+tekrar denemede tamamlanan yazıların tanınmasını sağlar.
+
 ## Install lifecycle adapters
 
 ```text
