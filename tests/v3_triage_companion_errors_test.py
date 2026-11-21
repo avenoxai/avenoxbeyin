@@ -25,9 +25,9 @@ class CompanionScanErrorsTest(unittest.TestCase):
         self.companion.mkdir(parents=True)
 
     def seed(self):
-        (self.companion / 'Kurallar.md').write_text('# Kurallar\n- First\n- Second\n', encoding='utf-8')
-        (self.companion / 'Threads.md').write_text('## Acik\n### Synthetic thread\n', encoding='utf-8')
-        (self.companion / 'Last-Session.md').write_text('## 2026-11-10 12:30 · Synthetic\n', encoding='utf-8')
+        (self.companion / 'Kurallar.md').write_text('# Kurallar\n- Şifre\n- ılık\n', encoding='utf-8', newline='\n')
+        (self.companion / 'Threads.md').write_text('## Açık\n### Müşteri\n', encoding='utf-8', newline='\n')
+        (self.companion / 'Last-Session.md').write_text('## 2026-11-10 12:30 · İstanbul\n', encoding='utf-8', newline='\n')
 
     def test_admitted_read_and_stat_errors_keep_the_readable_summary(self):
         self.seed()
@@ -64,6 +64,30 @@ class CompanionScanErrorsTest(unittest.TestCase):
         self.seed()
         expected.update(rules_count=2, active_threads=1, last_session='2026-11-10 12:30')
         self.assertEqual(triage.scan_companion(self.vault, self.state), expected)
+
+    def test_invalid_utf8_is_unreadable_without_reporting_content(self):
+        sources = (
+            ('Kurallar.md', 'rules_count', 0, 'Kurallar', b'- PRIVATE-CONTENT-CANARY\n'),
+            ('Threads.md', 'active_threads', 0, 'Acik is parcaciklari',
+             b'## Acik\n### PRIVATE-CONTENT-CANARY\n'),
+            ('Last-Session.md', 'last_session', None, 'Son oturum',
+             b'## 2026-11-10 12:30 PRIVATE-CONTENT-CANARY\n'),
+        )
+        healthy = {'rules_count': 2, 'active_threads': 1, 'last_session': '2026-11-10 12:30',
+                   'active_presence': 0}
+        for filename, key, value, label, content in sources:
+            with self.subTest(filename=filename):
+                self.seed()
+                (self.companion / filename).write_bytes(content + b'\xff\xfe')
+                result = triage.triage(self.vault, self.state)
+                expected = dict(healthy, status='partial', unreadable_sources=[filename])
+                expected[key] = value
+                self.assertEqual(result['companion'], expected)
+                if filename == 'Threads.md':
+                    self.assertEqual(result['threads']['status'], 'unavailable')
+                human = triage.format_human(result)
+                self.assertIn(f'{label}: taranamadi', human)
+                self.assertNotIn('PRIVATE-CONTENT-CANARY', json.dumps(result) + human)
 
     @unittest.skipUnless(os.name == 'posix', 'POSIX permission fixture')
     def test_installed_cli_reports_unreadable_rules_without_writing(self):

@@ -45,6 +45,7 @@ eklenmez; `doctor` mevcut tanılama davranışını korur.
 Eşlikçi özetinde `Kurallar.md`, `Threads.md` veya `Last-Session.md` okunamazsa
 JSON'da `companion.status: partial` ve `unreadable_sources` listesi döner.
 İnsan çıktısı okunamayan alanı sıfır yerine `taranamadi` olarak gösterir.
+Geçersiz UTF-8 içeren kaynaklar okunamayanlar arasında listelenir.
 Bulunmayan isteğe bağlı dosyalar hata sayılmaz. Triage çıkış kodu değişmez;
 çıktı, hata metnini ve dosyanın içeriğini kopyalamaz.
 
