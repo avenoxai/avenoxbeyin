@@ -100,6 +100,7 @@ class UsageReport(unittest.TestCase):
                   'knowledge/win.md', 'knowledge/hash.md', 'knowledge/echo.md',
                   'knowledge/compound.md', 'knowledge/wrong-vault.md')
         t.tool('Bash', command='python3 ./beyin.py note-read "knowledge/after space.md" --must-exist')
+        t.tool('Bash', command='python3 ./beyin.py note-read "knowledge/after space.md"')
         t.tool('PowerShell', command='py -3 .\\beyin.py note-read knowledge/win.md')
         t.tool('Bash', command='python3 beyin.py note-read knowledge/hash.md --sha-only')
         t.tool('Bash', command='echo python3 beyin.py note-read knowledge/echo.md')
@@ -107,9 +108,17 @@ class UsageReport(unittest.TestCase):
         t.tool('Bash', command='python3 /other/beyin.py note-read knowledge/wrong-vault.md')
         t.write(self.folder / 's.jsonl')
         main = self.report(names=True)['main']
-        self.assertEqual(main['note_read_attempts'], 3)
-        self.assertEqual(main['ranked']['all']['attempted_note_read'], 2)
-        self.assertEqual(main['ranked']['all']['opened_read_grep'], 0)
+        self.assertEqual(main['note_read_attempts'], 4)
+        self.assertEqual(main['vault_note_opens'], {'read_grep': 0, 'with_shell': 4})
+        ranked = main['ranked']
+        self.assertEqual(ranked['all']['attempted_note_read'], 2)
+        self.assertEqual(ranked['all']['opened_read_grep'], 0)
+        self.assertEqual(ranked['all']['opened_with_shell'], 4)
+        self.assertEqual(ranked['all']['rate_note_read_attempt'], round(2 / 7, 4))
+        for breakdown in ('by_event', 'by_rank'):
+            self.assertEqual(sum(r['attempted_note_read'] for r in ranked[breakdown].values()), 2)
+        self.assertFalse(any(r['opened_with_shell'] for r in main['names']['suggested']
+                             if r['attempted_note_read']))
         self.assertEqual({r['source'] for r in main['names']['suggested'] if r['attempted_note_read']},
                          {'knowledge/after space.md', 'knowledge/win.md'})
 

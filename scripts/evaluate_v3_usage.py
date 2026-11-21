@@ -19,8 +19,8 @@ structure, never by searching note names in free text:
 An injected source counts as opened when the same transcript opens it after the injection:
 
   read_grep   a Read of that file, or a Grep whose path is that file
-  with_shell  the above, or a Bash/PowerShell command naming that file, except commands
-              that look like writes (git add/commit/mv/rm/stash/..., sed -i, cp/mv/rm/tee,
+  with_shell  the above, or a Bash/PowerShell command naming that file, excluding recognized
+              note-read attempts and commands that look like writes (git add/commit/mv/rm/stash/..., sed -i, cp/mv/rm/tee,
               Set-Content/Out-File/..., redirection into a file, Python write calls).
               A shell mention is not proof of reading: this is the upper bound.
 
@@ -399,6 +399,7 @@ def analyse(path, roots, scope, errors):
                     if attempted is not None:
                         last_note_read[attempted] = position
                         scope.counts['note_read_attempts'] += 1
+                        continue
                     moves = CHANGES_DIR.search(command) is not None
                     for token in shell_paths(command, powershell=name == 'PowerShell'):
                         relative = roots.relative(token, cwd)
