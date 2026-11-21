@@ -445,28 +445,17 @@ def _environment(config, state=None, *, command_timeout=KEY_COMMAND_TIMEOUT):
                 if len(value)>=2 and value[0]==value[-1] and value[0] in "\"'":
                     value=value[1:-1]
                 values[match[1]]=value
-    # Check env for actual keys (not base_url)
-    for name in ('TYPESAFE_API_KEY','LAYA_API_KEY'):
-        if name in os.environ:
-            values[name]=os.environ[name]
-            key_source = 'env'
-    # Check env_file for actual keys (not base_url)
-    if key_source == 'none':
-        for name in ('TYPESAFE_API_KEY','LAYA_API_KEY'):
-            if name in values:
-                key_source = 'env_file'
-                break
-    # Try key_command from machine-local state
-    if key_source == 'none' and state and state.get('key_command'):
-        key_name = 'LAYA_API_KEY' if config.get('provider') == 'laya' else 'TYPESAFE_API_KEY'
+    key_name = 'LAYA_API_KEY' if config.get('provider') == 'laya' else 'TYPESAFE_API_KEY'
+    if os.environ.get(key_name):
+        values[key_name] = os.environ[key_name]
+        key_source = 'env'
+    elif values.get(key_name):
+        key_source = 'env_file'
+    elif state and 'key_command' in state:
         values[key_name] = _read_key_command(state['key_command'], command_timeout)
         key_source = 'command'
-    # Also read base_url from env/env_file if present (but don't count as key_source)
-    for name in ('TYPESAFE_BASE_URL',):
-        if name in os.environ:
-            values[name] = os.environ[name]
-        elif name not in values and config.get('env_file'):
-            pass
+    if 'TYPESAFE_BASE_URL' in os.environ:
+        values['TYPESAFE_BASE_URL'] = os.environ['TYPESAFE_BASE_URL']
     return values, key_source
 
 

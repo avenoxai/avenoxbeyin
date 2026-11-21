@@ -139,6 +139,27 @@ class KeyCommandCliTests(unittest.TestCase):
         stored = json.loads((self.state / 'jev-state.json').read_text(encoding='utf-8'))
         self.assertEqual(stored['key_command'][-1], 'Şifre İstanbul &')
 
+    def test_key_source_uses_the_active_provider_and_skips_empty_values(self):
+        key_file = self.state / 'env'
+        key_file.write_text('LAYA_API_KEY=unrelated\nTYPESAFE_API_KEY=from-file\n',
+                            encoding='utf-8', newline='\n')
+        config = dict(j.DEFAULTS, env_file=str(key_file))
+        state = {'key_command': [sys.executable, '-c', "print('from-child')"]}
+        cases = (
+            (dict(TYPESAFE_API_KEY='from-environment', LAYA_API_KEY='other'), 'env', 'from-environment'),
+            (dict(TYPESAFE_API_KEY='', LAYA_API_KEY='other'), 'env_file', 'from-file'),
+        )
+        for extra, expected_source, key in cases:
+            with self.subTest(source=expected_source), patch.dict(os.environ, self.env | extra, clear=True):
+                values, source = j._environment(config, state)
+                self.assertEqual(source, expected_source)
+                self.assertEqual(values['TYPESAFE_API_KEY'], key)
+        key_file.write_text('TYPESAFE_API_KEY=\nLAYA_API_KEY=unrelated\n', encoding='utf-8', newline='\n')
+        with patch.dict(os.environ, self.env | {'LAYA_API_KEY': 'other'}, clear=True):
+            values, source = j._environment(config, state)
+            self.assertEqual(source, 'command')
+            self.assertEqual(values['TYPESAFE_API_KEY'], 'from-child')
+
 class ClientTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
