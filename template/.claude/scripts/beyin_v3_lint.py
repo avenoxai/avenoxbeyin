@@ -172,6 +172,8 @@ def build_vault_index(vault_root, target_folder=None):
     files_by_rel = {}
     files_by_basename = defaultdict(list)
     attachments = defaultdict(list)
+    withheld_by_rel = {}
+    withheld_by_basename = defaultdict(list)
 
     for root, dirs, files in os.walk(start_dir):
         # Prune excluded dirs
@@ -202,6 +204,9 @@ def build_vault_index(vault_root, target_folder=None):
                 continue
 
             if not _eligible_note(vault_root, full_path):
+                if not full_path.is_symlink() and not _withheld_path(rel_path):
+                    withheld_by_rel[_norm_key(rel_path)] = rel_path
+                    withheld_by_basename[_norm_key(full_path.stem)].append(rel_path)
                 continue
             rel_key = _norm_key(rel_path)
             files_by_rel[rel_key] = rel_path
@@ -215,6 +220,8 @@ def build_vault_index(vault_root, target_folder=None):
         "by_basename": dict(files_by_basename),
         "attachments": dict(attachments),
         "receipts": _receipt_targets(vault_root),
+        "withheld_by_rel": withheld_by_rel,
+        "withheld_by_basename": dict(withheld_by_basename),
     }
 
 
@@ -348,6 +355,7 @@ def lint_vault(vault_root, folder=None, *, state=None):
     target_set = set(target_files)
 
     broken_links = []
+    withheld_targets = []
     outgoing_links = defaultdict(set)
     incoming_links = defaultdict(set)
     all_extracted_count = 0
@@ -395,15 +403,54 @@ def lint_vault(vault_root, folder=None, *, state=None):
                 outgoing_links[rel_path].add(resolved)
                 incoming_links[resolved].add(rel_path)
             else:
-                broken_links.append({
-                    "source": rel_path,
-                    "line": link["line"],
-                    "target": link["file_target"][:MAX_RAW_LINK_CHARS],
-                    "raw": link["raw"][:MAX_RAW_LINK_CHARS],
-                    "type": "wikilink",
-                })
+                target_norm = link["file_target"].replace("\\", "/").strip().strip("/")
+                target_base = target_norm.split("#")[0].strip()
+                target_with_ext = target_base if target_base.lower().endswith(".md") else f"{target_base}.md"
+                is_receipt_target = False
+                is_withheld_source = False
+                if target_norm.lower().startswith("receipts/") and not target_norm.startswith(("./", "../")):
+                    try:
+                        candidate = (vault_root / target_with_ext).resolve()
+                        receipts_dir = (vault_root / "receipts").resolve()
+                        if candidate.is_relative_to(receipts_dir) and not (vault_root / target_with_ext).is_symlink() and (vault_root / target_with_ext).is_file():
+                            is_receipt_target = True
+                    except (OSError, ValueError):
+                        pass
+                if not is_receipt_target:
+                    k_ext = _norm_key(target_with_ext)
+                    w_rel = vault_index.get("withheld_by_rel", {})
+                    w_base = vault_index.get("withheld_by_basename", {})
+                    if k_ext in w_rel:
+                        is_withheld_source = True
+                    elif "/" in target_base and not target_base.startswith(("./", "../")):
+                        suffix = "/" + k_ext
+                        stem = posixpath.basename(target_with_ext)[:-3]
+                        if any(("/" + _norm_key(p)).endswith(suffix) for p in w_base.get(_norm_key(stem), [])):
+                            is_withheld_source = True
+                    elif "/" not in target_base:
+                        stem = target_with_ext[:-3]
+                        if w_base.get(_norm_key(stem)):
+                            is_withheld_source = True
+                if is_receipt_target or is_withheld_source:
+                    withheld_targets.append({
+                        "source": rel_path,
+                        "line": link["line"],
+                        "target": link["file_target"][:MAX_RAW_LINK_CHARS],
+                        "raw": link["raw"][:MAX_RAW_LINK_CHARS],
+                        "type": "wikilink",
+                        "reason": "receipt" if is_receipt_target else "withheld",
+                    })
+                else:
+                    broken_links.append({
+                        "source": rel_path,
+                        "line": link["line"],
+                        "target": link["file_target"][:MAX_RAW_LINK_CHARS],
+                        "raw": link["raw"][:MAX_RAW_LINK_CHARS],
+                        "type": "wikilink",
+                    })
 
     broken_links = [link for link in broken_links if link["source"] in target_set]
+    withheld_targets = [link for link in withheld_targets if link["source"] in target_set]
 
     # Keep excluded notes in the graph, but omit their orphan/unlinked findings.
     classification_files = target_files
@@ -432,10 +479,12 @@ def lint_vault(vault_root, folder=None, *, state=None):
         "scanned_files_count": len(target_files),
         "total_links_count": all_extracted_count,
         "broken_links_count": len(broken_links),
+        "withheld_targets_count": len(withheld_targets),
         "orphan_count": len(orphans),
         "unlinked_count": len(unlinked),
     }
     result.update({name: items[:LINT_REPORT_LIMIT] for name, items in lists.items()})
+    result["withheld_targets"] = withheld_targets[:LINT_REPORT_LIMIT]
     # Group full findings, not their first page: a noisy folder must not hide the
     # existence of findings elsewhere. Paths already passed the scan's privacy filter.
     folders = {}

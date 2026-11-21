@@ -678,6 +678,10 @@ And another link on line 8: [[Components/Auth]].
         self.assertEqual(report["scanned_files_count"], 1)
         self.assertEqual(sorted(link["target"] for link in report["broken_links"]),
                          ["a" * 64, "receipts/" + "b" * 64 + ".md"])
+        self.assertEqual(report["withheld_targets"], [])
+        self.assertEqual(report["status"], "issues_found")
+        self.assertEqual(report["broken_links_count"], 2)
+        self.assertEqual(report["withheld_targets_count"], 0)
         self.assertNotIn("receipts/" + name, report["orphans"] + report["unlinked"])
         self.assertNotIn("daily/2026-01-02.md", report["orphans"])
 
@@ -801,6 +805,23 @@ And another link on line 8: [[Components/Auth]].
         self.assertEqual(parsed["status"], "created")
         self.assertEqual(parsed["indexed_notes_count"], 2)
         self.assertTrue((self.vault / "knowledge/MOC.md").is_file())
+
+    def test_missing_receipt_is_broken_and_existing_private_note_is_withheld(self):
+        (self.vault / "receipts").mkdir(exist_ok=True)
+        (self.vault / "knowledge").mkdir(exist_ok=True)
+        (self.vault / "knowledge/link.md").write_text("[[receipts/missing.md]]", encoding="utf-8")
+        report = linter.lint_vault(self.vault)
+        self.assertEqual(report["status"], "issues_found")
+        self.assertEqual(report["broken_links_count"], 1)
+        self.assertEqual(report["withheld_targets_count"], 0)
+
+        (self.vault / "inbox").mkdir(exist_ok=True)
+        (self.vault / "inbox/secret.md").write_text("---\nvisibility: private\n---\nGizli.\n", encoding="utf-8")
+        (self.vault / "knowledge/link.md").write_text("[[inbox/secret.md]]\n[[secret]]", encoding="utf-8")
+        report = linter.lint_vault(self.vault)
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["broken_links_count"], 0)
+        self.assertEqual(report["withheld_targets_count"], 2)
 
 
 if __name__ == "__main__":
