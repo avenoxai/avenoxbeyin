@@ -460,7 +460,7 @@ def _coverage_threshold(at, turn_at, edit_at):
     return edit_at or turn_at or at
 
 
-def receipt_coverage(db, now=None, state=None):
+def receipt_coverage(db, now=None, state=None, *, doctor_diagnostics=False):
     if now is None:
         now = time.time()
     seven_days = now - 7 * 86400
@@ -472,8 +472,12 @@ def receipt_coverage(db, now=None, state=None):
         'last_7d': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0, 'missing_no_observed_edit': 0, 'without_prompt': 0, 'without_prompt_with_receipt': 0},
         'last_30d': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0, 'missing_no_observed_edit': 0, 'without_prompt': 0, 'without_prompt_with_receipt': 0},
     }
+    hermes_without_terminal = 0
     for row in db.execute('SELECT harness,session,at,turn_at,project,project_id,prompt_at,edit_at FROM receipt_checkpoints'):
         if not row[2] or row[2] < row[3]:
+            # A missing or older terminal signal says nothing about whether a session is open.
+            if doctor_diagnostics and row[0] == 'hermes' and row[6]:
+                hermes_without_terminal += 1
             continue
         # Only count sessions that saw a user prompt: UserPromptSubmit, or a SessionStart carrying the first prompt (#78)
         chk_at = row[2]
@@ -506,6 +510,7 @@ def receipt_coverage(db, now=None, state=None):
                         windows[w_name]['missing_no_observed_edit'] += 1
 
     return {
+        **({'hermes_without_terminal': hermes_without_terminal} if doctor_diagnostics else {}),
         'ratio': round(windows['all_time']['covered'] / windows['all_time']['total'], 3) if windows['all_time']['total'] else None,
         'covered': windows['all_time']['covered'],
         'total': windows['all_time']['total'],
