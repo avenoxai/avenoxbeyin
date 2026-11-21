@@ -2237,7 +2237,7 @@ def main(argv=None, return_result=False):
             option_names = ("level", "phone_sync", "role", "remote", "remote_name", "branch", "interval", "bare", "hub_host",
                             "hub_user", "hub_path", "git_dir", "init_git", "capture", "capture_host", "capture_port", "device_name")
             options = {name: getattr(args, name) for name in option_names}
-            given = [name for name in option_names if options[name] not in (None, False)]
+            given = [name for name in option_names if options[name] is not None and options[name] is not False]
             if given and not (args.plan or args.apply):
                 raise ValueError("--" + given[0].replace("_", "-") + " is only valid with --plan or --apply")
             if args.detect:

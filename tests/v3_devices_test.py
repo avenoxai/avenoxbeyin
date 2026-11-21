@@ -596,6 +596,9 @@ class CliTest(Base):
         code, out, err = self.run_cli(vault, state, "--level", "phone")
         self.assertEqual(code, 1)
         self.assertIn("only valid with --plan or --apply", err)
+        code, _, err = self.run_cli(vault, state, "--interval", "0")
+        self.assertEqual(code, 1)
+        self.assertIn("--interval is only valid", err)
 
     def test_doctor_reports_the_layout(self):
         vault, state = self.machine("a")
