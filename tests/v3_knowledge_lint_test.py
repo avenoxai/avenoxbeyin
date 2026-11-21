@@ -678,7 +678,6 @@ And another link on line 8: [[Components/Auth]].
         self.assertEqual(report["scanned_files_count"], 1)
         self.assertEqual(sorted(link["target"] for link in report["broken_links"]),
                          ["a" * 64, "receipts/" + "b" * 64 + ".md"])
-        self.assertEqual(report["withheld_targets"], [])
         self.assertEqual(report["status"], "issues_found")
         self.assertEqual(report["broken_links_count"], 2)
         self.assertEqual(report["withheld_targets_count"], 0)
@@ -822,6 +821,7 @@ And another link on line 8: [[Components/Auth]].
         self.assertEqual(report["status"], "ok")
         self.assertEqual(report["broken_links_count"], 0)
         self.assertEqual(report["withheld_targets_count"], 2)
+        self.assertNotIn("secret", json.dumps(report))
 
     def test_lint_excludes_directories_correctly(self):
         # Create root vendor.md (should NOT be treated as a directory or excluded from orphans)

@@ -143,7 +143,7 @@ def _withheld_path(relative):
     return sensitive_source(relative) or any(_archive_folder(part) for part in Path(relative).parts[:-1])
 
 
-def _note_metadata(vault_root, path):
+def _note_metadata(vault_root, path, *, include_withheld=False):
     """Frontmatter of a note lint and moc may read; None when the note is withheld."""
     from beyin_v3_sync import parse
     try:
@@ -155,13 +155,9 @@ def _note_metadata(vault_root, path):
         metadata, _ = parse(path.read_text(encoding='utf-8-sig'))
     except (OSError, ValueError, UnicodeError):
         return None
-    if metadata.get('visibility') == 'private' or metadata.get('status') == 'archived':
+    if not include_withheld and (metadata.get('visibility') == 'private' or metadata.get('status') == 'archived'):
         return None
     return metadata
-
-
-def _eligible_note(vault_root, path):
-    return _note_metadata(vault_root, path) is not None
 
 
 def build_vault_index(vault_root, target_folder=None):
@@ -205,10 +201,12 @@ def build_vault_index(vault_root, target_folder=None):
             except ValueError:
                 continue
 
-            if not _eligible_note(vault_root, full_path):
-                if not full_path.is_symlink() and not _withheld_path(rel_path):
-                    withheld_by_rel[_norm_key(rel_path)] = rel_path
-                    withheld_by_basename[_norm_key(full_path.stem)].append(rel_path)
+            metadata = _note_metadata(vault_root, full_path, include_withheld=True)
+            if metadata is None:
+                continue
+            if metadata.get('visibility') == 'private' or metadata.get('status') == 'archived':
+                withheld_by_rel[_norm_key(rel_path)] = rel_path
+                withheld_by_basename[_norm_key(full_path.stem)].append(rel_path)
                 continue
             rel_key = _norm_key(rel_path)
             files_by_rel[rel_key] = rel_path
@@ -357,7 +355,9 @@ def lint_vault(vault_root, folder=None, *, state=None):
     target_set = set(target_files)
 
     broken_links = []
-    withheld_targets = []
+    withheld_count = 0
+    withheld_index = {"by_rel": vault_index.get("withheld_by_rel", {}),
+                      "by_basename": vault_index.get("withheld_by_basename", {})}
     outgoing_links = defaultdict(set)
     incoming_links = defaultdict(set)
     all_extracted_count = 0
@@ -391,6 +391,7 @@ def lint_vault(vault_root, folder=None, *, state=None):
                     })
                 continue
 
+            public_target = res["exists"]
             # Receipt targets prove file existence only; their bodies are never lint input.
             if (res['exists'] and link['heading']
                     and _norm_key(res['resolved_path']) not in vault_index.get('receipts', {})):
@@ -405,43 +406,8 @@ def lint_vault(vault_root, folder=None, *, state=None):
                 outgoing_links[rel_path].add(resolved)
                 incoming_links[resolved].add(rel_path)
             else:
-                target_norm = link["file_target"].replace("\\", "/").strip().strip("/")
-                target_base = target_norm.split("#")[0].strip()
-                target_with_ext = target_base if target_base.lower().endswith(".md") else f"{target_base}.md"
-                is_receipt_target = False
-                is_withheld_source = False
-                if target_norm.lower().startswith("receipts/") and not target_norm.startswith(("./", "../")):
-                    try:
-                        candidate = (vault_root / target_with_ext).resolve()
-                        receipts_dir = (vault_root / "receipts").resolve()
-                        if candidate.is_relative_to(receipts_dir) and not (vault_root / target_with_ext).is_symlink() and (vault_root / target_with_ext).is_file():
-                            is_receipt_target = True
-                    except (OSError, ValueError):
-                        pass
-                if not is_receipt_target:
-                    k_ext = _norm_key(target_with_ext)
-                    w_rel = vault_index.get("withheld_by_rel", {})
-                    w_base = vault_index.get("withheld_by_basename", {})
-                    if k_ext in w_rel:
-                        is_withheld_source = True
-                    elif "/" in target_base and not target_base.startswith(("./", "../")):
-                        suffix = "/" + k_ext
-                        stem = posixpath.basename(target_with_ext)[:-3]
-                        if any(("/" + _norm_key(p)).endswith(suffix) for p in w_base.get(_norm_key(stem), [])):
-                            is_withheld_source = True
-                    elif "/" not in target_base:
-                        stem = target_with_ext[:-3]
-                        if w_base.get(_norm_key(stem)):
-                            is_withheld_source = True
-                if is_receipt_target or is_withheld_source:
-                    withheld_targets.append({
-                        "source": rel_path,
-                        "line": link["line"],
-                        "target": link["file_target"][:MAX_RAW_LINK_CHARS],
-                        "raw": link["raw"][:MAX_RAW_LINK_CHARS],
-                        "type": "wikilink",
-                        "reason": "receipt" if is_receipt_target else "withheld",
-                    })
+                if not public_target and resolve_wikilink(vault_root, link["file_target"], rel_path, withheld_index)["exists"]:
+                    withheld_count += int(rel_path in target_set)
                 else:
                     broken_links.append({
                         "source": rel_path,
@@ -452,7 +418,6 @@ def lint_vault(vault_root, folder=None, *, state=None):
                     })
 
     broken_links = [link for link in broken_links if link["source"] in target_set]
-    withheld_targets = [link for link in withheld_targets if link["source"] in target_set]
 
     # Keep excluded notes in the graph, but omit their orphan/unlinked findings.
     from beyin_v3_index import applied_keys, exclusions
@@ -462,7 +427,7 @@ def lint_vault(vault_root, folder=None, *, state=None):
         parts = tuple(dir_key(part) for part in path.split('/')[:-1])
         if parts[:2] in (('knowledge', 'v3'), ('daily', 'v3')):
             return False
-        return not any(part in excluded or parts[:i + 1] in excluded for i, part in enumerate(parts))
+        return not any(part in excluded for part in parts)
 
     classification_files = [path for path in target_files if classified(path)]
 
@@ -484,12 +449,11 @@ def lint_vault(vault_root, folder=None, *, state=None):
         "scanned_files_count": len(target_files),
         "total_links_count": all_extracted_count,
         "broken_links_count": len(broken_links),
-        "withheld_targets_count": len(withheld_targets),
+        "withheld_targets_count": withheld_count,
         "orphan_count": len(orphans),
         "unlinked_count": len(unlinked),
     }
     result.update({name: items[:LINT_REPORT_LIMIT] for name, items in lists.items()})
-    result["withheld_targets"] = withheld_targets[:LINT_REPORT_LIMIT]
     # Group full findings, not their first page: a noisy folder must not hide the
     # existence of findings elsewhere. Paths already passed the scan's privacy filter.
     folders = {}

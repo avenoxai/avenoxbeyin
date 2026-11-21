@@ -500,7 +500,7 @@ def hook_cap_warning(vault, payload, cap=DEFAULT_CAP, harness=None, state=None):
         rel_lower = relative.lower()
         if rel_lower.startswith('tasks/') or rel_lower.startswith('gorevler/'):
             advice = ('gorev notu cok uzun; aciklama kisaltip [[wikilink]] ile detay notuna bagla, '
-                      'veya gorevi alt gorevlere bol (beyin.py task-create --parent).')
+                      'veya gorevi alt gorevlere bol.')
         elif rel_lower.startswith('receipts/') or rel_lower.startswith('makbuz/'):
             advice = ('makbuz ozeti cok uzun; ozeti kisaltip detaylari iliskili notlara [[wikilink]] ile bagla. '
                       'Makbuz sadece ozet tutar, detay kaynakta kalir.')
