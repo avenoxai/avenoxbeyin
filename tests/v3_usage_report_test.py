@@ -93,6 +93,41 @@ class UsageReport(unittest.TestCase):
     def report(self, **options):
         return usage.build(self.vault, projects_dir=options.pop('projects_dir', self.folder), **options)
 
+    def test_explicit_note_read_attempts_are_separate_and_only_follow_injection(self):
+        t = Transcript(self.vault)
+        t.tool('Bash', command='python3 beyin.py note-read knowledge/before.md')
+        t.records('UserPromptSubmit', 'knowledge/before.md', 'knowledge/after space.md',
+                  'knowledge/win.md', 'knowledge/hash.md', 'knowledge/echo.md',
+                  'knowledge/compound.md', 'knowledge/wrong-vault.md')
+        t.tool('Bash', command='python3 ./beyin.py note-read "knowledge/after space.md" --must-exist')
+        t.tool('PowerShell', command='py -3 .\\beyin.py note-read knowledge/win.md')
+        t.tool('Bash', command='python3 beyin.py note-read knowledge/hash.md --sha-only')
+        t.tool('Bash', command='echo python3 beyin.py note-read knowledge/echo.md')
+        t.tool('Bash', command='python3 beyin.py note-read knowledge/compound.md | head')
+        t.tool('Bash', command='python3 /other/beyin.py note-read knowledge/wrong-vault.md')
+        t.write(self.folder / 's.jsonl')
+        main = self.report(names=True)['main']
+        self.assertEqual(main['note_read_attempts'], 3)
+        self.assertEqual(main['ranked']['all']['attempted_note_read'], 2)
+        self.assertEqual(main['ranked']['all']['opened_read_grep'], 0)
+        self.assertEqual({r['source'] for r in main['names']['suggested'] if r['attempted_note_read']},
+                         {'knowledge/after space.md', 'knowledge/win.md'})
+
+    def test_note_read_launcher_keeps_report_root_aliases_but_requires_relative_cwd(self):
+        roots = usage.Roots(self.vault)
+        command = 'python3 beyin.py note-read notes/source.md'
+        self.assertIsNone(usage.note_read_source(command, roots, None))
+        self.assertEqual(usage.note_read_source(command, roots, str(self.vault)), 'notes/source.md')
+        self.assertIsNone(usage.note_read_source(command, roots, str(self.vault.parent)))
+        posix = usage.Roots(self.vault)
+        posix.roots = ['/media/Beyin Vault']
+        self.assertIsNone(usage.note_read_source(command, posix, '/media/beyin vault'))
+        self.assertEqual(posix.relative('beyin.py', '/media/beyin vault'), 'beyin.py')  # legacy behavior
+        windows = usage.Roots(self.vault)
+        windows.roots = ['C:/Users/Ada/Beyin Vault']
+        absolute = r'py -3 "c:\users\ada\beyin vault\beyin.py" note-read notes/source.md'
+        self.assertEqual(usage.note_read_source(absolute, windows, None, powershell=True), 'notes/source.md')
+
     def test_folder_name_follows_claude_code_rule(self):
         self.assertEqual(usage.sanitized('/Users/ada/Belgeler/Kasa Şube/🔮 Notlar'), '-Users-ada-Belgeler-Kasa--ube----Notlar')
         self.assertEqual(usage.sanitized('C:\\Users\\ada\\kasa'), 'C--Users-ada-kasa')
@@ -262,6 +297,7 @@ class UsageReport(unittest.TestCase):
     def test_names_stay_out_unless_asked_and_nothing_is_written(self):
         t = Transcript(self.vault).prompt('soru', origin={'kind': 'human'})
         t.records('UserPromptSubmit', f'knowledge/concepts/{SECRET}.md')
+        t.tool('Bash', command=f'python3 beyin.py note-read knowledge/concepts/{SECRET}.md')
         t.tool('Read', file_path=self.note(f'knowledge/concepts/{SECRET}-iki.md'))
         t.write(self.folder / 's.jsonl')
         before = snapshot(Path(self.tmp.name))
@@ -273,7 +309,10 @@ class UsageReport(unittest.TestCase):
                                     cwd=self.tmp.name, env=env, capture_output=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', 'replace'))
             outputs[' '.join(flags)] = result.stdout.decode('utf-8')
-        self.assertEqual(json.loads(outputs[''])['main']['ranked']['all']['suggested'], 1)
+        ranked = json.loads(outputs[''])['main']['ranked']['all']
+        self.assertEqual(ranked['suggested'], 1)
+        self.assertEqual(ranked['attempted_note_read'], 1)
+        self.assertIn('note-read', outputs['--human'])
         for key in ('', '--human'):
             self.assertNotIn(SECRET, outputs[key])
             self.assertNotIn('concepts/', outputs[key])
