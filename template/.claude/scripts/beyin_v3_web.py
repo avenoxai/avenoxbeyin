@@ -264,6 +264,40 @@ class Core:
                   'gizlenen': item.get('refs_withheld') or {}} for item in result.get('items', [])]
         return {'makbuzlar': items, 'toplam': result.get('total', 0), 'gun': RECEIPT_DAYS}
 
+    def review(self):
+        triage_res = self.run('triage')
+        store = self.store()
+        records = store._records()
+        superseded = store._superseded_ids(records)
+        eligible, _ = store._eligible('internal', records=records)
+        eligible = [record for record in eligible if record['id'] not in superseded]
+        by_source = {record['source']: record['id'] for record in eligible if record.get('source')}
+
+        def with_preview(rows):
+            return [dict(row, record_id=by_source[row['path']]) if row.get('path') in by_source else row
+                    for row in rows]
+
+        drafts = []
+        for r in eligible:
+            status = str(r.get('status') or '').strip().casefold()
+            if status in ('taslak', 'draft', 'proposed'):
+                drafts.append(r)
+        drafts.sort(key=lambda r: str(r.get('created_at') or r.get('updated_at') or '9999'))
+        taslaklar = [{
+            'id': r['id'],
+            'baslik': _title(r),
+            'kaynak': r.get('source'),
+            'durum': _text(r.get('status')),
+            'tarih': _text(r.get('created_at') or r.get('updated_at')),
+        } for r in drafts]
+        tasks = triage_res.get('tasks') or {}
+        return {
+            'inbox': triage_res.get('inbox'),
+            'bayat_konular': with_preview(triage_res.get('threads', {}).get('stale_threads', [])),
+            'gorevler': dict(tasks, stale_tasks=with_preview(tasks.get('stale_tasks', []))),
+            'taslaklar': taslaklar,
+        }
+
     def doctor(self):
         result = self.run('doctor')
         hygiene = result.get('companion_hygiene') if isinstance(result.get('companion_hygiene'), dict) else {}
@@ -502,6 +536,7 @@ class Handler(BaseHTTPRequestHandler):
             '/api/kayit': lambda: core.record(query.get('id', [''])[0]),
             '/api/makbuzlar': core.receipts,
             '/api/hafiza': core.memory,
+            '/api/gozden-gecir': core.review,
         }
         self._route(routes.get(url.path))
 
