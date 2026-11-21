@@ -16,6 +16,8 @@ Aynı sürümün no-op olması başarıdır. Başarı yalnız sürüm ve sağlı
 
 Updater paket kaynağını, bütünlüğünü ve değiştirebileceği sistem dosyalarını denetler. Notlar, kullanıcı skill'leri ve kişisel ayarlar güncelleme metni değildir. Yeni/çeşitli hook tanımı güven incelemesi gerektirirse bunu istemciye uygun şekilde açıkla; güven kaydı uydurma. Gerekli yeniden başlatmayı ve varsa tek kullanıcı adımını söyle.
 
+Güncelleme sonucundaki `after_update_steps` listesini incele. Yetkilendirilmiş yerel adımları uygula, kullanıcıya ait adımları ve sonucunu doğrulayamadığın işlemleri açıkça belirt.
+
 Sonuç mesajında önceki→yeni sürümü, doğrulama sonucunu ve varsa açık kalan adımı belirt. Token, yerel kullanıcı yolu, kişisel ayar dökümü veya ham log paylaşma.
 
 V3.1 öncesinde `--metadata-only` tanınmıyorsa mevcut `update --check` komutuna dön. Sürüm bildirimi varsayılan açık, günlük GitHub metadata kontrolüdür; not göndermez. Kapat/aç talebini `preferences --update-notifications off/on` ile uygula. Tek sürümü susturmak için `update --dismiss X.Y.Z` kullan. Metadata-only sonucu paketin kurulabilirlik kanıtı değildir.

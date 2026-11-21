@@ -170,6 +170,10 @@ Genel ayarlar kullanıcıya aittir ve vault güncellemesinin rollback kapsamına
   aynı projenin en yeni receipt özeti ve tarihi gelmiş görevleri kısa bir blok
   olarak eklenir, başka projelerden yalnız sayı gelir. Kapılar ve sınırlar
   [tercihler belgesinde](PREFERENCES.md#projeyi-tanıyan-oturum-başı).
+  Görev durumunun ilk sözcüğü, vault açılışındaki gibi büyük/küçük harf ve
+  Türkçe harf farklarından arındırılır: `Active` ve `waiting - tedarikçi` de
+  kapsanır. İzinli durumlar yine `active`, `waiting`, `inbox` ile sınırlıdır;
+  `blocked`, kapalı veya durumu eksik görevler bu listeye eklenmez.
 - Yerel `auto_sync: false` / manual profil köprüyü susturur; `context_mode: off`
   başlangıç metnini susturur. Global seçenekler yerel tercih dosyasını değiştirmez.
   Mevcut kontrol aralığı korunur.

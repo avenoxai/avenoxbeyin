@@ -13,7 +13,6 @@ import sys
 sys.dont_write_bytecode = True
 import time
 import uuid
-
 EVENTS = {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "PreCompact", "SessionEnd"}
 HOOK_BUDGET = 3.8  # seconds; installed POSIX hooks are killed at 5
 SYNC_WAIT = 1.5  # seconds the prompt hook waits for the source sync before reading the last index
@@ -49,8 +48,9 @@ KNOWLEDGE_REMINDER = (
 NO_LEARNING_CHALLENGE_REMINDER = (
     "Receipt declared no learnings ('Öğrenilen: yok') but files were edited in this session. "
     "In V3, lasting lessons must be distilled into knowledge/ or staged as candidates: "
-    'python3 beyin.py learn --session {session} --candidate "Lesson". If this edit was purely mechanical/routine '
-    "without new lessons, state that in one sentence to proceed."
+    'python3 beyin.py learn --session {session} --candidate "Lesson" --source PATH. PATH is the vault-relative '
+    "file the lesson comes from; a later receipt of this session that lists it in refs closes the candidate. "
+    "If this edit was purely mechanical/routine without new lessons, state that in one sentence to proceed."
 )
 # Global bridge sessions run in another project, where a relative `beyin.py` does not exist and
 # no vault note may exist yet to cite, so the note comes first (#500). The command line is named
@@ -173,7 +173,11 @@ def record_error(state, exc):
     """hook-error.json is a diagnostic only. A state folder that refuses the write (read-only,
     full disk) must not turn the fail-open handler itself into a traceback (#417)."""
     try:
-        atomic(Path(state) / "hook-error.json", {"at": time.time(), "error": type(exc).__name__})
+        diagnostic = {"at": time.time(), "error": type(exc).__name__}
+        code = getattr(exc, "errno", None) if isinstance(exc, OSError) else None
+        if type(code) is int:
+            diagnostic["errno"] = code
+        atomic(Path(state) / "hook-error.json", diagnostic)
     except OSError:
         pass
 
@@ -628,8 +632,7 @@ def drain_queue(vault, state, maintenance=False):
     # fresh healthy subset may be injected with an explicit warning. Source
     # conflicts still block acknowledgement because ownership is ambiguous.
     # Receipt view conflicts (outcomes.md, daily/v3) own no queued event (#323).
-    from beyin_v3_projections import is_receipt_view_conflict
-    source_conflicts = [c for c in result.get("conflicts", []) if not is_receipt_view_conflict(c)]
+    source_conflicts = SyncEngine._write_blockers(result)
     if (result.get("status") in ("ok", "succeeded", "synced", "degraded")
         or (result.get("status") == "conflict" and not source_conflicts)) and not source_conflicts:
         (state / "hook-error.json").unlink(missing_ok=True)
@@ -745,6 +748,14 @@ def main():
                 notice += scheduled_notice(state)
             except Exception:
                 pass
+        if not args.metadata_only and event == 'PostToolUse':
+            # Companion handoff limit at write time (#707): the same line SessionStart shows, so the
+            # writing agent sees it now. Harness-gated inside; a size check never costs the turn.
+            try:
+                from beyin_v3_companion import hook_limit_notice
+                notice += hook_limit_notice(vault, state, payload, harness=args.harness)
+            except Exception:
+                pass
         if not args.metadata_only and event in ('SessionStart', 'PostToolUse') and (state / 'hygiene.json').is_file():
             # Opt-in hygiene signals (#130), machine-local in state/hygiene.json. Independent of the
             # performance profile, and never able to cost the session or the turn itself.
@@ -785,6 +796,10 @@ def main():
                     if (state / 'context-dedupe.json').is_file() or (state / 'session-delivery').is_dir() or os.environ.get('BEYIN_V3_CONTEXT_DEDUPE') == '1':
                         from beyin_v3_dedupe import reset_session
                         reset_session(state, args.harness, payload.get('session_id'))
+                    if args.harness == 'claude' and (state / 'context-fill').is_dir():
+                        from beyin_v3_context_fill import reset_session_state
+                        if isinstance(payload.get('session_id'), str):
+                            reset_session_state(state, payload['session_id'])
             except Exception:
                 pass
         if not settings['auto_sync']:
@@ -831,6 +846,9 @@ def main():
         # (#417); an earlier edit marker must not reopen that path as a block in a state this client
         # cannot write. The writable path keeps its reminder untouched.
         reminder = None if args.metadata_only or sync_note else receipt_reminder(payload, state, args.harness, event, vault=vault)
+        if not args.metadata_only and not sync_note and not reminder and event == 'Stop' and args.harness == 'claude' and (state / 'context-fill.json').is_file():
+            from beyin_v3_context_fill import context_fill_reminder
+            reminder = context_fill_reminder(payload, state, args.harness, event)
         if not args.metadata_only and event == 'UserPromptSubmit' and (state / 'chat-trace.json').is_file():
             try:
                 from beyin_v3_chat_trace import hint
@@ -858,7 +876,7 @@ def main():
             except subprocess.TimeoutExpired:
                 pending = True
             if process is not None and not pending and process.returncode:
-                raise RuntimeError("Source sync failed; metadata remains queued")
+                raise RuntimeError("Source sync worker failed")
             # Context only reads the store. SyncEngine adds the Markdown journal and the
             # markdown_sources table, which the sync worker creates and every reader tolerates
             # missing, so the foreground skips importing the sync engine.
@@ -953,7 +971,7 @@ def main():
                     except Exception:
                         pass
             from beyin_v3_companion import (context as companion_context, relevant, opening_budget, client_budget,
-                                            client_rebudget, fit_client, receipt_header)
+                                            client_rebudget, fit_client, fit_opening_overflow, receipt_header)
             # Both budgets stop below a client's own cut-off; past it the client files the text away (#175).
             # A text over the client's own measure is rendered once more with a scaled budget.
             limit = client_budget(args.harness, settings['context_chars'])
@@ -978,7 +996,8 @@ def main():
                 # Local import syntax cannot prove client delivery. Keep the normal
                 # companion text, including after resume/compact and continuity questions.
                 # The opening may carry its own machine-local budget (#140); never a vault preference.
-                limit = client_budget(args.harness, opening_budget(state, settings['context_chars']))
+                opening_limit = client_budget(args.harness, opening_budget(state, settings['context_chars']))
+                limit = opening_limit
                 text = companion_context(store, max(0, limit - len(notice)), session, args.harness, query, receipt, warning, project=project,
                                          rules_project=rules_project)
                 smaller = client_rebudget(args.harness, limit, notice + text)
@@ -1004,9 +1023,13 @@ def main():
                             else:
                                 high = trial
                         if low:
-                            # Without any fitting trial (a notice alone over the cap) the
-                            # last render stays and the client guard trims it, as before.
                             limit, text = low, fitting
+                        else:
+                            # No fitting render before the deadline (or a notice alone
+                            # over the cap). Clip only vetted rendered text, without
+                            # another source read, reserving a complete omission marker.
+                            text = fit_opening_overflow(args.harness, notice + text, opening_limit)
+                            notice, limit = '', opening_limit
             else:
                 # Per-turn automatic context is strict: only meaningful lexical matches are
                 # injected, and an empty match injects nothing at all instead of a receipt
@@ -1110,7 +1133,7 @@ def main():
             return
         record_error(state, exc)
         if not args.metadata_only and locals().get("event") in ("SessionStart", "UserPromptSubmit"):
-            print(json.dumps(output_context(args.harness, event, notice + "V3 source sync failed or conflicted; metadata remains queued. Run the local CLI doctor and verify current Markdown sources.")))
+            print(json.dumps(output_context(args.harness, event, notice + "V3 source sync failed or conflicted. Run the local CLI doctor and verify current Markdown sources.")))
         else:
             print("{}")
 

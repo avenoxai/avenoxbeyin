@@ -4,12 +4,15 @@ Real SessionStart hook runs over synthetic vaults: huge rule files, hundreds of 
 and astral characters. The client guard must never be the thing that cuts, every cut must
 carry an explicit marker, and two runs over the same sources must be identical.
 """
+from contextlib import nullcontext
 import io
+from itertools import count
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -34,11 +37,11 @@ class OpeningBoundsTest(unittest.TestCase):
         self.store = runtime.MemoryStore(root / 'state', self.vault)
         companion.save_context(self.store.state_dir, 9500)
 
-    def write(self, name, text):
+    def write(self, name, text, **fields):
         source = f'{DIRECTORY}/{name}'
         (self.vault / source).write_text(text, encoding='utf-8')
         self.store.ingest(dict(id=source, source=source, text=text, kind='note', status='active',
-                               updated_at='2026-11-01T00:00:00Z'))
+                               updated_at='2026-11-01T00:00:00Z', **fields))
 
     def seed(self, rules=30, topics=12, astral=False, history=30):
         mark = '😀' if astral else 'ş'
@@ -54,7 +57,7 @@ class OpeningBoundsTest(unittest.TestCase):
                    + f'devir {mark}. ' * 120 + '\n## 2026-10-31 09:00 · b · 22222222\nKART_B ' + 'devir. ' * 300 + '\n')
         self.write('Journal.md', '# Journal\n## 2026-11-01\n' + f'Gözlem {mark}. ' * 200)
 
-    def run_hook(self, harness):
+    def run_hook(self, harness, *, exhausted=False):
         renders = []
         original_context, original_guard = companion.context, companion.fit_client
 
@@ -69,11 +72,22 @@ class OpeningBoundsTest(unittest.TestCase):
         payload = dict(hook_event_name='SessionStart', session_id='bounds-' + harness, cwd=str(self.vault))
         output = io.StringIO()
         argv = ['hook', '--vault', str(self.vault), '--state', str(self.store.state_dir), '--harness', harness]
+        # Formatting invariants must not depend on scheduling during a slow suite.
+        # Model exhaustion explicitly and leave wall time, I/O and all limits real.
+        ticks = count(step=0.01)
+
+        def elapsed():
+            return hook.HOOK_BUDGET if exhausted and len(renders) >= 2 else next(ticks)
+
+        clock = SimpleNamespace(time=hook.time.time, sleep=hook.time.sleep, monotonic=elapsed)
+        fit = nullcontext() if exhausted else patch.object(companion, 'fit_client', side_effect=guard)
         with patch.object(sys, 'argv', argv), patch.object(sys, 'stdin', io.StringIO(json.dumps(payload))), \
                 patch.object(sys, 'stdout', output), patch.object(companion, 'context', side_effect=counted), \
-                patch.object(companion, 'fit_client', side_effect=guard), \
+                patch.object(hook, 'time', clock), fit, \
                 patch.dict(os.environ, inherited_env(BEYIN_V3_NO_SPAWN='1', BEYIN_UPDATES_OFF='1'), clear=True):
             hook.main()
+        if exhausted:
+            self.assertEqual(len(renders), 2, 'deadline must not buy a third render')
         self.assertLessEqual(len(renders), 2 + companion.client_budget(harness, 9500).bit_length())
         text = json.loads(output.getvalue())['hookSpecificOutput']['additionalContext']
         cap = companion.CLIENT_TEXT_LIMITS[harness][0]
@@ -206,6 +220,22 @@ class OpeningBoundsTest(unittest.TestCase):
         self.assertIn('PRIORITY_CANARY', text)
         self.assertLessEqual(companion.client_size('codex', text), companion.CLIENT_TEXT_LIMITS['codex'][0])
 
+    def test_exhausted_real_opening_keeps_complete_marker_and_source_gates(self):
+        self.seed()
+        self.write('Soul.md', '# Hidden\nPRIVATE_IDENTITY_CANARY', visibility='private')
+        # The file exists but no longer matches its indexed source content.
+        (self.vault / DIRECTORY / 'Core.md').write_text('STALE_IDENTITY_CANARY', encoding='utf-8')
+        text = self.run_hook('codex', exhausted=True)
+        self.assertTrue(text.endswith(companion.CLIP_MARKER), text[-150:])
+        self.assertIn(f'[{DIRECTORY}/Kurallar.md]', text)
+        self.assertIn('KURAL_0000', text)
+        self.assertIn('KART_A', text)
+        self.assertIn('ADIM_000', text)
+        self.assertIn('Changed companion sources excluded', text)
+        for canary in ('PRIVATE_IDENTITY_CANARY', 'STALE_IDENTITY_CANARY', 'Kimlik ayrıntısı',
+                       'KAPALI_CANARY', 'source sync failed'):
+            self.assertNotIn(canary, text)
+
     def test_notice_over_the_cap_still_delivers_a_trimmed_opening(self):
         self.seed()
         for harness, notice in (('codex', 'ç' * 6000), ('claude', '😀' * 5200)):
@@ -221,6 +251,7 @@ class OpeningBoundsTest(unittest.TestCase):
                     hook.main()
                 text = json.loads(output.getvalue())['hookSpecificOutput']['additionalContext']
                 self.assertTrue(text.startswith(notice[:100]), 'the notice must not vanish with the opening')
+                self.assertTrue(text.endswith(companion.CLIP_MARKER), text[-150:])
                 self.assertLessEqual(companion.client_size(harness, text), companion.CLIENT_TEXT_LIMITS[harness][0])
 
 

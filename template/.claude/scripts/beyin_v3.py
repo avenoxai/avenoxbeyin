@@ -1096,7 +1096,9 @@ def _name_candidates(record):
     return candidates
 
 
-NAME_GENERIC_TERMS = _tokens("durum proje projeler not notlar karar kararlar arsiv sablon genel ozet guncel")
+_STOCK_RULE_TITLE_TERMS = _tokens("kural kurallar")
+_STOCK_RULE_HEADING = re.compile(r"^[ ]{0,3}#{1,6}[ \t]+(?:kural|kurallar)(?:[ \t]+#+)?[ \t]*\r?$", re.I | re.M)
+NAME_GENERIC_TERMS = _tokens("durum proje projeler not notlar karar kararlar arsiv sablon genel ozet guncel") | _STOCK_RULE_TITLE_TERMS
 
 
 def _name_match_score(record, terms):
@@ -1809,13 +1811,16 @@ class MemoryStore:
 
         rejected_only inverts the rejection gate alone, for rejected_matches: the same
         scope applies to history that is looked up but never delivered. records lets a
-        caller that also needs the supersession set read the table once.
+        caller narrow the returned set. Homepage dependencies are resolved against
+        the full index, never just that subset. Ordinary subsets need no table scan.
         """
         if audience not in ("public", "internal", "private"):
             raise ValueError("invalid audience")
         if records is None:
             records = self._records()
-        records = self._homepage_policy(records, records)
+            records = self._homepage_policy(records, records)
+        else:
+            records = self._homepage_policy(records)
         allowed = {"public"} if audience == "public" else {"public", "internal"} if audience == "internal" else {"public", "internal", "private"}
         # Read only for an explicit project: the per-turn hook path passes none.
         scopes = read_project_scopes(self.vault_root) if project is not None else None
@@ -1908,7 +1913,17 @@ class MemoryStore:
                            if name_score else "")
             # Without a query term no count can score or reorder a record (snapshots, scoped
             # listings, the advisor's eligibility pass), so the note text is not tokenised.
-            counts = (count_cache.counts(record["text"] + " " + _json(record["facts"]) + " " + str(record.get("title", "")) + " " + alias_text + " " + source_stem)
+            title_text = str(record.get("title", ""))
+            title_terms = _tokens(title_text) if terms else set()
+            if title_terms and title_terms <= _STOCK_RULE_TITLE_TERMS:
+                # The stock heading alone is not a lexical topic (#811).
+                # Preserve actual rule mentions, scoped names and aliases.
+                title_text = ""
+            search_body = record["text"]
+            if terms and _fold(Path(record["source"]).stem) in ("kural", "kurallar"):
+                # The stock Markdown section label is structure, not body evidence.
+                search_body = _STOCK_RULE_HEADING.sub("", search_body)
+            counts = (count_cache.counts(search_body + " " + _json(record["facts"]) + " " + title_text + " " + alias_text + " " + source_stem)
                       if terms else Counter())
             for stopword in STOPWORDS & counts.keys():
                 del counts[stopword]

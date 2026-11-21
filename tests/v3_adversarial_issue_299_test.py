@@ -7,6 +7,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'template/.claude/scripts'))
 import beyin_v3_yakala
+from v3_yakala_defuddle_consent_test import approved_test_state
 
 class TestYakalaHardenings(unittest.TestCase):
     def setUp(self):
@@ -76,7 +77,7 @@ class TestYakalaHardenings(unittest.TestCase):
         url = 'https://example.com/page'
         public = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('8.8.8.8', 443))]
         with patch.object(socket, 'getaddrinfo', return_value=public):
-            beyin_v3_yakala.via_defuddle(url, {'npx': 'npx'}, lang='tr')
+            beyin_v3_yakala.via_defuddle(url, {'npx': 'npx'}, lang='tr', state=approved_test_state(self))
             args = mock_run.call_args[0][0]
             # url should be last, -- is right before it, and --json / --markdown / --lang tr are before --
             self.assertEqual(args[-2:], ['--', url])

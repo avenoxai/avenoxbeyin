@@ -522,6 +522,7 @@ class SyncEngine:
         self.journal.mkdir(exist_ok=True, mode=0o700)
         with self.store._connect() as db:
             db.execute('CREATE TABLE IF NOT EXISTS markdown_sources(id TEXT PRIMARY KEY, source TEXT NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS markdown_task_revisions(id_hash TEXT PRIMARY KEY, revision INTEGER NOT NULL)')
 
     @classmethod
     def reader(cls, store):
@@ -625,12 +626,13 @@ class SyncEngine:
                                                (record_id is not None and item.get('id') == record_id))]
 
     @staticmethod
-    def _write_blockers(result, source):
+    def _write_blockers(result, source=None, record_ids=()):
         # Another receipt's divergence leaves this write's projection intact; it stays in every sync report (#210).
         # Receipt view conflicts preserve edited or untracked generated views without blocking source writes (#323).
         from beyin_v3_projections import is_receipt_view_conflict
         return [item for item in result.get('conflicts', [])
                 if not (item.get('kind') == 'receipt_divergence' and item.get('source') != source)
+                and not (source is not None and item.get('id') is not None and item['id'] not in record_ids)
                 and not is_receipt_view_conflict(item)]
 
     def _path(self, relative, existing=False):
@@ -865,6 +867,7 @@ class SyncEngine:
         and its value in the returned records is None: sync keeps that record as indexed."""
         records, warnings, conflicts = {}, [], []
         duplicate = set()
+        source_ids = {}
         # Stored by project_receipts with this sync's record deletions, like excluded_dir_keys.
         unreadable = self.unreadable_sources = set()
         # Provenance is independent of editable frontmatter. Prove paths before
@@ -925,6 +928,7 @@ class SyncEngine:
                             # Not decoded: sync leaves an unchanged indexed record as it is.
                             if id in records:
                                 duplicate.add(id)
+                            source_ids[relative] = id
                             records[id] = None
                             continue
                     raw = path.read_bytes()
@@ -948,12 +952,14 @@ class SyncEngine:
                         raise ValueError('source changed while scanning')
                     if record['id'] in records:
                         duplicate.add(record['id'])
+                    source_ids[relative] = record['id']
                     records[record['id']] = record
                     if cache is not None:
                         cache.read(relative, st, record['id'])
                 except (ValueError, OSError, UnicodeError) as exc:
                     warnings.append({'source': relative, 'reason': str(exc)})
                     unreadable.add(relative)
+        self.source_ids = source_ids
         for id in sorted(duplicate):
             records.pop(id, None)
             conflicts.append({'id': id, 'reason': 'duplicate source id; all copies quarantined'})
@@ -996,7 +1002,13 @@ class SyncEngine:
                     if actual == intent['old_hash']:
                         atomic(path, intent['content'])
                     elif actual != desired:
-                        conflicts.append({'source': intent['source'], 'reason': 'recovery conflict; manual edit preserved'})
+                        # A later edit restoring old bytes must never revive this abandoned write.
+                        # Preserve its private journal for inspection outside the replay glob.
+                        from uuid import uuid4
+                        saved = entry.with_suffix('.' + uuid4().hex + '.diverged')
+                        entry.rename(saved)
+                        conflicts.append({'source': intent['source'], 'journal': saved.name,
+                                          'reason': 'recovery conflict; manual edit preserved; review the diverged journal'})
                         continue
                     if note_locks is not None:
                         # Reserve replayed notes until commit AND journal cleanup.
@@ -1241,6 +1253,9 @@ class SyncEngine:
                 if previous_payload is not None:
                     old = json.loads(previous_payload)
                     db.execute("INSERT INTO events(event_type,record_id,revision,record) VALUES ('delete',?,?,?)", (id, old['revision'], previous_payload))
+                    if old.get('kind') == 'task':
+                        db.execute('INSERT INTO markdown_task_revisions VALUES (?,?) ON CONFLICT(id_hash) '
+                                   'DO UPDATE SET revision=max(revision,excluded.revision)', (_hash(id), old['revision']))
                     db.execute('DELETE FROM records WHERE id=?', (id,))
                     deleted += 1
                 db.execute('DELETE FROM markdown_sources WHERE id=?', (id,))
@@ -1256,6 +1271,17 @@ class SyncEngine:
                         record['revision'] = max(record['revision'], previous['revision'] + 1)
                     else:
                         record['revision'] = max(record['revision'], previous['revision'])
+                elif previous_payload is None and record.get('kind') == 'task':
+                    # A temporarily unreadable or duplicate source loses its index row.
+                    # Preserve optimistic concurrency even after maintenance prunes events.
+                    key = _hash(id)
+                    high = db.execute('SELECT revision FROM markdown_task_revisions WHERE id_hash=?', (key,)).fetchone()
+                    if high is None:
+                        # Older releases left only the event history.
+                        high = db.execute('SELECT MAX(revision) FROM events WHERE record_id=?', (id,)).fetchone()
+                    if high[0] is not None:
+                        record['revision'] = max(record['revision'], high[0] + 1)
+                        db.execute('DELETE FROM markdown_task_revisions WHERE id_hash=?', (key,))
                 payload = _json(record)
                 if previous_payload is not None and id not in old_owned and previous_payload != payload:
                     conflicts.append({'id': id, 'reason': 'id already owned by another record'})
@@ -1351,6 +1377,7 @@ class SyncEngine:
         atomic(entry, _json(intent))
         actual = _hash(path.read_bytes()) if path.exists() else None
         if actual != old_hash:
+            entry.unlink()
             raise RevisionConflict('source changed before replace')
         atomic(path, content)
         return entry
@@ -1411,7 +1438,7 @@ class SyncEngine:
             intended = render(metadata, body)
             self._intent(record['source'], record['source_sha256'], intended, 'task')
         result = self.sync()
-        if self._write_blockers(result, record['source']):
+        if self._write_blockers(result, record['source'], (id,)):
             raise RevisionConflict('source projection conflict')
         with self.store._connect() as db:
             row = db.execute('SELECT payload FROM records WHERE id=?', (id,)).fetchone()
@@ -1688,7 +1715,12 @@ class SyncEngine:
             else:
                 self._intent(source, None, content, 'receipt', event)
         result = self.sync()
-        if self._write_blockers(result, source):
+        referenced_ids = {self.source_ids.get(ref) for ref in refs}
+        if None in referenced_ids:
+            # An unindexed ref can alias a quarantined source. Keep the old
+            # conservative result when this scan cannot establish its ownership.
+            referenced_ids.update(item.get('id') for item in result.get('conflicts', []))
+        if self._write_blockers(result, source, referenced_ids):
             raise ReceiptConflict('receipt projection conflict')
         if _receipt_lf(self._path(source, existing=True).read_bytes()) != _receipt_lf(content.encode('utf-8')):
             raise ReceiptConflict('receipt source changed before readback')

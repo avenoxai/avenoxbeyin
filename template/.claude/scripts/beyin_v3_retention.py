@@ -67,7 +67,7 @@ AUTO_VACUUM = {0: 'none', 1: 'full', 2: 'incremental'}
 # (prefix + 8 characters of [a-z0-9_]) of the writers whose targets live there.
 _ROOT_TEMP = re.compile(
     r'hook-(?:error|health)\.json\.[0-9a-f]{32}\.tmp'
-    r'|\.(?:beyin|beyin-update|index|inbox|hygiene|hermes-platforms|parallel-sessions|scheduled|release)-[a-z0-9_]{8}'
+    r'|\.(?:beyin|beyin-update|index|inbox|hygiene|hermes-platforms|hermes-turns|parallel-sessions|scheduled|release)-[a-z0-9_]{8}'
     r'|\.(?:token-counts|passages)-[a-z0-9_]{8}\.tmp')
 _FOLDER_TEMP = {
     'hook-queue': re.compile(r'[0-9a-f]{64}\.json\.[0-9a-f]{32}\.tmp'),
