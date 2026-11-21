@@ -535,5 +535,26 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(res_removed['key_source'], 'none')
             self.assertFalse(res_removed['key_present'])
 
+    def test_provider_model_metadata_cannot_echo_the_command_key(self):
+        self.config()
+        token = 'synthetic-' + 'model-echo-747'
+        helper = [sys.executable, '-c', "print('synthetic-'+'model-echo-747')"]
+
+        def transport(url, body, key, timeout):
+            self.assertEqual(key, token)
+            result = self.transport(url, body, key, timeout)
+            return dict(result, model='echo/' + key)
+
+        with patch.dict(os.environ, self.helper_env, clear=True):
+            j.set_key_command(self.vault, helper)
+            result = j.evaluate(self.vault, 'question', self.cards, transport=transport)
+            self.assertFalse(result['degraded'])
+            self.assertFalse(token in json.dumps(result))
+            self.assertEqual(len(self.calls), 1)
+            self.assertTrue(self.run_client()['cache_hit'])
+        for path in self.vault.rglob('*'):
+            if path.is_file():
+                self.assertNotIn(token.encode(), path.read_bytes())
+
 
 if __name__=='__main__': unittest.main()

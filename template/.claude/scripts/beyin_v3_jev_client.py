@@ -684,6 +684,7 @@ def evaluate(vault, query, candidates, *, source_versions=None, scope='user', fa
         state = _load_jev_state(vault)
         env, _ = _environment(config, state, command_timeout=min(
             KEY_COMMAND_TIMEOUT, config['timeout'] - (time.monotonic() - started)))
+        key = env.get('LAYA_API_KEY' if laya else 'TYPESAFE_API_KEY')
         # TYPESAFE_BASE_URL and TYPESAFE_API_KEY never apply to the local backend.
         endpoint=laya.endpoint(config['base_url']) if laya else _endpoint(env.get('TYPESAFE_BASE_URL',config['base_url']))
         fingerprint=dict(body=body,scope=scope,sources=source_versions or {},endpoint=endpoint,
@@ -702,7 +703,7 @@ def evaluate(vault, query, candidates, *, source_versions=None, scope='user', fa
                     if inspect_config(vault) != policy: raise ValueError('configuration_changed')
                     assign(validate(cached['response'],False,None))
                     reported=cached.get('reported_model')
-                    if isinstance(reported,str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}',reported): result['reported_model']=reported
+                    if isinstance(reported,str) and (not key or key not in reported) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}',reported): result['reported_model']=reported
                     provenance=cached.get('confidence_provenance',{})
                     if isinstance(provenance,dict) and all(type(provenance.get(k)) is int and 0<=provenance[k]<=len(question_map) for k in ('present','missing')):
                         result['confidence_provenance']={k:provenance[k] for k in ('present','missing')} | {'used_for_selection':purpose in ('answer_check', 'memory_assessment') and config['mode']=='on','origin':'cached_'+origin}
@@ -718,8 +719,8 @@ def evaluate(vault, query, candidates, *, source_versions=None, scope='user', fa
                 raise
             result['diagnostics'].append('cache_unavailable')
         # laya-serve needs a key only when it was started with LAYA_API_KEY.
-        key=(env.get('LAYA_API_KEY') or '') if laya else env.get('TYPESAFE_API_KEY')
         if not key and not laya: raise ValueError('credentials_missing')
+        key = key or ''
         remaining=config['timeout']-(time.monotonic()-started)
         if remaining<=0: raise ValueError('deadline_exceeded')
         if inspect_config(vault) != policy: raise ValueError('configuration_changed')
@@ -752,7 +753,7 @@ def evaluate(vault, query, candidates, *, source_versions=None, scope='user', fa
         assign(validated)
         # Record provider identity only when it is a bounded identifier, never free text.
         reported=raw.get('model')
-        if isinstance(reported,str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}',reported):
+        if isinstance(reported,str) and (not key or key not in reported) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}',reported):
             result['reported_model']=reported
         answers=raw['answers']
         present=sum('confidence' in answer for answer in answers.values())
