@@ -629,8 +629,7 @@ def drain_queue(vault, state, maintenance=False):
     # fresh healthy subset may be injected with an explicit warning. Source
     # conflicts still block acknowledgement because ownership is ambiguous.
     # Receipt view conflicts (outcomes.md, daily/v3) own no queued event (#323).
-    from beyin_v3_projections import is_receipt_view_conflict
-    source_conflicts = [c for c in result.get("conflicts", []) if not is_receipt_view_conflict(c)]
+    source_conflicts = SyncEngine._write_blockers(result)
     if (result.get("status") in ("ok", "succeeded", "synced", "degraded")
         or (result.get("status") == "conflict" and not source_conflicts)) and not source_conflicts:
         (state / "hook-error.json").unlink(missing_ok=True)
