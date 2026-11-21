@@ -183,9 +183,12 @@ def index_exclusion_lines(report, pruned=False):
         return ['Indeks kapsami denetlenemedi (' + plain_text(report.get('error', 'unknown')) +
                 '); indeks dislama ayarlari ve klasor ipuclari dogrulanamadi.']
     lines = []
-    if report.get('excluded_dirs'):
-        lines.append('Indeks disi klasor adlari (senin listen, her derinlikte): ' +
-                     ', '.join(plain_text(name) for name in report['excluded_dirs']) +
+    names = report.get('excluded_dirs')
+    if names:
+        scope = ('her derinlikteki adlar ve vault kokune gore yollar'
+                 if any('/' in name for name in names) else 'senin listen, her derinlikte')
+        lines.append('Indeks disi klasor adlari (' + scope + '): ' +
+                     ', '.join(plain_text(name) for name in names) +
                      (' (bu taramada ' + str(report.get('pruned', 0)) + ' klasor atlandi)' if pruned else '') + '.')
     if report.get('error'):
         lines.append('index.json gecersiz (' + plain_text(report['error']) +

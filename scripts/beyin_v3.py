@@ -1191,10 +1191,10 @@ def parser(note_namespace=None, is_json=False):
     settings.add_argument("--inbox-folder", action="append",
                           help="Top-level inbox folder name for the report (repeat for several; replaces the "
                                "generic name detection; an empty value returns to it)")
-    settings.add_argument("--index-exclude-dir", action="append", default=[], metavar="NAME",
-                          help="Keep directories with this bare name out of the index, at any depth (repeatable); applied by the next sync")
-    settings.add_argument("--index-include-dir", action="append", default=[], metavar="NAME",
-                          help="Remove a name from the index exclusion list (repeatable)")
+    settings.add_argument("--index-exclude-dir", action="append", default=[], metavar="NAME_OR_PATH",
+                          help="Exclude a name at any depth or a vault-root-relative directory path (repeatable); applied by the next sync")
+    settings.add_argument("--index-include-dir", action="append", default=[], metavar="NAME_OR_PATH",
+                          help="Remove a name or vault-root-relative path from the index exclusion list (repeatable)")
     settings.add_argument("--parallel-sessions", choices=("on", "off"),
                           help="Opt-in one-line notice when another session is open on this vault")
     settings.add_argument("--context-dedupe", choices=("on", "off"),

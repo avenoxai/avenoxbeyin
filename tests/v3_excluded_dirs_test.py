@@ -539,6 +539,18 @@ class InstalledCliTest(unittest.TestCase):
         finally:
             db.close()
 
+    def test_human_output_describes_paths_as_vault_relative(self):
+        path = 'projects/unused fixtures'
+        code, _ = self.beyin('preferences', '--index-exclude-dir', path)
+        self.assertEqual(code, 0)
+        try:
+            code, human = self.beyin('preferences', human=True)
+            self.assertEqual(code, 0, human)
+            self.assertIn('vault kokune gore yollar', human)
+            self.assertIn(path, human)
+        finally:
+            self.beyin('preferences', '--index-include-dir', path)
+
     def test_hint_then_list_then_agreement_between_doctor_and_index(self):
         code, synced = self.beyin('sync')
         self.assertEqual(code, 0, synced)
