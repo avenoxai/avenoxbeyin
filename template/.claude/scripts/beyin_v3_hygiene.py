@@ -494,9 +494,20 @@ def hook_cap_warning(vault, payload, cap=DEFAULT_CAP, harness=None, state=None):
                          'eski bolumleri ayni klasordeki Arsiv/ altina kelimesi kelimesine tasi, acik konular '
                          'yerinde kalsin.\n' % (relative, words, words - cap))
             continue
+        # Tailor advice by file type
+        advice = ('dosya tek soruyu cevapliyorsa birak; birden fazla soruyu cevapliyorsa '
+                  'alt dosyaya bol ve notlar arasina [[wikilink]] ile bagla.')
+        rel_lower = relative.lower()
+        if rel_lower.startswith('tasks/') or rel_lower.startswith('gorevler/'):
+            advice = ('gorev notu cok uzun; aciklama kisaltip [[wikilink]] ile detay notuna bagla, '
+                      'veya gorevi alt gorevlere bol (beyin.py task-create --parent).')
+        elif rel_lower.startswith('receipts/') or rel_lower.startswith('makbuz/'):
+            advice = ('makbuz ozeti cok uzun; ozeti kisaltip detaylari iliskili notlara [[wikilink]] ile bagla. '
+                      'Makbuz sadece ozet tutar, detay kaynakta kalir.')
+        elif rel_lower.startswith('daily/') or rel_lower.startswith('gunluk/'):
+            advice = ('gunluk kayit cok uzun; o gun icin ozet tut, detaylari konu notlarina [[wikilink]] ile bagla.')
         lines.append('Buyuk not: "%s" %d kelime - %d kelime tavan uzerinde. Bolum SINYALI, emir degil: '
-                     'dosya tek soruyu cevapliyorsa birak; birden fazla soruyu cevapliyorsa alt dosyaya bol '
-                     've notlar arasina [[wikilink]] ile bagla.\n' % (relative, words, words - cap))
+                     '%s\n' % (relative, words, words - cap, advice))
     return ''.join(lines)
 
 

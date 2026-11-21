@@ -1220,6 +1220,30 @@ class CompactionRaceTest(unittest.TestCase):
                 parsed = compact_module.blocks(lines, 'Last-Session.md')
                 self.assertFalse(any(p['kind'] == 'entry' for p in parsed), parsed)
 
+    def test_hygiene_include_projects_returns_ambiguous_directory_without_keyerror(self):
+        alt = self.directory.parent / 'Companion'
+        alt.mkdir(exist_ok=True)
+        (alt / 'Core.md').write_text('# Alt\n', encoding='utf-8')
+        rep = companion_module.hygiene(self.vault, self.state, include_projects=True)
+        self.assertEqual(rep['status'], 'ambiguous_directory')
+
+    def test_project_companion_hygiene_checks_limits_and_skips_excluded_dirs(self):
+        proj_demo = self.vault / 'projects' / 'demo'
+        proj_demo.mkdir(parents=True)
+        (proj_demo / 'Threads.md').write_text('# Threads\n' + 'x' * 9000, encoding='utf-8')
+
+        proj_secret = self.vault / 'projects' / 'secret_proj'
+        proj_secret.mkdir(parents=True)
+        (proj_secret / 'Threads.md').write_text('# Threads\n' + 'x' * 9000, encoding='utf-8')
+
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / 'index.json').write_text(json.dumps({'schema': 1, 'excluded_dirs': ['secret_proj']}), encoding='utf-8')
+
+        rep = companion_module.hygiene(self.vault, self.state, include_projects=True)
+        self.assertEqual(rep['status'], 'over_limit')
+        self.assertIn('projects/demo/Threads.md', rep['over_limit'])
+        self.assertNotIn('projects/secret_proj', rep['project_directories'])
+
 
 if __name__ == '__main__':
     unittest.main()
