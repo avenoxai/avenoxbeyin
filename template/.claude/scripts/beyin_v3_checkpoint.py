@@ -5,15 +5,68 @@ learning candidate staging, receipt submission, and optional chat-trace.
 Standard library only.
 """
 from datetime import datetime, timezone
+import hashlib
 import json
 import re
 from pathlib import Path
 
 from beyin_v3_companion import directory as locate_companion
 from beyin_v3_compact import compact as companion_compact
-from beyin_v3_notes import read as note_read, apply as note_apply, NoteConflict
+from beyin_v3_notes import read as note_read, apply as note_apply
 from beyin_v3_learning import stage_candidate
 import beyin_v3_chat_trace
+
+def _step_key(session, step, *content):
+    data = json.dumps([session, step, *content], ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+
+def _update_note(sync, source, previous, updated):
+    if updated == previous["content"]:
+        return "unchanged"
+    request = {"source": source, "expected_sha256": previous["sha256"]}
+    if previous["content"] is None:
+        request["content"] = updated
+    else:
+        request["edits"] = [{"old": previous["content"], "new": updated}]
+    return note_apply(sync, request)["status"]
+
+
+def _update_card(sync, source, card, session, now):
+    label = (card.get("label") or card.get("title") or "oturum").strip() or "oturum"
+    if label.splitlines() != [label]:
+        raise ValueError("checkpoint card label must be one line")
+    body = card.get("body", "").strip().replace("\r\n", "\n").replace("\r", "\n")
+    revision = _step_key(session, "card", label, body)
+    # An anonymous handoff can replay its own text but has no session whose card it can replace.
+    owner = _step_key(session, "card-owner") if session else revision
+    previous = note_read(sync, source)
+    content = previous["content"] or ""
+    newline = "\r\n" if "\r\n" in content else "\n"
+    short = session[:8] if session and re.fullmatch(r"[a-zA-Z0-9_-]+", session) else owner[:8]
+    suffix = f" · {label} · {short} <!-- beyin-checkpoint:{owner}:{revision} -->"
+    end = f"<!-- /beyin-checkpoint:{owner} -->"
+    card_text = (f"## {now:%Y-%m-%d %H:%M}{suffix}" + newline
+                 + (body.replace("\n", newline) + newline if body else "") + end + newline)
+    opening = re.search(rf"^## [^\r\n]+ <!-- beyin-checkpoint:{owner}:([a-f0-9]{{64}}) -->\r?$",
+                        content, re.MULTILINE)
+    if opening:
+        ending = re.search(rf"^{re.escape(end)}\r?\n?", content[opening.end():], re.MULTILINE)
+        if not ending:
+            raise ValueError("checkpoint card end marker missing")
+        if opening.group(1) == revision:
+            return "unchanged"
+        updated = content[:opening.start()] + card_text + content[opening.end() + ending.end():]
+    else:
+        # A legacy eight-character suffix cannot prove ownership. Preserve those cards.
+        first = re.search(r"^## ", content, re.MULTILINE)
+        start = first.start() if first else len(content)
+        preamble = content[:start]
+        if preamble and not preamble.endswith(newline * 2):
+            preamble += newline if preamble.endswith(newline) else newline * 2
+        updated = preamble + card_text + (newline + content[start:] if first else "")
+    return _update_note(sync, source, previous, updated)
+
 
 def run_checkpoint(sync, vault, state, request, harness=None, session=None, dry_run=False):
     """Execute a unified session checkpoint handoff.
@@ -81,72 +134,7 @@ def run_checkpoint(sync, vault, state, request, harness=None, session=None, dry_
         else:
             try:
                 last_session_rel = (companion_dir / "Last-Session.md").relative_to(vault).as_posix()
-                read_res = note_read(sync, last_session_rel)
-                content = read_res.get("content") or ""
-                expected_sha = read_res.get("sha256")
-
-                label = card_data.get("label") or card_data.get("title") or "oturum"
-                sess_id = (session or "cli")
-                sess8 = sess_id[:8]
-                date_prefix = now_dt.strftime("%Y-%m-%d %H:%M")
-                card_heading = f"## {date_prefix} · {label} · {sess8}"
-                card_body = card_data.get("body", "").strip()
-                new_card = f"{card_heading}\n{card_body}\n" if card_body else f"{card_heading}\n"
-
-                lines = content.splitlines(keepends=True)
-                existing_card_idx = -1
-                for idx, line in enumerate(lines):
-                    if line.startswith("## ") and sess8 in line:
-                        existing_card_idx = idx
-                        break
-
-                if existing_card_idx >= 0:
-                    end_idx = len(lines)
-                    for idx in range(existing_card_idx + 1, len(lines)):
-                        if lines[idx].startswith("## "):
-                            end_idx = idx
-                            break
-                    old_card_text = "".join(lines[existing_card_idx:end_idx])
-
-                    edit_req = {
-                        "source": last_session_rel,
-                        "expected_sha256": expected_sha,
-                        "edits": [{"old": old_card_text, "new": new_card}]
-                    }
-                    edit_res = note_apply(sync, edit_req)
-                    steps["card"] = edit_res.get("status", "written")
-                else:
-                    insertion_idx = -1
-                    for idx, line in enumerate(lines):
-                        if line.startswith("## "):
-                            insertion_idx = idx
-                            break
-                    if insertion_idx >= 0:
-                        old_text = "".join(lines[:insertion_idx])
-                        target_old = lines[0] if lines else ""
-                        target_new = new_card + target_old
-                        edit_req = {
-                            "source": last_session_rel,
-                            "expected_sha256": expected_sha,
-                            "edits": [{"old": target_old, "new": target_new}] if target_old else [{"old": "", "new": new_card}]
-                        }
-                        edit_res = note_apply(sync, edit_req)
-                        steps["card"] = edit_res.get("status", "written")
-                    else:
-                        if expected_sha is None:
-                            edit_req = {
-                                "source": last_session_rel,
-                                "expected_sha256": None,
-                                "content": new_card + content
-                            }
-                        else:
-                            edit_req = {
-                                "source": last_session_rel,
-                                "expected_sha256": expected_sha,
-                                "edits": [{"old": content, "new": new_card + content}]
-                            }
-                        edit_res = note_apply(sync, edit_req)
-                        steps["card"] = edit_res.get("status", "written")
+                steps["card"] = _update_card(sync, last_session_rel, card_data, session, now_dt)
             except Exception as exc:
                 steps["card"] = {"status": "error", "message": str(exc)}
 

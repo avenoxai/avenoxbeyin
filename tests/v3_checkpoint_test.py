@@ -65,6 +65,7 @@ class CheckpointTest(unittest.TestCase):
         last_session_text = (self.comp / "Last-Session.md").read_text(encoding="utf-8")
         self.assertIn("12345678", last_session_text)
         self.assertIn("Harika ilerleme kaydedildi.", last_session_text)
+        self.assertIn("Eski kart gövdesi", last_session_text)
 
         threads_text = (self.comp / "Threads.md").read_text(encoding="utf-8")
         self.assertIn("yeni adım", threads_text)
@@ -86,6 +87,27 @@ class CheckpointTest(unittest.TestCase):
         self.assertIn("Güncellenmiş gövde.", last_session_text)
         self.assertNotIn("İlk gövde.", last_session_text)
         self.assertIn("12345678", last_session_text)
+
+    def test_card_updates_only_its_session_with_shared_prefix(self):
+        card = self.comp / "Last-Session.md"
+        card.write_text("# Son oturum\n", encoding="utf-8", newline="\n")
+        for session, label, body in (
+            ("abcdabcd1111111111111111", "İstanbul", "birinci gövde"),
+            ("abcdabcd2222222222222222", "ılık", "ikinci gövde"),
+            ("abcdabcd1111111111111111", "Arşiv", "güncel gövde"),
+        ):
+            request = {"card": {"label": label, "body": body}}
+            result = run_checkpoint(self.sync, self.vault, self.state, request, session=session)
+            self.assertEqual(result["steps"]["card"], "written")
+        content = card.read_text(encoding="utf-8")
+        self.assertTrue(content.startswith("# Son oturum\n"))
+        self.assertIn("ikinci gövde", content)
+        self.assertIn("güncel gövde", content)
+        self.assertNotIn("birinci gövde", content)
+        result = run_checkpoint(self.sync, self.vault, self.state, dict(request, now="2026-11-23T10:12:00"),
+                                session=session)
+        self.assertEqual(result["steps"]["card"], "unchanged")
+        self.assertEqual(card.read_text(encoding="utf-8"), content)
 
     def test_automatic_compaction(self):
         limits_file = self.state / "companion-limits.json"
@@ -115,19 +137,21 @@ class CheckpointTest(unittest.TestCase):
         self.assertEqual(res["steps"]["receipt"]["status"], "error")
 
     def test_cli_checkpoint_and_human_result(self):
-        import subprocess
-        import sys
         req_file = Path(self.test_dir) / "checkpoint_req.json"
-        req_file.write_text(json.dumps({"card": {"label": "cli", "body": "CLI testi."}}), encoding="utf-8")
+        req_file.write_text(json.dumps({"card": {"label": "cli", "body": "CLI testi."}}),
+                            encoding="utf-8", newline="\n")
 
         script_path = Path(__file__).resolve().parent.parent / "scripts" / "beyin_v3.py"
         proc = subprocess.run(
-            [sys.executable, str(script_path), "--vault", str(self.vault), "--state", str(self.state), "checkpoint", "--file", str(req_file), "--harness", "claude", "--session", "abcd1234abcd1234"],
-            capture_output=True, text=True, encoding="utf-8", check=False
+            [sys.executable, str(script_path), "--vault", str(self.vault), "--state", str(self.state),
+             "checkpoint", "--file", str(req_file), "--harness", "claude"],
+            capture_output=True, text=True, encoding="utf-8",
+            env=inherited_env(CLAUDE_CODE_SESSION_ID="checkpoint-test-session"), timeout=30,
         )
         self.assertEqual(proc.returncode, 0, f"stderr: {proc.stderr}")
         data = json.loads(proc.stdout)
         self.assertEqual(data["status"], "succeeded")
+        self.assertEqual(data["session"], hashlib.sha256(b"checkpoint-test-session").hexdigest()[:24])
 
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
         import beyin_entry

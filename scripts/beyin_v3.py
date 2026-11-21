@@ -2189,7 +2189,8 @@ def main(argv=None, return_result=False):
             import beyin_v3_checkpoint
             result = beyin_v3_checkpoint.run_checkpoint(
                 None if dry_checkpoint else load_sync()(vault, state), vault, state, payload,
-                harness=args.harness, session=args.session, dry_run=args.dry_run
+                harness=args.harness, session=args.session or env_session(args.harness),
+                dry_run=args.dry_run
             )
         elif args.command == "mutation-queue":
             _ensure_scripts_path()
