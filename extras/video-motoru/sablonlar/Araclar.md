@@ -21,6 +21,13 @@ yazılır.
 | Betik | Ne yapar | Yolu | Hangi videoda yazıldı |
 | --- | --- | --- | --- |
 
+## Dışarıdan alınanlar
+
+Başka bir repodan motora giren her şey. Nasıl doldurulacağı skill'in `REPO.md` dosyasında.
+
+| Tarih | Repo | Commit | Lisans | Alınan | Alınmayan ve nedeni |
+| --- | --- | --- | --- | --- | --- |
+
 ## Hesaplar ve servisler
 
 Yalnız hangi servisin kullanıldığı ve bilgilerin nerede durduğu. Parola, anahtar ya da token

@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PACK = ROOT / "extras/video-motoru"
 NOTEBOOK = ("Marka.md", "Dersler.md", "Sahne-Envanteri.md", "Araclar.md", "Acik-Isler.md",
             "Referanslar.md", "Kutuphane.md")
-GUIDES = ("KURULUM.md", "REFERANS.md", "KUTUPHANE.md")
+GUIDES = ("KURULUM.md", "REFERANS.md", "KUTUPHANE.md", "REPO.md")
 
 
 def skills_module():

@@ -13,6 +13,8 @@ Hazır bir stil, marka, ses ya da görsel içermez. Paketin içinde yalnız yön
   yapan mekanizmaları adlandırır, karesini saklar ve onayladıklarını kurala çevirir.
 - `KUTUPHANE.md`: ses, müzik, üretilmiş video, görsel ve logo için etiketli kütüphane. Ajan her
   varlığı üretildiği anda etiketler ve yenisini üretmeden önce kütüphanede arar.
+- `REPO.md`: bir GitHub reposu verdiğinde ajan onu çalıştırmadan okur, mantığını anlatır,
+  alınabilecekleri bedeliyle listeler ve yalnız senin seçtiklerini motora ekler.
 - `sablonlar/`: boş defter dosyaları (`Marka`, `Dersler`, `Sahne-Envanteri`, `Araclar`,
   `Acik-Isler`, `Referanslar`, `Kutuphane`) ve video başına doldurulan `KURGU-NOTU`.
 
