@@ -249,6 +249,16 @@ class CheckpointTest(unittest.TestCase):
                 self.assertNotIn("KORUNAN_İÇERİK", json.dumps(result, ensure_ascii=False))
                 self.assertFalse((self.state / "learning-state.jsonl").exists())
 
+    def test_quickstart_checkpoint_example(self):
+        quickstart = Path(__file__).resolve().parents[1] / "docs" / "v3" / "QUICKSTART.md"
+        section = quickstart.read_text(encoding="utf-8").split("### Oturum kontrol noktası", 1)[1]
+        payload = json.loads(section.split("```json\n", 1)[1].split("\n```", 1)[0])
+        (self.vault / payload["receipt"]["refs"][0]).write_text("# Kaynak\n", encoding="utf-8")
+        result = run_checkpoint(self.sync, self.vault, self.state, payload,
+                                harness="claude", session="123456789012345678901234")
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(result["steps"]["receipt"], "succeeded")
+
     def test_cli_checkpoint_and_human_result(self):
         req_file = Path(self.test_dir) / "checkpoint_req.json"
         req_file.write_text(json.dumps({"card": {"label": "cli", "body": "CLI testi."}}),
