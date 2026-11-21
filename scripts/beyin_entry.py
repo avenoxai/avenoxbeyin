@@ -438,6 +438,12 @@ def human_result(result, command, installed_version=None):
         else:
             lines.append('VACUUM tamamlanamadi: ' + ascii_text(result.get('vacuum')))
         return '\n'.join(lines + ['Vault dosyalarina dokunulmadi.'])
+    if command == 'checkpoint':
+        steps = result.get('steps') or {}
+        parts = [f"{k}={v.get('status') if isinstance(v, dict) else v}" for k, v in steps.items()]
+        summary = ', '.join(parts) if parts else 'adim yok'
+        return f"Oturum kontrol noktasi ({result.get('status', 'tamamlandi')}): {summary}."
+
     if command == 'mutation-queue':
         if isinstance(result.get('enabled'), bool):
             return ('Cevrimdisi mutasyon kuyrugu: ' + ('acik' if result['enabled'] else 'kapali (acmak icin: beyin.py mutation-queue --enable)') +
