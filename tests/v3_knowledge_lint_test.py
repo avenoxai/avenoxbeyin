@@ -866,6 +866,27 @@ And another link on line 8: [[Components/Auth]].
         self.assertNotIn('target.md', result['orphans'])
         self.assertNotIn('target.md', result['unlinked'])
 
+    def test_markdown_anchor_unicode_lowercase_and_dotted_i_alias(self):
+        self._write_notes(self.vault, {
+            'source.md': '[Şifre](target%20note.md#şifre-yönetimi)\n'
+                         '[İlk](target%20note.md#i%CC%87lk-kurulum)\n'
+                         '[Alt](target%20note.md#ilk-kurulum)\n'
+                         '[Tekrar](target%20note.md#i%CC%87lk-kurulum-1)\n'
+                         '[Alt tekrar](target%20note.md#ilk-kurulum-1)\n'
+                         '[IŞIK](target%20note.md#işik)\n'
+                         '[Çıktı](target%20note.md#çıktı--sonuç)\n'
+                         '[Straße](target%20note.md#stra%C3%9Fe-guide)\n'
+                         '[Strasse](target%20note.md#strasse-guide)\n'
+                         '[Yanlış tekrar](target%20note.md#strasse-guide-1)\n'
+                         '[Noktasız](target%20note.md#ışık)\n'
+                         '[[target note#İlk Kurulum]] [[target note#ilk-kurulum]]\n',
+            'target note.md': '## Şifre Yönetimi\n## İlk Kurulum\n## İlk Kurulum\n'
+                              '## IŞIK\n## Çıktı & Sonuç\n## Straße Guide\n## Strasse Guide\n',
+        })
+        result = self._lint_cli()
+        self.assertEqual({(link['line'], link['type']) for link in result['broken_links']},
+                         {(10, 'markdown'), (11, 'markdown'), (12, 'wikilink')})
+
     def test_markdown_heading_anchors_preserve_literal_wikilinks(self):
         self._write_notes(self.vault, {
             'source.md': '[guide](target.md#deployment-guide) '

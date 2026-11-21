@@ -101,7 +101,7 @@ def _heading_anchors(text):
         match = HEADING_PATTERN.fullmatch(line)
         if not match:
             continue
-        heading = _norm_key(match.group(1).strip().rstrip('#').strip())
+        heading = match.group(1).strip().rstrip('#').strip().lower()
         slug = ''.join(c for c in heading if c in ' -_' or
                        unicodedata.category(c)[0] in 'LNM').replace(' ', '-')
         if not slug:
@@ -114,7 +114,8 @@ def _heading_anchors(text):
             anchor = f'{slug}-{suffix}'
         next_suffix[slug] = suffix + 1
         anchors.add(anchor)
-    return anchors
+    # Add plain-i aliases after assigning suffixes to the Unicode slugs.
+    return anchors | {anchor.replace('i\u0307', 'i') for anchor in anchors if 'i\u0307' in anchor}
 
 
 def extract_wikilinks(text):
@@ -528,7 +529,8 @@ def lint_vault(vault_root, folder=None, *, state=None):
                     target_text = (vault_root / res['resolved_path']).read_text(encoding='utf-8-sig')
                     heading = _norm_key(link['heading'])
                     if (heading not in _headings(target_text) and
-                            (link_type != 'markdown' or heading not in _heading_anchors(target_text))):
+                            (link_type != 'markdown' or
+                             link['heading'].lower() not in _heading_anchors(target_text))):
                         res = {'exists': False, 'resolved_path': None}
                 except (OSError, UnicodeError):
                     res = {'exists': False, 'resolved_path': None}
