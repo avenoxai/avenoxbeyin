@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path, PureWindowsPath
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -562,6 +563,146 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(alias.stat().st_ino, inode)
         self.assertEqual(alias.read_bytes(), target.read_bytes())
         self.assertEqual(json.loads(alias.read_text(encoding='utf-8')), original)
+
+    def test_global_json_replacement_preserves_mode(self):
+        target = bridge.global_hook_path('claude', home=self.home)
+        target.parent.mkdir(parents=True)
+        target.write_text('{}', encoding='utf-8')
+        target.chmod(0o640)
+        mode = stat.S_IMODE(target.stat().st_mode)
+        bridge.install_bridge(self.vault, self.state, 'claude', [self.project], home=self.home)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), mode)
+        bridge.uninstall_bridge('claude', home=self.home)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), mode)
+
+    @unittest.skipUnless(_supports_file_operation(lambda path: os.chown(path, path.stat().st_uid, path.stat().st_gid)),
+                         'chown unavailable')
+    def test_global_json_replacement_attempts_to_preserve_owner_and_group(self):
+        target = self.home / 'settings.json'
+        target.write_text('{}', encoding='utf-8')
+        original = target.stat()
+        with patch.object(os, 'chown', wraps=os.chown) as chown:
+            bridge._write_global_json(target, {'updated': True})
+        self.assertEqual(chown.call_count, 1)
+        self.assertEqual(chown.call_args.args[1:], (original.st_uid, original.st_gid))
+        self.assertNotEqual(Path(chown.call_args.args[0]), target)
+        self.assertEqual((target.stat().st_uid, target.stat().st_gid), (original.st_uid, original.st_gid))
+
+    def test_global_json_replacement_tolerates_unavailable_chown(self):
+        target = self.home / 'settings.json'
+        target.write_text('{}', encoding='utf-8')
+        for error in (AttributeError, PermissionError, OSError):
+            with self.subTest(error=error), patch.object(os, 'chown', create=True, side_effect=error):
+                bridge._write_global_json(target, {'updated': True})
+                self.assertEqual(json.loads(target.read_text(encoding='utf-8')), {'updated': True})
+
+    def test_failed_global_json_temp_write_preserves_original_and_cleans_up(self):
+        target = self.home / 'settings.json'
+        original = b'{"keep": true}\n'
+        target.write_bytes(original)
+        real_fdopen = os.fdopen
+
+        @contextlib.contextmanager
+        def failing_fdopen(*args, **kwargs):
+            with real_fdopen(*args, **kwargs) as handle:
+                write = handle.write
+
+                def fail_after_partial_write(text):
+                    write(text[:1])
+                    raise OSError('injected temp write failure')
+
+                with patch.object(handle, 'write', side_effect=fail_after_partial_write):
+                    yield handle
+
+        with patch('beyin_v3_sync.os.fdopen', side_effect=failing_fdopen):
+            with self.assertRaisesRegex(OSError, 'injected temp write failure'):
+                bridge._write_global_json(target, {'updated': True})
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(list(target.parent.iterdir()), [target])
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS ACL and xattr tools required')
+    def test_global_json_replacement_preserves_acl_and_xattr(self):
+        import pwd
+        target = self.home / 'settings.json'
+        target.write_text('{}', encoding='utf-8')
+        user = pwd.getpwuid(os.getuid()).pw_name
+        subprocess.run(['/bin/chmod', '+a', f'{user} allow read', str(target)], env=self.env, check=True)
+        subprocess.run(['/usr/bin/xattr', '-w', 'user.beyin_probe', 'marker', str(target)],
+                       env=self.env, check=True)
+
+        bridge._write_global_json(target, {'updated': True})
+
+        attr = subprocess.run(['/usr/bin/xattr', '-p', 'user.beyin_probe', str(target)],
+                              env=self.env, capture_output=True, check=True)
+        acl = subprocess.run(['/bin/ls', '-le', str(target)], env=self.env, capture_output=True, check=True)
+        self.assertEqual(attr.stdout.strip(), b'marker')
+        self.assertIn(b'allow read', acl.stdout)
+
+    @unittest.skipUnless(_supports_file_operation(lambda path: os.setxattr(path, 'user.beyin_probe', b'marker')),
+                         'extended attributes unavailable through os.setxattr')
+    def test_global_json_replacement_preserves_posix_xattr(self):
+        target = self.home / 'settings.json'
+        target.write_text('{}', encoding='utf-8')
+        os.setxattr(target, 'user.beyin_probe', b'marker')
+        bridge._write_global_json(target, {'updated': True})
+        self.assertEqual(os.getxattr(target, 'user.beyin_probe'), b'marker')
+
+    @unittest.skipUnless(_supports_file_operation(lambda path: os.link(path, path.with_suffix('.link'))),
+                         'hardlinks unavailable')
+    def test_global_json_replacement_refuses_a_link_added_while_staging(self):
+        target = self.home / 'settings.json'
+        target.write_bytes(b'{}')
+        alias = target.with_suffix('.link')
+        fsync = os.fsync
+
+        def fsync_then_link(fd):
+            fsync(fd)
+            os.link(target, alias)
+
+        with patch('beyin_v3_sync.os.fsync', side_effect=fsync_then_link):
+            with self.assertRaisesRegex(OSError, 'Global settings changed before write'):
+                bridge._write_global_json(target, {'updated': True})
+        self.assertTrue(target.samefile(alias))
+        self.assertEqual(target.read_bytes(), b'{}')
+        self.assertEqual(set(target.parent.iterdir()), {target, alias})
+
+    @unittest.skipUnless(_supports_file_operation(lambda path: os.link(path, path.with_suffix('.link'))),
+                         'hardlinks unavailable')
+    def test_failed_hardlinked_global_json_update_restores_original(self):
+        target = self.home / 'settings.json'
+        original = b'{"keep": true}\n'
+        target.write_bytes(original)
+        alias = target.with_suffix('.link')
+        os.link(target, alias)
+        fsync = os.fsync
+        attempts = []
+
+        def fail_once(fd):
+            attempts.append(fd)
+            if len(attempts) == 1:
+                raise OSError('injected fsync failure')
+            fsync(fd)
+
+        with patch.object(os, 'fsync', side_effect=fail_once):
+            with self.assertRaisesRegex(OSError, 'injected fsync failure'):
+                bridge._write_global_json(target, {'updated': True})
+        self.assertEqual(len(attempts), 2)
+        self.assertTrue(target.samefile(alias))
+        self.assertEqual(alias.read_bytes(), original)
+        self.assertEqual(set(target.parent.iterdir()), {target, alias})
+
+    @unittest.skipUnless(os.name == 'nt' and _supports_file_operation(
+        lambda path: Path(str(path) + ':beyin_probe').write_bytes(b'marker')), 'NTFS streams unavailable')
+    def test_global_json_replacement_refuses_windows_named_streams(self):
+        target = self.home / 'settings.json'
+        target.write_bytes(b'{}')
+        stream = Path(str(target) + ':beyin_probe')
+        stream.write_bytes(b'marker')
+        with self.assertRaisesRegex(OSError, 'alternate data streams'):
+            bridge._write_global_json(target, {'updated': True})
+        self.assertEqual(target.read_bytes(), b'{}')
+        self.assertEqual(stream.read_bytes(), b'marker')
+        self.assertEqual(list(target.parent.iterdir()), [target])
 
     def test_cli_print_config_keeps_the_selected_events(self):
         base = [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault), '--state', str(self.state),

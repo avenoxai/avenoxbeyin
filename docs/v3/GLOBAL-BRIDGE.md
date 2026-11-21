@@ -40,6 +40,12 @@ Otomatik kurulum (`--install`):
 - **Antigravity `GEMINI.md` işaretçisi**: `--harness antigravity --install` çalıştırıldığında, hook kaydına ek olarak kullanıcı ana dizinindeki `~/.gemini/config/GEMINI.md` dosyasına vault konumunu ve temel yönergeleri işaret eden idempotent bir blok (`<!-- beyin-v3-bridge:start --> ... <!-- beyin-v3-bridge:end -->`) eklenir veya güncellenir. Mevcut dosya varsa önce `GEMINI.md.bak` olarak yedeklenir.
 
 Bozuk JSON veya beklenmeyen hook listesi biçimi korunur; kurulum hata vererek durur.
+Claude Code, Codex ve Antigravity hook JSON dosyalarında kurulum ve kaldırma
+sembolik bağlantıyı koruyarak hedefi günceller. Tek bağlantılı dosyalar,
+izinleri korunarak geçici dosya üzerinden değiştirilir. Windows'ta erişim
+bilgileri farklıysa veya dosyada alternatif veri akışı varsa işlem durur.
+Birden çok sabit bağlantısı (hardlink) olan dosyalar yerinde güncellenir.
+Yerinde yazma kesilirse önceki içeriği geri yüklemek için `.bak` yedeği kullanılabilir.
 Antigravity yönergesi de yalnız seçilen proje köklerinde geçerlidir; Companion
 dosyalarını otomatik okuma veya değiştirme talimatı vermez.
 

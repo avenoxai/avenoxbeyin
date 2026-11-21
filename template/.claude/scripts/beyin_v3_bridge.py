@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import stat
 import subprocess
 import sys
 
@@ -359,21 +360,116 @@ def _backup_file(path):
             index += 1
 
 
+def _check_windows_replacement_metadata(source, staged):
+    """Refuse a rename if it would discard Windows access metadata or named streams."""
+    import ctypes
+    from ctypes import wintypes
+
+    security = ctypes.WinDLL('advapi32', use_last_error=True).GetFileSecurityW
+    owner_group_dacl = 0x07
+
+    def descriptor(path):
+        name = ctypes.c_wchar_p(str(path))
+        size = wintypes.DWORD()
+        if not security(name, owner_group_dacl, None, 0, ctypes.byref(size)) and not size.value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        buffer = ctypes.create_string_buffer(size.value)
+        if not security(name, owner_group_dacl, buffer, len(buffer), ctypes.byref(size)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return buffer.raw
+
+    if descriptor(source) != descriptor(staged):
+        raise OSError('Windows global settings have different access metadata; preserved')
+
+    class StreamData(ctypes.Structure):
+        _fields_ = [('size', ctypes.c_longlong), ('name', wintypes.WCHAR * 296)]
+
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    find_first = kernel.FindFirstStreamW
+    find_first.restype = wintypes.HANDLE
+    info = StreamData()
+    found = find_first(ctypes.c_wchar_p(str(source)), 0, ctypes.byref(info), 0)
+    if found == ctypes.c_void_p(-1).value:
+        error = ctypes.get_last_error()
+        if error not in (38, 87):  # No streams or the file system does not support them.
+            raise ctypes.WinError(error)
+        return
+    handle = wintypes.HANDLE(found)
+    try:
+        if info.name != '::$DATA' or kernel.FindNextStreamW(handle, ctypes.byref(info)):
+            raise OSError('Windows global settings have alternate data streams; preserved')
+        if ctypes.get_last_error() != 38:  # ERROR_HANDLE_EOF
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel.FindClose(handle)
+
+
+def _copy_global_json_metadata(source, staged, current):
+    try:
+        os.chown(staged, current.st_uid, current.st_gid)
+    except (PermissionError, OSError, AttributeError):
+        pass
+
+    mode = stat.S_IMODE(current.st_mode)
+    if os.name == 'nt':
+        _check_windows_replacement_metadata(source, staged)
+        # A read-only destination cannot be replaced on Windows. Reject it before
+        # marking the temp file read-only too, which would also prevent cleanup.
+        if not mode & stat.S_IWRITE:
+            raise PermissionError('Windows global settings are read-only; preserved')
+    os.chmod(staged, mode)
+    if sys.platform == 'darwin':
+        import ctypes
+        copyfile = ctypes.CDLL(None, use_errno=True).copyfile
+        acl_and_xattr_no_follow = (1 << 0) | (1 << 2) | (1 << 18) | (1 << 19)
+        if copyfile(os.fsencode(source), os.fsencode(staged), None, acl_and_xattr_no_follow) != 0:
+            raise OSError(ctypes.get_errno(), 'Cannot preserve global settings ACL or extended attributes')
+    elif hasattr(os, 'listxattr'):
+        attributes = set(os.listxattr(source, follow_symlinks=False))
+        for name in set(os.listxattr(staged)) - attributes:
+            os.removexattr(staged, name)
+        for name in attributes:
+            value = os.getxattr(source, name, follow_symlinks=False)
+            os.setxattr(staged, name, value)
+
+
+def _global_json_stat(path):
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(current.st_mode):
+        raise OSError('Global settings changed before write')
+    return current
+
+
+def _global_json_stamp(current):
+    if current is None:
+        return None
+    return (current.st_dev, current.st_ino, current.st_nlink, current.st_mode,
+            current.st_mtime_ns, current.st_ctime_ns, current.st_size)
+
+
 def _write_global_json(path, data):
     """Update global settings through symlinks and keep shared inodes intact."""
     from beyin_v3_sync import atomic
-    target = Path(path).resolve()
+    path = Path(path)
+    target = path.resolve()
     text = json.dumps(data, indent=2, ensure_ascii=False) + '\n'
-    try:
-        current = target.lstat()
-    except FileNotFoundError:
-        current = None
+    current = _global_json_stat(target)
+    stamp = _global_json_stamp(current)
+
+    def check_target():
+        if path.resolve() != target or _global_json_stamp(_global_json_stat(target)) != stamp:
+            raise OSError('Global settings changed before write')
+
     if current is not None and current.st_nlink > 1:
         payload = text.encode('utf-8')
         with target.open('r+b', buffering=0) as handle:
-            if not os.path.samestat(current, os.fstat(handle.fileno())):
-                raise OSError('Global settings changed before write')
             original = handle.read()
+            if _global_json_stamp(os.fstat(handle.fileno())) != stamp:
+                raise OSError('Global settings changed before write')
+            check_target()
             handle.seek(0)
             handle.truncate(0)
             try:
@@ -388,7 +484,13 @@ def _write_global_json(path, data):
                 os.fsync(handle.fileno())
                 raise
         return
-    atomic(target, text)
+
+    def prepare_replace(staged):
+        check_target()
+        if current is not None:
+            _copy_global_json_metadata(target, staged, current)
+
+    atomic(target, text, prepare_replace=prepare_replace, before_replace=check_target)
 
 
 def hook_arguments(command: str) -> list:
