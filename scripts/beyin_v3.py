@@ -1843,7 +1843,9 @@ def main(argv=None, return_result=False):
                 result['receipt_coverage'] = coverage
             from beyin_v3_projections import knowledge_freshness, check_instruction_conflicts
             try:  # a recency report must never hide the rest of doctor, conflicts included
-                if store is not None:
+                if store is None:
+                    result['knowledge_freshness'] = knowledge_freshness(vault, None, now=time.time())
+                else:
                     with store._connect() as db:
                         result['knowledge_freshness'] = knowledge_freshness(vault, db, now=time.time())
             except Exception as exc:
@@ -1863,6 +1865,8 @@ def main(argv=None, return_result=False):
                                       'rejected_dependent_count': 0, 'rejected_dependents': [],
                                       'ambiguous_rejected_link_count': 0, 'ambiguous_rejected_links': [],
                                       'truncated': False}
+                result['supersedes'] = {'dead_count': 0, 'dead': [], 'truncated': False}
+                result['review'] = {'due_count': 0, 'due': [], 'invalid_count': 0, 'invalid': [], 'truncated': False}
             try:
                 if store is not None:
                     result['task_completion'] = load_sync().reader(store).completion_health()

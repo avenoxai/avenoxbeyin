@@ -1186,7 +1186,7 @@ def is_distilled_note(relative):
 
 
 def knowledge_freshness(vault, db, now=None):
-    """Diagnose knowledge distillation recency and count receipts since then."""
+    """Diagnose knowledge distillation recency, with no receipts when no index exists."""
     if now is None:
         now = time.time()
     vault = Path(vault)
@@ -1231,7 +1231,8 @@ def knowledge_freshness(vault, db, now=None):
     total_receipts = 0
     receipts_since = 0
     # A store error propagates: doctor reports "unavailable" instead of a silent zero.
-    for (payload,) in db.execute('SELECT payload FROM receipts'):
+    receipts = db.execute('SELECT payload FROM receipts') if db is not None else ()
+    for (payload,) in receipts:
         try:
             receipt = json.loads(payload)
             created = datetime.fromisoformat(receipt['created_at']).timestamp()

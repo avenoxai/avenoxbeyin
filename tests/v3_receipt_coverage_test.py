@@ -149,6 +149,9 @@ class ReceiptCoverageTest(unittest.TestCase):
         doc = json.loads(proc.stdout)
         self.assertIsNone(doc.get('potential_missing_receipts'))
         self.assertIsNone(doc.get('receipt_coverage'))
+        self.assertEqual(doc['knowledge_freshness']['total_receipts'], 0)
+        self.assertEqual(doc['review']['due_count'], 0)
+        self.assertEqual(doc['supersedes']['dead_count'], 0)
         # Doctor reads through its own store; it must not build a SyncEngine and its journal.
         self.assertFalse((self.state / 'markdown-journal').exists())
         self.assertEqual(list(self.state.iterdir()), [])
