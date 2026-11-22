@@ -1334,6 +1334,7 @@ def parser(note_namespace=None, is_json=False):
     bridge.add_argument("--print-config", action="store_true", help="Print global hook JSON without installing")
     bridge.add_argument("--event", choices=("SessionStart", "Stop", "PreCompact", "SessionEnd"), action="append")
     bridge.add_argument("--context-chars", type=int, default=1500)
+    bridge.add_argument("--replace", action="store_true", help="Overwrite an existing global bridge owned by another vault")
     learn = sub.add_parser("learn", help="Stage or inspect learning candidates before distillation (RFC #368)")
     learn.add_argument("--candidate", help="Candidate learning content text")
     learn.add_argument("--source", default="", help="Source file or note path linking to this learning")
@@ -1480,12 +1481,12 @@ def main(argv=None, return_result=False):
                 if not events:
                     argument_parser.error("Antigravity offers only SessionStart and Stop")
             if args.uninstall:
-                result = bridge_mod.uninstall_bridge(args.harness)
+                result = bridge_mod.uninstall_bridge(args.harness, state=state)
             elif args.install:
                 if not args.project_root:
                     argument_parser.error("--project-root is required with --install")
                 roots = [p.expanduser().resolve() for p in args.project_root]
-                result = bridge_mod.install_bridge(vault, state, args.harness, roots, events, args.context_chars)
+                result = bridge_mod.install_bridge(vault, state, args.harness, roots, events, args.context_chars, replace=args.replace)
             elif args.print_config:
                 if not args.project_root:
                     argument_parser.error("--project-root is required with --print-config")

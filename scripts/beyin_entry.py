@@ -799,7 +799,10 @@ def human_result(result, command, installed_version=None):
                 lines.append('  Global yonerge: ' + plain_text(result['gemini_md']))
             if result.get('project_roots'):
                 lines.append('  Kapsanan proje kokleri: ' + ', '.join(plain_text(r) for r in result['project_roots']))
-            lines.append('Mevcut kullanici ayarlari korundu; .bak yedegi alindi.')
+            if result.get('replaced_owner'):
+                lines.append('Baska bir kasaya ait kopru ezildi (' + plain_text(result['replaced_owner']) + '); .bak yedegi alindi.')
+            else:
+                lines.append('Mevcut kullanici ayarlari korundu; .bak yedegi alindi.')
             return '\n'.join(lines)
         elif status == 'uninstalled':
             lines = ['Global kopru kaldirildi (' + harness + '):']

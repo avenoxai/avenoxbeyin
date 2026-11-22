@@ -496,6 +496,51 @@ class BridgeTest(unittest.TestCase):
         bridge.uninstall_bridge('claude', home=self.home)
         self.assertEqual(json.loads(target.read_text(encoding='utf-8')), {'hooks': {'PostToolUse': [custom]}})
 
+    def test_multivault_bridge_ownership_and_replace(self):
+        other_vault = self.root / 'OtherVault'
+        other_state = self.root / 'other_state'
+        other_vault.mkdir()
+        other_state.mkdir()
+        target = bridge.global_hook_path('claude', home=self.home)
+        custom = {'matcher': 'Edit', 'hooks': [{'type': 'command', 'command': 'echo custom'}]}
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps({'hooks': {'PostToolUse': [custom]}}), encoding='utf-8')
+
+        # 1. Vault A installs bridge
+        bridge.install_bridge(self.vault, self.state, 'claude', [self.project], home=self.home)
+
+        # 2. Vault B tries to install without replace -> ValueError
+        with self.assertRaises(ValueError) as ctx:
+            bridge.install_bridge(other_vault, other_state, 'claude', [self.project], home=self.home)
+        self.assertIn('already owned by another vault', str(ctx.exception))
+
+        # 3. Vault B uninstalling without owning should remove 0 handlers and leave Vault A intact
+        un = bridge.uninstall_bridge('claude', state=other_state, home=self.home)
+        self.assertEqual(un['removed_count'], 0)
+        owner_info = bridge.bridge_owner('claude', state=self.state, home=self.home)
+        self.assertEqual(owner_info['state'], 'mine')
+
+        # 4. Vault B installs with replace=True -> replaces Vault A's handlers and returns replaced_owner
+        res = bridge.install_bridge(other_vault, other_state, 'claude', [self.project], replace=True, home=self.home)
+        self.assertEqual(res['status'], 'installed')
+        self.assertEqual(res.get('replaced_owner'), str(self.state.resolve()))
+        owner_info_b = bridge.bridge_owner('claude', state=other_state, home=self.home)
+        self.assertEqual(owner_info_b['state'], 'mine')
+        owner_info_a = bridge.bridge_owner('claude', state=self.state, home=self.home)
+        self.assertEqual(owner_info_a['state'], 'other')
+        self.assertEqual(owner_info_a.get('owner_state'), str(other_state.resolve()))
+
+        # 5. OpenCode multi-vault ownership
+        bridge.install_bridge(self.vault, self.state, 'opencode', [self.project], home=self.home)
+        with self.assertRaises(ValueError):
+            bridge.install_bridge(other_vault, other_state, 'opencode', [self.project], home=self.home)
+        un_opencode = bridge.uninstall_bridge('opencode', state=other_state, home=self.home)
+        self.assertEqual(un_opencode['removed_count'], 0)
+        opencode_owner = bridge.bridge_owner('opencode', state=self.state, home=self.home)
+        self.assertEqual(opencode_owner['state'], 'mine')
+        res_opencode_replace = bridge.install_bridge(other_vault, other_state, 'opencode', [self.project], replace=True, home=self.home)
+        self.assertEqual(res_opencode_replace.get('replaced_owner'), str(self.state.resolve()))
+
     def test_cli_print_config_keeps_the_selected_events(self):
         base = [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault), '--state', str(self.state),
                 'bridge', '--harness', 'claude', '--project-root', str(self.project), '--print-config']
