@@ -9021,7 +9021,10 @@ def _agent_jobs(vault, state):
         if _agent_reparse(entry) or not entry.is_dir():
             continue
         try:
-            jobs.append(_agent_load_job(vault, state, entry.name))
+            job = _agent_load_job(vault, state, entry.name, check_card=False)
+            if job['state'] in AGENT_ACTIVE:
+                _agent_card_path(vault, job)
+            jobs.append(job)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             _agent_log(state, 'worker', 'Is kaydi okunamadi: ' + entry.name + ': ' + type(exc).__name__)
     return sorted(jobs, key=lambda item: (item.get('created_ns', 0), item['id']))
@@ -9032,6 +9035,27 @@ def _agent_card_path(vault, job):
     if path.stem != job['card_id'] or not path.is_file():
         raise ValueError('Ajan kart yolu degisti.')
     return path
+
+
+def _agent_find_renamed_card(vault, state, job):
+    inbox_dir = _agent_no_links(inbox(vault, state))
+    if not inbox_dir.is_dir():
+        return None
+    matches = []
+    for entry in inbox_dir.iterdir():
+        if _agent_reparse(entry) or not entry.is_file() or entry.suffix.lower() != '.md':
+            continue
+        try:
+            meta, _ = read_card(entry)
+            if meta.get('ajan_isi') == job['id']:
+                rel = entry.resolve().relative_to(Path(vault).resolve())
+                checked = _agent_checked_path(Path(vault).resolve(), _agent_parts(rel.as_posix()))
+                matches.append(checked)
+        except (OSError, ValueError):
+            continue
+    if len(matches) == 1:
+        return matches[0]
+    return None
 
 
 def _agent_update_card(vault, job, status, reason='', **fields):
@@ -10088,16 +10112,33 @@ def _agent_worker(vault, state):
                     jobs = _agent_jobs(vault, state)
                     for job in jobs:
                         if job.get('card_reconcile') and job['state'] not in AGENT_ACTIVE:
+                            target_path = None
                             try:
-                                current, _body = read_card(_agent_card_path(vault, job))
-                                if current.get('ajan_isi') == job['id']:
-                                    _agent_end(vault, state, job, job['state'], job['result_summary'])
-                                else:
-                                    # A later owner or a pre-commit crash: keep the current card intact.
-                                    job['card_reconcile'] = False
-                                    _agent_json(_agent_job_dir(vault, state, job['id']) / 'job.json', job)
+                                target_path = _agent_card_path(vault, job)
                             except (OSError, ValueError):
-                                pass
+                                renamed = _agent_find_renamed_card(vault, state, job)
+                                if renamed is not None:
+                                    target_path = renamed
+                                    job['card_path'] = renamed.relative_to(Path(vault).resolve()).as_posix()
+                                    job['card_id'] = renamed.stem
+                                    _agent_json(_agent_job_dir(vault, state, job['id']) / 'job.json', job)
+                                else:
+                                    orig_target = Path(vault).resolve() / Path(*_agent_parts(job['card_path']))
+                                    if not orig_target.exists():
+                                        job['card_reconcile'] = False
+                                        _agent_json(_agent_job_dir(vault, state, job['id']) / 'job.json', job)
+                                        _agent_log(state, job['card_id'], 'Yetim kart temizligi yapildi; kart diskte bulunamadi.')
+                            if target_path is not None:
+                                try:
+                                    current, _body = read_card(target_path)
+                                    if current.get('ajan_isi') == job['id']:
+                                        _agent_end(vault, state, job, job['state'], job['result_summary'])
+                                    else:
+                                        # A later owner or a pre-commit crash: keep the current card intact.
+                                        job['card_reconcile'] = False
+                                        _agent_json(_agent_job_dir(vault, state, job['id']) / 'job.json', job)
+                                except (OSError, ValueError):
+                                    pass
                     stale = [item for item in jobs if item['state'] in ('running', 'preparing')]
                     for job in stale:
                         reason = 'Onceki calisan kesildi veya surec kimligi eski; '
@@ -12716,8 +12757,8 @@ def _agent_batch_jobs(vault, state):
                 if entry.is_dir():
                     job = _agent_load_job(vault, state, entry.name, check_card=False)
                     # A finished job whose card was later renamed, moved or deleted holds no
-                    # queue slot and owns no card. Active or unreconciled jobs still need theirs.
-                    if job['state'] in AGENT_ACTIVE or job.get('card_reconcile'):
+                    # queue slot and owns no card. Active jobs still need theirs.
+                    if job['state'] in AGENT_ACTIVE:
                         _agent_card_path(vault, job)
                     jobs.append(job)
             except (OSError, ValueError, KeyError, TypeError) as exc:
