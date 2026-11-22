@@ -184,5 +184,21 @@ class TaskDuePriorityTest(unittest.TestCase):
         self.assertNotIn('knowledge/arch.md', output)
 
 
+    def test_due_task_unifies_terminal_statuses_and_durum(self):
+        # Issue #761: _status_word should read durum and unify closed statuses with triage/hygiene
+        today = '2026-10-21'
+        # Closed task with status: bitti should not be due
+        task_bitti = {'kind': 'task', 'source': 'tasks/bitti.md', 'status': 'bitti', 'due_at': '2026-10-20'}
+        self.assertFalse(is_due_task(task_bitti, today))
+
+        # Closed task with durum: tamamlandi should not be due
+        task_durum_closed = {'kind': 'task', 'source': 'tasks/durum-closed.md', 'durum': 'tamamlandi', 'due_at': '2026-10-20'}
+        self.assertFalse(is_due_task(task_durum_closed, today))
+
+        # Active task with durum: active should be recognized as due
+        task_durum_active = {'kind': 'task', 'source': 'tasks/durum-active.md', 'durum': 'active', 'due_at': '2026-10-20'}
+        self.assertTrue(is_due_task(task_durum_active, today))
+
+
 if __name__ == '__main__':
     unittest.main()

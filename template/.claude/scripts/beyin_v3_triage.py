@@ -36,7 +36,10 @@ except ImportError:
         return {'🔮 850-Companion', 'Companion', '850-Companion'}
 
     INBOX_WORDS = re.compile(r'(?:inbox|inboxes|gelenkutusu|gelenkutum)')
-    TERMINAL_STATUSES = {'done', 'cancelled', 'kapandi'}
+    TERMINAL_STATUSES = frozenset((
+        'done', 'cancelled', 'canceled', 'kapandi', 'completed',
+        'tamamlandi', 'iptal', 'closed', 'bitti', 'cozuldu', 'resolved'
+    ))
     CODE_DIRS = {'node_modules', 'venv', '.venv', '__pycache__'}
 
     def _inbox_folder(name, configured=None):
@@ -49,7 +52,10 @@ except ImportError:
     def inbox_report(vault, state=None, max_items=10, max_days=7, now=None, folders=None):
         return {'folders': [], 'attention': False, 'max_items': max_items, 'max_days': max_days}
 
-EXTENDED_TERMINAL_STATUSES = frozenset(TERMINAL_STATUSES | {'completed', 'tamamlandi', 'iptal', 'closed'})
+EXTENDED_TERMINAL_STATUSES = frozenset(TERMINAL_STATUSES | {
+    'done', 'cancelled', 'canceled', 'kapandi', 'completed',
+    'tamamlandi', 'iptal', 'closed', 'bitti', 'cozuldu', 'resolved'
+})
 
 DATE_PATTERN = re.compile(r'(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?')
 
