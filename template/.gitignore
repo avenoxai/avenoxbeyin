@@ -25,3 +25,24 @@
 .obsidian/cache
 __pycache__/
 *.pyc
+
+# Machine-local hooks and installers (generated per machine by beyin.py init)
+.beyin-runtime.json
+Beyni Guncelle.cmd
+.agents/hooks.json
+.codex/hooks.json
+.codex/config.toml
+.kiro/hooks/beyin-v3.json
+.claude/hermes-plugin/__init__.py
+.opencode/plugins/beyin-v3.js
+.omp/hooks/pre/beyin-v3.ts
+.claude/scripts/compile.py
+.claude/scripts/flush.py
+.claude/hooks/session-start.sh
+.claude/hooks/session-start.ps1
+.claude/hooks/session-end.sh
+.claude/hooks/session-end.ps1
+.claude/hooks/pre-compact.sh
+.claude/hooks/pre-compact.ps1
+.claude/hooks/prompt-counter.sh
+.claude/hooks/prompt-counter.ps1
