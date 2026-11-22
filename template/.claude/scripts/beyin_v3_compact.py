@@ -735,7 +735,7 @@ def _compact_files(vault, target, configured, dry_run=False, now=None, state=Non
             continue
         archive_name = f'{Path(name).stem}-{month}.md'
         archive_relative = f'{relative}/{ARCHIVE_DIRECTORY}/{archive_name}'
-        result = plan(text, name, limit, POINTER.format(archive_relative), active_sessions=active_keys)
+        result = plan(text, name, limit, POINTER.format(archive_relative), active_keys)
         report.update(archive=archive_relative)
         if result is None:
             backup = text
@@ -793,7 +793,7 @@ def _compact_files(vault, target, configured, dry_run=False, now=None, state=Non
             # turn a retry into a new archive operation; changed payloads still differ.
             identity = _hash(json.dumps([source, _hash(result['archive'])], ensure_ascii=False))
             committed = moves.get(identity)
-            replanned = (plan(text, name, limit, POINTER.format(committed[1]), active_sessions=active_keys)
+            replanned = (plan(text, name, limit, POINTER.format(committed[1]), active_keys)
                          if committed is not None and committed[0] == result['archive'] else None)
             if replanned is not None and replanned['archive'] == result['archive']:
                 # A retry in another month must point at the actual committed
