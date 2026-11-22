@@ -23,7 +23,7 @@ import re
 import time
 import unicodedata
 
-from beyin_v3_companion import LIMITS, directory, read_limits
+from beyin_v3_companion import LIMITS, directory, read_limits, _project_companion_dirs
 from beyin_v3_notes import NoteConflict, vault_locked
 
 LINE = re.compile(r'[^\n]*\n|[^\n]+$')
@@ -669,11 +669,16 @@ def compact(vault, state, dry_run=False, now=None):
         # could archive far more than they wanted.
         return {'status': 'needs_attention', 'files': {}, 'limits_file': 'invalid',
                 'reason': 'companion-limits.json in the runtime state is invalid; nothing moved. Fix or remove it first.'}
+    project_dirs = _project_companion_dirs(vault, state=state)
     if dry_run:
-        return _compact_files(vault, target, configured, dry_run=True, now=now)
+        res = _compact_files(vault, target, configured, dry_run=True, now=now)
+        for pdir in project_dirs:
+            _compact_project_threads(vault, pdir, configured, res['files'], dry_run=True, now=now)
+        _recompute_status(res)
+        return res
     # An uninitialized vault has nothing to compact and should not gain a companion
     # directory merely because the lock lives beside the files it protects.
-    if not target.is_dir():
+    if not target.is_dir() and not project_dirs:
         return {'status': 'within_limit', 'directory': target.relative_to(vault).as_posix(), 'files': {},
                 'dry_run': False, 'limits_file': 'ok', 'deleted_chars': 0, 'model_calls': False}
     with ExitStack() as guard:
@@ -688,11 +693,169 @@ def compact(vault, state, dry_run=False, now=None):
             return {'status': 'needs_attention', 'reason': 'cannot acquire note lock: ' + str(exc), 'files': {}}
         try:
             with _compact_lock(target):
-                return _compact_files(vault, target, configured, dry_run=False, now=now)
+                res = _compact_files(vault, target, configured, dry_run=False, now=now)
+                for pdir in project_dirs:
+                    with _compact_lock(pdir):
+                        _compact_project_threads(vault, pdir, configured, res['files'], dry_run=False, now=now)
+                _recompute_status(res)
+                return res
         except TimeoutError as exc:
             return {'status': 'conflict', 'reason': str(exc), 'files': {}}
         except _LockError as exc:
             return {'status': 'needs_attention', 'reason': str(exc), 'files': {}}
+
+
+def _recompute_status(result):
+    files = result['files']
+    statuses = {entry['status'] for entry in files.values()}
+    still_over = any(entry.get('within_limit_after') is False for entry in files.values())
+    dry_run = result.get('dry_run', False)
+    status = ('conflict' if 'conflict' in statuses else
+              'needs_attention' if 'needs_attention' in statuses else
+              'dry_run' if dry_run else
+              'needs_rewrite' if 'needs_rewrite' in statuses or still_over else
+              'compacted' if 'compacted' in statuses else 'within_limit')
+    result['status'] = status
+
+
+def _compact_project_threads(vault, pdir, configured, files, dry_run=False, now=None):
+    name = 'Threads.md'
+    path = pdir / name
+    if path.is_symlink() or not path.is_file():
+        return
+    limit = configured.get(name, LIMITS[name])
+    rel_key = f"{pdir.relative_to(vault).as_posix()}/{name}"
+    _inside(path, vault)
+    raw = path.read_bytes()
+    try:
+        text = raw.decode('utf-8')
+    except UnicodeDecodeError:
+        files[rel_key] = {'status': 'needs_attention', 'reason': 'not UTF-8; nothing moved', 'limit': limit}
+        return
+    report = {'chars': len(text), 'limit': limit}
+    if not limit or len(text) <= limit:
+        return
+    now = now or datetime.now(timezone.utc)
+    month = now.strftime('%Y-%m')
+    relative = pdir.relative_to(vault).as_posix()
+    archive_name = f'{Path(name).stem}-{month}.md'
+    archive_relative = f'{relative}/{ARCHIVE_DIRECTORY}/{archive_name}'
+    result = plan(text, name, limit, POINTER.format(archive_relative))
+    report.update(archive=archive_relative)
+    if result is None:
+        backup = text
+    else:
+        report.update(chars_after=len(result['live']), moved_chars=result['moved_chars'],
+                      moved_entries=result['moved_entries'], moved_history=result['moved_history'],
+                      within_limit_after=len(result['live']) <= limit)
+        backup = None if report['within_limit_after'] else result['live']
+    found = decisions(text, result['moved_lines']) if result is not None and _decision_source_allowed(text) else []
+    if found:
+        try:
+            _decision_ledger_check(pdir, vault)
+        except (ValueError, UnicodeError, OSError) as exc:
+            files[rel_key] = dict(report, status='needs_attention', reason=str(exc) + '; nothing moved')
+            return
+    if dry_run:
+        if found:
+            report.update(decisions_planned=len(found))
+        if backup is not None:
+            report.update(backup='planned')
+        if result is None:
+            files[rel_key] = dict(report, status='needs_rewrite',
+                                  reason='No Previous/Closed section and no older dated entry to move; a real run backs '
+                                         'up the full file to the archive first. Then rewrite the file within the limit.')
+        else:
+            files[rel_key] = dict(report, status='planned')
+        return
+    archive = pdir / ARCHIVE_DIRECTORY / archive_name
+    _inside(archive, vault)
+    previous = archive.read_bytes() if archive.exists() else None
+    try:
+        existing = previous.decode('utf-8') if previous is not None else None
+    except UnicodeDecodeError:
+        files[rel_key] = dict(report, status='needs_attention', reason='existing archive is not UTF-8; nothing moved')
+        return
+    newline = result['newline'] if result else '\r\n' if '\r\n' in text else '\n'
+    heading = '## ' + now.strftime('%Y-%m-%d %H:%M UTC') + ', ' + name + ', '
+    source = _source(pdir, name, vault)
+    locations = {}
+    try:
+        moves, _ = _archive_history(pdir, name, vault, now, backup, locations, current=existing)
+    except (ValueError, UnicodeError, OSError) as exc:
+        files[rel_key] = dict(report, status='needs_attention', reason=str(exc) + '; nothing moved')
+        return
+    added = []
+    if result is not None:
+        identity = _hash(json.dumps([source, _hash(result['archive'])], ensure_ascii=False))
+        committed = moves.get(identity)
+        replanned = (plan(text, name, limit, POINTER.format(committed[1]))
+                     if committed is not None and committed[0] == result['archive'] else None)
+        if replanned is not None and replanned['archive'] == result['archive']:
+            archive_relative = committed[1]
+            result = replanned
+            report.update(archive=archive_relative, chars_after=len(result['live']),
+                          within_limit_after=len(result['live']) <= limit)
+            backup = None if report['within_limit_after'] else result['live']
+        else:
+            added.append(newline + heading + str(result['moved_chars']) + ' karakter taşındı' + newline + newline
+                         + _record('move', source, identity, result['archive'], newline))
+    if backup is not None:
+        previous_backup = _previous_backup(pdir, vault, name, now, backup, locations)
+        if previous_backup is not None:
+            report.update(backup='exists', backup_archive=previous_backup)
+            if result is None:
+                report.update(archive=previous_backup)
+        else:
+            kind, record = _backup_record(backup, source, existing, newline)
+            marker = (BACKUP if kind == 'full' else DELTA_BACKUP).format(len(backup))
+            added.append(newline + heading + marker + newline + newline + record)
+            report.update(backup='written', backup_format=kind, backup_archive=archive.relative_to(vault).as_posix())
+    if added:
+        if existing is None:
+            existing = newline.join([
+                '---', '{"kind": "note", "visibility": "private", "title": "' + name + ' arşivi ' + month + '"}', '---',
+                '# ' + name + ' arşivi: ' + month, '',
+                '`beyin.py companion-compact` bu dosyaya yalnız ekleme yapar. Taşınan metin kelimesi kelimesine '
+                'korunur, hiçbir şey silinmez. `visibility: private` olduğu için otomatik bağlama girmez; '
+                'gerektiğinde bu dosyayı doğrudan aç.', ''])
+        elif not existing.endswith('\n'):
+            existing += newline
+        archive_written = existing + ''.join(added)
+        current_live = path.read_bytes() if path.exists() else None
+        current_archive = archive.read_bytes() if archive.exists() else None
+        if current_live != raw or current_archive != previous:
+            report.pop('backup', None)
+            files[rel_key] = dict(report, status='conflict',
+                                  reason='file changed during compaction; nothing moved, retry')
+            return
+        _write(archive, archive_written)
+        if path.read_bytes() != raw:
+            if archive.exists() and archive.read_bytes() == archive_written.encode('utf-8'):
+                if previous is None:
+                    try:
+                        archive.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                else:
+                    _write(archive, previous.decode('utf-8'))
+            report.pop('backup', None)
+            files[rel_key] = dict(report, status='conflict', reason='file changed during compaction; nothing moved, retry')
+            return
+    elif path.read_bytes() != raw:
+        report.pop('backup', None)
+        files[rel_key] = dict(report, status='conflict', reason='file changed during compaction; nothing moved, retry')
+        return
+    if result is None:
+        files[rel_key] = dict(report, status='needs_rewrite',
+                              reason='No Previous/Closed section and no older dated entry to move; full file backed up to '
+                                     'the archive. Rewrite the file within the limit.')
+        return
+    if found:
+        report.update(decisions_added=_record_decisions(pdir, vault, found, archive_relative, result['newline'],
+                                                        source_relative=rel_key))
+    _write(path, result['live'])
+    files[rel_key] = dict(report, status='compacted')
 
 
 def _compact_files(vault, target, configured, dry_run=False, now=None):

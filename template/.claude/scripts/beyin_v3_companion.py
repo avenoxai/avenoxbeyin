@@ -670,24 +670,68 @@ def _project_companion_dirs(vault, state=None):
         except Exception:
             excluded_keys = frozenset()
     try:
-        from beyin_v3_projects import candidate_project_folders
+        from beyin_v3_projects import candidate_project_folders, read_project_scopes
         from beyin_v3_hygiene import sensitive_source
         from beyin_v3_index import dir_key
+        # 1. Scoped project folders from .beyin-projects.json
+        try:
+            scopes = read_project_scopes(vault)
+            if scopes and scopes.get('folders'):
+                for folder, _ in scopes['folders']:
+                    # Resolve real directory for folder
+                    cur = vault
+                    valid = True
+                    for part in folder.split('/'):
+                        key = dir_key(part)
+                        try:
+                            with os.scandir(cur) as entries:
+                                match = next((e.name for e in entries if e.is_dir() and dir_key(e.name) == key), None)
+                        except OSError:
+                            match = None
+                        if match is None:
+                            valid = False
+                            break
+                        cur = cur / match
+                    if not valid or cur.is_symlink() or not cur.is_dir():
+                        continue
+                    resolved_cur = cur.resolve()
+                    if not resolved_cur.is_relative_to(vault):
+                        continue
+                    identity = (cur.stat().st_dev, cur.stat().st_ino)
+                    if identity in seen_parents:
+                        continue
+                    rel_parts = resolved_cur.relative_to(vault).parts
+                    key_parts = tuple(dir_key(p) for p in rel_parts)
+                    if any(dir_key(p) in excluded_keys for p in rel_parts) or key_parts in excluded_keys:
+                        continue
+                    if sensitive_source((resolved_cur / 'Threads.md').relative_to(vault).as_posix()):
+                        continue
+                    if any((cur / name).is_file() and not (cur / name).is_symlink()
+                           for name in ('Threads.md', 'Last-Session.md', 'Core.md', 'Soul.md')):
+                        seen_parents.add(identity)
+                        dirs.append(cur)
+        except Exception:
+            pass
+
+        # 2. Candidate project parent folders (projects/, 🏰 300-Projects/, etc.)
         for parent_name in candidate_project_folders(vault):
             parent = vault / parent_name
             if parent.is_symlink() or not parent.is_dir():
                 continue
             if not parent.resolve().is_relative_to(vault):
                 continue
-            identity = (parent.stat().st_dev, parent.stat().st_ino)
-            if identity in seen_parents:
+            parent_id = (parent.stat().st_dev, parent.stat().st_ino)
+            if parent_id in seen_parents:
                 continue
-            seen_parents.add(identity)
+            seen_parents.add(parent_id)
             for entry in sorted(parent.iterdir()):
                 if not entry.is_dir() or entry.is_symlink():
                     continue
                 resolved_entry = entry.resolve()
                 if not resolved_entry.is_relative_to(vault):
+                    continue
+                entry_id = (entry.stat().st_dev, entry.stat().st_ino)
+                if entry_id in seen_parents:
                     continue
                 rel_parts = resolved_entry.relative_to(vault).parts
                 key_parts = tuple(dir_key(p) for p in rel_parts)
@@ -697,6 +741,7 @@ def _project_companion_dirs(vault, state=None):
                     continue
                 if any((entry / name).is_file() and not (entry / name).is_symlink()
                        for name in ('Threads.md', 'Last-Session.md', 'Core.md', 'Soul.md')):
+                    seen_parents.add(entry_id)
                     dirs.append(entry)
     except Exception:
         pass
@@ -710,7 +755,7 @@ def hygiene(vault, state=None, names=NAMES, target=None, include_projects=False)
     """
     vault = Path(vault).resolve()
     target = directory(vault) if target is None else target
-    configured, valid = read_limits(state) if state is not None else (dict(DEFAULT_LIMITS), True)
+    configured, valid = read_limits(state) if state is not None else (dict(LIMITS), True)
 
     def scan_dir(dir_path, dir_name):
         """Scan a single directory for companion files and limits."""

@@ -645,6 +645,76 @@ class HygieneCliTest(unittest.TestCase):
         self.assertEqual(last.read_bytes(), before + b'\xff\xfe eski kodlama\n')
         self.assertFalse((self.directory / 'Arşiv').exists())
 
+    def test_project_threads_compact_rotates_closed_threads_to_project_archive(self):
+        # Issue #707: project Threads.md is compacted by companion-compact
+        proj = self.vault / 'projects' / 'alpha'
+        proj.mkdir(parents=True)
+        active_part = '# Threads\n\n## Active Threads\n\n### Thread: Active Work\n**Status:** active\nAktif detay.\n\n'
+        closed_part = '## Closed Threads\n\n### Thread: Old Work\n**Status:** closed 2026-10-15\n' + ('Eski detay satiri.\n' * 500)
+        proj_threads = proj / 'Threads.md'
+        proj_threads.write_text(active_part + closed_part, encoding='utf-8')
+        before_len = len(proj_threads.read_text(encoding='utf-8'))
+        self.assertGreater(before_len, 8000)
+
+        # Dry run does not write
+        plan = self.run_cli('companion-compact', '--dry-run')
+        self.assertIn('projects/alpha/Threads.md', plan['files'])
+        self.assertEqual(plan['files']['projects/alpha/Threads.md']['status'], 'planned')
+        self.assertFalse((proj / 'Arşiv').exists())
+
+        # Real compact moves closed section to projects/alpha/Arşiv/Threads-YYYY-MM.md
+        result = self.run_cli('companion-compact')
+        self.assertIn('projects/alpha/Threads.md', result['files'])
+        self.assertEqual(result['files']['projects/alpha/Threads.md']['status'], 'compacted')
+        after_text = proj_threads.read_text(encoding='utf-8')
+        self.assertLessEqual(len(after_text), 8000)
+        self.assertIn('Active Work', after_text)
+        self.assertNotIn('Old Work', after_text)
+        self.assertIn('Arşivlenen metin: `projects/alpha/Arşiv/Threads-', after_text)
+
+        # Check archive file
+        archives = list((proj / 'Arşiv').glob('Threads-*.md'))
+        self.assertEqual(len(archives), 1)
+        archive_text = archives[0].read_text(encoding='utf-8')
+        self.assertIn('Old Work', archive_text)
+        self.assertIn('visibility: private', archive_text)
+
+    def test_official_template_project_threads_compact(self):
+        # 🏰 300-Projects/<proje>/Threads.md
+        proj = self.vault / '🏰 300-Projects' / 'beta'
+        proj.mkdir(parents=True)
+        active_part = '# Threads\n\n## Active Threads\n\n### Thread: Ongoing\n**Status:** active\nDetay.\n\n'
+        closed_part = '## Closed Threads\n\n### Thread: Finished\n**Status:** closed 2026-10-20\n' + ('Kapanan konu ayrintisi.\n' * 500)
+        proj_threads = proj / 'Threads.md'
+        proj_threads.write_text(active_part + closed_part, encoding='utf-8')
+        self.assertGreater(len(proj_threads.read_text(encoding='utf-8')), 8000)
+
+        result = self.run_cli('companion-compact')
+        self.assertIn('🏰 300-Projects/beta/Threads.md', result['files'])
+        self.assertEqual(result['files']['🏰 300-Projects/beta/Threads.md']['status'], 'compacted')
+        self.assertTrue((proj / 'Arşiv').is_dir())
+        archives = list((proj / 'Arşiv').glob('Threads-*.md'))
+        self.assertEqual(len(archives), 1)
+        self.assertIn('Finished', archives[0].read_text(encoding='utf-8'))
+
+    def test_scoped_project_threads_compact_from_projects_json(self):
+        # Scoped project folder via .beyin-projects.json
+        proj = self.vault / 'custom-projects' / 'gamma'
+        proj.mkdir(parents=True)
+        (self.vault / '.beyin-projects.json').write_text(
+            json.dumps({'folders': {'custom-projects/gamma': 'gamma'}}), encoding='utf-8')
+        active_part = '# Threads\n\n## Active Threads\n\n### Thread: Scoped\n**Status:** active\nDetay.\n\n'
+        closed_part = '## Closed Threads\n\n### Thread: Done Scoped\n**Status:** closed 2026-10-20\n' + ('Detayli aciklama satiri.\n' * 500)
+        proj_threads = proj / 'Threads.md'
+        proj_threads.write_text(active_part + closed_part, encoding='utf-8')
+        self.assertGreater(len(proj_threads.read_text(encoding='utf-8')), 8000)
+
+        result = self.run_cli('companion-compact')
+        self.assertIn('custom-projects/gamma/Threads.md', result['files'])
+        self.assertEqual(result['files']['custom-projects/gamma/Threads.md']['status'], 'compacted')
+        self.assertTrue((proj / 'Arşiv').is_dir())
+
+
 
 class HumanOutputTest(unittest.TestCase):
     @classmethod
@@ -1248,6 +1318,7 @@ class CompactionRaceTest(unittest.TestCase):
         self.assertEqual(rep['status'], 'over_limit')
         self.assertIn('projects/demo/Threads.md', rep['over_limit'])
         self.assertNotIn('projects/secret_proj', rep['project_directories'])
+
 
 
 if __name__ == '__main__':
