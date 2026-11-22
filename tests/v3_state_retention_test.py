@@ -187,6 +187,45 @@ class StateRetentionTest(unittest.TestCase):
         self.assertFalse(any(path.exists() for path in removed))
         self.assertTrue(all(path.exists() for path in kept))
 
+    def test_note_backup_retention_prunes_expired_backups(self):
+        """#772: .beyin-note-write/backups/*.json must be pruned after retention window."""
+        folder = self.vault / '.beyin-note-write' / 'backups'
+        expired = [self.stale(folder / ('0123456789abcdef' * 2 + '.json'), age=retention.NOTE_BACKUP_RETENTION_DAYS * DAY + 3600),
+                   self.stale(folder / ('fedcba9876543210' * 2 + '.json'), age=retention.NOTE_BACKUP_RETENTION_DAYS * DAY + 7200)]
+        kept = [self.stale(folder / ('a' * 32 + '.json'), age=3600),
+                self.stale(folder / ('b' * 32 + '.json'), age=retention.NOTE_BACKUP_RETENTION_DAYS * DAY - 3600),
+                self.stale(folder / 'not-a-backup.json'),
+                self.stale(folder / ('c' * 31 + '.json')),
+                self.stale(folder / ('d' * 33 + '.json')),
+                self.stale(folder / ('E' * 32 + '.json')),  # uppercase rejected
+                self.stale(folder / ('f' * 32 + '.json.tmp')),
+                self.stale(self.vault / 'other' / ('a' * 32 + '.json'))]
+        (folder / ('9' * 32 + '.json')).mkdir()
+        self.assertEqual(retention.expired_note_backups(self.vault), sorted(expired))
+        self.assertEqual(retention.sweep_note_backups(self.vault), len(expired))
+        self.assertFalse(any(path.exists() for path in expired))
+        self.assertTrue(all(path.exists() for path in kept))
+        self.assertEqual(retention.sweep_note_backups(self.vault), 0)
+
+    def test_note_backup_retention_storage_report_and_compact(self):
+        folder = self.vault / '.beyin-note-write' / 'backups'
+        old = self.stale(folder / ('1' * 32 + '.json'), age=retention.NOTE_BACKUP_RETENTION_DAYS * DAY + 3600)
+        fresh = self.stale(folder / ('2' * 32 + '.json'), age=3600)
+        report = retention.storage_report(self.state, vault=self.vault)
+        self.assertEqual(report['expired_note_backups'], 1)
+        plan = retention.compact(self.store, dry_run=True)
+        self.assertEqual(plan['expired_note_backups'], 1)
+        self.assertTrue(old.exists())
+        res = retention.maintain(self.store)
+        self.assertEqual(res['note_backups_removed'], 1)
+        self.assertFalse(old.exists())
+        self.assertTrue(fresh.exists())
+        again = self.stale(folder / ('3' * 32 + '.json'), age=retention.NOTE_BACKUP_RETENTION_DAYS * DAY + 3600)
+        compact_res = retention.compact(self.store)
+        self.assertEqual(compact_res['note_backups_removed'], 1)
+        self.assertFalse(again.exists())
+        self.assertTrue(fresh.exists())
+
     @unittest.skipUnless(os.name == 'posix', 'cleanup fails closed without POSIX directory descriptors')
     def test_jev_cache_sweep_removes_only_expired_entries(self):
         """#772: expired Jev score entries never leave `.cache/jev` unless the same request returns."""

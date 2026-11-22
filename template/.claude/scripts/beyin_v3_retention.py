@@ -33,6 +33,10 @@ Stale temp files are removed only in the state root and the two hook folders, on
 when their names match a temp name this runtime itself writes there, and only when
 they are older than TEMP_MAX_AGE_SECONDS.
 
+Expired note-edit backups (#772) in `<vault>/.beyin-note-write/backups/<uuid4_hex>.json`
+are swept when older than NOTE_BACKUP_RETENTION_DAYS. They are preserved under
+`note-edit` as a recovery net, but without retention they grew without bound.
+
 Expired Jev score entries (#772) go the same way: `<state>/.cache/jev/<sha256>.json`
 is replaced only when the same request returns, so entries of requests that never
 repeat stayed forever. `cache_ttl` is validated to at most JEV_CACHE_MAX_AGE_SECONDS,
@@ -50,6 +54,7 @@ import time
 
 EVENT_RETENTION_DAYS = 30
 EVENTS_PER_RECORD = 10
+NOTE_BACKUP_RETENTION_DAYS = 14
 PRUNE_BATCH = 500
 COMPACT_BATCH = 5000
 CHECK_INTERVAL_SECONDS = 86400
@@ -75,6 +80,7 @@ _FOLDER_TEMP = {
 }
 
 _JEV_CACHE_ENTRY = re.compile(r'[0-9a-f]{64}\.json')
+_NOTE_BACKUP_ENTRY = re.compile(r'[0-9a-f]{32}\.json')
 
 # An event may go when it is not the table's newest row, is old or beyond its
 # record's newest EVENTS_PER_RECORD, and is not the newest event of a current record.
@@ -292,11 +298,51 @@ def sweep_jev_cache(state, now=None):
     return removed
 
 
+def expired_note_backups(vault, now=None):
+    """Note-edit backup files older than NOTE_BACKUP_RETENTION_DAYS; never follows links."""
+    now = time.time() if now is None else now
+    folder = Path(vault) / '.beyin-note-write' / 'backups'
+    try:
+        info = os.lstat(folder)
+        if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_reparse_tag', 0) or not stat.S_ISDIR(info.st_mode):
+            return []
+        parent_info = os.lstat(folder.parent)
+        if stat.S_ISLNK(parent_info.st_mode) or getattr(parent_info, 'st_reparse_tag', 0):
+            return []
+        with os.scandir(folder) as listing:
+            entries = list(listing)
+    except OSError:
+        return []
+    found = []
+    threshold = now - NOTE_BACKUP_RETENTION_DAYS * 86400
+    for entry in entries:
+        if not _NOTE_BACKUP_ENTRY.fullmatch(entry.name):
+            continue
+        try:
+            item_info = os.lstat(entry.path)
+            if stat.S_ISREG(item_info.st_mode) and not getattr(item_info, 'st_reparse_tag', 0) and item_info.st_mtime <= threshold:
+                found.append(Path(entry.path))
+        except OSError:
+            continue
+    return sorted(found)
+
+
+def sweep_note_backups(vault, now=None):
+    removed = 0
+    for path in expired_note_backups(vault, now):
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
 def maintain(store, now=None, batch=PRUNE_BATCH):
     """Bounded background maintenance for the queue worker; throttled to once a day."""
     now = time.time() if now is None else now
     result = {'status': 'done', 'events_removed': 0, 'pages_freed': 0, 'temp_files_removed': 0,
-              'jev_cache_removed': 0}
+              'jev_cache_removed': 0, 'note_backups_removed': 0}
     try:
         with store._connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -318,6 +364,9 @@ def maintain(store, now=None, batch=PRUNE_BATCH):
         return dict(result, status='busy')
     result['temp_files_removed'] = sweep_temp_files(store.state_dir, now)
     result['jev_cache_removed'] = sweep_jev_cache(store.state_dir, now)
+    vault_root = getattr(store, 'vault_root', None)
+    if vault_root:
+        result['note_backups_removed'] = sweep_note_backups(vault_root, now)
     return result
 
 
@@ -335,12 +384,16 @@ def compact(store, dry_run=False, now=None):
     """Explicit `state-compact`: prune everything due now, sweep temp files, then VACUUM."""
     now = time.time() if now is None else now
     before = _sizes(store.database)
+    vault_root = getattr(store, 'vault_root', None)
     if dry_run:
         with store._connect() as db:
             count, size = prunable_events(db, now)
-        return dict(before, status='planned', events_prunable=count, event_bytes_prunable=size,
-                    stale_temp_files=len(stale_temp_files(store.state_dir, now)),
-                    expired_jev_cache=len(expired_jev_cache(store.state_dir, now)))
+        res = dict(before, status='planned', events_prunable=count, event_bytes_prunable=size,
+                   stale_temp_files=len(stale_temp_files(store.state_dir, now)),
+                   expired_jev_cache=len(expired_jev_cache(store.state_dir, now)))
+        if vault_root:
+            res['expired_note_backups'] = len(expired_note_backups(vault_root, now))
+        return res
     result = {'status': 'compacted', 'events_removed': 0, 'database_bytes_before': before['database_bytes']}
     try:
         while True:
@@ -359,6 +412,8 @@ def compact(store, dry_run=False, now=None):
         result.update(status='busy', vacuum='skipped')  # the uncommitted batch rolled back whole
     result['temp_files_removed'] = sweep_temp_files(store.state_dir, now)
     result['jev_cache_removed'] = sweep_jev_cache(store.state_dir, now)
+    if vault_root:
+        result['note_backups_removed'] = sweep_note_backups(vault_root, now)
     if result['status'] == 'compacted':
         try:
             with closing(sqlite3.connect(store.database, timeout=store.busy_timeout, isolation_level=None)) as db:
@@ -375,13 +430,15 @@ def compact(store, dry_run=False, now=None):
     return result
 
 
-def storage_report(state, now=None):
+def storage_report(state, now=None, vault=None):
     """Doctor's read-only view: sizes, event count and leftover temp files."""
     state = Path(state)
     database = state / 'memory.sqlite3'
     report = {'stale_temp_files': len(stale_temp_files(state, now)),
               'expired_jev_cache': len(expired_jev_cache(state, now)),
               'event_retention': {'days': EVENT_RETENTION_DAYS, 'per_record': EVENTS_PER_RECORD}}
+    if vault is not None:
+        report['expired_note_backups'] = len(expired_note_backups(vault, now))
     if database.is_symlink() or not database.is_file():
         return dict(report, status='absent')
     report.update(_sizes(database))
