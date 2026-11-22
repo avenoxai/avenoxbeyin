@@ -549,6 +549,59 @@ def _hook_arguments(command: str) -> list:
     return hook_arguments(command)
 
 
+def _planned_plugins(vault: Path, state: Path | None = None) -> dict[str, bytes]:
+    for cand in (
+        vault / ".claude/scripts",
+        Path(__file__).resolve().parent,
+        Path(__file__).resolve().parents[1] / "template/.claude/scripts",
+    ):
+        if (cand / "beyin_v3_omp.py").is_file():
+            template = cand
+            break
+    else:
+        return {}
+    res = {}
+    for mod_name, file_name in (("opencode", "beyin_v3_opencode.py"), ("omp", "beyin_v3_omp.py"), ("hermes", "beyin_v3_hermes.py")):
+        script_path = template / file_name
+        if script_path.is_file():
+            try:
+                import importlib.util
+                spec = importlib.util.spec_from_file_location("beyin_reconcile_plugin_" + mod_name, script_path)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                res.update(mod.plan_plugin(vault, state))
+            except Exception:
+                pass
+    return res
+
+
+def _extract_plugin_paths(rel_name: str, text: str) -> tuple[str | None, str | None]:
+    py_path, vault_path = None, None
+    if rel_name in (".opencode/plugins/beyin-v3.js", ".omp/hooks/pre/beyin-v3.ts"):
+        m = re.search(r"const PYTHON = process\.env\.BEYIN_PYTHON \|\| (.*)", text)
+        if m:
+            try:
+                py_path = json.loads(m.group(1).strip())
+            except Exception:
+                pass
+    if rel_name == ".omp/hooks/pre/beyin-v3.ts":
+        m = re.search(r"const VAULT = process\.env\.BEYIN_VAULT \|\| (.*)", text)
+        if m:
+            try:
+                vault_path = json.loads(m.group(1).strip())
+            except Exception:
+                pass
+    elif rel_name == ".claude/hermes-plugin/__init__.py":
+        import ast
+        m = re.search(r"VAULT = Path\(os\.environ\.get\([^)]+\) or (.*)\)", text)
+        if m:
+            try:
+                vault_path = ast.literal_eval(m.group(1).strip())
+            except Exception:
+                pass
+    return py_path, vault_path
+
+
 def hook_paths(vault: Path) -> dict:
     """Read-only (#204): hook commands that still name another install location.
 
@@ -610,6 +663,42 @@ def hook_paths(vault: Path) -> dict:
                 entry = {"file": name, "event": event, "reason": reason, "path": value}
                 if entry not in stale:
                     stale.append(entry)
+
+    # Check installed plugin files (OpenCode, OMP, Hermes)
+    try:
+        planned_plugins = _planned_plugins(vault)
+    except Exception:
+        planned_plugins = {}
+
+    for rel_name, expected_bytes in planned_plugins.items():
+        plugin_path = vault / rel_name
+        if not plugin_path.is_file():
+            continue
+        checked += 1
+        try:
+            original_bytes = plugin_path.read_bytes()
+            if original_bytes.replace(b"\r\n", b"\n") != expected_bytes.replace(b"\r\n", b"\n"):
+                text = original_bytes.decode("utf-8", errors="replace")
+                py_path, vault_path = _extract_plugin_paths(rel_name, text)
+                reasons = []
+                if vault_path:
+                    try:
+                        same_vault = Path(vault_path).resolve() == here
+                    except OSError:
+                        same_vault = False
+                    if not same_vault:
+                        reasons.append(("other_vault", vault_path))
+                if py_path:
+                    if (Path(py_path).is_absolute() and not Path(py_path).exists()) or py_path != sys.executable:
+                        reasons.append(("python_missing" if not Path(py_path).exists() else "stale_python", py_path))
+                if not reasons:
+                    reasons.append(("stale_plugin", rel_name))
+                for reason, value in reasons:
+                    entry = {"file": rel_name, "event": "plugin", "reason": reason, "path": value}
+                    if entry not in stale:
+                        stale.append(entry)
+        except OSError:
+            pass
     if not checked and not stale:
         return {"status": "not_installed", "checked": 0}
     result = {"status": "stale" if stale else "ok", "checked": checked}
@@ -709,14 +798,6 @@ def hook_reconcile(vault: Path, state: Path, force: bool = False) -> dict:
         _local_hook_file(vault, vault / name)
     _local_hook_file(state, state / "v3-install.json")
     paths_report = hook_paths(vault)
-    if paths_report.get("status") == "not_installed":
-        return {
-            "status": "not_installed",
-            "checked": 0,
-            "reconciled_count": 0,
-            "files": [],
-            "message": "No installed hooks found to reconcile.",
-        }
 
     expected_state = str(state.resolve())
     runtime_stale = False
@@ -762,7 +843,37 @@ def hook_reconcile(vault: Path, state: Path, force: bool = False) -> dict:
         except Exception:
             pass
 
-    if paths_report.get("status") != "stale" and not force and not runtime_stale and not launchers_stale:
+    try:
+        planned_plugins = _planned_plugins(vault, state)
+    except Exception:
+        planned_plugins = {}
+    plugins_stale = False
+    for pname, pbytes in planned_plugins.items():
+        ppath = vault / pname
+        if ppath.is_file():
+            _local_hook_file(vault, ppath)
+            try:
+                original = ppath.read_bytes()
+                baseline = launcher_baselines.get(pname)
+                # If baseline exists in manifest, verify user didn't customize it
+                if baseline is not None:
+                    if original.replace(b"\r\n", b"\n") == baseline.replace(b"\r\n", b"\n") and original.replace(b"\r\n", b"\n") != pbytes.replace(b"\r\n", b"\n"):
+                        plugins_stale = True
+                elif original.replace(b"\r\n", b"\n") != pbytes.replace(b"\r\n", b"\n"):
+                    plugins_stale = True
+            except OSError:
+                pass
+
+    if paths_report.get("status") == "not_installed" and not runtime_path.is_file() and not any((vault / p).is_file() for p in planned_plugins):
+        return {
+            "status": "not_installed",
+            "checked": 0,
+            "reconciled_count": 0,
+            "files": [],
+            "message": "No installed hooks found to reconcile.",
+        }
+
+    if paths_report.get("status") != "stale" and not force and not runtime_stale and not launchers_stale and not plugins_stale:
         return {
             "status": "ok",
             "checked": paths_report.get("checked", 0),
@@ -967,6 +1078,44 @@ def hook_reconcile(vault: Path, state: Path, force: bool = False) -> dict:
                         "new_command": "",
                         "old_summary": lname,
                         "new_summary": lname,
+                    }],
+                })
+                total_reconciled += 1
+        except OSError:
+            pass
+
+    for pname, expected_bytes in planned_plugins.items():
+        ppath = vault / pname
+        if not ppath.is_file():
+            continue
+        try:
+            original_bytes = ppath.read_bytes()
+            baseline = launcher_baselines.get(pname)
+            if baseline is not None and original_bytes.replace(b"\r\n", b"\n") != baseline.replace(b"\r\n", b"\n"):
+                continue  # A user-edited plugin remains user-owned, including with --force.
+            if original_bytes.replace(b"\r\n", b"\n") != expected_bytes.replace(b"\r\n", b"\n") or force:
+                if ppath.read_bytes() != original_bytes:
+                    raise RuntimeError("Plugin changed during reconciliation; preserved")
+                backup_path = _backup_hook_file(ppath, original_bytes)
+                _local_hook_file(vault, ppath)
+                if ppath.read_bytes() != original_bytes:
+                    raise RuntimeError("Plugin changed after backup; preserved")
+                ppath.write_bytes(expected_bytes)
+                reconciled_originals[pname] = original_bytes
+                old_py, old_v = _extract_plugin_paths(pname, original_bytes.decode("utf-8", errors="replace"))
+                new_py, new_v = _extract_plugin_paths(pname, expected_bytes.decode("utf-8", errors="replace"))
+                old_summary = old_v or old_py or pname
+                new_summary = new_v or new_py or pname
+                reconciled_files.append({
+                    "file": pname,
+                    "backup": str(backup_path.relative_to(vault).as_posix()),
+                    "reconciled": 1,
+                    "changes": [{
+                        "event": "plugin",
+                        "old_command": str(old_summary),
+                        "new_command": str(new_summary),
+                        "old_summary": str(old_summary),
+                        "new_summary": str(new_summary),
                     }],
                 })
                 total_reconciled += 1

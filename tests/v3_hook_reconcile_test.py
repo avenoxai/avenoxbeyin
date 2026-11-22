@@ -390,6 +390,61 @@ class HookReconcileTest(unittest.TestCase):
             self.assertEqual(launcher.read_bytes(), edited)
             self.assertEqual(json.loads(manifest_path.read_text(encoding='utf-8'))['files'][name], baseline)
 
+    def test_reconcile_and_doctor_detect_stale_plugins_and_runtime(self):
+        self.install()
+        # Remove JSON hook files to test plugin-only scenario and verify plugin stale detection
+        for hf in ('.claude/settings.local.json', '.codex/hooks.json', '.agents/hooks.json', '.kiro/hooks/beyin-v3.json'):
+            (self.vault / hf).unlink(missing_ok=True)
+
+        # Move vault to simulate moved vault and stale Python/vault paths in plugins
+        import shutil
+        moved_vault = self.root / 'Moved Plugin Space'
+        shutil.move(str(self.vault), str(moved_vault))
+        self.vault = moved_vault
+
+        # Make sure .beyin-runtime.json points to stale state
+        runtime_path = self.vault / '.beyin-runtime.json'
+        rdata = json.loads(runtime_path.read_text(encoding='utf-8'))
+        rdata['state'] = str(self.root / 'stale-state')
+        runtime_path.write_text(json.dumps(rdata, indent=2) + '\n', encoding='utf-8')
+
+        # Manifest has plugins
+        manifest_path = self.state / 'v3-install.json'
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+        self.assertIn('.opencode/plugins/beyin-v3.js', manifest['files'])
+        self.assertIn('.omp/hooks/pre/beyin-v3.ts', manifest['files'])
+        self.assertIn('.claude/hermes-plugin/__init__.py', manifest['files'])
+
+        # Doctor before reconcile must report stale
+        report = self.doctor_report()
+        self.assertEqual(report['hook_paths']['status'], 'stale')
+        stale_files = {entry['file'] for entry in report['hook_paths']['stale']}
+        self.assertIn('.omp/hooks/pre/beyin-v3.ts', stale_files)
+        self.assertIn('.claude/hermes-plugin/__init__.py', stale_files)
+
+        # Run hook-reconcile
+        recon_res = subprocess.run(
+            [sys.executable, str(self.vault / 'beyin.py'), '--state', str(self.state), 'hook-reconcile'],
+            capture_output=True, text=True, encoding='utf-8', cwd=self.vault, env=self.env, timeout=30
+        )
+        self.assertEqual(recon_res.returncode, 0, recon_res.stderr)
+        recon_data = json.loads(recon_res.stdout)
+        self.assertEqual(recon_data['status'], 'reconciled')
+        reconciled_names = {f['file'] for f in recon_data['files']}
+        self.assertIn('.omp/hooks/pre/beyin-v3.ts', reconciled_names)
+        self.assertIn('.claude/hermes-plugin/__init__.py', reconciled_names)
+        self.assertIn('.beyin-runtime.json', reconciled_names)
+
+        # Verify backups created
+        self.assertTrue((self.vault / '.omp/hooks/pre/beyin-v3.ts.bak').is_file())
+        self.assertTrue((self.vault / '.claude/hermes-plugin/__init__.py.bak').is_file())
+        self.assertTrue((self.vault / '.beyin-runtime.json.bak').is_file())
+
+        # Doctor after reconcile must report ok
+        report_after = self.doctor_report()
+        self.assertEqual(report_after['hook_paths']['status'], 'ok')
+
+
 
 if __name__ == "__main__":
     unittest.main()
