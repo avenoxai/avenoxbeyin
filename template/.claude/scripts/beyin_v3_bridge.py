@@ -447,8 +447,12 @@ def _global_json_stat(path):
 def _global_json_stamp(current):
     if current is None:
         return None
+    # Windows path stat and descriptor fstat can use different meanings for
+    # ctime on the same file (CPython #157671). Compare creation time on both.
+    identity_time = (getattr(current, 'st_birthtime_ns', current.st_ctime_ns)
+                     if os.name == 'nt' else current.st_ctime_ns)
     return (current.st_dev, current.st_ino, current.st_nlink, current.st_mode,
-            current.st_mtime_ns, current.st_ctime_ns, current.st_size)
+            current.st_mtime_ns, identity_time, current.st_size)
 
 
 def _global_json_snapshot(path):
