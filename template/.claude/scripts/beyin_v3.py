@@ -2047,6 +2047,8 @@ class PackedContext(dict):
     wider = {}
     extensions = {}
     evidence = {}
+    query = None
+    project = None
 
 
 def _locate_matching_passage(text, query, project=None):
@@ -2179,6 +2181,8 @@ def pack_context(records, limit=5, budget_chars=8000, stale_count=0, query=None,
                             "truncated": bool(omitted) or clipped_any, "omitted_count": omitted,
                             "used_chars": used, "budget_chars": budget_chars, "stale_count": stale_count})
     packed.sources = tuple(sources)
+    packed.query = query
+    packed.project = project
     return packed
 
 
@@ -2299,7 +2303,8 @@ def render_context(context, budget_chars, prefix="", suffix=""):
     payload_budget = available
     while True:
         packed = pack_widened(records, wider_views, len(records), payload_budget, context.get("stale_count", 0),
-                              extensions=extension_views)
+                              extensions=extension_views, query=getattr(context, "query", None),
+                              project=getattr(context, "project", None))
         packed["omitted_count"] += context.get("omitted_count", 0)
         packed["truncated"] = packed["truncated"] or bool(context.get("truncated"))
         packed.update(extra)

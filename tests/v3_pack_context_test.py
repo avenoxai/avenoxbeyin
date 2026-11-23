@@ -268,6 +268,9 @@ class TestPackContextEscaping(unittest.TestCase):
         self.assertTrue(delivered.get("text_truncated"))
         self.assertIn("KUZEY_YILDIZI_2026", delivered["text"])
         self.assertLessEqual(result["used_chars"], 8000)
+        text, _ = render_context(result, 3000, prefix=HOOK_PREFIX)
+        self.assertIn("KUZEY_YILDIZI_2026", text)
+        self.assertLessEqual(len(text), 3000)
 
 
 
