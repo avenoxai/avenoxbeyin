@@ -9,10 +9,13 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "template" / ".claude" / "scripts"))
 import beyin_v3_usage
 import beyin_v3_hook
+from beyin_v3_checkpoint import run_checkpoint
+from beyin_v3_sync import SyncEngine
 
 from tests.v3_package_helpers import inherited_env
 
@@ -161,6 +164,90 @@ class TestBeyinV3UsageFeedback(unittest.TestCase):
             result = self.cli(*receipt)
             self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(beyin_v3_usage.summarize_usage(self.state_path)["tracked"], 1)
+        self.assertEqual(self.rows(), {"artemis": (0, 1, 0, 0, 0)})
+
+    def checkpoint_receipt(self, receipt, *flags):
+        request = Path(self.test_dir) / "checkpoint.json"
+        request.write_text(json.dumps({"receipt": receipt}), encoding="utf-8")
+        result = self.cli("checkpoint", "--file", str(request), "--harness", "claude", *flags)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)["steps"]["receipt"]
+
+    def test_checkpoint_cites_eligible_notes_once_across_receipt_paths(self):
+        public, private = "knowledge/Artemis.md", "knowledge/Veiled.md"
+        self.note(public, "artemis", "Synthetic public text")
+        self.note(private, "veiled", "Synthetic private text", "private")
+        for turn in range(10):
+            beyin_v3_usage.record_injected(self.state_path, [{"id": "artemis", "source": public}],
+                                           session="citation-session", turn=str(turn))
+        unused = {"artemis": (10, 0, 0, 0, 0)}
+        self.assertEqual(beyin_v3_usage.summarize_usage(self.state_path)["dead_weight_count"], 1)
+        payload = {"event_id": "checkpoint-citation", "summary": "Synthetic result",
+                   "refs": [public, public, private]}
+        receipts = self.vault_path / "receipts"
+
+        self.assertEqual(self.checkpoint_receipt(payload, "--dry-run"), "planned")
+        self.assertEqual(self.checkpoint_receipt(dict(payload, summary=""))["status"], "error")
+        self.assertFalse(list(receipts.glob("*.md")))
+        self.assertEqual(self.rows(), unused)
+
+        self.assertEqual(self.checkpoint_receipt(payload), "succeeded")
+        used = {"artemis": (10, 1, 0, 0, 0)}
+        self.assertEqual(self.rows(), used)
+        self.assertEqual(beyin_v3_usage.summarize_usage(self.state_path)["dead_weight_count"], 0)
+        receipt_file, = receipts.glob("*.md")
+        original = receipt_file.read_bytes()
+        self.assertEqual(self.checkpoint_receipt(payload), "succeeded")
+        standalone = self.cli("receipt", "--harness", "codex", "--event-id", payload["event_id"],
+                              "--summary", payload["summary"],
+                              "--ref", public, "--ref", public, "--ref", private)
+        self.assertEqual(standalone.returncode, 0, standalone.stderr)
+        self.assertEqual(json.loads(standalone.stdout)["status"], "succeeded")
+        self.assertEqual(list(receipts.glob("*.md")), [receipt_file])
+        self.assertEqual(receipt_file.read_bytes(), original)
+        self.assertEqual(self.rows(), used)
+        self.assertEqual(self.checkpoint_receipt(dict(payload, summary="conflicting content"))["status"], "error")
+        self.assertEqual(self.rows(), used)
+
+    def test_locked_usage_keeps_checkpoint_receipt_durable_and_replay_recovers(self):
+        source = "knowledge/Artemis.md"
+        self.note(source, "artemis", "Synthetic public text")
+        beyin_v3_usage.record_injected(self.state_path, [{"id": "artemis", "source": source}],
+                                       session="citation-session", turn="1")
+        payload = {"event_id": "locked-citation", "summary": "Synthetic result", "refs": [source]}
+        with closing(sqlite3.connect(self.state_path / beyin_v3_usage.DATABASE)) as db:
+            db.execute("BEGIN EXCLUSIVE")
+            try:
+                self.assertEqual(self.checkpoint_receipt(payload), "succeeded")
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM citations").fetchone()[0], 0)
+            finally:
+                db.rollback()
+
+        receipt_file, = (self.vault_path / "receipts").glob("*.md")
+        original = receipt_file.read_bytes()
+        engine = SyncEngine(self.vault_path, self.state_path)
+        with engine.store._connect() as db:
+            row = db.execute("SELECT payload FROM receipts WHERE id=?", (payload["event_id"],)).fetchone()
+        self.assertEqual(json.loads(row[0])["summary"], payload["summary"])
+        self.assertEqual(self.rows(), {"artemis": (1, 0, 0, 0, 0)})
+        for _ in range(2):
+            self.assertEqual(self.checkpoint_receipt(payload), "succeeded")
+            self.assertEqual(self.rows(), {"artemis": (1, 1, 0, 0, 0)})
+            self.assertEqual(receipt_file.read_bytes(), original)
+
+    def test_failed_receipt_submission_does_not_count_a_citation(self):
+        source = "knowledge/Artemis.md"
+        self.note(source, "artemis", "Synthetic public text")
+        engine = SyncEngine(self.vault_path, self.state_path)
+        req = {"receipt": {"event_id": "failed-submission", "summary": "Synthetic result", "refs": [source]}}
+        with patch.object(engine.store, "submit_receipt", side_effect=OSError("fixture submission failed")) as submit:
+            result = run_checkpoint(engine, self.vault_path, self.state_path, req, harness="claude")
+        submit.assert_called_once()
+        self.assertEqual(result["steps"]["receipt"]["status"], "error")
+        usage_db = self.state_path / beyin_v3_usage.DATABASE
+        self.assertFalse(usage_db.exists())
+        self.assertEqual(self.checkpoint_receipt(req["receipt"]), "succeeded")
+        self.assertTrue(usage_db.is_file(), "successful replay should record the citation")
         self.assertEqual(self.rows(), {"artemis": (0, 1, 0, 0, 0)})
 
     def test_receipt_case_alias_counts_the_indexed_note(self):
