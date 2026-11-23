@@ -1260,6 +1260,13 @@ def parser(note_namespace=None, is_json=False):
     queue_action.add_argument("--dismiss", metavar="MUTATION_ID", help="Dismiss a reviewed conflict or failed mutation")
     mutation_queue.add_argument("--status", choices=["pending", "applied", "conflict", "failed", "dismissed"], help="Filter status for --list")
     mutation_queue.add_argument("--file", default="-", help="JSON {action, source, payload, mutation_id?} for --enqueue, or - for stdin")
+    devices = sub.add_parser("devices", help="Opt-in staged multi-device layout (off by default): detect, plan, apply")
+    devices_action = devices.add_mutually_exclusive_group()
+    devices_action.add_argument("--detect", action="store_true", help="Describe this machine and the levels it is ready for; writes nothing")
+    devices_action.add_argument("--plan", action="store_true", help="Show what --apply would store and the steps left to you; writes nothing")
+    devices_action.add_argument("--apply", action="store_true", help="Store the chosen level in the runtime state; writes nothing in the vault")
+    devices.add_argument("--level", choices=["solo", "phone"], help="solo: one computer; phone: + phone or tablet via a file sync service")
+    devices.add_argument("--phone-sync", choices=["icloud", "obsidian-sync", "other"], help="How the phone sees the vault")
     context = sub.add_parser("context", help="Retrieve source-backed shared context")
     context.add_argument("query", nargs="?", help="Query; alternatively use --file")
     context.add_argument("--file", help="JSON retrieval arguments, or - for stdin")
@@ -1466,7 +1473,7 @@ def main(argv=None, return_result=False):
         if read_only_context and args.jev:
             raise ValueError("context --no-sync cannot be combined with --jev")
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
-        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc") else None
+        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "devices", "workspace", "lint", "moc") else None
         store = engine.MemoryStore(state, vault, read_only=read_only_context) if engine else None
         sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "homepage-create", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
         if args.command == "bridge":
@@ -1946,6 +1953,12 @@ def main(argv=None, return_result=False):
                 result['mutation_queue'] = mutation.doctor(state)
             except Exception as exc:
                 result['mutation_queue'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            try:  # information only: the opt-in multi-device layout
+                _ensure_scripts_path()
+                import beyin_v3_devices as devices_mod
+                result['devices'] = devices_mod.doctor(state)
+            except Exception as exc:
+                result['devices'] = {'status': 'unavailable', 'error': type(exc).__name__}
             result['status'] = ('needs_attention' if health.get('sync', {}).get('status') in ('conflict', 'degraded') or result['hook_paths'].get('status') == 'stale' or result['skill_conflicts'] or result.get('instruction_conflicts') or result['hook-error.json'] or result['task_completion']['strict_issue_count'] or result['task_completion'].get('error') or result['validity']['ignored_rejection_count'] or result['validity'].get('error') or result.get('project_scopes', {}).get('status') in ('error', 'warning') else 'pending' if result['pending_events'] else 'observed_metadata' if result['acknowledged_events'] else 'never_seen')
             if result['updates'].get('status') == 'recovery_required':
                 result['status'] = 'needs_attention'
@@ -2201,6 +2214,21 @@ def main(argv=None, return_result=False):
                 result = mutation.list_mutations(state, status=args.status)
             else:
                 result = mutation.status(state)
+        elif args.command == "devices":
+            _ensure_scripts_path()
+            import beyin_v3_devices as devices_mod
+            options = {"level": args.level, "phone_sync": args.phone_sync}
+            given = [name for name, value in options.items() if value is not None]
+            if given and not (args.plan or args.apply):
+                raise ValueError("--" + given[0].replace("_", "-") + " is only valid with --plan or --apply")
+            if args.detect:
+                result = devices_mod.detect(vault, state)
+            elif args.plan:
+                result = devices_mod.public_plan(devices_mod.plan(vault, state, options))
+            elif args.apply:
+                result = devices_mod.apply(vault, state, options)
+            else:
+                result = devices_mod.status(vault, state)
         elif args.command == "context":
             params = {"query": args.query, "project": args.project, "audience": args.audience,
                       "statuses": args.statuses, "limit": args.limit, "budget_chars": args.budget_chars}
