@@ -801,6 +801,17 @@ def find_card(vault, card_id, state=None):
     raise ValueError('Kart bulunamadi: ' + str(card_id))
 
 
+def _card_head_status(head):
+    # The 600-character read can stop before the end of a long frontmatter.
+    # Keep complete fields and use the same parser as the full card reader.
+    if not head.startswith('---\n'):
+        return None
+    if head.find('\n---', 3) < 0:
+        head = head[:head.rfind('\n')] + '\n---'
+    meta, _ = _parse_card_text(head)
+    return meta.get('durum') if meta.get('tur') == 'yakala' else None
+
+
 def pending(vault, state=None):
     """Cheap for SessionStart: one directory listing, a 600-byte head read per card."""
     folder = inbox(vault, state)
@@ -816,7 +827,7 @@ def pending(vault, state=None):
                     head = handle.read(600)
             except OSError:
                 continue
-            if re.search(r'^durum:\s*"?bekliyor"?\s*$', head, re.M) and re.search(r'^tur:\s*"?yakala"?\s*$', head, re.M):
+            if _card_head_status(head) == 'bekliyor':
                 count += 1
     return count
 
@@ -2233,9 +2244,9 @@ def session_notice(vault, state=None):
             try:
                 with path.open(encoding='utf-8', errors='ignore') as stream:
                     head = stream.read(600)
-                if re.search(r'^tur:\s*"?yakala"?\s*$', head, re.M):
-                    active += bool(re.search(r'^durum:\s*"?ajanda"?\s*$', head, re.M))
-                    approval += bool(re.search(r'^durum:\s*"?onay-bekliyor"?\s*$', head, re.M))
+                status = _card_head_status(head)
+                active += status == 'ajanda'
+                approval += status == 'onay-bekliyor'
             except OSError:
                 pass
     if active:
