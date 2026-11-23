@@ -27,6 +27,9 @@ class ReceiptNewlineIdentityTest(unittest.TestCase):
         self.vault.mkdir()
         self.state = self.root / 'state'
         self.env = isolated_env(self.root / 'home')
+        # The installed CLI and in-process sync must project receipts to the same local day.
+        if 'TZ' in os.environ:
+            self.env['TZ'] = os.environ['TZ']
         result = install(self.vault, self.state, self.env)
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         (self.vault / 'notes').mkdir()
