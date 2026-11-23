@@ -115,6 +115,25 @@ class V3SelftestTest(unittest.TestCase):
         self.assertEqual(len(res2["regressed"]), 1)
         self.assertEqual(res2["regressed"][0]["expected_source"], "projects/nonexistent.md")
 
+    def test_context_mode_scores_delivered_text_without_writing_a_baseline(self):
+        path = self.vault / "projects" / "large.md"
+        body = "Quasar deployment guide\n" + ("plain filler " * 900) + "red umbrella"
+        path.write_text(body, encoding="utf-8")
+        self.store.ingest({"id": "large", "kind": "note", "visibility": "internal",
+                           "text": body, "source": "projects/large.md"})
+        questions = self.vault / "questions.json"
+        question = {"query": "Quasar deployment", "sources": ["projects/other.md", "projects/large.md"],
+                    "sentence": "red umbrella"}
+        questions.write_text(json.dumps({"questions": [question]}), encoding="utf-8")
+        clipped = selftest.run_selftest(self.vault, self.state, questions.name, mode="context", budget=1200)
+        self.assertEqual(clipped.get("passed"), 0, clipped)
+        self.assertEqual(clipped["truncated"], 1)
+        self.assertEqual(clipped["missed"][0]["reason"], "truncated")
+        whole = selftest.run_selftest(self.vault, self.state, questions.name, mode="context", budget=32000)
+        self.assertEqual(whole["passed"], 1)
+        self.assertFalse((self.state / "selftest-last.json").exists())
+        self.assertEqual(selftest.run_selftest(self.vault, self.state, questions.name)["passed"], 1)
+
     def test_path_traversal_and_symlink_guards(self):
         with self.assertRaises(ValueError):
             selftest.add_question(self.vault, "../outside.json", "query", "projects/alpha.md")

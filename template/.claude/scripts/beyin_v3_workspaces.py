@@ -304,6 +304,16 @@ def matching_workspace_ids(vault_root, query):
     return sorted(matches)
 
 
+def context_project(vault, query):
+    files = (vault / ".beyin-workspaces.json", vault / ".beyin-projects.json")
+    if not any(path.exists() or path.is_symlink() for path in files):
+        return None
+    named = matching_workspace_ids(vault, query)
+    if len(named) > 1:
+        raise ValueError("context query names multiple Workspaces; specify --project")
+    return named[0] if named else None
+
+
 def _workspace_view(vault_root, workspace_id):
     view = read_workspaces(vault_root).get(workspace_id)
     # A legacy project whose last folder was just disconnected has no record left.

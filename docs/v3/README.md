@@ -71,3 +71,7 @@ Gerçek kullanımda kancanın enjekte ettiği kaynakların sonradan açılıp a�
 [Ürünleştirme durumu](PRODUCTIZATION-PLAN.md) · [Komut detayları](QUICKSTART.md) · [Serai desenleri](SERAI-PATTERNS.md).
 
 İlk incelenen public taban `2e074cc` idi. [Public mimari](public-architecture.md), [yerel mimari](local-runtime-architecture.md), [eşitlik/migration değerlendirmesi](parity-and-migration.md) ve [sorun incelemeleri](issue-validation.md) tasarım geçmişidir; mevcut uygulamanın yerine kullanılmaz.
+
+### Kasanın verdiği cevabı sınama
+
+`beyin.py selftest --mode context --limit 3 --budget 8000` mevcut indeks üzerinde, `context --no-sync` ile aynı kayıt metnini puanlar. Sorunun `sentence` değeri bütçeye sığmayan bölümde kaldıysa sonuçta `truncated` sayılır. Soru dosyasında bir `source` veya kabul ettiğin yolları içeren bir `sources` listesi kullanabilirsin. Bu mod önceki ölçümü değiştirmez.

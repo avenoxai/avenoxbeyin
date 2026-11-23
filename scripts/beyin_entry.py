@@ -267,6 +267,8 @@ def human_result(result, command, installed_version=None):
             f'Vault oz-denetim (selftest): toplam {total} soru, gecen {passed}, kacan {len(missed)}.',
             f'Kontroller: {ctrl_passed}/{ctrl_total} basarili.'
         ]
+        if result.get("mode") == "context":
+            lines.append(f'Bağlam bütçesi {result["budget"]} karakter. Kırpılan cevap sayısı {result["truncated"]}.')
         if regressed:
             lines.append(f'UYARI: {len(regressed)} soru onceki kosuya gore geriledi (eskiden geciyordu, simdi kacti)!')
         for m in missed[:3]:

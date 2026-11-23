@@ -1328,6 +1328,8 @@ def parser(note_namespace=None, is_json=False):
     selftest_parser = sub.add_parser("selftest", help="Run vault-local read-only retrieval self-test")
     selftest_parser.add_argument("--questions", type=Path, help="Questions JSON path inside vault (default knowledge/v3/selftest.json)")
     selftest_parser.add_argument("--limit", type=int, default=5, help="Candidate retrieval limit (default 5)")
+    selftest_parser.add_argument("--mode", choices=("candidates", "context"), default="candidates")
+    selftest_parser.add_argument("--budget", type=int, help="Context-mode character budget (default 8000)")
     selftest_parser.add_argument("--audience", choices=("internal", "public"), default="internal", help="Retrieval audience")
     selftest_parser.add_argument("--add-question", help="Add a test query")
     selftest_parser.add_argument("--source", help="Vault-relative source note for --add-question")
@@ -1469,16 +1471,21 @@ def main(argv=None, return_result=False):
         if state == vault or vault in state.parents:
             raise ValueError("--state must be outside the vault")
         read_only_context = args.command == "context" and args.no_sync
+        context_selftest = args.command == "selftest" and args.mode == "context"
+        if args.command == "selftest" and args.budget is not None and (not context_selftest or args.budget < 0):
+            raise ValueError("--budget requires --mode context and a nonnegative value")
+        if context_selftest and args.add_question:
+            raise ValueError("--add-question cannot be combined with --mode context")
         read_only_doctor = args.command == "doctor"
         dry_checkpoint = args.command == "checkpoint" and args.dry_run
-        if read_only_context or read_only_doctor or args.command == "triage" or args.command == "feedback" or dry_checkpoint:
+        if context_selftest or read_only_context or read_only_doctor or args.command == "triage" or args.command == "feedback" or dry_checkpoint:
             # The source CLI can run without the installed entry point, which
             # already disables bytecode. Merely importing runtime code must not write.
             sys.dont_write_bytecode = True
         if read_only_context and args.jev:
             raise ValueError("context --no-sync cannot be combined with --jev")
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
-        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc", "triage", "feedback", "checkpoint") else None
+        engine = load_engine() if not context_selftest and args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc", "triage", "feedback", "checkpoint") else None
         database = state / "memory.sqlite3"
         doctor_without_index = read_only_doctor and not (database.exists() or database.is_symlink())
         store = None
@@ -2201,7 +2208,9 @@ def main(argv=None, return_result=False):
                     argument_parser.error("--source is required with --add-question")
                 result = selftest_mod.add_question(vault, args.questions, args.add_question, args.source, args.sentence)
             else:
-                result = selftest_mod.run_selftest(vault, state, args.questions, args.limit, args.audience)
+                result = selftest_mod.run_selftest(
+                    vault, state, args.questions, args.limit, args.audience,
+                    mode=args.mode, budget=8000 if args.budget is None else args.budget)
         elif args.command == "note-read":
             result = sync.note_read(args.source)
             if args.must_exist and not result['exists']:
@@ -2281,15 +2290,9 @@ def main(argv=None, return_result=False):
                 params["project"] = args.project
             if not isinstance(params["query"], str) or not params["query"].strip():
                 raise ValueError("context requires a nonempty query")
-            workspace_files = (vault / ".beyin-workspaces.json", vault / ".beyin-projects.json")
-            if params["project"] is None and any(path.exists() or path.is_symlink() for path in workspace_files):
-                _ensure_scripts_path()
-                from beyin_v3_workspaces import matching_workspace_ids
-                named = matching_workspace_ids(vault, params["query"])
-                if len(named) > 1:
-                    raise ValueError("context query names multiple Workspaces; specify --project")
-                if named:
-                    params["project"] = named[0]
+            if params["project"] is None:
+                from beyin_v3_workspaces import context_project
+                params["project"] = context_project(vault, params["query"])
             if read_only_context:
                 result = store.context_for(args.harness, explicit=True, **params)
                 result['source_sync'] = {'status': 'skipped', 'reason': 'explicit_no_sync'}
