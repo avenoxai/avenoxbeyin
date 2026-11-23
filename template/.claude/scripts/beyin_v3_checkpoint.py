@@ -15,6 +15,7 @@ from beyin_v3_companion import directory as locate_companion, headings
 from beyin_v3_compact import ARCHIVE_DIRECTORY, _archive_history, compact as companion_compact
 from beyin_v3_notes import read as note_read, apply as note_apply, NoteConflict, locked, _index_excluded
 from beyin_v3_learning import stage_candidate
+from beyin_v3_parallel import receipt_session
 from beyin_v3_sync import parse
 import beyin_v3_chat_trace
 
@@ -65,7 +66,12 @@ def _update_card(sync, source, card, session, now):
     previous = note_read(sync, source)
     content = previous["content"] or ""
     newline = "\r\n" if "\r\n" in content else "\n"
-    short = session[:8] if session and re.fullmatch(r"[a-zA-Z0-9_-]+", session) else owner[:8]
+    # A receipt key is already normalized. Raw inputs use the same display key as
+    # active-session markers without changing the card owner or its replay identity.
+    short = owner[:8]
+    if session:
+        receipt_key = session if re.fullmatch(r"[0-9a-f]{24}", session) else receipt_session(session)
+        short = receipt_key[:8]
     marker = f"<!-- beyin-checkpoint:{owner}:{revision} -->"
     suffix = f" · {label} · {short} {marker}"
     end = f"<!-- /beyin-checkpoint:{owner} -->"

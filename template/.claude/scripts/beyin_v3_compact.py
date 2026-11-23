@@ -29,6 +29,12 @@ from beyin_v3_notes import NoteConflict, vault_locked
 LINE = re.compile(r'[^\n]*\n|[^\n]+$')
 HEADING = re.compile(r'(#{1,6})[ \t]')
 FENCE = re.compile(r' {0,3}(`{3,}|~{3,})')
+# Keep the legacy suffix grammar. A Checkpoint must instead match both writer delimiters.
+CARD_SESSION_KEY = re.compile(r'·[ \t]*([0-9a-fA-F]{8})[ \t]*$')
+CHECKPOINT_CARD_START = re.compile(
+    r'## \d{4}-\d{2}-\d{2} \d{2}:\d{2} · [^\r\n]+ · ([a-zA-Z0-9_-]{1,8}) '
+    r'<!-- beyin-checkpoint:([0-9a-f]{64}):[0-9a-f]{64} -->')
+CHECKPOINT_CARD_END = re.compile(r'<!-- /beyin-checkpoint:([0-9a-f]{64}) -->')
 # Month names for dates written out as `12 Ekim 2026` or `12 October 2026`. A day range such
 # as `4→5 Ekim 2026` or `26–27 Eylül 2026` dates the entry by its last day.
 MONTHS = {name: number for number, names in enumerate((
@@ -323,6 +329,45 @@ def _frontmatter_end(lines):
     return 0
 
 
+def _open_fence(line):
+    # CommonMark forbids a backtick in a backtick fence's info string; inline code
+    # like ```code``` cannot swallow the cards and markers below it (#228).
+    opened = FENCE.match(line)
+    if opened and not (opened[1][0] == '`' and '`' in line[opened.end():]):
+        return opened[1]
+    return None
+
+
+def _close_fence(line, fence):
+    return re.match(r' {0,3}' + re.escape(fence[0]) + '{' + str(len(fence)) + r',}[ \t]*$', line)
+
+
+def _checkpoint_ranges(lines, start):
+    """Pair exact, unfenced writer delimiters, without crossing the next checkpoint."""
+    ranges = {}
+    pending = fence = None
+    for index in range(start, len(lines)):
+        bare = lines[index].rstrip('\r\n')
+        if fence:
+            if _close_fence(bare, fence):
+                fence = None
+            continue
+        fence = _open_fence(bare)
+        if fence or 'beyin-checkpoint:' not in bare:
+            continue
+        opening = CHECKPOINT_CARD_START.fullmatch(bare)
+        if opening:
+            pending = index, opening[1].lower(), opening[2]
+        elif pending and (ending := CHECKPOINT_CARD_END.fullmatch(bare)):
+            first, key, owner = pending
+            if ending[1] == owner:
+                # A historical raw suffix does not identify an active session, but its
+                # correctly delimited body must still be kept together during rotation.
+                ranges[first] = index, key if re.fullmatch(r'[0-9a-f]{8}', key) else None
+            pending = None
+    return ranges
+
+
 def blocks(lines, name):
     """Split lines into contiguous static, entry and history blocks; together they cover every line."""
     top, history = CONTAINER[name], HISTORY[name]
@@ -338,22 +383,21 @@ def blocks(lines, name):
         found.append({'kind': kind, 'start': index, 'end': None, 'container': container, 'key': key, 'level': level})
 
     start = _frontmatter_end(lines)
+    checkpoints = _checkpoint_ranges(lines, start) if name == 'Last-Session.md' else {}
+    checkpoint_end = -1
     if start:
         begin('static', 0)
     begin('static', start)
     for index in range(start, len(lines)):
+        if index <= checkpoint_end:
+            continue  # All body headings are content through the matching owner close.
         bare = lines[index].rstrip('\r\n')
         if fence:
-            if re.match(r' {0,3}' + re.escape(fence[0]) + '{' + str(len(fence)) + r',}[ \t]*$', bare):
+            if _close_fence(bare, fence):
                 fence = None
             continue
-        opened = FENCE.match(bare)
-        # CommonMark: a backtick fence's info string cannot contain a backtick, so a line such as
-        # ```code``` is inline code, not an opening fence that would swallow the cards below (#228).
-        if opened and opened[1][0] == '`' and '`' in bare[opened.end():]:
-            opened = None
-        if opened:
-            fence = opened[1]
+        fence = _open_fence(bare)
+        if fence:
             boundary = False
             continue
         # A dated heading opens a card (#118): up to the next heading of its own or a higher
@@ -374,8 +418,11 @@ def blocks(lines, name):
                 begin('static', index)
             elif card and level > card:
                 pass  # A deeper heading, dated or not, stays inside the card.
-            elif stamp(bare, heading=True):
-                begin('entry', index, stamp(bare, heading=True), level)
+            elif key := stamp(bare, heading=True):
+                begin('entry', index, key, level)
+                if index in checkpoints:
+                    checkpoint_end, session_key = checkpoints[index]
+                    found[-1]['checkpoint_session'] = session_key
             elif found[-1]['kind'] in ('history', 'entry'):
                 # An undated heading closes a dated paragraph and a dated heading of the same
                 # or a higher level: it is the file's own structure, not part of the old entry.
@@ -390,10 +437,6 @@ def blocks(lines, name):
         boundary = not bare.strip()
     found[-1]['end'] = len(lines)
     return [block for block in found if block['end'] > block['start']]
-
-
-# Suffix pattern for Last-Session card headings: ## YYYY-MM-DD HH:MM · <etiket> · <8-hex-session-id>
-CARD_SESSION_KEY = re.compile(r'·[ \t]*([0-9a-fA-F]{8})[ \t]*$')
 
 
 def plan(text, name, limit, pointer, active_sessions=None):
@@ -422,9 +465,12 @@ def plan(text, name, limit, pointer, active_sessions=None):
         for rank, p in enumerate(positions):
             order[p] = (parsed[p]['key'], -rank if newest_first else rank, p)
             if name == 'Last-Session.md' and active_keys:
-                first_line = lines[parsed[p]['start']].rstrip('\r\n')
-                match = CARD_SESSION_KEY.search(first_line)
-                if match and match.group(1).lower() in active_keys:
+                key = parsed[p].get('checkpoint_session')
+                if key is None:
+                    first_line = lines[parsed[p]['start']].rstrip('\r\n')
+                    match = CARD_SESSION_KEY.search(first_line)
+                    key = match[1].lower() if match else None
+                if key in active_keys:
                     protected.add(p)
         protected.add(max(positions, key=order.get))
     histories = [p for p, block in enumerate(parsed) if block['kind'] == 'history']
