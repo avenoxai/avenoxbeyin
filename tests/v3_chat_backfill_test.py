@@ -406,6 +406,22 @@ class BackfillTest(unittest.TestCase):
         self.enable()
         self.assert_refused(self.s5, 'kaydetme')
 
+    def test_knowledge_reminder_kdone_does_not_suppress_backfill(self):
+        """A knowledge reminder (.kdone) without [kaydetme] must not exclude backfill (#754)."""
+        session_id = self.latest.stem
+        digest = hashlib.sha256(session_id.encode('utf-8')).hexdigest()
+        reminders_folder = self.state / 'receipt-reminders'
+        reminders_folder.mkdir(parents=True, exist_ok=True)
+        # Simulate knowledge reminder having fired (.kdone exists, but not .optout)
+        (reminders_folder / f"{digest}.kdone").touch()
+        self.assertFalse((reminders_folder / f"{digest}.optout").exists())
+        self.enable()
+        plan = self.plan()
+        # self.latest (s5) must still be pending, NOT suppressed
+        self.assertIn(self.s5, [item['session'] for item in plan['pending']])
+        res = self.backfill.show(self.vault, self.state, self.s5)
+        self.assertIn('messages', res)
+
     def test_private_keys_and_literals_cut_by_the_limit_are_hidden_whole(self):
         import base64
         import random

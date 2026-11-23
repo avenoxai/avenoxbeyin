@@ -441,8 +441,10 @@ def _marker_suppressed(state, stem, session):
     """The hooks' own opt-out records: the chat trace counter and the receipt reminder marker."""
     import beyin_v3_chat_trace as trace
     # The receipt reminder hook marks [kaydetme] even while chat trace is off (beyin_v3_hook.py).
-    reminder = Path(state) / 'receipt-reminders' / (hashlib.sha256(stem.encode('utf-8')).hexdigest() + '.kdone')
-    if os.path.lexists(reminder):
+    digest = hashlib.sha256(stem.encode('utf-8')).hexdigest()
+    folder = Path(state) / 'receipt-reminders'
+    optout = folder / (digest + '.optout')
+    if os.path.lexists(optout):
         return True
     try:
         value = trace._read(Path(state) / trace.SESSIONS / ('claude-' + session + '.json'))

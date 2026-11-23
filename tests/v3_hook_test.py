@@ -739,6 +739,15 @@ class HookInstallerTest(unittest.TestCase):
         del self.env['BEYIN_V3_NO_RECEIPT_REMINDER']
         self.assertEqual(self.lifecycle('Stop', 'env-opt-out', 'claude'), {})
 
+    def test_stop_receipt_reminder_honours_casefold_opt_out(self):
+        """[KAYDETME] uppercase or mixed case should opt out of receipt reminders (#754)."""
+        self.lifecycle('UserPromptSubmit', 'case-opt-out', 'claude', prompt='Bunu lütfen [KAYDETME]')
+        self.lifecycle('PostToolUse', 'case-opt-out', 'claude')
+        self.assertEqual(self.lifecycle('Stop', 'case-opt-out', 'claude'), {})
+        folder = self.state / 'receipt-reminders'
+        digest = hashlib.sha256(b'case-opt-out').hexdigest()
+        self.assertTrue((folder / f"{digest}.optout").exists())
+
     def test_stop_receipt_reminder_quiet_paths_keep_the_one_reminder(self):
         self.lifecycle('PostToolUse', 'quiet', 'claude')
         self.assertEqual(self.lifecycle('Stop', 'quiet', 'claude', stop_hook_active=True), {})
