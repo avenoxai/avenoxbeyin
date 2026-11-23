@@ -775,6 +775,52 @@ class BridgeTest(unittest.TestCase):
         res_opencode_replace = bridge.install_bridge(other_vault, other_state, 'opencode', [self.project], replace=True, home=self.home)
         self.assertEqual(res_opencode_replace.get('replaced_owner'), str(self.state.resolve()))
 
+    def test_owner_and_mutation_use_the_same_global_settings_snapshot(self):
+        for harness in ('claude', 'opencode'):
+            for removing in (False, True):
+                with self.subTest(harness=harness, removing=removing):
+                    bridge.install_bridge(self.vault, self.state, harness, [self.project],
+                                          home=self.home, replace=True)
+                    target = (bridge.global_opencode_settings_path(home=self.home) if harness == 'opencode'
+                              else bridge.global_hook_path(harness, home=self.home))
+                    plugin = bridge.global_opencode_plugin_path(home=self.home)
+                    previous_plugin = plugin.read_bytes() if plugin.is_file() else None
+                    replacement = b'{"changed_externally":true}\n'
+                    ownership = bridge._bridge_owner
+
+                    def edit_after_snapshot(*args):
+                        result = ownership(*args)
+                        target.write_bytes(replacement)
+                        return result
+
+                    with patch.object(bridge, '_bridge_owner', side_effect=edit_after_snapshot):
+                        with self.assertRaisesRegex(OSError, 'changed before write'):
+                            if removing:
+                                bridge.uninstall_bridge(harness, self.home, state=self.state)
+                            else:
+                                bridge.install_bridge(self.vault, self.state, harness, [self.project],
+                                                      ['SessionStart'], 1500, self.home)
+                    self.assertEqual(target.read_bytes(), replacement)
+                    if harness == 'opencode':
+                        self.assertEqual(plugin.read_bytes(), previous_plugin)
+                    if harness == 'opencode':
+                        target.unlink()
+
+    def test_preserves_managed_command_paired_with_custom_platform_command(self):
+        target = bridge.global_hook_path('codex', home=self.home)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        own = bridge.shell_command([sys.executable, str(bridge.__file__), '--vault', str(self.vault),
+                                    '--state', str(self.state)])
+        raw = json.dumps({'hooks': {'SessionStart': [{'hooks': [
+            {'type': 'command', 'command': own, 'commandWindows': 'echo custom'},
+        ]}]}}).encode()
+        target.write_bytes(raw)
+        self.assertEqual(bridge.bridge_owner('codex', state=self.state, home=self.home)['state'], 'unidentified')
+        self.assertEqual(bridge.uninstall_bridge('codex', self.home, state=self.state)['removed_count'], 0)
+        with self.assertRaisesRegex(ValueError, 'unidentified'):
+            bridge.install_bridge(self.vault, self.state, 'codex', [self.project], home=self.home)
+        self.assertEqual(target.read_bytes(), raw)
+
     def test_bound_bridge_preserves_mixed_and_unidentified_ownership(self):
         for identifiable in (True, False):
             with self.subTest(identifiable=identifiable):
