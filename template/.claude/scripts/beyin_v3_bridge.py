@@ -376,7 +376,91 @@ def hook_arguments(command: str) -> list:
     except ValueError:
         return []
 
-def global_bridge_paths(vault: Path, state: Path, only_harness=None) -> dict | None:
+def bridge_owner(harness, state=None, home=None):
+    """Inspect global bridge ownership for a given harness.
+
+    Returns dict:
+      'state': 'absent' | 'mine' | 'other' | 'stale'
+      'owner_state': str path or None
+      'vault': str path or None
+    """
+    my_state = Path(state).expanduser().resolve() if state else None
+    if harness not in ('claude', 'codex', 'antigravity', 'opencode'):
+        return {'state': 'absent', 'owner_state': None, 'vault': None}
+    if harness == 'opencode':
+        try:
+            settings_path = global_opencode_settings_path(home=home)
+            data = json.loads(settings_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError, UnicodeError):
+            data = None
+        if isinstance(data, dict) and data.get('managed_by') == OPENCODE_MANAGED:
+            command = data.get('command')
+            if isinstance(command, list) and all(isinstance(v, str) for v in command):
+                values = {}
+                for flag in ('--state', '--vault'):
+                    if command.count(flag) == 1 and command.index(flag) < len(command) - 1:
+                        values[flag] = command[command.index(flag) + 1]
+                if len(values) == 2:
+                    try:
+                        owner_path = Path(values['--state']).expanduser().resolve()
+                        vault_path = Path(values['--vault']).expanduser().resolve()
+                    except (OSError, ValueError, RuntimeError):
+                        owner_path = None
+                        vault_path = None
+                    if owner_path:
+                        status = 'mine' if my_state and owner_path == my_state else 'other'
+                        return {'state': status, 'owner_state': str(owner_path), 'vault': str(vault_path) if vault_path else None}
+        return {'state': 'absent', 'owner_state': None, 'vault': None}
+
+    target = global_hook_path(harness, home=home)
+    try:
+        data = json.loads(target.read_text(encoding='utf-8'))
+    except (OSError, ValueError, UnicodeError):
+        data = None
+    if not isinstance(data, dict):
+        return {'state': 'absent', 'owner_state': None, 'vault': None}
+
+    events = data.get('beyin-v3-bridge' if harness == 'antigravity' else 'hooks', {})
+    found_owners = []
+    found_vaults = []
+    for event, groups in events.items() if isinstance(events, dict) else ():
+        for group in groups if isinstance(groups, list) else ():
+            if not isinstance(group, dict):
+                continue
+            handlers = group.get('hooks', [group])
+            for handler in handlers if isinstance(handlers, list) else ():
+                if not isinstance(handler, dict):
+                    continue
+                cmd_str = (handler.get('commandWindows', handler.get('command'))
+                           if sys.platform == 'win32' else handler.get('command'))
+                if not isinstance(cmd_str, str):
+                    continue
+                arguments = hook_arguments(cmd_str)
+                if not any(arg.replace('\\', '/').endswith('/beyin_v3_bridge.py') for arg in arguments):
+                    continue
+                values = {}
+                for flag in ('--state', '--vault'):
+                    if arguments.count(flag) == 1 and arguments.index(flag) < len(arguments) - 1:
+                        values[flag] = arguments[arguments.index(flag) + 1]
+                if len(values) == 2:
+                    try:
+                        owner_p = Path(values['--state']).expanduser().resolve()
+                        vault_p = Path(values['--vault']).expanduser().resolve()
+                    except (OSError, ValueError, RuntimeError):
+                        continue
+                    found_owners.append(owner_p)
+                    found_vaults.append(vault_p)
+
+    if not found_owners:
+        return {'state': 'absent', 'owner_state': None, 'vault': None}
+
+    owner_p = found_owners[0]
+    vault_p = found_vaults[0] if found_vaults else None
+    status = 'mine' if my_state and owner_p == my_state else 'other'
+    return {'state': status, 'owner_state': str(owner_p), 'vault': str(vault_p) if vault_p else None}
+
+
+def global_bridge_paths(vault: Path, state: Path, only_harness=None, home=None) -> dict | None:
     """Read only global bridge paths owned by this state, without executing commands.
 
     A different vault may legitimately own the user's global bridge. Inspect only
@@ -389,7 +473,7 @@ def global_bridge_paths(vault: Path, state: Path, only_harness=None) -> dict | N
         if only_harness and harness != only_harness:
             continue
         try:
-            data = json.loads(global_hook_path(harness).read_text(encoding='utf-8'))
+            data = json.loads(global_hook_path(harness, home=home).read_text(encoding='utf-8'))
         except (OSError, ValueError, UnicodeError):
             continue
         if not isinstance(data, dict):
@@ -433,7 +517,7 @@ def global_bridge_paths(vault: Path, state: Path, only_harness=None) -> dict | N
     # OpenCode's global bridge is a managed plugin plus a JSON settings file,
     # rather than a hook command embedded in client settings.
     try:
-        opencode_settings = global_opencode_settings_path()
+        opencode_settings = global_opencode_settings_path(home=home)
         data = json.loads(opencode_settings.read_text(encoding='utf-8'))
     except (OSError, ValueError, UnicodeError):
         data = None
@@ -489,7 +573,9 @@ def _read_global_settings(path):
     return data
 
 
-def _without_bridge(groups):
+def _without_bridge(groups, state=None):
+    """Filter out beyin_v3_bridge handlers. If state is provided, only handlers matching state are removed."""
+    owner = Path(state).expanduser().resolve() if state else None
     cleaned, removed = [], 0
     for group in groups:
         if not isinstance(group, dict):
@@ -499,9 +585,36 @@ def _without_bridge(groups):
         if not isinstance(handlers, list):
             cleaned.append(group)
             continue
-        remaining = [handler for handler in handlers if not (
-            isinstance(handler, dict) and any('beyin_v3_bridge.py' in _decoded_command(handler.get(key))
-                                             for key in ('command', 'commandWindows')))]
+        remaining = []
+        for handler in handlers:
+            if not isinstance(handler, dict):
+                remaining.append(handler)
+                continue
+            is_bridge = any('beyin_v3_bridge.py' in _decoded_command(handler.get(key))
+                            for key in ('command', 'commandWindows'))
+            if not is_bridge:
+                remaining.append(handler)
+                continue
+            if owner is not None:
+                cmd_str = (handler.get('commandWindows', handler.get('command'))
+                           if sys.platform == 'win32' else handler.get('command'))
+                arguments = hook_arguments(cmd_str) if isinstance(cmd_str, str) else []
+                values = {}
+                for flag in ('--state', '--vault'):
+                    if arguments.count(flag) == 1 and arguments.index(flag) < len(arguments) - 1:
+                        values[flag] = arguments[arguments.index(flag) + 1]
+                matches_owner = False
+                if len(values) == 2:
+                    try:
+                        matches_owner = Path(values['--state']).expanduser().resolve() == owner
+                    except (OSError, ValueError, RuntimeError):
+                        matches_owner = False
+                elif not values:
+                    # Legacy handler without state/vault flags is considered ours if we are managing this bridge
+                    matches_owner = True
+                if not matches_owner:
+                    remaining.append(handler)
+                    continue
         count = len(handlers) - len(remaining)
         removed += count
         if not count:
@@ -777,7 +890,7 @@ def _managed_opencode_file(path):
     return isinstance(data, dict) and data.get('managed_by') == OPENCODE_MANAGED
 
 
-def install_bridge(vault, state, harness, roots, events=None, context_chars=1500, home=None):
+def install_bridge(vault, state, harness, roots, events=None, context_chars=1500, replace=False, home=None):
     vault = Path(vault).expanduser().resolve()
     if not vault.is_dir() or not 0 <= context_chars <= 4000:
         raise ValueError('Invalid vault or context budget')
@@ -788,6 +901,14 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
     if not roots or any(not p.is_dir() for p in roots):
         raise ValueError('Project roots must exist')
     events = list(dict.fromkeys(events or EVENTS))
+
+    owner_info = bridge_owner(harness, state=state, home=home)
+    replaced_owner = None
+    if owner_info['state'] == 'other':
+        if not replace:
+            raise ValueError(f'Global bridge for {harness} is already owned by another vault ({owner_info["owner_state"]}); use --replace to overwrite')
+        replaced_owner = owner_info['owner_state']
+
     if harness == 'opencode':
         target = global_opencode_plugin_path(home=home)
         settings_path = global_opencode_settings_path(home=home)
@@ -803,7 +924,7 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
             if not path.is_file() or path.read_bytes() != text.encode('utf-8'):
                 _backup_file(path)
                 atomic(path, text)
-        return {
+        result = {
             'status': 'installed',
             'harness': harness,
             'hook_file': str(target),
@@ -811,6 +932,9 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
             'events': events,
             'project_roots': [str(r) for r in roots],
         }
+        if replaced_owner:
+            result['replaced_owner'] = replaced_owner
+        return result
     if harness == 'antigravity':
         events = [event for event in events if event in ANTIGRAVITY.values()]
         if not events:
@@ -847,10 +971,10 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
     else:
         wanted = hook_groups(shell_command(command), harness, events)
         hooks_map = data.setdefault('hooks', {})
-        # Replace every earlier bridge handler, so a narrower reinstall does not leave one
+        # Replace every earlier bridge handler (either mine or replaced owner), so a narrower reinstall does not leave one
         # forwarding an event the user removed; other handlers and their order stay.
         for event in list(hooks_map):
-            cleaned_groups, removed = _without_bridge(hooks_map[event])
+            cleaned_groups, removed = _without_bridge(hooks_map[event], state=None if replace else state)
             if removed and not cleaned_groups and event not in wanted:
                 del hooks_map[event]
             elif removed:
@@ -867,7 +991,7 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
     if harness == 'antigravity':
         gemini_path = update_gemini_md(vault, roots, home=home)
 
-    return {
+    result = {
         'status': 'installed',
         'harness': harness,
         'hook_file': str(target),
@@ -875,11 +999,24 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
         'events': handled_events(harness, events) if harness != 'antigravity' else events,
         'project_roots': [str(r) for r in roots],
     }
+    if replaced_owner:
+        result['replaced_owner'] = replaced_owner
+    return result
 
 
-def uninstall_bridge(harness, home=None):
+def uninstall_bridge(harness, state=None, home=None):
     if harness not in ('claude', 'codex', 'antigravity', 'opencode'):
         raise ValueError(f'Unsupported harness: {harness}')
+    owner_info = bridge_owner(harness, state=state, home=home)
+    if state and owner_info['state'] == 'other':
+        # Belonging to another vault: do not touch
+        target = global_hook_path(harness, home=home)
+        return {
+            'status': 'uninstalled',
+            'harness': harness,
+            'hook_file': str(target),
+            'removed_count': 0,
+        }
     target = global_hook_path(harness, home=home)
     removed_count = 0
     if harness == 'opencode':
@@ -910,7 +1047,7 @@ def uninstall_bridge(harness, home=None):
                         groups = hooks_map[event]
                         if not isinstance(groups, list):
                             continue
-                        cleaned_groups, removed = _without_bridge(groups)
+                        cleaned_groups, removed = _without_bridge(groups, state=state)
                         if not removed:
                             continue
                         removed_count += removed
@@ -926,7 +1063,8 @@ def uninstall_bridge(harness, home=None):
                 target.write_bytes((json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode('utf-8'))
 
     if harness == 'antigravity':
-        removed_count += remove_gemini_md(home=home)
+        if not state or owner_info['state'] == 'mine':
+            removed_count += remove_gemini_md(home=home)
 
     return {
         'status': 'uninstalled',
@@ -974,6 +1112,7 @@ def _main(argv=None):
     parser.add_argument('--print-config', action='store_true', help='Print hook groups to merge into global JSON; changes nothing')
     parser.add_argument('--install', action='store_true', help='Install bridge into global hook settings')
     parser.add_argument('--uninstall', action='store_true', help='Uninstall bridge from global hook settings')
+    parser.add_argument('--replace', action='store_true', help='Overwrite an existing global bridge owned by another vault')
     args = parser.parse_args(argv)
 
     if sum([bool(args.print_config), bool(args.install), bool(args.uninstall)]) > 1:
@@ -985,7 +1124,16 @@ def _main(argv=None):
         if args.harness == 'pi' and (args.print_config or args.install or args.uninstall):
             raise ValueError('Pi uses the installed extension with --beyin-project-root, not hook JSON')
         if args.uninstall:
-            result = uninstall_bridge(args.harness)
+            target_state = args.state
+            if not target_state and args.vault:
+                vault_dir = args.vault.expanduser().resolve()
+                if vault_dir.is_dir() and (vault_dir / '.beyin-runtime.json').is_file():
+                    try:
+                        rt = json.loads((vault_dir / '.beyin-runtime.json').read_text(encoding='utf-8'))
+                        target_state = Path(rt['state'])
+                    except Exception:
+                        pass
+            result = uninstall_bridge(args.harness, state=target_state)
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0
 
@@ -1026,7 +1174,7 @@ def _main(argv=None):
                 raise ValueError('Antigravity offers only SessionStart and Stop')
 
         if args.install:
-            result = install_bridge(vault, state, args.harness, roots, events, args.context_chars)
+            result = install_bridge(vault, state, args.harness, roots, events, args.context_chars, replace=args.replace)
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0
 
