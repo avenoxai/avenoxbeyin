@@ -1323,6 +1323,21 @@ class YakalaUnitTest(unittest.TestCase):
         (folder / 'b.md').write_text('---\ntur: not\ndurum: bekliyor\n---\n', encoding='utf-8')
         self.assertEqual(yakala.pending(self.vault), 1)
 
+    def test_card_notices_share_single_quoted_status_parsing(self):
+        folder = self.vault / INBOX
+        folder.mkdir(parents=True)
+        for status in ('bekliyor', 'ajanda', 'onay-bekliyor'):
+            (folder / (status + '.md')).write_text(
+                "---\ntur: 'yakala'\ndurum: '" + status + "'\n---\n", encoding='utf-8')
+        (folder / 'body.md').write_text(
+            '---\ntur: yakala\ndurum: islendi\n---\ndurum: bekliyor\n', encoding='utf-8')
+
+        self.assertEqual(yakala.pending(self.vault), 1)
+        notice = yakala.session_notice(self.vault)
+        self.assertIn('Yakalanan 1 kaynak bekliyor', notice)
+        self.assertIn('1 Yakala karti ajana ayrildi', notice)
+        self.assertIn('1 Yakala isi onay/inceleme bekliyor', notice)
+
     def test_emojiless_inbox_detection_and_install(self):
         vault = Path(self.tmp.name) / 'emojiless-vault'
         vault.mkdir(parents=True)
