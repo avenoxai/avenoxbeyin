@@ -111,8 +111,7 @@ def run_selftest(vault, state, questions_path=None, limit=5, audience="internal"
 
     def retrieve(query):
         if mode == "context":
-            from beyin_v3_workspaces import context_project
-            context = store.context_for("codex", query, project=context_project(vault, query),
+            context = store.context_for("codex", query, project=runtime.context_project(vault, query),
                                         audience=audience, limit=limit, budget_chars=budget, explicit=True)
             return context["records"], context.sources
         return store.candidates(query, audience=audience, limit=limit), ()

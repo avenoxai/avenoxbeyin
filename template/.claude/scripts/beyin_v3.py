@@ -2245,6 +2245,17 @@ def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0, *, e
     return packed
 
 
+def context_project(vault, query):
+    files = (vault / ".beyin-workspaces.json", vault / ".beyin-projects.json")
+    if not any(path.exists() or path.is_symlink() for path in files):
+        return None
+    from beyin_v3_workspaces import matching_workspace_ids
+    named = matching_workspace_ids(vault, query)
+    if len(named) > 1:
+        raise ValueError("context query names multiple Workspaces; specify --project")
+    return named[0] if named else None
+
+
 def shared_context(store, harness, query, **kwargs):
     """All supported harnesses call the same source-backed retrieval function."""
     if harness not in HARNESSES:

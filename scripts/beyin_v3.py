@@ -2320,8 +2320,7 @@ def main(argv=None, return_result=False):
             if not isinstance(params["query"], str) or not params["query"].strip():
                 raise ValueError("context requires a nonempty query")
             if params["project"] is None:
-                from beyin_v3_workspaces import context_project
-                params["project"] = context_project(vault, params["query"])
+                params["project"] = engine.context_project(vault, params["query"])
             if read_only_context:
                 result = store.context_for(args.harness, explicit=True, **params)
                 result['source_sync'] = {'status': 'skipped', 'reason': 'explicit_no_sync'}
