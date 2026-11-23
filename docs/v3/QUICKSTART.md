@@ -233,6 +233,10 @@ sonra aynı oturum kimliği ve aynı istekle tekrar çalıştır. Receipt için 
 `event_id` değerini koru. Kart ve Threads içindeki görünmez Markdown işaretleri
 tekrar denemede tamamlanan yazıların tanınmasını sağlar.
 
+Checkpoint makbuzu, bağımsız `receipt` komutuyla aynı yerel not atfı sayacını kullanır.
+Uygun notlara yapılan atıflar bir `event_id` için yalnız bir kez sayılır. Sayaç yazılamazsa
+makbuz geçerli kalır; aynı makbuz tekrar gönderildiğinde eksik sayaç tamamlanabilir.
+
 ## Install lifecycle adapters
 
 ```text

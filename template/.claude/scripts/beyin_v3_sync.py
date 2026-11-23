@@ -1743,4 +1743,12 @@ class SyncEngine:
                     receipt_res['candidates_resolved'] = resolved_count
             except Exception:
                 pass
-        return self._write_diagnostics(receipt_res, result)
+        receipt_res = self._write_diagnostics(receipt_res, result)
+        # Only a verified, committed receipt counts. Retry best-effort bookkeeping
+        # on replay too: the usage transaction deduplicates by the receipt event ID.
+        try:
+            from beyin_v3_usage import record_cited
+            record_cited(self.state, event_id, refs, self)
+        except Exception:
+            pass  # The durable receipt does not depend on machine-local counters.
+        return receipt_res

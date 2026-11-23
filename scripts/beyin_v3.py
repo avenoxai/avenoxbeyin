@@ -2407,11 +2407,6 @@ def main(argv=None, return_result=False):
             result = sync.receipt(payload["event_id"], payload["summary"],
                                           payload["refs"], args.harness, session=payload.get('session'),
                                           links=payload.get('links'))
-            try:
-                import beyin_v3_usage
-                beyin_v3_usage.record_cited(state, payload["event_id"], payload["refs"], sync)
-            except Exception:
-                pass
         elif args.command == "history":
             # History is source-verified, so refresh first like context: an edit
             # made just before this command must not hide the audit trail.
