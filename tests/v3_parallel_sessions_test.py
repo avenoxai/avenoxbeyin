@@ -426,6 +426,24 @@ class ParallelModuleTest(unittest.TestCase):
         self.assertFalse((self.state / 'parallel-presence-device.json').exists())
         self.assertFalse((self.state / '.presence').exists())
 
+    def test_active_session_keys_returns_short_keys_of_active_sessions(self):
+        self.assertEqual(self.module.active_session_keys(None), set())
+        self.assertEqual(self.module.active_session_keys(self.state), set())
+        now = time.time()
+        vault = self.state / 'vault'
+        vault.mkdir()
+        self.module.touch(self.state, 'claude', 'session-1', now=now, vault=vault)
+        self.module.touch(self.state, 'claude', 'session-2', now=now, vault=vault)
+        keys = self.module.active_session_keys(self.state, vault=vault, now=now)
+        short_1 = receipt_short('session-1')
+        short_2 = receipt_short('session-2')
+        self.assertIn(short_1, keys)
+        self.assertIn(short_2, keys)
+        self.assertEqual(len(keys), 2)
+        # Stale session is excluded
+        future = now + self.module.ACTIVE_SECONDS + 10
+        self.assertEqual(self.module.active_session_keys(self.state, vault=vault, now=future), set())
+
     def test_continuity_malformed_id_type_error(self):
         from beyin_v3 import MemoryStore
         from beyin_v3_continuity import resolve

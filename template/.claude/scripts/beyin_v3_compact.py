@@ -392,7 +392,11 @@ def blocks(lines, name):
     return [block for block in found if block['end'] > block['start']]
 
 
-def plan(text, name, limit, pointer):
+# Suffix pattern for Last-Session card headings: ## YYYY-MM-DD HH:MM · <etiket> · <8-hex-session-id>
+CARD_SESSION_KEY = re.compile(r'·[ \t]*([0-9a-fA-F]{8})[ \t]*$')
+
+
+def plan(text, name, limit, pointer, active_sessions=None):
     """Decide what moves. Returns None when nothing can move (the file needs a rewrite)."""
     lines = LINE.findall(text)
     parsed = blocks(lines, name)
@@ -406,6 +410,7 @@ def plan(text, name, limit, pointer):
         if block['kind'] == 'entry' and (name != 'Threads.md' or (owner is not None and not ACTIVE.match(lines[owner]))):
             groups.setdefault(owner, []).append(position)
     order, protected = {}, set()
+    active_keys = {k.lower() for k in active_sessions} if active_sessions else set()
     for positions in groups.values():
         keys = [parsed[p]['key'] for p in positions]
         rising = any(a < b for a, b in zip(keys, keys[1:]))
@@ -416,6 +421,11 @@ def plan(text, name, limit, pointer):
         newest_first = falling if rising != falling else name == 'Last-Session.md'
         for rank, p in enumerate(positions):
             order[p] = (parsed[p]['key'], -rank if newest_first else rank, p)
+            if name == 'Last-Session.md' and active_keys:
+                first_line = lines[parsed[p]['start']].rstrip('\r\n')
+                match = CARD_SESSION_KEY.search(first_line)
+                if match and match.group(1).lower() in active_keys:
+                    protected.add(p)
         protected.add(max(positions, key=order.get))
     histories = [p for p, block in enumerate(parsed) if block['kind'] == 'history']
     kept_pointers = {i for p in histories for i in range(parsed[p]['start'] + 1, parsed[p]['end'])
@@ -670,7 +680,7 @@ def compact(vault, state, dry_run=False, now=None):
         return {'status': 'needs_attention', 'files': {}, 'limits_file': 'invalid',
                 'reason': 'companion-limits.json in the runtime state is invalid; nothing moved. Fix or remove it first.'}
     if dry_run:
-        return _compact_files(vault, target, configured, dry_run=True, now=now)
+        return _compact_files(vault, target, configured, dry_run=True, now=now, state=state)
     # An uninitialized vault has nothing to compact and should not gain a companion
     # directory merely because the lock lives beside the files it protects.
     if not target.is_dir():
@@ -688,18 +698,25 @@ def compact(vault, state, dry_run=False, now=None):
             return {'status': 'needs_attention', 'reason': 'cannot acquire note lock: ' + str(exc), 'files': {}}
         try:
             with _compact_lock(target):
-                return _compact_files(vault, target, configured, dry_run=False, now=now)
+                return _compact_files(vault, target, configured, dry_run=False, now=now, state=state)
         except TimeoutError as exc:
             return {'status': 'conflict', 'reason': str(exc), 'files': {}}
         except _LockError as exc:
             return {'status': 'needs_attention', 'reason': str(exc), 'files': {}}
 
 
-def _compact_files(vault, target, configured, dry_run=False, now=None):
+def _compact_files(vault, target, configured, dry_run=False, now=None, state=None):
     now = now or datetime.now(timezone.utc)
     month = now.strftime('%Y-%m')
     relative = target.relative_to(vault).as_posix()
     files = {}
+    active_keys = None
+    if state is not None:
+        try:
+            from beyin_v3_parallel import active_session_keys
+            active_keys = active_session_keys(state, vault=vault, now=now.timestamp())
+        except Exception:
+            active_keys = None
     for name in LIMITS:
         path = target / name
         limit = configured[name]
@@ -718,7 +735,7 @@ def _compact_files(vault, target, configured, dry_run=False, now=None):
             continue
         archive_name = f'{Path(name).stem}-{month}.md'
         archive_relative = f'{relative}/{ARCHIVE_DIRECTORY}/{archive_name}'
-        result = plan(text, name, limit, POINTER.format(archive_relative))
+        result = plan(text, name, limit, POINTER.format(archive_relative), active_keys)
         report.update(archive=archive_relative)
         if result is None:
             backup = text
@@ -776,7 +793,7 @@ def _compact_files(vault, target, configured, dry_run=False, now=None):
             # turn a retry into a new archive operation; changed payloads still differ.
             identity = _hash(json.dumps([source, _hash(result['archive'])], ensure_ascii=False))
             committed = moves.get(identity)
-            replanned = (plan(text, name, limit, POINTER.format(committed[1]))
+            replanned = (plan(text, name, limit, POINTER.format(committed[1]), active_keys)
                          if committed is not None and committed[0] == result['archive'] else None)
             if replanned is not None and replanned['archive'] == result['archive']:
                 # A retry in another month must point at the actual committed
