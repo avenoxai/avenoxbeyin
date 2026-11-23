@@ -9038,24 +9038,29 @@ def _agent_card_path(vault, job):
 
 
 def _agent_find_renamed_card(vault, state, job):
+    root = Path(vault).resolve()
     inbox_dir = _agent_no_links(inbox(vault, state))
+    if not inbox_dir.is_relative_to(root):
+        raise ValueError('Yakala gelen kutusu vault disinda.')
     if not inbox_dir.is_dir():
         return None
-    matches = []
+    match = None
     for entry in inbox_dir.iterdir():
-        if _agent_reparse(entry) or not entry.is_file() or entry.suffix.lower() != '.md':
+        if entry.suffix.lower() != '.md':
             continue
         try:
-            meta, _ = read_card(entry)
-            if meta.get('ajan_isi') == job['id']:
-                rel = entry.resolve().relative_to(Path(vault).resolve())
-                checked = _agent_checked_path(Path(vault).resolve(), _agent_parts(rel.as_posix()))
-                matches.append(checked)
+            checked = _agent_checked_path(root, _agent_parts(entry.relative_to(root).as_posix()))
+            if not checked.is_file():
+                continue
+            meta, _ = read_card(checked)
         except (OSError, ValueError):
             continue
-    if len(matches) == 1:
-        return matches[0]
-    return None
+        if meta.get('ajan_isi') != job['id']:
+            continue
+        if match is not None:
+            raise ValueError('Ayni ajan isi birden fazla karta ait.')
+        match = checked
+    return match
 
 
 def _agent_update_card(vault, job, status, reason='', **fields):
@@ -10115,19 +10120,23 @@ def _agent_worker(vault, state):
                             target_path = None
                             try:
                                 target_path = _agent_card_path(vault, job)
-                            except (OSError, ValueError):
-                                renamed = _agent_find_renamed_card(vault, state, job)
+                            except (OSError, ValueError, KeyError):
+                                try:
+                                    root = Path(vault).resolve()
+                                    original = _agent_checked_path(root, _agent_parts(job['card_path']))
+                                    renamed = _agent_find_renamed_card(vault, state, job)
+                                except (OSError, ValueError, KeyError, TypeError) as exc:
+                                    _agent_log(state, 'worker', 'Kart uzlastirma bekliyor: ' + type(exc).__name__)
+                                    continue
                                 if renamed is not None:
                                     target_path = renamed
-                                    job['card_path'] = renamed.relative_to(Path(vault).resolve()).as_posix()
+                                    job['card_path'] = renamed.relative_to(root).as_posix()
                                     job['card_id'] = renamed.stem
                                     _agent_json(_agent_job_dir(vault, state, job['id']) / 'job.json', job)
-                                else:
-                                    orig_target = Path(vault).resolve() / Path(*_agent_parts(job['card_path']))
-                                    if not orig_target.exists():
-                                        job['card_reconcile'] = False
-                                        _agent_json(_agent_job_dir(vault, state, job['id']) / 'job.json', job)
-                                        _agent_log(state, job['card_id'], 'Yetim kart temizligi yapildi; kart diskte bulunamadi.')
+                                elif not original.exists():
+                                    job['card_reconcile'] = False
+                                    _agent_json(_agent_job_dir(vault, state, job['id']) / 'job.json', job)
+                                    _agent_log(state, job.get('card_id'), 'Yetim kart temizligi yapildi; kart diskte bulunamadi.')
                             if target_path is not None:
                                 try:
                                     current, _body = read_card(target_path)
