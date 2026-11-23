@@ -10123,7 +10123,7 @@ def _agent_worker(vault, state):
                             except (OSError, ValueError, KeyError):
                                 try:
                                     root = Path(vault).resolve()
-                                    original = _agent_checked_path(root, _agent_parts(job['card_path']))
+                                    original = _agent_no_links(root.joinpath(*_agent_parts(job['card_path'])))
                                     renamed = _agent_find_renamed_card(vault, state, job)
                                 except (OSError, ValueError, KeyError, TypeError) as exc:
                                     _agent_log(state, 'worker', 'Kart uzlastirma bekliyor: ' + type(exc).__name__)
