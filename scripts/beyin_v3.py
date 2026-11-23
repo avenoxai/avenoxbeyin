@@ -1270,6 +1270,13 @@ def parser(note_namespace=None, is_json=False):
     queue_action.add_argument("--dismiss", metavar="MUTATION_ID", help="Dismiss a reviewed conflict or failed mutation")
     mutation_queue.add_argument("--status", choices=["pending", "applied", "conflict", "failed", "dismissed"], help="Filter status for --list")
     mutation_queue.add_argument("--file", default="-", help="JSON {action, source, payload, mutation_id?} for --enqueue, or - for stdin")
+    devices = sub.add_parser("devices", help="Opt-in staged multi-device layout (off by default): detect, plan, apply")
+    devices_action = devices.add_mutually_exclusive_group()
+    devices_action.add_argument("--detect", action="store_true", help="Describe this machine and the levels it is ready for; writes nothing")
+    devices_action.add_argument("--plan", action="store_true", help="Show what --apply would store and the steps left to you; writes nothing")
+    devices_action.add_argument("--apply", action="store_true", help="Store the chosen level in the runtime state; writes nothing in the vault")
+    devices.add_argument("--level", choices=["solo", "phone"], help="solo: one computer; phone: + phone or tablet via a file sync service")
+    devices.add_argument("--phone-sync", choices=["icloud", "obsidian-sync", "other"], help="How the phone sees the vault")
     context = sub.add_parser("context", help="Retrieve source-backed shared context")
     context.add_argument("query", nargs="?", help="Query; alternatively use --file")
     context.add_argument("--file", help="JSON retrieval arguments, or - for stdin")
@@ -1346,6 +1353,7 @@ def parser(note_namespace=None, is_json=False):
     bridge.add_argument("--print-config", action="store_true", help="Print global hook JSON without installing")
     bridge.add_argument("--event", choices=("SessionStart", "Stop", "PreCompact", "SessionEnd"), action="append")
     bridge.add_argument("--context-chars", type=int, default=1500)
+    bridge.add_argument("--replace", action="store_true", help="Overwrite an existing global bridge owned by another vault")
     learn = sub.add_parser("learn", help="Stage or inspect learning candidates before distillation (RFC #368)")
     learn.add_argument("--candidate", help="Candidate learning content text")
     learn.add_argument("--source", default="", help="Source file or note path linking to this learning")
@@ -1485,7 +1493,7 @@ def main(argv=None, return_result=False):
         if read_only_context and args.jev:
             raise ValueError("context --no-sync cannot be combined with --jev")
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
-        engine = load_engine() if not context_selftest and args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc", "triage", "feedback", "checkpoint") else None
+        engine = load_engine() if not context_selftest and args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "devices", "workspace", "lint", "moc", "triage", "feedback", "checkpoint") else None
         database = state / "memory.sqlite3"
         doctor_without_index = read_only_doctor and not (database.exists() or database.is_symlink())
         store = None
@@ -1509,12 +1517,12 @@ def main(argv=None, return_result=False):
                 if not events:
                     argument_parser.error("Antigravity offers only SessionStart and Stop")
             if args.uninstall:
-                result = bridge_mod.uninstall_bridge(args.harness)
+                result = bridge_mod.uninstall_bridge(args.harness, state=state)
             elif args.install:
                 if not args.project_root:
                     argument_parser.error("--project-root is required with --install")
                 roots = [p.expanduser().resolve() for p in args.project_root]
-                result = bridge_mod.install_bridge(vault, state, args.harness, roots, events, args.context_chars)
+                result = bridge_mod.install_bridge(vault, state, args.harness, roots, events, args.context_chars, replace=args.replace)
             elif args.print_config:
                 if not args.project_root:
                     argument_parser.error("--project-root is required with --print-config")
@@ -1999,6 +2007,12 @@ def main(argv=None, return_result=False):
                 result['note_usage'] = usage.summarize_usage(state)
             except Exception as exc:
                 result['note_usage'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            try:  # information only: the opt-in multi-device layout
+                _ensure_scripts_path()
+                import beyin_v3_devices as devices_mod
+                result['devices'] = devices_mod.doctor(state)
+            except Exception as exc:
+                result['devices'] = {'status': 'unavailable', 'error': type(exc).__name__}
             result['status'] = ('needs_attention' if health.get('sync', {}).get('status') in ('conflict', 'degraded') or result['hook_paths'].get('status') == 'stale' or result['skill_conflicts'] or result.get('instruction_conflicts') or result['hook-error.json'] or result['task_completion']['strict_issue_count'] or result['task_completion'].get('error') or result['validity']['ignored_rejection_count'] or result['validity'].get('error') or result.get('project_scopes', {}).get('status') in ('error', 'warning') else 'pending' if result['pending_events'] else 'observed_metadata' if result['acknowledged_events'] else 'never_seen')
             if result['updates'].get('status') == 'recovery_required':
                 result['status'] = 'needs_attention'
@@ -2278,6 +2292,21 @@ def main(argv=None, return_result=False):
                 result = mutation.list_mutations(state, status=args.status)
             else:
                 result = mutation.status(state)
+        elif args.command == "devices":
+            _ensure_scripts_path()
+            import beyin_v3_devices as devices_mod
+            options = {"level": args.level, "phone_sync": args.phone_sync}
+            given = [name for name, value in options.items() if value is not None]
+            if given and not (args.plan or args.apply):
+                raise ValueError("--" + given[0].replace("_", "-") + " is only valid with --plan or --apply")
+            if args.detect:
+                result = devices_mod.detect(vault, state)
+            elif args.plan:
+                result = devices_mod.public_plan(devices_mod.plan(vault, state, options))
+            elif args.apply:
+                result = devices_mod.apply(vault, state, options)
+            else:
+                result = devices_mod.status(vault, state)
         elif args.command == "context":
             params = {"query": args.query, "project": args.project, "audience": args.audience,
                       "statuses": args.statuses, "limit": args.limit, "budget_chars": args.budget_chars}

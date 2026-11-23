@@ -226,6 +226,8 @@ def human_result(result, command, installed_version=None):
     if result.get('error'):
         return ('Islem tamamlanamadi: ' + str(result.get('message', result['error'])) +
                 ('\n' + ascii_text(result['hint']) if result.get('hint') else ''))
+    if command == 'devices':
+        return json.dumps(result, ensure_ascii=False, indent=2)
     if command == 'hook-reconcile':
         status = result.get('status')
         if status in ('ok', 'noop'):
@@ -658,6 +660,12 @@ def human_result(result, command, installed_version=None):
                          (' (kuyruk dosyasi okunamadi)' if queue.get('status') == 'invalid' else
                           ' (' + str(queue.get('pending_count', 0)) + ' bekleyen, ' + str(queue.get('conflict_count', 0)) +
                           ' cakisma, ' + str(queue.get('failed_count', 0)) + ' basarisiz)'))
+        devices = result.get('devices') or {}
+        if devices.get('valid') is False:
+            lines.append('devices.json gecersiz; coklu cihaz duzeni kapali sayiliyor.')
+        elif devices.get('enabled'):
+            lines.append('Coklu cihaz: ' + str(devices.get('level')) +
+                         (' / ' + str(devices['phone_sync']) if devices.get('phone_sync') else ''))
         index_scope = result.get('index_exclusions') or {}
         lines += index_exclusion_lines(index_scope)
         hint = index_scope.get('vendored_hint') or {}
@@ -821,7 +829,10 @@ def human_result(result, command, installed_version=None):
                 lines.append('  Global yonerge: ' + plain_text(result['gemini_md']))
             if result.get('project_roots'):
                 lines.append('  Kapsanan proje kokleri: ' + ', '.join(plain_text(r) for r in result['project_roots']))
-            lines.append('Mevcut kullanici ayarlari korundu; .bak yedegi alindi.')
+            if result.get('replaced_owner'):
+                lines.append('Baska bir kasaya ait kopru ezildi (' + plain_text(result['replaced_owner']) + '); .bak yedegi alindi.')
+            else:
+                lines.append('Mevcut kullanici ayarlari korundu; .bak yedegi alindi.')
             return '\n'.join(lines)
         elif status == 'uninstalled':
             lines = ['Global kopru kaldirildi (' + harness + '):']

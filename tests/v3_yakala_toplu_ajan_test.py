@@ -609,6 +609,22 @@ class BatchQueueTest(BatchFiles):
         self.assertEqual(result['sayilar']['preparing'], 1)
         self.spawned.assert_not_called()
 
+    def test_renamed_card_with_reconcile_flag_does_not_block_batch_submission(self):
+        self.configure()
+        _, old, card = self.queued(text='Prior finished job whose card was renamed')
+        old.update(state='completed', result_summary='Done.', card_reconcile=True)
+        yakala._agent_json(yakala._agent_job_dir(self.vault, self.state, old['id']) / 'job.json', old)
+        renamed = card['path'].with_name('renamed-' + card['path'].name)
+        card['path'].rename(renamed)
+
+        # Create a new card for bulk submission
+        _, new_card = self.card(text='New card to submit in batch')
+        preview = self.bulk(request='Toplu istek', use_why=False)
+        self.assertEqual(preview['kayit_sorunlari'], [])
+        result = self.submit(request='Toplu istek', use_why=False)
+        self.assertEqual(result['status'], 'toplu_gonderildi')
+
+
 
 class BatchCancelTest(BatchFiles):
     def prepared(self, count=2):

@@ -203,6 +203,8 @@ def _status_word(record):
     A task without a status is not active: task_create always writes one.
     """
     value = record.get("status")
+    if (value is None or (isinstance(value, str) and not value.strip())) and record.get("durum") is not None:
+        value = record.get("durum")
     if not isinstance(value, str) or not value.strip():
         return "" if record.get("kind") == "task" else "active"
     word = re.match(r"[^\W_]+", unicodedata.normalize("NFC", value.strip()).translate(_STATUS_FOLD).casefold())
@@ -1985,7 +1987,8 @@ class MemoryStore:
                                          today=today, allowed_statuses=allowed_statuses, factors=factors)
         if candidate_only:
             return [record for _, record in ranked[:limit]]
-        return pack_context([record for _, record in ranked], limit, budget_chars, stale_count)
+        return pack_context([record for _, record in ranked], limit, budget_chars, stale_count,
+                            query=query, project=project)
 
 
 # A rejected claim is proposed again when the new text restates most of it. Coverage is
@@ -2051,15 +2054,62 @@ class PackedContext(dict):
     wider = {}
     extensions = {}
     evidence = {}
+    query = None
+    project = None
 
 
-def _clip_to(record, citation, room):
-    """Longest text prefix whose serialized record+citation fits in room, else None."""
+def _locate_matching_passage(text, query, project=None):
+    """Locate the span (start, end) of the block matching query terms best, or None."""
+    if not query or not isinstance(query, str) or not text:
+        return None
+    try:
+        from beyin_v3_passage import split_blocks
+        ignored = STOPWORDS | _tokens(project or '')
+        terms = _strict_terms(_tokens(query) - ignored)
+        if not terms:
+            terms = _tokens(query) - ignored
+        if not terms:
+            return None
+        blocks = split_blocks(text)
+        if not blocks or not any(head for head, _, _ in blocks):
+            return None
+        vocabulary = _tokens(text)
+        roots = _query_roots(terms, lambda token: int(token in vocabulary), ignored)
+
+        def overlap(value):
+            tokens = _tokens(value)
+            return sum(term in tokens or roots.get(term) in tokens for term in terms)
+
+        best_score = 0
+        best_span = None
+        for head, start, end in blocks:
+            score = overlap(head + ' ' + text[start:end] if head else text[start:end])
+            if score > best_score:
+                best_score = score
+                best_span = (start, end)
+        if best_score > 0:
+            return best_span
+    except Exception:
+        pass
+    return None
+
+
+def _clip_to(record, citation, room, query=None, project=None):
+    """Text slice whose serialized record+citation fits in room, centered on match or prefix."""
     text, best = record["text"], None
+    span = _locate_matching_passage(text, query, project) if query else None
+    center = (span[0] + span[1]) // 2 if span else 0
     low, high = 0, len(text)
-    while low <= high:  # JSON escaping only grows with the prefix, so bisection is exact
+    while low <= high:  # JSON escaping only grows with the slice length, so bisection is exact
         middle = (low + high) // 2
-        candidate = dict(record, text=text[:middle] + CONTEXT_MARKER, text_truncated=True)
+        if span is None:
+            candidate_text = text[:middle] + CONTEXT_MARKER
+        else:
+            half = middle // 2
+            start = max(0, min(center - half, len(text) - middle))
+            end = start + middle
+            candidate_text = text[start:end] + CONTEXT_MARKER
+        candidate = dict(record, text=candidate_text, text_truncated=True)
         if len(_json(candidate)) + len(_json(citation)) <= room:
             best, low = candidate, middle + 1
         else:
@@ -2076,7 +2126,7 @@ def _clipped_size(record, citation, chars):
                + len(_json(citation)))
 
 
-def pack_context(records, limit=5, budget_chars=8000, stale_count=0):
+def pack_context(records, limit=5, budget_chars=8000, stale_count=0, query=None, project=None):
     """Pack successfully delivered sources, not a prefix of attempted candidates.
 
     An oversized metadata record cannot consume a source slot. Text may be clipped,
@@ -2122,7 +2172,7 @@ def pack_context(records, limit=5, budget_chars=8000, stale_count=0):
         room = allocation + carry
         source = record
         if full > room:
-            record = _clip_to(record, citation, room)
+            record = _clip_to(record, citation, room, query=query, project=project)
             if record is None:  # unreachable while room >= floor; never overspend
                 carry = room
                 continue
@@ -2138,10 +2188,13 @@ def pack_context(records, limit=5, budget_chars=8000, stale_count=0):
                             "truncated": bool(omitted) or clipped_any, "omitted_count": omitted,
                             "used_chars": used, "budget_chars": budget_chars, "stale_count": stale_count})
     packed.sources = tuple(sources)
+    packed.query = query
+    packed.project = project
     return packed
 
 
-def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0, *, extensions=None):
+def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0, *, extensions=None,
+                 query=None, project=None):
     """pack_context, then each wholly delivered record may take its wider version (id -> record)
     from the room every record left over, in rank order.
 
@@ -2151,7 +2204,7 @@ def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0, *, e
     The result's sources stay the narrow originals and .wider is kept, so every later pack
     (the advisor's or the final envelope's) decides again at its own budget.
     """
-    packed = pack_context(records, limit, budget_chars, stale_count)
+    packed = pack_context(records, limit, budget_chars, stale_count, query=query, project=project)
     widened, spare, chosen = False, budget_chars - packed["used_chars"], list(records)
     whole = {r["id"] for r, s in zip(packed["records"], packed.sources) if r["text"] == s["text"]}
     for position, record in enumerate(records):
@@ -2165,7 +2218,7 @@ def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0, *, e
                 chosen[position], spare, widened = alternative, spare - extra, True
                 break
     if widened:
-        packed = pack_context(chosen, limit, budget_chars, stale_count)
+        packed = pack_context(chosen, limit, budget_chars, stale_count, query=query, project=project)
     # Optional source/section context spends only what the existing passage
     # policy left over. Reserve every source's original second passage first;
     # a rich first source must not displace a later source's answering passage.
@@ -2182,7 +2235,7 @@ def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0, *, e
                     break
         if extended:
             prior = packed
-            packed = pack_context(chosen, len(chosen), budget_chars, stale_count)
+            packed = pack_context(chosen, len(chosen), budget_chars, stale_count, query=query, project=project)
             packed['omitted_count'] = prior['omitted_count']
             packed['truncated'] = packed['truncated'] or bool(prior['omitted_count'])
     by_id = {r["id"]: r for r in records}
@@ -2257,7 +2310,8 @@ def render_context(context, budget_chars, prefix="", suffix=""):
     payload_budget = available
     while True:
         packed = pack_widened(records, wider_views, len(records), payload_budget, context.get("stale_count", 0),
-                              extensions=extension_views)
+                              extensions=extension_views, query=getattr(context, "query", None),
+                              project=getattr(context, "project", None))
         packed["omitted_count"] += context.get("omitted_count", 0)
         packed["truncated"] = packed["truncated"] or bool(context.get("truncated"))
         packed.update(extra)

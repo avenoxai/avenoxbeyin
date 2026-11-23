@@ -535,6 +535,64 @@ c.compact(Path(sys.argv[2]), Path(sys.argv[3]), now=datetime(2026,10,26,tzinfo=t
         self.write('Threads.md', text)
         self.assertEqual(self.run_compact(NEXT)['files']['Threads.md']['backup_format'], 'full')
 
+    def test_compact_protects_cards_of_active_parallel_sessions(self):
+        # Issue #759: Active parallel session cards must not be archived when file exceeds limit.
+        import beyin_v3_parallel as parallel
+        session_a = 'session_alpha_12345'
+        session_b = 'session_beta_67890'
+        short_a = parallel.receipt_session(session_a)[:8]
+        short_b = parallel.receipt_session(session_b)[:8]
+
+        # Write active marker for session A
+        now_ts = NOW.timestamp()
+        folder = self.state / 'session-markers'
+        folder.mkdir(parents=True, exist_ok=True)
+        mname_a = parallel._marker_name('claude', session_a)
+        mdata_a = {
+            'schema': 1, 'harness': 'claude', 'session': parallel.receipt_session(session_a),
+            'first_at': now_ts - 100, 'last_at': now_ts - 50, 'announced': []
+        }
+        (folder / mname_a).write_text(json.dumps(mdata_a), encoding='utf-8')
+
+        # Last-Session.md has:
+        # B's card (newest, 2026-10-26 11:00, session short_b)
+        # A's card (active, 2026-10-26 10:00, session short_a)
+        # Old card (finished, 2026-10-25 09:00, session dead1234)
+        card_b = f"## 2026-10-26 11:00 · Görev B · {short_b}\nB oturumu içeriği.\n" + ("B satırı.\n" * 120)
+        card_a = f"## 2026-10-26 10:00 · Görev A · {short_a}\nA oturumu içeriği.\n" + ("A satırı.\n" * 120)
+        card_old = "## 2026-10-25 09:00 · Eski iş · dead1234\nEski tamamlanmış iş içeriği.\n" + ("Eski satır.\n" * 120)
+
+        content = "# Son oturum\n\n" + card_b + "\n" + card_a + "\n" + card_old
+        self.write('Last-Session.md', content)
+
+        # Run compact with tight limit so that old entries must move.
+        # But here limit is tight enough that preserving only card B would archive both card A and card_old.
+        # Card A must stay protected because session A is active in markers!
+        # With card B alone: ~1000 chars. Card A: ~1000 chars. Card old: ~1000 chars. Total ~3000 chars.
+        # Set limit to 1500 chars.
+        # If card A is NOT protected, card_old moves first; projected() is still > 1500, so card A moves too!
+        # If card A IS protected, card A cannot move, only card_old moves.
+        limit = len(card_b) + 200
+        limits_file = self.state / 'companion-limits.json'
+        limits_file.write_text(json.dumps({'schema': 1, 'Last-Session.md': limit, 'Threads.md': 8000}), encoding='utf-8')
+
+        report = self.run_compact(NOW)['files']['Last-Session.md']
+        self.assertEqual(report['status'], 'compacted')
+        live = (self.target / 'Last-Session.md').read_text(encoding='utf-8')
+        # Live file must retain card B and card A, but dead1234 was moved.
+        self.assertIn(short_b, live, "Newest card B must be preserved in live file")
+        self.assertIn(short_a, live, "Active session A card must be protected from compaction in live file")
+        self.assertNotIn("dead1234", live, "Old inactive card should be archived")
+
+        # In archive, the moved entries payload must contain dead1234, but NOT card A or card B as moved entries.
+        archive = self.target / 'Arşiv' / 'Last-Session-2026-10.md'
+        self.assertTrue(archive.exists())
+        archived_text = archive.read_text(encoding='utf-8')
+        moves = [p for p in archived_text.split('<!-- beyin-compact-v1: ') if '"kind": "move"' in p]
+        self.assertTrue(moves)
+        self.assertIn("dead1234", moves[0])
+        self.assertNotIn(short_a, moves[0], "Card A must not be among moved entries")
+
 
 if __name__ == '__main__':
     unittest.main()
