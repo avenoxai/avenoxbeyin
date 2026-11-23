@@ -149,8 +149,28 @@ class ReceiptCoverageTest(unittest.TestCase):
         doc = json.loads(proc.stdout)
         self.assertIsNone(doc.get('potential_missing_receipts'))
         self.assertIsNone(doc.get('receipt_coverage'))
+        self.assertEqual(doc['knowledge_freshness']['total_receipts'], 0)
+        self.assertEqual(doc['review']['due_count'], 0)
+        self.assertEqual(doc['supersedes']['dead_count'], 0)
         # Doctor reads through its own store; it must not build a SyncEngine and its journal.
         self.assertFalse((self.state / 'markdown-journal').exists())
+        self.assertEqual(list(self.state.iterdir()), [])
+
+    def test_doctor_does_not_migrate_legacy_checkpoint_schema(self):
+        engine = SyncEngine(self.vault, self.state)
+        engine.sync()
+        with engine.store._connect() as db:
+            db.execute('DROP TABLE receipt_checkpoints')
+            db.execute('CREATE TABLE receipt_checkpoints(harness TEXT, session TEXT, at REAL, '
+                       'PRIMARY KEY(harness, session))')
+            db.execute("INSERT INTO receipt_checkpoints VALUES ('hermes', 'legacy', 0)")
+        before = engine.store.database.read_bytes()
+        cmd = [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
+               '--state', str(self.state), 'doctor']
+        doc = json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True,
+                                        env=inherited_env()).stdout)
+        self.assertEqual(doc['receipt_coverage']['hermes_without_terminal'], 0)
+        self.assertEqual(engine.store.database.read_bytes(), before)
 
     def test_doctor_dynamic_coverage_and_human_output(self):
         """Review Point 5 & Human Rendering: doctor computes coverage dynamically at invocation time."""
@@ -190,6 +210,62 @@ class ReceiptCoverageTest(unittest.TestCase):
         # Human rendering test
         human_text = beyin_entry.human_result(doc, 'doctor')
         self.assertIn('Makbuz kapsami: %50 (1/2 oturum, son 7 gun: %50)', human_text)
+
+    def test_doctor_reports_hermes_terminal_observation_without_expanding_gaps(self):
+        engine = SyncEngine(self.vault, self.state)
+        now = time.time()
+        fixtures = (
+            ('hermes', 'synthetic-never-final', 0, now - 60, now - 60),
+            ('hermes', 'synthetic-later-turn', now - 90, now - 50, now - 50),
+            ('hermes', 'synthetic-finalized', now - 40, now - 80, now - 80),
+            ('hermes', 'synthetic-no-prompt', 0, now - 30, 0),
+            ('claude', 'synthetic-other-harness', 0, now - 20, now - 20),
+        )
+        with engine.store._connect() as db:
+            _checkpoint_schema(db)
+            db.executemany('INSERT INTO receipt_checkpoints(harness,session,at,turn_at,prompt_at) '
+                           'VALUES (?,?,?,?,?)', fixtures)
+        engine.sync()
+        gaps_path = self.state / 'receipt-gaps.json'
+        before = gaps_path.read_bytes()
+        gaps = json.loads(before)
+        base_coverage = gaps['receipt_coverage']
+        self.assertEqual((base_coverage['total'], base_coverage['missing']), (1, 1))
+        self.assertEqual(gaps['potential_missing_receipts'], 1)
+        self.assertNotIn('hermes_without_terminal', base_coverage)
+
+        cmd = [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
+               '--state', str(self.state), 'doctor']
+        doc = json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True,
+                                        env=inherited_env()).stdout)
+        coverage = doc['receipt_coverage']
+        self.assertEqual(coverage.pop('hermes_without_terminal'), 2)
+        self.assertEqual(coverage, base_coverage)
+        coverage['hermes_without_terminal'] = 2
+        rendered = beyin_entry.human_result(doc, 'doctor')
+        self.assertIn('Hermes: 2 oturumda son tur icin kapanis sinyali gozlenmedi', rendered)
+        self.assertNotIn('synthetic-never-final', rendered)
+        self.assertNotIn('synthetic-later-turn', rendered)
+        self.assertEqual(gaps_path.read_bytes(), before)
+
+        # The diagnostic is still useful when there is no eligible coverage denominator.
+        with engine.store._connect() as db:
+            db.execute("DELETE FROM receipt_checkpoints WHERE session = 'synthetic-finalized'")
+        engine.sync()
+        doc = json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True,
+                                        env=inherited_env()).stdout)
+        self.assertEqual(doc['receipt_coverage']['total'], 0)
+        self.assertIsNone(doc['receipt_coverage']['ratio'])
+        self.assertEqual(doc['receipt_coverage']['hermes_without_terminal'], 2)
+        self.assertIn('Hermes: 2 oturumda son tur icin kapanis sinyali gozlenmedi',
+                      beyin_entry.human_result(doc, 'doctor'))
+
+        gaps_path.unlink()
+        doc = json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True,
+                                        env=inherited_env()).stdout)
+        self.assertIsNone(doc['potential_missing_receipts'])
+        self.assertEqual(doc['receipt_coverage'], {'hermes_without_terminal': 2})
+        self.assertFalse(gaps_path.exists())
 
     def test_first_prompt_delivered_as_session_start_counts(self):
         """Hermes and OpenCode send the first user prompt as SessionStart; a one-prompt session still counts."""

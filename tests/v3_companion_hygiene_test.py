@@ -23,8 +23,11 @@ from v3_package_helpers import inherited_env
 
 ROOT = Path(os.environ.get('BEYIN_TEST_REPO', Path(__file__).resolve().parents[1]))
 SCRIPTS = ROOT / 'template/.claude/scripts'
-if str(SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS))
+# Spawned workers inherit the parent suite's path order. Put the engine ahead
+# of the repository CLI, which has the same beyin_v3 module name.
+if str(SCRIPTS) in sys.path:
+    sys.path.remove(str(SCRIPTS))
+sys.path.insert(0, str(SCRIPTS))
 import beyin_v3_compact as compact_module  # noqa: E402
 import beyin_v3_companion as companion_module  # noqa: E402
 

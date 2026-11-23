@@ -32,7 +32,7 @@ Code'un kendisi yapar.
 Terminalde `claude` çalıştır ve şunu yapıştır:
 
 ```
-Read https://avenox.lol/beyin.md and follow it exactly to build my second brain.
+Read https://avenox.io/beyin.md and follow it exactly to build my second brain.
 ```
 
 Bu tek satırlık giriş önce platformu ayırır: macOS/Linux mevcut `SETUP.md` yolunda kalır, yerel

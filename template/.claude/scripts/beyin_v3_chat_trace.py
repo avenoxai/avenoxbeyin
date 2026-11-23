@@ -199,13 +199,14 @@ def hint(state, harness, payload):
     return ''
 
 
-def write(vault, state, harness, session, text, *, day=None, record=None):
+def write(vault, state, harness, session, text, *, day=None, record=None, checkpoint_key=None):
     """Append only the explicitly supplied summary through the existing source writer.
 
     `day` is set only by the explicit backfill (#599): a past session's own first day, so its
     trace lands in that month instead of the day the summary was written. It also passes `record`
     (#766): a callable run under this same writer lock once the note is confirmed, so the backfill
     ledger entry and the note can never be separated by another process taking the lock between them.
+    A unified checkpoint pins its original journal date across retries using a content key.
     """
     if not settings(state)['enabled']:
         raise ValueError('chat trace is off; explicitly enable it before writing')
@@ -224,6 +225,25 @@ def write(vault, state, harness, session, text, *, day=None, record=None):
         path, value = _marker(folder, harness, session, time.time())
         if value['suppressed']:
             raise ValueError('chat trace was suppressed for this session by [kaydetme]')
+        checkpoint = None
+        if checkpoint_key is not None:
+            if not re.fullmatch(r'[0-9a-f]{64}', checkpoint_key) or record is not None:
+                raise ValueError('invalid chat trace checkpoint key')
+            checkpoint = folder / ('checkpoint-' + checkpoint_key + '.json')
+            try:
+                saved = _read(checkpoint)
+            except FileNotFoundError:
+                saved = {'day': today, 'complete': False}
+                atomic(checkpoint, json.dumps(saved))
+            if (not isinstance(saved, dict) or type(saved.get('complete')) is not bool or
+                    not isinstance(saved.get('day'), str)):
+                raise ValueError('invalid chat trace checkpoint record')
+            today = date.fromisoformat(saved['day']).isoformat()
+            paragraph = today + ': ' + ' '.join(text.split())
+            if saved['complete']:
+                return {'status': 'unchanged', 'source': 'knowledge/conversations/' + today[:7] + '.md',
+                        'paragraph_chars': len(paragraph), 'covered_turns': value['covered'],
+                        'remote_allowed': False}
         engine = SyncEngine(vault, state)
         recovered_month = value.get('backfill_month') if record is not None and value.get('backfill_digest') else None
         month = recovered_month or today[:7]
@@ -292,6 +312,8 @@ def write(vault, state, harness, session, text, *, day=None, record=None):
         # finds the exact paragraph before acknowledging, so it cannot duplicate it.
         value.update(covered=value['turns'], since=time.time(), next_due=value['turns'] + 2)
         atomic(path, json.dumps(value))
+        if checkpoint is not None:
+            atomic(checkpoint, json.dumps({'day': today, 'complete': True}))
         return {'status': result['status'], 'source': source, 'paragraph_chars': len(paragraph),
                 'covered_turns': value['covered'], 'remote_allowed': False,
                 **({'session_date': paragraph[:10]} if record is not None else {})}

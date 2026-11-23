@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path, PureWindowsPath
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,18 @@ sys.path.insert(0, str(SCRIPTS))
 import beyin_v3_bridge as bridge
 import beyin_v3_hook as hook
 from beyin_v3_sync import SyncEngine
+
+
+def _supports_file_operation(operation):
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / 'settings.json'
+        path.touch()
+        try:
+            operation(path)
+        except (AttributeError, OSError, NotImplementedError):
+            return False
+        return True
+
 
 # Drives the generated global plugin the way OpenCode 2.x does: setup(ctx), prompt,
 # request-time context, then the event stream. Prints one JSON line.
@@ -495,6 +508,227 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(hooks['PostToolUse'], [custom])
         bridge.uninstall_bridge('claude', home=self.home)
         self.assertEqual(json.loads(target.read_text(encoding='utf-8')), {'hooks': {'PostToolUse': [custom]}})
+
+    def test_global_json_updates_preserve_symlink_and_custom_hooks(self):
+        target = bridge.global_hook_path('claude', home=self.home)
+        target.parent.mkdir(parents=True)
+        real = self.home / 'dotfiles' / 'settings.json'
+        real.parent.mkdir()
+        custom = {'matcher': '*', 'hooks': [{'type': 'command', 'command': 'echo user'}]}
+        original = {'hooks': {'PostToolUse': [custom]}}
+        real.write_text(json.dumps(original), encoding='utf-8')
+        try:
+            target.symlink_to(os.path.relpath(real, target.parent))
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f'symlinks unavailable: {exc}')
+        link = os.readlink(target)
+        bridge.install_bridge(self.vault, self.state, 'claude', [self.project], home=self.home)
+        self.assertTrue(target.is_symlink())
+        self.assertEqual(os.readlink(target), link)
+        self.assertNotEqual(json.loads(real.read_text(encoding='utf-8')), original)
+        bridge.uninstall_bridge('claude', home=self.home)
+        self.assertTrue(target.is_symlink())
+        self.assertEqual(os.readlink(target), link)
+        self.assertEqual(json.loads(real.read_text(encoding='utf-8')), original)
+
+    def test_global_json_update_refuses_a_symlink_retargeted_after_read(self):
+        target = bridge.global_hook_path('claude', home=self.home)
+        target.parent.mkdir(parents=True)
+        original = self.home / 'original.json'
+        other = self.home / 'other.json'
+        original.write_bytes(b'{"original": true}')
+        other.write_bytes(b'{"other": true}')
+        try:
+            target.symlink_to(original)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f'symlinks unavailable: {exc}')
+        read_settings = bridge._read_global_settings
+
+        def read_then_retarget(path):
+            data = read_settings(path)
+            target.unlink()
+            target.symlink_to(other)
+            return data
+
+        with patch.object(bridge, '_read_global_settings', side_effect=read_then_retarget):
+            with self.assertRaisesRegex(OSError, 'Global settings changed before write'):
+                bridge.install_bridge(self.vault, self.state, 'claude', [self.project], home=self.home)
+        self.assertEqual(original.read_bytes(), b'{"original": true}')
+        self.assertEqual(other.read_bytes(), b'{"other": true}')
+        self.assertEqual(list(target.parent.iterdir()), [target])
+
+    def test_global_json_updates_use_the_atomic_writer(self):
+        target = bridge.global_hook_path('claude', home=self.home)
+        target.parent.mkdir(parents=True)
+        target.write_text(json.dumps({'hooks': {}}), encoding='utf-8')
+        with patch('beyin_v3_sync.atomic', wraps=__import__('beyin_v3_sync').atomic) as atomic:
+            bridge.install_bridge(self.vault, self.state, 'claude', [self.project], home=self.home)
+            bridge.uninstall_bridge('claude', home=self.home)
+        self.assertEqual(atomic.call_count, 2)
+        self.assertEqual(json.loads(target.read_text(encoding='utf-8')), {})
+
+    @unittest.skipUnless(_supports_file_operation(lambda path: os.link(path, path.with_suffix('.link'))),
+                         'hardlinks unavailable')
+    def test_global_json_updates_preserve_hardlinks(self):
+        target = bridge.global_hook_path('claude', home=self.home)
+        target.parent.mkdir(parents=True)
+        alias = target.with_suffix('.link')
+        original = {'keep': 'Şifre'}
+        target.write_text(json.dumps(original), encoding='utf-8')
+        os.link(target, alias)
+        inode = target.stat().st_ino
+
+        bridge.install_bridge(self.vault, self.state, 'claude', [self.project], home=self.home)
+        self.assertEqual(target.stat().st_ino, inode)
+        self.assertEqual(alias.stat().st_ino, inode)
+        self.assertEqual(alias.read_bytes(), target.read_bytes())
+        self.assertIn('SessionStart', json.loads(alias.read_text(encoding='utf-8'))['hooks'])
+
+        bridge.uninstall_bridge('claude', home=self.home)
+        self.assertEqual(target.stat().st_ino, inode)
+        self.assertEqual(alias.stat().st_ino, inode)
+        self.assertEqual(alias.read_bytes(), target.read_bytes())
+        self.assertEqual(json.loads(alias.read_text(encoding='utf-8')), original)
+
+    def test_global_json_replacement_preserves_mode(self):
+        target = bridge.global_hook_path('claude', home=self.home)
+        target.parent.mkdir(parents=True)
+        target.write_text('{}', encoding='utf-8')
+        target.chmod(0o640)
+        mode = stat.S_IMODE(target.stat().st_mode)
+        bridge.install_bridge(self.vault, self.state, 'claude', [self.project], home=self.home)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), mode)
+        bridge.uninstall_bridge('claude', home=self.home)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), mode)
+
+    @unittest.skipUnless(_supports_file_operation(lambda path: os.chown(path, path.stat().st_uid, path.stat().st_gid)),
+                         'chown unavailable')
+    def test_global_json_replacement_attempts_to_preserve_owner_and_group(self):
+        target = self.home / 'settings.json'
+        target.write_text('{}', encoding='utf-8')
+        original = target.stat()
+        with patch.object(os, 'chown', wraps=os.chown) as chown:
+            bridge._write_global_json(target, {'updated': True})
+        self.assertEqual(chown.call_count, 1)
+        self.assertEqual(chown.call_args.args[1:], (original.st_uid, original.st_gid))
+        self.assertNotEqual(Path(chown.call_args.args[0]), target)
+        self.assertEqual((target.stat().st_uid, target.stat().st_gid), (original.st_uid, original.st_gid))
+
+    def test_global_json_replacement_tolerates_unavailable_chown(self):
+        target = self.home / 'settings.json'
+        target.write_text('{}', encoding='utf-8')
+        for error in (AttributeError, PermissionError, OSError):
+            with self.subTest(error=error), patch.object(os, 'chown', create=True, side_effect=error):
+                bridge._write_global_json(target, {'updated': True})
+                self.assertEqual(json.loads(target.read_text(encoding='utf-8')), {'updated': True})
+
+    def test_failed_global_json_temp_write_preserves_original_and_cleans_up(self):
+        target = self.home / 'settings.json'
+        original = b'{"keep": true}\n'
+        target.write_bytes(original)
+        real_fdopen = os.fdopen
+
+        @contextlib.contextmanager
+        def failing_fdopen(*args, **kwargs):
+            with real_fdopen(*args, **kwargs) as handle:
+                write = handle.write
+
+                def fail_after_partial_write(text):
+                    write(text[:1])
+                    raise OSError('injected temp write failure')
+
+                with patch.object(handle, 'write', side_effect=fail_after_partial_write):
+                    yield handle
+
+        with patch('beyin_v3_sync.os.fdopen', side_effect=failing_fdopen):
+            with self.assertRaisesRegex(OSError, 'injected temp write failure'):
+                bridge._write_global_json(target, {'updated': True})
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(list(target.parent.iterdir()), [target])
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS ACL and xattr tools required')
+    def test_global_json_replacement_preserves_acl_and_xattr(self):
+        import pwd
+        target = self.home / 'settings.json'
+        target.write_text('{}', encoding='utf-8')
+        user = pwd.getpwuid(os.getuid()).pw_name
+        subprocess.run(['/bin/chmod', '+a', f'{user} allow read', str(target)], env=self.env, check=True)
+        subprocess.run(['/usr/bin/xattr', '-w', 'user.beyin_probe', 'marker', str(target)],
+                       env=self.env, check=True)
+
+        bridge._write_global_json(target, {'updated': True})
+
+        attr = subprocess.run(['/usr/bin/xattr', '-p', 'user.beyin_probe', str(target)],
+                              env=self.env, capture_output=True, check=True)
+        acl = subprocess.run(['/bin/ls', '-le', str(target)], env=self.env, capture_output=True, check=True)
+        self.assertEqual(attr.stdout.strip(), b'marker')
+        self.assertIn(b'allow read', acl.stdout)
+
+    @unittest.skipUnless(_supports_file_operation(lambda path: os.setxattr(path, 'user.beyin_probe', b'marker')),
+                         'extended attributes unavailable through os.setxattr')
+    def test_global_json_replacement_preserves_posix_xattr(self):
+        target = self.home / 'settings.json'
+        target.write_text('{}', encoding='utf-8')
+        os.setxattr(target, 'user.beyin_probe', b'marker')
+        bridge._write_global_json(target, {'updated': True})
+        self.assertEqual(os.getxattr(target, 'user.beyin_probe'), b'marker')
+
+    @unittest.skipUnless(_supports_file_operation(lambda path: os.link(path, path.with_suffix('.link'))),
+                         'hardlinks unavailable')
+    def test_global_json_replacement_refuses_a_link_added_while_staging(self):
+        target = self.home / 'settings.json'
+        target.write_bytes(b'{}')
+        alias = target.with_suffix('.link')
+        fsync = os.fsync
+
+        def fsync_then_link(fd):
+            fsync(fd)
+            os.link(target, alias)
+
+        with patch('beyin_v3_sync.os.fsync', side_effect=fsync_then_link):
+            with self.assertRaisesRegex(OSError, 'Global settings changed before write'):
+                bridge._write_global_json(target, {'updated': True})
+        self.assertTrue(target.samefile(alias))
+        self.assertEqual(target.read_bytes(), b'{}')
+        self.assertEqual(set(target.parent.iterdir()), {target, alias})
+
+    @unittest.skipUnless(_supports_file_operation(lambda path: os.link(path, path.with_suffix('.link'))),
+                         'hardlinks unavailable')
+    def test_failed_hardlinked_global_json_update_restores_original(self):
+        target = self.home / 'settings.json'
+        original = b'{"keep": true}\n'
+        target.write_bytes(original)
+        alias = target.with_suffix('.link')
+        os.link(target, alias)
+        fsync = os.fsync
+        attempts = []
+
+        def fail_once(fd):
+            attempts.append(fd)
+            if len(attempts) == 1:
+                raise OSError('injected fsync failure')
+            fsync(fd)
+
+        with patch.object(os, 'fsync', side_effect=fail_once):
+            with self.assertRaisesRegex(OSError, 'injected fsync failure'):
+                bridge._write_global_json(target, {'updated': True})
+        self.assertEqual(len(attempts), 2)
+        self.assertTrue(target.samefile(alias))
+        self.assertEqual(alias.read_bytes(), original)
+        self.assertEqual(set(target.parent.iterdir()), {target, alias})
+
+    @unittest.skipUnless(os.name == 'nt' and _supports_file_operation(
+        lambda path: Path(str(path) + ':beyin_probe').write_bytes(b'marker')), 'NTFS streams unavailable')
+    def test_global_json_replacement_refuses_windows_named_streams(self):
+        target = self.home / 'settings.json'
+        target.write_bytes(b'{}')
+        stream = Path(str(target) + ':beyin_probe')
+        stream.write_bytes(b'marker')
+        with self.assertRaisesRegex(OSError, 'alternate data streams'):
+            bridge._write_global_json(target, {'updated': True})
+        self.assertEqual(target.read_bytes(), b'{}')
+        self.assertEqual(stream.read_bytes(), b'marker')
+        self.assertEqual(list(target.parent.iterdir()), [target])
 
     def test_cli_print_config_keeps_the_selected_events(self):
         base = [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault), '--state', str(self.state),
@@ -1406,6 +1640,43 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout.strip().splitlines()[-1]), {'a': 1, 'b': 0, 'c': 1, 'd': 0})
         self.assertEqual(sorted(event['project'] for event in self.queued()), sorted([self.project.name, other.name]))
 
+    def test_write_global_json_preserves_symlink(self):
+        # Create a settings file as a dotfile / target file, and a symlink pointing to it
+        target_file = self.root / 'real_settings.json'
+        target_file.write_text('{"initial": true}\n', encoding='utf-8')
+        link_file = self.root / 'symlink_settings.json'
+        try:
+            link_file.symlink_to(target_file)
+        except OSError:
+            raise self.skipTest('Symlinks not supported or permitted on this system/user')
+
+        bridge._write_global_json(link_file, {"updated": True})
+        self.assertTrue(link_file.is_symlink())
+        self.assertEqual(link_file.resolve(), target_file.resolve())
+        data = json.loads(target_file.read_text(encoding='utf-8'))
+        self.assertEqual(data, {"updated": True})
+
+
+
+    def test_install_and_uninstall_preserve_symlinked_global_settings(self):
+        target = bridge.global_hook_path('claude', home=self.home)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        dotfiles_target = self.root / 'dotfiles_settings.json'
+        dotfiles_target.write_text(json.dumps({"hooks": {}}), encoding='utf-8')
+        try:
+            target.symlink_to(dotfiles_target)
+        except OSError:
+            raise self.skipTest('Symlinks not supported or permitted on this system/user')
+
+        bridge.install_bridge(self.vault, self.state, 'claude', [self.project], home=self.home)
+        self.assertTrue(target.is_symlink())
+        installed_data = json.loads(dotfiles_target.read_text(encoding='utf-8'))
+        self.assertIn('hooks', installed_data)
+
+        bridge.uninstall_bridge('claude', home=self.home)
+        self.assertTrue(target.is_symlink())
+        uninstalled_data = json.loads(dotfiles_target.read_text(encoding='utf-8'))
+        self.assertEqual(uninstalled_data, {})
 
 if __name__ == '__main__':
     unittest.main()

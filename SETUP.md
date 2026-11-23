@@ -660,7 +660,7 @@ log, and be precise about when the rest arrives.
 - 💸 **Maliyet:** Ekstra ücret yok; arka plan özetleyici ve derleyici mevcut Claude aboneliğinin
   günlük limitinden küçük bir pay kullanır (özet: her oturum sonunda küçük bir Haiku çağrısı;
   derleme: günde bir Sonnet çağrısı).
-- 🔗 **Sen de kurdun mu?** Bir arkadaşına gönder: `avenox.lol/beyin.md`
+- 🔗 **Sen de kurdun mu?** Bir arkadaşına gönder: `avenox.io/beyin.md`
 
 Do not end the session by saying "kuruldu" alone. Show the pipeline once, with the user watching.
 

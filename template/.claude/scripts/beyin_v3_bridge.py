@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import stat
 import subprocess
 import sys
 
@@ -342,10 +343,11 @@ def gemini_md_content(vault, roots):
     )
 
 
-def _backup_file(path):
-    if not path.is_file():
+def _backup_file(path, *, source=None):
+    source = path if source is None else source
+    if not source.is_file():
         return None
-    raw = path.read_bytes()
+    raw = source.read_bytes()
     index = 0
     while True:
         backup = path.with_name(path.name + '.bak' + ('.' + str(index) if index else ''))
@@ -357,6 +359,150 @@ def _backup_file(path):
             return backup
         except FileExistsError:
             index += 1
+
+
+def _check_windows_replacement_metadata(source, staged):
+    """Refuse a rename if it would discard Windows access metadata or named streams."""
+    import ctypes
+    from ctypes import wintypes
+
+    security = ctypes.WinDLL('advapi32', use_last_error=True).GetFileSecurityW
+    owner_group_dacl = 0x07
+
+    def descriptor(path):
+        name = ctypes.c_wchar_p(str(path))
+        size = wintypes.DWORD()
+        if not security(name, owner_group_dacl, None, 0, ctypes.byref(size)) and not size.value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        buffer = ctypes.create_string_buffer(size.value)
+        if not security(name, owner_group_dacl, buffer, len(buffer), ctypes.byref(size)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return buffer.raw
+
+    if descriptor(source) != descriptor(staged):
+        raise OSError('Windows global settings have different access metadata; preserved')
+
+    class StreamData(ctypes.Structure):
+        _fields_ = [('size', ctypes.c_longlong), ('name', wintypes.WCHAR * 296)]
+
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    find_first = kernel.FindFirstStreamW
+    find_first.restype = wintypes.HANDLE
+    info = StreamData()
+    found = find_first(ctypes.c_wchar_p(str(source)), 0, ctypes.byref(info), 0)
+    if found == ctypes.c_void_p(-1).value:
+        error = ctypes.get_last_error()
+        if error not in (38, 87):  # No streams or the file system does not support them.
+            raise ctypes.WinError(error)
+        return
+    handle = wintypes.HANDLE(found)
+    try:
+        if info.name != '::$DATA' or kernel.FindNextStreamW(handle, ctypes.byref(info)):
+            raise OSError('Windows global settings have alternate data streams; preserved')
+        if ctypes.get_last_error() != 38:  # ERROR_HANDLE_EOF
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel.FindClose(handle)
+
+
+def _copy_global_json_metadata(source, staged, current):
+    try:
+        os.chown(staged, current.st_uid, current.st_gid)
+    except (PermissionError, OSError, AttributeError):
+        pass
+
+    mode = stat.S_IMODE(current.st_mode)
+    if os.name == 'nt':
+        _check_windows_replacement_metadata(source, staged)
+        # A read-only destination cannot be replaced on Windows. Reject it before
+        # marking the temp file read-only too, which would also prevent cleanup.
+        if not mode & stat.S_IWRITE:
+            raise PermissionError('Windows global settings are read-only; preserved')
+    os.chmod(staged, mode)
+    if sys.platform == 'darwin':
+        import ctypes
+        copyfile = ctypes.CDLL(None, use_errno=True).copyfile
+        acl_and_xattr_no_follow = (1 << 0) | (1 << 2) | (1 << 18) | (1 << 19)
+        if copyfile(os.fsencode(source), os.fsencode(staged), None, acl_and_xattr_no_follow) != 0:
+            raise OSError(ctypes.get_errno(), 'Cannot preserve global settings ACL or extended attributes')
+    elif hasattr(os, 'listxattr'):
+        attributes = set(os.listxattr(source, follow_symlinks=False))
+        for name in set(os.listxattr(staged)) - attributes:
+            os.removexattr(staged, name)
+        for name in attributes:
+            value = os.getxattr(source, name, follow_symlinks=False)
+            os.setxattr(staged, name, value)
+
+
+def _global_json_stat(path):
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(current.st_mode):
+        raise OSError('Global settings changed before write')
+    return current
+
+
+def _global_json_stamp(current):
+    if current is None:
+        return None
+    return (current.st_dev, current.st_ino, current.st_nlink, current.st_mode,
+            current.st_mtime_ns, current.st_ctime_ns, current.st_size)
+
+
+def _global_json_snapshot(path):
+    resolved = path.resolve()
+    return resolved, _global_json_stamp(_global_json_stat(resolved))
+
+
+def _write_global_json(path, data, *, expected=None):
+    """Update global settings through symlinks and keep shared inodes intact."""
+    from beyin_v3_sync import atomic
+    path = Path(path)
+    target = path.resolve()
+    text = json.dumps(data, indent=2, ensure_ascii=False) + '\n'
+    current = _global_json_stat(target)
+    stamp = _global_json_stamp(current)
+
+    def check_target():
+        if _global_json_snapshot(path) != (target, stamp):
+            raise OSError('Global settings changed before write')
+
+    if expected is not None:
+        if expected != (target, stamp):
+            raise OSError('Global settings changed before write')
+        _backup_file(path, source=target)
+        check_target()
+
+    if current is not None and current.st_nlink > 1:
+        payload = text.encode('utf-8')
+        with target.open('r+b', buffering=0) as handle:
+            original = handle.read()
+            if _global_json_stamp(os.fstat(handle.fileno())) != stamp:
+                raise OSError('Global settings changed before write')
+            check_target()
+            handle.seek(0)
+            handle.truncate(0)
+            try:
+                if handle.write(payload) != len(payload):
+                    raise OSError('Incomplete global settings write')
+                os.fsync(handle.fileno())
+            except OSError:
+                handle.seek(0)
+                if handle.write(original) != len(original):
+                    raise OSError('Incomplete global settings rollback')
+                handle.truncate()
+                os.fsync(handle.fileno())
+                raise
+        return
+
+    def prepare_replace(staged):
+        check_target()
+        if current is not None:
+            _copy_global_json_metadata(target, staged, current)
+
+    atomic(target, text, prepare_replace=prepare_replace, before_replace=check_target)
 
 
 def hook_arguments(command: str) -> list:
@@ -829,7 +975,9 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
     for event in events:
         command.extend(['--event', event])
 
-    data = _read_global_settings(target)
+    snapshot = _global_json_snapshot(target)
+    settings_file = snapshot[0]
+    data = _read_global_settings(settings_file)
     if harness != 'antigravity':
         hooks = data.get('hooks', {})
         if not isinstance(hooks, dict) or any(not isinstance(groups, list) for groups in hooks.values()):
@@ -859,9 +1007,8 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
             hooks_map.setdefault(event, []).append(group)
 
     new_bytes = (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode('utf-8')
-    if not target.is_file() or target.read_bytes() != new_bytes:
-        _backup_file(target)
-        target.write_bytes(new_bytes)
+    if not settings_file.is_file() or settings_file.read_bytes() != new_bytes:
+        _write_global_json(target, data, expected=snapshot)
 
     gemini_path = None
     if harness == 'antigravity':
@@ -894,8 +1041,9 @@ def uninstall_bridge(harness, home=None):
             'hook_file': str(target),
             'removed_count': removed_count,
         }
-    if target.is_file():
-        data = _read_global_settings(target)
+    snapshot = _global_json_snapshot(target)
+    if snapshot[1] is not None:
+        data = _read_global_settings(snapshot[0])
         if isinstance(data, dict):
             modified = False
             if harness == 'antigravity':
@@ -922,8 +1070,7 @@ def uninstall_bridge(harness, home=None):
                     if modified and not hooks_map:
                         del data['hooks']
             if modified:
-                _backup_file(target)
-                target.write_bytes((json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode('utf-8'))
+                _write_global_json(target, data, expected=snapshot)
 
     if harness == 'antigravity':
         removed_count += remove_gemini_md(home=home)

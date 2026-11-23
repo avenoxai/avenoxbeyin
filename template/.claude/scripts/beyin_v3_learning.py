@@ -69,14 +69,27 @@ def _ledger_lock(state_dir: Path, timeout: float = 10.0, step: float = 0.05, *, 
         handle.close()
 
 
-def _atomic_append(file_path: Path, record: dict) -> None:
+def _atomic_append(file_path: Path, record: dict, *, deduplicate: bool = False) -> dict:
     file_path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(record, ensure_ascii=False) + "\n"
     with _ledger_lock(file_path.parent):
-        with open(file_path, "a", encoding="utf-8") as f:
+        if deduplicate:
+            try:
+                with file_path.open(encoding="utf-8") as ledger:
+                    for previous in ledger:
+                        try:
+                            existing = json.loads(previous)
+                        except ValueError:
+                            continue
+                        if isinstance(existing, dict) and existing.get("id") == record["id"]:
+                            return dict(existing, idempotent=True)
+            except FileNotFoundError:
+                pass
+        with open(file_path, "a", encoding="utf-8", newline="\n") as f:
             f.write(line)
             f.flush()
             os.fsync(f.fileno())
+    return record
 
 
 def _normalize_session(session: str | None) -> str:
@@ -125,7 +138,8 @@ def _check_source_trust(state: Path, source: str) -> None:
             raise ValueError(f"trust check failed: {e}")
 
 
-def stage_candidate(state: Path, session: str, candidate: str, source: str = "", scope: str = "global") -> dict:
+def stage_candidate(state: Path, session: str, candidate: str, source: str = "", scope: str = "global",
+                    *, deduplicate: bool = False) -> dict:
     """Stage a learning candidate into learning-state.jsonl."""
     state = Path(state)
     source = str(source).strip()
@@ -138,14 +152,14 @@ def stage_candidate(state: Path, session: str, candidate: str, source: str = "",
     # candidate instead of storing it raw. Only the aggregate health counter is best effort.
     from beyin_v3_secrets import redact, record as record_redactions
     cand_text, count = redact(cand_text, state)
-    if count > 0:
-        try:
-            record_redactions(state, count)
-        except Exception:
-            pass
-
     norm_session = _normalize_session(session)
-    record_id = hashlib.sha256(f"{norm_session}:{time.time()}:{cand_text}".encode("utf-8")).hexdigest()[:16]
+    scope = str(scope).strip() or "global"
+    if deduplicate:
+        cand_text = cand_text.replace("\r\n", "\n").replace("\r", "\n")
+        identity = json.dumps(["checkpoint-learn", session, cand_text, source, scope], ensure_ascii=False)
+    else:
+        identity = f"{norm_session}:{time.time()}:{cand_text}"
+    record_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
     now = datetime.now(timezone.utc).isoformat()
     record = {
         "id": record_id,
@@ -153,12 +167,17 @@ def stage_candidate(state: Path, session: str, candidate: str, source: str = "",
         "session": norm_session,
         "candidate": cand_text,
         "source": str(source).strip(),
-        "scope": str(scope).strip() or "global",
+        "scope": scope,
         "status": "candidate"
     }
     ledger = state / LEARNING_STATE_FILE
-    _atomic_append(ledger, record)
-    return record
+    result = _atomic_append(ledger, record, deduplicate=deduplicate)
+    if count > 0 and not result.get("idempotent"):
+        try:
+            record_redactions(state, count)
+        except Exception:
+            pass
+    return result
 
 
 def _created_at(item: dict) -> float | None:
@@ -168,14 +187,23 @@ def _created_at(item: dict) -> float | None:
         return None
 
 
+def _matches_session(item: dict, target: str | None, *, include_cli_fallback: bool = False) -> bool:
+    if target is None:
+        return True
+    session = item.get("session")
+    return session == target or (include_cli_fallback and session == "cli")
+
+
 def list_candidates(state: Path, session: str | None = None, status: str = "candidate", scope: str | None = None,
-                    since: float | None = None, *, strict: bool = False) -> list[dict]:
+                    since: float | None = None, *, strict: bool = False,
+                    include_cli_fallback: bool = True) -> list[dict]:
     """Read learning candidates matching session, status, and scope.
 
     Explicit CLI reads opt into IO errors; hook callers remain best effort.
 
-    `since` (epoch seconds) keeps only candidates staged at or after that moment. A "cli"
-    candidate carries no session, so without it one old entry would match every later session.
+    `since` (epoch seconds) keeps only candidates staged at or after that moment. Hook
+    callers additionally see recent unscoped "cli" candidates. An explicit session list
+    disables that fallback so it matches the resolver's session boundary.
     """
     ledger = Path(state) / LEARNING_STATE_FILE
     if strict:
@@ -192,6 +220,9 @@ def list_candidates(state: Path, session: str | None = None, status: str = "cand
     elif not ledger.is_file():
         return []
     target_sess = _normalize_session(session) if session else None
+    # Legacy callers treated a session that normalizes to empty as unfiltered.
+    if include_cli_fallback and target_sess == "":
+        target_sess = None
     results = []
     try:
         with open(ledger, "r", encoding="utf-8") as f:
@@ -201,7 +232,7 @@ def list_candidates(state: Path, session: str | None = None, status: str = "cand
                     continue
                 try:
                     item = json.loads(line)
-                    if target_sess and item.get("session") not in (target_sess, "cli"):
+                    if not _matches_session(item, target_sess, include_cli_fallback=include_cli_fallback):
                         continue
                     if status and item.get("status") != status:
                         continue
@@ -260,8 +291,7 @@ def resolve_candidates(state: Path, session: str | None = None, target_status: s
                         if not isinstance(item, dict):
                             records.append(line)
                             continue
-                        matches = item.get("status") == "candidate" and (
-                            target_session is None or item.get("session") == target_session)
+                        matches = item.get("status") == "candidate" and _matches_session(item, target_session)
                         if source_keys is not None:
                             source = item.get("source")
                             matches = matches and isinstance(source, str) and _source_key(source) in source_keys
