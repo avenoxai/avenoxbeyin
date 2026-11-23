@@ -233,9 +233,15 @@ class PassageContextTest(Vault):
     def test_delivers_the_matching_block_of_a_rich_note(self):
         self.ingest('rich', RICH, 'projects/kuzey.md')
         self.ingest('other', 'Market listesi: elma, ekmek, zeytinyağı.', 'notes/market.md')
+        # Queryless prefix clipping still drops ANSWER, proving RICH exceeds the opening budget.
+        raw_rich = self.store.candidates('yedekleme zirkon kovası hangisiydi', strict=True, limit=1)
+        prefix_only = runtime.pack_context(raw_rich, limit=1, budget_chars=5000)
+        self.assertFalse(any(ANSWER in r['text'] for r in prefix_only['records']))
+        # #847: note-level retrieval now centers its clipped window on the matching block,
+        # while #83 passage retrieval uniquely adds the structured heading path.
         note_level = self.store.retrieve('yedekleme zirkon kovası hangisiydi', strict=True, budget_chars=5000)
-        # The #83 delivery failure: a whole-note match hands over the note's opening characters.
-        self.assertFalse(any(ANSWER in r['text'] for r in note_level['records']))
+        self.assertTrue(note_level['records'][0]['text_truncated'])
+        self.assertFalse(note_level['records'][0]['text'].startswith('Kuzey deposu > Yedekleme\n\n'))
         result = self.strict('yedekleme zirkon kovası hangisiydi', budget_chars=5000)
         self.assertEqual([r['id'] for r in result['records']], ['rich'])
         self.assertIn(ANSWER, result['records'][0]['text'])

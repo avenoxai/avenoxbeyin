@@ -250,6 +250,26 @@ class TestPackContextEscaping(unittest.TestCase):
         self.assertGreaterEqual(len(delivered["records"][0]["text"]), len(stale["records"][0]["text"]))
         self.assertNotIn("sources", json.loads(text[300:]))
 
+    def test_clip_to_centers_matching_passage_in_long_record(self):
+        """Issue #847: Long note clipping preserves the matched query passage window instead of note head."""
+        body = []
+        for i in range(1, 70):
+            body.append(f"## 2026-10-{i%28+1:02d} 10:00 · Eski oturum {i}")
+            body.append(f"- **Karar:** Eski genel kayıt numarası {i} ve buna bağlı uzun açıklama metni burada arşivlenmiş karar olarak duruyor.")
+            body.append("")
+        body.append("## 2026-11-21 18:00 · Güncel karar")
+        body.append("- **Karar:** `KUZEY_YILDIZI_2026` parametresi kesinlikle `aktif` olarak bırakılacak.")
+        full_text = "\n".join(body)
+
+        rec = {"id": "kararlar", "source": "Kararlar.md", "kind": "note",
+               "visibility": "internal", "revision": 1, "facts": {}, "supersedes": [], "text": full_text}
+        result = pack_context([rec], limit=1, budget_chars=8000, query="KUZEY_YILDIZI_2026")
+        delivered = result["records"][0]
+        self.assertTrue(delivered.get("text_truncated"))
+        self.assertIn("KUZEY_YILDIZI_2026", delivered["text"])
+        self.assertLessEqual(result["used_chars"], 8000)
+
+
 
 if __name__ == '__main__':
     unittest.main()
