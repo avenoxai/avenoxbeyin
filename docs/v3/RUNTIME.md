@@ -40,6 +40,24 @@ Ingesting the exact same record is idempotent. Reusing an existing ID for differ
 
 `submit_receipt(event_id, summary, refs, harness)` requires existing source references. Replaying the same semantic payload, including from the other harness, returns the original receipt. Changing summary or references under an existing event ID fails. First-writer harness attribution is retained. Receipts are stored locally and do not automatically append to daily notes or project views.
 
+### Not kullanımı ve geri bildirim
+
+Otomatik bağlamda sunulan uygun notlar ve receipt'te kaynak gösterilen uygun notlar
+makineye özel `state/note-usage.sqlite3` dosyasında sayılır. Özel, dahili,
+güvenilmeyen ve hassas kayıtlar kapsam dışıdır. Sayaçlar not kimliği, kaynak yolu,
+sayılar ve ilişkilendirme için gerekli yerel zaman ve oturum bilgilerini tutar.
+Not metni ve istem metni tutulmaz. Son 20.000 hook olayından birinin veya bir receipt'in tekrarı sayacı yeniden artırmaz. Hook, kullanım veritabanı kilitliyse o kaydı atlayıp bağlamı sunar.
+
+`doctor` özetinde son 30 günde en az 10 kez sunulan, hiç receipt atfı ve `ok`
+geri bildirimi almayan notların sayısı ile toplam geri bildirim sayıları görünür.
+Özet kullanım veritabanını oluşturmaz veya güncellemez.
+
+`python3 beyin.py feedback <not-kimliği-veya-yolu> <ok|wrong|stale> --session <oturum>`
+komutunda hook'un `Receipt session` değerini veya istemcinin oturum kimliğini kullanın.
+Komut `--session` verilmezse geçerli istemci sürecinin oturum kimliğini kullanır.
+Oturum belirsizse veya hedef o oturumda sunulan notlardan biriyle tekil olarak
+eşleşmiyorsa komut hata verir. Geri bildirim notu düzenlemez, yerel sayacı artırır.
+
 Codex reports edits when its PostToolUse event names an editor matched by the installed hook. In code-mode hosts that report only the outer `exec` call, an inner `apply_patch` can change Markdown without opening the edit window. Receipt coverage can then undercount edits. Record a receipt explicitly after meaningful work. SessionStart context and the Stop event have separate triggers.
 
 The Claude/Codex Stop learning reminder treats knowledge references as citations, not proof that a note was updated. Its filesystem evidence accepts either a distilled Markdown note cited in the receipt's `refs` with modification time at or after the edit window began, or a PostToolUse editor write of such a note (Claude file path, Codex apply_patch header) in the same window, since that write precedes the hook that opens the window. The editor check examines all parsed paths in the hook's bounded input payload, rather than only the first five. File symlinks are rejected, and resolved paths must remain inside the vault and within the existing distillation roots, outside generated-file exclusions; the mtime check also requires the cited path itself to name a distilled note. An unrelated recent note elsewhere in the vault no longer satisfies the receipt's learning claim, and citing an older note alone does not suppress the reminder. Candidates staged for this session in the current edit window can also satisfy the separate candidate-ledger check. Filesystem evidence remains a time heuristic, not content-hash verification, proof of authorship or a semantic check that the declared learning was saved; a sync tool can change modification times without changing content.
@@ -56,7 +74,7 @@ The explicit `context` command adds `unmatched_terms`: sorted, deduplicated quer
 
 Supersession is stateless: the current trusted index determines each match, with no persisted target binding. A new same-basename note can therefore make a formerly unique name reference ambiguous and let its old target return to context; one added at the vault root matches a bare value as an exact path, so it is retired in the old target's place without any report. Prefer an explicit id or full vault-relative path to avoid this collision. Explicit `sync` and `doctor` human output shows a bounded warning for ineffective references; JSON fields, command statuses and per-turn hook behavior are unchanged. See [Supersedes references](MARKDOWN.md#supersedes-references) for the repair steps and limits.
 
-The per-turn hook asks for strict context (`context_for(..., strict=True)`), which ranks Markdown passages instead of whole notes (`beyin_v3_passage.py`, #83). Each record's text is split into heading-aware blocks (oversized blocks become overlapping windows of about 900 characters), a block is admitted with the same relative-idf weight family scaled by query coverage, and the best block per source is delivered with its heading path through the same `pack_context` budget and citation contract. Admission uses block frequency, ranking among admitted sources uses source frequency, and the coverage denominator is capped at four terms so a long conversational prompt is not rejected for its length. Frontmatter is never read (records carry the Markdown body), `daily/` and `receipts/` are always excluded, supersession, visibility, trust, project and freshness gates are the same `_eligible()` gates as the note-level path, and explicit project words do not count as matches. The derived index lives in the runtime directory as JSON (`passages.json`, 0600), re-tokenised only for changed records; a cold build runs in one-second steps and meanwhile, like any real error, falls back to the note-level path. A read-only store (a hook turn while a sync is pending) still saves that progress, because `passages.json` is derived data written atomically and ignored when stale or unwritable; it never touches the SQLite database, and a failed write only costs speed. An empty passage result is an answer, not a fallback. `retrieval.json` in the runtime directory may set `strict_floor` (default 0.20) and extra `strict_exclude` prefixes; see PREFERENCES.md. The same file can opt the unscoped explicit `context` command (no `--project`) into two-word admission (`unscoped_min_shared: 2`) and dominant-project demotion (`unscoped_dominant_weight`, BM25 part only); both are off by default because they cost recall on the frozen fixtures (#532). `scripts/evaluate_v3_passages.py` measures both paths on a deterministic synthetic corpus or, read-only, on your own vault.
+The per-turn hook asks for strict context (`context_for(..., strict=True)`), which ranks Markdown passages instead of whole notes (`beyin_v3_passage.py`, #83). Each record's text is split into heading-aware blocks (oversized blocks become overlapping windows of about 900 characters), a block is admitted with the same relative-idf weight family scaled by query coverage, and the best block per source is delivered with its heading path through the same `pack_context` budget and citation contract. Admission uses block frequency, ranking among admitted sources uses source frequency, and the coverage denominator is capped at four terms so a long conversational prompt is not rejected for its length. Frontmatter is never read (records carry the Markdown body), `daily/` and `receipts/` are excluded by default. Supersession, visibility, trust, project and freshness gates are the same as on the note-level path, and explicit project words do not count as matches. The derived index lives in the runtime directory as JSON (`passages.json`, 0600), re-tokenised only for changed records; a cold build runs in one-second steps and meanwhile, like any real error, falls back to the note-level path. A read-only store (a hook turn while a sync is pending) still saves that progress, because `passages.json` is derived data written atomically and ignored when stale or unwritable; it never touches the SQLite database, and a failed write only costs speed. An empty passage result is an answer, not a fallback. `retrieval.json` in the runtime directory may set `strict_floor` (default 0.20), extra `strict_exclude` prefixes, and `strict_keep` paths. A strict match under a keep prefix survives strict path exclusion and Jev score elimination. `receipts/` remains excluded. See PREFERENCES.md. The same file can opt the unscoped explicit `context` command (no `--project`) into two-word admission (`unscoped_min_shared: 2`) and dominant-project demotion (`unscoped_dominant_weight`, BM25 part only); both are off by default because they cost recall on the frozen fixtures (#532). `scripts/evaluate_v3_passages.py` measures both paths on a deterministic synthetic corpus or, read-only, on your own vault.
 
 Both clients call `shared_context(store, harness, query, **kwargs)` or `store.context_for(harness, query, **kwargs)`. Codex and Claude use exactly the same retrieval implementation and normalized output. `codex_context` and `claude_context` are convenience wrappers.
 
@@ -154,7 +172,9 @@ görmek için bayraksız `project-scope list` kullan.
   `reconciliation` nesnesi neyin kaldığını söyler ve kayıt `provision.status: failed` olarak
   kalır; aynı `workspace provision <id>` komutu kaydı kaldığı yerden tamamlar.
 - `lint [--folder <klasör>]` kırık wikilink, eksik başlık veya ek, yetim ve gelen bağlantısı
-  olmayan notları raporlar. Kısmi yol (`[[klasör/not]]`) ve ekler Obsidian gibi ad ve yol
+  olmayan notları raporlar. Satır içi Markdown bağlantısında `]` ile `(` bitişik olmalıdır:
+  `[etiket] (açıklama)` düz metindir; içindeki ayrı wikilink yine sayılır. Kısmi yol
+  (`[[klasör/not]]`) ve ekler Obsidian gibi ad ve yol
   sonuyla çözülür; kod blokları ve satır içi kod sayılmaz. Hassas, arşiv (`📦 900-Archive`,
   `Arşiv` gibi), `visibility: private` ve kurulum klasörlerindeki notlar taranmaz; böyle bir nota
   giden bağlantı da kırık görünür. İstisna: kökteki `receipts/` klasörünün üst seviyesinde
@@ -174,6 +194,11 @@ görmek için bayraksız `project-scope list` kullan.
   Excluded notes still supply link targets and backlinks, and their broken links
   remain visible. Scan and link counts, privacy filters and MOC behavior are unchanged.
   Generated files have no separate exemption.
+  Yerel Markdown bağlantıları `[Kılavuz](not.md#kurulum-kılavuzu)` biçiminde,
+  `# Kurulum Kılavuzu` gibi bir başlıktan üretilen kısa adresi de kabul eder.
+  Aynı kısa adresi üreten başlıklar `-1`, `-2` ekleriyle ayrılır.
+  Başlıktaki satır içi kodun metni kısa adrese katılır. `İ` harfi için hem
+  noktalı Unicode `i̇` hem düz `i` kabul edilir. Wikilinkler başlık metniyle eşleşir.
 - `moc [--folder knowledge] [--file MOC.md]` yalnız hedef klasördeki düz bir `.md` dosyasına
   yazar. `CLAUDE.md`, `AGENTS.md`, `Kurallar.md` gibi talimat, companion veya kural dosyası
   adları kabul edilmez. Dosya yoksa oluşturur. Varsa yalnız tek bir `<!-- beyin-moc:start -->` ve
@@ -248,7 +273,9 @@ veya uzak dosya sistemi için mutlak kalıcılık garantisi değildir. Windows't
 
 Açık bir `learn --resolve distilled|discarded` isteğinde aday defterinin varlığını denetleme veya mevcut defteri okuma, kilitleme ya da yazma işlemi bir G/Ç hatasıyla başarısız olursa komut çıkış 1 verir. JSON hatası, özel dosya yolu veya defter içeriği yerine sabit `learning candidate resolution failed` mesajını taşır. Başarılı sonuçlandırma, hatasız tamamlanan eşleşmesiz istek ve defterin bulunmaması mevcut sonuçlarını ve çıkış 0 davranışını korur. Eşleşme bulunmasa da mevcut yeniden yazma adımı çalışır; bu adımın G/Ç hatası da çıkış 1 verir. Receipt'in otomatik aday takibi isteğe bağlı kalır; sonuçlandırma hatası kalıcı receipt'i geri almaz veya başarısız saymaz. Defter biçimi ve yazma/tekrar davranışı değişmez.
 
-Açık `learn --list` isteği de mevcut aday defterinin denetimi veya okunması G/Ç hatasıyla başarısız olduğunda çıkış 1 ve özel yol/içerik içermeyen sabit `learning candidate listing failed` mesajı verir. Bulunmayan veya normal dosya olmayan defter boş liste olarak kalır. Başarılı filtreleme, bozuk satırların atlanması ve hook aday kontrollerinin mevcut en iyi çaba davranışı değişmez.
+Açık `learn --list` isteği de mevcut aday defterinin denetimi veya okunması G/Ç hatasıyla başarısız olduğunda çıkış 1 ve özel yol/içerik içermeyen sabit `learning candidate listing failed` mesajı verir. Bulunmayan veya normal dosya olmayan defter boş liste olarak kalır. Bozuk satırlar atlanır; hook aday kontrolleri en iyi çaba olarak kalır.
+
+`learn --list --session SESSION`, `learn --resolve … --session SESSION` ile aynı oturum eşleşmesini kullanır: başka oturumların veya oturumsuz CLI adaylarının satırları bu listeye girmez. Oturumsuz adayları ayrı görmek için `learn --list --session cli`, tüm oturumları görmek için oturum filtresiz `learn --list` ya da `learn --list --all` kullanın. `--scope` listeyi ayrıca daraltabilir. Oturum filtresi belirtilmeyen `--resolve` varsayılan oturumu kullanmaya devam eder; bütün oturumlarda sonuçlandırmak için açıkça `--all` gerekir. Bu listeleme değişikliği receipt'in otomatik sonuçlandırma ve Stop hatırlatma kurallarını değiştirmez.
 
 ## Memory audit read errors
 

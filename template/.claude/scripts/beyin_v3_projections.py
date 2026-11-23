@@ -460,19 +460,39 @@ def _coverage_threshold(at, turn_at, edit_at):
     return edit_at or turn_at or at
 
 
-def receipt_coverage(db, now=None, state=None):
+def hermes_without_terminal(db):
+    """Count prompted Hermes rows without a terminal observation for the latest turn."""
+    columns = {row[1] for row in db.execute('PRAGMA table_info(receipt_checkpoints)')}
+    if 'prompt_at' not in columns:
+        return 0
+    older_terminal = ' OR at < turn_at' if 'turn_at' in columns else ''
+    return db.execute("SELECT COUNT(*) FROM receipt_checkpoints "
+                      "WHERE harness = 'hermes' AND prompt_at <> 0 "
+                      f"AND (at IS NULL OR at = 0{older_terminal})").fetchone()[0]
+
+
+def receipt_coverage(db, now=None, state=None, *, read_only=False):
     if now is None:
         now = time.time()
     seven_days = now - 7 * 86400
     thirty_days = now - 30 * 86400
-    _checkpoint_schema(db, state=state)
+    fields = ('harness', 'session', 'at', 'turn_at', 'project', 'project_id', 'prompt_at', 'edit_at')
+    if read_only:
+        # An old index may still need a migration. Use the schema defaults for
+        # absent observations until a writer performs it.
+        columns = {row[1] for row in db.execute('PRAGMA table_info(receipt_checkpoints)')}
+    else:
+        _checkpoint_schema(db, state=state)
+        columns = set(fields)
+    select_fields = ','.join(field if field in columns else '0' for field in fields)
+    checkpoints = db.execute(f'SELECT {select_fields} FROM receipt_checkpoints') if columns else ()
     latest = _latest_receipts(db)
     windows = {
         'all_time': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0, 'missing_no_observed_edit': 0, 'without_prompt': 0, 'without_prompt_with_receipt': 0},
         'last_7d': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0, 'missing_no_observed_edit': 0, 'without_prompt': 0, 'without_prompt_with_receipt': 0},
         'last_30d': {'total': 0, 'covered': 0, 'missing': 0, 'no_observed_edit': 0, 'missing_no_observed_edit': 0, 'without_prompt': 0, 'without_prompt_with_receipt': 0},
     }
-    for row in db.execute('SELECT harness,session,at,turn_at,project,project_id,prompt_at,edit_at FROM receipt_checkpoints'):
+    for row in checkpoints:
         if not row[2] or row[2] < row[3]:
             continue
         # Only count sessions that saw a user prompt: UserPromptSubmit, or a SessionStart carrying the first prompt (#78)
@@ -1166,7 +1186,7 @@ def is_distilled_note(relative):
 
 
 def knowledge_freshness(vault, db, now=None):
-    """Diagnose knowledge distillation recency and count receipts since then."""
+    """Diagnose knowledge distillation recency, with no receipts when no index exists."""
     if now is None:
         now = time.time()
     vault = Path(vault)
@@ -1211,7 +1231,8 @@ def knowledge_freshness(vault, db, now=None):
     total_receipts = 0
     receipts_since = 0
     # A store error propagates: doctor reports "unavailable" instead of a silent zero.
-    for (payload,) in db.execute('SELECT payload FROM receipts'):
+    receipts = db.execute('SELECT payload FROM receipts') if db is not None else ()
+    for (payload,) in receipts:
         try:
             receipt = json.loads(payload)
             created = datetime.fromisoformat(receipt['created_at']).timestamp()

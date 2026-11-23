@@ -444,6 +444,60 @@ class HookWiringTest(unittest.TestCase):
                 failed = self.run_hook(vault, state, QUERY)
             self.assertIn('yearly plan', failed['hookSpecificOutput']['additionalContext'])
 
+    def test_hook_keeps_strict_project_rule_below_jev_threshold(self):
+        from beyin_v3_sync import SyncEngine
+
+        with tempfile.TemporaryDirectory() as tmp:
+            vault, state = Path(tmp).resolve() / 'vault', Path(tmp).resolve() / 'state'
+            folder = 'projects/İstanbul Arşivi'
+            notes = [
+                (folder + '/Kurallar.md', 'rules', 'Quartz deploy rollback uses the amber switch.', ''),
+                (folder + '/private.md', 'hidden', 'Quartz deploy rollback uses the private switch.',
+                 'visibility: private\n'),
+                (folder + '/Şifre/hidden.md', 'sensitive', 'Quartz deploy rollback uses the sensitive switch.', ''),
+                (folder + '/loose.md', 'loose', 'Confirm the rollback.', ''),
+                ('notes/control.md', 'control', 'Quartz deploy rollback uses the silver switch.', ''),
+            ]
+            for source, ident, text, metadata in notes:
+                path = vault / source
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(f'---\nid: {ident}\ntitle: {ident}\n{metadata}---\n{text}\n', encoding='utf-8')
+
+            SyncEngine(vault, state).sync()
+            (state / 'retrieval.json').write_text(json.dumps({
+                'strict_exclude': ['projects/'], 'strict_keep': [folder],
+            }, ensure_ascii=False), encoding='utf-8')
+            prompt = 'quartz deploy rollback switch'
+            before = self.run_hook(vault, state, prompt)['hookSpecificOutput']['additionalContext']
+            self.assertIn('amber switch', before)
+            self.assertIn('silver switch', before)
+
+            client.set_mode(state, 'on', enable=['auto_context'])
+            advisor.save_audit_config(state, {'enabled': True})
+            sent = []
+
+            def transport(url, body, key, timeout):
+                sent.extend(note['title'] for note in body['state']['notes'].values())
+                return {'answers': {q: {'type': 'noul', 'noul': 0.99 if q == 'topical' else 0.05}
+                                    for q in body['questions']}}
+
+            with patch.object(client, '_transport', transport):
+                result = self.run_hook(vault, state, prompt)
+            self.assertCountEqual(sent, ['rules', 'control'])
+            text = result.get('hookSpecificOutput', {}).get('additionalContext', '')
+            self.assertIn('amber switch', text)
+            self.assertNotIn('silver switch', text)
+            self.assertNotIn('private switch', text)
+            self.assertNotIn('sensitive switch', text)
+            self.assertNotIn('Confirm the rollback', text)
+            self.assertIn('"dropped": 1', text)
+            audit_log = state / advisor.AUTO_CONTEXT_AUDIT_LOG
+            audit = json.loads(audit_log.read_text(encoding='utf-8').splitlines()[-1])
+            by_source = {note['source_id']: note for note in audit['notes']}
+            self.assertLess(by_source['rules']['score'], by_source['rules']['threshold'])
+            self.assertEqual(by_source['rules']['outcome'], 'kept')
+            self.assertEqual(by_source['control']['outcome'], 'dropped')
+
     def test_hook_continuation_keeps_the_delivered_tail_without_an_advisor_call(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault, state = Path(tmp) / 'vault', Path(tmp) / 'state'
