@@ -506,6 +506,75 @@ class HygieneCliTest(unittest.TestCase):
         archive = (self.directory / 'Arşiv' / f'Last-Session-{month}.md').read_text(encoding='utf-8')
         self.assertIn('CARD_11', archive, 'oldest session card is safely preserved in archive')
 
+    def check_active_checkpoint_survives_compaction(self, explicit_raw=False):
+        from beyin_v3_parallel import active_session_keys, end, receipt_session, touch
+        raw_session = 'de123456-5d70-4b23-80bd-66dadf1093e2'
+        receipt_key = receipt_session(raw_session)
+        session = raw_session if explicit_raw else receipt_key
+        newline = '\r\n'
+        header = '# Son oturum' + newline * 2
+        last = self.write('Last-Session.md', header)
+        active_body = ('ACTIVE_CHECKPOINT_CARD ' + ('active detail ' * 12).strip()
+                       + '\n\n## 2026-09-19 08:00 · Dated checkpoint section\n'
+                       + 'ACTIVE_CHECKPOINT_SECTION ' + 'section detail ' * 11).rstrip()
+        card = {'now': '2026-09-20T12:00:00', 'card': {'label': 'Aktif oturum', 'body': active_body}}
+        active = self.run_cli('checkpoint', '--file', '-', '--harness', 'claude', '--session', session, payload=card)
+        self.assertEqual(active['steps']['card'], 'written')
+        card_content = last.read_bytes().decode('utf-8').removeprefix(header)
+        newest = ('## 2026-09-21 12:00 · newest · a1111111' + newline + 'NEWEST_CARD' + newline * 2)
+        inactive = ('## 2026-09-20 18:00 · inactive · b2222222' + newline
+                    + 'INACTIVE_CARD ' + ('inactive detail ' * 48).strip() + newline * 2)
+        last.write_bytes((header + newest + inactive + card_content).encode('utf-8'))
+        companion_module.save_limits(self.state, {'Last-Session.md': 1000})
+        touch(self.state, 'claude', raw_session, vault=self.vault)
+        self.assertEqual(active_session_keys(self.state, vault=self.vault), {receipt_key[:8]})
+        before = last.read_bytes()
+        preview = self.run_cli('companion-compact', '--dry-run')
+        self.assertEqual(preview['files']['Last-Session.md']['moved_entries'], 1)
+        self.assertEqual(last.read_bytes(), before)
+        self.assertFalse((self.directory / 'Arşiv').exists())
+
+        compacted = self.run_cli('companion-compact')
+        report = compacted['files']['Last-Session.md']
+        self.assertEqual(report['status'], 'compacted')
+        live = last.read_bytes().decode('utf-8')
+        archive = (self.vault / report['archive']).read_bytes().decode('utf-8')
+        self.assertIn(card_content, live, 'the active older checkpoint card remains whole')
+        self.assertIn(f' · {receipt_key[:8]} <!-- beyin-checkpoint:', card_content)
+        self.assertIn('NEWEST_CARD', live)
+        self.assertNotIn('INACTIVE_CARD', live)
+        self.assertIn('INACTIVE_CARD', archive)
+        self.assertNotIn('ACTIVE_CHECKPOINT_CARD', archive)
+        self.assertNotIn('ACTIVE_CHECKPOINT_SECTION', archive)
+        self.assertNotIn('\n', live.replace(newline, ''))
+        replay = self.run_cli('checkpoint', '--file', '-', '--harness', 'claude', '--session', session, payload=card)
+        self.assertEqual(replay['steps']['card'], 'unchanged')
+        self.assertEqual(last.read_bytes().decode('utf-8'), live)
+
+        # Closing the actual session removes protection; force one more compaction.
+        end(self.state, 'claude', raw_session, vault=self.vault)
+        self.assertEqual(active_session_keys(self.state, vault=self.vault), set())
+        last.write_bytes(live.replace('NEWEST_CARD', 'NEWEST_CARD' + ' more details' * 46).encode('utf-8'))
+        ended = self.run_cli('companion-compact')['files']['Last-Session.md']
+        self.assertEqual(ended['moved_entries'], 1)
+        ended_live = last.read_bytes()
+        self.assertNotIn(b'ACTIVE_CHECKPOINT_CARD', ended_live)
+        archive_path = self.vault / ended['archive']
+        ended_archive = archive_path.read_bytes()
+        self.assertIn(card_content.encode('utf-8'), ended_archive,
+                      'ended card archives with its nested heading and closing marker')
+        replay = self.run_cli('checkpoint', '--file', '-', '--harness', 'claude', '--session', session,
+                              payload={'card': card['card']})
+        self.assertEqual(replay['steps']['card'], 'unchanged')
+        self.assertEqual(last.read_bytes(), ended_live)
+        self.assertEqual(archive_path.read_bytes(), ended_archive)
+
+    def test_compaction_preserves_active_checkpoint_with_receipt_key(self):
+        self.check_active_checkpoint_survives_compaction()
+
+    def test_compaction_preserves_active_checkpoint_with_explicit_raw_session(self):
+        self.check_active_checkpoint_survives_compaction(explicit_raw=True)
+
     def test_private_source_decisions_are_not_promoted_to_internal_ledger(self):
         cards = ['---\n{"visibility":"private"}\n---\n# Son oturum\n\n']
         cards += [f'## 2026-09-{day:02d}: PRIVATE_CARD_{day}\n**Karar:** PRIVATE_ONLY_{day}\n' + FILLER * 5 + '\n'
@@ -777,6 +846,46 @@ class CompactionPlanTest(unittest.TestCase):
         self.assertIn('EN_ESKİ_KART_1', result['archive'])
         self.assertIn('## Önceki oturumlar\n\n' + self.POINTER, result['live'])
         self.assertLessEqual(len(result['live']), 350)
+
+    def test_checkpoint_protection_requires_complete_marker_on_card_heading(self):
+        owner, revision = 'a' * 64, 'b' * 64
+
+        def marked(owner_hash):
+            return f'<!-- beyin-checkpoint:{owner_hash}:{revision} -->'
+
+        def closer(owner_hash):
+            return f'<!-- /beyin-checkpoint:{owner_hash} -->'
+
+        valid = ('## 2026-09-25 16:30 · valid · 12345678 ' + marked(owner) + '\nVALID_CHECKPOINT\n\n'
+                 '## 2026-09-12 15:00 · inside card\nVALID_CHECKPOINT_SECTION\n'
+                 f'```markdown\n{closer(owner)}\n```\n' + closer(owner) + '\n\n')
+        old_raw = ('## 2026-09-16 16:30 · old raw id · legacy-s ' + marked(revision) + '\nOLD_RAW_CARD\n\n'
+                   '## 2026-09-11 15:00 · old raw section\nOLD_RAW_SECTION\n' + closer(revision) + '\n\n')
+        text = ('# Son oturum\n\n'
+                '## 2026-09-26 16:30 · recent · 00000000\nNEWEST_CARD\n\n'
+                + valid
+                + '## 2026-09-24 16:30 · legacy · abcdef12\nLEGACY_CARD\n\n'
+                '## 2026-09-23 16:30 · malformed · 12345678 <!-- beyin-checkpoint:bad -->\nMALFORMED_CARD\n\n'
+                f'## 2026-09-22 16:30 · trailing · 12345678 {marked(owner)} prose\nTRAILING_CARD\n\n'
+                f'## 2026-09-21 16:30 · no-close · 12345678 {marked(owner)}\nMISSING_CLOSER\n\n'
+                f'## 2026-09-20 16:30 · wrong-close · 12345678 {marked(owner)}\nWRONG_CLOSER\n{closer(revision)}\n\n'
+                f'## 2026-09-19 16:30 · fenced-close · 12345678 {marked(owner)}\nFENCED_CLOSER\n'
+                f'```markdown\n{closer(owner)}\n```\n\n'
+                f'## 2026-09-18 16:30 · other · ffffffff {marked(owner)}\nOTHER_SESSION\n{closer(owner)}\n\n'
+                '## Not a dated heading\n\n'
+                f'2026-09-17 16:30 · paragraph · 12345678 {marked(owner)}\nNON_HEADING\n{closer(owner)}\n\n'
+                + old_raw)
+        result = compact_module.plan(text, 'Last-Session.md', 1, self.POINTER, {'12345678', 'abcdef12'})
+        self.assertIn(valid, result['live'])
+        self.assertIn('LEGACY_CARD', result['live'])
+        for token in ('MALFORMED_CARD', 'TRAILING_CARD', 'MISSING_CLOSER', 'WRONG_CLOSER', 'FENCED_CLOSER',
+                      'OTHER_SESSION', 'NON_HEADING'):
+            with self.subTest(card=token):
+                self.assertNotIn(token, result['live'])
+                self.assertIn(token, result['archive'])
+        self.assertNotIn('OLD_RAW_CARD', result['live'])
+        self.assertIn(old_raw, result['archive'])
+        self.assertEqual(result['moved_entries'], 8)
 
     def test_written_out_dates_are_entries_ordered_by_their_day(self):
         # A Turkish vault writes `## 12 Ekim 2026: ...`; without this nothing was dated and the

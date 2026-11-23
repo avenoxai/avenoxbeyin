@@ -217,7 +217,11 @@ python3 beyin.py checkpoint --file kontrol.json --harness claude --session OTURU
 Varsa gerçek oturum kimliğini kullan. Oturum kimliği komut satırında verilmezse
 CLI, desteklenen istemcinin ortam değişkeninden türetir. Oturum kimliği olmadan
 aynı kart metni tekrar kullanılabilir. Kart güncellemelerini aynı oturuma bağlamak
-için sonraki çağrılarda aynı kimliği ver.
+için sonraki çağrılarda aynı kimliği ver. Yeni veya güncellenen Checkpoint
+kartlarının başlığında ham kimlik değil, receipt oturum anahtarının ilk sekiz
+karakteri kullanılır. Paralel oturum işareti etkin kaldıkça `companion-compact`
+bu kartın tamamını canlı dosyada tutar. Eski sürümde ham kimlik önekiyle yazılmış
+bir kartın oturum anahtarı yalnız önekten geri bulunamaz.
 
 `threads` tam başlık eşleşmesiyle bir `next_step` ekler. Bir metni değiştirmek için
 `{"old": "eski metin", "new": "yeni metin"}` kullan. `learn` içindeki `source`
