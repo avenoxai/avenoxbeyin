@@ -283,14 +283,14 @@ class BridgeTest(unittest.TestCase):
         with patch.object(sys, 'stdin', io.StringIO()), \
                 patch.object(bridge, 'uninstall_bridge', side_effect=SystemExit(19)):
             with self.assertRaises(SystemExit) as caught:
-                bridge.main(['--harness', 'codex', '--uninstall'])
+                bridge.main(['--state', str(self.state), '--harness', 'codex', '--uninstall'])
         self.assertEqual(caught.exception.code, 19)
 
     def test_runtime_exception_keeps_existing_management_error_contract(self):
         err = io.StringIO()
         with patch.object(sys, 'stdin', io.StringIO()), contextlib.redirect_stderr(err), \
                 patch.object(bridge, 'uninstall_bridge', side_effect=ValueError('synthetic failure')):
-            self.assertEqual(bridge.main(['--harness', 'codex', '--uninstall']), 1)
+            self.assertEqual(bridge.main(['--state', str(self.state), '--harness', 'codex', '--uninstall']), 1)
         self.assertIn('Bridge error: synthetic failure', err.getvalue())
 
     def test_external_boundary_context_and_project_metadata_for_both_clients(self):
@@ -1310,6 +1310,10 @@ class BridgeTest(unittest.TestCase):
 
         # CLI uninstall
         cmd_uninst = [sys.executable, str(SCRIPTS / 'beyin_v3_bridge.py'), '--harness', 'antigravity', '--uninstall']
+        unbound = subprocess.run(cmd_uninst, capture_output=True, text=True, env=self.env, cwd=self.project)
+        self.assertNotEqual(unbound.returncode, 0)
+        self.assertIn('Uninstall requires --state', unbound.stderr)
+        cmd_uninst.extend(['--state', str(self.state)])
         res_uninst = subprocess.run(cmd_uninst, capture_output=True, text=True, env=self.env, cwd=self.project)
         self.assertEqual(res_uninst.returncode, 0, res_uninst.stderr)
         data_un = json.loads(res_uninst.stdout)

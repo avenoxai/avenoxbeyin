@@ -253,6 +253,10 @@ ile olay görüldüğünü ayrıca doğrulayın.
 
 Köprüyü kaldırmak için doğrudan `--uninstall` komutunu çalıştırabilirsiniz:
 
+Kaldırmayı köprüyü kuran vault'tan çalıştırın. Başka bir vault köprüyü devralmak
+istiyorsa kurulum komutuna açıkça `--replace` ekler. Sahibi belirsiz veya karışık
+global yapılandırmalar korunur.
+
 ```sh
 # Antigravity köprüsünü ve GEMINI.md işaretçisini temizleme:
 py -3 beyin.py bridge --harness antigravity --uninstall
