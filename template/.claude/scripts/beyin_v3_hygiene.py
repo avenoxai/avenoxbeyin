@@ -94,7 +94,10 @@ SORU_SKIP_DIRS = re.compile(r'(?:daily|knowledge|receipts|tasks|notes|nodes|node
 # Archives are not kasa-class: they are quiet by design, not private, and the
 # template ships "📦 900-Archive".
 
-TERMINAL_STATUSES = {'done', 'cancelled', 'kapandi'}
+TERMINAL_STATUSES = frozenset((
+    'done', 'cancelled', 'canceled', 'kapandi', 'completed',
+    'tamamlandi', 'iptal', 'closed', 'bitti', 'cozuldu', 'resolved'
+))
 # Directories a walk must never descend into: they are code, not notes.
 CODE_DIRS = {'node_modules', 'venv', '.venv', '__pycache__'}
 WALK_LIMIT = 20000  # directories; a doctor report must stay bounded on any vault
@@ -321,7 +324,8 @@ def _front_values(text, keys):
 
 def _front_status(text):
     """The frontmatter status, folded, from JSON (what V3 writes) or flat YAML frontmatter; else None."""
-    return _front_values(text, ('status',)).get('status')
+    vals = _front_values(text, ('status', 'durum'))
+    return vals.get('status') or vals.get('durum')
 
 
 def _archived_body(text):

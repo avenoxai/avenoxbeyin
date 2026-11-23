@@ -203,6 +203,8 @@ def _status_word(record):
     A task without a status is not active: task_create always writes one.
     """
     value = record.get("status")
+    if (value is None or (isinstance(value, str) and not value.strip())) and record.get("durum") is not None:
+        value = record.get("durum")
     if not isinstance(value, str) or not value.strip():
         return "" if record.get("kind") == "task" else "active"
     word = re.match(r"[^\W_]+", unicodedata.normalize("NFC", value.strip()).translate(_STATUS_FOLD).casefold())
