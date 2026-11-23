@@ -490,8 +490,6 @@ def receipt_reminder(payload, state, harness, event, vault=None, bridge_cli=None
         optout = folder / (digest + ".optout")
         if event == "Stop" and harness == "claude":
             _queue_cli_edit(folder / (digest + ".cli"), vault, state, payload)
-        if optout.exists() or (done.exists() and kdone.exists()):
-            return None
         if event == "UserPromptSubmit":
             # Quoted worker output is data, not the user's instruction to opt out.
             if not is_synthetic_prompt(payload) and "[kaydetme]" in prompt_text(payload).casefold():
@@ -500,6 +498,8 @@ def receipt_reminder(payload, state, harness, event, vault=None, bridge_cli=None
                 done.touch()
                 kdone.touch()
                 edited.unlink(missing_ok=True)
+            return None
+        if optout.exists() or (done.exists() and kdone.exists()):
             return None
         if event == "PostToolUse":
             if bridge_cli is None and _edits_only_outside_vault(vault, payload):

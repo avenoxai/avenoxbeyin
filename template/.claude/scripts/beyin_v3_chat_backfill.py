@@ -444,7 +444,10 @@ def _marker_suppressed(state, stem, session):
     digest = hashlib.sha256(stem.encode('utf-8')).hexdigest()
     folder = Path(state) / 'receipt-reminders'
     optout = folder / (digest + '.optout')
-    if os.path.lexists(optout):
+    # Older hooks wrote both markers for opt-out, including with chat trace off.
+    # Both can also result from sequential reminders, so err on the side of privacy.
+    legacy = all(os.path.lexists(folder / (digest + suffix)) for suffix in ('.done', '.kdone'))
+    if os.path.lexists(optout) or legacy:
         return True
     try:
         value = trace._read(Path(state) / trace.SESSIONS / ('claude-' + session + '.json'))
