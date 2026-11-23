@@ -541,6 +541,30 @@ class BridgeTest(unittest.TestCase):
         res_opencode_replace = bridge.install_bridge(other_vault, other_state, 'opencode', [self.project], replace=True, home=self.home)
         self.assertEqual(res_opencode_replace.get('replaced_owner'), str(self.state.resolve()))
 
+    def test_bound_bridge_preserves_mixed_and_unidentified_ownership(self):
+        for identifiable in (True, False):
+            with self.subTest(identifiable=identifiable):
+                target = bridge.global_hook_path('codex', home=self.home)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                script = str(bridge.__file__)
+                own = bridge.shell_command([sys.executable, script, '--vault', str(self.vault),
+                                            '--state', str(self.state)])
+                foreign = [sys.executable, script]
+                if identifiable:
+                    foreign += ['--vault', str(self.root / 'peer'), '--state', str(self.root / 'peer-state')]
+                data = {'hooks': {'SessionStart': [{'hooks': [
+                    {'type': 'command', 'command': own, 'commandWindows': bridge.shell_command(foreign)},
+                ]}]}}
+                raw = json.dumps(data).encode('utf-8')
+                target.write_bytes(raw)
+                kind = 'mixed' if identifiable else 'unidentified'
+                self.assertEqual(bridge.bridge_owner('codex', state=self.state, home=self.home)['state'], kind)
+                with self.assertRaisesRegex(ValueError, kind):
+                    bridge.install_bridge(self.vault, self.state, 'codex', [self.project],
+                                          replace=True, home=self.home)
+                self.assertEqual(bridge.uninstall_bridge('codex', state=self.state, home=self.home)['removed_count'], 0)
+                self.assertEqual(target.read_bytes(), raw)
+
     def test_cli_print_config_keeps_the_selected_events(self):
         base = [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault), '--state', str(self.state),
                 'bridge', '--harness', 'claude', '--project-root', str(self.project), '--print-config']
@@ -1201,7 +1225,9 @@ class BridgeTest(unittest.TestCase):
         target = bridge.global_hook_path('codex', home=self.home)
         target.parent.mkdir(parents=True)
         foreign = {'matcher': 'custom', 'hooks': ['opaque-handler', {'type': 'future', 'command': None}]}
-        windows = {'hooks': [{'type': 'command', 'commandWindows': 'python beyin_v3_bridge.py'}]}
+        command = bridge.shell_command([sys.executable, str(bridge.__file__),
+                                        '--vault', str(self.vault), '--state', str(self.state)])
+        windows = {'hooks': [{'type': 'command', 'commandWindows': command}]}
         target.write_text(json.dumps({'hooks': {'SessionStart': [foreign, windows], 'Stop': []}}), encoding='utf-8')
         bridge.install_bridge(self.vault, self.state, 'codex', [self.project], ['SessionStart'], home=self.home)
         groups = json.loads(target.read_text(encoding='utf-8'))['hooks']['SessionStart']
