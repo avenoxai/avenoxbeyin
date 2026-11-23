@@ -346,55 +346,14 @@ def end(state, harness, session_id, vault=None):
 
 
 def active_session_keys(state, vault=None, now=None):
-    """Return a set of short (8 hex) session keys for active local and remote sessions.
-
-    Safe and read-only. Returns an empty set if state is None, unreadable, or no active markers exist.
-    """
+    """Return the short keys of active local and remote sessions without writing markers."""
     if state is None:
         return set()
-    now = time.time() if now is None else now
-    folder = _folder(state)
-    all_sessions = {}
-    active_keys = set()
-    current_state_key = _state_key(state)
-    if folder is not None and folder.is_dir():
-        try:
-            with os.scandir(folder) as listing:
-                for entry in listing:
-                    if entry.name.endswith('.json') and not entry.is_symlink() and entry.is_file():
-                        val = _load(entry.path)
-                        if val is not None:
-                            all_sessions[val['session']] = val
-                            if now - entry.stat().st_mtime <= ACTIVE_SECONDS and -60 <= now - val['last_at'] <= ACTIVE_SECONDS:
-                                active_keys.add(val['session'][:8])
-        except OSError:
-            pass
-    if vault is not None:
-        pfolder = _presence_folder(vault)
-        if pfolder is not None and pfolder.is_dir():
-            try:
-                with os.scandir(pfolder) as plisting:
-                    for pentry in plisting:
-                        if pentry.name.endswith('.json') and not pentry.is_symlink() and pentry.is_file():
-                            pval = _load_presence(pentry.path)
-                            if pval is not None:
-                                peer = pval['session']
-                                if pval.get('state') == current_state_key and peer not in all_sessions:
-                                    continue
-                                if peer not in all_sessions:
-                                    all_sessions[peer] = pval
-                                    if now - pentry.stat().st_mtime <= ACTIVE_SECONDS and -60 <= now - pval['last_at'] <= ACTIVE_SECONDS:
-                                        active_keys.add(peer[:8])
-            except OSError:
-                pass
-    return active_keys
+    _, sessions = _sessions(state, vault, time.time() if now is None else now)
+    return {session[:8] for session in sessions}
 
 
-def doctor(state, vault=None, now=None):
-    """Read-only: the switch and how many markers look active. Never creates the folder."""
-    now = time.time() if now is None else now
-    value, valid = read_settings(state)
-    result = {'enabled': value, 'valid': valid, 'markers': 0, 'active': 0}
+def _sessions(state, vault, now):
     folder = _folder(state)
     all_sessions = {}
     active_sessions = set()
@@ -429,6 +388,15 @@ def doctor(state, vault=None, now=None):
                                         active_sessions.add(peer)
             except OSError:
                 pass
-    result['markers'] = len(all_sessions)
+    return len(all_sessions), active_sessions
+
+
+def doctor(state, vault=None, now=None):
+    """Read-only: the switch and how many markers look active. Never creates the folder."""
+    now = time.time() if now is None else now
+    value, valid = read_settings(state)
+    result = {'enabled': value, 'valid': valid, 'markers': 0, 'active': 0}
+    marker_count, active_sessions = _sessions(state, vault, now)
+    result['markers'] = marker_count
     result['active'] = len(active_sessions)
     return result
