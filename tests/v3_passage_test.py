@@ -596,7 +596,11 @@ class BenchmarkTest(unittest.TestCase):
         report = bench.evaluate(budgets=(2000,))
         self.assertEqual(report['questions'], 42)
         note, passages = report['arms']['note_level']['2000'], report['arms']['passage_level']['2000']
-        self.assertGreaterEqual(passages['short']['answerable'], note['short']['answerable'] + 0.15)
+        # Note-level now centers excerpts on the query. Gate both arms on absolute
+        # quality and retain the passage arm's advantage on the same corpus.
+        self.assertGreaterEqual(note['short']['answerable'], 0.70)
+        self.assertGreaterEqual(passages['short']['answerable'], 0.78)
+        self.assertGreaterEqual(passages['short']['answerable'], note['short']['answerable'])
         self.assertGreaterEqual(passages['long']['answerable'], note['long']['answerable'] + 0.10)
         self.assertEqual(passages['noise_everyday'], 0.0)
         self.assertLessEqual(passages['noise_agent'], 0.1)
