@@ -80,6 +80,10 @@ hook event names/timing. Do not assume a universal six-hour timeout or manufactu
 `SessionEnd` events from elapsed time. See the upstream
 [finalization contract](https://github.com/NousResearch/hermes-agent/blob/ae2a81ccc00e9b7c06301523e5bb09608397149c/website/docs/user-guide/features/hooks.md#on_session_finalize).
 
+The doctor report separately counts prompted Hermes sessions with no terminal checkpoint
+for the latest observed turn. This is an observation gap, not a count of active sessions
+or missing receipts, and does not enter receipt coverage or trigger reminders.
+
 ### Unattended sessions
 
 Hermes passes `platform` to `pre_llm_call`. Sessions on platforms nobody sits in front of

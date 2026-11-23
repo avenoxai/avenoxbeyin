@@ -5,6 +5,10 @@ Beyin yerel önceliklidir: makineler arasında senkron kodu yoktur ve Beyin git 
 eşitliyorsan bu belge hangi dosyaların eşitleneceğini ve iki makinenin aynı gün nasıl
 çalışacağını anlatır ([#112](https://github.com/avenoxai/avenoxbeyin/issues/112)).
 
+Telefon ya da tablet için dosya eşitleme servisli (iCloud, Obsidian Sync, diğerleri) kademeyi
+isteğe bağlı `beyin.py devices` komutuyla planlayabilirsin: [DEVICES.md](DEVICES.md). Komutu
+çalıştırmazsan bu belgedeki davranış değişmez.
+
 Her makine Beyin'i kendisi kurar ve günceller. Runtime (SQLite veritabanı) vault dışında,
 makineye özeldir ve eşitlenmez; her makine onu vault'taki Markdown'dan kendisi kurar.
 
@@ -96,6 +100,7 @@ Beyni Guncelle.cmd
 .kiro/skills/beyin-kontrol/
 .opencode/plugins/beyin-v3.js
 .omp/hooks/pre/beyin-v3.ts
+.pi/extensions/beyin-v3.ts
 # companion-compact süreçler arası kilidi; kalıcıdır ama kullanıcı verisi değildir
 **/.beyin-compact.lock
 # Aynı makinedeki not yazarlarının yerel kilidi, istekleri ve tam bayt yedekleri

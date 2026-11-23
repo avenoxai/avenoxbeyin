@@ -64,7 +64,7 @@ def add_question(vault, questions_path, query, source, sentence=None):
     return {"status": "ok", "questions_path": resolved.relative_to(vault).as_posix(), "added": q_item}
 
 
-def run_selftest(vault, state, questions_path=None, limit=5, audience="internal"):
+def run_selftest(vault, state, questions_path=None, limit=5, audience="internal", *, mode="candidates", budget=8000):
     vault = Path(vault).expanduser().resolve()
     state = Path(state).expanduser().resolve()
 
@@ -87,9 +87,16 @@ def run_selftest(vault, state, questions_path=None, limit=5, audience="internal"
 
     if not isinstance(data, dict) or not isinstance(data.get("questions"), list):
         return {"status": "error", "message": "invalid questions file"}
-    if any(not isinstance(q, dict) or not isinstance(q.get("query"), str)
-           or not isinstance(q.get("source"), str) for q in data["questions"]):
-        return {"status": "error", "message": "invalid question"}
+    for question in data["questions"]:
+        if not isinstance(question, dict) or not isinstance(question.get("query"), str):
+            return {"status": "error", "message": "invalid question"}
+        source = question.get("source")
+        alternatives = question.get("sources", [])
+        if (not isinstance(alternatives, list)
+                or not all(isinstance(item, str) and item for item in alternatives)
+                or (source is not None and not isinstance(source, str))
+                or not (source or alternatives)):
+            return {"status": "error", "message": "invalid question source"}
     questions = data.get("questions", [])
     controls = data.get("controls", [])
 
@@ -102,36 +109,43 @@ def run_selftest(vault, state, questions_path=None, limit=5, audience="internal"
     passed = 0
     missed = []
 
+    def retrieve(query):
+        if mode == "context":
+            context = store.context_for("codex", query, project=runtime.context_project(vault, query),
+                                        audience=audience, limit=limit, budget_chars=budget, explicit=True)
+            return context["records"], context.sources
+        return store.candidates(query, audience=audience, limit=limit), ()
+
+    truncated = 0
     for q in questions:
-        query = q.get("query", "")
-        expected_source = q.get("source", "")
-        sentence = q.get("sentence")
+        query = q["query"]
+        expected = set(q.get("sources", []))
+        if q.get("source"):
+            expected.add(q["source"])
+        sentence = _normal(q.get("sentence") or "")
 
         try:
-            candidates = store.candidates(query, audience=audience, limit=limit)
+            candidates, originals = retrieve(query)
         except Exception as exc:
             return {"status": "error", "message": f"retrieval failed: {exc}"}
 
-        got_sources = [c.get("source") for c in candidates]
-        found = expected_source in got_sources
+        def matches(record):
+            return record.get("source") in expected and sentence in _normal(record.get("text", ""))
 
-        if found and sentence:
-            matched_sentence = False
-            for c in candidates:
-                if c.get("source") == expected_source:
-                    if _normal(sentence) in _normal(c.get("text", "")):
-                        matched_sentence = True
-                        break
-            found = matched_sentence
-
-        if found:
+        if any(matches(record) for record in candidates):
             passed += 1
         else:
-            missed.append({
+            miss = {
                 "query": query,
-                "expected_source": expected_source,
-                "got_sources": got_sources
-            })
+                "expected_source": q.get("source") or q["sources"][0],
+                "got_sources": [record.get("source") for record in candidates]
+            }
+            if q.get("sources"):
+                miss["expected_sources"] = sorted(expected)
+            if sentence and any(matches(record) for record in originals):
+                miss["reason"] = "truncated"
+                truncated += 1
+            missed.append(miss)
 
     # Controls handling
     ctrl_total = 0
@@ -149,7 +163,7 @@ def run_selftest(vault, state, questions_path=None, limit=5, audience="internal"
     for ctrl_query in control_list:
         ctrl_total += 1
         try:
-            candidates = store.candidates(ctrl_query, audience=audience, limit=limit)
+            candidates, _ = retrieve(ctrl_query)
         except Exception as exc:
             return {"status": "error", "message": f"retrieval failed: {exc}"}
         if not candidates:
@@ -159,6 +173,14 @@ def run_selftest(vault, state, questions_path=None, limit=5, audience="internal"
                 "query": ctrl_query,
                 "got_sources": [c.get("source") for c in candidates]
             })
+
+    summary = {
+        "status": "ok", "questions_path": resolved_q.relative_to(vault).as_posix(),
+        "total": total, "passed": passed, "missed": missed,
+        "controls_total": ctrl_total, "controls_passed": ctrl_passed, "controls_missed": ctrl_missed,
+    }
+    if mode == "context":
+        return dict(summary, mode=mode, budget=budget, truncated=truncated)
 
     # Compare with previous run stored in state / selftest-last.json
     last_file = state / "selftest-last.json"
@@ -188,15 +210,4 @@ def run_selftest(vault, state, questions_path=None, limit=5, audience="internal"
     except OSError:
         return {"status": "error", "message": "failed to save selftest result"}
 
-    return {
-        "status": "ok",
-        "questions_path": resolved_q.relative_to(vault).as_posix(),
-        "total": total,
-        "passed": passed,
-        "missed": missed,
-        "controls_total": ctrl_total,
-        "controls_passed": ctrl_passed,
-        "controls_missed": ctrl_missed,
-        "previous": previous_data,
-        "regressed": regressed
-    }
+    return dict(summary, previous=previous_data, regressed=regressed)

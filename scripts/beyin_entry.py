@@ -226,6 +226,8 @@ def human_result(result, command, installed_version=None):
     if result.get('error'):
         return ('Islem tamamlanamadi: ' + str(result.get('message', result['error'])) +
                 ('\n' + ascii_text(result['hint']) if result.get('hint') else ''))
+    if command == 'devices':
+        return json.dumps(result, ensure_ascii=False, indent=2)
     if command == 'hook-reconcile':
         status = result.get('status')
         if status in ('ok', 'noop'):
@@ -267,6 +269,8 @@ def human_result(result, command, installed_version=None):
             f'Vault oz-denetim (selftest): toplam {total} soru, gecen {passed}, kacan {len(missed)}.',
             f'Kontroller: {ctrl_passed}/{ctrl_total} basarili.'
         ]
+        if result.get("mode") == "context":
+            lines.append(f'Bağlam bütçesi {result["budget"]} karakter. Kırpılan cevap sayısı {result["truncated"]}.')
         if regressed:
             lines.append(f'UYARI: {len(regressed)} soru onceki kosuya gore geriledi (eskiden geciyordu, simdi kacti)!')
         for m in missed[:3]:
@@ -438,6 +442,17 @@ def human_result(result, command, installed_version=None):
         else:
             lines.append('VACUUM tamamlanamadi: ' + ascii_text(result.get('vacuum')))
         return '\n'.join(lines + ['Vault dosyalarina dokunulmadi.'])
+    if command == 'feedback':
+        if result.get('success'):
+            fb = result.get('feedback', {})
+            return f"Geri bildirim kaydedildi ({result.get('target')} -> {result.get('verdict')}): ok={fb.get('ok', 0)}, wrong={fb.get('wrong', 0)}, stale={fb.get('stale', 0)}"
+        return f"Geri bildirim kaydedilemedi: {result.get('message') or result.get('error', 'unknown error')}"
+    if command == 'checkpoint':
+        steps = result.get('steps') or {}
+        parts = [f"{k}={v.get('status') if isinstance(v, dict) else v}" for k, v in steps.items()]
+        summary = ', '.join(parts) if parts else 'adim yok'
+        return f"Oturum kontrol noktasi ({result.get('status', 'tamamlandi')}): {summary}."
+
     if command == 'mutation-queue':
         if isinstance(result.get('enabled'), bool):
             return ('Cevrimdisi mutasyon kuyrugu: ' + ('acik' if result['enabled'] else 'kapali (acmak icin: beyin.py mutation-queue --enable)') +
@@ -500,6 +515,10 @@ def human_result(result, command, installed_version=None):
                                if isinstance(unobserved, int) and unobserved > 0 else '')
             lines.append('Makbuz kapsami: %' + str(pct) + ' (' + str(cov['covered']) + '/' + str(cov['total']) + ' oturum' + d7_text + ')'
                          + unobserved_text)
+        hermes_without_terminal = cov.get('hermes_without_terminal', 0) if isinstance(cov, dict) else 0
+        if hermes_without_terminal > 0:
+            lines.append('Hermes: ' + str(hermes_without_terminal) +
+                         ' oturumda son tur icin kapanis sinyali gozlenmedi (makbuz kapsami disinda).')
         kf = result.get('knowledge_freshness')
         if isinstance(kf, dict) and kf.get('status') == 'unavailable':
             lines.append('Son bilgi damitmasi: olculemedi (' + str(kf.get('error') or 'hata') + ')')
@@ -628,6 +647,11 @@ def human_result(result, command, installed_version=None):
             lines.append('Oturum ici tekrar onleme: acik (' + str(dedupe.get('sessions', 0)) + ' oturum defteri)')
         elif dedupe.get('valid') is False:
             lines.append('context-dedupe.json gecersiz; oturum ici tekrar onleme kapali sayiliyor.')
+        usage = result.get('note_usage') or {}
+        if isinstance(usage, dict) and usage.get('tracked', 0) > 0:
+            totals = usage.get('feedback_totals', {})
+            lines.append(f"Not kullanim takibi: {usage.get('tracked', 0)} kayit, {usage.get('dead_weight_count', 0)} olu agirlik (dead-weight), geri bildirim [ok: {totals.get('ok', 0)}, wrong: {totals.get('wrong', 0)}, stale: {totals.get('stale', 0)}]")
+
         queue = result.get('mutation_queue') or {}
         if queue.get('valid') is False:
             lines.append('mutation-queue-settings.json gecersiz; cevrimdisi kuyruk kapali sayiliyor.')
@@ -636,6 +660,12 @@ def human_result(result, command, installed_version=None):
                          (' (kuyruk dosyasi okunamadi)' if queue.get('status') == 'invalid' else
                           ' (' + str(queue.get('pending_count', 0)) + ' bekleyen, ' + str(queue.get('conflict_count', 0)) +
                           ' cakisma, ' + str(queue.get('failed_count', 0)) + ' basarisiz)'))
+        devices = result.get('devices') or {}
+        if devices.get('valid') is False:
+            lines.append('devices.json gecersiz; coklu cihaz duzeni kapali sayiliyor.')
+        elif devices.get('enabled'):
+            lines.append('Coklu cihaz: ' + str(devices.get('level')) +
+                         (' / ' + str(devices['phone_sync']) if devices.get('phone_sync') else ''))
         index_scope = result.get('index_exclusions') or {}
         lines += index_exclusion_lines(index_scope)
         hint = index_scope.get('vendored_hint') or {}
@@ -799,7 +829,10 @@ def human_result(result, command, installed_version=None):
                 lines.append('  Global yonerge: ' + plain_text(result['gemini_md']))
             if result.get('project_roots'):
                 lines.append('  Kapsanan proje kokleri: ' + ', '.join(plain_text(r) for r in result['project_roots']))
-            lines.append('Mevcut kullanici ayarlari korundu; .bak yedegi alindi.')
+            if result.get('replaced_owner'):
+                lines.append('Baska bir kasaya ait kopru ezildi (' + plain_text(result['replaced_owner']) + '); .bak yedegi alindi.')
+            else:
+                lines.append('Mevcut kullanici ayarlari korundu; .bak yedegi alindi.')
             return '\n'.join(lines)
         elif status == 'uninstalled':
             lines = ['Global kopru kaldirildi (' + harness + '):']

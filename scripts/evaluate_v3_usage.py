@@ -19,10 +19,13 @@ structure, never by searching note names in free text:
 An injected source counts as opened when the same transcript opens it after the injection:
 
   read_grep   a Read of that file, or a Grep whose path is that file
-  with_shell  the above, or a Bash/PowerShell command naming that file, except commands
-              that look like writes (git add/commit/mv/rm/stash/..., sed -i, cp/mv/rm/tee,
+  with_shell  the above, or a Bash/PowerShell command naming that file, excluding recognized
+              note-read attempts and commands that look like writes (git add/commit/mv/rm/stash/..., sed -i, cp/mv/rm/tee,
               Set-Content/Out-File/..., redirection into a file, Python write calls).
               A shell mention is not proof of reading: this is the upper bound.
+
+The separate note-read column counts direct CLI content-read attempts matched after
+injection. It is not part of either bound, and does not inspect tool results.
 
 The reverse direction counts vault notes (.md, outside dot-folders) opened in a transcript
 with V3 context although no injection before that point named them. Turns that the hook
@@ -129,12 +132,19 @@ class Roots:
         head, rest = (path[:2], path[2:]) if drive else ('', path)
         return head + posixpath.normpath(rest)
 
-    def relative(self, path, cwd):
+    def relative(self, path, cwd, *, strict_posix=False):
         if not isinstance(path, str) or not path.strip():
             return None
         path = self.absolute(path, cwd)
         for root in self.roots:
-            if len(path) > len(root) + 1 and path[len(root)] == '/' and path[:len(root)].casefold() == root.casefold():
+            if len(path) <= len(root) + 1 or path[len(root)] != '/':
+                continue
+            prefix = path[:len(root)]
+            if strict_posix and not re.match(r'^[A-Za-z]:/', root):
+                matches = prefix == root
+            else:
+                matches = prefix.casefold() == root.casefold()
+            if matches:
                 return path[len(root) + 1:]
         return None
 
@@ -229,8 +239,48 @@ def shell_paths(command, powershell=False):
     return found
 
 
+def note_read_source(command, roots, cwd, powershell=False):
+    """Recognize a single literal invocation of this vault's CLI, not its outcome."""
+    if re.search(r'[;&|()<>\r\n`$#*?\[\]{}]', command):
+        return None  # don't interpret shell syntax, expansions or globbing
+    if powershell and not re.fullmatch(r"""[^\s'"]+(?:[ \t]+(?:[^\s'"]+|'[^']*'|"[^"]*"))*""", command.strip(' \t')):
+        return None  # a bare command followed by whitespace-separated literals
+    try:
+        tokens = shlex.split(command, posix=not powershell)
+    except ValueError:
+        return None
+    if powershell:
+        tokens = [t[1:-1] if len(t) > 1 and t[0] == t[-1] and t[0] in '"\'' else t for t in tokens]
+    if not tokens:
+        return None
+    interpreter = tokens.pop(0)
+    python = posixpath.basename(slash(interpreter)).lower()
+    if not re.fullmatch(r'(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?', python):
+        return None
+    if python in ('py', 'py.exe') and tokens[:1] == ['-3']:
+        tokens.pop(0)
+    if len(tokens) == 4 and tokens[-1] == '--must-exist':
+        tokens.pop()
+    if len(tokens) != 3 or tokens[1] != 'note-read':
+        return None
+    launch, _, source = tokens
+    if launch != launch.strip() or launch.startswith('~') or (not powershell and '\\' in interpreter + launch):
+        return None  # preserve literal POSIX paths; don't trim or expand the launcher
+    # A relative launcher belongs to this vault only when the transcript gives a cwd.
+    if not cwd and not ABSOLUTE.match(slash(launch)):
+        return None
+    if roots.relative(launch, cwd, strict_posix=True) != 'beyin.py':
+        return None
+    # note-read takes a vault-relative POSIX path, independent of the shell cwd.
+    if ('\\' in source or ':' in source or source.startswith(('-', '~'))
+            or any(not part or part.startswith('.') or part.endswith((' ', '.')) for part in source.split('/'))
+            or not is_note(source)):
+        return None
+    return nfc(source)
+
+
 def row():
-    return {'suggested': 0, 'opened_read_grep': 0, 'opened_with_shell': 0}
+    return {'suggested': 0, 'opened_read_grep': 0, 'opened_with_shell': 0, 'attempted_note_read': 0}
 
 
 class Scope:
@@ -246,6 +296,7 @@ def analyse(path, roots, scope, errors):
     """Stream one transcript; update scope counters in place."""
     injections = []  # (position, row keys, source)
     last = {'read_grep': {}, 'with_shell': {}}  # source -> last open position
+    last_note_read = {}
     injected = set()
     has_context = False
     prompt = None
@@ -346,6 +397,11 @@ def analyse(path, roots, scope, errors):
                         errors['unrecognized_tool_inputs'] += 1
                         continue
                     scope.counts['shell_commands'] += 1
+                    attempted = note_read_source(command, roots, cwd, powershell=name == 'PowerShell')
+                    if attempted is not None:
+                        last_note_read[attempted] = position
+                        scope.counts['note_read_attempts'] += 1
+                        continue
                     if WRITE.search(command):
                         scope.counts['shell_commands_write_excluded'] += 1
                         continue
@@ -380,6 +436,7 @@ def analyse(path, roots, scope, errors):
             target['suggested'] += 1
             target['opened_read_grep'] += strict
             target['opened_with_shell'] += broad
+            target['attempted_note_read'] += last_note_read.get(source, 0) > position
 
 
 def rate(part, whole):
@@ -388,7 +445,8 @@ def rate(part, whole):
 
 def finish(row_data):
     return dict(row_data, rate_read_grep=rate(row_data['opened_read_grep'], row_data['suggested']),
-                rate_with_shell=rate(row_data['opened_with_shell'], row_data['suggested']))
+                rate_with_shell=rate(row_data['opened_with_shell'], row_data['suggested']),
+                rate_note_read_attempt=rate(row_data['attempted_note_read'], row_data['suggested']))
 
 
 def scope_report(scope, names):
@@ -417,6 +475,7 @@ def scope_report(scope, names):
         'unsuggested_opened': {bound: {'opens': sum(counter.values()), 'distinct_notes': len(counter)}
                                for bound, counter in scope.unsuggested.items()},
         'vault_note_opens': dict(scope.note_opens),
+        'note_read_attempts': scope.counts['note_read_attempts'],
         'shell_commands': scope.counts['shell_commands'],
         'shell_commands_write_excluded': scope.counts['shell_commands_write_excluded'],
     }
@@ -468,14 +527,15 @@ def human(report):
 
     def table_row(label, data):
         return (f"  {label:<40} {data['suggested']:>7} {data['opened_read_grep']:>7} {percent(data['rate_read_grep']):>7}"
-                f" {data['opened_with_shell']:>7} {percent(data['rate_with_shell']):>7}")
+                f" {data['opened_with_shell']:>7} {percent(data['rate_with_shell']):>7}"
+                f" {data['attempted_note_read']:>9} {percent(data['rate_note_read_attempt']):>7}")
 
     for name in ('main', 'subagent'):
         scope = report[name]
         lines += ['', f"[{'Ana oturumlar' if name == 'main' else 'Alt ajanlar'}] transkript {scope['transcripts']}, "
                       f"V3 bağlamlı {scope['transcripts_with_v3_context']}",
                   '  Bağlam: ' + ', '.join(f'{k}={v}' for k, v in scope['contexts'].items()),
-                  f"  {'satır':<40} {'öneri':>7} {'Read':>7} {'oran':>7} {'+kabuk':>7} {'oran':>7}",
+                  f"  {'satır':<40} {'öneri':>7} {'Read':>7} {'oran':>7} {'+kabuk':>7} {'oran':>7} {'note-read':>9} {'oran':>7}",
                   table_row('sıralı kaynaklar (toplam)', scope['ranked']['all'])]
         lines += [table_row('  tür ' + event, data) for event, data in scope['ranked']['by_event'].items()]
         lines += [table_row('  sıra ' + rank, data) for rank, data in scope['ranked']['by_rank'].items()]
@@ -489,11 +549,12 @@ def human(report):
         lines.append(f"  Önerilmeden açılan notlar: Read/Grep {rev['read_grep']['opens']} açılış / "
                      f"{rev['read_grep']['distinct_notes']} not; kabuk dahil {rev['with_shell']['opens']} / "
                      f"{rev['with_shell']['distinct_notes']}")
+        lines.append(f"  note-read girişimi (başarı doğrulanmadı): {scope['note_read_attempts']}")
         lines.append(f"  Kabuk komutu {scope['shell_commands']}, yazma sayılıp dışarıda bırakılan "
                      f"{scope['shell_commands_write_excluded']}")
         for item in scope.get('names', {}).get('suggested', []):
             lines.append(f"    öneri {item['source']}: {item['suggested']} / Read {item['opened_read_grep']} / "
-                         f"kabuk {item['opened_with_shell']}")
+                         f"kabuk {item['opened_with_shell']} / note-read girişimi {item['attempted_note_read']}")
         for item in scope.get('names', {}).get('unsuggested_opened', []):
             lines.append(f"    önerilmeden {item['source']}: Read {item['opens_read_grep']} / kabuk {item['opens_with_shell']}")
     return '\n'.join(lines)

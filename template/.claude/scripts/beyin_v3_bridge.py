@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import stat
 import subprocess
 import sys
 
@@ -342,10 +343,11 @@ def gemini_md_content(vault, roots):
     )
 
 
-def _backup_file(path):
-    if not path.is_file():
+def _backup_file(path, *, source=None):
+    source = path if source is None else source
+    if not source.is_file():
         return None
-    raw = path.read_bytes()
+    raw = source.read_bytes()
     index = 0
     while True:
         backup = path.with_name(path.name + '.bak' + ('.' + str(index) if index else ''))
@@ -357,6 +359,154 @@ def _backup_file(path):
             return backup
         except FileExistsError:
             index += 1
+
+
+def _check_windows_replacement_metadata(source, staged):
+    """Refuse a rename if it would discard Windows access metadata or named streams."""
+    import ctypes
+    from ctypes import wintypes
+
+    security = ctypes.WinDLL('advapi32', use_last_error=True).GetFileSecurityW
+    owner_group_dacl = 0x07
+
+    def descriptor(path):
+        name = ctypes.c_wchar_p(str(path))
+        size = wintypes.DWORD()
+        if not security(name, owner_group_dacl, None, 0, ctypes.byref(size)) and not size.value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        buffer = ctypes.create_string_buffer(size.value)
+        if not security(name, owner_group_dacl, buffer, len(buffer), ctypes.byref(size)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return buffer.raw
+
+    if descriptor(source) != descriptor(staged):
+        raise OSError('Windows global settings have different access metadata; preserved')
+
+    class StreamData(ctypes.Structure):
+        _fields_ = [('size', ctypes.c_longlong), ('name', wintypes.WCHAR * 296)]
+
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    find_first = kernel.FindFirstStreamW
+    find_first.restype = wintypes.HANDLE
+    info = StreamData()
+    found = find_first(ctypes.c_wchar_p(str(source)), 0, ctypes.byref(info), 0)
+    if found == ctypes.c_void_p(-1).value:
+        error = ctypes.get_last_error()
+        if error not in (38, 87):  # No streams or the file system does not support them.
+            raise ctypes.WinError(error)
+        return
+    handle = wintypes.HANDLE(found)
+    try:
+        if info.name != '::$DATA' or kernel.FindNextStreamW(handle, ctypes.byref(info)):
+            raise OSError('Windows global settings have alternate data streams; preserved')
+        if ctypes.get_last_error() != 38:  # ERROR_HANDLE_EOF
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel.FindClose(handle)
+
+
+def _copy_global_json_metadata(source, staged, current):
+    try:
+        os.chown(staged, current.st_uid, current.st_gid)
+    except (PermissionError, OSError, AttributeError):
+        pass
+
+    mode = stat.S_IMODE(current.st_mode)
+    if os.name == 'nt':
+        _check_windows_replacement_metadata(source, staged)
+        # A read-only destination cannot be replaced on Windows. Reject it before
+        # marking the temp file read-only too, which would also prevent cleanup.
+        if not mode & stat.S_IWRITE:
+            raise PermissionError('Windows global settings are read-only; preserved')
+    os.chmod(staged, mode)
+    if sys.platform == 'darwin':
+        import ctypes
+        copyfile = ctypes.CDLL(None, use_errno=True).copyfile
+        acl_and_xattr_no_follow = (1 << 0) | (1 << 2) | (1 << 18) | (1 << 19)
+        if copyfile(os.fsencode(source), os.fsencode(staged), None, acl_and_xattr_no_follow) != 0:
+            raise OSError(ctypes.get_errno(), 'Cannot preserve global settings ACL or extended attributes')
+    elif hasattr(os, 'listxattr'):
+        attributes = set(os.listxattr(source, follow_symlinks=False))
+        for name in set(os.listxattr(staged)) - attributes:
+            os.removexattr(staged, name)
+        for name in attributes:
+            value = os.getxattr(source, name, follow_symlinks=False)
+            os.setxattr(staged, name, value)
+
+
+def _global_json_stat(path):
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(current.st_mode):
+        raise OSError('Global settings changed before write')
+    return current
+
+
+def _global_json_stamp(current):
+    if current is None:
+        return None
+    # Windows path stat and descriptor fstat can use different meanings for
+    # ctime on the same file (CPython #157671). Compare creation time on both.
+    identity_time = (getattr(current, 'st_birthtime_ns', current.st_ctime_ns)
+                     if os.name == 'nt' else current.st_ctime_ns)
+    return (current.st_dev, current.st_ino, current.st_nlink, current.st_mode,
+            current.st_mtime_ns, identity_time, current.st_size)
+
+
+def _global_json_snapshot(path):
+    resolved = path.resolve()
+    return resolved, _global_json_stamp(_global_json_stat(resolved))
+
+
+def _write_global_json(path, data, *, expected=None):
+    """Update global settings through symlinks and keep shared inodes intact."""
+    from beyin_v3_sync import atomic
+    path = Path(path)
+    target = path.resolve()
+    text = json.dumps(data, indent=2, ensure_ascii=False) + '\n'
+    current = _global_json_stat(target)
+    stamp = _global_json_stamp(current)
+
+    def check_target():
+        if _global_json_snapshot(path) != (target, stamp):
+            raise OSError('Global settings changed before write')
+
+    if expected is not None:
+        if expected != (target, stamp):
+            raise OSError('Global settings changed before write')
+        _backup_file(path, source=target)
+        check_target()
+
+    if current is not None and current.st_nlink > 1:
+        payload = text.encode('utf-8')
+        with target.open('r+b', buffering=0) as handle:
+            original = handle.read()
+            if _global_json_stamp(os.fstat(handle.fileno())) != stamp:
+                raise OSError('Global settings changed before write')
+            check_target()
+            handle.seek(0)
+            handle.truncate(0)
+            try:
+                if handle.write(payload) != len(payload):
+                    raise OSError('Incomplete global settings write')
+                os.fsync(handle.fileno())
+            except OSError:
+                handle.seek(0)
+                if handle.write(original) != len(original):
+                    raise OSError('Incomplete global settings rollback')
+                handle.truncate()
+                os.fsync(handle.fileno())
+                raise
+        return
+
+    def prepare_replace(staged):
+        check_target()
+        if current is not None:
+            _copy_global_json_metadata(target, staged, current)
+
+    atomic(target, text, prepare_replace=prepare_replace, before_replace=check_target)
 
 
 def hook_arguments(command: str) -> list:
@@ -376,7 +526,68 @@ def hook_arguments(command: str) -> list:
     except ValueError:
         return []
 
-def global_bridge_paths(vault: Path, state: Path, only_harness=None) -> dict | None:
+def _owner_binding(arguments):
+    if not isinstance(arguments, list) or not all(isinstance(arg, str) for arg in arguments):
+        return None
+    paths = []
+    for flag in ('--state', '--vault'):
+        if arguments.count(flag) != 1 or arguments.index(flag) + 1 >= len(arguments):
+            return None
+        try:
+            path = Path(arguments[arguments.index(flag) + 1])
+            if not path.is_absolute():
+                return None
+            paths.append(path.resolve())
+        except (OSError, ValueError, RuntimeError):
+            return None
+    return tuple(paths)
+
+
+def bridge_owner(harness, state=None, home=None):
+    """Return one verified binding, or classify absent, unidentified, or mixed records."""
+    target = (global_opencode_settings_path(home=home) if harness == 'opencode'
+              else global_hook_path(harness, home=home))
+    _, settings = _settings_snapshot(target)
+    return _bridge_owner(harness, state, settings)
+
+
+def _bridge_owner(harness, state, settings):
+    my_state = Path(state).resolve() if state is not None else None
+    bindings = set()
+    if harness == 'opencode':
+        if settings.get('managed_by') == OPENCODE_MANAGED:
+            bindings.add(_owner_binding(settings.get('command')))
+    else:
+        key = 'beyin-v3-bridge' if harness == 'antigravity' else 'hooks'
+        events = settings.get(key, {})
+        for groups in events.values() if isinstance(events, dict) else ():
+            for group in groups if isinstance(groups, list) else ():
+                handlers = group.get('hooks', [group]) if isinstance(group, dict) else ()
+                for handler in handlers if isinstance(handlers, list) else ():
+                    if not isinstance(handler, dict):
+                        continue
+                    commands = [handler[field] for field in ('command', 'commandWindows') if field in handler]
+                    managed = ['beyin_v3_bridge.py' in _decoded_command(command) for command in commands]
+                    if any(managed):
+                        bindings.update(_owner_binding(hook_arguments(command)) if own else None
+                                        for command, own in zip(commands, managed))
+        if harness == 'antigravity' and key in settings and not bindings:
+            bindings.add(None)
+
+    if not bindings:
+        status = 'absent'
+    elif None in bindings:
+        status = 'unidentified'
+    elif len(bindings) > 1:
+        status = 'mixed'
+    else:
+        owner, vault = next(iter(bindings))
+        return {'state': 'mine' if owner == my_state else 'other',
+                'owner_state': str(owner), 'vault': str(vault)}
+    return {'state': status, 'owner_state': None, 'vault': None}
+
+
+def global_bridge_paths(vault: Path, state: Path, only_harness=None, home=None) -> dict | None:
     """Read only global bridge paths owned by this state, without executing commands.
 
     A different vault may legitimately own the user's global bridge. Inspect only
@@ -389,7 +600,7 @@ def global_bridge_paths(vault: Path, state: Path, only_harness=None) -> dict | N
         if only_harness and harness != only_harness:
             continue
         try:
-            data = json.loads(global_hook_path(harness).read_text(encoding='utf-8'))
+            data = json.loads(global_hook_path(harness, home=home).read_text(encoding='utf-8'))
         except (OSError, ValueError, UnicodeError):
             continue
         if not isinstance(data, dict):
@@ -433,7 +644,7 @@ def global_bridge_paths(vault: Path, state: Path, only_harness=None) -> dict | N
     # OpenCode's global bridge is a managed plugin plus a JSON settings file,
     # rather than a hook command embedded in client settings.
     try:
-        opencode_settings = global_opencode_settings_path()
+        opencode_settings = global_opencode_settings_path(home=home)
         data = json.loads(opencode_settings.read_text(encoding='utf-8'))
     except (OSError, ValueError, UnicodeError):
         data = None
@@ -487,6 +698,18 @@ def _read_global_settings(path):
     if not isinstance(data, dict):
         raise ValueError('Global settings must be a JSON object; preserved')
     return data
+
+
+def _check_snapshot(path, snapshot):
+    if _global_json_snapshot(path) != snapshot:
+        raise OSError('Global settings changed before write')
+
+
+def _settings_snapshot(path):
+    snapshot = _global_json_snapshot(path)
+    settings = _read_global_settings(snapshot[0])
+    _check_snapshot(path, snapshot)
+    return snapshot, settings
 
 
 def _without_bridge(groups):
@@ -777,7 +1000,7 @@ def _managed_opencode_file(path):
     return isinstance(data, dict) and data.get('managed_by') == OPENCODE_MANAGED
 
 
-def install_bridge(vault, state, harness, roots, events=None, context_chars=1500, home=None):
+def install_bridge(vault, state, harness, roots, events=None, context_chars=1500, home=None, *, replace=False):
     vault = Path(vault).expanduser().resolve()
     if not vault.is_dir() or not 0 <= context_chars <= 4000:
         raise ValueError('Invalid vault or context budget')
@@ -788,22 +1011,50 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
     if not roots or any(not p.is_dir() for p in roots):
         raise ValueError('Project roots must exist')
     events = list(dict.fromkeys(events or EVENTS))
+
+    target = global_hook_path(harness, home=home)
+    settings_path = global_opencode_settings_path(home=home) if harness == 'opencode' else target
+    snapshot, data = _settings_snapshot(settings_path)
+    owner_info = _bridge_owner(harness, state, data)
+    if owner_info['state'] in ('unidentified', 'mixed'):
+        raise ValueError(f'Global bridge for {harness} has {owner_info["state"]} ownership; preserved')
+    replaced_owner = None
+    if owner_info['state'] == 'other':
+        if not replace:
+            raise ValueError(f'Global bridge for {harness} is already owned by another vault ({owner_info["owner_state"]}); use --replace to overwrite')
+        replaced_owner = owner_info['owner_state']
+
     if harness == 'opencode':
-        target = global_opencode_plugin_path(home=home)
-        settings_path = global_opencode_settings_path(home=home)
-        files = [(settings_path, opencode_settings_content(vault, state, roots, events, context_chars)),
-                 (target, opencode_plugin_content())]
-        # Check both paths before writing either: a user file at one of them is never replaced.
-        for path, _ in files:
-            if (path.exists() or path.is_symlink()) and not (path.is_file() and _managed_opencode_file(path)):
+        plugin_snapshot = _global_json_snapshot(target)
+        files = ((settings_path, snapshot, data.get('managed_by') == OPENCODE_MANAGED,
+                  opencode_settings_content(vault, state, roots, events, context_chars)),
+                 (target, plugin_snapshot, _managed_opencode_file(plugin_snapshot[0]),
+                  opencode_plugin_content()))
+        for path, previous, managed, _ in files:
+            if path.is_symlink() or (previous[1] is not None and not managed):
                 raise ValueError(f'{path.name} exists and is not managed; preserved')
         from beyin_v3_sync import atomic
-        # Settings first: a plugin a running service already imported reads them on the next event.
-        for path, text in files:
-            if not path.is_file() or path.read_bytes() != text.encode('utf-8'):
+        snapshots = {path: previous for path, previous, _, _ in files}
+
+        def check_files():
+            for path, expected in snapshots.items():
+                if path.is_symlink():
+                    raise OSError('Global bridge path changed before write')
+                _check_snapshot(path, expected)
+
+        check_files()
+        # Settings first: a running plugin reads them on the next event.
+        for path, previous, _, content in files:
+            if previous[1] is None or path.read_bytes() != content.encode('utf-8'):
+                check_files()
                 _backup_file(path)
-                atomic(path, text)
-        return {
+                atomic(path, content, before_replace=check_files)
+                new_snapshot = _global_json_snapshot(path)
+                if path.read_bytes() != content.encode('utf-8'):
+                    raise OSError('Global bridge path changed after write')
+                _check_snapshot(path, new_snapshot)
+                snapshots[path] = new_snapshot
+        result = {
             'status': 'installed',
             'harness': harness,
             'hook_file': str(target),
@@ -811,6 +1062,9 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
             'events': events,
             'project_roots': [str(r) for r in roots],
         }
+        if replaced_owner:
+            result['replaced_owner'] = replaced_owner
+        return result
     if harness == 'antigravity':
         events = [event for event in events if event in ANTIGRAVITY.values()]
         if not events:
@@ -818,7 +1072,6 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
     elif harness not in ('claude', 'codex'):
         raise ValueError(f'Unsupported harness: {harness}')
 
-    target = global_hook_path(harness, home=home)
     target.parent.mkdir(parents=True, exist_ok=True)
 
     bridge_script = Path(__file__).resolve()
@@ -829,7 +1082,7 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
     for event in events:
         command.extend(['--event', event])
 
-    data = _read_global_settings(target)
+    settings_file = snapshot[0]
     if harness != 'antigravity':
         hooks = data.get('hooks', {})
         if not isinstance(hooks, dict) or any(not isinstance(groups, list) for groups in hooks.values()):
@@ -847,7 +1100,7 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
     else:
         wanted = hook_groups(shell_command(command), harness, events)
         hooks_map = data.setdefault('hooks', {})
-        # Replace every earlier bridge handler, so a narrower reinstall does not leave one
+        # Replace every earlier bridge handler (either mine or replaced owner), so a narrower reinstall does not leave one
         # forwarding an event the user removed; other handlers and their order stay.
         for event in list(hooks_map):
             cleaned_groups, removed = _without_bridge(hooks_map[event])
@@ -859,15 +1112,16 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
             hooks_map.setdefault(event, []).append(group)
 
     new_bytes = (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode('utf-8')
-    if not target.is_file() or target.read_bytes() != new_bytes:
-        _backup_file(target)
-        target.write_bytes(new_bytes)
+    if not settings_file.is_file() or settings_file.read_bytes() != new_bytes:
+        _write_global_json(target, data, expected=snapshot)
+    else:
+        _check_snapshot(target, snapshot)
 
     gemini_path = None
     if harness == 'antigravity':
         gemini_path = update_gemini_md(vault, roots, home=home)
 
-    return {
+    result = {
         'status': 'installed',
         'harness': harness,
         'hook_file': str(target),
@@ -875,27 +1129,43 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
         'events': handled_events(harness, events) if harness != 'antigravity' else events,
         'project_roots': [str(r) for r in roots],
     }
+    if replaced_owner:
+        result['replaced_owner'] = replaced_owner
+    return result
 
 
-def uninstall_bridge(harness, home=None):
+def uninstall_bridge(harness, home=None, *, state=None):
     if harness not in ('claude', 'codex', 'antigravity', 'opencode'):
         raise ValueError(f'Unsupported harness: {harness}')
     target = global_hook_path(harness, home=home)
+    settings_path = global_opencode_settings_path(home=home) if harness == 'opencode' else target
+    snapshot, data = _settings_snapshot(settings_path)
+    if state is not None and _bridge_owner(harness, state, data)['state'] != 'mine':
+        return {
+            'status': 'uninstalled', 'harness': harness, 'hook_file': str(target), 'removed_count': 0,
+        }
     removed_count = 0
     if harness == 'opencode':
-        # Settings first: a plugin module a running service keeps in memory then has nothing to run.
-        for path in (global_opencode_settings_path(home=home), target):
-            if path.is_file() and not path.is_symlink() and _managed_opencode_file(path):
-                path.unlink()
-                removed_count += 1
+        plugin_snapshot = _global_json_snapshot(target)
+        plugin_managed = _managed_opencode_file(plugin_snapshot[0])
+        settings_managed = data.get('managed_by') == OPENCODE_MANAGED
+        _check_snapshot(settings_path, snapshot)
+        _check_snapshot(target, plugin_snapshot)
+        # Preserve foreign or linked files. Scoped removal requires proof from the settings
+        # before removing the adapter even when its managed marker is present.
+        if settings_managed and not settings_path.is_symlink():
+            settings_path.unlink()
+            removed_count += 1
+            snapshot = (snapshot[0], None)
+        if plugin_managed and not target.is_symlink() and (state is None or removed_count):
+            _check_snapshot(settings_path, snapshot)
+            _check_snapshot(target, plugin_snapshot)
+            target.unlink()
+            removed_count += 1
         return {
-            'status': 'uninstalled',
-            'harness': harness,
-            'hook_file': str(target),
-            'removed_count': removed_count,
+            'status': 'uninstalled', 'harness': harness, 'hook_file': str(target), 'removed_count': removed_count,
         }
-    if target.is_file():
-        data = _read_global_settings(target)
+    if snapshot[1] is not None:
         if isinstance(data, dict):
             modified = False
             if harness == 'antigravity':
@@ -922,8 +1192,7 @@ def uninstall_bridge(harness, home=None):
                     if modified and not hooks_map:
                         del data['hooks']
             if modified:
-                _backup_file(target)
-                target.write_bytes((json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode('utf-8'))
+                _write_global_json(target, data, expected=snapshot)
 
     if harness == 'antigravity':
         removed_count += remove_gemini_md(home=home)
@@ -974,6 +1243,7 @@ def _main(argv=None):
     parser.add_argument('--print-config', action='store_true', help='Print hook groups to merge into global JSON; changes nothing')
     parser.add_argument('--install', action='store_true', help='Install bridge into global hook settings')
     parser.add_argument('--uninstall', action='store_true', help='Uninstall bridge from global hook settings')
+    parser.add_argument('--replace', action='store_true', help='Overwrite an existing global bridge owned by another vault')
     args = parser.parse_args(argv)
 
     if sum([bool(args.print_config), bool(args.install), bool(args.uninstall)]) > 1:
@@ -985,7 +1255,18 @@ def _main(argv=None):
         if args.harness == 'pi' and (args.print_config or args.install or args.uninstall):
             raise ValueError('Pi uses the installed extension with --beyin-project-root, not hook JSON')
         if args.uninstall:
-            result = uninstall_bridge(args.harness)
+            target_state = args.state
+            if not target_state and args.vault:
+                vault_dir = args.vault.expanduser().resolve()
+                if vault_dir.is_dir() and (vault_dir / '.beyin-runtime.json').is_file():
+                    try:
+                        rt = json.loads((vault_dir / '.beyin-runtime.json').read_text(encoding='utf-8'))
+                        target_state = Path(rt['state'])
+                    except Exception:
+                        pass
+            if target_state is None:
+                raise ValueError('Uninstall requires --state or a vault with installed runtime settings')
+            result = uninstall_bridge(args.harness, state=target_state)
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0
 
@@ -1026,7 +1307,7 @@ def _main(argv=None):
                 raise ValueError('Antigravity offers only SessionStart and Stop')
 
         if args.install:
-            result = install_bridge(vault, state, args.harness, roots, events, args.context_chars)
+            result = install_bridge(vault, state, args.harness, roots, events, args.context_chars, replace=args.replace)
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0
 

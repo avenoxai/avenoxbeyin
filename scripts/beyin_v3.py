@@ -484,7 +484,7 @@ HOOK_FILES = (".claude/settings.local.json", ".codex/hooks.json", ".agents/hooks
 # Fixed machine-local installation paths only, not all managed files/user scripts.
 MACHINE_LOCAL_FILES = tuple(sorted(set(HOOK_FILES + (
     '.beyin-runtime.json', 'Beyni Guncelle.cmd', '.codex/config.toml', '.claude/hermes-plugin/__init__.py',
-    '.opencode/plugins/beyin-v3.js', '.omp/hooks/pre/beyin-v3.ts',
+    '.opencode/plugins/beyin-v3.js', '.omp/hooks/pre/beyin-v3.ts', '.pi/extensions/beyin-v3.ts',
     '.claude/scripts/compile.py', '.claude/scripts/flush.py',
 ) + tuple('.claude/hooks/' + name + suffix
           for name in ('session-start', 'session-end', 'pre-compact', 'prompt-counter')
@@ -1248,6 +1248,16 @@ def parser(note_namespace=None, is_json=False):
     homepage.add_argument("--file", default="-", help="JSON {source, expected_sha256, title, project, selections}; - for stdin")
     task = sub.add_parser("task-create", help="Create and verify an explicit new task")
     task.add_argument("--file", default="-", help="JSON {source: tasks/name.md, text, metadata: {id,status,owner}}")
+    feedback_p = sub.add_parser("feedback", help="Record feedback (ok, wrong, stale) for a note or source")
+    feedback_p.add_argument("target", help="Note ID, source path, or identifier")
+    feedback_p.add_argument("verdict", choices=["ok", "wrong", "stale"], help="Feedback verdict")
+    feedback_p.add_argument("--session", help="Session identifier or the receipt session value shown by the hook")
+
+    checkpoint_p = sub.add_parser("checkpoint", help="Execute unified session checkpoint handoff")
+    checkpoint_p.add_argument("--file", default="-", help="JSON checkpoint payload; - for stdin")
+    checkpoint_p.add_argument("--harness", default=None, help="Client harness identifier")
+    checkpoint_p.add_argument("--session", default=None, help="Session identifier")
+    checkpoint_p.add_argument("--dry-run", action="store_true", help="Plan checkpoint steps without writing")
     mutation_queue = sub.add_parser("mutation-queue", help="Opt-in local offline mutation queue (off by default; machine-local state)")
     queue_action = mutation_queue.add_mutually_exclusive_group()
     queue_action.add_argument("--enable", action="store_true", help="Turn the queue on for this machine")
@@ -1260,6 +1270,13 @@ def parser(note_namespace=None, is_json=False):
     queue_action.add_argument("--dismiss", metavar="MUTATION_ID", help="Dismiss a reviewed conflict or failed mutation")
     mutation_queue.add_argument("--status", choices=["pending", "applied", "conflict", "failed", "dismissed"], help="Filter status for --list")
     mutation_queue.add_argument("--file", default="-", help="JSON {action, source, payload, mutation_id?} for --enqueue, or - for stdin")
+    devices = sub.add_parser("devices", help="Opt-in staged multi-device layout (off by default): detect, plan, apply")
+    devices_action = devices.add_mutually_exclusive_group()
+    devices_action.add_argument("--detect", action="store_true", help="Describe this machine and the levels it is ready for; writes nothing")
+    devices_action.add_argument("--plan", action="store_true", help="Show what --apply would store and the steps left to you; writes nothing")
+    devices_action.add_argument("--apply", action="store_true", help="Store the chosen level in the runtime state; writes nothing in the vault")
+    devices.add_argument("--level", choices=["solo", "phone"], help="solo: one computer; phone: + phone or tablet via a file sync service")
+    devices.add_argument("--phone-sync", choices=["icloud", "obsidian-sync", "other"], help="How the phone sees the vault")
     context = sub.add_parser("context", help="Retrieve source-backed shared context")
     context.add_argument("query", nargs="?", help="Query; alternatively use --file")
     context.add_argument("--file", help="JSON retrieval arguments, or - for stdin")
@@ -1318,6 +1335,8 @@ def parser(note_namespace=None, is_json=False):
     selftest_parser = sub.add_parser("selftest", help="Run vault-local read-only retrieval self-test")
     selftest_parser.add_argument("--questions", type=Path, help="Questions JSON path inside vault (default knowledge/v3/selftest.json)")
     selftest_parser.add_argument("--limit", type=int, default=5, help="Candidate retrieval limit (default 5)")
+    selftest_parser.add_argument("--mode", choices=("candidates", "context"), default="candidates")
+    selftest_parser.add_argument("--budget", type=int, help="Context-mode character budget (default 8000)")
     selftest_parser.add_argument("--audience", choices=("internal", "public"), default="internal", help="Retrieval audience")
     selftest_parser.add_argument("--add-question", help="Add a test query")
     selftest_parser.add_argument("--source", help="Vault-relative source note for --add-question")
@@ -1334,12 +1353,13 @@ def parser(note_namespace=None, is_json=False):
     bridge.add_argument("--print-config", action="store_true", help="Print global hook JSON without installing")
     bridge.add_argument("--event", choices=("SessionStart", "Stop", "PreCompact", "SessionEnd"), action="append")
     bridge.add_argument("--context-chars", type=int, default=1500)
+    bridge.add_argument("--replace", action="store_true", help="Overwrite an existing global bridge owned by another vault")
     learn = sub.add_parser("learn", help="Stage or inspect learning candidates before distillation (RFC #368)")
     learn.add_argument("--candidate", help="Candidate learning content text")
     learn.add_argument("--source", default="", help="Source file or note path linking to this learning")
     learn.add_argument("--scope", default=None, help="Scope of the learning: global or project name")
     learn.add_argument("--session", default="", help="Session ID associated with candidate")
-    learn.add_argument("--list", action="store_true", help="List active candidate learnings")
+    learn.add_argument("--list", action="store_true", help="List active candidates; --session limits the list to that session")
     learn.add_argument("--resolve", choices=("distilled", "discarded"), default=None,
                        help="Resolve candidates for session as distilled or discarded")
     learn.add_argument("--all", action="store_true", help="When resolving or listing, apply across all sessions")
@@ -1459,15 +1479,32 @@ def main(argv=None, return_result=False):
         if state == vault or vault in state.parents:
             raise ValueError("--state must be outside the vault")
         read_only_context = args.command == "context" and args.no_sync
-        if read_only_context:
+        context_selftest = args.command == "selftest" and args.mode == "context"
+        if args.command == "selftest" and args.budget is not None and (not context_selftest or args.budget < 0):
+            raise ValueError("--budget requires --mode context and a nonnegative value")
+        if context_selftest and args.add_question:
+            raise ValueError("--add-question cannot be combined with --mode context")
+        read_only_doctor = args.command == "doctor"
+        dry_checkpoint = args.command == "checkpoint" and args.dry_run
+        if context_selftest or read_only_context or read_only_doctor or args.command == "triage" or args.command == "feedback" or dry_checkpoint:
             # The source CLI can run without the installed entry point, which
-            # already disables bytecode. Importing the engine must not write.
+            # already disables bytecode. Merely importing runtime code must not write.
             sys.dont_write_bytecode = True
         if read_only_context and args.jev:
             raise ValueError("context --no-sync cannot be combined with --jev")
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
-        engine = load_engine() if args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "workspace", "lint", "moc") else None
-        store = engine.MemoryStore(state, vault, read_only=read_only_context) if engine else None
+        engine = load_engine() if not context_selftest and args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "devices", "workspace", "lint", "moc", "triage", "feedback", "checkpoint") else None
+        database = state / "memory.sqlite3"
+        doctor_without_index = read_only_doctor and not (database.exists() or database.is_symlink())
+        store = None
+        if engine and not doctor_without_index:
+            try:
+                store = engine.MemoryStore(state, vault, read_only=read_only_context or read_only_doctor)
+            except ValueError as exc:
+                # A database file that exists but was never initialized is reported like a
+                # missing index; doctor must not create the schema to answer.
+                if not read_only_doctor or str(exc) != "read-only runtime is not initialized":
+                    raise
         sync = load_sync()(vault, state) if args.command in ("sync", "recover-views", "recap", "receipt", "task-update", "note-create", "note-read", "note-edit", "homepage-create", "task-create", "context", "jev-review", "jev-answer", "jev-memory", "history") and not read_only_context else None
         if args.command == "bridge":
             if sum([bool(args.print_config), bool(args.install), bool(args.uninstall)]) > 1:
@@ -1480,12 +1517,12 @@ def main(argv=None, return_result=False):
                 if not events:
                     argument_parser.error("Antigravity offers only SessionStart and Stop")
             if args.uninstall:
-                result = bridge_mod.uninstall_bridge(args.harness)
+                result = bridge_mod.uninstall_bridge(args.harness, state=state)
             elif args.install:
                 if not args.project_root:
                     argument_parser.error("--project-root is required with --install")
                 roots = [p.expanduser().resolve() for p in args.project_root]
-                result = bridge_mod.install_bridge(vault, state, args.harness, roots, events, args.context_chars)
+                result = bridge_mod.install_bridge(vault, state, args.harness, roots, events, args.context_chars, replace=args.replace)
             elif args.print_config:
                 if not args.project_root:
                     argument_parser.error("--project-root is required with --print-config")
@@ -1830,16 +1867,20 @@ def main(argv=None, return_result=False):
             health = result['hook-health.json'] or {}
             gaps_info = result['receipt-gaps.json']
             result['potential_missing_receipts'] = gaps_info.get('potential_missing_receipts') if gaps_info is not None else None
-            if gaps_info is not None:
-                from beyin_v3_projections import receipt_coverage
+            result['receipt_coverage'] = None
+            if store is not None:
+                from beyin_v3_projections import hermes_without_terminal, receipt_coverage
                 with store._connect() as db:
-                    result['receipt_coverage'] = receipt_coverage(db, now=time.time())
-            else:
-                result['receipt_coverage'] = None
+                    coverage = receipt_coverage(db, now=time.time(), read_only=True) if gaps_info is not None else {}
+                    coverage['hermes_without_terminal'] = hermes_without_terminal(db)
+                result['receipt_coverage'] = coverage
             from beyin_v3_projections import knowledge_freshness, check_instruction_conflicts
             try:  # a recency report must never hide the rest of doctor, conflicts included
-                with store._connect() as db:
-                    result['knowledge_freshness'] = knowledge_freshness(vault, db, now=time.time())
+                if store is None:
+                    result['knowledge_freshness'] = knowledge_freshness(vault, None, now=time.time())
+                else:
+                    with store._connect() as db:
+                        result['knowledge_freshness'] = knowledge_freshness(vault, db, now=time.time())
             except Exception as exc:
                 result['knowledge_freshness'] = {'status': 'unavailable', 'error': type(exc).__name__}
             result['instruction_conflicts'] = check_instruction_conflicts(vault)
@@ -1850,8 +1891,18 @@ def main(argv=None, return_result=False):
             view_sync = health.get('sync', {})
             result['receipt_view_conflicts'] = [c for c in view_sync.get('conflicts', []) + view_sync.get('warnings', [])
                                                 if is_receipt_view_conflict(c)]
+            if store is None:
+                result['task_completion'] = {'strict_issue_count': 0, 'strict_issues': [], 'legacy_done_count': 0,
+                                             'legacy_done': [], 'truncated': False}
+                result['validity'] = {'ignored_rejection_count': 0, 'ignored_rejections': [],
+                                      'rejected_dependent_count': 0, 'rejected_dependents': [],
+                                      'ambiguous_rejected_link_count': 0, 'ambiguous_rejected_links': [],
+                                      'truncated': False}
+                result['supersedes'] = {'dead_count': 0, 'dead': [], 'truncated': False}
+                result['review'] = {'due_count': 0, 'due': [], 'invalid_count': 0, 'invalid': [], 'truncated': False}
             try:
-                result['task_completion'] = load_sync().reader(store).completion_health()
+                if store is not None:
+                    result['task_completion'] = load_sync().reader(store).completion_health()
             except Exception as exc:
                 result['task_completion'] = {
                     'strict_issue_count': 0, 'strict_issues': [], 'legacy_done_count': 0,
@@ -1862,7 +1913,8 @@ def main(argv=None, return_result=False):
             # Notes that link to a rejected inference are listed for review only and never raise
             # the doctor status: citing a rejected claim can be legitimate (explaining why it fell).
             try:
-                result['validity'] = load_sync().reader(store).validity_health()
+                if store is not None:
+                    result['validity'] = load_sync().reader(store).validity_health()
             except Exception as exc:
                 result['validity'] = {'ignored_rejection_count': 0, 'ignored_rejections': [], 'truncated': False,
                                       'rejected_dependent_count': 0, 'rejected_dependents': [],
@@ -1871,12 +1923,14 @@ def main(argv=None, return_result=False):
             # Information only: a supersedes link that retires nothing keeps the old note in
             # context, as before #206; it never raises the doctor status.
             try:
-                result['supersedes'] = load_sync().reader(store).supersedes_health()
+                if store is not None:
+                    result['supersedes'] = load_sync().reader(store).supersedes_health()
             except Exception as exc:
                 result['supersedes'] = {'status': 'unavailable', 'error': type(exc).__name__}
             # Information only: a note's own review_at date has come; never raises the doctor status.
             try:
-                result['review'] = load_sync().reader(store).review_health()
+                if store is not None:
+                    result['review'] = load_sync().reader(store).review_health()
             except Exception as exc:
                 result['review'] = {'status': 'unavailable', 'error': type(exc).__name__}
             # Read-only information: each scan fails alone and never hides the rest of doctor.
@@ -1914,12 +1968,13 @@ def main(argv=None, return_result=False):
             # indexed trees that look vendored. Reads the index and one small file; no vault walk.
             try:
                 import beyin_v3_index as index_settings
-                with store._connect() as db:
-                    # Before the first sync this table may legitimately be absent. Any
-                    # other query or payload error must reach the unavailable report below.
-                    rows = []
-                    if db.execute("SELECT 1 FROM sqlite_master WHERE name = 'markdown_sources' COLLATE NOCASE").fetchone():
-                        rows = db.execute('SELECT m.source, r.payload FROM markdown_sources m LEFT JOIN records r ON r.id = m.id').fetchall()
+                # Before the first sync this table may legitimately be absent. Any
+                # other query or payload error must reach the unavailable report below.
+                rows = []
+                if store is not None:
+                    with store._connect() as db:
+                        if db.execute("SELECT 1 FROM sqlite_master WHERE name = 'markdown_sources' COLLATE NOCASE").fetchone():
+                            rows = db.execute('SELECT m.source, r.payload FROM markdown_sources m LEFT JOIN records r ON r.id = m.id').fetchall()
                 indexed_sources = [row[0] for row in rows]
                 indexed_records = [json.loads(row[1]) if row[1] else {'source': row[0]} for row in rows]
                 result['index_exclusions'] = index_settings.doctor(state, vault, indexed_sources, records=indexed_records)
@@ -1946,6 +2001,18 @@ def main(argv=None, return_result=False):
                 result['mutation_queue'] = mutation.doctor(state)
             except Exception as exc:
                 result['mutation_queue'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            try:
+                _ensure_scripts_path()
+                import beyin_v3_usage as usage
+                result['note_usage'] = usage.summarize_usage(state)
+            except Exception as exc:
+                result['note_usage'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            try:  # information only: the opt-in multi-device layout
+                _ensure_scripts_path()
+                import beyin_v3_devices as devices_mod
+                result['devices'] = devices_mod.doctor(state)
+            except Exception as exc:
+                result['devices'] = {'status': 'unavailable', 'error': type(exc).__name__}
             result['status'] = ('needs_attention' if health.get('sync', {}).get('status') in ('conflict', 'degraded') or result['hook_paths'].get('status') == 'stale' or result['skill_conflicts'] or result.get('instruction_conflicts') or result['hook-error.json'] or result['task_completion']['strict_issue_count'] or result['task_completion'].get('error') or result['validity']['ignored_rejection_count'] or result['validity'].get('error') or result.get('project_scopes', {}).get('status') in ('error', 'warning') else 'pending' if result['pending_events'] else 'observed_metadata' if result['acknowledged_events'] else 'never_seen')
             if result['updates'].get('status') == 'recovery_required':
                 result['status'] = 'needs_attention'
@@ -2090,7 +2157,8 @@ def main(argv=None, return_result=False):
             _ensure_scripts_path()
             import beyin_v3_triage as triage_module
             try:
-                review = load_sync().reader(store).review_health(source_verified=True)
+                review_store = load_engine().MemoryStore(state, vault, read_only=True)
+                review = load_sync().reader(review_store).review_health(source_verified=True)
             except Exception as exc:
                 review = {'status': 'unavailable', 'error': type(exc).__name__}
             result = triage_module.triage(vault, state=state, stale_days=args.stale_days,
@@ -2154,7 +2222,9 @@ def main(argv=None, return_result=False):
                     argument_parser.error("--source is required with --add-question")
                 result = selftest_mod.add_question(vault, args.questions, args.add_question, args.source, args.sentence)
             else:
-                result = selftest_mod.run_selftest(vault, state, args.questions, args.limit, args.audience)
+                result = selftest_mod.run_selftest(
+                    vault, state, args.questions, args.limit, args.audience,
+                    mode=args.mode, budget=8000 if args.budget is None else args.budget)
         elif args.command == "note-read":
             result = sync.note_read(args.source)
             if args.must_exist and not result['exists']:
@@ -2177,6 +2247,27 @@ def main(argv=None, return_result=False):
         elif args.command == "task-create":
             payload = read_json(args.file)
             result = sync.task_create(payload['source'], payload['text'], payload['metadata'])
+        elif args.command == "feedback":
+            _ensure_scripts_path()
+            import beyin_v3_usage as usage
+            if args.session is not None:
+                session = args.session if re.fullmatch(r"[0-9a-f]{24}", args.session) else usage.session_key(args.session)
+            else:
+                identities = {os.environ[name] for name in (
+                    "BEYIN_V3_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "PI_SESSION_ID", "CODEX_THREAD_ID"
+                ) if os.environ.get(name)}
+                session = usage.session_key(identities.pop()) if len(identities) == 1 else None
+            result = usage.record_feedback(state, args.target, args.verdict, session=session)
+
+        elif args.command == "checkpoint":
+            payload = read_json(args.file)
+            _ensure_scripts_path()
+            import beyin_v3_checkpoint
+            result = beyin_v3_checkpoint.run_checkpoint(
+                None if dry_checkpoint else load_sync()(vault, state), vault, state, payload,
+                harness=args.harness, session=args.session or env_session(args.harness),
+                dry_run=args.dry_run
+            )
         elif args.command == "mutation-queue":
             _ensure_scripts_path()
             import beyin_v3_mutation as mutation
@@ -2201,6 +2292,21 @@ def main(argv=None, return_result=False):
                 result = mutation.list_mutations(state, status=args.status)
             else:
                 result = mutation.status(state)
+        elif args.command == "devices":
+            _ensure_scripts_path()
+            import beyin_v3_devices as devices_mod
+            options = {"level": args.level, "phone_sync": args.phone_sync}
+            given = [name for name, value in options.items() if value is not None]
+            if given and not (args.plan or args.apply):
+                raise ValueError("--" + given[0].replace("_", "-") + " is only valid with --plan or --apply")
+            if args.detect:
+                result = devices_mod.detect(vault, state)
+            elif args.plan:
+                result = devices_mod.public_plan(devices_mod.plan(vault, state, options))
+            elif args.apply:
+                result = devices_mod.apply(vault, state, options)
+            else:
+                result = devices_mod.status(vault, state)
         elif args.command == "context":
             params = {"query": args.query, "project": args.project, "audience": args.audience,
                       "statuses": args.statuses, "limit": args.limit, "budget_chars": args.budget_chars}
@@ -2213,15 +2319,8 @@ def main(argv=None, return_result=False):
                 params["project"] = args.project
             if not isinstance(params["query"], str) or not params["query"].strip():
                 raise ValueError("context requires a nonempty query")
-            workspace_files = (vault / ".beyin-workspaces.json", vault / ".beyin-projects.json")
-            if params["project"] is None and any(path.exists() or path.is_symlink() for path in workspace_files):
-                _ensure_scripts_path()
-                from beyin_v3_workspaces import matching_workspace_ids
-                named = matching_workspace_ids(vault, params["query"])
-                if len(named) > 1:
-                    raise ValueError("context query names multiple Workspaces; specify --project")
-                if named:
-                    params["project"] = named[0]
+            if params["project"] is None:
+                params["project"] = engine.context_project(vault, params["query"])
             if read_only_context:
                 result = store.context_for(args.harness, explicit=True, **params)
                 result['source_sync'] = {'status': 'skipped', 'reason': 'explicit_no_sync'}
@@ -2308,6 +2407,11 @@ def main(argv=None, return_result=False):
             result = sync.receipt(payload["event_id"], payload["summary"],
                                           payload["refs"], args.harness, session=payload.get('session'),
                                           links=payload.get('links'))
+            try:
+                import beyin_v3_usage
+                beyin_v3_usage.record_cited(state, payload["event_id"], payload["refs"], sync)
+            except Exception:
+                pass
         elif args.command == "history":
             # History is source-verified, so refresh first like context: an edit
             # made just before this command must not hide the audit trail.
@@ -2337,7 +2441,8 @@ def main(argv=None, return_result=False):
                 result = stage_candidate(state, sess, args.candidate, source=args.source, scope=args.scope or "global")
             elif args.list:
                 list_sess = None if getattr(args, "all", False) else (args.session or None)
-                result = {"candidates": list_candidates(state, session=list_sess, scope=args.scope, strict=True)}
+                result = {"candidates": list_candidates(state, session=list_sess, scope=args.scope, strict=True,
+                                                         include_cli_fallback=False)}
             else:
                 raise ValueError("one of --candidate, --list, or --resolve is required")
         elif args.command == "workspace":

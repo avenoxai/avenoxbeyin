@@ -253,6 +253,42 @@ class AgentOrphanRecoveryTest(fixtures.AgentFiles):
         sleep.assert_called_once_with(0.1)
         self.assertIn('surec kimligi dogrulanamadi', recovered['result_summary'])
 
+    def test_reconciliation_with_renamed_or_missing_card_clears_orphan_reconcile_flag(self):
+        self.configure()
+        _, old, card = self.queued(text='Card renamed while agent was running')
+        old.update(state='completed', result_summary='Agent completed successfully.', card_reconcile=True)
+        yakala._agent_json(yakala._agent_job_dir(self.vault, self.state, old['id']) / 'job.json', old)
+
+        # Rename card on disk (simulating user or tool renaming card note in Obsidian)
+        renamed = card['path'].with_name('yeni-ad-' + card['path'].name)
+        card['path'].rename(renamed)
+
+        # Run worker reconciliation
+        self.assertEqual(yakala._agent_worker(self.vault, self.state), 0)
+
+        # The job must have been reconciled to the renamed card or cleared if orphan
+        saved = yakala._agent_load_job(self.vault, self.state, old['id'])
+        self.assertFalse(saved.get('card_reconcile'))
+        renamed_meta, _ = yakala.read_card(renamed)
+        self.assertEqual(renamed_meta.get('durum'), 'islendi')
+
+    def test_reconciliation_with_deleted_orphan_card_clears_orphan_reconcile_flag(self):
+        self.configure()
+        _, old, card = self.queued(text='Card deleted while agent was running')
+        old.update(state='completed', result_summary='Agent completed successfully.', card_reconcile=True)
+        yakala._agent_json(yakala._agent_job_dir(self.vault, self.state, old['id']) / 'job.json', old)
+
+        # Delete card from disk completely
+        card['path'].unlink()
+
+        # Run worker reconciliation
+        self.assertEqual(yakala._agent_worker(self.vault, self.state), 0)
+
+        # The orphan job must have its card_reconcile cleared
+        saved = yakala._agent_load_job(self.vault, self.state, old['id'], check_card=False)
+        self.assertFalse(saved.get('card_reconcile'))
+
+
 
 class AgentBridgeLeaseTest(unittest.TestCase):
     setUp = fixtures.AgentBridgeFilesTest.setUp

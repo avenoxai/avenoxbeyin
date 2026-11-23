@@ -345,11 +345,15 @@ def end(state, harness, session_id, vault=None):
         pass
 
 
-def doctor(state, vault=None, now=None):
-    """Read-only: the switch and how many markers look active. Never creates the folder."""
-    now = time.time() if now is None else now
-    value, valid = read_settings(state)
-    result = {'enabled': value, 'valid': valid, 'markers': 0, 'active': 0}
+def active_session_keys(state, vault=None, now=None):
+    """Return the short keys of active local and remote sessions without writing markers."""
+    if state is None:
+        return set()
+    _, sessions = _sessions(state, vault, time.time() if now is None else now)
+    return {session[:8] for session in sessions}
+
+
+def _sessions(state, vault, now):
     folder = _folder(state)
     all_sessions = {}
     active_sessions = set()
@@ -384,6 +388,15 @@ def doctor(state, vault=None, now=None):
                                         active_sessions.add(peer)
             except OSError:
                 pass
-    result['markers'] = len(all_sessions)
+    return len(all_sessions), active_sessions
+
+
+def doctor(state, vault=None, now=None):
+    """Read-only: the switch and how many markers look active. Never creates the folder."""
+    now = time.time() if now is None else now
+    value, valid = read_settings(state)
+    result = {'enabled': value, 'valid': valid, 'markers': 0, 'active': 0}
+    marker_count, active_sessions = _sessions(state, vault, now)
+    result['markers'] = marker_count
     result['active'] = len(active_sessions)
     return result

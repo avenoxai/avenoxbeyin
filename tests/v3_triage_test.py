@@ -460,6 +460,20 @@ class TriageTest(unittest.TestCase):
         self.assertEqual(waiting_task['status'], 'waiting')
         self.assertGreaterEqual(waiting_task['age_days'], 17.0)
 
+    def test_triage_terminal_statuses_unification_issue_761(self):
+        # Issue #761: bitti, cozuldu, resolved, canceled must be recognized as terminal in triage
+        tasks = self.vault / 'tasks_761'
+        tasks.mkdir(parents=True, exist_ok=True)
+        for name, status in [('t_bitti.md', 'bitti'), ('t_cozuldu.md', 'cozuldu'),
+                             ('t_resolved.md', 'resolved'), ('t_canceled.md', 'canceled')]:
+            f = tasks / name
+            f.write_text(f'---\ntitle: {name}\nstatus: {status}\n---\nBody\n', encoding='utf-8')
+            self.set_age(f, 30)
+        report = triage_module.scan_stale_tasks(self.vault, self.now, stale_days=14)
+        open_titles = [t['title'] for t in report.get('stale_tasks', []) + report.get('undated_tasks', [])]
+        for name in ['t_bitti.md', 't_cozuldu.md', 't_resolved.md', 't_canceled.md']:
+            self.assertNotIn(name, open_titles)
+
     def test_knowledge_digest_scanning(self):
         knowledge = self.vault / '🧠 500-Knowledge' / 'concepts'
         knowledge.mkdir(parents=True)

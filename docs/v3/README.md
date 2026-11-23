@@ -4,7 +4,7 @@ Vault dışındaki seçili proje oturumları için: [opsiyonel global köprü](G
 
 V3'te Markdown kaynak, SQLite yerel indeks, Codex/Claude Code/Antigravity, [Hermes Agent](HERMES.md), [OpenCode](OPENCODE.md), [OMP](OMP.md), [Kiro](KIRO.md) ve [Pi](PI.md) ise aynı motora bağlanan istemcilerdir. Python 3.11+ dışında ek Python paketi gerekmez. Varsayılan akışta Mem0, API anahtarı, daemon veya ayrı sunucu kurulmaz. [Jev danışmanı](JEV.md) isteğe bağlıdır ve varsayılan kapalıdır; `beyin.py jev` ile açılmadıkça normal arama ve hook akışını değiştirmez. Aynı danışman ayrı kurulan yerel Laya sunucusunu da yalnız gölge modda, ölçüm için kullanabilir (`jev shadow --provider laya`).
 
-[Yeni kullanıcı başlangıcı](../../README.md) · [Ajanla kurulum](../../SETUP-V3.md) · [Güncelleme/geri alma](UPDATE.md) · [Birden çok makine](MULTI-MACHINE.md) · [Kasa yedeği](BACKUP.md) · [Kaynak şeması](MARKDOWN.md) · [Runtime](RUNTIME.md)
+[Yeni kullanıcı başlangıcı](../../README.md) · [Ajanla kurulum](../../SETUP-V3.md) · [Güncelleme/geri alma](UPDATE.md) · [Birden çok makine](MULTI-MACHINE.md) · [Kademeli çoklu cihaz düzeni](DEVICES.md) · [Kasa yedeği](BACKUP.md) · [Kaynak şeması](MARKDOWN.md) · [Runtime](RUNTIME.md)
 
 [Sorgu değişikliklerini karşılaştırma ve kendi kasanızda ölçüm](QUERY-EXPERIMENTS.md).
 
@@ -16,7 +16,7 @@ Geliştiriciler için: [kaynak ve dağıtım sınırları envanteri](MODULE-BOUN
 
 Kurucu ortak motoru, `beyin`, `beyin-doktor`, `beyin-guncelle`, `beyin-kontrol` skill'lerini, kurulu `beyin.py` girişini ve işletim sistemine uygun güncelleme kısayolunu dağıtır. Paket ZIP olarak açılıp kullanılabilir; Git gerekmez. Kurulu vault kaynak repo klasöründen bağımsız çalışır.
 
-[Son kararlı release](https://github.com/avenoxai/avenoxbeyin/releases/latest) ve içindeki `beyin-v3-X.Y.Z.zip` paketi stable dağıtım noktasıdır. V3.14.1 sürüm kapısı tam çevrimdışı test paketini, 10 development ve 6 holdout semantik senaryosunu kapsar; CI aynı paketi Windows, macOS ve Linux'ta doğrular.
+[Son kararlı release](https://github.com/avenoxai/avenoxbeyin/releases/latest) ve içindeki `beyin-v3-X.Y.Z.zip` paketi stable dağıtım noktasıdır. V3.15.0 sürüm kapısı tam çevrimdışı test paketini, 10 development ve 6 holdout semantik senaryosunu kapsar; CI aynı paketi Windows, macOS ve Linux'ta doğrular.
 
 ## Davranış
 
@@ -41,6 +41,16 @@ notla geçersiz kılınmış kaynaklar dışarıda kalır. Değişmiş/okunamaya
 önce `python beyin.py sync` çalıştırın. Boş veya şablon tarihleri atlanır;
 geçersiz tarihler ayrı sayılır. Oturum açılışına yeni satır veya otomatik hatırlatma
 eklenmez; `doctor` mevcut tanılama davranışını korur.
+İndeks henüz oluşturulmamışsa triage diğer taramaları yapar ve bu bölümü
+taranamadı olarak gösterir. Kasa ve yerel çalışma durumu salt okunur kalır.
+
+Eşlikçi özetinde `Kurallar.md`, `Threads.md` veya `Last-Session.md` okunamazsa
+JSON'da `companion.status: partial` ve `unreadable_sources` listesi döner.
+İnsan çıktısı okunamayan alanı sıfır yerine `taranamadi` olarak gösterir.
+Geçersiz UTF-8 içeren kaynaklar ve dosya yerindeki dizinler okunamayanlar
+arasında listelenir.
+Bulunmayan isteğe bağlı dosyalar hata sayılmaz. Triage çıkış kodu değişmez;
+çıktı, hata metnini ve dosyanın içeriğini kopyalamaz.
 
 ## V2 geçişi
 
@@ -61,3 +71,7 @@ Gerçek kullanımda kancanın enjekte ettiği kaynakların sonradan açılıp a�
 [Ürünleştirme durumu](PRODUCTIZATION-PLAN.md) · [Komut detayları](QUICKSTART.md) · [Serai desenleri](SERAI-PATTERNS.md).
 
 İlk incelenen public taban `2e074cc` idi. [Public mimari](public-architecture.md), [yerel mimari](local-runtime-architecture.md), [eşitlik/migration değerlendirmesi](parity-and-migration.md) ve [sorun incelemeleri](issue-validation.md) tasarım geçmişidir; mevcut uygulamanın yerine kullanılmaz.
+
+### Kasanın verdiği cevabı sınama
+
+`beyin.py selftest --mode context --limit 3 --budget 8000` mevcut indeks üzerinde, `context --no-sync` ile aynı kayıt metnini puanlar. Sorunun `sentence` değeri bütçeye sığmayan bölümde kaldıysa sonuçta `truncated` sayılır. Soru dosyasında bir `source` veya kabul ettiğin yolları içeren bir `sources` listesi kullanabilirsin. Bu mod önceki ölçümü değiştirmez.
