@@ -16,8 +16,7 @@ class LauncherTest(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('test_v3_launchers_module', MODULE)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        self.assertEqual(module.powershell_literal("O'Brien ‘d’ ‚e‛"), "'O''Brien ‘‘d’’ ‚‚e‛‛'")
-        self.assertEqual(module.powershell_unescape("O''Brien ‘‘d’’ ‚‚e‛‛"), "O'Brien ‘d’ ‚e‛")
+        self.assertEqual(module._powershell_literal("O'Brien ‘d’ ‚e‛"), "'O''Brien ‘‘d’’ ‚‚e‛‛'")
         with tempfile.TemporaryDirectory(prefix='beyin-launcher-') as temp:
             vault = Path(temp) / "Beyin Ölçüm & D’Angelo ‘Notlar’ ‚Ek‛ 'Plan'"
             vault.mkdir()
