@@ -165,6 +165,26 @@ def _session_digest(session_id):
     return hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:24]
 
 
+def _threshold(config, state):
+    """Token count the next reminder waits for: the first threshold, then last reminder + repeat."""
+    first_threshold = config.get("first_threshold", DEFAULT_FIRST_THRESHOLD)
+    if state.get("reminders_sent", 0) == 0:
+        return first_threshold
+    repeat_threshold = config.get("repeat_threshold", DEFAULT_REPEAT_THRESHOLD)
+    return state.get("last_reminded_tokens", first_threshold) + repeat_threshold
+
+
+def _format_tokens(count):
+    return f"{count:,}".replace(",", ".")
+
+
+def reminder_reason(tokens, threshold):
+    """Say what was reached, not that the window is full: auto-compaction can come long before."""
+    return (f"Bağlam {_format_tokens(tokens)} tokene ulaştı (eşik {_format_tokens(threshold)}). "
+            "Otomatik sıkıştırma pencere dolmadan gelebilir; önce devir kartını güncelle, "
+            "sonra receipt yaz.")
+
+
 def should_remind(state_dir, session_id, config, state):
     """Determine if a context-fill reminder should be shown.
 
@@ -175,16 +195,9 @@ def should_remind(state_dir, session_id, config, state):
     if os.environ.get("BEYIN_V3_NO_RECEIPT_REMINDER") == "1":
         return False, state, None
 
-    first_threshold = config.get("first_threshold", DEFAULT_FIRST_THRESHOLD)
-    repeat_threshold = config.get("repeat_threshold", DEFAULT_REPEAT_THRESHOLD)
-
     tokens = state.get("tokens", 0)
     reminders_sent = state.get("reminders_sent", 0)
-
-    if reminders_sent == 0:
-        threshold = first_threshold
-    else:
-        threshold = state.get("last_reminded_tokens", first_threshold) + repeat_threshold
+    threshold = _threshold(config, state)
 
     if tokens >= threshold:
         new_state = dict(state)
@@ -240,6 +253,7 @@ def context_fill_reminder(payload, state_dir, harness, event, *, transcript_sess
         with _ledger_lock(folder, timeout=0, lock_name="writer.lock"):
             state = load_session_state(state_dir, session_digest)
             state["tokens"] = tokens
+            threshold = _threshold(config, state)
             remind, new_state, _ = should_remind(state_dir, session_id, config, state)
             if not remind:
                 return None
@@ -249,7 +263,7 @@ def context_fill_reminder(payload, state_dir, harness, event, *, transcript_sess
         # Return blocking decision
         return {
             "decision": "block",
-            "reason": "Bağlam doluluk eşiği aşıldı. Önce devir kartını güncelle, sonra receipt yaz."
+            "reason": reminder_reason(tokens, threshold)
         }
 
     except Exception:
