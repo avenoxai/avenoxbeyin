@@ -53,6 +53,8 @@ class HookDoneLedgerTest(unittest.TestCase):
         self.assertEqual(ledger.summary(self.state, ("claude",))["acknowledged_events"], 1)
         self.assertEqual(ledger.prune(self.store), 1)
         self.assertFalse(old.exists())
+        with patch.object(Path, "glob", side_effect=AssertionError("unexpected directory scan")):
+            self.assertEqual(ledger.prune(self.store), 0)
         self.assertTrue(ledger.acknowledged(self.state, key))
         report = ledger.summary(self.state, ("claude", "codex"))
         self.assertEqual(report["acknowledged_events"], 1)
