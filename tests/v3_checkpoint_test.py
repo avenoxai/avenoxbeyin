@@ -5,7 +5,7 @@ import hashlib
 import json
 import shutil
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -112,6 +112,27 @@ class CheckpointTest(unittest.TestCase):
                                 session=session)
         self.assertEqual(result["steps"]["card"], "unchanged")
         self.assertEqual(card.read_text(encoding="utf-8"), content)
+
+    def test_card_heading_uses_local_wall_time(self):
+        # Hand-written cards and the hook's now= use local time; a card stamped with an
+        # aware time in another offset (or the UTC default) must not read hours behind them.
+        local = datetime.now().astimezone().utcoffset()
+        other = timezone(local + timedelta(hours=3))
+        stamp = datetime(2026, 11, 23, 12, 0, tzinfo=other)
+        request = {"card": {"label": "saat", "body": "gövde"}, "now": stamp.isoformat()}
+        result = run_checkpoint(self.sync, self.vault, self.state, request, session="saat1234")
+        self.assertEqual(result["steps"]["card"], "written")
+        content = (self.comp / "Last-Session.md").read_text(encoding="utf-8")
+        self.assertIn(f"## {stamp.astimezone():%Y-%m-%d %H:%M} · saat · ", content)
+        self.assertNotIn("## 2026-11-23 12:00 · saat", content)
+
+        utc_now = datetime(2026, 11, 23, 15, 35, tzinfo=timezone.utc)
+        with patch("beyin_v3_checkpoint.datetime", wraps=datetime) as clock:
+            clock.now.return_value = utc_now
+            run_checkpoint(self.sync, self.vault, self.state,
+                           {"card": {"label": "varsayılan", "body": "gövde"}}, session="vars1234")
+        content = (self.comp / "Last-Session.md").read_text(encoding="utf-8")
+        self.assertIn(f"## {utc_now.astimezone():%Y-%m-%d %H:%M} · varsayılan · ", content)
 
     def test_automatic_compaction(self):
         card = self.comp / "Last-Session.md"

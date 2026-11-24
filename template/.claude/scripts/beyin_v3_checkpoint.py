@@ -75,7 +75,9 @@ def _update_card(sync, source, card, session, now):
     marker = f"<!-- beyin-checkpoint:{owner}:{revision} -->"
     suffix = f" · {label} · {short} {marker}"
     end = f"<!-- /beyin-checkpoint:{owner} -->"
-    card_text = (f"## {now:%Y-%m-%d %H:%M}{suffix}" + newline
+    # Hand-written cards and the hook's now= are local wall time; an aware UTC default would
+    # stamp this card hours apart from its siblings. Naive input is already local.
+    card_text = (f"## {now.astimezone():%Y-%m-%d %H:%M}{suffix}" + newline
                  + (body.replace("\n", newline) + newline if body else "") + end + newline)
     starts = headings(content, 2)
     pattern = re.compile(rf"^## [^\r\n]+ <!-- beyin-checkpoint:{owner}:([a-f0-9]{{64}}) -->\r?$",
