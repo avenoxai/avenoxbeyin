@@ -743,6 +743,15 @@ def human_result(result, command, installed_version=None):
         return '\n'.join(update_lines(result))
     if result.get('verification') == 'metadata_only':
         return '\n'.join(update_lines(result) + ['Yalniz surum bilgisi kontrol edildi; paket kurulumu denenmedi.'])
+    if command == 'update' and status == 'plan':
+        lines = [f"Güncelleme önizlemesi {result['current_version']} -> {result['version']}"]
+        labels = {'added': 'Eklenecek', 'updated': 'Değişecek', 'removed': 'Kaldırılacak'}
+        for name, action in result['files'].items():
+            if action in labels:
+                lines.append(labels[action] + ': ' + name)
+        if result.get('trust_review_files'):
+            lines.append('Kanca onayı gerekecek: ' + ', '.join(result['trust_review_files']))
+        return '\n'.join(lines)
     if status == 'updated':
         message = 'Beyin guncellendi: ' + str(result.get('from_version', installed_version or '?')) + ' -> ' + str(result['version'])
         if result.get('after_update_steps'):
@@ -980,21 +989,24 @@ def main(argv=None):
 
             parser = _UpdateArgumentParser()
             parser.add_argument('command', choices=('update', 'rollback', 'recover'))
-            parser.add_argument('--check', action='store_true')
+            mode = parser.add_mutually_exclusive_group()
+            mode.add_argument('--check', action='store_true')
+            mode.add_argument('--plan', action='store_true')
             parser.add_argument('--package', type=Path)
             parser.add_argument('--metadata-only', action='store_true')
             parser.add_argument('--dismiss')
             args = parser.parse_args(argv)
-            if args.command != 'update' and (args.check or args.package or args.metadata_only or args.dismiss is not None):
+            if args.command != 'update' and (args.check or args.plan or args.package or args.metadata_only or args.dismiss is not None):
                 parser.error('update options require the update command')
             if args.metadata_only and (not args.check or args.package or args.dismiss is not None):
                 parser.error('--metadata-only requires --check and cannot use --package or --dismiss')
-            if args.dismiss is not None and (args.check or args.package):
-                parser.error('--dismiss cannot use --check or --package')
+            if args.dismiss is not None and (args.check or args.plan or args.package):
+                parser.error('--dismiss cannot use --check, --plan or --package')
             if args.command == 'update':
                 import beyin_v3_releases as releases
                 if args.metadata_only: result = releases.check(vault, state)
                 elif args.dismiss is not None: result = releases.dismiss(vault, state, args.dismiss)
+                elif args.plan: result = updater.update(vault, state, args.package, preview=True)
                 else: result = updater.update(vault, state, args.package, args.check)
             elif args.command == 'rollback': result = updater.rollback(vault, state)
             else: result = updater.recover(vault, state)
