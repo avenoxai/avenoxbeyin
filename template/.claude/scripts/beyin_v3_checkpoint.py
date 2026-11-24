@@ -199,7 +199,7 @@ def run_checkpoint(sync, vault, state, request, harness=None, session=None, dry_
       - learn: list of {"candidate": str, "source": str, "scope": str}
       - receipt: {"event_id": str, "summary": str, "refs": [...], "links": [...]}
       - chat_trace: str <= 450 chars
-      - now: ISO timestamp override for tests or current local time
+      - now: ISO timestamp override for tests or current UTC time
     """
     vault = Path(vault).resolve()
     state = Path(state).resolve()

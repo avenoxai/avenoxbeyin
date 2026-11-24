@@ -23,7 +23,7 @@ import re
 import time
 import unicodedata
 
-from beyin_v3_companion import LIMITS, directory, read_limits
+from beyin_v3_companion import LIMITS, THREAD_CHECKPOINT_MARKER, companion_chars, directory, read_limits
 from beyin_v3_notes import NoteConflict, vault_locked
 
 LINE = re.compile(r'[^\n]*\n|[^\n]+$')
@@ -443,6 +443,8 @@ def plan(text, name, limit, pointer, active_sessions=None):
     """Decide what moves. Returns None when nothing can move (the file needs a rewrite)."""
     lines = LINE.findall(text)
     parsed = blocks(lines, name)
+    marker_lines = {i for i, line in enumerate(lines) if THREAD_CHECKPOINT_MARKER.fullmatch(line)} if name == 'Threads.md' else set()
+    chars = len(text) - sum(len(lines[i]) for i in marker_lines)
     newline = '\r\n' if '\r\n' in text else '\n'
     pointer_line = pointer + newline
     # Newest entry per container stays. Equal timestamps follow the container's own
@@ -482,7 +484,7 @@ def plan(text, name, limit, pointer, active_sessions=None):
     # keeps its heading and its separation from whatever follows it.
     history_moved = set()
     for p in histories:
-        body = [i for i in range(parsed[p]['start'] + 1, parsed[p]['end']) if i not in kept_pointers]
+        body = [i for i in range(parsed[p]['start'] + 1, parsed[p]['end']) if i not in kept_pointers and i not in marker_lines]
         if any(lines[i].strip() for i in body):
             if not lines[body[-1]].strip():
                 body.pop()
@@ -495,13 +497,13 @@ def plan(text, name, limit, pointer, active_sessions=None):
             extra = 0 if has_pointer else len(pointer_line) + (0 if lines[parsed[histories[0]]['start']].endswith('\n') else len(newline))
         else:
             extra = (0 if not text or text.endswith('\n') else len(newline)) + len(newline + ADDED_HISTORY[name] + newline + newline + pointer_line)
-        return len(text) - moved + extra
+        return chars - moved + extra
 
     for p in sorted((p for p in order if p not in protected), key=order.get):
         if projected() <= limit:
             break
         moved_blocks.add(p)
-        moved_lines.update(range(parsed[p]['start'], parsed[p]['end']))
+        moved_lines.update(i for i in range(parsed[p]['start'], parsed[p]['end']) if i not in marker_lines)
     if not moved_lines:
         return None
     live, archive, label = [], [], None
@@ -523,7 +525,8 @@ def plan(text, name, limit, pointer, active_sessions=None):
             if owner is not None and owner != label and len(HEADING.match(lines[owner])[1]) >= 2:
                 archive.append(lines[owner] if lines[owner].endswith('\n') else lines[owner] + newline)
                 label = owner
-            archive.extend(lines[i] for i in span)
+            archive.extend(lines[i] for i in span if i in moved_lines)
+            live.extend(lines[i] for i in span if i in marker_lines)
         else:
             live.extend(lines[i] for i in span)
     live = ''.join(live)
@@ -775,8 +778,9 @@ def _compact_files(vault, target, configured, dry_run=False, now=None, state=Non
         except UnicodeDecodeError:
             files[name] = {'status': 'needs_attention', 'reason': 'not UTF-8; nothing moved', 'limit': limit}
             continue
-        report = {'chars': len(text), 'limit': limit}
-        if not limit or len(text) <= limit:
+        chars = companion_chars(name, text)
+        report = {'chars': chars, 'limit': limit}
+        if not limit or chars <= limit:
             files[name] = dict(report, status='within_limit' if limit else 'limit_off')
             continue
         archive_name = f'{Path(name).stem}-{month}.md'
@@ -786,9 +790,9 @@ def _compact_files(vault, target, configured, dry_run=False, now=None, state=Non
         if result is None:
             backup = text
         else:
-            report.update(chars_after=len(result['live']), moved_chars=result['moved_chars'],
+            report.update(chars_after=companion_chars(name, result['live']), moved_chars=result['moved_chars'],
                           moved_entries=result['moved_entries'], moved_history=result['moved_history'],
-                          within_limit_after=len(result['live']) <= limit)
+                          within_limit_after=companion_chars(name, result['live']) <= limit)
             backup = None if report['within_limit_after'] else result['live']
         # #168: a file that stays over the limit is rewritten by the agent next, which may
         # summarize. Its full remaining text goes to the archive first, verbatim, so the
@@ -821,7 +825,8 @@ def _compact_files(vault, target, configured, dry_run=False, now=None, state=Non
             files[name] = dict(report, status='needs_attention', reason='existing archive is not UTF-8; nothing moved')
             continue
         newline = result['newline'] if result else '\r\n' if '\r\n' in text else '\n'
-        heading = '## ' + now.strftime('%Y-%m-%d %H:%M UTC') + ', ' + name + ', '
+        utc_now = now.astimezone(timezone.utc) if now.tzinfo else now
+        heading = '## ' + utc_now.strftime('%Y-%m-%d %H:%M UTC') + ', ' + name + ', '
         source = _source(target, name, vault)
         locations = {}
         try:
@@ -846,8 +851,8 @@ def _compact_files(vault, target, configured, dry_run=False, now=None, state=Non
                 # archive, including a ledger not yet written before the crash.
                 archive_relative = committed[1]
                 result = replanned
-                report.update(archive=archive_relative, chars_after=len(result['live']),
-                              within_limit_after=len(result['live']) <= limit)
+                report.update(archive=archive_relative, chars_after=companion_chars(name, result['live']),
+                              within_limit_after=companion_chars(name, result['live']) <= limit)
                 backup = None if report['within_limit_after'] else result['live']
             else:
                 added.append(newline + heading + str(result['moved_chars']) + ' karakter taşındı' + newline + newline

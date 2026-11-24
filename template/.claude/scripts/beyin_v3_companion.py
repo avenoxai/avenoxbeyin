@@ -645,6 +645,17 @@ def client_imports(vault, harness, cwd):
     return loaded
 
 
+THREAD_CHECKPOINT_MARKER = re.compile(r"<!-- beyin-checkpoint-thread:([a-f0-9]{64}) -->(?:\r?\n)?\Z")
+
+
+def companion_chars(name, text):
+    """Count visible content and leave checkpoint retry metadata outside the Threads limit."""
+    if name != 'Threads.md':
+        return len(text)
+    return sum(len(line) for line in re.findall(r'[^\n]*\n|[^\n]+$', text)
+               if not THREAD_CHECKPOINT_MARKER.fullmatch(line))
+
+
 def size(path):
     """Unicode characters as stored: not bytes and not UTF-16 units, so a Turkish or
     emoji-rich file is not reported larger than it is. Line endings are not translated
@@ -652,8 +663,15 @@ def size(path):
     bounded memory."""
     count = 0
     with Path(path).open(encoding='utf-8', errors='replace', newline='') as source:
-        for chunk in iter(lambda: source.read(1 << 16), ''):
-            count += len(chunk)
+        if Path(path).name == 'Threads.md':
+            at_line_start = True
+            for part in iter(lambda: source.readline(1 << 16), ''):
+                if not at_line_start or not THREAD_CHECKPOINT_MARKER.fullmatch(part):
+                    count += len(part)
+                at_line_start = part.endswith(('\n', '\r'))
+        else:
+            for chunk in iter(lambda: source.read(1 << 16), ''):
+                count += len(chunk)
     return count
 
 
