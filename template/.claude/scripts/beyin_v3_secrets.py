@@ -36,7 +36,7 @@ _SECRET_NAME = (r"(?!(?:pad|eos|bos|unk|sep|cls|mask)_token(?a:(?![a-z0-9_])))"
 # the Turkish İ and ı, which hid the whole value of KİŞİSEL_API_KEY=... while
 # MÜŞTERI_API_KEY=... was masked.
 _NAME_START = r"(?a:(?<![a-z0-9_]))"
-_SECRET_VALUE = r"""(?:\\{0,8}["\']\S{8,}\\{0,8}["\']|[^"\'\s,;][^\s,;]{7,})"""
+_SECRET_VALUE = r"""(?:\\{0,8}["\']\S{8,}\\{0,8}["\']|[^"\'\x60\s,;][^\x60\s,;]{7,})"""
 
 
 BUILTIN_PATTERNS = (
@@ -63,8 +63,14 @@ BUILTIN_PATTERNS = (
     # or dash before the key, or a sentence-ending period after it, still redacts.
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,255}(?![A-Za-z0-9_-])"),
     re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
-    re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"),
-    re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
+    # Match PEM body lines locally, independent of whether the trailer is present.
+    # A second header or a prose line cannot pull the scan into the next block.
+    re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"
+               r"(?:[ \t]*\r?\n(?:[ \t]*(?:Proc-Type:|DEK-Info:)[^\r\n]*\r?\n){1,2})?"
+               r"(?:[ \t]*\r?\n[ \t]*[A-Za-z0-9+/]{4,}={0,2}(?=[ \t]*(?:\r?\n|\Z)))*"
+               r"(?:[ \t]*\r?\n[ \t]*-----END [A-Z0-9 ]*PRIVATE KEY-----)?"),
+    re.compile(r"(?i)\bauthorization[ \t]*:[ \t]*token[ \t]+[A-Za-z0-9._~+/=-]{8,}"),
+    re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])"),
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{20,}"),
     # Provider formats with a fixed, distinctive prefix. Stripe keys use underscores,
     # so the dashed sk- pattern above never sees them (#151).

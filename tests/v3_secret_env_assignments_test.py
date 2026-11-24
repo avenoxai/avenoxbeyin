@@ -65,6 +65,21 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(redact(name + '=' + VALUE, self.state), ('[REDACTED]', 1))
 
+    def test_markdown_assignment_label_and_provider_formats(self):
+        self.assertEqual(redact("Use `SECRET_KEY=` in the example.", self.state),
+                         ("Use `SECRET_KEY=` in the example.", 0))
+        for text in (f"APP_API_KEY={VALUE}", f"SECRET_KEY={VALUE}",
+                     f"Authorization: Token {VALUE}", f"glpat-{VALUE}"):
+            with self.subTest(format=text.split()[0]):
+                self.assertEqual(redact(text, self.state), ("[REDACTED]", 1))
+
+    def test_pem_body_is_masked_without_trailer_and_does_not_swallow_prose(self):
+        begin = "-----BEGIN PRIVATE KEY-----"
+        body = "QUJD" * 16  # Synthetic base64, no private key.
+        text = f"{begin}\r\n{body}\r\n{begin}\r\n{body}\r\nLabel: retained words"
+        self.assertEqual(redact(text, self.state),
+                         ("[REDACTED]\r\n[REDACTED]\r\nLabel: retained words", 2))
+
     def test_turkish_letters_in_a_prefix_never_hide_the_value(self):
         # Unicode IGNORECASE lets [a-z] match İ and ı. A name boundary that did so
         # left the whole value of these names visible while MÜŞTERI_API_KEY masked.
