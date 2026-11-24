@@ -16,8 +16,10 @@ class LauncherTest(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('test_v3_launchers_module', MODULE)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        self.assertEqual(module.powershell_literal("O'Brien ‘d’ ‚e‛"), "'O''Brien ‘‘d’’ ‚‚e‛‛'")
+        self.assertEqual(module.powershell_unescape("O''Brien ‘‘d’’ ‚‚e‛‛"), "O'Brien ‘d’ ‚e‛")
         with tempfile.TemporaryDirectory(prefix='beyin-launcher-') as temp:
-            vault = Path(temp) / 'Beyin Ölçüm & Space'
+            vault = Path(temp) / "Beyin Ölçüm & D’Angelo ‘Notlar’ ‚Ek‛ 'Plan'"
             vault.mkdir()
             entry = vault / 'beyin.py'
             entry.write_text("from pathlib import Path\nimport json,sys\nPath(__file__).with_name('invoked.json').write_text(json.dumps(sys.argv[1:]))\nsys.exit(23)\n", encoding='utf-8')

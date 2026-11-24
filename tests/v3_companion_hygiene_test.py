@@ -167,6 +167,18 @@ class HygieneCliTest(unittest.TestCase):
         self.run_cli('sync')
         return last, threads
 
+    def test_threads_retry_markers_do_not_spend_the_content_limit(self):
+        marker = '<!-- beyin-checkpoint-thread:' + 'a' * 64 + ' -->\r\n'
+        visible = '# Threads\r\n\r\n### Active project\r\n' + 'x' * 7950 + '\r\n'
+        path = self.write('Threads.md', visible.replace('# Threads\r\n',
+                                                       '# Threads\r\n' + marker * 6))
+        hygiene = companion_module.hygiene(self.vault, self.state)
+        self.assertEqual(hygiene['files']['Threads.md']['chars'], len(visible))
+        report = compact_module.compact(self.vault, self.state, dry_run=True, now=NOW)
+        self.assertEqual(report['files']['Threads.md']['status'], 'within_limit')
+        self.assertEqual(report['files']['Threads.md']['chars'], len(visible))
+        self.assertEqual(path.read_bytes().count(marker.encode()), 6)
+
     def test_oversized_handoff_files_get_one_notice_inside_every_budget(self):
         last, threads = self.oversized()
         sizes = len(last.read_text(encoding='utf-8')), len(threads.read_text(encoding='utf-8'))

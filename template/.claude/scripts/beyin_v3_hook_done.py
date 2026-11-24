@@ -58,7 +58,7 @@ def prune(store, now=None):
 
     Serialize migrations on the existing memory DB writer lock. SQLite commits
     before any unlink, so a crash preserves either the old file or the ledger
-    entry (possibly both). A completed empty scan is throttled to once per day;
+    entry (possibly both). A completed scan is throttled to once per day;
     backlog batches continue on subsequent successful drains.
     """
     now = time.time() if now is None else now
@@ -106,13 +106,26 @@ def prune(store, now=None):
             raise
     # The transaction is committed and the connection closed before removing anything.
     removed = 0
+    handled = 0
     for path, _key, _harness, _event in batch:
         try:
             if not path.is_symlink():
                 path.unlink()
                 removed += 1
-        except (FileNotFoundError, PermissionError):
-            pass  # Another cleanup worker already removed the committed marker, or Windows kept it open.
+                handled += 1
+        except FileNotFoundError:
+            handled += 1  # Another cleanup worker removed the committed marker.
+        except PermissionError:
+            pass  # Windows can keep a committed marker open; retry on the next drain.
+    if 0 < handled == len(batch) < BATCH_SIZE:
+        try:
+            with store._connect() as db:
+                db.execute("INSERT INTO metadata(key,value) VALUES('hook_done_last_scan',?) "
+                           "ON CONFLICT(key) DO UPDATE SET value=excluded.value "
+                           "WHERE CAST(metadata.value AS REAL) < CAST(excluded.value AS REAL)", (str(now),))
+        except sqlite3.OperationalError as exc:
+            if not any(word in str(exc).lower() for word in ('locked', 'busy')):
+                raise
     return removed
 
 

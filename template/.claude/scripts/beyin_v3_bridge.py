@@ -268,7 +268,9 @@ def shell_command(argv):
         raise ValueError('Unsupported command path')
     if os.name != 'nt':
         return shlex.join(map(str, argv))
-    script = '& ' + ' '.join("'" + str(v).replace("'", "''") + "'" for v in argv) + '; exit $LASTEXITCODE'
+    from beyin_v3_launchers import powershell_literal
+
+    script = '& ' + ' '.join(powershell_literal(v) for v in argv) + '; exit $LASTEXITCODE'
     encoded = base64.b64encode(script.encode('utf-16le')).decode()
     system = Path(os.environ.get('SYSTEMROOT') or os.environ.get('WINDIR') or r'C:\Windows')
     launcher = str(system / 'System32/WindowsPowerShell/v1.0/powershell.exe').replace('\\', '/')
@@ -520,7 +522,8 @@ def hook_arguments(command: str) -> list:
             script = base64.b64decode(match.group(1), validate=True).decode("utf-16le")
         except (ValueError, UnicodeError):
             return []
-        return [item.replace("''", "'") for item in re.findall(r"'((?:[^']|'')*)'", script)]
+        from beyin_v3_launchers import powershell_unescape
+        return [powershell_unescape(item) for item in re.findall(r"'((?:[^']|'')*)'", script)]
     try:
         return shlex.split(command)
     except ValueError:
@@ -1380,8 +1383,11 @@ def _main(argv=None):
         payload['conversationId'] = payload['session_id']
         session = hashlib.sha256(payload['session_id'].encode()).hexdigest()[:24]
         cli = [sys.executable, str(vault / 'beyin.py')]
-        command = ('& ' + ' '.join("'" + v.replace("'", "''") + "'" for v in cli)
-                   if os.name == 'nt' else shlex.join(cli))
+        if os.name == 'nt':
+            from beyin_v3_launchers import powershell_literal
+            command = '& ' + ' '.join(powershell_literal(v) for v in cli)
+        else:
+            command = shlex.join(cli)
         from beyin_v3_hook import main as hook_main, output_context, receipt_reminder
         if event == EDIT_EVENT:
             # Opens this session's receipt edit window, like the vault's own PostToolUse hook, but
