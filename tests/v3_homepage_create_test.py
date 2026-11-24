@@ -378,7 +378,9 @@ class HomepageCreateTest(unittest.TestCase):
         link = self.vault / 'notes/link.md'
         try:
             link.symlink_to(self.vault / 'notes/aksam.md')
-        except OSError as error:  # Windows without the symlink privilege (no Developer Mode, not elevated)
+        except OSError as error:
+            if getattr(error, 'winerror', None) != 1314:  # ERROR_PRIVILEGE_NOT_HELD
+                raise
             self.skipTest(f'symlink not permitted here: {error}')
         before = self.snapshot()
         req = self.request(selections=[{'source': 'notes/link.md', 'fields': [
