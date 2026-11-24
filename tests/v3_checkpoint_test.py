@@ -116,8 +116,8 @@ class CheckpointTest(unittest.TestCase):
     def test_card_heading_uses_local_wall_time(self):
         # Hand-written cards and the hook's now= use local time; a card stamped with an
         # aware time in another offset (or the UTC default) must not read hours behind them.
-        local = datetime.now().astimezone().utcoffset()
-        other = timezone(local + timedelta(hours=3))
+        local = datetime(2026, 11, 23, 12, 0).astimezone().utcoffset()
+        other = timezone(local + timedelta(hours=-3 if local >= timedelta(0) else 3))
         stamp = datetime(2026, 11, 23, 12, 0, tzinfo=other)
         request = {"card": {"label": "saat", "body": "gövde"}, "now": stamp.isoformat()}
         result = run_checkpoint(self.sync, self.vault, self.state, request, session="saat1234")
