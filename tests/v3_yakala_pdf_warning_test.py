@@ -1,5 +1,6 @@
 """A mixed file card keeps extracted text and names a PDF with no text layer."""
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -49,6 +50,18 @@ def write_pdf(path, text=False):
 
 @unittest.skipUnless(shutil.which('pdftotext'), 'pdftotext required for a real PDF extraction check')
 class PdfWarningCliTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Git for Windows bundles Xpdf; it crashes (0xC0000374) on most calls once USERPROFILE
+        # points at the isolated profile below. CI puts Poppler first (scripts/setup_v3_poppler.ps1).
+        if os.name == 'nt':
+            version = subprocess.run([shutil.which('pdftotext'), '-v'], capture_output=True, text=True,
+                                     encoding='utf-8', errors='replace', timeout=30)
+            banner = version.stdout + version.stderr
+            if 'Glyph & Cog' in banner and 'Poppler' not in banner:
+                raise unittest.SkipTest('Xpdf pdftotext crashes under an isolated USERPROFILE on Windows; '
+                                        'put Poppler first on PATH')
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix='yakala-pdf-warning-')
         self.addCleanup(tmp.cleanup)
