@@ -1330,6 +1330,7 @@ def parser(note_namespace=None, is_json=False):
     context.add_argument("--limit", type=int, default=5)
     context.add_argument("--budget-chars", type=int, default=8000)
     context.add_argument("--no-sync", action="store_true", help="Read an existing index without writing to the vault or runtime")
+    context.add_argument("--strip-fillers", action="store_true", help="Drop Turkish question wrappers in local context searches")
     context.add_argument("--jev", action="store_true", help="Explicit optional remote advisor; requires state/jev.json and --project")
     review = sub.add_parser("jev-review", help="Advisory source review; never saves or approves a candidate")
     review.add_argument("--file", required=True, help="JSON proposal (maximum 24,000 characters)")
@@ -2365,6 +2366,11 @@ def main(argv=None, return_result=False):
                 raise ValueError("context requires a nonempty query")
             if params["project"] is None:
                 params["project"] = engine.context_project(vault, params["query"])
+            if args.strip_fillers:
+                if args.jev:
+                    raise ValueError("--strip-fillers is only available for local context")
+                params["query"] = engine.strip_query_fillers(params["query"])
+
             if read_only_context:
                 result = store.context_for(args.harness, explicit=True, **params)
                 result['source_sync'] = {'status': 'skipped', 'reason': 'explicit_no_sync'}

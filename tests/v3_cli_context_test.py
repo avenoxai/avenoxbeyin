@@ -33,6 +33,24 @@ class ContextRefreshTest(unittest.TestCase):
     def run_cli(self, *args):
         return subprocess.run([sys.executable,str(ROOT/'scripts/beyin_v3.py'),'--vault',str(self.vault),'--state',str(self.state),*args],capture_output=True,text=True,encoding='utf-8',env=inherited_env())
 
+    def test_context_opt_in_filters_question_wrappers_but_keeps_topic_stems(self):
+        self.write('softmax hak not')
+        (self.vault / 'notes/wrapper.md').write_text(
+            '---\n{"visibility":"internal"}\n---\nHakkında ne biliyoruz, notlarda ve neler?\n',
+            encoding='utf-8')
+        self.assertEqual(self.run_cli('sync').returncode, 0)
+        query = 'softmax HAKKINDA ne BİLİYORUZ, hak not notlarda?'
+        ordinary = json.loads(self.run_cli('context', query, '--no-sync').stdout)
+        self.assertIn('notes/wrapper.md', [record['source'] for record in ordinary['records']])
+        opt_in = self.run_cli('context', query, '--strip-fillers', '--no-sync')
+        self.assertEqual(opt_in.returncode, 0, opt_in.stderr)
+        filtered = json.loads(opt_in.stdout)
+        # Compare to the equivalent literal topical query, including homonymous stems.
+        explicit = json.loads(self.run_cli('context', 'softmax hak not', '--no-sync').stdout)
+        self.assertEqual(filtered['records'], explicit['records'])
+        self.assertEqual(filtered['unmatched_terms'], explicit['unmatched_terms'])
+        self.assertIn('calibration', [record['id'] for record in filtered['records']])
+
     def test_context_reports_unmatched_terms_without_changing_admission(self):
         self.write('Synthetic supplier imports products and sells them.')
         for flags in ([], ['--no-sync']):
