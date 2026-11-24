@@ -55,6 +55,7 @@ MOC_SETTLE_SECONDS = 0.02
 # Lint returns every count in full and at most this many entries per list.
 LINT_REPORT_LIMIT = 100
 MAX_RAW_LINK_CHARS = 200
+_UNPARSEABLE_FRONTMATTER = object()
 
 
 def _norm_key(text):
@@ -246,15 +247,21 @@ def _withheld_metadata(metadata):
 
 
 def _note_metadata(vault_root, path, *, include_withheld=False):
-    """Frontmatter of a note lint and moc may read; None when the note is withheld."""
-    from beyin_v3_sync import parse
+    """Read note metadata, or flag unparseable frontmatter for the withheld index."""
+    from beyin_v3_sync import _has_conflict_markers, parse
     try:
         relative = path.relative_to(vault_root).as_posix()
         if path.is_symlink() or not path.resolve().is_relative_to(vault_root.resolve()):
             return None
         if _withheld_path(relative):
             return None
-        metadata, _ = parse(path.read_text(encoding='utf-8-sig'))
+        text = path.read_text(encoding='utf-8-sig')
+        try:
+            metadata, _ = parse(text)
+        except ValueError:
+            if include_withheld and path.is_file() and not _has_conflict_markers(text):
+                return _UNPARSEABLE_FRONTMATTER
+            return None
     except (OSError, ValueError, UnicodeError):
         return None
     if not include_withheld and _withheld_metadata(metadata):
@@ -274,8 +281,7 @@ def build_vault_index(vault_root, target_folder=None):
     files_by_basename = defaultdict(list)
     attachments = defaultdict(list)
     records = []
-    withheld_by_rel = {}
-    withheld_by_basename = defaultdict(list)
+    withheld_paths = []
 
     for root, dirs, files in os.walk(start_dir):
         # Prune excluded dirs
@@ -306,6 +312,9 @@ def build_vault_index(vault_root, target_folder=None):
                 continue
 
             metadata = _note_metadata(vault_root, full_path, include_withheld=True)
+            if metadata is _UNPARSEABLE_FRONTMATTER:
+                withheld_paths.append(rel_path)
+                continue
             if metadata is None:
                 continue
             record = dict(metadata, source=rel_path)
@@ -321,11 +330,16 @@ def build_vault_index(vault_root, target_folder=None):
     for record in records:
         rel_path = record['source']
         if _withheld_metadata(record) or record['id'] in retired:
-            withheld_by_rel[_norm_key(rel_path)] = rel_path
-            withheld_by_basename[_norm_key(Path(rel_path).stem)].append(rel_path)
+            withheld_paths.append(rel_path)
         else:
             files_by_rel[_norm_key(rel_path)] = rel_path
             files_by_basename[_norm_key(Path(rel_path).stem)].append(rel_path)
+
+    withheld_by_rel = {}
+    withheld_by_basename = defaultdict(list)
+    for rel_path in withheld_paths:
+        withheld_by_rel[_norm_key(rel_path)] = rel_path
+        withheld_by_basename[_norm_key(Path(rel_path).stem)].append(rel_path)
 
     return {
         "by_rel": files_by_rel,
