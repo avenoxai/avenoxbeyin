@@ -395,6 +395,62 @@ class HookInstallerTest(unittest.TestCase):
             self.lifecycle('PostToolUse', 'other-' + harness, harness)
             self.assertEqual(self.lifecycle('Stop', 'other-' + harness, harness), {})
 
+    def test_claude_context_mode_defers_receipt_once_and_keeps_retrieval(self):
+        self.seed()
+        self.env['BEYIN_V3_RECEIPT_REMINDER'] = 'context'
+        session = 'context-mode-private-session-id'
+        self.lifecycle('PostToolUse', session, 'claude')
+        self.assertEqual(self.lifecycle('Stop', session, 'claude'), {})
+        self.assertEqual(self.lifecycle('Stop', session, 'claude'), {})
+        pending = list((self.state / 'receipt-reminders').glob('*.pending-receipt'))
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].read_bytes(), b'')
+        self.assertNotIn(session, pending[0].name)
+        for other_session, prompt in (('unrelated', 'Nebula calibration'), (session, '<task-notification>done</task-notification>')):
+            result = self.lifecycle('UserPromptSubmit', other_session, 'claude', prompt=prompt)
+            self.assertNotIn('Reminder from the previous turn', json.dumps(result))
+        result = self.lifecycle('UserPromptSubmit', session, 'claude', prompt='Nebula calibration owner')
+        self.assertNotIn('decision', result)
+        context = result['hookSpecificOutput']['additionalContext']
+        self.assertIn('Reminder from the previous turn', context)
+        self.assertIn('Nebula calibration owner is Synthetic Reviewer', context)
+        self.assertNotIn(session, context)
+        self.assertNotIn('Reminder from the previous turn',
+                         json.dumps(self.lifecycle('UserPromptSubmit', session, 'claude', prompt='Next')))
+        self.lifecycle('PostToolUse', 'other-client', 'codex')
+        self.assertEqual(self.lifecycle('Stop', 'other-client', 'codex')['decision'], 'block')
+
+    def test_claude_context_mode_checks_receipt_and_opt_out_before_delivery(self):
+        engine = self.seed()
+        self.env['BEYIN_V3_RECEIPT_REMINDER'] = 'context'
+        for session, prompt in (('received', 'Next'), ('opted-out', '[KAYDETME] Next'), ('disabled', 'Next')):
+            self.lifecycle('PostToolUse', session, 'claude')
+            self.assertEqual(self.lifecycle('Stop', session, 'claude'), {})
+            if session == 'received':
+                digest = hashlib.sha256(session.encode()).hexdigest()[:24]
+                engine.receipt('received-event', 'Edited the task note.', ['notes/task.md'], 'claude', session=digest)
+            if session == 'disabled':
+                self.env['BEYIN_V3_NO_RECEIPT_REMINDER'] = '1'
+            result = self.lifecycle('UserPromptSubmit', session, 'claude', prompt=prompt)
+            self.assertNotIn('Reminder from the previous turn', json.dumps(result))
+            if session != 'disabled':
+                result = self.lifecycle('UserPromptSubmit', session, 'claude', prompt='Next again')
+                self.assertNotIn('Reminder from the previous turn', json.dumps(result))
+
+    def test_claude_context_mode_defers_learning_reminder_once(self):
+        engine = self.seed()
+        self.env['BEYIN_V3_RECEIPT_REMINDER'] = 'context'
+        session = 'deferred-learning'
+        digest = hashlib.sha256(session.encode()).hexdigest()[:24]
+        self.lifecycle('PostToolUse', session, 'claude')
+        engine.receipt('learning-event', 'Refactor bitti.\nÖğrenilen: WAL timeout en az 5 sn.', ['notes/task.md'],
+                       'claude', session=digest)
+        self.assertEqual(self.lifecycle('Stop', session, 'claude'), {})
+        first = self.lifecycle('UserPromptSubmit', session, 'claude', prompt='Next')
+        self.assertIn('Learnings were reported', first['hookSpecificOutput']['additionalContext'])
+        self.assertNotIn('Learnings were reported',
+                         json.dumps(self.lifecycle('UserPromptSubmit', session, 'claude', prompt='Next again')))
+
     def test_stop_receipt_reminder_passes_when_receipt_is_present(self):
         engine = self.seed()
         def session(name):
