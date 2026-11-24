@@ -670,6 +670,64 @@ def drain_queue(vault, state, maintenance=False):
     return {"processed": 0, "failed": len(pending), "pending": len(pending)}
 
 
+ANTIGRAVITY_TRANSCRIPT_LIMIT = 2 * 1024 * 1024
+
+
+def _antigravity_step_types(value):
+    """Read only metadata from a complete, bounded Antigravity transcript."""
+    if not isinstance(value, str) or '\0' in value:
+        return None
+    path = Path(value)
+    if not path.is_absolute() or path.suffix.lower() != '.jsonl' or path.drive.startswith(('\\', '//')):
+        return None
+    try:
+        info = path.lstat()
+        reparse = stat.FILE_ATTRIBUTE_REPARSE_POINT
+        if (not stat.S_ISREG(info.st_mode) or getattr(info, 'st_file_attributes', 0) & reparse
+                or info.st_size > ANTIGRAVITY_TRANSCRIPT_LIMIT or path.resolve(strict=True) != path):
+            return None
+        flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0)
+        flags |= getattr(os, 'O_NONBLOCK', 0)
+        with os.fdopen(os.open(path, flags), 'rb') as handle:
+            opened = os.fstat(handle.fileno())
+            if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(info, opened):
+                return None
+            raw = handle.read(ANTIGRAVITY_TRANSCRIPT_LIMIT + 1)
+        if len(raw) > ANTIGRAVITY_TRANSCRIPT_LIMIT:
+            return None
+        steps = []
+        for line in raw.splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if (not isinstance(row, dict) or type(row.get('step_index')) is not int
+                    or row['step_index'] != len(steps) or not isinstance(row.get('type'), str)):
+                return None
+            steps.append(row['type'])
+        return steps
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _antigravity_nonhuman_turn(payload, event):
+    if os.environ.get('BEYIN_V3_FILTER_HARNESS_TURNS') == '0':
+        return False
+    initial = payload.get('initialNumSteps')
+    last_input = payload.get('lastUserInput')
+    if type(initial) is not int or initial < 0 or not isinstance(last_input, str):
+        return False  # older clients do not supply these fields
+    if event == 'PreInvocation' and initial == 0:
+        return last_input == ''
+    if event == 'Stop' and last_input != '':
+        return False  # the parent can stop after planner steps
+    steps = _antigravity_step_types(payload.get('transcriptPath'))
+    if not steps or initial > len(steps):
+        return False
+    if event == 'PreInvocation':
+        return steps[initial - 1] == 'PLANNER_RESPONSE'
+    return 'USER_INPUT' not in steps and 'PLANNER_RESPONSE' in steps
+
+
 def main():
     started = time.monotonic()
     if hasattr(sys.stdin, "reconfigure"):
@@ -720,11 +778,12 @@ def main():
             payload["session_id"] = payload.get("session_id") or payload.get("conversationId", "unknown")
         if args.harness == "antigravity":
             if event == "PreInvocation":
-                if payload.get("invocationNum") != 0:
+                if payload.get("invocationNum") != 0 or _antigravity_nonhuman_turn(payload, event):
                     print("{}")
                     return
                 event = "SessionStart"
-            elif event == "Stop" and payload.get("fullyIdle") is not True:
+            elif event == "Stop" and (payload.get("fullyIdle") is not True
+                                      or _antigravity_nonhuman_turn(payload, event)):
                 print('{"decision":"stop"}')
                 return
             payload["session_id"] = payload.get("conversationId", "unknown")

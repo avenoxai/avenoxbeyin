@@ -796,6 +796,43 @@ class HookInstallerTest(unittest.TestCase):
         self.assertEqual(self.invoke(dict(stop, fullyIdle=True), 'antigravity'), {'decision': 'stop'})
         self.assertEqual(len(list((self.state / 'hook-queue').glob('*.json'))), before + 1)
 
+    def test_antigravity_filters_nested_turns_before_checkpointing(self):
+        self.seed()
+        transcript = (self.vault / 'antigravity.jsonl').resolve()
+        def transcript_steps(*types):
+            transcript.write_text(''.join(json.dumps({'step_index': index, 'type': kind}) + '\n'
+                                          for index, kind in enumerate(types)), encoding='utf-8')
+        payload = {'hook_event_name': 'PreInvocation', 'conversationId': 'antigravity-report',
+                   'invocationNum': 0, 'lastUserInput': '', 'initialNumSteps': 0,
+                   'transcriptPath': str(transcript)}
+        queue = self.state / 'hook-queue'
+        self.assertEqual(self.invoke(payload, 'antigravity'), {})
+        self.assertEqual(list(queue.glob('*.json')), [])
+        transcript_steps('PLANNER_RESPONSE')
+        self.assertEqual(self.invoke(dict(payload, initialNumSteps=1), 'antigravity'), {})
+        stop = dict(payload, hook_event_name='Stop', fullyIdle=True, initialNumSteps=1)
+        self.assertEqual(self.invoke(stop, 'antigravity'), {'decision': 'stop'})
+        self.assertEqual(list(queue.glob('*.json')), [])
+
+        transcript_steps('USER_INPUT', 'PLANNER_RESPONSE')
+        self.assertEqual(self.invoke(dict(payload, initialNumSteps=2, lastUserInput='old prompt'), 'antigravity'), {})
+        self.assertEqual(list(queue.glob('*.json')), [])
+        self.assertIn('injectSteps', self.invoke(dict(payload, initialNumSteps=1, lastUserInput='prompt'), 'antigravity'))
+        self.assertEqual(self.invoke(dict(stop, lastUserInput='prompt'), 'antigravity'), {'decision': 'stop'})
+        self.assertEqual(len(list(queue.glob('*.json'))), 2)
+
+    def test_antigravity_unknown_transcript_and_filter_opt_out_preserve_turns(self):
+        self.seed()
+        transcript = (self.vault / 'antigravity.jsonl').resolve()
+        transcript.write_text('{"step_index":0,"type":"NEW_EVENT"}\n', encoding='utf-8')
+        payload = {'hook_event_name': 'PreInvocation', 'conversationId': 'antigravity-unknown',
+                   'invocationNum': 0, 'lastUserInput': 'prompt', 'initialNumSteps': 1,
+                   'transcriptPath': str(transcript)}
+        self.assertIn('injectSteps', self.invoke(payload, 'antigravity'))
+        transcript.write_text('{"step_index":0,"type":"PLANNER_RESPONSE"}\n', encoding='utf-8')
+        self.env['BEYIN_V3_FILTER_HARNESS_TURNS'] = '0'
+        self.assertIn('injectSteps', self.invoke(payload, 'antigravity'))
+
     def test_internal_recursion_guard_skips_queue(self):
         self.env['BEYIN_V3_INTERNAL'] = '1'
         self.assertEqual(self.invoke(self.payload), {})
