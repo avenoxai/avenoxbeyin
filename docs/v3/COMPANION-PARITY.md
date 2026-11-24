@@ -314,4 +314,12 @@ otomatik olarak geriye dönük yeniden yazılmaz.
 
 Karar defteri kaynak kartın gizlilik ve güven sınırını genişletmez: private, untrusted veya reddedilmiş kaynaklardan karar kopyalanmaz. Yeni `Kararlar.md` yerel aramaya açık (`visibility: internal`) ve uzak danışmana kapalıdır (`remote_allowed: false`). Var olan defterin de `remote_allowed: false` veya `visibility: private` taşıması gerekir; bozuk ya da uygun olmayan defterde kartlar taşınmadan dikkat uyarısı döner. Aynı satır farklı kartlarda geçiyorsa her kartın kararı ayrı korunur; aynı kartın tekrar denemesi yeni kopya eklemez.
 
+En yeni kuralları dosyanın sonuna ekliyorsanız, Markdown gövdesinin ilk satırına
+`<!-- beyin:rules-order=latest -->` koyabilirsiniz. Kırpma gerektiğinde aynı ayrılmış
+pay içinde sondaki tam kural maddeleri gösterilir. İşaret yoksa baştan ve sondan
+gösterme düzeni geçerlidir. Numaralı kırpma aralığı varsa `doctor` bunu metin
+içeriğini açıklamadan `companion_rules_opening.omitted_rules` alanında bildirir.
+`doctor` standart bir referans açılışı ölçer. Canlı oturuma özel bildirimler
+kural metnine kalan payı ve atlanan aralığı değiştirebilir.
+
 Doctor, kaynak doğrulamasından geçmeyen Kurallar.md için açılış ölçümünü `stale` olarak bildirir; `beyin.py sync` sonrasında yeniden kontrol edin. Bu tanı salt okunurdur, dışlanan kural metnini göstermez ve kuralları arşive taşımaz.
