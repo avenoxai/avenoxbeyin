@@ -1894,6 +1894,8 @@ def main(argv=None, return_result=False):
                         rules or {}, status='stale' if rules and rules.get('stale') else
                         'clipped' if rules and rules['clipped'] else 'ok' if rules else 'no_rules',
                         budget=budget, harness='claude')
+                    if rules and not rules.get('stale'):
+                        result['companion_rules_opening']['measurement'] = 'reference_opening'
             except Exception as exc:  # never hides the rest of doctor
                 result['companion_rules_opening'] = {'status': 'unavailable', 'error': type(exc).__name__}
             try:

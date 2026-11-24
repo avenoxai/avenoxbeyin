@@ -567,9 +567,14 @@ def human_result(result, command, installed_version=None):
         if rules_opening.get('status') == 'clipped':
             lines.append('Kurallar.md acilista kirpiliyor (bilgi): kural metni ' + str(rules_opening['chars']) +
                          ' karakter; Claude Code acilisi bu ayarlarla (' + str(rules_opening['budget']) +
-                         ' karakter) en fazla ' + str(rules_opening['share']) + ' karakterini tam gosterir, aradaki kurallar atlanir' +
+                         ' karakter) en fazla ' + str(rules_opening['share']) + ' karakterini tam gosterir' +
                          (' (gerekceler de cikarildi)' if rules_opening.get('reasons_omitted') else '') +
-                         '. Kurallari kisa tut; uzun gerekceyi ve ayrintiyi ayri bir nota (or. Kurallar-Detay.md) tasi.')
+                         '. Oturuma ozel bildirimler gercek acilista bu payi azaltabilir. '
+                         'Kurallari kisa tut; uzun gerekceyi ve ayrintiyi ayri bir nota (or. Kurallar-Detay.md) tasi.')
+            omitted = rules_opening.get('omitted_rules')
+            if omitted:
+                lines.append(f'Gosterilmeyen kural siralari {omitted["first"]}-{omitted["last"]} '
+                             f'({omitted["count"]}/{omitted["total"]}).')
         references = result.get('instruction_references') or {}
         if references.get('status') == 'unavailable':
             lines.append('Talimat ve skill baglanti denetimi tamamlanamadi (bilgi): ' +
