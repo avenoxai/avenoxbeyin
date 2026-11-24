@@ -263,12 +263,27 @@ def eligible(cwd, vault, roots):
     return any(cwd.is_relative_to(root) for root in roots)
 
 
+# Print-config and ownership inspection can run with only this bridge module installed.
+_PS_QUOTES = "'‘’‚‛"
+_PS_ESCAPE = str.maketrans({quote: quote * 2 for quote in _PS_QUOTES})
+
+
+def _powershell_literal(value):
+    return "'" + str(value).translate(_PS_ESCAPE) + "'"
+
+
+def _powershell_unescape(value):
+    for quote in _PS_QUOTES:
+        value = value.replace(quote * 2, quote)
+    return value
+
+
 def shell_command(argv):
     if any(any(c in str(value) for c in '\r\n\x00') for value in argv):
         raise ValueError('Unsupported command path')
     if os.name != 'nt':
         return shlex.join(map(str, argv))
-    script = '& ' + ' '.join("'" + str(v).replace("'", "''") + "'" for v in argv) + '; exit $LASTEXITCODE'
+    script = '& ' + ' '.join(_powershell_literal(v) for v in argv) + '; exit $LASTEXITCODE'
     encoded = base64.b64encode(script.encode('utf-16le')).decode()
     system = Path(os.environ.get('SYSTEMROOT') or os.environ.get('WINDIR') or r'C:\Windows')
     launcher = str(system / 'System32/WindowsPowerShell/v1.0/powershell.exe').replace('\\', '/')
@@ -520,7 +535,7 @@ def hook_arguments(command: str) -> list:
             script = base64.b64decode(match.group(1), validate=True).decode("utf-16le")
         except (ValueError, UnicodeError):
             return []
-        return [item.replace("''", "'") for item in re.findall(r"'((?:[^']|'')*)'", script)]
+        return [_powershell_unescape(item) for item in re.findall(r"'((?:[^']|'')*)'", script)]
     try:
         return shlex.split(command)
     except ValueError:
@@ -1380,8 +1395,10 @@ def _main(argv=None):
         payload['conversationId'] = payload['session_id']
         session = hashlib.sha256(payload['session_id'].encode()).hexdigest()[:24]
         cli = [sys.executable, str(vault / 'beyin.py')]
-        command = ('& ' + ' '.join("'" + v.replace("'", "''") + "'" for v in cli)
-                   if os.name == 'nt' else shlex.join(cli))
+        if os.name == 'nt':
+            command = '& ' + ' '.join(_powershell_literal(v) for v in cli)
+        else:
+            command = shlex.join(cli)
         from beyin_v3_hook import main as hook_main, output_context, receipt_reminder
         if event == EDIT_EVENT:
             # Opens this session's receipt edit window, like the vault's own PostToolUse hook, but

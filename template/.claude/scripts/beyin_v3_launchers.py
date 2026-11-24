@@ -5,6 +5,15 @@ import shlex
 import sys
 
 
+# PowerShell treats curly single quotes as delimiters even inside ASCII delimiters.
+_PS_QUOTES = "'‘’‚‛"
+_PS_ESCAPE = str.maketrans({quote: quote * 2 for quote in _PS_QUOTES})
+
+
+def _powershell_literal(value):
+    return "'" + str(value).translate(_PS_ESCAPE) + "'"
+
+
 def _cmd_quote(value):
     value = str(value)
     if any(char in value for char in '\r\n\x00"'):
@@ -30,7 +39,7 @@ def plan_launchers(vault, state):
         # The update this file starts rewrites it, and cmd.exe resumes at the old byte
         # offset: changing this layout ends the first update before pause and exit /b.
         import base64
-        script = '& ' + ' '.join("'" + str(v).replace("'", "''") + "'" for v in [sys.executable, entry, 'update'])
+        script = '& ' + ' '.join(_powershell_literal(v) for v in [sys.executable, entry, 'update'])
         script += '; exit $LASTEXITCODE'
         encoded = base64.b64encode(script.encode('utf-16le')).decode('ascii')
         system = os.environ.get('SYSTEMROOT') or os.environ.get('WINDIR') or r'C:\Windows'

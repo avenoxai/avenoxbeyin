@@ -1599,6 +1599,26 @@ class BridgeTest(unittest.TestCase):
         data_un = json.loads(res_uninst.stdout)
         self.assertEqual(data_un['status'], 'uninstalled')
 
+    def test_standalone_bridge_serializes_and_reads_windows_hook_commands(self):
+        script = self.root / 'standalone_bridge.py'
+        shutil.copyfile(SCRIPTS / 'beyin_v3_bridge.py', script)
+        program = """
+import runpy
+import sys
+from types import SimpleNamespace
+
+bridge = runpy.run_path(sys.argv[1])
+serialize = bridge['shell_command']
+serialize.__globals__['os'] = SimpleNamespace(name='nt', environ={})
+paths = ["C:/Program Files/Python/python.exe", "C:/O'Brien ‘notlar’ ‚ek‛/beyin_v3_bridge.py"]
+command = serialize(paths)
+assert '-EncodedCommand ' in command
+assert bridge['hook_arguments'](command) == paths
+"""
+        result = subprocess.run([sys.executable, '-I', '-c', program, str(script)],
+                                capture_output=True, text=True, env=self.env, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_bridge_print_config_cli_and_human_mode(self):
         import shutil
         vault_entry = self.vault / 'beyin.py'

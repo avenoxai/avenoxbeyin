@@ -48,6 +48,8 @@ def main():
         payload = {}
     value = context(args.vault, args.state, args.event, payload)
     if value:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         print(value)
 
 

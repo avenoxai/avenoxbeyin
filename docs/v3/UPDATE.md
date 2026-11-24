@@ -36,6 +36,8 @@ Tamamlanmamış bir güncelleme veya geri alma varsa `doctor`, `update --check` 
 
 `update --check` resmi stable release'i inceler ve paketi geçici alanda doğrular. Vault ve mevcut runtime dosyalarını değiştirmez. Paket verilmezse ağ erişimi gerekir. `update` aynı doğrulamadan sonra yeni sürümü uygular. Aynı sürüme ikinci güncelleme no-op'tur; sayısal sürüm sırası kullanılır. Eski bir paketi yükleyerek downgrade yapılmaz; geri dönüş için `rollback` kullanılır.
 
+`python3 beyin.py update --plan` kurulu dosyalarla hedef paketi karşılaştırır. `--json` çıktısındaki `files` her planlanan kasa yolunu ve işlemini, `trust_review_files` onay gerektiren kancaları, `excluded_components` kurulumdan hariç tutulan bileşenleri gösterir. Paket şeması ve paketin beyan ettiği geçişler de çıktıya eklenir. Aynı sürümde sonuç `noop` olur. Kurucu yerel bir çakışma bulursa ilk engelde ilgili dosyayı bildirip durur. Önizleme kasa ve state üzerinde yazma veya kilitleme yapmaz. Dosya çakışmaları kurucunun yönetilen dosya denetimine aittir. Gerçek güncelleme ayrıca eski sürümün etkin kilitlerini ve geçiş koşullarını denetler. Çevrimdışı kullanım için `--package` ile resmi ZIP’i ver.
+
 Varsayılan indirme kaynağı `avenoxai/avenoxbeyin` deposunun resmi GitHub stable release'idir. Preview, hareket eden geliştirme dalı veya üçüncü taraf paket kaynağı otomatik seçilmez. Stable release ya da beklenen ZIP yoksa bunu hata olarak bildirir; yayın varmış gibi sonuç vermez.
 
 Yerel, önceden indirilmiş ZIP ile ağ gerekmez:
@@ -303,7 +305,7 @@ Kullanıcı gereksinim duymadığı bileşenleri (`skills/<ad>`, `adapters/<ad>`
 Repo kökünde:
 
 ```sh
-python3 scripts/build_v3_release.py --output "/tmp/beyin-v3-3.15.0.zip" --version 3.15.0
+python3 scripts/build_v3_release.py --output "/tmp/beyin-v3-3.16.0.zip" --version 3.16.0
 ```
 
 Bu komut yalnız yerel ZIP oluşturur, GitHub'a yayınlamaz. Paket `manifest.json`, izin verilen installer/giriş dosyaları, runtime modülleri ve üç skill'i içerir. Manifest sürüm, schema/runtime schema, minimum Python, dosya hashleri ve tanınan legacy hashlerini taşır. Release yayınlama ve final platform CI ayrı işlemlerdir.

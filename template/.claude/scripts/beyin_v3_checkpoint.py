@@ -75,7 +75,10 @@ def _update_card(sync, source, card, session, now):
     marker = f"<!-- beyin-checkpoint:{owner}:{revision} -->"
     suffix = f" · {label} · {short} {marker}"
     end = f"<!-- /beyin-checkpoint:{owner} -->"
-    card_text = (f"## {now:%Y-%m-%d %H:%M}{suffix}" + newline
+    # Hand-written cards and the hook's now= are local wall time; an aware UTC default would
+    # stamp this card hours apart from its siblings. Naive input is already local.
+    local_now = now if now.tzinfo is None else now.astimezone()
+    card_text = (f"## {local_now:%Y-%m-%d %H:%M}{suffix}" + newline
                  + (body.replace("\n", newline) + newline if body else "") + end + newline)
     starts = headings(content, 2)
     pattern = re.compile(rf"^## [^\r\n]+ <!-- beyin-checkpoint:{owner}:([a-f0-9]{{64}}) -->\r?$",
@@ -199,7 +202,7 @@ def run_checkpoint(sync, vault, state, request, harness=None, session=None, dry_
       - learn: list of {"candidate": str, "source": str, "scope": str}
       - receipt: {"event_id": str, "summary": str, "refs": [...], "links": [...]}
       - chat_trace: str <= 450 chars
-      - now: ISO timestamp override for tests or current local time
+      - now: ISO timestamp override for tests or current UTC time
     """
     vault = Path(vault).resolve()
     state = Path(state).resolve()

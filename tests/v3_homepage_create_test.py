@@ -376,7 +376,12 @@ class HomepageCreateTest(unittest.TestCase):
                 self.assertEqual(before, self.snapshot())
         bad.unlink()
         link = self.vault / 'notes/link.md'
-        link.symlink_to(self.vault / 'notes/aksam.md')
+        try:
+            link.symlink_to(self.vault / 'notes/aksam.md')
+        except OSError as error:
+            if getattr(error, 'winerror', None) != 1314:  # ERROR_PRIVILEGE_NOT_HELD
+                raise
+            self.skipTest(f'symlink not permitted here: {error}')
         before = self.snapshot()
         req = self.request(selections=[{'source': 'notes/link.md', 'fields': [
             {'field': 'facts.gorusme', 'label': 'Tarih', 'editable': True}]}])

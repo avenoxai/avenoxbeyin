@@ -457,8 +457,21 @@ def _queue_cli_edit(flag, vault, state, payload):
         pass  # coverage bookkeeping never costs the reminder
 
 
+def _receipt_reminder_result(marker, pending, event, deferred, reason):
+    if deferred and event == "Stop":
+        # Empty, per-session markers carry neither transcript nor rendered text.
+        pending.touch(exist_ok=False)
+        return None
+    with marker.open("x", encoding="utf-8"):
+        pass  # An overlapping hook already gave the reminder if this marker exists.
+    if deferred:
+        pending.unlink(missing_ok=True)
+        return {"context": "Reminder from the previous turn: " + reason}
+    return {"decision": "block", "reason": reason}
+
+
 def receipt_reminder(payload, state, harness, event, vault=None, bridge_cli=None):
-    """Track edits per session and return a one-time Stop block, or None.
+    """Track edits and return a one-time Stop block or deferred user-prompt notice.
 
     Installed PostToolUse hooks match Edit|Write|apply_patch|MultiEdit|NotebookEdit for Claude and
     Codex. Known vault-external edits do not mark the session; unknown/pathless
@@ -479,6 +492,8 @@ def receipt_reminder(payload, state, harness, event, vault=None, bridge_cli=None
         return None
     if os.environ.get("BEYIN_V3_NO_RECEIPT_REMINDER") == "1":
         return None
+    deferred = (harness == "claude" and bridge_cli is None
+                and os.environ.get("BEYIN_V3_RECEIPT_REMINDER") == "context")
     try:
         session_id = payload.get("session_id")
         if not isinstance(session_id, str) or not session_id:
@@ -488,17 +503,26 @@ def receipt_reminder(payload, state, harness, event, vault=None, bridge_cli=None
         done, edited = folder / (digest + ".done"), folder / (digest + ".edited")
         kdone = folder / (digest + ".kdone")
         optout = folder / (digest + ".optout")
+        pending_receipt = folder / (digest + ".pending-receipt")
+        pending_knowledge = folder / (digest + ".pending-knowledge")
+        next_prompt = event == "UserPromptSubmit"
         if event == "Stop" and harness == "claude":
             _queue_cli_edit(folder / (digest + ".cli"), vault, state, payload)
-        if event == "UserPromptSubmit":
+        if next_prompt:
             # Quoted worker output is data, not the user's instruction to opt out.
-            if not is_synthetic_prompt(payload) and "[kaydetme]" in prompt_text(payload).casefold():
+            if is_synthetic_prompt(payload):
+                return None
+            if "[kaydetme]" in prompt_text(payload).casefold():
                 folder.mkdir(parents=True, exist_ok=True)
                 optout.touch()
                 done.touch()
                 kdone.touch()
                 edited.unlink(missing_ok=True)
-            return None
+                pending_receipt.unlink(missing_ok=True)
+                pending_knowledge.unlink(missing_ok=True)
+                return None
+            if not deferred or not (pending_receipt.is_file() or pending_knowledge.is_file()):
+                return None
         if optout.exists() or (done.exists() and kdone.exists()):
             return None
         if event == "PostToolUse":
@@ -514,6 +538,10 @@ def receipt_reminder(payload, state, harness, event, vault=None, bridge_cli=None
         if payload.get("stop_hook_active") is True:
             return None
         if not edited.exists():
+            if next_prompt:
+                pending_receipt.unlink(missing_ok=True)
+                pending_knowledge.unlink(missing_ok=True)
+                return None
             # The global bridge keeps its editor-only window (#500): no transcript read there.
             shell = _shell_edit(payload, vault, state, harness) if bridge_cli is None else None
             if shell is None:
@@ -526,16 +554,19 @@ def receipt_reminder(payload, state, harness, event, vault=None, bridge_cli=None
         db_path = Path(state) / "memory.sqlite3"
         receipt = _get_session_receipt(db_path, harness, session, since)
         if not receipt:
+            if next_prompt and not pending_receipt.is_file():
+                pending_knowledge.unlink(missing_ok=True)
+                return None
             if not done.exists():
-                # Keep the edit window: a receipt written in answer to this reminder arrives
-                # during the stop_hook_active Stop, so only the next Stop can check its learning.
-                folder.mkdir(parents=True, exist_ok=True)
-                with done.open("x", encoding="utf-8"):  # FileExistsError if a concurrent Stop reminded first
-                    pass
-                if bridge_cli is not None:
-                    return {"decision": "block", "reason": BRIDGE_RECEIPT_REMINDER.format(
-                        cli=_bridge_cli(bridge_cli), harness=harness, session=session)}
-                return {"decision": "block", "reason": RECEIPT_REMINDER.format(harness=harness, session=session)}
+                # Keep the edit window so a later Stop can check a new receipt for learning.
+                reason = (BRIDGE_RECEIPT_REMINDER.format(cli=_bridge_cli(bridge_cli), harness=harness, session=session)
+                          if bridge_cli is not None else RECEIPT_REMINDER.format(harness=harness, session=session))
+                return _receipt_reminder_result(done, pending_receipt, event, deferred, reason)
+            return None
+
+        if deferred:
+            pending_receipt.unlink(missing_ok=True)
+        if next_prompt and not pending_knowledge.is_file():
             return None
 
         # Receipt exists! Check if receipt declared learning or explicitly claimed no learning.
@@ -548,18 +579,14 @@ def receipt_reminder(payload, state, harness, event, vault=None, bridge_cli=None
             if (reason and marker.get("knowledge") is not True and
                     not _has_staged_candidates(state, session, since) and
                     not _has_knowledge_update(vault, receipt, since)):
-                folder.mkdir(parents=True, exist_ok=True)
-                try:
-                    with kdone.open("x", encoding="utf-8"):
-                        pass
-                except FileExistsError:
-                    return None
                 if bridge_cli is not None:
                     cli = _bridge_cli(bridge_cli)
                     reason = (reason.replace("python3 beyin.py", cli) +
                               f" Beyin CLI for this project: {cli}; write the note with note-create.")
-                return {"decision": "block", "reason": reason}
+                return _receipt_reminder_result(kdone, pending_knowledge, event, deferred, reason)
 
+        if deferred:
+            pending_knowledge.unlink(missing_ok=True)
         edited.unlink(missing_ok=True)  # later edits open a new window
         return None
     except Exception:
@@ -670,6 +697,64 @@ def drain_queue(vault, state, maintenance=False):
     return {"processed": 0, "failed": len(pending), "pending": len(pending)}
 
 
+ANTIGRAVITY_TRANSCRIPT_LIMIT = 2 * 1024 * 1024
+
+
+def _antigravity_step_types(value):
+    """Read only metadata from a complete, bounded Antigravity transcript."""
+    if not isinstance(value, str) or '\0' in value:
+        return None
+    path = Path(value)
+    if not path.is_absolute() or path.suffix.lower() != '.jsonl' or path.drive.startswith(('\\', '//')):
+        return None
+    try:
+        info = path.lstat()
+        reparse = stat.FILE_ATTRIBUTE_REPARSE_POINT
+        if (not stat.S_ISREG(info.st_mode) or getattr(info, 'st_file_attributes', 0) & reparse
+                or info.st_size > ANTIGRAVITY_TRANSCRIPT_LIMIT or path.resolve(strict=True) != path):
+            return None
+        flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0)
+        flags |= getattr(os, 'O_NONBLOCK', 0)
+        with os.fdopen(os.open(path, flags), 'rb') as handle:
+            opened = os.fstat(handle.fileno())
+            if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(info, opened):
+                return None
+            raw = handle.read(ANTIGRAVITY_TRANSCRIPT_LIMIT + 1)
+        if len(raw) > ANTIGRAVITY_TRANSCRIPT_LIMIT:
+            return None
+        steps = []
+        for line in raw.splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if (not isinstance(row, dict) or type(row.get('step_index')) is not int
+                    or row['step_index'] != len(steps) or not isinstance(row.get('type'), str)):
+                return None
+            steps.append(row['type'])
+        return steps
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _antigravity_nonhuman_turn(payload, event):
+    if os.environ.get('BEYIN_V3_FILTER_HARNESS_TURNS') == '0':
+        return False
+    initial = payload.get('initialNumSteps')
+    last_input = payload.get('lastUserInput')
+    if type(initial) is not int or initial < 0 or not isinstance(last_input, str):
+        return False  # older clients do not supply these fields
+    if event == 'PreInvocation' and initial == 0:
+        return last_input == ''
+    if event == 'Stop' and last_input != '':
+        return False  # the parent can stop after planner steps
+    steps = _antigravity_step_types(payload.get('transcriptPath'))
+    if not steps or initial > len(steps):
+        return False
+    if event == 'PreInvocation':
+        return steps[initial - 1] == 'PLANNER_RESPONSE'
+    return 'USER_INPUT' not in steps and 'PLANNER_RESPONSE' in steps
+
+
 def main():
     started = time.monotonic()
     if hasattr(sys.stdin, "reconfigure"):
@@ -720,11 +805,12 @@ def main():
             payload["session_id"] = payload.get("session_id") or payload.get("conversationId", "unknown")
         if args.harness == "antigravity":
             if event == "PreInvocation":
-                if payload.get("invocationNum") != 0:
+                if payload.get("invocationNum") != 0 or _antigravity_nonhuman_turn(payload, event):
                     print("{}")
                     return
                 event = "SessionStart"
-            elif event == "Stop" and payload.get("fullyIdle") is not True:
+            elif event == "Stop" and (payload.get("fullyIdle") is not True
+                                      or _antigravity_nonhuman_turn(payload, event)):
                 print('{"decision":"stop"}')
                 return
             payload["session_id"] = payload.get("conversationId", "unknown")
@@ -849,6 +935,9 @@ def main():
         # (#417); an earlier edit marker must not reopen that path as a block in a state this client
         # cannot write. The writable path keeps its reminder untouched.
         reminder = None if args.metadata_only or sync_note else receipt_reminder(payload, state, args.harness, event, vault=vault)
+        if event == "UserPromptSubmit" and reminder:
+            notice = (notice + "\n" if notice else "") + reminder["context"] + "\n"
+            reminder = None
         if not args.metadata_only and not sync_note and not reminder and event == 'Stop' and args.harness == 'claude' and (state / 'context-fill.json').is_file():
             from beyin_v3_context_fill import context_fill_reminder
             reminder = context_fill_reminder(payload, state, args.harness, event)

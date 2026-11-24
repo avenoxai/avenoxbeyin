@@ -567,9 +567,31 @@ def _preflight(stage, files):
             raise ValueError('release preflight did not succeed')
 
 
-def update(vault, state, package=None, check=False):
+def _installation_plan(stage, vault, state, manifest):
+    spec = importlib.util.spec_from_file_location('beyin_release_installer', stage / 'scripts/install_v3.py')
+    installer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(installer)
+    plan = installer.install(vault, state, plan_only=True, version=manifest["version"],
+                             legacy_hashes=manifest.get('legacy_hashes', {}),
+                             legacy_skill_hashes=manifest.get('legacy_skill_hashes', {}))
+    trust_review = []
+    for name in HOOK_FILES:
+        if name in plan['planned']:
+            path = vault / name
+            before = json.loads(path.read_bytes()) if path.exists() else {}
+            planned = plan['planned'][name]
+            after = json.loads(planned) if planned is not None else {}
+            key = 'beyin-v3' if name == '.agents/hooks.json' else 'hooks'
+            if before.get(key) != after.get(key):
+                trust_review.append(name)
+    return plan, trust_review
+
+
+def update(vault, state, package=None, check=False, *, preview=False):
     vault, state = roots(vault, state)
-    if check:
+    if check and preview:
+        raise ValueError('--plan and --check are mutually exclusive')
+    if check or preview:
         import beyin_v3_releases as releases
         if releases.pending_transaction(state):
             return releases.recovery_status()
@@ -584,6 +606,32 @@ def update(vault, state, package=None, check=False):
         _preflight(stage, files)
         old, new = current_version(vault), manifest['version']
         if version(new) < version(old): raise ValueError('downgrade requires rollback')
+        if preview:
+            report = {'status': 'plan', 'current_version': old, 'version': new,
+                      'files': {}, 'trust_review_files': [], 'trust_review_required': False,
+                      'runtime_schema': manifest.get('runtime_schema', 1),
+                      'package_migrations': manifest.get('migrations', [])}
+            if old == new:
+                return dict(report, status='noop')
+            plan, trust_review = _installation_plan(stage, vault, state, manifest)
+            for name, content in sorted(plan['planned'].items()):
+                path = vault / name
+                previous = path.read_bytes() if path.exists() else None
+                mode_changed = (os.name != 'nt' and previous is not None and content is not None
+                                and name != '.beyin-version' and os.access(path, os.W_OK)
+                                and stat.S_IMODE(path.stat().st_mode) != plan.get('modes', {}).get(name, 0o644))
+                if previous == content and not mode_changed:
+                    action = 'unchanged'
+                elif previous is None:
+                    action = 'added'
+                elif content is None:
+                    action = 'removed'
+                else:
+                    action = 'updated'
+                report['files'][name] = action
+            return dict(report, trust_review_files=trust_review, trust_review_required=bool(trust_review),
+                        excluded_components=plan['manifest'].get('excluded_components', []),
+                        preserved_excluded=plan.get('preserved_excluded', []))
         if check: return {'status': 'noop' if new == old else 'available', 'current_version': old, 'version': new}
         with locked(vault, state):
             _recover_locked(vault, state)
@@ -592,22 +640,7 @@ def update(vault, state, package=None, check=False):
                 if new == old: return {'status': 'noop', 'version': old}
                 raise ValueError('downgrade requires rollback')
             with _migration_guard(vault, state, stage / 'template/.claude/scripts') as migration:
-                spec = importlib.util.spec_from_file_location('beyin_release_installer', stage / 'scripts/install_v3.py')
-                installer = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(installer)
-                plan = installer.install(vault, state, plan_only=True, version=new,
-                                         legacy_hashes=manifest.get('legacy_hashes', {}),
-                                         legacy_skill_hashes=manifest.get('legacy_skill_hashes', {}))
-                trust_review = []
-                for name in HOOK_FILES:
-                    if name in plan['planned']:
-                        path = vault / name
-                        before = json.loads(path.read_bytes()) if path.exists() else {}
-                        planned = plan['planned'][name]
-                        after = json.loads(planned) if planned is not None else {}
-                        key = 'beyin-v3' if name == '.agents/hooks.json' else 'hooks'
-                        if before.get(key) != after.get(key):
-                            trust_review.append(name)
+                plan, trust_review = _installation_plan(stage, vault, state, manifest)
                 operations = []
                 for name, data in plan['planned'].items():
                     if name == '.beyin-version': continue

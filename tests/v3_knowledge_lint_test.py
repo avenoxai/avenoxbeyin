@@ -973,6 +973,17 @@ And another link on line 8: [[Components/Auth]].
         self.assertEqual(result['withheld_targets_count'], 1)
         self.assertNotIn('sub/hidden.md', json.dumps(result))
 
+    def test_lint_withholds_targets_with_unparseable_frontmatter(self):
+        self._write_notes(self.vault, {
+            'a.md': '# A\n\nSee [[b]] and [b](b.md).\n',
+            'b.md': '---\nsource: [x] "quoted"\n---\n# B\n[[missing]]\n',
+        })
+        result = linter.lint_vault(self.vault)
+        self.assertEqual((result['broken_links_count'], result['withheld_targets_count']), (0, 2))
+        self.assertEqual(result['scanned_files_count'], 1)
+        self.assertEqual(result['total_links_count'], 2)
+        self.assertEqual(result['orphans'], ['a.md'])
+
     def test_lint_and_moc_apply_retirement_without_exposing_replacements(self):
         self._write_notes(self.vault, {
             'knowledge/old.md': '---\nid: old-id\n---\n# OldCanary',

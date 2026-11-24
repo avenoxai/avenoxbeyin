@@ -83,6 +83,34 @@ class OfflineUpdateTest(unittest.TestCase):
         self.assertEqual(snapshot(self.state), before_state)
         self.assertEqual(self.version(), '3.0.0')
 
+    def test_preview_uses_the_installed_planner_without_writing(self):
+        name = '.claude/scripts/beyin_v3.py'
+        before = snapshot(self.vault), snapshot(self.state)
+        result = run_python(self.vault / 'beyin.py', ['update', '--plan', '--package', self.package],
+                            self.vault, self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['status'], 'plan')
+        self.assertEqual(report['files'][name], 'updated')
+        self.assertEqual(report['trust_review_files'], [])
+        self.assertEqual(before, (snapshot(self.vault), snapshot(self.state)))
+        target = self.vault / name
+        target.write_bytes(target.read_bytes() + b'# local edit\n')
+        before = snapshot(self.vault), snapshot(self.state)
+        with self.assertRaisesRegex(ValueError, 'Reinstall conflict'):
+            self.module.update(self.vault, self.state, self.package, preview=True)
+        self.assertEqual(before, (snapshot(self.vault), snapshot(self.state)))
+
+    def test_preview_noop_and_deleted_file(self):
+        same = build_package(self.base / 'same.zip', self.version(), self.env)
+        name = '.claude/scripts/beyin_v3.py'
+        (self.vault / name).unlink()
+        before = snapshot(self.vault), snapshot(self.state)
+        self.assertEqual(self.module.update(self.vault, self.state, same, preview=True)['status'], 'noop')
+        with self.assertRaisesRegex(ValueError, 'Reinstall conflict'):
+            self.module.update(self.vault, self.state, self.package, preview=True)
+        self.assertEqual(before, (snapshot(self.vault), snapshot(self.state)))
+
     def test_update_idempotent_and_rollback_preserves_new_user_note(self):
         core = self.vault / '.claude/scripts/beyin_v3.py'
         original = core.read_bytes()

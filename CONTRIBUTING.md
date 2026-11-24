@@ -104,6 +104,8 @@ Bu bölüm, katkıcıya ek zorunluluk koymak yerine PR'ların nasıl değerlendi
 - CI Linux, macOS ve Windows'ta çalışır; ilk kez katkı verenlerin fork kaynaklı CI koşuları onaydan sonra başlar. PR'sı olmayan yeniden üretilebilir hatalar maintainer tarafından düzeltilebilir ve raporlayan `Reported-by` ile anılabilir. Tasarım ve öneri issue'larına durum notu yazılır. Ürün yönü, merge ve yayın kararları maintainer'a aittir.
 - Kritik modüller için alanı bilen reviewer'ların sürece katılması yararlıdır. Katkı hacmi gerektirirse `CODEOWNERS` veya branch rulesets gibi denetimler ayrıca değerlendirilebilir; bunların devreye alınması repo yöneticisinin kararıdır ve bu rehber tek başına yeni bir merge engeli oluşturmaz.
 
+Bir mimari öneri için issue açabilirsiniz. Hangi mevcut davranışın değişmesini istediğinizi ve bir kullanıcının farkı nasıl doğrulayacağını belirtmeniz, sonraki adımı seçmemize yardımcı olur. Bir yol haritasının yalnız bir parçası kabul edilirse uygulama kaydı eski tartışmaya bağlanır. Kapanışta alınan parça, ertelenen karar ve yeniden değerlendirme koşulu yazılır. Kapalı RFC'nin numarasını yeni bir ölçümde, tasarımda veya küçük bir PR'da kullanabilirsiniz. Katkıcılar, kendilerine depo yetkisi verilmeden de yeniden üretim, test ve PR incelemesiyle karara katılabilir.
+
 ## 7. Gizlilik ve güvenlik
 
 Gerçek notları, sohbet kayıtlarını, kişisel dosya yollarını, özel çalışma alanlarını, token veya API anahtarlarını issue, PR, test fixture'ı ya da loglara eklemeyin. Sentetik veri kullanın ve paylaşılan çıktılardaki hassas bilgileri temizleyin.

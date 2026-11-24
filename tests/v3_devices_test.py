@@ -145,7 +145,12 @@ class DetectTest(Base):
         vault, state = self.machine()
         git(vault, "init", "-q", "-b", "main")
         link = self.tmp / "link"
-        link.symlink_to(vault, target_is_directory=True)
+        try:
+            link.symlink_to(vault, target_is_directory=True)
+        except OSError as error:
+            if getattr(error, 'winerror', None) != 1314:  # ERROR_PRIVILEGE_NOT_HELD
+                raise
+            self.skipTest(f"symlink not permitted here: {error}")
         found = devices.detect(link, state)["git"]
         self.assertEqual(found, {"repository": True, "git_dir_inside_vault": True, "git_file_in_vault": False})
 

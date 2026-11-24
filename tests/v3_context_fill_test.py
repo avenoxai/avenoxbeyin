@@ -125,6 +125,29 @@ class ContextFillTest(unittest.TestCase):
             self.assertEqual(result['decision'], 'block')
             self.assertIn('devir kartını güncelle', result['reason'])
 
+    def test_reminder_reason_reports_tokens_and_crossed_threshold(self):
+        # A 1M-window session reminded at 164.601 tokens read "doluluk eşiği aşıldı" while the
+        # client showed 17% used; the reason must say what was reached, not that context is full.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = dict(cf.load_config(Path(tmp)), enabled=True,
+                       first_threshold=150000, repeat_threshold=75000)
+            cf.save_config(Path(tmp), cfg)
+
+            def payload(tokens):
+                return {'session_id': 'test-session', 'stop_hook_active': False, 'prompt': '',
+                        'transcript': [{'role': 'assistant', 'usage': {'input_tokens': tokens}}]}
+
+            first = cf.context_fill_reminder(payload(164601), tmp, 'claude', 'Stop')
+            self.assertIn('164.601', first['reason'])
+            self.assertIn('150.000', first['reason'])
+            self.assertNotIn('doluluk', first['reason'])
+            self.assertIn('sıkıştırma', first['reason'])
+            self.assertIn('devir kartını güncelle', first['reason'])
+
+            repeat = cf.context_fill_reminder(payload(250000), tmp, 'claude', 'Stop')
+            self.assertIn('250.000', repeat['reason'])
+            self.assertIn('239.601', repeat['reason'])  # last reminder + repeat interval
+
     def test_silencing_stop_hook_active(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp)

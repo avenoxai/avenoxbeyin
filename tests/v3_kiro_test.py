@@ -64,14 +64,14 @@ class KiroIntegrationTest(unittest.TestCase):
         self.install()
         note = self.vault / "notes/compass.md"
         note.parent.mkdir()
-        note.write_text("The synthetic violet compass points to the library.\n", encoding="utf-8")
+        note.write_text("The synthetic violet compass 🧭 points to the library.\n", encoding="utf-8")
         self.run_python(self.vault / "beyin.py", "sync")
         adapter = self.vault / ".claude/scripts/beyin_v3_kiro.py"
         args = ("--vault", self.vault, "--state", self.state)
-        env = dict(self.env, USER_PROMPT="Where does the violet compass point?")
+        env = dict(self.env, USER_PROMPT="Where does the violet compass point?", PYTHONIOENCODING="cp1254")
         output = self.run_python(adapter, *args, "--event", "UserPromptSubmit",
                                  payload={"session_id": "kiro-test-session", "cwd": str(self.vault)}, env=env)
-        self.assertIn("violet compass", output)
+        self.assertIn("violet compass 🧭", output)
         self.assertNotIn("hookSpecificOutput", output)
         if os.name != "nt":
             definitions = json.loads((self.vault / ".kiro/hooks/beyin-v3.json").read_text(encoding="utf-8"))

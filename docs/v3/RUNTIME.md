@@ -194,6 +194,8 @@ görmek için bayraksız `project-scope list` kullan.
   Excluded notes still supply link targets and backlinks, and their broken links
   remain visible. Scan and link counts, privacy filters and MOC behavior are unchanged.
   Generated files have no separate exemption.
+  Lint skips notes with unparseable frontmatter. Wikilinks and local Markdown links
+  to these notes count in `withheld_targets_count` and are omitted from `broken_links`.
   Yerel Markdown bağlantıları `[Kılavuz](not.md#kurulum-kılavuzu)` biçiminde,
   `# Kurulum Kılavuzu` gibi bir başlıktan üretilen kısa adresi de kabul eder.
   Aynı kısa adresi üreten başlıklar `-1`, `-2` ekleriyle ayrılır.

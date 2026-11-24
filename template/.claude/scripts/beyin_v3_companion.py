@@ -645,6 +645,17 @@ def client_imports(vault, harness, cwd):
     return loaded
 
 
+THREAD_CHECKPOINT_MARKER = re.compile(r"<!-- beyin-checkpoint-thread:([a-f0-9]{64}) -->(?:\r?\n)?\Z")
+
+
+def companion_chars(name, text):
+    """Count visible content and leave checkpoint retry metadata outside the Threads limit."""
+    if name != 'Threads.md':
+        return len(text)
+    return sum(len(line) for line in re.findall(r'[^\n]*\n|[^\n]+$', text)
+               if not THREAD_CHECKPOINT_MARKER.fullmatch(line))
+
+
 def size(path):
     """Unicode characters as stored: not bytes and not UTF-16 units, so a Turkish or
     emoji-rich file is not reported larger than it is. Line endings are not translated
@@ -652,8 +663,15 @@ def size(path):
     bounded memory."""
     count = 0
     with Path(path).open(encoding='utf-8', errors='replace', newline='') as source:
-        for chunk in iter(lambda: source.read(1 << 16), ''):
-            count += len(chunk)
+        if Path(path).name == 'Threads.md':
+            at_line_start = True
+            for part in iter(lambda: source.readline(1 << 16), ''):
+                if not at_line_start or not THREAD_CHECKPOINT_MARKER.fullmatch(part):
+                    count += len(part)
+                at_line_start = part.endswith(('\n', '\r'))
+        else:
+            for chunk in iter(lambda: source.read(1 << 16), ''):
+                count += len(chunk)
     return count
 
 
@@ -1075,7 +1093,17 @@ def rule_starts(text):
     return starts
 
 
-def ends(text, budget):
+LATEST_RULES = '<!-- beyin:rules-order=latest -->'
+
+
+def _rule_gap(head, tail, first, last, total, report):
+    count = last - first + 1
+    if report is not None:
+        report['omitted_rules'] = {'first': first, 'last': last, 'count': count, 'total': total}
+    return head + f'\n[truncated: rules {first}-{last} ({count} of {total}) omitted here; read source]\n' + tail
+
+
+def ends(text, budget, *, rules_report=None):
     """Opening plus closing lines of a rule set, with the omitted rules named.
 
     The first marker is sized with the widest form the final one can take, so the
@@ -1091,6 +1119,16 @@ def ends(text, budget):
         widest = f'\n[truncated: rules {total}-{total} ({total} of {total}) omitted here; read source]\n'
         gap = max(gap, widest, key=len)
     keep = budget - len(gap)
+    if total and text.startswith(LATEST_RULES + '\n'):
+        if keep < 0:
+            return CLIP_MARKER.strip()[:budget]
+        # Keep complete items from the source's end within its existing allocation.
+        first_kept = next((i for i, offset in enumerate(rules) if len(text) - offset <= keep), total)
+        tail = text[rules[first_kept]:] if first_kept < total else ''
+        if first_kept == 0:
+            # Only prose before the first item was omitted.
+            return '\n[truncated: read source]\n' + tail
+        return _rule_gap('', tail, 1, first_kept, total, rules_report)
     if keep < 80:
         return None
     if not total:
@@ -1146,10 +1184,7 @@ def ends(text, budget):
                 head = text[:rules[k]]
                 grown = True
 
-    first = k + 1
-    omitted = j - k
-    what = f'rules {first}-{j} ({omitted} of {total})'
-    return head + f'\n[truncated: {what} omitted here; read source]\n' + closing
+    return _rule_gap(head, closing, k + 1, j, total, rules_report)
 
 
 CLIP_MARKER = '\n[truncated: read source]\n'
@@ -1167,12 +1202,12 @@ def fit_opening_overflow(harness, text, budget):
     return prefix.rstrip() + marker
 
 
-def clip(text, budget, tail=False, both=False):
+def clip(text, budget, tail=False, both=False, *, rules_report=None):
     budget = max(0, budget)
     if len(text) <= budget:
         return text
     if both:
-        kept = ends(text, budget)
+        kept = ends(text, budget, rules_report=rules_report)
         if kept:
             return kept
     marker = CLIP_MARKER
@@ -1733,11 +1768,13 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         h = header if header_text is None else header_text
         rendered, rules = h + notice, None
         for i, (label, body, name) in enumerate(parts):
+            rules_report = None
             if name == 'Kurallar.md' and i < len(records):  # project rule files come after the records
                 rules = {'chars': len(sections[i][1]), 'share': lengths[i], 'clipped': lengths[i] < len(body),
                          'reasons_omitted': body != sections[i][1]}
+                rules_report = rules
             rendered += label + (thread_view(body, lengths[i], brief) if name == 'Threads.md' else
-                                 clip(body, lengths[i], both=name == 'Kurallar.md',
+                                 clip(body, lengths[i], both=name == 'Kurallar.md', rules_report=rules_report,
                                       tail=name == 'Kurallar.md' or (name == 'Journal.md' and not re.search(r'(?m)^## ', body))))
         return rendered, rules
 
@@ -1840,6 +1877,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         new_fixed = len(reserved_header) + len(notice) + sum(len(label) for label, _, _ in sections)
         if new_fixed > budget:
             final_rules = dict(rules, share=0)
+            final_rules.pop('omitted_rules', None)
             if report is not None:
                 report['Kurallar.md'] = final_rules
             full_header = hygiene_line + hygiene_notice(None, rules=final_rules) + header_tail

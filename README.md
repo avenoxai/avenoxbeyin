@@ -32,7 +32,7 @@ flowchart TB
 
 Asıl kaynak dosyaların. Beyin bunların yerel indeksini tutar ve seçilen bağlamı kullandığın AI istemcisine verir. Sohbet geçmişinin tamamını kendiliğinden bilgiye dönüştürmez; kalıcı olmasını istediğin şeyi nota yazdırırsın.
 
-> **V3.15.0** ile uzun notlarda eşleşen pasajı görebilir, oturum sonu kaydını tek komutla yazabilir ve telefonla kullanacağın kasanın kurulum planını çıkarabilirsin. [Sürüm notu](docs/v3/releases/3.15.0.md) · [Önceki sürüm ve video motoru](docs/v3/releases/3.14.1.md).
+> **V3.16.0** ile sonraki güncellemenin kasanda hangi dosyaları değiştireceğini önceden görebilirsin. Türkçe aramada soru kalıplarını ayıklamak için `context --strip-fillers` seçeneği geldi. [Sürüm notu](docs/v3/releases/3.16.0.md) · [Önceki sürüm](docs/v3/releases/3.15.0.md).
 
 <a id="kurulum"></a>
 ## Üç adımda kurulum

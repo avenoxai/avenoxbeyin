@@ -395,6 +395,62 @@ class HookInstallerTest(unittest.TestCase):
             self.lifecycle('PostToolUse', 'other-' + harness, harness)
             self.assertEqual(self.lifecycle('Stop', 'other-' + harness, harness), {})
 
+    def test_claude_context_mode_defers_receipt_once_and_keeps_retrieval(self):
+        self.seed()
+        self.env['BEYIN_V3_RECEIPT_REMINDER'] = 'context'
+        session = 'context-mode-private-session-id'
+        self.lifecycle('PostToolUse', session, 'claude')
+        self.assertEqual(self.lifecycle('Stop', session, 'claude'), {})
+        self.assertEqual(self.lifecycle('Stop', session, 'claude'), {})
+        pending = list((self.state / 'receipt-reminders').glob('*.pending-receipt'))
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].read_bytes(), b'')
+        self.assertNotIn(session, pending[0].name)
+        for other_session, prompt in (('unrelated', 'Nebula calibration'), (session, '<task-notification>done</task-notification>')):
+            result = self.lifecycle('UserPromptSubmit', other_session, 'claude', prompt=prompt)
+            self.assertNotIn('Reminder from the previous turn', json.dumps(result))
+        result = self.lifecycle('UserPromptSubmit', session, 'claude', prompt='Nebula calibration owner')
+        self.assertNotIn('decision', result)
+        context = result['hookSpecificOutput']['additionalContext']
+        self.assertIn('Reminder from the previous turn', context)
+        self.assertIn('Nebula calibration owner is Synthetic Reviewer', context)
+        self.assertNotIn(session, context)
+        self.assertNotIn('Reminder from the previous turn',
+                         json.dumps(self.lifecycle('UserPromptSubmit', session, 'claude', prompt='Next')))
+        self.lifecycle('PostToolUse', 'other-client', 'codex')
+        self.assertEqual(self.lifecycle('Stop', 'other-client', 'codex')['decision'], 'block')
+
+    def test_claude_context_mode_checks_receipt_and_opt_out_before_delivery(self):
+        engine = self.seed()
+        self.env['BEYIN_V3_RECEIPT_REMINDER'] = 'context'
+        for session, prompt in (('received', 'Next'), ('opted-out', '[KAYDETME] Next'), ('disabled', 'Next')):
+            self.lifecycle('PostToolUse', session, 'claude')
+            self.assertEqual(self.lifecycle('Stop', session, 'claude'), {})
+            if session == 'received':
+                digest = hashlib.sha256(session.encode()).hexdigest()[:24]
+                engine.receipt('received-event', 'Edited the task note.', ['notes/task.md'], 'claude', session=digest)
+            if session == 'disabled':
+                self.env['BEYIN_V3_NO_RECEIPT_REMINDER'] = '1'
+            result = self.lifecycle('UserPromptSubmit', session, 'claude', prompt=prompt)
+            self.assertNotIn('Reminder from the previous turn', json.dumps(result))
+            if session != 'disabled':
+                result = self.lifecycle('UserPromptSubmit', session, 'claude', prompt='Next again')
+                self.assertNotIn('Reminder from the previous turn', json.dumps(result))
+
+    def test_claude_context_mode_defers_learning_reminder_once(self):
+        engine = self.seed()
+        self.env['BEYIN_V3_RECEIPT_REMINDER'] = 'context'
+        session = 'deferred-learning'
+        digest = hashlib.sha256(session.encode()).hexdigest()[:24]
+        self.lifecycle('PostToolUse', session, 'claude')
+        engine.receipt('learning-event', 'Refactor bitti.\nÖğrenilen: WAL timeout en az 5 sn.', ['notes/task.md'],
+                       'claude', session=digest)
+        self.assertEqual(self.lifecycle('Stop', session, 'claude'), {})
+        first = self.lifecycle('UserPromptSubmit', session, 'claude', prompt='Next')
+        self.assertIn('Learnings were reported', first['hookSpecificOutput']['additionalContext'])
+        self.assertNotIn('Learnings were reported',
+                         json.dumps(self.lifecycle('UserPromptSubmit', session, 'claude', prompt='Next again')))
+
     def test_stop_receipt_reminder_passes_when_receipt_is_present(self):
         engine = self.seed()
         def session(name):
@@ -795,6 +851,43 @@ class HookInstallerTest(unittest.TestCase):
         self.assertEqual(len(list((self.state / 'hook-queue').glob('*.json'))), before)
         self.assertEqual(self.invoke(dict(stop, fullyIdle=True), 'antigravity'), {'decision': 'stop'})
         self.assertEqual(len(list((self.state / 'hook-queue').glob('*.json'))), before + 1)
+
+    def test_antigravity_filters_nested_turns_before_checkpointing(self):
+        self.seed()
+        transcript = (self.vault / 'antigravity.jsonl').resolve()
+        def transcript_steps(*types):
+            transcript.write_text(''.join(json.dumps({'step_index': index, 'type': kind}) + '\n'
+                                          for index, kind in enumerate(types)), encoding='utf-8')
+        payload = {'hook_event_name': 'PreInvocation', 'conversationId': 'antigravity-report',
+                   'invocationNum': 0, 'lastUserInput': '', 'initialNumSteps': 0,
+                   'transcriptPath': str(transcript)}
+        queue = self.state / 'hook-queue'
+        self.assertEqual(self.invoke(payload, 'antigravity'), {})
+        self.assertEqual(list(queue.glob('*.json')), [])
+        transcript_steps('PLANNER_RESPONSE')
+        self.assertEqual(self.invoke(dict(payload, initialNumSteps=1), 'antigravity'), {})
+        stop = dict(payload, hook_event_name='Stop', fullyIdle=True, initialNumSteps=1)
+        self.assertEqual(self.invoke(stop, 'antigravity'), {'decision': 'stop'})
+        self.assertEqual(list(queue.glob('*.json')), [])
+
+        transcript_steps('USER_INPUT', 'PLANNER_RESPONSE')
+        self.assertEqual(self.invoke(dict(payload, initialNumSteps=2, lastUserInput='old prompt'), 'antigravity'), {})
+        self.assertEqual(list(queue.glob('*.json')), [])
+        self.assertIn('injectSteps', self.invoke(dict(payload, initialNumSteps=1, lastUserInput='prompt'), 'antigravity'))
+        self.assertEqual(self.invoke(dict(stop, lastUserInput='prompt'), 'antigravity'), {'decision': 'stop'})
+        self.assertEqual(len(list(queue.glob('*.json'))), 2)
+
+    def test_antigravity_unknown_transcript_and_filter_opt_out_preserve_turns(self):
+        self.seed()
+        transcript = (self.vault / 'antigravity.jsonl').resolve()
+        transcript.write_text('{"step_index":0,"type":"NEW_EVENT"}\n', encoding='utf-8')
+        payload = {'hook_event_name': 'PreInvocation', 'conversationId': 'antigravity-unknown',
+                   'invocationNum': 0, 'lastUserInput': 'prompt', 'initialNumSteps': 1,
+                   'transcriptPath': str(transcript)}
+        self.assertIn('injectSteps', self.invoke(payload, 'antigravity'))
+        transcript.write_text('{"step_index":0,"type":"PLANNER_RESPONSE"}\n', encoding='utf-8')
+        self.env['BEYIN_V3_FILTER_HARNESS_TURNS'] = '0'
+        self.assertIn('injectSteps', self.invoke(payload, 'antigravity'))
 
     def test_internal_recursion_guard_skips_queue(self):
         self.env['BEYIN_V3_INTERNAL'] = '1'

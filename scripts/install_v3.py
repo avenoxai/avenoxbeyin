@@ -294,7 +294,9 @@ def commands(argv):
     posix = shlex.join(portable_argv)
     # Explicit PowerShell invocation with single-quoted literals inside encoded code.
     # EncodedCommand prevents cmd.exe metacharacters in paths being evaluated.
-    script = "& " + " ".join("'" + str(value).replace("'", "''") + "'" for value in argv)
+    # PowerShell recognizes typographic single quotes as delimiters too.
+    quote_map = str.maketrans({quote: quote * 2 for quote in "'‘’‚‛"})
+    script = "& " + " ".join("'" + str(value).translate(quote_map) + "'" for value in argv)
     script += "; exit $LASTEXITCODE"
     encoded = base64.b64encode(script.encode("utf-16le")).decode()
     launcher = "powershell.exe"

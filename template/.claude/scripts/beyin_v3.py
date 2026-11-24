@@ -979,15 +979,17 @@ _STRICT_FILLER_SURFACES = frozenset((
 ))
 
 
+def strip_query_fillers(query):
+    """Drop exact Turkish question wrappers before stemming."""
+    # A wrapper cannot erase an explicit topic with the same stem ("not notlarda",
+    # "konu konusunda"). Preserve punctuation so compound names retain tokenization.
+    return re.sub(r"[^\W_]+", lambda match: (
+        " " if _fold(match.group()) in _STRICT_FILLER_SURFACES else match.group()
+    ), unicodedata.normalize("NFC", query))
+
+
 def _strict_query_tokens(query):
-    """Return strict query tokens without known Turkish question wrappers."""
-    # Remove surfaces before stemming so a wrapper cannot erase an explicit
-    # topic with the same stem ("not notlarda", "konu konusunda"). Preserve
-    # punctuation so compound names retain their normal tokenization.
-    text = re.sub(r"[a-z0-9]+", lambda match: (
-        " " if match.group() in _STRICT_FILLER_SURFACES else match.group()
-    ), _fold(query))
-    return _tokens(text)
+    return _tokens(strip_query_fillers(query))
 
 
 def _strict_terms(terms):

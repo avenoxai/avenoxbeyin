@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import errno
 import hashlib
 import importlib.util
 import json
@@ -411,6 +412,46 @@ ERROR_HINTS = {
         "yeni vault yolu, ayni --state ve --rebind-state ile calistir; eski yol hala duruyorsa kurucu reddeder. "
         "Ayrinti: https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/MULTI-MACHINE.md"),
 }
+# A sandboxed client (a workspace-write profile, a restricted Windows token) can run the CLI in the
+# vault but not write the runtime state outside it. The hook already answers that case from the
+# previous index (2614eab); the CLI names the refusal instead of leaving a bare PermissionError.
+STATE_WRITE_REFUSED_HINT = (
+    "State klasoru bu istemcide yazilamiyor (sandbox ya da izin); komutun state'e yazan adimi burada "
+    "tamamlanamadi. Komutu state klasorune yazabilen bir istemciden ya da normal bir terminalden yeniden "
+    "calistir. State konumu: beyin.py doctor -> state_location.")
+# The hook's permission_refused: "this client may not write here", not a full disk or an I/O error.
+STATE_PERMISSION_REFUSALS = frozenset({errno.EPERM, errno.EACCES, errno.EROFS})
+
+
+def _at_or_around(path, root):
+    """True when path is root, lies under it, or is a parent the runtime creates on the way to it."""
+    try:
+        candidate = os.path.normcase(os.path.abspath(os.fspath(path)))
+        root = os.path.normcase(os.path.abspath(os.fspath(root)))
+        common = os.path.commonpath([candidate, root])
+    except (TypeError, ValueError):  # no path, or two Windows drives
+        return False
+    return common in (candidate, root)
+
+
+def state_write_refused(exc, state):
+    """True when a write to the runtime state was refused for lack of permission.
+
+    The refusals are the hook's (EPERM, EACCES, EROFS; WinError 5 or 19, which a win32 wrapper
+    can raise with errno unset), counted only on a path at or under the state folder or on a
+    parent created for it: a refused vault note is not a state problem. SQLite reports a
+    read-only database without a path; every database this CLI opens for writing is in state.
+    """
+    # Not imported here: a command that never loaded sqlite3 cannot have raised its error.
+    sqlite = sys.modules.get("sqlite3")
+    if sqlite is not None and isinstance(exc, sqlite.OperationalError):
+        return getattr(exc, "sqlite_errorcode", None) in (sqlite.SQLITE_READONLY, sqlite.SQLITE_READONLY_DIRECTORY)
+    if not isinstance(exc, OSError):
+        return False
+    if getattr(exc, "winerror", None) not in (5, 19) and exc.errno not in STATE_PERMISSION_REFUSALS:
+        return False
+    return any(name is not None and _at_or_around(name, state)
+               for name in (exc.filename, getattr(exc, "filename2", None)))
 
 
 def jev_client():
@@ -637,7 +678,9 @@ def _hook_commands(argv):
         raise ValueError("Newlines or NUL in command paths are unsupported")
     portable_argv = [str(value).replace("\\", "/") if os.name == "nt" else str(value) for value in argv]
     posix = shlex.join(portable_argv)
-    script = "& " + " ".join("'" + str(value).replace("'", "''") + "'" for value in argv)
+    # PowerShell recognizes typographic single quotes as delimiters too.
+    quote_map = str.maketrans({quote: quote * 2 for quote in "'‘’‚‛"})
+    script = "& " + " ".join("'" + str(value).translate(quote_map) + "'" for value in argv)
     script += "; exit $LASTEXITCODE"
     encoded = base64.b64encode(script.encode("utf-16le")).decode()
     launcher = "powershell.exe"
@@ -1287,6 +1330,7 @@ def parser(note_namespace=None, is_json=False):
     context.add_argument("--limit", type=int, default=5)
     context.add_argument("--budget-chars", type=int, default=8000)
     context.add_argument("--no-sync", action="store_true", help="Read an existing index without writing to the vault or runtime")
+    context.add_argument("--strip-fillers", action="store_true", help="Drop Turkish question wrappers in local context searches")
     context.add_argument("--jev", action="store_true", help="Explicit optional remote advisor; requires state/jev.json and --project")
     review = sub.add_parser("jev-review", help="Advisory source review; never saves or approves a candidate")
     review.add_argument("--file", required=True, help="JSON proposal (maximum 24,000 characters)")
@@ -1471,6 +1515,7 @@ def main(argv=None, return_result=False):
             return result, 64
         print_error(result, sys.stdout)
         return 64
+    state = None
     try:
         vault = args.vault.expanduser().resolve()
         if not vault.is_dir():
@@ -1849,6 +1894,8 @@ def main(argv=None, return_result=False):
                         rules or {}, status='stale' if rules and rules.get('stale') else
                         'clipped' if rules and rules['clipped'] else 'ok' if rules else 'no_rules',
                         budget=budget, harness='claude')
+                    if rules and not rules.get('stale'):
+                        result['companion_rules_opening']['measurement'] = 'reference_opening'
             except Exception as exc:  # never hides the rest of doctor
                 result['companion_rules_opening'] = {'status': 'unavailable', 'error': type(exc).__name__}
             try:
@@ -2321,6 +2368,11 @@ def main(argv=None, return_result=False):
                 raise ValueError("context requires a nonempty query")
             if params["project"] is None:
                 params["project"] = engine.context_project(vault, params["query"])
+            if args.strip_fillers:
+                if args.jev:
+                    raise ValueError("--strip-fillers is only available for local context")
+                params["query"] = engine.strip_query_fillers(params["query"])
+
             if read_only_context:
                 result = store.context_for(args.harness, explicit=True, **params)
                 result['source_sync'] = {'status': 'skipped', 'reason': 'explicit_no_sync'}
@@ -2500,6 +2552,8 @@ def main(argv=None, return_result=False):
                 error.update(exc.details)
         if isinstance(exc, ValueError) and str(exc) in ERROR_HINTS:
             error["hint"] = ERROR_HINTS[str(exc)]
+        elif args.command in ("sync", "receipt") and state is not None and state_write_refused(exc, state):
+            error.setdefault("hint", STATE_WRITE_REFUSED_HINT)
         if return_result:
             return error, code
         print_error(error, sys.stdout if args.command in NOTE_JSON_COMMANDS else sys.stderr)

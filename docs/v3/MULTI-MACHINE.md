@@ -263,6 +263,18 @@ göre sıralar, en yenisini korur.
   `event_id`'nin sonuna kart başlığındaki gibi `Receipt session=` değerinin ilk 8 karakterini
   ekle: `ortak-konu-2026-09-27-3f9a1c2b`.
 
+### Last-Session kartlarını başka bir araçla birleştirme
+
+`checkpoint` kartı şu satırlarla sınırlar. `kısa-id` 8, `sahip` ve `revizyon` 64 küçük onaltılık karakterdir.
+
+```text
+## YYYY-MM-DD HH:MM · etiket · kısa-id <!-- beyin-checkpoint:sahip:revizyon -->
+kart gövdesi
+<!-- /beyin-checkpoint:sahip -->
+```
+
+Kapanış satırındaki sahip açılıştakiyle eşleşir. Kartı taşırken başlığı, gövdeyi ve iki işareti birlikte koruyun. Gövdede başka Markdown başlıkları bulunabilir. Kısa kimlik görüntüleme içindir. Aynı sahibin farklı revizyonları iki makinede değişmişse her iki metni de incelemeye ayırın. Elle yazılmış eski kartlarda bu işaretler bulunmayabilir. Eşleşmeyen veya tanınmayan bir kartı otomatik olarak silmeyin.
+
 ## Aynı makinede birden çok ajan
 
 Claude Code ve Codex aynı vault'taki insan yazımı notları düzenlerken doğrudan
