@@ -85,6 +85,9 @@ class StateWriteRefusedClassifierTest(unittest.TestCase):
                 self.assertFalse(self.refused(OSError(code, os.strerror(code), str(self.state / 'memory.sqlite3'))))
         self.assertFalse(self.refused(ValueError('runtime belongs to another vault')))
         self.assertFalse(self.refused(sqlite3.OperationalError('no such table: records')))
+        moved = sqlite3.OperationalError('attempt to write a readonly database')
+        moved.sqlite_errorcode = sqlite3.SQLITE_READONLY_DBMOVED
+        self.assertFalse(self.refused(moved))
         self.assertFalse(self.refused(None))
 
     @unittest.skipUnless(os.name == 'nt', 'winerror is set only on Windows')

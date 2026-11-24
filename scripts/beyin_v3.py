@@ -445,7 +445,7 @@ def state_write_refused(exc, state):
     # Not imported here: a command that never loaded sqlite3 cannot have raised its error.
     sqlite = sys.modules.get("sqlite3")
     if sqlite is not None and isinstance(exc, sqlite.OperationalError):
-        return (getattr(exc, "sqlite_errorcode", 0) & 0xFF) == sqlite.SQLITE_READONLY
+        return getattr(exc, "sqlite_errorcode", None) in (sqlite.SQLITE_READONLY, sqlite.SQLITE_READONLY_DIRECTORY)
     if not isinstance(exc, OSError):
         return False
     if getattr(exc, "winerror", None) not in (5, 19) and exc.errno not in STATE_PERMISSION_REFUSALS:
@@ -1512,8 +1512,7 @@ def main(argv=None, return_result=False):
             return result, 64
         print_error(result, sys.stdout)
         return 64
-    # The error handler below names a refused state write only for a known state and a writing command.
-    state, read_only = None, False
+    state = None
     try:
         vault = args.vault.expanduser().resolve()
         if not vault.is_dir():
@@ -1529,9 +1528,6 @@ def main(argv=None, return_result=False):
             raise ValueError("--add-question cannot be combined with --mode context")
         read_only_doctor = args.command == "doctor"
         dry_checkpoint = args.command == "checkpoint" and args.dry_run
-        # Commands that never write state: a refusal while they read it is not a refused write.
-        read_only = (read_only_context or context_selftest or read_only_doctor or dry_checkpoint
-                     or args.command == "triage")
         if context_selftest or read_only_context or read_only_doctor or args.command == "triage" or args.command == "feedback" or dry_checkpoint:
             # The source CLI can run without the installed entry point, which
             # already disables bytecode. Merely importing runtime code must not write.
@@ -2546,7 +2542,7 @@ def main(argv=None, return_result=False):
                 error.update(exc.details)
         if isinstance(exc, ValueError) and str(exc) in ERROR_HINTS:
             error["hint"] = ERROR_HINTS[str(exc)]
-        elif state is not None and not read_only and state_write_refused(exc, state):
+        elif args.command in ("sync", "receipt") and state is not None and state_write_refused(exc, state):
             error.setdefault("hint", STATE_WRITE_REFUSED_HINT)
         if return_result:
             return error, code
