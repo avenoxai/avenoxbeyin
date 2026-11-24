@@ -637,7 +637,9 @@ def _hook_commands(argv):
         raise ValueError("Newlines or NUL in command paths are unsupported")
     portable_argv = [str(value).replace("\\", "/") if os.name == "nt" else str(value) for value in argv]
     posix = shlex.join(portable_argv)
-    script = "& " + " ".join("'" + str(value).replace("'", "''") + "'" for value in argv)
+    # PowerShell recognizes typographic single quotes as delimiters too.
+    quote_map = str.maketrans({quote: quote * 2 for quote in "'‘’‚‛"})
+    script = "& " + " ".join("'" + str(value).translate(quote_map) + "'" for value in argv)
     script += "; exit $LASTEXITCODE"
     encoded = base64.b64encode(script.encode("utf-16le")).decode()
     launcher = "powershell.exe"
