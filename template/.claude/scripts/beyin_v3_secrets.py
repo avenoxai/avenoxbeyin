@@ -63,10 +63,16 @@ BUILTIN_PATTERNS = (
     # or dash before the key, or a sentence-ending period after it, still redacts.
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,255}(?![A-Za-z0-9_-])"),
     re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
+    # Complete blocks may appear as escaped strings or with internal whitespace.
+    # Stop at the next PEM boundary, so missing trailers cannot cause repeated rescans.
+    re.compile(r"-----BEGIN (?P<keytype>[A-Z0-9 ]*PRIVATE KEY)-----"
+               r"(?:(?!-----(?:BEGIN|END) )[\s\S])*"
+               r"-----END (?P=keytype)-----"),
     # Match PEM body lines locally, independent of whether the trailer is present.
     # A second header or a prose line cannot pull the scan into the next block.
     re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"
-               r"(?:[ \t]*\r?\n(?:[ \t]*(?:Proc-Type:|DEK-Info:)[^\r\n]*\r?\n){1,2})?"
+               r"(?:[ \t]*\r?\n[ \t]*(?:Proc-Type:|DEK-Info:)[^\r\n]*){0,2}"
+               r"(?:[ \t]*\r?\n(?=[ \t]*\r?\n))?"
                r"(?:[ \t]*\r?\n[ \t]*[A-Za-z0-9+/]{4,}={0,2}(?=[ \t]*(?:\r?\n|\Z)))*"
                r"(?:[ \t]*\r?\n[ \t]*-----END [A-Z0-9 ]*PRIVATE KEY-----)?"),
     re.compile(r"(?i)\bauthorization[ \t]*:[ \t]*token[ \t]+[A-Za-z0-9._~+/=-]{8,}"),

@@ -76,6 +76,8 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
     def test_pem_body_is_masked_without_trailer_and_does_not_swallow_prose(self):
         begin = "-----BEGIN PRIVATE KEY-----"
         body = "QUJD" * 16  # Synthetic base64, no private key.
+        escaped = json.dumps(f'{begin}\n{body}\n-----END PRIVATE KEY-----')
+        self.assertEqual(redact(escaped, self.state), ('"[REDACTED]"', 1))
         text = f"{begin}\r\n{body}\r\n{begin}\r\n{body}\r\nLabel: retained words"
         self.assertEqual(redact(text, self.state),
                          ("[REDACTED]\r\n[REDACTED]\r\nLabel: retained words", 2))
