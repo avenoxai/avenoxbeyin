@@ -32,7 +32,7 @@ flowchart TB
 
 Asıl kaynak dosyaların. Beyin bunların yerel indeksini tutar ve seçilen bağlamı kullandığın AI istemcisine verir. Sohbet geçmişinin tamamını kendiliğinden bilgiye dönüştürmez; kalıcı olmasını istediğin şeyi nota yazdırırsın.
 
-> **V3.16.0** ile sonraki güncellemenin kasanda hangi dosyaları değiştireceğini önceden görebilirsin. Türkçe aramada soru kalıplarını ayıklamak için `context --strip-fillers` seçeneği geldi. [Sürüm notu](docs/v3/releases/3.16.0.md) · [Önceki sürüm](docs/v3/releases/3.15.0.md).
+> **V3.17.0** ile ChatGPT, Claude ya da Gemini'nin senin hakkında bildiklerini beyne taşıyabilirsin. Ajanına "verilerimi çek" de; promptu panona kopyalar, sen öbür uygulamaya yapıştırıp cevabı geri getirirsin. [Sürüm notu](docs/v3/releases/3.17.0.md) · [Önceki sürüm](docs/v3/releases/3.16.0.md).
 
 <a id="kurulum"></a>
 ## Üç adımda kurulum
