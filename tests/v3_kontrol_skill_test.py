@@ -19,7 +19,7 @@ from v3_package_helpers import ROOT, build_package, inherited_env, run_python, s
 
 SKILL = ROOT / 'template/.agents/skills/beyin-kontrol/SKILL.md'
 ROOTS = ('.agents', '.claude', '.kiro')
-STARTERS = ('beyin', 'beyin-doktor', 'beyin-guncelle', 'beyin-kontrol')
+STARTERS = ('beyin', 'beyin-doktor', 'beyin-guncelle', 'beyin-kontrol', 'veri-cek')
 # beyin_v3_update.allowed() as released up to 3.12.0. Those updaters install every later
 # release, so a package member outside this list would stop them before the new installer runs.
 RELEASED_ALLOWLIST = re.compile(r'scripts/(?:install_v3|beyin_v3|beyin_entry)\.py|'

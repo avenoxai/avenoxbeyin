@@ -32,7 +32,7 @@ flowchart TB
 
 Asıl kaynak dosyaların. Beyin bunların yerel indeksini tutar ve seçilen bağlamı kullandığın AI istemcisine verir. Sohbet geçmişinin tamamını kendiliğinden bilgiye dönüştürmez; kalıcı olmasını istediğin şeyi nota yazdırırsın.
 
-> **V3.16.0** ile sonraki güncellemenin kasanda hangi dosyaları değiştireceğini önceden görebilirsin. Türkçe aramada soru kalıplarını ayıklamak için `context --strip-fillers` seçeneği geldi. [Sürüm notu](docs/v3/releases/3.16.0.md) · [Önceki sürüm](docs/v3/releases/3.15.0.md).
+> **V3.17.0** ile ChatGPT, Claude ya da Gemini'nin senin hakkında bildiklerini beyne taşıyabilirsin. Ajanına "verilerimi çek" de; promptu panona kopyalar, sen öbür uygulamaya yapıştırıp cevabı geri getirirsin. [Sürüm notu](docs/v3/releases/3.17.0.md) · [Önceki sürüm](docs/v3/releases/3.16.0.md).
 
 <a id="kurulum"></a>
 ## Üç adımda kurulum
@@ -77,7 +77,7 @@ python3 scripts/install_v3.py --vault "/tam/yol/Beynim"
 py -3 scripts/install_v3.py --vault "C:\Notlar\Beynim"
 ```
 
-Kurucu motoru, istemci bağlantılarını ve dört başlangıç skill'ini vault'a yerleştirir. Paket klasörünü açık tutman gerekmez. Vault'u istemcinde aç, güven incelemesini tamamla ve yeni bir oturum başlat. [Ayrıntılı kurulum](SETUP-V3.md).
+Kurucu motoru, istemci bağlantılarını ve beş başlangıç skill'ini vault'a yerleştirir. Paket klasörünü açık tutman gerekmez. Vault'u istemcinde aç, güven incelemesini tamamla ve yeni bir oturum başlat. [Ayrıntılı kurulum](SETUP-V3.md).
 
 </details>
 
@@ -95,7 +95,7 @@ Ajanına sırayla şunları söyle. Bunlar örnek mesajlar; kendi bilgilerinle d
 Kaydı dosyada, geri çağırmayı yeni oturumda kontrol et. Böylece kendi istemcinde bağlantının çalıştığını da görürsün.
 
 <details>
-<summary><strong>Kurulan dört skill ne yapıyor?</strong></summary>
+<summary><strong>Kurulan beş skill ne yapıyor?</strong></summary>
 
 | Skill | Kullanım |
 | --- | --- |
@@ -103,6 +103,7 @@ Kaydı dosyada, geri çağırmayı yeni oturumda kontrol et. Böylece kendi iste
 | **beyin-doktor** | Bağlantı, kayıt ve kurulum sorunlarını kontrol etme |
 | **beyin-guncelle** | Güncelleme, sürüm kontrolü ve geri alma |
 | **beyin-kontrol** | Hafızadaki bilginin hala doğru olup olmadığını denetleme; yalnız sen istediğinde çalışır, onayın olmadan yazmaz |
+| **veri-cek** | ChatGPT, Claude ya da Gemini'nin senin hakkında bildiklerini soru cevap turlarıyla beyne taşıma; ajan promptu yazıp panona kopyalar, sen yapıştırıp cevabı getirirsin. Yalnız sen istediğinde çalışır |
 
 Ortak kaynak `.agents/skills` içindedir; Claude ve Kiro kendi proje kopyalarını kullanır. Mevcut kişisel skill'ler sessizce ezilmez.
 

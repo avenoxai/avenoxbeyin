@@ -455,7 +455,7 @@ Hariç tutulabilen bileşenler:
 
 `adapters` grubu Pi extension'ını (`.pi/extensions/beyin-v3.ts`) da kapsar. Pi için ayrı bir ad yoktur: `.beyin-exclusions.json` kasayla birlikte taşınır ve 3.12.0 ve öncesi bilinmeyen bir adı gördüğünde güncellemeyi durdurur.
 
-`beyin-kontrol` skill'i yalnız kullanıcı açıkça istediğinde çalışır ve onay olmadan yazmaz; tek başına hariç tutma adı yoktur, `skills` dört başlangıç skill'ini birlikte kaldırır. Yeni bir ad eski sürümlerin `.beyin-exclusions.json` doğrulamasını bozacağı için rollback uyumluluğu adına eklenmedi.
+`beyin-kontrol` skill'i yalnız kullanıcı açıkça istediğinde çalışır ve onay olmadan yazmaz; `veri-cek` de yalnız kullanıcı istediğinde başlar. İkisinin de tek başına hariç tutma adı yoktur, `skills` beş başlangıç skill'ini birlikte kaldırır. Yeni bir ad eski sürümlerin `.beyin-exclusions.json` doğrulamasını bozacağı için rollback uyumluluğu adına eklenmedi.
 
 Hariç tutma tercihleri vault kökünde bağımsız `.beyin-exclusions.json` dosyasında saklanır (`.beyin-preferences.json` dosyasını değiştirmez; böylece eski sürümlere rollback 3.4.0 uyumlu kalır). Tercih kaydedildiğinde bir sonraki kurulum veya güncellemede uygulanır (`update` veya `install`). Değiştirilmemiş hariç tutulan dosyalar temizlenir, kullanıcının değiştirdiği dosyalar ise çakışma vermeden korunur. `doctor` çıktısı hem uygulanan hariç tutmaları hem de bekleyen değişiklikleri gösterir.
 

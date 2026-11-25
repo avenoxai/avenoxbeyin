@@ -86,11 +86,13 @@ Beyni Guncelle.cmd
 .claude/skills/beyin-doktor/
 .claude/skills/beyin-guncelle/
 .claude/skills/beyin-kontrol/
+.claude/skills/veri-cek/
 .agents/hooks.json
 .agents/skills/beyin/
 .agents/skills/beyin-doktor/
 .agents/skills/beyin-guncelle/
 .agents/skills/beyin-kontrol/
+.agents/skills/veri-cek/
 .codex/config.toml
 .codex/hooks.json
 .kiro/hooks/beyin-v3.json
@@ -98,6 +100,7 @@ Beyni Guncelle.cmd
 .kiro/skills/beyin-doktor/
 .kiro/skills/beyin-guncelle/
 .kiro/skills/beyin-kontrol/
+.kiro/skills/veri-cek/
 .opencode/plugins/beyin-v3.js
 .omp/hooks/pre/beyin-v3.ts
 .pi/extensions/beyin-v3.ts
