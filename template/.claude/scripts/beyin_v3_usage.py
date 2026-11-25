@@ -26,7 +26,7 @@ def session_key(raw):
 def _is_private_or_sensitive(record):
     if record.get("private") or record.get("is_private") or record.get("trusted") is False:
         return True
-    if record.get("visibility") in ("private", "untrusted", "secret", "internal"):
+    if record.get("visibility") in ("private", "untrusted", "secret"):
         return True
     if record.get("trust") in ("untrusted", "false", "private"):
         return True
