@@ -77,7 +77,7 @@ python3 scripts/install_v3.py --vault "/tam/yol/Beynim"
 py -3 scripts/install_v3.py --vault "C:\Notlar\Beynim"
 ```
 
-Kurucu motoru, istemci bağlantılarını ve dört başlangıç skill'ini vault'a yerleştirir. Paket klasörünü açık tutman gerekmez. Vault'u istemcinde aç, güven incelemesini tamamla ve yeni bir oturum başlat. [Ayrıntılı kurulum](SETUP-V3.md).
+Kurucu motoru, istemci bağlantılarını ve beş başlangıç skill'ini vault'a yerleştirir. Paket klasörünü açık tutman gerekmez. Vault'u istemcinde aç, güven incelemesini tamamla ve yeni bir oturum başlat. [Ayrıntılı kurulum](SETUP-V3.md).
 
 </details>
 
@@ -95,7 +95,7 @@ Ajanına sırayla şunları söyle. Bunlar örnek mesajlar; kendi bilgilerinle d
 Kaydı dosyada, geri çağırmayı yeni oturumda kontrol et. Böylece kendi istemcinde bağlantının çalıştığını da görürsün.
 
 <details>
-<summary><strong>Kurulan dört skill ne yapıyor?</strong></summary>
+<summary><strong>Kurulan beş skill ne yapıyor?</strong></summary>
 
 | Skill | Kullanım |
 | --- | --- |
@@ -103,10 +103,9 @@ Kaydı dosyada, geri çağırmayı yeni oturumda kontrol et. Böylece kendi iste
 | **beyin-doktor** | Bağlantı, kayıt ve kurulum sorunlarını kontrol etme |
 | **beyin-guncelle** | Güncelleme, sürüm kontrolü ve geri alma |
 | **beyin-kontrol** | Hafızadaki bilginin hala doğru olup olmadığını denetleme; yalnız sen istediğinde çalışır, onayın olmadan yazmaz |
+| **veri-cek** | ChatGPT, Claude ya da Gemini'nin senin hakkında bildiklerini soru cevap turlarıyla beyne taşıma; ajan promptu yazıp panona kopyalar, sen yapıştırıp cevabı getirirsin. Yalnız sen istediğinde çalışır |
 
 Ortak kaynak `.agents/skills` içindedir; Claude ve Kiro kendi proje kopyalarını kullanır. Mevcut kişisel skill'ler sessizce ezilmez.
-
-**İsteğe bağlı paket:** [Veri çek](extras/veri-cek/README.md), ChatGPT, Claude ya da Gemini'nin senin hakkında bildiklerini soru cevap turlarıyla beyne taşıyan skill. Ajan promptu yazar, sen yapıştırıp cevabı getirirsin. Kurucu onu getirmez; istersen `skill-import` ile alırsın.
 
 **İsteğe bağlı paket:** [Video motoru](extras/video-motoru/README.md), boş başlayıp her videoda markanı ve düzeltmelerini not alarak gelişen bir video skill'i. Kurucu onu getirmez; istersen `skill-import` ile alırsın.
 

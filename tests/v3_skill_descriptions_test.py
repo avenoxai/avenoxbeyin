@@ -67,9 +67,9 @@ class SkillDescriptionTest(unittest.TestCase):
 
     def test_starter_boundaries_name_only_shipped_skills_or_say_they_may_be_absent(self):
         module = installer()
-        # V3 installs the starter skills plus the opt-in-by-name beyin-kontrol audit (#589),
-        # whose bytes the installer carries itself and template/.agents mirrors for readers.
-        starters = set(module.STARTER_SKILLS) | {module.AUDIT_SKILL}
+        # V3 installs the starter skills plus the opt-in-by-name beyin-kontrol audit (#589) and
+        # veri-cek, whose bytes the installer carries itself and template/.agents mirrors for readers.
+        starters = set(module.STARTER_SKILLS) | {name for name, _ in module.EMBEDDED_SKILLS}
         self.assertEqual(starters, {p.parent.name for p in STARTER_ROOT.glob('*/SKILL.md')})
         others = sorted({p.parent.name for p in ROOT.glob('template/*/skills/*/SKILL.md')} - starters)
         self.assertIn('gecmis-import', others)
