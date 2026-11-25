@@ -120,6 +120,33 @@ python beyin.py chat-trace backfill --session OTURUM --skip           # kaydedil
 - Yalnız Claude Code kayıtları desteklenir; Codex ve diğer istemcilerin biçimi farklıdır.
   Claude Code kayıt biçimi belgelenmemiştir; tanınmayan kayıtlar tahmin edilmez, atlanıp sayılır.
 
+### Codex oturumları için salt okunur prototip
+
+[#875](https://github.com/avenoxai/avenoxbeyin/issues/875) için bağımsız okuyucu,
+`CODEX_HOME/sessions/**/rollout-*.jsonl` ve `state_5.sqlite` / `thread_history_1.sqlite`
+dosyalarından seçili vault'un oturumlarını tarar. Deneme yalnız hash, tarih, boyut ve
+sayıları döndürür. Hash ile seçilen tek oturumun filtrelenmiş dökümü bellekte hazırlanabilir.
+Okuyucu komut satırına, kancalara ve özet yazımına bağlı değildir. Vault'a yazmaz,
+özet saklamaz ve model çağırmaz.
+
+SQLite şeması belgelenmemiştir. Prototip yalnız tanıdığı şemayı okur. Yan dosya
+yoksa `mode=ro&immutable=1` kullanır ve dosyanın okuma sırasında değişmediğini
+kontrol eder. `-wal` ve `-shm` birlikte varsa `mode=ro` ve `PRAGMA query_only=ON`
+kullanır. Her veritabanı bir okuma işlemi içinde kendi tutarlı anlık görüntüsünü
+sağlar. İki veritabanının anlık görüntüleri farklı zamanlara ait olabilir.
+
+WAL kipinde SQLite mevcut `-shm` dosyasında paylaşımlı bellek okuma kilitleri alır
+ve okuma işaretlerini güncelleyebilir. Okuyucu veritabanı sayfalarına veya
+`-wal` içeriğine yazmaz. Codex çalışırken bu dosyalar değişebildiği için önceki
+ve sonraki içerikleri karşılaştırmak okuyucunun yazmadığını doğrulayamaz.
+Okuma sonrasında iki veritabanının bulunduğu dizinin üst düzeyinde yeni bir normal
+dosya görülürse SQLite sonuçları atılır (`new_home_files`). Bu kontrol alt
+dizinlere inmez ve bağlantıları izlemez. Normal açılış mevcut yan dosyaları
+kullanır ve yeni dosya oluşturmaz. Yazıcı açılış sırasında yan dosyaları kaldırırsa SQLite
+bunları yeniden oluşturabilir. Yalnız bir WAL yan dosyası (`partial_sidecars`)
+veya `-journal` (`rollback_journal`) açılıştan önce görülürse okuyucu yalnız
+JSONL kullanır.
+
 ## Ayar ve rollback
 
 Ayar yalnız makineye/vault'a ait runtime `state/chat-trace.json` içindedir:
