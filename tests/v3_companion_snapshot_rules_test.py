@@ -314,6 +314,48 @@ class InstalledOpeningTest(unittest.TestCase):
                          ['companion_rules_opening']['status'], 'ok')
         self.assertNotIn('Kurallar.md acilista kirpiliyor', self.run_cli(self.vault / 'beyin.py', 'doctor', '--human'))
 
+    def test_doctor_reports_clipped_and_stale_project_rules_without_disclosing_private(self):
+        self.rules('# Rules\n- Short global rule.\n')
+        proj_dir = self.vault / 'projects' / 'alpha'
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        proj_rules = proj_dir / 'Kurallar.md'
+        proj_rules.write_text(rules_file(16000)[0], encoding='utf-8', newline='\n')
+        priv_dir = self.vault / 'projects' / 'gizli'
+        priv_dir.mkdir(parents=True, exist_ok=True)
+        (priv_dir / 'Kurallar.md').write_text(
+            '---\nvisibility: private\n---\n' + rules_file(16000)[0], encoding='utf-8', newline='\n')
+        self.run_cli(self.vault / 'beyin.py', '--vault', self.vault, '--state', self.state, 'sync')
+
+        before = self.tree()
+        raw = self.run_cli(self.vault / 'beyin.py', 'doctor', '--json')
+        report = json.loads(raw)['companion_rules_opening']
+        human = self.run_cli(self.vault / 'beyin.py', 'doctor', '--human')
+        self.assertEqual(self.tree(), before, 'doctor must not write')
+        self.assertEqual(report['status'], 'ok')
+        project_entries = report.get('project_rules') or []
+        self.assertEqual(len(project_entries), 1, project_entries)
+        entry = project_entries[0]
+        self.assertEqual((entry['project'], entry['source'], entry['status'], entry['clipped']),
+                         ('alpha', 'projects/alpha/Kurallar.md', 'clipped', True))
+        self.assertLess(entry['share'], entry['chars'])
+        self.assertIn('omitted_rules', entry)
+        self.assertNotIn('gizli', raw)
+        self.assertIn('projects/alpha/Kurallar.md', human)
+        self.assertIn('Proje Kurallar.md acilista kirpiliyor', human)
+
+        # Stale project rules must be marked stale without disclosing text.
+        proj_rules.write_text('# Rules\n- STALE_PROJECT_CANARY.\n', encoding='utf-8', newline='\n')
+        stale_raw = self.run_cli(self.vault / 'beyin.py', 'doctor', '--json')
+        self.assertNotIn('STALE_PROJECT_CANARY', stale_raw)
+        stale_entries = json.loads(stale_raw)['companion_rules_opening'].get('project_rules') or []
+        self.assertEqual([(e['project'], e['status']) for e in stale_entries], [('alpha', 'stale')])
+
+        # Short synced project rules produce no clipped/stale warning.
+        proj_rules.write_text('# Rules\n- Short project rule.\n', encoding='utf-8', newline='\n')
+        self.run_cli(self.vault / 'beyin.py', '--vault', self.vault, '--state', self.state, 'sync')
+        clean_report = json.loads(self.run_cli(self.vault / 'beyin.py', 'doctor', '--json'))['companion_rules_opening']
+        self.assertNotIn('project_rules', clean_report)
+
 
 if __name__ == '__main__':
     unittest.main()

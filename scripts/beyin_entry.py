@@ -575,6 +575,23 @@ def human_result(result, command, installed_version=None):
             if omitted:
                 lines.append(f'Gosterilmeyen kural siralari {omitted["first"]}-{omitted["last"]} '
                              f'({omitted["count"]}/{omitted["total"]}).')
+        for proj in rules_opening.get('project_rules') or []:
+            source = plain_text(proj.get('source') or proj.get('project') or 'Kurallar.md')
+            if proj.get('status') == 'stale':
+                lines.append('Proje Kurallar.md kaynak dogrulamasi guncel degil (bilgi): ' + source +
+                             '; acilis olcumu icin beyin.py sync calistir.')
+            elif proj.get('status') == 'clipped':
+                lines.append('Proje Kurallar.md acilista kirpiliyor (bilgi): ' + source + ' ' +
+                             str(proj['chars']) + ' karakter; Claude Code proje acilisi bu ayarlarla (' +
+                             str(rules_opening.get('budget')) + ' karakter) en fazla ' + str(proj['share']) +
+                             ' karakterini tam gosterir' +
+                             (' (gerekceler de cikarildi)' if proj.get('reasons_omitted') else '') +
+                             '. Kurallari kisa tut; eski/uzun ayrintiyi arsiv veya detay notuna tasi.')
+                p_omitted = proj.get('omitted_rules')
+                if p_omitted:
+                    lines.append(f'Gosterilmeyen proje kural siralari ({source}) '
+                                 f'{p_omitted["first"]}-{p_omitted["last"]} '
+                                 f'({p_omitted["count"]}/{p_omitted["total"]}).')
         references = result.get('instruction_references') or {}
         if references.get('status') == 'unavailable':
             lines.append('Talimat ve skill baglanti denetimi tamamlanamadi (bilgi): ' +
