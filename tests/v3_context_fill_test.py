@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'template/.claude/scripts'))
 import beyin_v3_context_fill as cf
+from v3_package_helpers import clean_environ
 
 
 class ContextFillTest(unittest.TestCase):
@@ -13,6 +14,10 @@ class ContextFillTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.state = Path(self.temp.name)
+        # The reminder reads BEYIN_V3_NO_RECEIPT_REMINDER from os.environ in process (#887).
+        environment = clean_environ()
+        environment.start()
+        self.addCleanup(environment.stop)
 
     def test_default_config(self):
         cfg = cf.load_config(self.state)

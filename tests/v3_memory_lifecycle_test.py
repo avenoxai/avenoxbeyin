@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
 import beyin_v3_learning as learning
 import beyin_v3_hook as hook
 from beyin_v3_sync import SyncEngine
-from v3_package_helpers import inherited_env
+from v3_package_helpers import clean_environ, inherited_env
 
 
 class MemoryLifecycleDoDTest(unittest.TestCase):
@@ -42,6 +42,10 @@ class MemoryLifecycleDoDTest(unittest.TestCase):
         self.state.mkdir()
         self.engine = SyncEngine(self.vault, self.state)
         self.env = inherited_env(PYTHONIOENCODING='utf-8')
+        # hook.receipt_reminder runs in process and reads the reminder flags from os.environ (#887).
+        environment = clean_environ()
+        environment.start()
+        self.addCleanup(environment.stop)
 
     def test_receipt_auto_resolves_staged_candidates(self):
         session_a = "session-dod-a-12345"

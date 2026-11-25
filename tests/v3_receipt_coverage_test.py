@@ -11,7 +11,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
-from v3_package_helpers import inherited_env
+from v3_package_helpers import clean_environ, inherited_env
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -36,6 +36,10 @@ class ReceiptCoverageTest(unittest.TestCase):
         self.vault.mkdir()
         self.state = root / 'state'
         self.state.mkdir()
+        # mark_session_edit reads BEYIN_V3_NO_RECEIPT_REMINDER from os.environ in process (#887).
+        environment = clean_environ()
+        environment.start()
+        self.addCleanup(environment.stop)
 
     def _enqueue(self, event, session_id, at=None, harness='claude'):
         queue_dir = self.state / 'hook-queue'

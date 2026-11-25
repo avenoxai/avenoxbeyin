@@ -28,7 +28,7 @@ class PreferencesTest(unittest.TestCase):
     def cli(self, *args):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/beyin_v3.py'),
             '--vault', str(self.vault), '--state', str(self.state), *args],
-            capture_output=True, text=True, encoding='utf-8', timeout=20)
+            capture_output=True, text=True, encoding='utf-8', env=inherited_env(), timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 

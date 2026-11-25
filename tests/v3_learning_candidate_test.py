@@ -30,8 +30,12 @@ class LearningCandidateLedgerTest(unittest.TestCase):
         self.state.mkdir()
         self.engine = SyncEngine(self.vault, self.state)
         # The agent session running the suite must not name the fixture's session (#169, #212).
-        from v3_package_helpers import inherited_env
+        from v3_package_helpers import clean_environ, inherited_env
         self.env = inherited_env(PYTHONIOENCODING='utf-8')
+        # The same holds in process: hook.receipt_reminder reads the reminder flags from os.environ (#887).
+        environment = clean_environ()
+        environment.start()
+        self.addCleanup(environment.stop)
 
     def test_resolution_preserves_malformed_lines_verbatim(self):
         ledger = self.state / 'learning-state.jsonl'

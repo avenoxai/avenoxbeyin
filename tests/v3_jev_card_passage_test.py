@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """Tests for Jev auto_context card passage extraction (Issue #507)."""
 import json
-import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
@@ -16,6 +14,7 @@ if str(SCRIPTS) not in sys.path:
 from beyin_v3 import MemoryStore
 import beyin_v3_jev as advisor
 import beyin_v3_jev_client as client
+from v3_package_helpers import clean_environ
 
 
 class JevCardPassageTest(unittest.TestCase):
@@ -29,7 +28,8 @@ class JevCardPassageTest(unittest.TestCase):
         self.state.mkdir()
         self.store = MemoryStore(self.state, self.vault)
         self.addCleanup(lambda: getattr(self.store, 'close', lambda: None)())
-        self.env = patch.dict(os.environ, {'TYPESAFE_API_KEY': 'synthetic-key'})
+        # BEYIN_JEV_DISABLE in the shell would switch off the advisor these tests call in process.
+        self.env = clean_environ(TYPESAFE_API_KEY='synthetic-key')
         self.env.start()
         self.addCleanup(self.env.stop)
         self.calls = []
