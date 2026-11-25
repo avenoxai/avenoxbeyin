@@ -14,7 +14,7 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from v3_package_helpers import inherited_env, install, snapshot, without_hook_clock
+from v3_package_helpers import clean_environ, inherited_env, install, snapshot, without_hook_clock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
@@ -859,6 +859,10 @@ class BridgeTest(unittest.TestCase):
 
     def test_bridge_reminders_name_the_cli_and_stay_bounded(self):
         self.state.mkdir()
+        # In process, a reminder flag in the shell would turn the Stop reminder into None (#887).
+        environment = clean_environ()
+        environment.start()
+        self.addCleanup(environment.stop)
         for cli in ('python3 /v/beyin.py', 'x' * 20000):
             with self.subTest(length=len(cli)):
                 payload = {'session_id': json.dumps([str(self.project), str(len(cli))]), 'cwd': str(self.project),

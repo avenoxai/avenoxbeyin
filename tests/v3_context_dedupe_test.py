@@ -10,7 +10,7 @@ import tempfile
 import time
 import unittest
 
-from v3_package_helpers import isolated_path
+from v3_package_helpers import clean_environ, isolated_path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
@@ -449,6 +449,10 @@ class DedupeLedgerTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix='v3-dedupe-ledger-')
         self.addCleanup(self.tmp.cleanup)
         self.state = Path(self.tmp.name)
+        # BEYIN_V3_CONTEXT_DEDUPE in the shell would answer for the settings file under test.
+        environment = clean_environ()
+        environment.start()
+        self.addCleanup(environment.stop)
         sys.path.insert(0, str(SCRIPTS))
         self.addCleanup(lambda: sys.path.remove(str(SCRIPTS)))
         import beyin_v3_dedupe
