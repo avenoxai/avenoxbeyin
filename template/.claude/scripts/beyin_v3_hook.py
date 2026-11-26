@@ -829,6 +829,14 @@ def main():
                 notice += session_notice(vault, state)
             except Exception:
                 pass
+        if event == 'SessionStart' and not args.metadata_only and payload.get('source') == 'compact':
+            # The summary can drop the open step; this session's own card holds it (the opening
+            # shows only the top card, often a parallel session's). One file read, never fatal.
+            try:
+                from beyin_v3_companion import compact_card_notice
+                notice += compact_card_notice(vault, payload.get('session_id'))
+            except Exception:
+                pass
         if event == 'SessionStart' and not args.metadata_only and (state / 'scheduled-notice.json').is_file():
             # A scheduled-check run that needs attention (#267): one small state file, said once, then gone.
             try:
