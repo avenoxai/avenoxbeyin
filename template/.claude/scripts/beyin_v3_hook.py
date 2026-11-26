@@ -457,7 +457,7 @@ def _queue_cli_edit(flag, vault, state, payload):
         pass  # coverage bookkeeping never costs the reminder
 
 
-def _receipt_reminder_result(marker, pending, event, deferred, reason):
+def _receipt_reminder_result(marker, pending, event, deferred, reason, harness=None):
     if deferred and event == "Stop":
         # Empty, per-session markers carry neither transcript nor rendered text.
         pending.touch(exist_ok=False)
@@ -467,6 +467,8 @@ def _receipt_reminder_result(marker, pending, event, deferred, reason):
     if deferred:
         pending.unlink(missing_ok=True)
         return {"context": "Reminder from the previous turn: " + reason}
+    if harness == "antigravity":
+        return {"decision": "continue", "reason": reason}
     return {"decision": "block", "reason": reason}
 
 
@@ -488,7 +490,7 @@ def receipt_reminder(payload, state, harness, event, vault=None, bridge_cli=None
     the external project, so vault-external edits open the window, and the Stop reasons name
     that command line and note-create instead of a relative `beyin.py`.
     """
-    if harness not in ("claude", "codex", "pi") or event not in ("UserPromptSubmit", "PostToolUse", "Stop"):
+    if harness not in ("claude", "codex", "pi", "antigravity") or event not in ("UserPromptSubmit", "PostToolUse", "Stop"):
         return None
     if os.environ.get("BEYIN_V3_NO_RECEIPT_REMINDER") == "1":
         return None
@@ -561,7 +563,7 @@ def receipt_reminder(payload, state, harness, event, vault=None, bridge_cli=None
                 # Keep the edit window so a later Stop can check a new receipt for learning.
                 reason = (BRIDGE_RECEIPT_REMINDER.format(cli=_bridge_cli(bridge_cli), harness=harness, session=session)
                           if bridge_cli is not None else RECEIPT_REMINDER.format(harness=harness, session=session))
-                return _receipt_reminder_result(done, pending_receipt, event, deferred, reason)
+                return _receipt_reminder_result(done, pending_receipt, event, deferred, reason, harness=harness)
             return None
 
         if deferred:
@@ -583,7 +585,7 @@ def receipt_reminder(payload, state, harness, event, vault=None, bridge_cli=None
                     cli = _bridge_cli(bridge_cli)
                     reason = (reason.replace("python3 beyin.py", cli) +
                               f" Beyin CLI for this project: {cli}; write the note with note-create.")
-                return _receipt_reminder_result(kdone, pending_knowledge, event, deferred, reason)
+                return _receipt_reminder_result(kdone, pending_knowledge, event, deferred, reason, harness=harness)
 
         if deferred:
             pending_knowledge.unlink(missing_ok=True)
@@ -808,7 +810,10 @@ def main():
                 if payload.get("invocationNum") != 0 or _antigravity_nonhuman_turn(payload, event):
                     print("{}")
                     return
+                # Treat as SessionStart to inject companion baseline
                 event = "SessionStart"
+                if not payload.get("prompt") and payload.get("lastUserInput"):
+                    payload["prompt"] = payload["lastUserInput"]
             elif event == "Stop" and (payload.get("fullyIdle") is not True
                                       or _antigravity_nonhuman_turn(payload, event)):
                 print('{"decision":"stop"}')

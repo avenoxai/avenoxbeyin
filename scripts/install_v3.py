@@ -1150,7 +1150,7 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
             add(".agents/hooks.json", jbytes(data))
     else:
         managed = {}
-        for event in ("PreInvocation", "Stop"):
+        for event in ("PreInvocation", "PostToolUse", "Stop"):
             posix, windows = commands([sys.executable, hook, "--vault", vault, "--state", state, "--harness", "antigravity", "--event", event])
             managed[event] = [{"type": "command", "command": windows if os.name == "nt" else posix, "timeout": 20 if os.name == "nt" else 5}]
         data["beyin-v3"] = managed

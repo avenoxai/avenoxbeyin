@@ -852,6 +852,23 @@ class HookInstallerTest(unittest.TestCase):
         self.assertEqual(self.invoke(dict(stop, fullyIdle=True), 'antigravity'), {'decision': 'stop'})
         self.assertEqual(len(list((self.state / 'hook-queue').glob('*.json'))), before + 1)
 
+    def test_antigravity_stop_receipt_reminder_continues_model(self):
+        self.seed()
+        session = 'ag-reminder-session'
+        # PostToolUse marks the session as edited
+        payload_edit = {'hook_event_name': 'PostToolUse', 'conversationId': session, 'event_id': 'ag-edit-1'}
+        self.assertEqual(self.invoke(payload_edit, 'antigravity'), {'decision': 'stop'})
+        
+        # Stop hook with missing receipt returns continue decision
+        payload_stop = {'hook_event_name': 'Stop', 'conversationId': session, 'fullyIdle': True, 'event_id': 'ag-stop-1'}
+        res = self.invoke(payload_stop, 'antigravity')
+        self.assertEqual(res.get('decision'), 'continue')
+        self.assertIn('Receipt session=', res.get('reason', ''))
+
+        # Second Stop should stop cleanly without repeating
+        res2 = self.invoke(payload_stop, 'antigravity')
+        self.assertEqual(res2, {'decision': 'stop'})
+
     def test_antigravity_filters_nested_turns_before_checkpointing(self):
         self.seed()
         transcript = (self.vault / 'antigravity.jsonl').resolve()
