@@ -121,6 +121,34 @@ class CompanionRulesTest(unittest.TestCase):
         # Other companion files are not filtered.
         self.assertEqual(companion.excerpt('Core.md', V2_HEAD), V2_HEAD)
 
+    def test_project_owned_rules_keep_prose_scope_notes(self):
+        central = '# Kurallar\n\n- **genel:** Her zaman kisa yaz.\n- [scope: beta] Sadece beta kurali.\n'
+        self.seed(central)
+        proj_rules = (
+            '# Alpha Kurallari\n\n'
+            '- **2026-10-11 · API kurali:** Istekleri kuyruga al. Kapsam: Faz 2.\n'
+            '- **2026-10-12 · Pencere kurali:** Kisa pencere kullan. Scope: staging.\n'
+        )
+        proj_source = 'projects/alpha/Kurallar.md'
+        (self.vault / 'projects' / 'alpha').mkdir(parents=True)
+        (self.vault / proj_source).write_text(proj_rules, encoding='utf-8')
+        self.store.ingest({
+            'id': 'alpha-kurallar',
+            'kind': 'note',
+            'status': 'active',
+            'project': 'alpha',
+            'text': proj_rules,
+            'source': proj_source,
+            'updated_at': '2026-10-12T00:00:00Z',
+        })
+        text = companion.context(self.store, 9500, 'synthetic-proj-rules', 'claude', rules_project='alpha')
+        self.assertIn('[projects/alpha/Kurallar.md]', text)
+        self.assertIn('API kurali', text)
+        self.assertIn('Pencere kurali', text)
+        # Negative control: global Kurallar.md still filters foreign [scope: beta] tags.
+        self.assertNotIn('Sadece beta kurali', text)
+        self.assertIn('Her zaman kisa yaz', text)
+
     def test_new_installs_and_the_v2_seed_no_longer_promise_a_60_line_window(self):
         seed = (ROOT / 'template' / COMPANION / 'Kurallar.md').read_text(encoding='utf-8')
         self.assertNotRegex(seed, r'60 sat')

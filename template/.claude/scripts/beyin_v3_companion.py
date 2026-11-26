@@ -1616,8 +1616,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
                             p_rel = candidate.relative_to(store.vault_root.resolve()).parent.as_posix()
                             project_snapshot = store.source_snapshot(
                                 [p_name], source_directory=p_rel, budget_chars=200000,
-                                text_transform=lambda name, text: filter_scoped_rules(
-                                    without_v2_window(text), active_project=rules_project))
+                                text_transform=lambda name, text: without_v2_window(text))
                             for record in project_snapshot['records']:
                                 if record['text'].strip():
                                     sections.append((f"\n[{record['source']}]\n", record['text'], 'Kurallar.md'))
