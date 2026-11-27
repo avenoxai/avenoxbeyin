@@ -720,10 +720,37 @@ def drain_queue(vault, state, maintenance=False):
 
 
 ANTIGRAVITY_TRANSCRIPT_LIMIT = 2 * 1024 * 1024
+ANTIGRAVITY_TRANSCRIPT_HEAD = 64 * 1024
 
 
-def _antigravity_step_types(value):
-    """Read only metadata from a complete, bounded Antigravity transcript."""
+def _parse_antigravity_steps(raw, *, start_at_zero=False):
+    """Parse JSONL bytes into a contiguous {step_index: type} mapping, or None."""
+    steps = {}
+    expected = 0 if start_at_zero else None
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if not isinstance(row, dict):
+            return None
+        index, kind = row.get('step_index'), row.get('type')
+        if type(index) is not int or index < 0 or not isinstance(kind, str):
+            return None
+        if expected is not None and index != expected:
+            return None
+        steps[index] = kind
+        expected = index + 1
+    return steps
+
+
+def _antigravity_transcript_steps(value):
+    """Read only step metadata from a bounded Antigravity transcript.
+
+    Files up to ANTIGRAVITY_TRANSCRIPT_LIMIT are parsed in full into one mapping
+    (returned as (steps, steps)). Larger files read a bounded head and tail from
+    the same already-opened descriptor so long sessions still filter subagent and
+    wakeup turns without unbounded memory or I/O.
+    """
     if not isinstance(value, str) or '\0' in value:
         return None
     path = Path(value)
@@ -733,7 +760,7 @@ def _antigravity_step_types(value):
         info = path.lstat()
         reparse = stat.FILE_ATTRIBUTE_REPARSE_POINT
         if (not stat.S_ISREG(info.st_mode) or getattr(info, 'st_file_attributes', 0) & reparse
-                or info.st_size > ANTIGRAVITY_TRANSCRIPT_LIMIT or path.resolve(strict=True) != path):
+                or path.resolve(strict=True) != path):
             return None
         flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0)
         flags |= getattr(os, 'O_NONBLOCK', 0)
@@ -741,21 +768,48 @@ def _antigravity_step_types(value):
             opened = os.fstat(handle.fileno())
             if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(info, opened):
                 return None
-            raw = handle.read(ANTIGRAVITY_TRANSCRIPT_LIMIT + 1)
-        if len(raw) > ANTIGRAVITY_TRANSCRIPT_LIMIT:
+            if opened.st_size <= ANTIGRAVITY_TRANSCRIPT_LIMIT:
+                raw = handle.read(ANTIGRAVITY_TRANSCRIPT_LIMIT + 1)
+                if len(raw) > ANTIGRAVITY_TRANSCRIPT_LIMIT:
+                    return None
+                steps = _parse_antigravity_steps(raw, start_at_zero=True)
+                return (steps, steps) if steps is not None else None
+            head_raw = handle.read(ANTIGRAVITY_TRANSCRIPT_HEAD)
+            tail_offset = opened.st_size - ANTIGRAVITY_TRANSCRIPT_LIMIT
+            handle.seek(tail_offset - 1)
+            prev = handle.read(1)
+            tail_raw = handle.read(ANTIGRAVITY_TRANSCRIPT_LIMIT + 1)
+        if len(tail_raw) > ANTIGRAVITY_TRANSCRIPT_LIMIT:
             return None
-        steps = []
-        for line in raw.splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            if (not isinstance(row, dict) or type(row.get('step_index')) is not int
-                    or row['step_index'] != len(steps) or not isinstance(row.get('type'), str)):
+        nl = head_raw.rfind(b'\n')
+        head_raw = head_raw[:nl + 1] if nl >= 0 else b''
+        if prev != b'\n':
+            nl = tail_raw.find(b'\n')
+            tail_raw = tail_raw[nl + 1:] if nl >= 0 else b''
+        head = _parse_antigravity_steps(head_raw, start_at_zero=True)
+        tail = _parse_antigravity_steps(tail_raw, start_at_zero=False)
+        if head is None or tail is None:
+            return None
+        if head and tail:
+            if max(head) > max(tail):
                 return None
-            steps.append(row['type'])
-        return steps
+            for index, kind in head.items():
+                if index in tail and tail[index] != kind:
+                    return None
+        return head, tail
     except (OSError, RuntimeError, ValueError):
         return None
+
+
+def _antigravity_step_types(value):
+    """Read only metadata from a complete, bounded Antigravity transcript."""
+    parsed = _antigravity_transcript_steps(value)
+    if not parsed:
+        return None
+    head, tail = parsed
+    if head is not tail:
+        return None
+    return [head[index] for index in range(len(head))]
 
 
 def _antigravity_nonhuman_turn(payload, event):
@@ -769,12 +823,22 @@ def _antigravity_nonhuman_turn(payload, event):
         return last_input == ''
     if event == 'Stop' and last_input != '':
         return False  # the parent can stop after planner steps
-    steps = _antigravity_step_types(payload.get('transcriptPath'))
-    if not steps or initial > len(steps):
+    parsed = _antigravity_transcript_steps(payload.get('transcriptPath'))
+    if not parsed:
+        return False
+    head, tail = parsed
+    if not tail or initial > max(tail) + 1:
         return False
     if event == 'PreInvocation':
-        return steps[initial - 1] == 'PLANNER_RESPONSE'
-    return 'USER_INPUT' not in steps and 'PLANNER_RESPONSE' in steps
+        step_type = tail.get(initial - 1)
+        if step_type is None:
+            step_type = head.get(initial - 1)
+        return step_type == 'PLANNER_RESPONSE'
+    if 0 not in head and 0 not in tail:
+        return False  # step 0 exceeded the bounded head; fail open instead of guessing
+    if 'USER_INPUT' in head.values() or 'USER_INPUT' in tail.values():
+        return False
+    return 'PLANNER_RESPONSE' in head.values() or 'PLANNER_RESPONSE' in tail.values()
 
 
 # Antigravity file writes for the receipt edit window (#903). write_file and edit_file with their Path
@@ -916,6 +980,49 @@ def main():
     parser.add_argument("--metadata-only", action="store_true", help="Queue lifecycle metadata without injecting vault context")
     args = parser.parse_args()
     vault = args.vault.resolve()
+    raw_stdin = None
+    early_payload = None
+    has_early_payload = False
+    if not args.worker and not args.drain_queue and not args.metadata_only and args.harness == "antigravity":
+        # Antigravity invokes PreInvocation before every model call in a turn (invocationNum=1, 2, ...)
+        # and Stop on non-idle pauses. Exit before importing beyin_v3/preferences for those no-ops,
+        # while preserving in-vault state refusal and malformed-JSON error diagnostics.
+        raw_state = str(args.state)
+        state_safe = False
+        if raw_state.strip() and "\0" not in raw_state:
+            expanded_state = args.state.expanduser()
+            foreign_os = (not expanded_state.is_absolute() and (
+                bool(re.match(r"^[A-Za-z]:[/\\]", raw_state))
+                or (sys.platform == "win32" and raw_state.startswith(("/", "\\")))
+            ))
+            if not foreign_os:
+                try:
+                    candidate_state = expanded_state.resolve()
+                except (OSError, ValueError, RuntimeError):
+                    candidate_state = None
+                if candidate_state is not None:
+                    if candidate_state == vault or vault in candidate_state.parents:
+                        raise ValueError("Runtime state must be outside vault")
+                    state_safe = True
+        if state_safe:
+            try:
+                raw_stdin = sys.stdin.read(1_000_000)
+            except OSError:
+                raw_stdin = None
+            if raw_stdin is not None:
+                try:
+                    early_payload = json.loads(raw_stdin.lstrip("\ufeff").strip() or "{}")
+                    has_early_payload = True
+                except ValueError:
+                    pass
+                if isinstance(early_payload, dict):
+                    early_event = early_payload.get("hook_event_name", args.event)
+                    if early_event == "PreInvocation" and early_payload.get("invocationNum") != 0:
+                        print("{}")
+                        return
+                    if early_event == "Stop" and early_payload.get("fullyIdle") is not True:
+                        print('{"decision":"stop"}')
+                        return
     from beyin_v3 import resolve_state
     state = resolve_state(vault, args.state)
     try:
@@ -942,7 +1049,10 @@ def main():
     try:
         # A payload cut at the read limit is not JSON: the handler below answers "{}" and
         # records the error for doctor instead of silently dropping the turn.
-        payload = json.loads(sys.stdin.read(1_000_000).lstrip("\ufeff").strip() or "{}")
+        if has_early_payload:
+            payload = early_payload
+        else:
+            payload = json.loads((sys.stdin.read(1_000_000) if raw_stdin is None else raw_stdin).lstrip("\ufeff").strip() or "{}")
         event = payload.get("hook_event_name", args.event)
         if args.harness == "hermes":
             # Hermes plugin hooks: pre_llm_call (first turn -> SessionStart, later ->
