@@ -1025,6 +1025,9 @@ _COVERAGE_FILLERS = _tokens(
     "may might must there here any some many much so if then than also just not as by into out up all "
     "use using need want often "
     "ben sen biz siz onlar da de ki gibi daha cok var ama fakat her hep sey neden niye nerede kac gerek lazim")
+# A longer word is a pasted blob (hex calldata, bytecode, base64, a URL run), not a topic word;
+# the same cap as a hyphenated name's joined spelling (_compound_spans).
+_COVERAGE_WORD_MAX = 64
 
 
 def query_term_coverage(query, records):
@@ -1033,8 +1036,8 @@ def query_term_coverage(query, records):
     The explicit context command's unmatched_terms rule (#768) for automatic context (#909):
     a word matches by its stem in the records' text, title, fact values and aliases as given
     (a clipped text counts only as far as it was clipped). Question wrappers, stopwords,
-    pronouns and auxiliaries, single letters and short numbers are not terms, and one stem
-    counts once. A hyphenated name (claude-mem, e-posta) is one term, as retrieval reads it
+    pronouns and auxiliaries, single letters, short numbers and words over 64 characters (a
+    pasted hex or base64 blob) are not terms, and one stem counts once. A hyphenated name (claude-mem, e-posta) is one term, as retrieval reads it
     (#430): a record holds it by its joined spelling or by every part that is a term itself.
     A possessive also counts as held by its short Turkish root (boyum by Boy, _query_roots),
     and two words on one root are one term ("boyum boyun").
@@ -1067,7 +1070,7 @@ def query_term_coverage(query, records):
             keys, own = {stem, *needed}, {stem}
         else:
             word, stem = match.group(), _stem(match.group())
-            if not is_term(stem):
+            if len(word) > _COVERAGE_WORD_MAX or not is_term(stem):
                 continue
             # A possessive meets its short root as in _query_roots (boyum -> Boy); the
             # delivered records stand in for the frequency check retrieval already passed.

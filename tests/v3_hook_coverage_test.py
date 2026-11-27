@@ -88,6 +88,15 @@ class QueryTermCoverageTest(unittest.TestCase):
         # A plain word before a hyphenated name does not hide the name.
         self.assertEqual(beyin_v3.query_term_coverage('claude claude-mem', [])[0], ['claude', 'claude-mem'])
 
+    def test_pasted_blob_is_not_a_term(self):
+        # A pasted calldata or base64 run is one [a-z0-9]+ word; listing it whole would spend the budget.
+        blob = '0x' + 'ab12' * 2000
+        self.assertEqual(beyin_v3.query_term_coverage('why does this calldata hit the Orbit rate limit? ' + blob,
+                                                      [{'text': 'Orbit rate limit'}]),
+                         (['calldata', 'hit', 'orbit', 'rate', 'limit'], ['calldata', 'hit']))
+        sha = 'f' * 64
+        self.assertEqual(beyin_v3.query_term_coverage(f'commit {sha} {sha}0', [])[0], ['commit', sha])
+
     def test_empty_prompt_has_no_terms(self):
         self.assertEqual(beyin_v3.query_term_coverage('', [{'text': 'x'}]), ([], []))
         self.assertEqual(beyin_v3.query_term_coverage(None, []), ([], []))
