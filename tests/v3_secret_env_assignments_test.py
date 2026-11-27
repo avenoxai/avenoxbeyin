@@ -68,6 +68,11 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
     def test_markdown_assignment_label_and_provider_formats(self):
         self.assertEqual(redact("Use `SECRET_KEY=` in the example.", self.state),
                          ("Use `SECRET_KEY=` in the example.", 0))
+        # Backtick-quoted secret values must be redacted without swallowing trailing prose (#907).
+        self.assertEqual(redact(f"API_KEY=`{VALUE}`", self.state), ("[REDACTED]", 1))
+        self.assertEqual(redact(f"API_KEY: `{VALUE}` sonra", self.state), ("[REDACTED] sonra", 1))
+        self.assertEqual(redact("token: `kisa`", self.state), ("token: `kisa`", 0))
+        self.assertEqual(redact("secret = `abc def ghi jkl`", self.state), ("secret = `abc def ghi jkl`", 0))
         for text in (f"APP_API_KEY={VALUE}", f"SECRET_KEY={VALUE}",
                      f"Authorization: Token {VALUE}", f"glpat-{VALUE}"):
             with self.subTest(format=text.split()[0]):
