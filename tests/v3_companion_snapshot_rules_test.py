@@ -264,6 +264,37 @@ class SnapshotTest(unittest.TestCase):
                 self.assertTrue(shown.startswith(companion.CLIP_MARKER + '- X000 '), shown[:80])
                 self.assertEqual(report, {})
 
+    def test_doctor_reads_what_every_project_opening_shares_once(self):
+        # #893: doctor measures each project's rules with SessionStart's own context(). The
+        # knowledge map and the unqueried retrieval in it are the same for every project, so
+        # each distinct read reaches the store once, and the report is the unshared one.
+        for name, body in self.bodies.items():
+            self.write(name, body)
+        self.write('Kurallar.md', '# Rules\n- Short global rule.\n')
+        sources = {'knowledge/index.md': '# Index\n- [[Kart]]\n'}
+        for n in range(4):
+            sources[f'projects/p{n}/Kurallar.md'] = rules_file(2000 + 5000 * n)[0]
+        for source, body in sources.items():
+            (self.vault / source).parent.mkdir(parents=True, exist_ok=True)
+            (self.vault / source).write_text(body, encoding='utf-8', newline='\n')
+            self.store.ingest({'id': source, 'kind': 'note', 'status': 'active', 'text': body,
+                               'source': source, 'updated_at': '2026-10-16T10:00:00Z'})
+        with mock.patch.object(companion, '_SharedOpeningStore', lambda store: store):
+            unshared = companion.project_rules_opening(self.store, 5000)
+        self.assertEqual([e['source'] for e in unshared], [f'projects/p{n}/Kurallar.md' for n in (1, 2, 3)])
+        calls = []
+        for name in ('snapshot_context', 'due_tasks_context', 'source_snapshot'):
+            real = getattr(self.store, name)
+
+            def counted(*args, _name=name, _real=real, **kwargs):
+                if kwargs.get('text_transform') is None:
+                    calls.append((_name, repr(args), repr(sorted(kwargs.items()))))
+                return _real(*args, **kwargs)
+            setattr(self.store, name, counted)
+        self.assertEqual(companion.project_rules_opening(self.store, 5000), unshared)
+        self.assertIn('knowledge', ''.join(call[1] + call[2] for call in calls))
+        self.assertEqual(len(calls), len(set(calls)), calls)
+
     def test_rules_notice_keeps_long_receipt_within_total_budget(self):
         for name, body in self.bodies.items():
             self.write(name, body)

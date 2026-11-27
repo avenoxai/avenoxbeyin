@@ -1,5 +1,6 @@
 """User-owned companion bootstrap and compact, source-verified session context."""
 import bisect
+import copy
 from datetime import datetime
 import json
 import os
@@ -2078,9 +2079,46 @@ def _project_rule_candidates(vault, state=None, max_projects=50):
     return found
 
 
+class _SharedOpeningStore:
+    """The read-only store doctor's per-project openings share (#893).
+
+    Each opening is SessionStart's own context(); its unqueried retrieval and knowledge map
+    do not depend on the project whose rules are measured, so each distinct call is read once
+    for all projects and handed out as a copy. Reads with a text transform (the rule files,
+    person notes) pass straight through."""
+
+    def __init__(self, store):
+        self._store = store
+        self._read = {}
+
+    def __getattr__(self, name):
+        return getattr(self._store, name)
+
+    def _once(self, name, key, call):
+        key = (name, key)
+        if key not in self._read:
+            self._read[key] = call()
+        return copy.deepcopy(self._read[key])
+
+    def snapshot_context(self, **kwargs):
+        return self._once('snapshot_context', tuple(sorted(kwargs.items())),
+                          lambda: self._store.snapshot_context(**kwargs))
+
+    def due_tasks_context(self, **kwargs):
+        return self._once('due_tasks_context', tuple(sorted(kwargs.items())),
+                          lambda: self._store.due_tasks_context(**kwargs))
+
+    def source_snapshot(self, source_names, **kwargs):
+        if kwargs.get('text_transform') is not None:
+            return self._store.source_snapshot(source_names, **kwargs)
+        return self._once('source_snapshot', (tuple(source_names), tuple(sorted(kwargs.items()))),
+                          lambda: self._store.source_snapshot(source_names, **kwargs))
+
+
 def project_rules_opening(store, budget, receipt='', max_projects=50):
     """Read-only: detect project Kurallar.md files that clip or are stale at SessionStart."""
     results = []
+    store = _SharedOpeningStore(store)
     for project_name, p_rel, p_name in _project_rule_candidates(store.vault_root, store.state_dir, max_projects=max_projects):
         source = f'{p_rel}/{p_name}'
         report = {}
