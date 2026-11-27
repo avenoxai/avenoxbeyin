@@ -1796,17 +1796,23 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
                         parts = parts[:i] + [(label, view, name)] + parts[i + 1:]
                         lengths = share(available, parts, protect=True)
         h = header if header_text is None else header_text
-        rendered, rules = h + notice, None
+        rendered, rules, project_rules = h + notice, None, []
         for i, (label, body, name) in enumerate(parts):
             rules_report = None
-            if name == 'Kurallar.md' and i < len(records):  # project rule files come after the records
-                rules = {'chars': len(sections[i][1]), 'share': lengths[i], 'clipped': lengths[i] < len(body),
+            if name == 'Kurallar.md':
+                entry = {'chars': len(sections[i][1]), 'share': lengths[i], 'clipped': lengths[i] < len(body),
                          'reasons_omitted': body != sections[i][1]}
-                rules_report = rules
+                if i < len(records):  # project rule files come after the records
+                    rules = entry
+                    rules_report = rules
+                else:
+                    entry['source'] = label.strip().strip('[]').strip()
+                    project_rules.append(entry)
+                    rules_report = entry
             rendered += label + (thread_view(body, lengths[i], brief) if name == 'Threads.md' else
                                  clip(body, lengths[i], both=name == 'Kurallar.md', rules_report=rules_report,
                                       tail=name == 'Kurallar.md' or (name == 'Journal.md' and not re.search(r'(?m)^## ', body))))
-        return rendered, rules
+        return rendered, rules, project_rules
 
     needed = sum(len(body) for _, body, _ in sections)
     # Reserve the protected core before maps, receipts or retrieval. If even this core
@@ -1819,7 +1825,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         core_size = budget
     available = max(0, max(int(budget * .83), core_size if core_size <= budget else 0) - fixed)
     companion_clipped = needed > available
-    text, rules = companion(available)
+    text, rules, project_rules = companion(available)
     extra = ''
     related_records = []
     index = knowledge_map(store)
@@ -1892,9 +1898,9 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         extra += clip(receipt, budget - len(text) - len(extra))
     # Retrieval takes its share first; every character it did not use goes back to the
     # clipped companion sources instead of being dropped.
-    regained, regained_rules = companion(budget - fixed - len(extra))
+    regained, regained_rules, regained_project_rules = companion(budget - fixed - len(extra))
     if len(text) < len(regained) <= budget - len(extra):
-        text, rules = regained, regained_rules
+        text, rules, project_rules = regained, regained_rules, regained_project_rules
     if rules and rules.get('clipped'):
         # Reserve the longest possible numeric share before allocating. Reclaiming
         # its spare digits can oscillate (999 -> 1000 -> 999), so keep this small
@@ -1910,6 +1916,11 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
             final_rules.pop('omitted_rules', None)
             if report is not None:
                 report['Kurallar.md'] = final_rules
+                if project_rules:
+                    report['project_rules'] = [
+                        {k: v for k, v in dict(item, share=0).items() if k != 'omitted_rules'}
+                        for item in project_rules
+                    ]
             full_header = hygiene_line + hygiene_notice(None, rules=final_rules) + header_tail
             return clip(full_header + notice + 'Read companion files: ' + ', '.join(r['source'] for r in records), budget)
         # Optional retrieval/receipt text was chosen before adding the rules notice.
@@ -1918,13 +1929,15 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         if new_fixed + len(extra) > budget:
             extra = ''
         allocation = budget - new_fixed - len(extra)
-        _, final_rules = companion(allocation, header_text=reserved_header)
+        _, final_rules, _ = companion(allocation, header_text=reserved_header)
         full_header = hygiene_line + hygiene_notice(None, rules=final_rules) + header_tail
-        text, final_rules = companion(allocation, header_text=full_header)
+        text, final_rules, project_rules = companion(allocation, header_text=full_header)
         if report is not None and final_rules:
             report['Kurallar.md'] = final_rules
     elif report is not None and rules:
         report['Kurallar.md'] = rules
+    if report is not None and project_rules:
+        report['project_rules'] = project_rules
     if report is not None and extra:
         report['related_records'] = related_records
     return text + extra
@@ -1952,3 +1965,103 @@ def rules_opening(store, budget, receipt=''):
         if snapshot['stale_excluded']:
             return {'stale': True}
     return None
+
+
+def _project_rule_candidates(vault, state=None, max_projects=50):
+    """Discover non-symlink project rule files within vault boundaries for doctor diagnostics."""
+    vault = Path(vault).resolve()
+    excluded_keys = frozenset()
+    if state is not None:
+        try:
+            from beyin_v3_index import exclusions
+            excluded_keys, _ = exclusions(state, vault)
+        except Exception:
+            excluded_keys = frozenset()
+    from beyin_v3 import _path_redirected
+    from beyin_v3_hygiene import sensitive_source
+    from beyin_v3_index import dir_key
+    from beyin_v3_projects import candidate_project_folders, read_project_scopes, _scope_key
+
+    raw_dirs = []
+    try:
+        scopes = read_project_scopes(vault)
+        if scopes and scopes.get('folders'):
+            for f_key, proj_name in scopes['folders']:
+                d = project_rule_directory(vault, f_key)
+                if d is not None:
+                    raw_dirs.append((proj_name, d))
+    except Exception:
+        pass
+    seen_parents = set()
+    parent_names = list(dict.fromkeys(['projects', 'Projeler', 'projeler', *candidate_project_folders(vault)]))
+    for parent_name in parent_names:
+        parent = vault / parent_name
+        try:
+            if parent.is_symlink() or not parent.is_dir():
+                continue
+            resolved_parent = parent.resolve()
+            if not resolved_parent.is_relative_to(vault):
+                continue
+            identity = (resolved_parent.stat().st_dev, resolved_parent.stat().st_ino)
+            if identity in seen_parents:
+                continue
+            seen_parents.add(identity)
+            for entry in sorted(parent.iterdir()):
+                if entry.is_dir() and not entry.is_symlink():
+                    raw_dirs.append((entry.name, entry))
+        except OSError:
+            continue
+
+    found = []
+    seen = set()
+    for proj_name, cand_dir in raw_dirs:
+        if len(found) >= max_projects:
+            break
+        try:
+            resolved_dir = cand_dir.resolve()
+            if not resolved_dir.is_relative_to(vault):
+                continue
+            rel_parts = resolved_dir.relative_to(vault).parts
+            key_parts = tuple(dir_key(p) for p in rel_parts)
+            if any(dir_key(p) in excluded_keys for p in rel_parts) or key_parts in excluded_keys:
+                continue
+            p_rel = resolved_dir.relative_to(vault).as_posix()
+            dedupe_key = (_scope_key(proj_name), dir_key(p_rel))
+            if dedupe_key in seen:
+                continue
+            for p_name in ('Kurallar.md', '.rules.md', 'rules.md'):
+                lexical = cand_dir / p_name
+                if any(_path_redirected(part) for part in (lexical, *lexical.parents)
+                       if part != vault and part.is_relative_to(vault)):
+                    continue
+                candidate = lexical.resolve()
+                if not candidate.is_relative_to(vault) or candidate.is_symlink() or not candidate.is_file():
+                    continue
+                rel_source = f'{p_rel}/{p_name}'
+                if sensitive_source(rel_source):
+                    continue
+                seen.add(dedupe_key)
+                found.append((proj_name, p_rel, p_name))
+                break
+        except (ValueError, OSError):
+            continue
+    found.sort(key=lambda item: (_scope_key(item[0]), item[1]))
+    return found
+
+
+def project_rules_opening(store, budget, receipt='', max_projects=50):
+    """Read-only: detect project Kurallar.md files that clip or are stale at SessionStart."""
+    results = []
+    for project_name, p_rel, p_name in _project_rule_candidates(store.vault_root, store.state_dir, max_projects=max_projects):
+        source = f'{p_rel}/{p_name}'
+        report = {}
+        context(store, budget, '0' * 24, 'claude', receipt=receipt, rules_project=project_name, report=report)
+        matched = [item for item in (report.get('project_rules') or []) if item.get('source') == source]
+        if matched:
+            if matched[0].get('clipped'):
+                results.append(dict(matched[0], project=project_name, status='clipped'))
+            continue
+        snapshot = store.source_snapshot([p_name], budget_chars=0, source_directory=p_rel)
+        if snapshot['stale_excluded']:
+            results.append({'project': project_name, 'source': source, 'status': 'stale'})
+    return results
