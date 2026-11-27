@@ -824,6 +824,18 @@ And another link on line 8: [[Components/Auth]].
         self.assertEqual(report["withheld_targets_count"], 2)
         self.assertNotIn("secret", json.dumps(report))
 
+        # Links to notes in archive folders must be counted as withheld targets, not broken (#915).
+        archive_dir = self.vault / "Arşiv/Sohbetler"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        (archive_dir / "eski-oturum.md").write_text("# Eski Oturum\nArşiv notu.\n", encoding="utf-8")
+        (self.vault / "knowledge/link.md").write_text(
+            "[[Arşiv/Sohbetler/eski-oturum.md]]\n[[eski-oturum]]\n[Eski](/Arşiv/Sohbetler/eski-oturum.md)\n[EskiRel](../Arşiv/Sohbetler/eski-oturum.md)", encoding="utf-8")
+        report = linter.lint_vault(self.vault)
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["broken_links_count"], 0)
+        self.assertEqual(report["withheld_targets_count"], 4)
+        self.assertNotIn("eski-oturum", json.dumps(report))
+
     def test_lint_excludes_directories_correctly(self):
         # Create root vendor.md (should NOT be treated as a directory or excluded from orphans)
         (self.vault / "vendor.md").write_text("# Vendor Root File", encoding="utf-8")
