@@ -37,15 +37,32 @@ class TestBeyinV3UsageFeedback(unittest.TestCase):
     def test_record_injected_privacy_and_sensitivity(self):
         records = [
             {"id": "note1", "source": "knowledge/note1.md", "visibility": "public", "text": "SYNTHETIC_NOTE_BODY"},
+            {"id": "note1_int", "source": "knowledge/note1_internal.md", "visibility": "internal", "text": "SYNTHETIC_INTERNAL_BODY"},
             {"id": "note2", "source": "knowledge/secret.env", "visibility": "public"},
             {"id": "note3", "source": "knowledge/note3.md", "visibility": "private"},
             {"id": "note4", "source": "knowledge/note4.md", "trusted": False},
             {"id": "note5", "source": "knowledge/Şifre/Müşteri.md"},
+            {"id": "note6", "source": "knowledge/note6.md", "visibility": "secret"},
+            {"id": "note7", "source": "knowledge/note7.md", "visibility": "untrusted"},
         ]
         for turn in ("one", "two", "one"):
             beyin_v3_usage.record_injected(self.state_path, records, session="session", turn=turn)
-        self.assertEqual(self.rows(), {"note1": (2, 0, 0, 0, 0)})
-        self.assertNotIn(b"SYNTHETIC_NOTE_BODY", (self.state_path / beyin_v3_usage.DATABASE).read_bytes())
+        self.assertEqual(self.rows(), {"note1": (2, 0, 0, 0, 0), "note1_int": (2, 0, 0, 0, 0)})
+        raw_db = (self.state_path / beyin_v3_usage.DATABASE).read_bytes()
+        self.assertNotIn(b"SYNTHETIC_NOTE_BODY", raw_db)
+        self.assertNotIn(b"SYNTHETIC_INTERNAL_BODY", raw_db)
+
+    def test_unknown_or_malformed_visibility_stays_out_of_counters(self):
+        records = [
+            {"id": "implicit", "source": "knowledge/implicit.md"},
+            {"id": "shared", "source": "knowledge/shared.md", "visibility": "shared"},
+            {"id": "upper", "source": "knowledge/upper.md", "visibility": "Private"},
+            {"id": "upper_internal", "source": "knowledge/upper_internal.md", "visibility": "INTERNAL"},
+            {"id": "empty", "source": "knowledge/empty.md", "visibility": None},
+            {"id": "listed", "source": "knowledge/listed.md", "visibility": ["internal"]},
+        ]
+        beyin_v3_usage.record_injected(self.state_path, records, session="session", turn="one")
+        self.assertEqual(self.rows(), {"implicit": (1, 0, 0, 0, 0)})
 
     def test_dead_weight_count_summarize_window(self):
         now = datetime.now(timezone.utc)
@@ -290,6 +307,41 @@ class TestBeyinV3UsageFeedback(unittest.TestCase):
             self.assertIn("artemis", self.hook("session-a", "a2", "Artemis calibration owner"))
         self.assertEqual(self.rows(), {"artemis": (1, 0, 0, 0, 0)})
         self.assertFalse((self.state_path / "hook-error.json").exists())
+
+    def test_default_internal_visibility_tracks_injection_citation_and_feedback(self):
+        internal_explicit = "knowledge/InternalGuide.md"
+        plain_default = "knowledge/PlainDefault.md"
+        private_note = "knowledge/PrivateSecret.md"
+        self.note(internal_explicit, "int-explicit", "Helios calibration protocol explicit internal note", visibility="internal")
+        (self.vault_path / plain_default).parent.mkdir(parents=True, exist_ok=True)
+        (self.vault_path / plain_default).write_text("# Plain Default\nVega telemetry calibration without frontmatter.\n",
+                                                    encoding="utf-8", newline="\n")
+        self.note(private_note, "priv-note", "Helios private calibration body", visibility="private")
+        self.assertEqual(self.cli("sync").returncode, 0)
+
+        self.assertIn("Helios calibration protocol", self.hook("sess-int", "t1", "Helios calibration protocol"))
+        hint = self.hook("sess-int", "t2", "yanlış")
+        self.assertIn(internal_explicit, hint)
+        self.assertNotIn(private_note, hint)
+
+        fb = self.cli("feedback", internal_explicit, "ok", CLAUDE_CODE_SESSION_ID="sess-int")
+        self.assertEqual(fb.returncode, 0, fb.stderr)
+        self.assertEqual(json.loads(fb.stdout)["target"], "int-explicit")
+
+        self.assertIn("Vega telemetry calibration", self.hook("sess-plain", "p1", "Vega telemetry calibration"))
+        rc = self.cli("receipt", "--harness", "claude", "--event-id", "int-cite-1",
+                      "--summary", "Used internal and plain default notes",
+                      "--ref", internal_explicit, "--ref", plain_default, "--ref", private_note)
+        self.assertEqual(rc.returncode, 0, rc.stderr)
+
+        doctor = json.loads(self.cli("doctor").stdout)["note_usage"]
+        self.assertEqual(doctor["tracked"], 2)
+        self.assertEqual(doctor["feedback_totals"]["ok"], 1)
+        rows = self.rows()
+        self.assertEqual(rows["int-explicit"], (1, 1, 1, 0, 0))
+        self.assertNotIn("priv-note", rows)
+        plain_rows = [vals for nid, vals in rows.items() if nid != "int-explicit"]
+        self.assertEqual(plain_rows, [(1, 1, 0, 0, 0)])
 
 
 if __name__ == "__main__":
