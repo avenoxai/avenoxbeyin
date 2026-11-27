@@ -1082,6 +1082,7 @@ def main():
                     except Exception:
                         pass  # Optional counters cannot break context delivery.
 
+            own_notice, own_card = '', ''
             if event == 'SessionStart' or relevant(query):
                 # Claude Code and Antigravity send a working directory, not a project (#288, #403).
                 # A project found from it selects the project rules only: as a retrieval scope it
@@ -1099,6 +1100,16 @@ def main():
                             rules_project = resolve_project_from_query(vault, query)
                         except Exception:
                             rules_project = None
+                if event == 'SessionStart' and payload.get('source') == 'compact':
+                    # The summary can drop the open step; this session's own card holds it (the
+                    # opening shows only the top card, often a parallel session's). It is read
+                    # through the opening's own gated snapshot and never costs the opening.
+                    try:
+                        from beyin_v3_companion import compact_card_notice
+                        own_notice, own_card = compact_card_notice(store, payload.get('session_id'))
+                        notice += own_notice
+                    except Exception:
+                        own_notice, own_card = '', ''
                 # Local import syntax cannot prove client delivery. Keep the normal
                 # companion text, including after resume/compact and continuity questions.
                 # The opening may carry its own machine-local budget (#140); never a vault preference.
@@ -1219,6 +1230,9 @@ def main():
                     remember_notice(diagnostic)
                     print(json.dumps(output_context(args.harness, event, diagnostic)) if diagnostic else "{}")
                     return
+            if own_notice and own_card in text and own_notice in notice:
+                # A roomy opening already shows the whole card; dropping the copy only shortens it.
+                notice = notice.replace(own_notice, '', 1)
             shown = fit_client(args.harness, (notice + text)[:limit])
             record_usage(usage_records if shown == notice + text else [])
             remember_notice(shown)
