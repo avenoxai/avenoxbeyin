@@ -327,7 +327,8 @@ koyabilirsiniz (maddenin herhangi bir satırına, `**neden:**` gerekçesinden so
 gerekçeler açılışa sığmadığı için atıldığında işaret maddede kalır; Obsidian'ın okuma görünümünde
 görünmez). Kırpma gerektiğinde işaretli maddeler önce yer alır: atlanan aralıktan gelenler kırpma
 işaretinin hemen önünde, tam madde olarak gösterilir ve işaretteki sayı yalnız
-gerçekten gösterilmeyen maddeleri sayar. Bu iki düzende de (baştan ve sondan ya da
+gerçekten gösterilmeyen maddeleri sayar. Kesilen yalnız ilk maddeden önceki metinse
+işaret o metnin yerinde, sabitlenen maddelerin önünde durur. Bu iki düzende de (baştan ve sondan ya da
 `rules-order=latest`) geçerlidir; ana `Kurallar.md` ile proje `Kurallar.md`
 dosyalarında aynı çalışır. Sabitlenenler kural payının en fazla yarısını kullanır
 (dosyadaki sırayla, sığanlar); sığmayan işaretli maddeler normal kırpılır ve

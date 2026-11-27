@@ -1137,7 +1137,9 @@ def _pinned(items, room):
 
 def _rule_gap(head, tail, first, last, total, report, items=(), shown=()):
     """head, the pinned items shown from first-last, the marker, tail. The marker and the
-    report count only the rules really left out of that range."""
+    report count only the rules really left out of that range. When those pins are the whole
+    range, only the prose before the first rule was left out: the plain marker stands where
+    that prose was, before the pins."""
     count = last - first + 1 - len(shown)
     if not count:
         # Every rule of the range is a pinned one shown here: only the prose before the
@@ -1164,7 +1166,8 @@ def ends(text, budget, *, rules_report=None):
     final one, naming only what was really dropped, can never be longer and the
     result stays inside budget. Text with no list items keeps the character count.
     Rules marked <!-- beyin:pin --> take up to half the room first (#890); a pinned
-    rule from the omitted range is shown just before the marker.
+    rule from the omitted range is shown just before the marker (after it when only the
+    prose before the first rule was left out).
     """
     if len(text) <= budget:
         return text

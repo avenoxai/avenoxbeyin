@@ -269,8 +269,9 @@ class SnapshotTest(unittest.TestCase):
                 self.assertNotIn('pinned_omitted', report)
 
     def test_pinned_rule_alone_in_the_cut_names_no_empty_rule_range(self):
-        # When the only rule in the cut is a pinned one shown before the marker, only the
-        # prose before the first rule was left out; "rules 1-1 (0 of 5)" would misreport it.
+        # When the only rule in the cut is a pinned one, only the prose before the first rule
+        # was left out; "rules 1-1 (0 of 5)" would misreport it. The plain marker stands where
+        # that prose was, before the pin (the order COMPANION-PARITY.md documents).
         items = ''.join(f'- X{i:03d} ' + 'k' * 60 + (' <!-- beyin:pin -->' if i == 0 else '') + '\n'
                         for i in range(5))
         for latest in (False, True):
