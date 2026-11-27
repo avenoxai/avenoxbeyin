@@ -14,8 +14,10 @@ from collections import Counter
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import posixpath
 import re
 import sys
+from urllib.parse import unquote
 
 _MODULE_DIR = str(Path(__file__).resolve().parent)
 if _MODULE_DIR not in sys.path:
@@ -124,6 +126,68 @@ def _auditable(path: Path, rel_path: str, *, strict: bool = False) -> tuple[dict
     return meta, body
 
 
+_WIKILINK_RE = re.compile(r'\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]')
+_MD_LINK_RE = re.compile(r'(?<!!)\[[^\]]*\]\(([^)]+)\)')
+_FENCED_CODE_RE = re.compile(r'```[\s\S]*?```|~~~[\s\S]*?~~~')
+
+
+def _extract_internal_links(body: str, rel_path: str) -> tuple[frozenset[str], frozenset[str]]:
+    """Return referenced relative markdown paths and bare wikilink stems (all casefolded)."""
+    cleaned = _FENCED_CODE_RE.sub('', body)
+    base_dir = posixpath.dirname(rel_path.replace('\\', '/'))
+    link_paths = set()
+    wiki_stems = set()
+
+    def _add_path(raw: str):
+        norm = posixpath.normpath(raw.replace('\\', '/')).lstrip('./')
+        if not norm or norm.startswith('../') or norm == '..':
+            return
+        if not norm.casefold().endswith('.md'):
+            norm = norm + '.md'
+        link_paths.add(norm.casefold())
+
+    for m in _WIKILINK_RE.finditer(cleaned):
+        raw = m.group(1).strip().replace('\\', '/')
+        if not raw:
+            continue
+        if '/' in raw:
+            target = posixpath.normpath(posixpath.join(base_dir, raw)) if raw.startswith('./') or raw.startswith('../') else raw
+            _add_path(target)
+        else:
+            stem = raw[:-3] if raw.casefold().endswith('.md') else raw
+            if stem:
+                wiki_stems.add(stem.casefold())
+
+    for m in _MD_LINK_RE.finditer(cleaned):
+        raw = m.group(1).strip()
+        if raw.startswith('<') and raw.endswith('>'):
+            raw = raw[1:-1].strip()
+        raw = re.sub(r'\s+["\'].*$', '', raw).strip()
+        if not raw or raw.startswith('#') or re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*:', raw):
+            continue
+        raw = unquote(raw.split('#', 1)[0].split('?', 1)[0]).strip().replace('\\', '/')
+        if not raw or not raw.casefold().endswith('.md'):
+            continue
+        joined = raw.lstrip('/') if raw.startswith('/') else (posixpath.join(base_dir, raw) if base_dir else raw)
+        _add_path(joined)
+
+    return frozenset(link_paths), frozenset(wiki_stems)
+
+
+def _notes_linked(a: dict, b: dict) -> bool:
+    """True when either note directly links to the other via path or bare wikilink."""
+    path_a = a['path'].replace('\\', '/').casefold()
+    path_b = b['path'].replace('\\', '/').casefold()
+    stem_a = Path(path_a).stem.casefold()
+    stem_b = Path(path_b).stem.casefold()
+    return (
+        path_b in a.get('link_paths', ()) or
+        path_a in b.get('link_paths', ()) or
+        stem_b in a.get('wiki_stems', ()) or
+        stem_a in b.get('wiki_stems', ())
+    )
+
+
 def _candidate(path: Path, rel_path: str, meta: dict, body: str) -> dict:
     title = str(meta.get('title') or '').strip()
     if not title:
@@ -150,6 +214,7 @@ def _candidate(path: Path, rel_path: str, meta: dict, body: str) -> dict:
     elif not isinstance(supersedes, list):
         supersedes = []
     note_id = meta.get('id')
+    link_paths, wiki_stems = _extract_internal_links(body, rel_path)
     return {
         # The id sync gives the record, so `supersedes: [<id>]` from note-create resolves here too.
         'id': note_id if isinstance(note_id, str) and note_id else 'md-' + _hash(rel_path)[:24],
@@ -162,6 +227,8 @@ def _candidate(path: Path, rel_path: str, meta: dict, body: str) -> dict:
         'updated_ts': updated_ts,
         'words_count': sum(1 for _ in _WORD_RE.finditer(body)),
         'supersedes': [str(s).strip() for s in supersedes if s],
+        'link_paths': link_paths,
+        'wiki_stems': wiki_stems,
     }
 
 
@@ -344,6 +411,10 @@ def _evaluate_pair(a: dict, b: dict, threshold: float, min_shared: int) -> dict 
             f"olarak degismis gorunuyor. Eski kaydi tarihsel (supersedes veya status: archived) olarak "
             f"isaretlemeyi ya da guncel durumu tek kaynakta toplamayi degerlendir."
         )
+    elif _notes_linked(a, b):
+        # Explicitly linked notes (e.g. summary <-> detail pairs) still surface status
+        # contradictions above, without repeating near_duplicate/overlap "link them" noise.
+        return None
     elif overlap >= 0.80 and jaccard >= 0.30 and vocab_ratio <= 3.0:
         finding_type = 'near_duplicate'
         severity = 'warning' if overlap >= 0.85 else 'info'
