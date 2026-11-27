@@ -52,6 +52,18 @@ class TestBeyinV3UsageFeedback(unittest.TestCase):
         self.assertNotIn(b"SYNTHETIC_NOTE_BODY", raw_db)
         self.assertNotIn(b"SYNTHETIC_INTERNAL_BODY", raw_db)
 
+    def test_unknown_or_malformed_visibility_stays_out_of_counters(self):
+        records = [
+            {"id": "implicit", "source": "knowledge/implicit.md"},
+            {"id": "shared", "source": "knowledge/shared.md", "visibility": "shared"},
+            {"id": "upper", "source": "knowledge/upper.md", "visibility": "Private"},
+            {"id": "upper_internal", "source": "knowledge/upper_internal.md", "visibility": "INTERNAL"},
+            {"id": "empty", "source": "knowledge/empty.md", "visibility": None},
+            {"id": "listed", "source": "knowledge/listed.md", "visibility": ["internal"]},
+        ]
+        beyin_v3_usage.record_injected(self.state_path, records, session="session", turn="one")
+        self.assertEqual(self.rows(), {"implicit": (1, 0, 0, 0, 0)})
+
     def test_dead_weight_count_summarize_window(self):
         now = datetime.now(timezone.utc)
         note = [{"id": "note1", "source": "note1.md"}]

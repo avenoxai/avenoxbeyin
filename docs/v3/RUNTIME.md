@@ -43,7 +43,8 @@ Ingesting the exact same record is idempotent. Reusing an existing ID for differ
 ### Not kullanımı ve geri bildirim
 
 Otomatik bağlamda sunulan uygun notlar ve receipt'te kaynak gösterilen uygun notlar
-makineye özel `state/note-usage.sqlite3` dosyasında sayılır. Özel, dahili,
+makineye özel `state/note-usage.sqlite3` dosyasında sayılır. Yalnız `public` ve
+varsayılan `internal` görünürlükteki notlar sayılır; özel, bilinmeyen görünürlükteki,
 güvenilmeyen ve hassas kayıtlar kapsam dışıdır. Sayaçlar not kimliği, kaynak yolu,
 sayılar ve ilişkilendirme için gerekli yerel zaman ve oturum bilgilerini tutar.
 Not metni ve istem metni tutulmaz. Son 20.000 hook olayından birinin veya bir receipt'in tekrarı sayacı yeniden artırmaz. Hook, kullanım veritabanı kilitliyse o kaydı atlayıp bağlamı sunar.
