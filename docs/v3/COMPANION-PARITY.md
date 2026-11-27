@@ -322,4 +322,27 @@ içeriğini açıklamadan `companion_rules_opening.omitted_rules` alanında bild
 `doctor` standart bir referans açılışı ölçer. Canlı oturuma özel bildirimler
 kural metnine kalan payı ve atlanan aralığı değiştirebilir.
 
+Kırpılmaması gereken birkaç kural maddesine `<!-- beyin:pin -->` işareti
+koyabilirsiniz (maddenin herhangi bir satırına, `**neden:**` gerekçesinden sonra da;
+gerekçeler açılışa sığmadığı için atıldığında işaret maddede kalır; Obsidian'ın okuma görünümünde
+görünmez). Kırpma gerektiğinde işaretli maddeler önce yer alır: atlanan aralıktan gelenler kırpma
+işaretinin hemen önünde, tam madde olarak gösterilir ve işaretteki sayı yalnız
+gerçekten gösterilmeyen maddeleri sayar. Kesilen yalnız ilk maddeden önceki metinse
+işaret o metnin yerinde, sabitlenen maddelerin önünde durur. Bu iki düzende de (baştan ve sondan ya da
+`rules-order=latest`) geçerlidir; ana `Kurallar.md` ile proje `Kurallar.md`
+dosyalarında aynı çalışır. Sabitlenenler kural payının en fazla yarısını kullanır
+(dosyadaki sırayla, sığanlar); sığmayan işaretli maddeler normal kırpılır ve
+`doctor` bunları `pinned_omitted` alanında ve `--human` çıktısında bildirir.
+
+`doctor`, proje klasörlerindeki (`projects/`, `Projects/`, `Projeler/`, `projeler/`,
+`🏰 300-Projects/`, `300-Projects/` ve adı `-projects`, `-projeler`, `_projects` ya da
+`_projeler` ile biten kök klasörler altındaki `<proje>/Kurallar.md`, ayrıca proje kapsamı
+eşlemeleri; klasör adı kasadaki yazımıyla okunur) kural dosyalarını da aynı referans açılışla ölçer ve yalnız
+kırpılan ya da `sync` sonrası değişmiş (`stale`) olanları
+`companion_rules_opening.project_rules` altında listeler. Gizli (`visibility: private`),
+güvenilmeyen ya da dışlanan klasördeki proje kuralları listelenmez; tanı salt okunurdur
+ve tek çağrıda en fazla 50 proje dosyasına bakar. Bulunan ve ölçülen dosya sayısı
+`project_rules_total` ve `project_rules_checked` alanlarındadır; sınır aşılırsa `--human`
+çıktısı ölçülmeyen dosya sayısını tek satırla bildirir.
+
 Doctor, kaynak doğrulamasından geçmeyen Kurallar.md için açılış ölçümünü `stale` olarak bildirir; `beyin.py sync` sonrasında yeniden kontrol edin. Bu tanı salt okunurdur, dışlanan kural metnini göstermez ve kuralları arşive taşımaz.

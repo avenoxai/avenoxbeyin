@@ -32,7 +32,7 @@ flowchart TB
 
 Asıl kaynak dosyaların. Beyin bunların yerel indeksini tutar ve seçilen bağlamı kullandığın AI istemcisine verir. Sohbet geçmişinin tamamını kendiliğinden bilgiye dönüştürmez; kalıcı olmasını istediğin şeyi nota yazdırırsın.
 
-> **V3.17.0** ile ChatGPT, Claude ya da Gemini'nin senin hakkında bildiklerini beyne taşıyabilirsin. Ajanına "verilerimi çek" de; promptu panona kopyalar, sen öbür uygulamaya yapıştırıp cevabı geri getirirsin. [Sürüm notu](docs/v3/releases/3.17.0.md) · [Önceki sürüm](docs/v3/releases/3.16.0.md).
+> **V3.18.0** ile kırpılmasını istemediğin kuralları `<!-- beyin:pin -->` ile sabitleyebilirsin. Antigravity açılışı her mesajda yeniden basmıyor, Web Clipper yazıları tam taşınıyor ve backtick içindeki gizli değerler yeniden maskeleniyor. [Sürüm notu](docs/v3/releases/3.18.0.md) · [Önceki sürüm](docs/v3/releases/3.17.0.md).
 
 <a id="kurulum"></a>
 ## Üç adımda kurulum

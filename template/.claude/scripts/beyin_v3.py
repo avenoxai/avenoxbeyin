@@ -868,6 +868,12 @@ def _fold(text):
 
 def _compounds(text):
     """(joined spelling, parts) of every hyphenated name in folded text."""
+    for _start, _end, joined, parts in _compound_spans(text):
+        yield joined, parts
+
+
+def _compound_spans(text):
+    """(start, end, joined spelling, parts) of every hyphenated name in folded text."""
     end = 0
     for hyphen in _HYPHEN.finditer(text):
         at = hyphen.start()
@@ -882,7 +888,7 @@ def _compounds(text):
         parts = compound.group().replace("\u2010", "-").split("-")
         joined = "".join(parts)
         if len(joined) <= 64 and not joined.isdigit():
-            yield joined, parts
+            yield compound.start(), end, joined, parts
 
 
 def _token_counts(text):
@@ -1000,6 +1006,86 @@ def _strict_terms(terms):
     and alphanumeric identifiers ('722b4dd').
     """
     return {t for t in terms if len(t) >= 2 and not (t.isdigit() and len(t) < 3)}
+
+
+def _delivered_text(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return ' '.join(_delivered_text(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return ' '.join(_delivered_text(item) for item in value)
+    return str(value) if value is not None else ''
+
+
+# Pronouns and auxiliaries a prompt carries around its topic. Not retrieval stopwords (that list
+# changes ranking); they only stay out of the automatic context's term coverage (#909).
+_COVERAGE_FILLERS = _tokens(
+    "i me we us you your he she they them their be been being am can could should would will shall "
+    "may might must there here any some many much so if then than also just not as by into out up all "
+    "use using need want often "
+    "ben sen biz siz onlar da de ki gibi daha cok var ama fakat her hep sey neden niye nerede kac gerek lazim")
+# A longer word is a pasted blob (hex calldata, bytecode, base64, a URL run), not a topic word;
+# the same cap as a hyphenated name's joined spelling (_compound_spans).
+_COVERAGE_WORD_MAX = 64
+
+
+def query_term_coverage(query, records):
+    """(terms, unmatched): a prompt's topical words and, in prompt order, those no record contains.
+
+    The explicit context command's unmatched_terms rule (#768) for automatic context (#909):
+    a word matches by its stem in the records' text, title, fact values and aliases as given
+    (a clipped text counts only as far as it was clipped). Question wrappers, stopwords,
+    pronouns and auxiliaries, single letters, short numbers and words over 64 characters (a
+    pasted hex or base64 blob) are not terms, and one stem counts once. A hyphenated name (claude-mem, e-posta) is one term, as retrieval reads it
+    (#430): a record holds it by its joined spelling or by every part that is a term itself.
+    A possessive also counts as held by its short Turkish root (boyum by Boy, _query_roots),
+    and two words on one root are one term ("boyum boyun").
+    This is lexical coverage only: a synonym, a clipped tail or a scope filter also leaves a
+    word unmatched.
+    """
+    covered = set()
+    for record in records:
+        covered.update(_tokens(' '.join(_delivered_text(record.get(key, ''))
+                                        for key in ('text', 'title', 'facts', 'aliases'))))
+
+    def is_term(stem):
+        return stem not in STOPWORDS and stem not in _COVERAGE_FILLERS and _strict_terms({stem})
+
+    text = _fold(strip_query_fillers(query or ''))
+    spans = list(_compound_spans(text))
+    terms, unmatched, seen, at = [], [], set(), 0
+    for match in re.finditer(r'[a-z0-9]+', text):
+        while at < len(spans) and spans[at][1] <= match.start():
+            at += 1
+        if at < len(spans) and spans[at][0] < match.end():
+            start, end, joined, parts = spans[at]
+            if match.start() > start:
+                continue  # a later part of a name already counted
+            word, stem = text[start:end].replace('\u2010', '-'), _stem(joined)
+            needed = [part for part in map(_stem, parts) if is_term(part)]
+            if not needed:
+                continue  # every part is a wrapper, a single letter or a short number
+            found = stem in covered or all(part in covered for part in needed)
+            keys, own = {stem, *needed}, {stem}
+        else:
+            word, stem = match.group(), _stem(match.group())
+            if len(word) > _COVERAGE_WORD_MAX or not is_term(stem):
+                continue
+            # A possessive meets its short root as in _query_roots (boyum -> Boy); the
+            # delivered records stand in for the frequency check retrieval already passed.
+            root = None if stem in _WHOLE_WORDS else _short_root(stem)
+            if root in _PRONOUN_ROOTS or root in STOPWORDS:
+                root = None
+            found = stem in covered or root in covered
+            keys = own = {stem, root} - {None}
+        if not own.isdisjoint(seen):
+            continue
+        seen.update(keys)
+        terms.append(word)
+        if not found:
+            unmatched.append(word)
+    return terms, unmatched
 
 
 # bu and su are stopwords; their oblique stem (bunu, sunun, bunlar -> bun) is not a topic either.

@@ -157,7 +157,7 @@ class AuditReadErrorsTest(unittest.TestCase):
     def test_healthy_report_shape_and_missing_target_behavior_are_unchanged(self):
         report = audit.audit_memory(self.vault)
         self.assertEqual(set(report), {'schema', 'vault', 'target', 'notes_scanned', 'pairs_compared',
-                                       'threshold', 'min_shared', 'findings'})
+                                       'linked_pairs_skipped', 'threshold', 'min_shared', 'findings'})
         self.assertEqual(report['notes_scanned'], 2)
         with self.assertRaises(FileNotFoundError):
             audit.audit_memory(self.vault, target_file='knowledge/missing.md')

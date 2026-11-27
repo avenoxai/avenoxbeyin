@@ -797,6 +797,10 @@ def receipt_day(created_at, zone=None):
         return None
 
 
+def _receipt_alias(event_id):
+    return ' '.join(re.sub(r'[\[\]|#^]', ' ', event_id).split())[:80].strip()
+
+
 def _receipt_link(source, event_id):
     """Wikilink to a receipt, shown by its event_id instead of the hash file name (#514).
 
@@ -804,8 +808,33 @@ def _receipt_link(source, event_id):
     readable left, or none given for a withheld receipt, keeps the bare link. Obsidian's
     graph still labels the node by the hash file name, which is the receipt's identity.
     """
-    alias = ' '.join(re.sub(r'[\[\]|#^]', ' ', event_id).split())[:80].strip()
+    alias = _receipt_alias(event_id)
     return f'[[{source}|{alias}]]' if alias else f'[[{source}]]'
+
+
+def _missing_receipt_link(source, event_id):
+    """Plain text for an indexed receipt whose source file is gone, so lint sees no broken link (#899).
+
+    A withheld receipt passes an empty event_id and shows only the hash path, as its wikilink did.
+    """
+    alias = _receipt_alias(event_id)
+    return f'`{source}` ({alias}, file missing on disk)' if alias else f'`{source}` (file missing on disk)'
+
+
+def _present_receipt_names(engine):
+    """Receipt file names on disk for live views; None when the directory cannot be listed.
+
+    An absent or symlinked receipts/ (sync never reads one) has no sources. A transient
+    listing error renders links unchecked instead of rewriting every view as missing;
+    the receipt scan already reports that directory.
+    """
+    receipts_dir = engine.root / 'receipts'
+    try:
+        if receipts_dir.is_symlink() or not receipts_dir.is_dir():
+            return set()
+        return set(os.listdir(receipts_dir))
+    except OSError:
+        return None
 
 
 def _event_refs(event):
@@ -852,10 +881,26 @@ def _receipt_view_contents(engine, db, warnings=None, *, include_human_daily=Fal
                              '' if withheld else event['event_id']))
     desired = {}
     outcomes = []
+    # Only live views check the disk; ownership proofs (receipt_sources) and the released format do not.
+    existing_receipts = None
+    if not released_format and receipt_sources is None:
+        existing_receipts = _present_receipt_names(engine)
+    missing_warned = set()
     for day, items in sorted(grouped.items()):
         entries = []
         for _, at, source, summary, event_id in sorted(items):
-            link = f'[[{source}]]' if released_format else _receipt_link(source, event_id)
+            filename = source[len('receipts/'):]
+            if existing_receipts is not None and filename not in existing_receipts:
+                link = _missing_receipt_link(source, event_id)
+                if warnings is not None and source not in missing_warned:
+                    missing_warned.add(source)
+                    warnings.append({
+                        'source': source,
+                        'kind': 'missing_receipt_source',
+                        'reason': 'receipt source file missing on disk; rendered without wikilink',
+                    })
+            else:
+                link = f'[[{source}]]' if released_format else _receipt_link(source, event_id)
             entries.append(f'## {at}\n\n{summary}\n\nSource: {link}\n')
             outcomes.append(f'- {day}: {summary}\n  Source: {link}\n')
         relative = f'daily/{day}.md' if layout == 'flat' else f'daily/v3/{day}.md'

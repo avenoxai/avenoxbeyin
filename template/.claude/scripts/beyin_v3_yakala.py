@@ -1895,8 +1895,71 @@ def _section(body, name):
     return match.group(1).strip() if match else ''
 
 
+# The Web Clipper template ends with `## Icerik`, and `{{content}}` carries the page's own `##`
+# headings. The section therefore runs to the next heading that this module itself appends to a card:
+# a re-capture note (`capture`) or the `## Islendi` summary (`finish`). Anything else is page text.
+_CLIPPER_SECTION = re.compile(r'^## (Icerik|\u0130\u00e7erik)\s*$(.*?)'
+                              r'(?=^## (?:Islendi|Yeniden yakalandi \(\d{4}-\d{2}-\d{2} \d{2}:\d{2}\))[ \t]*$|\Z)',
+                              re.M | re.S)
+
+
+def _clipper_section(body):
+    """The clipped page body under `## Icerik`, including its internal ## headings."""
+    match = _CLIPPER_SECTION.search(body)
+    return match.group(2).strip() if match else ''
+
+
+_CLIPPER_POINTER = re.compile(r'Tam metin ham dosyaya tasindi: `([^`\n]+)`[ \t]*(?:\n|\Z)')
+_CLIPPER_LEGACY_NOTE = ('Onceki surumde ilk alt baslikta kesilen Web Clipper metni, ham dosyadaki '
+                        'girisle birlestirilerek yeniden yazildi.')
+
+
+def _clipper_text(vault, card, clipped):
+    """Return (page text, note) for the `## Icerik` section of a card that may already be processed.
+
+    After `isle`, the section holds only the pointer to the raw file; that is no clipped page. Before
+    3.18.0 (#908) `isle` cut the page at its first `##` heading: the intro went to the raw file and
+    the rest stayed in the card under the pointer. Such a card is rebuilt from both halves, so a
+    second `isle` repairs it instead of overwriting the raw intro with the leftover sections.
+    """
+    pointer = _CLIPPER_POINTER.match(clipped)
+    if not pointer:
+        return clipped, None
+    rest = clipped[pointer.end():].strip()
+    if not rest:
+        return '', None
+    raw = card['path'].parent / RAW / (card['id'] + '.md')
+    try:
+        if pointer.group(1) != raw.relative_to(vault).as_posix() or not raw.is_file():
+            return '', None
+        stored = raw.read_text(encoding='utf-8').replace('\r\n', '\n')
+    except (OSError, ValueError, UnicodeDecodeError):
+        return '', None
+    head = stored.split('\n---\n', 1)[0] + '\n'
+    kart = card['path'].relative_to(vault).as_posix()
+    boundary = re.search(r'^<!-- yakala-kaynak:([0-9a-f]{32}):baslangic -->\n', stored, re.M)
+    if not boundary or '\nkart: ' + json.dumps(kart, ensure_ascii=False) + '\n' not in head \
+            or '\nyontem: "web-clipper"\n' not in head:
+        return '', None  # not this card's clipped intro: the old fallback, the raw file stays as it is
+    closing = '\n<!-- yakala-kaynak:' + boundary.group(1) + ':bitis -->'
+    intro = stored[boundary.end():]
+    if closing not in intro:
+        return '', None
+    intro = intro.rsplit(closing, 1)[0].strip()
+    if not intro:
+        return '', None
+    if rest in intro:
+        return intro, _CLIPPER_LEGACY_NOTE  # repaired by hand already
+    return intro + '\n\n' + rest, _CLIPPER_LEGACY_NOTE
+
+
 def _without_section(body, name, replacement):
     return re.sub(r'^## ' + name + r'\s*$.*?(?=^## |\Z)', '## ' + name + '\n\n' + replacement + '\n\n', body, count=1, flags=re.M | re.S)
+
+
+def _without_clipper_section(body, replacement):
+    """Replace the whole clipped page body; the card's own later sections stay in the card."""
+    return _CLIPPER_SECTION.sub(lambda match: '## ' + match.group(1) + '\n\n' + replacement + '\n\n', body, count=1)
 
 
 def _windows_reserved_name(part):
@@ -1990,9 +2053,9 @@ def extract(vault, card, found, allow_audio=True, info=None, state=None):
         _safe_source_url(url)  # Cards can also be edited, clipped or synced.
         if kind == 'youtube' and kind_of(url) != 'youtube':
             kind = kind_of(url)  # an edited field never hands another site to yt-dlp's generic extractor
-    clipped = _section(body, 'Icerik') or _section(body, 'İçerik')
+    clipped, legacy = _clipper_text(vault, card, _clipper_section(body))
     if clipped and len(clipped) > 200 and kind != 'youtube':
-        return clipped, 'web-clipper', None
+        return clipped, 'web-clipper', legacy
     if kind == 'youtube' and url:
         _safe_network_url(url)
         return via_youtube(url, found, allow_audio, info, state)
@@ -2151,8 +2214,8 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
                            '## Kaynak içeriği\n\n' + opening + '\n')
                 raw_write = (raw, '\n'.join(header) + '\n\n' + warning + text.strip() + '\n' + closing + '\n')
                 if method == 'web-clipper':
-                    body = _without_section(body, 'Icerik' if _section(body, 'Icerik') else 'İçerik',
-                                            'Tam metin ham dosyaya tasindi: `' + raw.relative_to(vault).as_posix() + '`')
+                    body = _without_clipper_section(body,
+                                                    'Tam metin ham dosyaya tasindi: `' + raw.relative_to(vault).as_posix() + '`')
                 meta.update(durum='cikarildi', yontem=method, ham=raw.relative_to(vault).as_posix())
                 meta.pop('hata', None)
                 # Video, DOCX and the web completeness check report these; only explicit

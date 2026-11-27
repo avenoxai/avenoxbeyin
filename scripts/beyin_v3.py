@@ -863,14 +863,17 @@ def hook_reconcile(vault: Path, state: Path, force: bool = False) -> dict:
         elif name == ".agents/hooks.json":
             managed = data.get("beyin-v3")
             if isinstance(managed, dict):
-                for event in ("PreInvocation", "Stop"):
+                for event in ("SessionStart", "PreInvocation", "PostToolUse", "Stop"):
                     if event in managed and isinstance(managed[event], list):
                         posix, windows = _hook_commands([sys.executable, hook_script, "--vault", vault, "--state", state,
                                                          "--harness", "antigravity", "--event", event])
                         all_new_commands.extend([posix, windows])
                         target_cmd = windows if os.name == "nt" else posix
                         timeout = 20 if os.name == "nt" else 5
-                        for handler in managed[event]:
+                        # PostToolUse handlers sit in matcher groups (#903); the other events are flat.
+                        handlers = [handler for group in managed[event] if isinstance(group, dict)
+                                    for handler in (group.get("hooks") if isinstance(group.get("hooks"), list) else [group])]
+                        for handler in handlers:
                             if isinstance(handler, dict):
                                 old_cmd = handler.get("command", "")
                                 if not isinstance(old_cmd, str):
@@ -1888,14 +1891,23 @@ def main(argv=None, return_result=False):
                 else:
                     from beyin_v3_hook import receipt_context
                     budget = companion.client_budget('claude', companion.opening_budget(state, prefs['context_chars']))
-                    rules = companion.rules_opening(engine.MemoryStore(state, vault, read_only=True), budget,
-                                                    receipt_context(vault, state))
+                    ro_store = engine.MemoryStore(state, vault, read_only=True)
+                    opening_receipt = receipt_context(vault, state)
+                    rules = companion.rules_opening(ro_store, budget, opening_receipt)
                     result['companion_rules_opening'] = dict(
                         rules or {}, status='stale' if rules and rules.get('stale') else
                         'clipped' if rules and rules['clipped'] else 'ok' if rules else 'no_rules',
                         budget=budget, harness='claude')
                     if rules and not rules.get('stale'):
                         result['companion_rules_opening']['measurement'] = 'reference_opening'
+                    scanned = {}
+                    project_rules = companion.project_rules_opening(ro_store, budget, opening_receipt, report=scanned)
+                    if project_rules:
+                        result['companion_rules_opening']['project_rules'] = project_rules
+                    if scanned.get('total'):
+                        # Past the per-call cap the rest are not measured; say how many.
+                        result['companion_rules_opening'].update(project_rules_checked=scanned['checked'],
+                                                                 project_rules_total=scanned['total'])
             except Exception as exc:  # never hides the rest of doctor
                 result['companion_rules_opening'] = {'status': 'unavailable', 'error': type(exc).__name__}
             try:
