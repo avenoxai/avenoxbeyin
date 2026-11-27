@@ -62,7 +62,7 @@ class QueryTermCoverageTest(unittest.TestCase):
         self.assertEqual(beyin_v3.query_term_coverage(None, []), ([], []))
 
 
-class HookUnmatchedTermsTest(unittest.TestCase):
+class HookVault(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='v3-hook-coverage-')
         self.addCleanup(self.tmp.cleanup)
@@ -98,6 +98,8 @@ class HookUnmatchedTermsTest(unittest.TestCase):
         output = json.loads(result.stdout)
         return output.get('hookSpecificOutput', {}).get('additionalContext', '')
 
+
+class HookUnmatchedTermsTest(HookVault):
     def test_partly_covered_prompt_names_its_unmatched_words(self):
         body = envelope(self.invoke('what is the Orbit API GraphQL schema version'))
         self.assertIn('projects/orbit/decisions.md', [r['source'] for r in body['records']])
@@ -119,6 +121,51 @@ class HookUnmatchedTermsTest(unittest.TestCase):
 
     def test_unmatched_prompt_still_injects_nothing(self):
         self.assertEqual(self.invoke('recommend a recipe for lentil soup'), '')
+
+
+class HookAbstainThresholdTest(HookVault):
+    """Opt-in abstention (#909): BEYIN_V3_ABSTAIN_COVERAGE; off by default, byte for byte."""
+    PARTIAL = 'what is the Orbit API GraphQL schema version'  # 2 of 5 terms: coverage 2/4
+    COVERED = 'what is the Orbit API rate limit'
+    CHATTY = ('Before we continue the parser refactor, the docs cleanup and the release notes '
+              'checklist for tomorrow, remind me what the Orbit rate limit is')
+
+    def test_low_coverage_match_is_withheld_behind_a_note(self):
+        self.assertFalse(envelope(self.invoke(self.PARTIAL, BEYIN_V3_ABSTAIN_COVERAGE='0.5'))['abstained'])
+        context = self.invoke(self.PARTIAL, BEYIN_V3_ABSTAIN_COVERAGE='0.6')
+        body = envelope(context)
+        self.assertEqual(body['records'], [])
+        self.assertTrue(body['abstained'])
+        self.assertEqual(body['unmatched_terms'], ['graphql', 'schema', 'version'])
+        self.assertIn('No reliable related record', body['note'])
+        self.assertIn('2 of 5 prompt terms (coverage 0.50, threshold 0.6)', body['note'])
+        self.assertNotIn('Orbit API decisions', context)
+
+    def test_covered_match_is_delivered_with_the_threshold_on(self):
+        for prompt in (self.COVERED, self.CHATTY):
+            with self.subTest(prompt=prompt):
+                on = envelope(self.invoke(prompt, BEYIN_V3_ABSTAIN_COVERAGE='0.75'))
+                self.assertFalse(on['abstained'])
+                self.assertIn('projects/orbit/decisions.md', [r['source'] for r in on['records']])
+                self.assertNotIn('note', on)
+
+    def test_threshold_one_requires_every_term(self):
+        body = envelope(self.invoke('Orbit rate limit tomorrow', BEYIN_V3_ABSTAIN_COVERAGE='1'))
+        self.assertTrue(body['abstained'])
+        self.assertEqual(body['unmatched_terms'], ['tomorrow'])
+
+    def test_off_and_invalid_values_keep_the_default_output(self):
+        def strip_clock(text):
+            return text.split('\n', 1)[1]  # the receipt line carries the minute
+        for prompt in (self.PARTIAL, self.COVERED, 'recommend a recipe for lentil soup'):
+            default = strip_clock(self.invoke(prompt) or '\n')
+            for value in ('', '0', '-1', '1.5', 'nan', 'inf', 'yes'):
+                with self.subTest(prompt=prompt, value=value):
+                    self.assertEqual(strip_clock(self.invoke(prompt, BEYIN_V3_ABSTAIN_COVERAGE=value) or '\n'),
+                                     default)
+
+    def test_prompt_without_matches_stays_silent(self):
+        self.assertEqual(self.invoke('recommend a recipe for lentil soup', BEYIN_V3_ABSTAIN_COVERAGE='0.6'), '')
 
 
 if __name__ == '__main__':

@@ -17,6 +17,17 @@ EVENTS = {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "PreCompact
 HOOK_BUDGET = 3.8  # seconds; installed POSIX hooks are killed at 5
 SYNC_WAIT = 1.5  # seconds the prompt hook waits for the source sync before reading the last index
 UNMATCHED_SHOWN = 8  # prompt words listed as unmatched; a pasted page must not spend the budget on them
+
+
+def abstain_coverage():
+    """Opt-in per-turn abstention (#909): the share of prompt terms the matched records must
+    contain, from BEYIN_V3_ABSTAIN_COVERAGE in (0, 1]; anything else (unset, 0, junk) is off.
+    An environment value, never a vault preference: an older release ignores it on rollback."""
+    try:
+        value = float(os.environ.get("BEYIN_V3_ABSTAIN_COVERAGE", "").strip())
+    except ValueError:
+        return None
+    return value if 0 < value <= 1 else None
 # A client that sandboxes its hook commands (a workspace-write profile, a read-only home) can read
 # the vault and the index the previous sync committed, but not the runtime state. Both refusals
 # below therefore keep the turn's context: it comes from that index with one line saying why it will
@@ -1166,9 +1177,28 @@ def main():
                                                    timeout_cap=min(2.0, remaining), project=project)
                         except Exception:
                             pass  # an advisor failure must never cost the local context
+                # Opt-in abstention (#909): matches that hold too few of the prompt's terms are
+                # withheld behind one short note instead of reading as an answer. Off by default.
+                # The denominator is capped like passage admission's, so a question inside a long,
+                # chatty prompt is not withheld merely for the prompt's length.
+                threshold = abstain_coverage()
+                abstained = False
+                if threshold is not None and query and not inherited and context.get("records"):
+                    from beyin_v3 import query_term_coverage
+                    from beyin_v3_passage import COVERAGE_CAP
+                    terms, missing = query_term_coverage(query, context["records"])
+                    held = len(terms) - len(missing)
+                    coverage = min(1.0, held / min(len(terms), COVERAGE_CAP)) if terms else 1.0
+                    if coverage < threshold:
+                        abstained = True
+                        context = {"records": [], "unmatched_terms": missing[:UNMATCHED_SHOWN],
+                                   "note": (f"No reliable related record: the {len(context['records'])} closest "
+                                            f"match(es) hold {held} of {len(terms)} prompt terms (coverage "
+                                            f"{coverage:.2f}, threshold {threshold:g}). Search explicitly with "
+                                            "beyin.py context if the vault should know this.")}
                 duplicates = []
                 topic_evidence = getattr(context, 'evidence', {})
-                suffix = receipt
+                suffix = '' if abstained else receipt
                 if dedupe_enabled and context.get("records"):
                     try:
                         from beyin_v3_dedupe import drop_delivered, receipt_delivered
@@ -1186,7 +1216,8 @@ def main():
                     # delivered record contains, nor one held back as already delivered. The field
                     # takes room, which can clip a record further, so render again until it holds.
                     # A continuation is judged by its earlier topic, not by its own vague words.
-                    context.pop("unmatched_terms", None)
+                    if not abstained:
+                        context.pop("unmatched_terms", None)
                     rendered = render_context(context, max(0, budget - len(notice)), prefix=prefix, suffix=suffix)
                     for _ in range(3):
                         if inherited or not rendered[1].get("records"):
@@ -1235,7 +1266,7 @@ def main():
                              inherited=inherited)
                 except (ValueError, OSError):
                     pass
-                if not usage_records and not receipt_only:
+                if not usage_records and not receipt_only and not abstained:
                     record_usage([])
                     diagnostic = fit_client(args.harness, (notice + warning)[:limit])
                     remember_notice(diagnostic)

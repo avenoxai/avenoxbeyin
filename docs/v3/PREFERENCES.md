@@ -351,6 +351,14 @@ Her mesajda hook'un eklediği bağlam (`context_mode: turn`) strict aramadan gel
 
 İndeks türetilmiş veridir ve vault dışındaki runtime klasöründe `passages.json` olarak durur (JSON, 0600 izin, atomik yazım, 64 MB sınırı; pickle yoktur). Yalnız değişen kayıtlar yeniden işlenir; kelime ayırıcı değişirse önbellek kendiliğinden yeniden kurulur. İlk kurulum her turda en fazla yaklaşık 1 saniye çalışır ve kaldığı yerden devam eder; tamamlanana kadar o turlar eski yolu kullanır, böylece büyük bir vault hook süresini aşmaz.
 
+### Eşleşmeyen terimler ve isteğe bağlı çekimserlik (#909)
+
+Tur başı bağlam, teslim ettiği kayıtlarda geçmeyen soru kelimelerini JSON zarfında `unmatched_terms` alanıyla bildirir (açık `context` komutundaki #768 alanının hook karşılığı). Alan yalnız en az bir kayıt teslim edildiğinde ve en az bir kelime eksik kaldığında görünür; en fazla 8 kelime, mesajdaki sırasıyla. Soru kalıpları, durak kelimeleri, zamir ve yardımcı sözcükler (`should`, `we`, `gibi`, `daha`), tek harfler ve bir iki haneli sayılar terim sayılmaz. Bu bir kelime eşleşmesi teşhisidir: eş anlamlı bir sözcük ya da kırpılan bir paragraf da kelimeyi eksik gösterir.
+
+Çekimserlik eşiği varsayılan olarak kapalıdır. Açmak için hook'un ortamına `BEYIN_V3_ABSTAIN_COVERAGE` değişkenini 0 ile 1 arasında bir değerle ver (Claude Code'da `settings.json` içindeki `"env"` bloğu; başlangıç için `0.6`). Kapsama, teslim edilecek kayıtlarda geçen soru terimlerinin, en fazla 4 olan paydaya oranıdır (pasaj kabulündeki payda sınırıyla aynı; uzun, sohbet havasındaki bir mesaj uzunluğu yüzünden elenmez). Kapsama eşiğin altındaysa kayıtlar yerine kısa bir zarf gelir: `"records": []`, `"abstained": true`, eksik terimler ve `No reliable related record: ...` notu. Hiç eşleşme olmayan mesaj eskisi gibi sessiz kalır; süreklilikten gelen devam mesajı ve SessionStart eşikten etkilenmez. Değişken yoksa, `0`, 1'den büyük ya da sayı değilse çıktı bayt bayt aynıdır. Ayar `.beyin-preferences.json`'a yazılmaz, bu yüzden eski sürüme dönüşte hiçbir şeyi bozmaz.
+
+Bedeli ölçüldü: eşik 0.6'da depo içindeki sentetik pasaj korpusunda (`scripts/evaluate_v3_passages.py`, 42 kısa ve 42 uzun soru) teslim edilen doğru cevaplardan hiçbiri düşmedi, 0.75'te kısa sorularda 39 doğru kaynaktan 3'ü düştü. Kendi mini setimizde (8 not, 12 yanıtsız, 12 yanıtlanabilir soru) eşik kapalıyken yanıtsız soruların 3'ünde bağlam doluydu; 0.6'da 12'si de boş ya da çekimser kaldı, yanıtlanabilir sorulardan ek kayıp olmadı; 0.75'te yanıtlanabilir 3 soru da düştü. Kasanın kelime dağarcığıyla yazılmış ama cevabı olmayan sorular (korpustaki `generic` kontroller) eşikten geçer; eşik eş anlamlıları da tanımaz. Kendi kasanda denemek için önce `0.6` ile başla, doğru bağlamın düştüğünü görürsen değeri düşür.
+
 ### `retrieval.json`
 
 Runtime klasöründeki (konumu için bkz. QUICKSTART) isteğe bağlı `retrieval.json` örneği:
