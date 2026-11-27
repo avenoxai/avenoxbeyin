@@ -213,6 +213,36 @@ def pinned_overflow(count, source=None):
             'kural payinin en fazla yarisini kullanir. Isareti en onemli birkac maddeye indir.')
 
 
+def _companion_hygiene_entries(hygiene):
+    """Collect (label, file_name, entry) for over-limit root and project companion files."""
+    if not isinstance(hygiene, dict):
+        return []
+    files = hygiene.get('files') if isinstance(hygiene.get('files'), dict) else {}
+    entries = []
+    seen = set()
+    for name in hygiene.get('over_limit') or []:
+        if not isinstance(name, str) or '/' in name:
+            continue
+        entry = files.get(name)
+        if isinstance(entry, dict) and 'chars' in entry and 'limit' in entry:
+            entries.append((name, name, entry))
+            seen.add(name)
+    for proj in hygiene.get('projects') or []:
+        if not isinstance(proj, dict):
+            continue
+        directory = plain_text(proj.get('directory') or '')
+        pfiles = proj.get('files') if isinstance(proj.get('files'), dict) else {}
+        for name in proj.get('over_limit') or []:
+            if not isinstance(name, str):
+                continue
+            entry = pfiles.get(name)
+            label = f'{directory}/{name}' if directory else name
+            if isinstance(entry, dict) and 'chars' in entry and 'limit' in entry and label not in seen:
+                entries.append((label, name, entry))
+                seen.add(label)
+    return entries
+
+
 def human_result(result, command, installed_version=None):
     status = result.get('status', '')
     if command == 'scheduled-check' and 'status' in result:
@@ -558,11 +588,22 @@ def human_result(result, command, installed_version=None):
         if result.get('exclusions_error'):
             lines.append('.beyin-exclusions.json gecersiz; guncelleme duzeltilene kadar durur: ' + result['exclusions_error'])
         hygiene = result.get('companion_hygiene') or {}
-        for name in hygiene.get('over_limit', []):
-            entry = hygiene['files'][name]
-            lines.append('Hafiza hijyeni: ' + name + ' ' + str(entry['chars']) + ' karakter (sinir ' + str(entry['limit']) +
-                         '). Ajanina "' + ('py -3' if sys.platform == 'win32' else 'python3') +
-                         ' beyin.py companion-compact" calistirmasini soyle; eski kayitlar arsive tasinir, metin silinmez.')
+        parallel_on = isinstance(result.get('parallel_sessions'), dict) and result['parallel_sessions'].get('enabled') is True
+        python_cmd = 'py -3' if sys.platform == 'win32' else 'python3'
+        for label, file_name, entry in _companion_hygiene_entries(hygiene):
+            prefix = f'Hafiza hijyeni: {plain_text(label)} {entry["chars"]} karakter (sinir {entry["limit"]}). '
+            if parallel_on and file_name == 'Last-Session.md':
+                suggested = ((int(entry['chars']) + 999) // 1000) * 1000
+                if suggested <= 200000:
+                    advice = (f'Bu kartlar hala gerekliyse: "{python_cmd} beyin.py preferences '
+                              f'--last-session-chars {suggested}". ')
+                else:
+                    advice = 'Dosya desteklenen sinir tavanini asiyor; arsivlemeden once devir kartlarini gozden gecir. '
+                lines.append(prefix + 'Paralel oturum bildirimi acik; diger oturumlarin taze kartlarini yalniz bu uyariyi '
+                             'kaldirmak icin sikistirma. ' + advice + 'Sikistirmayi diger oturumlar bittikten sonra yap.')
+            else:
+                lines.append(prefix + 'Ajanina "' + python_cmd +
+                             ' beyin.py companion-compact" calistirmasini soyle; eski kayitlar arsive tasinir, metin silinmez.')
         storage = result.get('state_storage') or {}
         if storage.get('compact_suggested'):
             lines.append('Yerel indeks (bilgi): ' + megabytes(storage['database_bytes']) + ' MB, bunun ' +
