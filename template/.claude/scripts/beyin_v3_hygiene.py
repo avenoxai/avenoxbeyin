@@ -477,11 +477,12 @@ def hook_cap_warning(vault, payload, cap=DEFAULT_CAP, harness=None, state=None):
 
     Opt-in: the caller only invokes this when word_cap_warning is on.
     Harness gate (#130 decision): Claude/Codex receive additionalContext;
-    Pi appends it to the editor result, preserving structured output. Other
-    harnesses stay silent until their adapter behavior is proven.
+    Pi appends it to the editor result, preserving structured output;
+    Antigravity queues it for the next PreInvocation because PostToolUse
+    answers {}. Other harnesses stay silent until their adapter behavior is proven.
     A split signal, not a split action - the wording is MMS's on purpose.
     """
-    if harness is not None and harness not in ('claude', 'codex', 'pi'):
+    if harness is not None and harness not in ('claude', 'codex', 'pi', 'antigravity'):
         return ''
     if payload.get('hook_event_name') != 'PostToolUse':
         return ''

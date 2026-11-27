@@ -1131,6 +1131,173 @@ class HookInstallerTest(unittest.TestCase):
         self.assertIn('"records"', result['injectSteps'][0]['ephemeralMessage'])
         self.assertEqual((markers / 'key.json').read_text(encoding='utf-8'), 'not json')
 
+    def test_antigravity_post_edit_companion_limit_notice_delivers_on_next_pre_invocation(self):
+        self.seed()
+        companion = self.vault / '🔮 850-Companion'
+        companion.mkdir()
+        last = companion / 'Last-Session.md'
+        last.write_text('# Son oturum\n' + 'x' * 3100, encoding='utf-8')
+        conversation = 'agy-companion-limit'
+        base = {'conversationId': conversation, 'cwd': str(self.vault), 'workspacePaths': [str(self.vault)]}
+        self.invoke(dict(base, hookEventName='SessionStart', lastUserInput='devam'), 'antigravity',
+                    extra=['--event', 'SessionStart'])
+        # PostToolUse must strictly answer {} and queue the over-limit notice.
+        self.assertEqual(self.agy_tool(conversation, 'write_file', {'Path': str(last.resolve())}), {})
+        # A second write of the same over-limit file deduplicates the notice line.
+        self.assertEqual(self.agy_tool(conversation, 'edit_file', {'Path': str(last.resolve())}), {})
+        notice_file = self.state / 'antigravity-notices' / (hashlib.sha256(conversation.encode()).hexdigest() + '.json')
+        self.assertTrue(notice_file.is_file())
+        # Next mid-turn PreInvocation delivers the notice once and removes the file.
+        mid = dict(base, hookEventName='PreInvocation', invocationNum=1, initialNumSteps=3, lastUserInput='devam')
+        delivered = self.invoke(mid, 'antigravity', extra=['--event', 'PreInvocation'])
+        text = delivered['injectSteps'][0]['ephemeralMessage']
+        self.assertIn('Memory hygiene: Last-Session.md', text)
+        self.assertEqual(text.count('Memory hygiene: Last-Session.md'), 1)
+        self.assertFalse(notice_file.exists())
+        # Subsequent PreInvocation in the same turn is silent again.
+        self.assertEqual(self.invoke(dict(mid, invocationNum=2, initialNumSteps=5), 'antigravity',
+                                     extra=['--event', 'PreInvocation']), {})
+
+    def test_antigravity_post_edit_word_cap_warning_delivers_on_next_pre_invocation(self):
+        self.seed()
+        big = self.vault / 'notes/uzun.md'
+        big.write_text('kelime ' * 600, encoding='utf-8')
+        self.enable(word_cap_warning=True)
+        conversation = 'agy-word-cap'
+        base = {'conversationId': conversation, 'cwd': str(self.vault), 'workspacePaths': [str(self.vault)]}
+        self.assertEqual(self.agy_tool(conversation, 'write_file', {'Path': str(big.resolve())}), {})
+        mid = dict(base, hookEventName='PreInvocation', invocationNum=1, initialNumSteps=3, lastUserInput='not yaz')
+        delivered = self.invoke(mid, 'antigravity', extra=['--event', 'PreInvocation'])
+        text = delivered['injectSteps'][0]['ephemeralMessage']
+        self.assertIn('Bolum SINYALI', text)
+        self.assertIn('notes/uzun.md', text)
+        self.assertEqual(self.invoke(dict(mid, invocationNum=2, initialNumSteps=5), 'antigravity',
+                                     extra=['--event', 'PreInvocation']), {})
+
+    def test_antigravity_pending_notice_delivers_on_next_turn_invocation_zero(self):
+        self.seed()
+        big = self.vault / 'notes/uzun.md'
+        big.write_text('kelime ' * 600, encoding='utf-8')
+        self.enable(word_cap_warning=True)
+        conversation = 'agy-next-turn'
+        base = {'conversationId': conversation, 'cwd': str(self.vault), 'workspacePaths': [str(self.vault)]}
+        self.invoke(dict(base, hookEventName='SessionStart', lastUserInput='basla'), 'antigravity',
+                    extra=['--event', 'SessionStart'])
+        # Edit as the last tool call of the turn; no mid-turn invocationNum > 0 follows.
+        self.assertEqual(self.agy_tool(conversation, 'write_file', {'Path': str(big.resolve())}), {})
+        # Next user message with no matching records still delivers the pending notice once.
+        turn = dict(base, hookEventName='PreInvocation', invocationNum=0, initialNumSteps=5, lastUserInput='zzqx')
+        delivered = self.invoke(turn, 'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertIn('Bolum SINYALI', delivered['injectSteps'][0]['ephemeralMessage'])
+        self.assertEqual(self.invoke(dict(turn, initialNumSteps=8), 'antigravity',
+                                     extra=['--event', 'PreInvocation']), {})
+        # When the next turn DOES match records, both the notice and retrieval context arrive together.
+        self.assertEqual(self.agy_tool(conversation, 'write_file', {'Path': str(big.resolve())}), {})
+        matched = self.invoke(dict(turn, initialNumSteps=11, lastUserInput='Who owns Nebula calibration?'),
+                              'antigravity', extra=['--event', 'PreInvocation'])
+        combined = matched['injectSteps'][0]['ephemeralMessage']
+        self.assertIn('Bolum SINYALI', combined)
+        self.assertIn('"records"', combined)
+        self.assertIn('Synthetic Reviewer', combined)
+
+    def test_antigravity_post_edit_auto_sync_false_stays_empty_and_respects_opt_outs(self):
+        self.seed()
+        big = self.vault / 'notes/uzun.md'
+        big.write_text('kelime ' * 600, encoding='utf-8')
+        self.enable(word_cap_warning=True)
+        (self.vault / '.beyin-preferences.json').write_text(
+            json.dumps({'auto_sync': False, 'context_mode': 'off'}), encoding='utf-8')
+        conversation = 'agy-manual'
+        base = {'conversationId': conversation, 'cwd': str(self.vault), 'workspacePaths': [str(self.vault)]}
+        self.assertEqual(self.agy_tool(conversation, 'write_file', {'Path': str(big.resolve())}), {})
+        notice_file = self.state / 'antigravity-notices' / (hashlib.sha256(conversation.encode()).hexdigest() + '.json')
+        self.assertTrue(notice_file.is_file())
+        mid = dict(base, hookEventName='PreInvocation', invocationNum=1, initialNumSteps=3, lastUserInput='yaz')
+        # no_memory and BEYIN_V3_SKIP must not consume or inject the notice.
+        self.assertEqual(self.invoke(dict(mid, no_memory=True), 'antigravity', extra=['--event', 'PreInvocation']), {})
+        self.assertTrue(notice_file.is_file())
+        self.env['BEYIN_V3_SKIP'] = '1'
+        self.assertEqual(self.invoke(mid, 'antigravity', extra=['--event', 'PreInvocation']), {})
+        del self.env['BEYIN_V3_SKIP']
+        self.assertTrue(notice_file.is_file())
+        # Normal next PreInvocation delivers it once even when auto_sync is off.
+        delivered = self.invoke(mid, 'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertIn('Bolum SINYALI', delivered['injectSteps'][0]['ephemeralMessage'])
+        self.assertFalse(notice_file.exists())
+        # Same when delivered via invocationNum == 0 with auto_sync=False and context_mode=off.
+        self.assertEqual(self.agy_tool(conversation, 'write_file', {'Path': str(big.resolve())}), {})
+        turn0 = dict(base, hookEventName='PreInvocation', invocationNum=0, initialNumSteps=6, lastUserInput='devam')
+        delivered0 = self.invoke(turn0, 'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertIn('Bolum SINYALI', delivered0['injectSteps'][0]['ephemeralMessage'])
+        self.assertEqual(self.invoke(dict(turn0, initialNumSteps=9), 'antigravity',
+                                     extra=['--event', 'PreInvocation']), {})
+
+    def test_antigravity_notice_stale_oversized_and_symlink_fail_open(self):
+        self.seed()
+        conversation = 'agy-safety'
+        notice_dir = self.state / 'antigravity-notices'
+        notice_dir.mkdir(parents=True, exist_ok=True)
+        notice_file = notice_dir / (hashlib.sha256(conversation.encode()).hexdigest() + '.json')
+        mid = {'hookEventName': 'PreInvocation', 'conversationId': conversation,
+               'invocationNum': 1, 'initialNumSteps': 3, 'lastUserInput': 'devam'}
+        # Stale (> 1h) notice is ignored safely.
+        notice_file.write_text(json.dumps({'at': time.time() - 4000, 'text': 'old warning\n'}), encoding='utf-8')
+        self.assertEqual(self.invoke(mid, 'antigravity', extra=['--event', 'PreInvocation']), {})
+        # Oversized (> 8192 bytes) notice file is refused without crashing.
+        notice_file.write_text(json.dumps({'at': time.time(), 'text': 'x' * 9000}), encoding='utf-8')
+        self.assertEqual(self.invoke(mid, 'antigravity', extra=['--event', 'PreInvocation']), {})
+        notice_file.unlink()
+        # Invalid schema / boolean timestamp fails open.
+        notice_file.write_text(json.dumps({'at': True, 'text': 'bad ts\n'}), encoding='utf-8')
+        self.assertEqual(self.hook._consume_antigravity_notice(self.state, conversation), '')
+        # Symlink / reparse point check (real symlinks on POSIX; simulated reparse point on Windows).
+        if os.name != 'nt':
+            outside = self.root / 'outside-notice.json'
+            outside.write_text(json.dumps({'at': time.time(), 'text': 'secret\n'}), encoding='utf-8')
+            notice_file.symlink_to(outside)
+            self.assertEqual(self.hook._consume_antigravity_notice(self.state, conversation), '')
+            self.assertTrue(notice_file.is_symlink(), 'symlink target must not be unlinked')
+            self.hook._queue_antigravity_notice(self.state, conversation, 'new warning\n')
+            self.assertTrue(notice_file.is_symlink())
+            self.assertEqual(json.loads(outside.read_text(encoding='utf-8'))['text'], 'secret\n')
+            notice_file.unlink()
+            outside_dir = self.root / 'outside-notices-dir'
+            outside_dir.mkdir()
+            shutil.rmtree(notice_dir)
+            notice_dir.symlink_to(outside_dir, target_is_directory=True)
+            self.hook._queue_antigravity_notice(self.state, conversation, 'new warning\n')
+            self.assertEqual(list(outside_dir.iterdir()), [])
+            self.assertEqual(self.hook._consume_antigravity_notice(self.state, conversation), '')
+        else:
+            import stat as stat_mod
+            real_lstat = Path.lstat
+            class FakeReparse:
+                st_mode = stat_mod.S_IFREG | 0o600
+                st_size = 64
+                st_file_attributes = getattr(stat_mod, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
+            notice_file.write_text(json.dumps({'at': time.time(), 'text': 'reparse\n'}), encoding='utf-8')
+            def fake_lstat(p):
+                if p == notice_file:
+                    return FakeReparse()
+                return real_lstat(p)
+            with patch.object(Path, 'lstat', fake_lstat):
+                self.assertEqual(self.hook._consume_antigravity_notice(self.state, conversation), '')
+                self.assertTrue(notice_file.exists(), 'reparse file must not be unlinked')
+                self.hook._queue_antigravity_notice(self.state, conversation, 'overwrite attempt\n')
+            self.assertEqual(json.loads(notice_file.read_text(encoding='utf-8'))['text'], 'reparse\n')
+            class FakeDirReparse:
+                st_mode = stat_mod.S_IFDIR | 0o700
+                st_size = 0
+                st_file_attributes = getattr(stat_mod, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
+            def fake_dir_lstat(p):
+                if p == notice_dir:
+                    return FakeDirReparse()
+                return real_lstat(p)
+            with patch.object(Path, 'lstat', fake_dir_lstat):
+                self.assertEqual(self.hook._consume_antigravity_notice(self.state, conversation), '')
+                self.hook._queue_antigravity_notice(self.state, conversation, 'dir reparse attempt\n')
+            self.assertEqual(json.loads(notice_file.read_text(encoding='utf-8'))['text'], 'reparse\n')
+
     def test_internal_recursion_guard_skips_queue(self):
         self.env['BEYIN_V3_INTERNAL'] = '1'
         self.assertEqual(self.invoke(self.payload), {})
