@@ -765,9 +765,13 @@ def _antigravity_nonhuman_turn(payload, event):
 
 # Antigravity file writes for the receipt edit window (#903). write_file and edit_file with their Path
 # argument were observed in Antigravity CLI 1.5.18 PostToolUse payloads; code_action (TargetFile or
-# AbsolutePath) is the step-type name the IDE reported in #905. The installed PostToolUse matcher
-# names the same tools, so a read or shell step does not start Python at all.
-ANTIGRAVITY_WRITE_TOOLS = ('write_file', 'edit_file', 'code_action')
+# AbsolutePath) is the step-type name the IDE reported in #905. write_to_file, replace_file_content
+# and multi_replace_file_content are the IDE agent's file tools named in the 1.5.18 binary (its
+# write_to_file example and its policy check read TargetFile); no PostToolUse payload with them was
+# recorded. Reads (read_file, view_file, list_dir) and shell steps (run_command) are not writes.
+# The installed PostToolUse matcher names the same tools, so other steps do not start Python at all.
+ANTIGRAVITY_WRITE_TOOLS = ('write_file', 'edit_file', 'code_action',
+                           'write_to_file', 'replace_file_content', 'multi_replace_file_content')
 ANTIGRAVITY_EDIT_MATCHER = '^(?:' + '|'.join(ANTIGRAVITY_WRITE_TOOLS) + ')$'
 ANTIGRAVITY_PATH_ARGS = ('Path', 'TargetFile', 'AbsolutePath')
 

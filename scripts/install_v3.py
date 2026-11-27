@@ -21,7 +21,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 START, END = "<!-- beyin-v3:start -->", "<!-- beyin-v3:end -->"
 # Antigravity PostToolUse tools that write files; mirrors ANTIGRAVITY_EDIT_MATCHER in beyin_v3_hook.py (#903).
-ANTIGRAVITY_EDIT_MATCHER = "^(?:write_file|edit_file|code_action)$"
+ANTIGRAVITY_EDIT_MATCHER = "^(?:write_file|edit_file|code_action|write_to_file|replace_file_content|multi_replace_file_content)$"
 # By default Claude Code skips AGENTS.md whenever a CLAUDE.md exists; an import keeps it loaded once (#84).
 AGENTS_IMPORT = re.compile(r"(?m)^@(?:\./)?AGENTS\.md\s*$")
 CLAUDE_IMPORT = b"@AGENTS.md\n"

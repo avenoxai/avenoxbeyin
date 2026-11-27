@@ -165,7 +165,8 @@ Genel ayarlar kullanıcıya aittir ve vault güncellemesinin rollback kapsamına
   kullanıcı mesajında 0'dan başladığı için `PreInvocation` yalnız `SessionStart` gelmemiş bir
   konuşmada (o olayı göndermeyen istemci, güncellemeden önce açılmış konuşma) bir kez başlangıç
   sayılır (#903). `PostToolUse` yalnız başarılı dosya yazımında (`write_file`, `edit_file`,
-  `code_action`; `matcher` grubu içinde) düzenleme penceresini açar ve `{}` döner. `Stop` yalnız
+  `code_action`, IDE'deki `write_to_file`, `replace_file_content`, `multi_replace_file_content`;
+  `matcher` grubu içinde) düzenleme penceresini açar ve `{}` döner. `Stop` yalnız
   `fullyIdle: true` iken sayılır; receipt eksikse bir kez `{"decision":"continue"}` döner,
   devam ettirilen `Stop` (`continuationActive: true` ya da `executionNum` 0'dan büyük; 1.5.18
   devamdan sonraki `Stop`'u `continuationActive: false`, `executionNum: 1` ile gönderdi) aynı turda

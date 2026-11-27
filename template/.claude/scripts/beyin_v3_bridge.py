@@ -28,7 +28,7 @@ EDIT_MATCHER = 'Edit|Write|apply_patch|MultiEdit|NotebookEdit'
 ANTIGRAVITY = {'PreInvocation': 'SessionStart', 'Stop': 'Stop'}
 ANTIGRAVITY_NATIVE = dict(ANTIGRAVITY, SessionStart='SessionStart', PostToolUse=EDIT_EVENT)
 # Mirrors beyin_v3_hook.ANTIGRAVITY_EDIT_MATCHER: the tools whose PostToolUse opens the edit window.
-ANTIGRAVITY_EDIT_MATCHER = '^(?:write_file|edit_file|code_action)$'
+ANTIGRAVITY_EDIT_MATCHER = '^(?:write_file|edit_file|code_action|write_to_file|replace_file_content|multi_replace_file_content)$'
 
 
 def handled_events(harness, events):

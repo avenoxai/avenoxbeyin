@@ -74,9 +74,12 @@ class HookInstallerTest(unittest.TestCase):
         spec.loader.exec_module(bridge)
         self.assertEqual(bridge.ANTIGRAVITY_EDIT_MATCHER, group['matcher'])
         matcher = re.compile(group['matcher'])
+        self.assertLessEqual({'write_to_file', 'replace_file_content', 'multi_replace_file_content'},
+                             set(self.hook.ANTIGRAVITY_WRITE_TOOLS))  # the IDE agent's file tools
         for tool in self.hook.ANTIGRAVITY_WRITE_TOOLS:
             self.assertIsNotNone(matcher.search(tool))
-        for tool in ('read_file', 'view_file', 'run_command', 'multi_edit_file_preview', 'write_file2'):
+        for tool in ('read_file', 'view_file', 'list_dir', 'grep_search', 'run_command', 'multi_edit_file_preview',
+                     'write_file2', 'replace_file_content_preview'):
             self.assertIsNone(matcher.search(tool))
         self.assertIn('--event PostToolUse', decoded_command(group['hooks'][0]['command']).replace("'", '').replace('"', ''))
 
@@ -948,6 +951,13 @@ class HookInstallerTest(unittest.TestCase):
                 ({'name': 'edit_file', 'args': {'Path': '/v/a.md'}}, None, {'file_path': '/v/a.md'}),
                 ({'name': 'code_action', 'args': {'TargetFile': '/v/b.md'}}, '', {'file_path': '/v/b.md'}),
                 ({'name': 'code_action', 'args': {'AbsolutePath': '/v/c.md'}}, '', {'file_path': '/v/c.md'}),
+                # The IDE agent's file tools, named in the Antigravity 1.5.18 binary with TargetFile.
+                ({'name': 'write_to_file', 'args': {'TargetFile': '/v/d.md', 'CodeContent': 'x'}}, '', {'file_path': '/v/d.md'}),
+                ({'name': 'replace_file_content', 'args': {'TargetFile': '/v/e.md'}}, '', {'file_path': '/v/e.md'}),
+                ({'name': 'multi_replace_file_content', 'args': {'TargetFile': '/v/f.md'}}, '', {'file_path': '/v/f.md'}),
+                ({'name': 'replace_file_content', 'args': {'TargetFile': '/v/e.md'}}, 'target content not found', None),
+                ({'name': 'view_file', 'args': {'AbsolutePath': '/v/a.md'}}, '', None),
+                ({'name': 'list_dir', 'args': {'DirectoryPath': '/v'}}, '', None),
                 ({'name': 'write_file', 'args': {}}, '', {}),
                 ({'name': 'write_file', 'args': None}, '', {}),
                 ({'name': 'write_file', 'args': {'Path': '/v/a.md'}}, 'exit status 1', None),
