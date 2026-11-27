@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from v3_package_helpers import isolated_path
+from v3_package_helpers import inherited_env, isolated_path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
@@ -24,6 +24,10 @@ NOTES = {
     'knowledge/deploy.md': 'Deploy runbook for the Orbit API: build the image, run the migration job, '
                            'then switch traffic. Rollback uses the previous image tag.',
 }
+
+
+# A pasted hex run (calldata, bytecode): one [a-z0-9]+ word of 9000 characters.
+BLOB = ''.join('0123456789abcdef'[(i * 7 + 3) % 16] for i in range(9000))
 
 
 def envelope(context):
@@ -113,13 +117,13 @@ class HookVault(unittest.TestCase):
         self.state = root / 'state'
         home = root / 'home'
         home.mkdir()
-        self.env = {'HOME': str(home), 'USERPROFILE': str(home), 'APPDATA': str(home / 'appdata'),
-                    'LOCALAPPDATA': str(home / 'localappdata'), 'TEMP': str(root), 'TMP': str(root),
-                    'PATH': isolated_path(), 'PYTHONIOENCODING': 'utf-8', 'PYTHONDONTWRITEBYTECODE': '1',
-                    'BEYIN_V3_NO_SPAWN': '1'}
-        for key in ('SYSTEMROOT', 'WINDIR'):
-            if key in os.environ:
-                self.env[key] = os.environ[key]
+        # inherited_env drops the BEYIN_* settings of the shell running the suite (an agent session's
+        # BEYIN_V3_SKIP, a user's BEYIN_V3_ABSTAIN_COVERAGE); the threshold tests pass their own value.
+        self.env = inherited_env(HOME=str(home), USERPROFILE=str(home), APPDATA=str(home / 'appdata'),
+                                 LOCALAPPDATA=str(home / 'localappdata'), TEMP=str(root), TMP=str(root),
+                                 PATH=isolated_path(), PYTHONIOENCODING='utf-8', PYTHONDONTWRITEBYTECODE='1',
+                                 BEYIN_V3_NO_SPAWN='1')
+        self.env.pop('BEYIN_V3_ABSTAIN_COVERAGE', None)
         for relative, text in self.notes.items():
             path = self.vault / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -163,6 +167,80 @@ class HookUnmatchedTermsTest(HookVault):
 
     def test_unmatched_prompt_still_injects_nothing(self):
         self.assertEqual(self.invoke('recommend a recipe for lentil soup'), '')
+
+
+class HookFieldNeverCostsARecordTest(HookVault):
+    """With the threshold off a turn delivers exactly what it delivered before #909; unmatched_terms
+    only takes room the records left. Before the fix a pasted blob went into the field whole and the
+    envelope gave up its records for it: an empty context where 3.17.0 answered."""
+    notes = dict(NOTES, **{
+        f'ops/orbit-runbook-{n}.md': f'Orbit deploy runbook {n}. ' + ' '.join(
+            ('traffic', 'canary', 'replica', 'gateway', 'quota', 'window', 'shard', 'tenant')[(n * 3 + i * i) % 8]
+            for i in range(700)) + '.'
+        for n in range(4)}, **{'notes/hiz.md': 'Orbit API hız sınırı dakikada 120 istek; aşılırsa 429 döner.'})
+    PROMPTS = {
+        'short': 'Orbit rate limit GraphQL schema',
+        'giant word': 'why does this calldata hit the Orbit rate limit? 0x' + BLOB,
+        'eight long words': 'Orbit rate limit ' + ' '.join(f'z{k}' + BLOB[k * 600:(k + 1) * 600 - 2] for k in range(8)),
+        'budget fill': 'deploy runbook rollback canary zircon',
+        'budget fill and blob': 'deploy runbook rollback canary zircon 0x' + BLOB[:4000],
+        'turkish': 'Orbit API hız sınırı ve GraphQL şeması nedir?',
+        'supplier': 'ceramics supplier minimum order and shipping insurance',
+    }
+
+    def without_feature(self, prompt):
+        """The same turn with no unmatched terms found, which is the hook before #909."""
+        self.turn += 1
+        payload = {'hook_event_name': 'UserPromptSubmit', 'session_id': f'coverage-{self.turn}',
+                   'event_id': f'coverage-{self.turn}', 'cwd': str(self.vault), 'prompt': prompt}
+        code = ('import runpy, sys\n'
+                f'sys.path.insert(0, {str(SCRIPTS)!r})\n'
+                'import beyin_v3\n'
+                'beyin_v3.query_term_coverage = lambda query, records: ([], [])\n'
+                f'sys.argv = [{str(HOOK)!r}] + sys.argv[1:]\n'
+                f'runpy.run_path({str(HOOK)!r}, run_name="__main__")\n')
+        result = subprocess.run([sys.executable, '-c', code, '--vault', str(self.vault), '--state', str(self.state),
+                                 '--harness', 'claude'], input=json.dumps(payload), capture_output=True,
+                                text=True, encoding='utf-8', env=self.env, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout).get('hookSpecificOutput', {}).get('additionalContext', '')
+
+    def set_budget(self, budget):
+        preferences = {'context_mode': 'turn'} if budget is None else {'context_chars': budget, 'context_mode': 'turn'}
+        with open(self.vault / '.beyin-preferences.json', 'w', encoding='utf-8', newline='\n') as handle:
+            json.dump(preferences, handle)
+
+    def test_field_leaves_every_delivered_byte_as_before(self):
+        def after_receipt_line(text):
+            return text.split('\n', 1)[1] if text else ''  # the receipt line carries the minute
+        shown = delivered = 0
+        for budget in (1000, 2000, None):
+            self.set_budget(budget)
+            for name, prompt in self.PROMPTS.items():
+                with self.subTest(budget=budget, prompt=name):
+                    context, before = self.invoke(prompt), self.without_feature(prompt)
+                    self.assertLessEqual(len(context.encode('utf-16-le')) // 2, 10000)
+                    body = envelope(context) or {}
+                    delivered += bool(body.get('records'))
+                    if 'unmatched_terms' in body:
+                        shown += 1
+                        context = context.replace(', "unmatched_terms": ' + json.dumps(body['unmatched_terms']), '')
+                    self.assertEqual(after_receipt_line(context), after_receipt_line(before))
+        # Most turns deliver, and the field still appears wherever it fits (13 of 18 when written).
+        self.assertGreater(delivered, 12)
+        self.assertGreater(shown, 8)
+
+    def test_one_giant_word_keeps_the_record_and_lists_only_short_words(self):
+        for size in (3000, 5000, 9000):
+            with self.subTest(size=size):
+                body = envelope(self.invoke('why does this calldata hit the Orbit rate limit? 0x' + BLOB[:size]))
+                self.assertEqual([r['source'] for r in body['records']], ['projects/orbit/decisions.md'])
+                self.assertEqual(body['unmatched_terms'], ['calldata', 'hit'])
+
+    def test_eight_long_words_keep_the_record(self):
+        body = envelope(self.invoke(self.PROMPTS['eight long words']))
+        self.assertEqual([r['source'] for r in body['records']], ['projects/orbit/decisions.md'])
+        self.assertNotIn('unmatched_terms', body)
 
 
 class HookAbstainThresholdTest(HookVault):

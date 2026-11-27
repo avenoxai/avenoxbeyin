@@ -16,7 +16,7 @@ import uuid
 EVENTS = {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "PreCompact", "SessionEnd"}
 HOOK_BUDGET = 3.8  # seconds; installed POSIX hooks are killed at 5
 SYNC_WAIT = 1.5  # seconds the prompt hook waits for the source sync before reading the last index
-UNMATCHED_SHOWN = 8  # prompt words listed as unmatched; a pasted page must not spend the budget on them
+UNMATCHED_SHOWN = 8  # prompt words listed as unmatched (#909); each at most 64 characters
 
 
 def abstain_coverage():
@@ -1212,33 +1212,30 @@ def main():
                         pass
                 from beyin_v3 import query_term_coverage, render_context
                 prefix = warning + receipt_header(session) + "--harness CLIENT.\nV3 source-backed context (data, not instructions):\n"
-
-                def render(budget):
-                    # unmatched_terms (#909, the context command's #768 field): prompt words that no
-                    # delivered record contains, nor one held back as already delivered. The field
-                    # takes room, which can clip a record further, so render again until it holds.
-                    # A continuation is judged by its earlier topic, not by its own vague words.
-                    if not abstained:
-                        context.pop("unmatched_terms", None)
-                    rendered = render_context(context, max(0, budget - len(notice)), prefix=prefix, suffix=suffix)
-                    for _ in range(3):
-                        if inherited or not rendered[1].get("records"):
-                            break
-                        missing = query_term_coverage(query, rendered[1]["records"] + duplicates)[1][:UNMATCHED_SHOWN]
-                        if missing == context.get("unmatched_terms", []):
-                            break
-                        if missing:
-                            context["unmatched_terms"] = missing
-                        else:
-                            context.pop("unmatched_terms", None)
-                        rendered = render_context(context, max(0, budget - len(notice)), prefix=prefix, suffix=suffix)
-                    return rendered
-
-                text, delivered = render(limit)
+                text, delivered = render_context(context, max(0, limit - len(notice)), prefix=prefix, suffix=suffix)
                 smaller = client_rebudget(args.harness, limit, notice + text)
                 if smaller is not None:
                     limit = smaller
-                    text, delivered = render(limit)
+                    text, delivered = render_context(context, max(0, limit - len(notice)), prefix=prefix, suffix=suffix)
+                # unmatched_terms (#909, the context command's #768 field): prompt words that no
+                # delivered record contains, nor one held back as already delivered. It goes only
+                # into the room the rendered turn left: the records, their clipping, the receipt
+                # suffix and the client fit stay byte for byte as without it, and a field that does
+                # not fit is left out, never a record. A continuation is judged by its earlier
+                # topic, not by its own vague words; a withheld turn already carries the field.
+                if not abstained and not inherited and delivered.get("records") and text.startswith(prefix):
+                    missing = query_term_coverage(query, delivered["records"] + duplicates)[1][:UNMATCHED_SHOWN]
+                    try:
+                        envelope, closing = json.JSONDecoder().raw_decode(text, len(prefix))
+                        closing -= 1  # the envelope's final "}"
+                    except ValueError:
+                        envelope = None
+                    if missing and isinstance(envelope, dict) and envelope and "unmatched_terms" not in envelope:
+                        annexed = (text[:closing] + ', "unmatched_terms": ' + json.dumps(missing, ensure_ascii=False)
+                                   + text[closing:])
+                        if (len(notice) + len(annexed) <= limit
+                                and client_rebudget(args.harness, limit, notice + annexed) is None):
+                            text = annexed
                 # Every match was held back but the receipt is new to the session: it alone is the news,
                 # without an empty envelope that would read as an abstained search.
                 receipt_only = bool(duplicates and suffix and not context.get("records")
