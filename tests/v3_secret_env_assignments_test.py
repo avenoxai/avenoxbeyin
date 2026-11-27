@@ -193,9 +193,10 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
         # the value is left (and Jev rejects it); never a mask with a tail.
         store = runtime.MemoryStore(self.state, self.vault)
         values = (('Xy7#kL9a', 'mN2$pQ4!'), ('Xy7#k', 'L9amN2$pQ4!'),
-                  ('Xy7#kL9amN2', '$pQ4!z'), ('Xy7#​kL9a', 'mN2$pQ4!'))
+                  ('Xy7#kL9amN2', '$pQ4!z'), ('Xy7#​kL9a', 'mN2$pQ4!'), ('kisa', ''))
         afters = ('', ' ve devam', '.', ', sonra', "'yi kullan", 'değerini',
-                  '\nsonraki satır', '\r\nsonraki satır', ' `kod` sonra')
+                  '\nsonraki satır', '\r\nsonraki satır', ' `kod` sonra', '\nsonra',
+                  '\r\nsonra', '” dedi', "'lerindekilerden geç", '…')
         failures, outcomes = [], {'masked': 0, 'kept': 0}
         for prefix, opening, inner, (head, tail), closing, after in itertools.product(
                 ('API_KEY=', 'password: ', '- `OPENAI_API_KEY='), range(1, 7), range(4),
@@ -220,7 +221,7 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
             if not ok:
                 failures.append((text, result, count, accepted))
         self.assertEqual(failures[:10], [])
-        self.assertEqual(sum(outcomes.values()), 3 * 6 * 4 * 4 * 7 * 9)
+        self.assertEqual(sum(outcomes.values()), 3 * 6 * 4 * 5 * 7 * 14)
         self.assertGreater(outcomes['masked'], 0)
         self.assertGreater(outcomes['kept'], 0)
 
@@ -257,6 +258,51 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(redact(text, self.state), (expected, 1))
 
+    def test_long_suffix_and_typographic_marks_after_inline_code_match_3_17_0(self):
+        # A Turkish suffix longer than eight letters, or a typographic quote,
+        # ellipsis or dash after the closing backtick, read as part of the
+        # value: the outer backtick and the prose went into the mask. The
+        # expected text is the 3.17.0 output.
+        for text, expected in (
+                ("`API_KEY=Xy7kL9amN2pQ`'larındaki satır", "`[REDACTED]`'larındaki satır"),
+                ("- `SECRET_KEY=Xy7kL9amN2pQ`'ındakileri sil", "- `[REDACTED]`'ındakileri sil"),
+                ("`API_KEY=abcdefghij`'ndakilerden geç", "`[REDACTED]`'ndakilerden geç"),
+                ("`API_KEY=abcdefghij`'lerindeki ayarla", "`[REDACTED]`'lerindeki ayarla"),
+                ('- `OPENAI_API_KEY=Xy7kL9amN2pQ`’larınızdan.', '- `[REDACTED]`’larınızdan.'),
+                ("`API_KEY=abcdefghij`'lerinizdekilerden geç", "`[REDACTED]`'lerinizdekilerden geç"),
+                ('“`API_KEY=abcdefghij`” dedi', '“`[REDACTED]`” dedi'),
+                ('`API_KEY=Xy7kL9amN2pQ`’', '`[REDACTED]`’'),
+                ("`API_KEY=Xy7kL9amN2pQ`'yi…", "`[REDACTED]`'yi…"),
+                ("`API_KEY=Xy7kL9amN2pQ`'yi—", "`[REDACTED]`'yi—"),
+                ('`API_KEY=Xy7kL9amN2pQ`’yi”', '`[REDACTED]`’yi”'),
+                ('`API_KEY=Xy7kL9amN2pQ`» dedi', '`[REDACTED]`» dedi'),
+                ('`API_KEY=Xy7kL9amN2pQ`… sonra', '`[REDACTED]`… sonra'),
+                ('‘`TOKEN=Xy7kL9amN2pQ`’ yaz', '‘`[REDACTED]`’ yaz')):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text, self.state), (expected, 1))
+        # A value opened by backticks keeps the same marks outside the mask.
+        self.assertEqual(redact('API_KEY=`Xy7kL9amN2pQ`” dedi', self.state), ('[REDACTED]” dedi', 1))
+
+    def test_short_span_before_a_line_break_stays_text_and_passes_jev(self):
+        # Jev scans the JSON form, where a line break is the two characters \n.
+        # A short span read through its closing backtick reached the end of the
+        # JSON string, so Jev refused a note that redact() kept as written.
+        store = runtime.MemoryStore(self.state, self.vault)
+        for text in ('token: `kisa`\ndevam', 'Password: `abc`\nok', 'API key: `.env`\nbitti',
+                     'Not: secret: `yok`\n#etiket', 'token: `kisa`\r\n`kod`',
+                     'Token: `abc`\n`Xy7kL9amN2`', 'API key: ```js\nconst x=1\n```',
+                     'API key: ``ab`c``\nsonra'):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text, self.state), (text, 0))
+                advisor._safe(store, {'statement': text})
+        # A long value before the line break is still masked and refused.
+        for text, expected in (('token: `Xy7kL9amN2`\ndevam', '[REDACTED]\ndevam'),
+                               ('token: `Xy7kL9amN2\ndevam', '[REDACTED]\ndevam')):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text, self.state), (expected, 1))
+                with self.assertRaises(ValueError):
+                    advisor._safe(store, {'statement': text})
+
     def test_comma_semicolon_and_closing_quote_end_a_value_as_in_3_17_0(self):
         # A comma or a semicolon ends an unquoted value and a closing quote ends
         # a quoted one, so the next setting in compact JSON, a connection string
@@ -292,7 +338,8 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
                     ('"', '"'), ("'", "'"))
         inners = [''.join(run) for size in range(4) for run in itertools.product('`,;', repeat=size)]
         afters = ('', ' ve devam', '.', ', sonra', "'yi kullan", 'değerini',
-                  '\nsonraki satır', '\r\nsonraki satır', ' `kod` sonra')
+                  '\nsonraki satır', '\r\nsonraki satır', ' `kod` sonra', '\nsonra',
+                  '\r\nsonra', '” dedi', "'lerindekilerden geç", '…')
         failures, outcomes = [], {'masked': 0, 'kept': 0, 'split': 0}
         for prefix, (opening, closing), inner, (head, tail), after in itertools.product(
                 ('DB_PASSWORD=', 'export DB_PASSWORD=', 'API_KEY: ', 'setx API_KEY ',
@@ -324,7 +371,7 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
             if not ok:
                 failures.append((text, result, count, accepted))
         self.assertEqual(failures[:10], [])
-        self.assertEqual(sum(outcomes.values()), 5 * 8 * 40 * 4 * 9)
+        self.assertEqual(sum(outcomes.values()), 5 * 8 * 40 * 4 * 14)
         self.assertGreater(outcomes['masked'], 0)
         self.assertGreater(outcomes['kept'], 0)
         self.assertGreater(outcomes['split'], 0)
