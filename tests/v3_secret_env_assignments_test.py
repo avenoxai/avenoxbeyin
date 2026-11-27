@@ -3,6 +3,7 @@ import itertools
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -20,6 +21,98 @@ from beyin_v3_secrets import redact
 VALUE = 'abcd1234efgh5678ijkl'
 NAMES = ('TYPESAFE_API_KEY', 'OPENAI_API_KEY', 'MY_SECRET', 'DB_PASSWORD')
 QUERY = 'how do we deploy the quartz site'
+
+# The setx rule of 3.17.0, verbatim, used as the reference for setx and set -x
+# input that holds a backtick.
+_NAME_3_17_0 = (r"(?!(?:pad|eos|bos|unk|sep|cls|mask)_token(?a:(?![a-z0-9_])))"
+                r"(?a:(?:[a-z_][a-z0-9_]*_|_)?)"
+                r"(?:api[_ -]?key|access[_ -]?token|token|secret(?:[_ -]?access)?[_ -]?key"
+                r"|private[_ -]?key|secret|password|passwd)")
+SETX_3_17_0_VALUE = re.compile(
+    r"""(?i)(?a:(?<![a-z0-9_-]))(?:(?:setx(?:[ \t]+/m)?|set[ \t]+-[a-z]{0,3}x[a-z]{0,3})"""
+    r"""[ \t]+["\']?""" + _NAME_3_17_0 + r"""["\']?[ \t]+|setenvironmentvariable\([ \t]*["\']"""
+    + _NAME_3_17_0 + r"""["\'][ \t]*,[ \t]*)"""
+    r"""(?:\\{0,8}["\']\S{8,}\\{0,8}["\']|(?=[^\s,;]*\d)[^"\'\s,;][^\s,;]{7,})""")
+# Generated from the 3.17.0 source of beyin_v3_secrets.redact: text, the
+# synthetic value and the 3.17.0 count.
+SETX_3_17_0 = (
+    ('setx API_KEY `Xy7kL9amN2pQ4zR8 devam',
+     'Xy7kL9amN2pQ4zR8', 1),
+    ('setx API_KEY `Xy7kL9amN2pQ4zR8, sonra',
+     'Xy7kL9amN2pQ4zR8', 1),
+    ('setx API_KEY `Xy7kL9amN2pQ4zR8. Sonra',
+     'Xy7kL9amN2pQ4zR8', 1),
+    ("setx API_KEY `Xy7kL9amN2pQ4zR8'yi kullan",
+     'Xy7kL9amN2pQ4zR8', 1),
+    ('setx API_KEY `Xy7kL9amN2pQ4zR8"',
+     'Xy7kL9amN2pQ4zR8', 1),
+    ('setx API_KEY `Xy7kL9amN2pQ4zR8)',
+     'Xy7kL9amN2pQ4zR8', 1),
+    ('Komut: setx API_KEY `Qw3rTy7uIo9pAs1D ve terminali yeniden aç',
+     'Qw3rTy7uIo9pAs1D', 1),
+    ('set -x API_KEY `Xy7kL9amN2pQ4zR8 devam',
+     'Xy7kL9amN2pQ4zR8', 1),
+    ('set -gx GITHUB_TOKEN `Xy7kL9amN2pQ4zR8 devam',
+     'Xy7kL9amN2pQ4zR8', 1),
+    ('setx DB_PASSWORD `$Xy7kL9am2 /M',
+     '`$Xy7kL9am2', 1),
+    ('setx /m API_KEY `$Xy7kL9am2 /M',
+     '`$Xy7kL9am2', 1),
+    ('setx API_KEY `$Xy7kL9am2 && echo ok',
+     '`$Xy7kL9am2', 1),
+    ('setx API_KEY `$ab`$Xy7kL9am2',
+     '`$ab`$Xy7kL9am2', 1),
+    ('setx API_KEY `"Xy7kL9amN2pQ4zR8`"',
+     '`"Xy7kL9amN2pQ4zR8`"', 1),
+    ('setx API_KEY `"Xy7kL9amN2pQ4zR8`" /M',
+     '`"Xy7kL9amN2pQ4zR8`"', 1),
+    ('setx API_KEY Xy7kL9amN2pQ4zR8`$Ab12 /M',
+     'Xy7kL9amN2pQ4zR8`$Ab12', 1),
+    ('setx API_KEY `#Xy7kL9amN2pQ4zR8 | Out-Null',
+     '`#Xy7kL9amN2pQ4zR8', 1),
+    ('PS> setx DB_PASSWORD `0Xy7kL9amN2pQ4zR8 2>$null',
+     '`0Xy7kL9amN2pQ4zR8', 1),
+    ('[Environment]::SetEnvironmentVariable("API_KEY", `$Xy7kL9am2, "User")',
+     '`$Xy7kL9am2', 1),
+    ('setx API_KEY ```Xy7kL9amN2pQ4zR8` devam',
+     'Xy7kL9amN2pQ4zR8', 1),
+    ('setx API_KEY ``Xy7kL9amN2pQ4zR8` devam',
+     'Xy7kL9amN2pQ4zR8', 1),
+    ('setx API_KEY ````Xy7kL9amN2pQ4zR8`` x',
+     'Xy7kL9amN2pQ4zR8', 1),
+    ('setx API_KEY `kisa`mN2pQ4zR8 /M',
+     'kisa`mN2pQ4zR8', 1),
+    ('set -x API_KEY `kisa`mN2pQ4zR8',
+     'kisa`mN2pQ4zR8', 1),
+    ('setx API_KEY `Xy7kL9`amN2pQ4zR8',
+     'Xy7kL9`amN2pQ4zR8', 1),
+    ('setx API_KEY `````````````````Xy7kL9amN2pQ4zR8`````````````````',
+     'Xy7kL9amN2pQ4zR8', 1),
+    ('setx API_KEY Xy7kL9a` x',
+     'Xy7kL9a', 1),
+    ('setx API_KEY Ab1cde```` x',
+     'Ab1cde', 1),
+    ('setx API_KEY Xy7``kL9amN2 x',
+     'Xy7``kL9amN2', 1),
+    ("setx API_KEY Xy7kL9amN2`'abcdefgh",
+     "Xy7kL9amN2`'abcdefgh", 1),
+    ('setx API_KEY Xy7kL9am`N2pQ4zR8',
+     'Xy7kL9am`N2pQ4zR8', 1),
+    ('setx API_KEY `Xy7kL9am,N2pQ4 x',
+     'Xy7kL9am,N2pQ4', 1),
+    ('setx API_KEY `Xy7kL9am,N2pQ4zR8`',
+     'Xy7kL9am,N2pQ4zR8', 1),
+    ('set -x API_KEY `Xy7kL9amN2pQ4zR8\nsonra',
+     'Xy7kL9amN2pQ4zR8', 1),
+    ('`setx API_KEY Xy7kL9amN2pQ4zR8`',
+     'Xy7kL9amN2pQ4zR8', 1),
+    ('`setx API_KEY Xy7kL9amN2pQ4zR8` komutu',
+     'Xy7kL9amN2pQ4zR8', 1),
+    ("`setx API_KEY Xy7kL9amN2pQ4zR8`'yi çalıştır",
+     'Xy7kL9amN2pQ4zR8', 1),
+    ('`set -x API_KEY Xy7kL9amN2pQ4zR8`.',
+     'Xy7kL9amN2pQ4zR8', 1),
+)
 
 
 class SecretEnvAssignmentsTest(unittest.TestCase):
@@ -375,6 +468,53 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
         self.assertGreater(outcomes['masked'], 0)
         self.assertGreater(outcomes['kept'], 0)
         self.assertGreater(outcomes['split'], 0)
+
+    def test_setx_values_that_3_17_0_masked_stay_masked(self):
+        # 3.17.0 read a setx or set -x value that starts with a backtick, or
+        # holds one in its first eight characters, as part of the value. The
+        # span and unquoted rules left such a value as written when it did not
+        # close before a space or the line end (PowerShell "setx DB_PASSWORD
+        # `$Xy7kL9am2 /M"), so it reached the note, memory.sqlite3 and Jev. The
+        # text and the 3.17.0 count were produced by the 3.17.0 source.
+        store = runtime.MemoryStore(self.state, self.vault)
+        for text, value, count_3_17_0 in SETX_3_17_0:
+            self.assertEqual(count_3_17_0, len(SETX_3_17_0_VALUE.findall(text)))
+            with self.subTest(text=text):
+                result, count = redact(text, self.state)
+                self.assertGreaterEqual(count, 1)
+                for piece in re.findall(r'[A-Za-z0-9]{6,}', value):
+                    self.assertNotIn(piece, result)
+                with self.assertRaises(ValueError):
+                    advisor._safe(store, {'statement': text})
+        for text, expected in (('setx DB_PASSWORD `$Xy7kL9am2 /M', '[REDACTED] /M'),
+                               ('setx API_KEY `$Xy7kL9am2 && echo ok', '[REDACTED] && echo ok'),
+                               ('setx API_KEY `Xy7kL9amN2pQ4zR8, sonra', '[REDACTED], sonra'),
+                               ('setx API_KEY `Xy7kL9am,N2pQ4 x', '[REDACTED] x')):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text, self.state), (expected, 1))
+
+    def test_setx_spans_masked_by_3_17_0_are_masked_whole(self):
+        # Class check for setx and set -x with backticks: an opening run of 0-6
+        # backticks, a value holding 0-3 in a row, a closing run of 0-6 and the
+        # text after it. Wherever the 3.17.0 setx rule (SETX_3_17_0_VALUE)
+        # masked, the value is masked and no 6-character piece of it is left.
+        values = (('Xy7kL9am', 'N2pQ4zR8'), ('$Xy7k', 'L9amN2pQ'), ('kisa', 'mN2pQ4zR8'),
+                  ('Xy7kL9a', ''), ('"Xy7kL9am', '"'), ('Xy7#kL9', 'a,mN2$pQ4!'), ('Ab1cde', ''))
+        afters = ('', ' /M', ' && echo ok', ', sonra', "'yi kullan", '"', '\nsonra', '” dedi')
+        failures, masked = [], 0
+        for prefix, opening, inner, (head, tail), closing, after in itertools.product(
+                ('setx API_KEY ', 'setx /m DB_PASSWORD ', 'set -x API_KEY ', '`setx API_KEY '),
+                range(7), range(4), values, range(7), afters):
+            value = head + '`' * inner + tail
+            text = prefix + '`' * opening + value + '`' * closing + after
+            if not SETX_3_17_0_VALUE.search(text):
+                continue
+            masked += 1
+            result, count = redact(text, self.state)
+            if count < 1 or any(piece in result for piece in re.findall(r'[A-Za-z0-9]{6,}', value)):
+                failures.append((text, result, count))
+        self.assertEqual(failures[:10], [])
+        self.assertGreater(masked, 20000)
 
     def test_variable_name_in_backticks_after_a_secret_label_stays_text(self):
         # Docs name the variable that holds a credential; masking the name hid

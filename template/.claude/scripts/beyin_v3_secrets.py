@@ -58,7 +58,7 @@ _TURKISH_SUFFIX = r"['\u2019](?-i:[a-zçğıöşü]){1,20}(?=" + _AFTER_VALUE + 
 _QUOTED_VALUE = r"""\\{0,8}["\']\S{8,}\\{0,8}["\']"""
 
 
-def _unquoted_value(start="", head_runs=False):
+def _unquoted_value(start="", head_runs=False, suffix=True):
     """A value that no quote or backtick opens, kept inside one non-space token.
 
     A comma or a semicolon ends it, as in 3.17.0: "token=Xy7kL9am,mode=fast"
@@ -75,10 +75,12 @@ def _unquoted_value(start="", head_runs=False):
     as in 3.17.0, so a JSON-escaped fence after a label ("Token:\\n```js")
     stays text. A setx value counted backticks among its first eight in 3.17.0
     (head_runs) and keeps doing so.
+    Without suffix a Turkish suffix after a backtick run is part of the value,
+    as 3.17.0 read a setx value: a suffix may be up to 20 letters of the value.
     """
     character = r"[^\x60\s,;]"
-    inner_run = (r"\x60+(?=" + character + r")(?!" + _AFTER_VALUE + "|"
-                 + _TURKISH_SUFFIX + ")")
+    inner_run = (r"\x60+(?=" + character + r")(?!" + _AFTER_VALUE
+                 + ("|" + _TURKISH_SUFFIX if suffix else "") + ")")
     step = "(?:" + character + "|" + inner_run + ")"
     head = step + "{7,}" if head_runs else character + "{7,}" + step + "*"
     return start + r"[^\"'\x60\s,;]" + head
@@ -130,6 +132,19 @@ def _backtick_span():
 
 _SECRET_VALUE = ("(?:" + _QUOTED_VALUE + "|" + _backtick_span() + "|" + _unquoted_value() + ")")
 
+# The setx value of 3.17.0 may start with a backtick and counts backticks among
+# its first eight characters. A setx value that the span and unquoted rules
+# above do not read (an unclosed span before more text, "setx DB_PASSWORD
+# `$Xy7kL9am2 /M"; a span that closes before eight characters,
+# "`kisa`mN2pQ4zR8"; a run longer than the fence cap; a value split inside its
+# first eight characters) was masked by 3.17.0, so it is masked here too, to
+# the end of the token: a comma or a semicolon in it leaves no tail, and only
+# up to three punctuation marks before the space stay outside, as after a
+# span. Text without a backtick never reaches this rule, since the unquoted
+# rule above reads such a value exactly as 3.17.0 did.
+_SETX_FALLBACK = (r"""(?=[^\s,;]*\d)[^"\'\s,;](?=[^\s,;]{7})\S*?(?="""
+                  + _AFTER_VALUE + ")")
+
 
 BUILTIN_PATTERNS = (
     re.compile(r"(?i)(?<=[?&])" + _SECRET_NAME + r"=[^&\s]{8,}"),
@@ -145,7 +160,8 @@ BUILTIN_PATTERNS = (
                r"""[ \t]+["\']?""" + _SECRET_NAME + r"""["\']?[ \t]+|setenvironmentvariable\([ \t]*["\']"""
                + _SECRET_NAME + r"""["\'][ \t]*,[ \t]*)"""
                + "(?:" + _QUOTED_VALUE + r"|(?=\S*\d)" + _backtick_span() + "|"
-               + _unquoted_value(start=r"(?=[^\s,;]*\d)", head_runs=True) + ")"),
+               + _unquoted_value(start=r"(?=[^\s,;]*\d)", head_runs=True, suffix=False)
+               + "|" + _SETX_FALLBACK + ")"),
     re.compile(r"(?<=://)[^/\s?#:]*:[^/\s?#]*(?=@[^/\s?#@]+)"),
     re.compile(r"\bgh(?:p|o|u|s|r)_[A-Za-z0-9]{20,255}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,255}\b"),
