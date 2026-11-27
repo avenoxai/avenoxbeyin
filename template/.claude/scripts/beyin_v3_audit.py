@@ -27,6 +27,8 @@ from beyin_v3 import (
     _tokens,
     _status_word,
     _trusted_record,
+    _link_fold,
+    _link_keys,
     RETIRED_STATUSES,
     resolve_supersedes,
     STOPWORDS,
@@ -124,6 +126,63 @@ def _auditable(path: Path, rel_path: str, *, strict: bool = False) -> tuple[dict
     return meta, body
 
 
+# Fenced blocks (``` or ~~~, any fence length) and inline code spans quote links, they do not make them.
+# A closing fence may end in \r: notes written on Windows keep CRLF line endings.
+_CODE_RE = re.compile(r'(?ms)^[ \t]*(`{3,}|~{3,})[^\n]*\n.*?^[ \t]*\1[`~]*[ \t\r]*$|(`+)[^\n]*?\2')
+
+
+def _link_keys_from_body(body: str, rel_path: str) -> tuple[tuple[bool, str], ...]:
+    """(is_wikilink, folded vault key) for each link in the note body outside code.
+
+    Parsing is the core's (`_link_keys`, the same reader `rejected_dependents` uses) so
+    [[note|alias]], [[note#heading]], [[note^block]], .md suffixes, URL-encoded and
+    folder-relative Markdown paths read the same everywhere; keys are NFC + casefold so an
+    NFD (macOS/iCloud) file name still matches the link a person typed.
+    """
+    text = _CODE_RE.sub(' ', body)
+    keys = []
+    for raw, key in _link_keys({'text': text, 'source': rel_path}):
+        folded = _link_fold(key)
+        if folded:
+            keys.append((raw.startswith('[['), folded))
+    return tuple(dict.fromkeys(keys))
+
+
+def _resolve_links(pool: list[dict]) -> None:
+    """Set each candidate's `linked` to the vault paths of the other candidates it links to.
+
+    A Markdown link names a vault path and matches only that path. A wikilink matches a whole
+    vault path, else the one note whose path ends with it ([[note]], [[folder/note]]); a name
+    two notes share links neither, so an ambiguous link never silences an unrelated pair.
+    """
+    by_path, by_name = {}, {}
+    for c in pool:
+        key = _link_fold(c['path'])
+        by_path[key] = c['path']
+        by_name.setdefault(key.rsplit('/', 1)[-1], []).append((key, c['path']))
+    for c in pool:
+        linked = set()
+        for is_wiki, key in c.get('link_keys', ()):
+            target = by_path.get(key)
+            if target is None and is_wiki:
+                matches = [path for folded, path in by_name.get(key.rsplit('/', 1)[-1], ())
+                           if folded.endswith('/' + key)]
+                if len(matches) == 1:
+                    target = matches[0]
+            if target is not None and target != c['path']:
+                linked.add(target)
+        c['linked'] = frozenset(linked)
+
+
+def _notes_linked(a: dict, b: dict) -> bool:
+    """True when either note links to the other (one direction is enough: a summary names its detail)."""
+    return b['path'] in a.get('linked', ()) or a['path'] in b.get('linked', ())
+
+
+# _evaluate_pair's answer for an overlap it would report but the two notes already link each other.
+_LINKED_PAIR = object()
+
+
 def _candidate(path: Path, rel_path: str, meta: dict, body: str) -> dict:
     title = str(meta.get('title') or '').strip()
     if not title:
@@ -162,6 +221,8 @@ def _candidate(path: Path, rel_path: str, meta: dict, body: str) -> dict:
         'updated_ts': updated_ts,
         'words_count': sum(1 for _ in _WORD_RE.finditer(body)),
         'supersedes': [str(s).strip() for s in supersedes if s],
+        # Read from the body already in memory; resolved against the whole pool in audit_memory.
+        'link_keys': _link_keys_from_body(body, rel_path),
     }
 
 
@@ -364,6 +425,11 @@ def _evaluate_pair(a: dict, b: dict, threshold: float, min_shared: int) -> dict 
         )
     else:
         return None
+    if not conflict and _notes_linked(a, b):
+        # Explicitly linked notes (e.g. summary <-> detail pairs) still surface status
+        # contradictions, without repeating near_duplicate/overlap "link them" noise; the
+        # report counts them so a silenced pair is not invisible.
+        return _LINKED_PAIR
 
     finding = {
         'type': finding_type,
@@ -445,9 +511,11 @@ def audit_memory(
     candidates = [c for c in candidates if c['id'] not in retired]
     if target_candidate is not None and target_candidate['id'] in retired:
         raise ValueError("audit target is retired by supersedes")
+    _resolve_links(pool)
 
     findings = []
     pairs_compared = 0
+    linked_pairs_skipped = 0
 
     if target_candidate:
         for c in candidates:
@@ -455,7 +523,9 @@ def audit_memory(
                 continue
             pairs_compared += 1
             f = _evaluate_pair(target_candidate, c, threshold=threshold, min_shared=min_shared)
-            if f:
+            if f is _LINKED_PAIR:
+                linked_pairs_skipped += 1
+            elif f:
                 findings.append(f)
     else:
         # Inverted index for fast candidate selection
@@ -478,7 +548,9 @@ def audit_memory(
                         evaluated_pairs.add(pair_key)
                         pairs_compared += 1
                         f = _evaluate_pair(candidates[i], candidates[j], threshold=threshold, min_shared=min_shared)
-                        if f:
+                        if f is _LINKED_PAIR:
+                            linked_pairs_skipped += 1
+                        elif f:
                             findings.append(f)
 
     # Sort findings: status contradictions first, then highest overlap
@@ -492,6 +564,8 @@ def audit_memory(
         'target': target_rel,
         'notes_scanned': len(candidates),
         'pairs_compared': pairs_compared,
+        # Overlaps not reported because one note already links the other (summary <-> detail).
+        'linked_pairs_skipped': linked_pairs_skipped,
         'threshold': threshold,
         'min_shared': min_shared,
         'findings': findings,
@@ -505,12 +579,16 @@ def format_audit_human(report: dict) -> str:
     notes_scanned = report.get('notes_scanned', 0)
     pairs_compared = report.get('pairs_compared', 0)
     findings = report.get('findings', [])
+    linked_skipped = report.get('linked_pairs_skipped', 0)
 
     if target:
         lines.append(f"Hedef Not: {target}")
         lines.append(f"Karsilastirilan Not: {notes_scanned} | Bulgu: {len(findings)}\n")
     else:
         lines.append(f"Taranan Not: {notes_scanned} | Aday Karsilastirma: {pairs_compared} | Bulgu: {len(findings)}\n")
+
+    if linked_skipped:
+        lines.append(f"Birbirine bagli oldugu icin raporlanmayan ortusme: {linked_skipped} cift\n")
 
     if not findings:
         lines.append("Belirgin bir tekrar, celiski veya guncellik sorunu tespit edilmedi; hafiza durumu dengeli.")
