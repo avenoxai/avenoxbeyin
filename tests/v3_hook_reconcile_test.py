@@ -164,12 +164,15 @@ class HookReconcileTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         managed = json.loads(path.read_text(encoding="utf-8"))["beyin-v3"]
+        # The installer records the resolved vault; a Windows temp root may carry an 8.3 short name.
+        hook = (self.vault / ".claude/scripts/beyin_v3_hook.py").resolve()
         for event, command in (("SessionStart", managed["SessionStart"][0]["command"]),
                                ("PostToolUse", managed["PostToolUse"][0]["hooks"][0]["command"])):
             with self.subTest(event=event):
+                decoded = decoded_command(command)
                 self.assertNotEqual(command, stale_cmd)
-                self.assertIn(str(self.vault / ".claude/scripts/beyin_v3_hook.py"), decoded_command(command))
-                self.assertIn("--event " + event, decoded_command(command).replace("'", "").replace('"', ""))
+                self.assertTrue(str(hook) in decoded or hook.as_posix() in decoded, decoded)
+                self.assertIn("--event " + event, decoded.replace("'", "").replace('"', ""))
         self.assertTrue(managed["PostToolUse"][0]["matcher"])
         self.assertEqual(self.doctor_report()["hook_paths"]["status"], "ok")
 
