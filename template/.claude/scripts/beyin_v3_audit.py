@@ -127,7 +127,8 @@ def _auditable(path: Path, rel_path: str, *, strict: bool = False) -> tuple[dict
 
 
 # Fenced blocks (``` or ~~~, any fence length) and inline code spans quote links, they do not make them.
-_CODE_RE = re.compile(r'(?ms)^[ \t]*(`{3,}|~{3,})[^\n]*\n.*?^[ \t]*\1[`~]*[ \t]*$|(`+)[^\n]*?\2')
+# A closing fence may end in \r: notes written on Windows keep CRLF line endings.
+_CODE_RE = re.compile(r'(?ms)^[ \t]*(`{3,}|~{3,})[^\n]*\n.*?^[ \t]*\1[`~]*[ \t\r]*$|(`+)[^\n]*?\2')
 
 
 def _link_keys_from_body(body: str, rel_path: str) -> tuple[tuple[bool, str], ...]:
