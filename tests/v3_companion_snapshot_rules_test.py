@@ -295,6 +295,31 @@ class SnapshotTest(unittest.TestCase):
         self.assertIn('knowledge', ''.join(call[1] + call[2] for call in calls))
         self.assertEqual(len(calls), len(set(calls)), calls)
 
+    def test_doctor_says_how_many_project_rule_files_it_left_unmeasured(self):
+        # #893: doctor measures at most max_projects project rule files per call; the cut is
+        # reported (JSON counts and one --human line) instead of being silent.
+        self.write('Kurallar.md', '# Rules\n- Short global rule.\n')
+        for n in range(3):
+            source = f'projects/p{n}/Kurallar.md'
+            (self.vault / source).parent.mkdir(parents=True)
+            body = rules_file(16000)[0]
+            (self.vault / source).write_text(body, encoding='utf-8', newline='\n')
+            self.store.ingest({'id': source, 'kind': 'note', 'status': 'active', 'text': body,
+                               'source': source, 'updated_at': '2026-10-16T10:00:00Z'})
+        for cap, checked in ((2, 2), (50, 3)):
+            with self.subTest(cap=cap):
+                scanned = {}
+                results = companion.project_rules_opening(self.store, 5000, max_projects=cap, report=scanned)
+                self.assertEqual(scanned, {'checked': checked, 'total': 3})
+                self.assertEqual(len(results), checked)
+        entry = load('beyin_entry_issue893', 'scripts/beyin_entry.py')
+        line = 'Proje Kurallar.md olcumu ilk 50 dosyayla sinirli (bilgi): 57 dosyanin 7 tanesi olculmedi.'
+        opening = {'status': 'ok', 'budget': 5000, 'project_rules_checked': 50, 'project_rules_total': 57}
+        self.assertIn(line, entry.human_result({'status': 'ok', 'companion_rules_opening': opening}, 'doctor'))
+        opening.update(project_rules_checked=57)
+        self.assertNotIn('Proje Kurallar.md olcumu', entry.human_result(
+            {'status': 'ok', 'companion_rules_opening': opening}, 'doctor'))
+
     def test_rules_notice_keeps_long_receipt_within_total_budget(self):
         for name, body in self.bodies.items():
             self.write(name, body)
@@ -488,6 +513,10 @@ class InstalledOpeningTest(unittest.TestCase):
                          ('alpha', 'projects/alpha/Kurallar.md', 'clipped', True))
         self.assertLess(entry['share'], entry['chars'])
         self.assertIn('omitted_rules', entry)
+        # The count names nothing, and the file under a sensitive folder is not counted;
+        # under the cap no --human line reports a cut.
+        self.assertEqual((report['project_rules_checked'], report['project_rules_total']), (1, 1))
+        self.assertNotIn('Proje Kurallar.md olcumu', human)
         self.assertNotIn('gizli', raw)
         self.assertIn('projects/alpha/Kurallar.md', human)
         self.assertIn('Proje Kurallar.md acilista kirpiliyor', human)

@@ -1988,8 +1988,10 @@ def rules_opening(store, budget, receipt=''):
     return None
 
 
-def _project_rule_candidates(vault, state=None, max_projects=50):
-    """Discover non-symlink project rule files within vault boundaries for doctor diagnostics."""
+def _project_rule_candidates(vault, state=None, max_projects=50, report=None):
+    """Discover non-symlink project rule files within vault boundaries for doctor diagnostics.
+
+    The first max_projects found are returned; report, a dict, receives how many there are."""
     vault = Path(vault).resolve()
     excluded_keys = frozenset()
     if state is not None:
@@ -2045,8 +2047,6 @@ def _project_rule_candidates(vault, state=None, max_projects=50):
     found = []
     seen = set()
     for proj_name, cand_dir in raw_dirs:
-        if len(found) >= max_projects:
-            break
         try:
             resolved_dir = cand_dir.resolve()
             if not resolved_dir.is_relative_to(vault):
@@ -2075,6 +2075,9 @@ def _project_rule_candidates(vault, state=None, max_projects=50):
                 break
         except (ValueError, OSError):
             continue
+    if report is not None:
+        report['total'] = len(found)
+    found = found[:max_projects]
     found.sort(key=lambda item: (_scope_key(item[0]), item[1]))
     return found
 
@@ -2115,11 +2118,18 @@ class _SharedOpeningStore:
                           lambda: self._store.source_snapshot(source_names, **kwargs))
 
 
-def project_rules_opening(store, budget, receipt='', max_projects=50):
-    """Read-only: detect project Kurallar.md files that clip or are stale at SessionStart."""
+def project_rules_opening(store, budget, receipt='', max_projects=50, report=None):
+    """Read-only: detect project Kurallar.md files that clip or are stale at SessionStart.
+
+    Only the first max_projects rule files are measured; report, a dict, receives how many
+    there are (total) and how many were measured (checked), so a cut is never silent."""
     results = []
     store = _SharedOpeningStore(store)
-    for project_name, p_rel, p_name in _project_rule_candidates(store.vault_root, store.state_dir, max_projects=max_projects):
+    counted = {}
+    candidates = _project_rule_candidates(store.vault_root, store.state_dir, max_projects=max_projects, report=counted)
+    if report is not None:
+        report.update(checked=len(candidates), total=counted['total'])
+    for project_name, p_rel, p_name in candidates:
         source = f'{p_rel}/{p_name}'
         report = {}
         context(store, budget, '0' * 24, 'claude', receipt=receipt, rules_project=project_name, report=report)

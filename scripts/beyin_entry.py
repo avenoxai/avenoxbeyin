@@ -603,6 +603,10 @@ def human_result(result, command, installed_version=None):
                                  f'({p_omitted["count"]}/{p_omitted["total"]}).')
                 if proj.get('pinned_omitted'):
                     lines.append(pinned_overflow(proj['pinned_omitted'], source))
+        checked, total = rules_opening.get('project_rules_checked'), rules_opening.get('project_rules_total')
+        if isinstance(checked, int) and isinstance(total, int) and checked < total:
+            lines.append(f'Proje Kurallar.md olcumu ilk {checked} dosyayla sinirli (bilgi): {total} dosyanin '
+                         f'{total - checked} tanesi olculmedi.')
         references = result.get('instruction_references') or {}
         if references.get('status') == 'unavailable':
             lines.append('Talimat ve skill baglanti denetimi tamamlanamadi (bilgi): ' +

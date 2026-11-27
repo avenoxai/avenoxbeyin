@@ -339,6 +339,8 @@ adı kasadaki yazımıyla okunur) kural dosyalarını da aynı referans açılı
 kırpılan ya da `sync` sonrası değişmiş (`stale`) olanları
 `companion_rules_opening.project_rules` altında listeler. Gizli (`visibility: private`),
 güvenilmeyen ya da dışlanan klasördeki proje kuralları listelenmez; tanı salt okunurdur
-ve tek çağrıda en fazla 50 proje dosyasına bakar.
+ve tek çağrıda en fazla 50 proje dosyasına bakar. Bulunan ve ölçülen dosya sayısı
+`project_rules_total` ve `project_rules_checked` alanlarındadır; sınır aşılırsa `--human`
+çıktısı ölçülmeyen dosya sayısını tek satırla bildirir.
 
 Doctor, kaynak doğrulamasından geçmeyen Kurallar.md için açılış ölçümünü `stale` olarak bildirir; `beyin.py sync` sonrasında yeniden kontrol edin. Bu tanı salt okunurdur, dışlanan kural metnini göstermez ve kuralları arşive taşımaz.

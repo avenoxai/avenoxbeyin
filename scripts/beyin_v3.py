@@ -1897,9 +1897,14 @@ def main(argv=None, return_result=False):
                         budget=budget, harness='claude')
                     if rules and not rules.get('stale'):
                         result['companion_rules_opening']['measurement'] = 'reference_opening'
-                    project_rules = companion.project_rules_opening(ro_store, budget, opening_receipt)
+                    scanned = {}
+                    project_rules = companion.project_rules_opening(ro_store, budget, opening_receipt, report=scanned)
                     if project_rules:
                         result['companion_rules_opening']['project_rules'] = project_rules
+                    if scanned.get('total'):
+                        # Past the per-call cap the rest are not measured; say how many.
+                        result['companion_rules_opening'].update(project_rules_checked=scanned['checked'],
+                                                                 project_rules_total=scanned['total'])
             except Exception as exc:  # never hides the rest of doctor
                 result['companion_rules_opening'] = {'status': 'unavailable', 'error': type(exc).__name__}
             try:
