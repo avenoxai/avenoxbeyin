@@ -864,6 +864,26 @@ def antigravity_continued_stop(payload):
     return payload.get('continuationActive') is True or (type(count) is int and count > 0)
 
 
+def antigravity_abnormal_stop(payload):
+    """True when an Antigravity Stop ended with an error or non-normal terminationReason.
+
+    Antigravity sends terminationReason='NO_TOOL_CALL' with an empty error on a normal turn;
+    USER_CANCELED, ERROR, MAX_INVOCATIONS, MAX_FORCED_INVOCATIONS, MAX_TOKEN_BUDGET_EXCEEDED,
+    TERMINAL_STEP_TYPE, TERMINAL_CUSTOM_HOOK and INJECTED_RESPONSE must not be asked to
+    continue. Absent or empty fields stay False so older clients keep normal Stop behaviour."""
+    if not isinstance(payload, dict):
+        return False
+    err = payload.get('error')
+    if isinstance(err, str) and err.strip():
+        return True
+    reason = payload.get('terminationReason')
+    if isinstance(reason, str):
+        reason = reason.strip()
+        if reason and reason != 'NO_TOOL_CALL':
+            return True
+    return False
+
+
 def _antigravity_nonhuman_start(payload):
     """A native SessionStart without user input is a nested agent's conversation (#885)."""
     return (os.environ.get('BEYIN_V3_FILTER_HARNESS_TURNS') != '0'
@@ -992,7 +1012,8 @@ def main():
                     return
                 payload["tool_input"] = tool_input
             elif event == "Stop" and (payload.get("fullyIdle") is not True
-                                      or _antigravity_nonhuman_turn(payload, event)):
+                                      or _antigravity_nonhuman_turn(payload, event)
+                                      or antigravity_abnormal_stop(payload)):
                 print('{"decision":"stop"}')
                 return
             if event == "Stop" and antigravity_continued_stop(payload):
