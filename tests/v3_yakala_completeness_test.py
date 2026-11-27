@@ -18,7 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
 import beyin_v3_yakala as y
 from v3_yakala_defuddle_consent_test import approved_test_state
-from v3_package_helpers import inherited_env, isolated_path
+from v3_package_helpers import inherited_env, isolated_path, isolate_user_state
+isolate_user_state(y)  # card locks stay out of the real user state root
 
 HEADINGS = [f'How does synthetic topic {number} work?' for number in range(10)]
 WORDS = 'This is a synthetic explanation of the captured topic. ' * 5

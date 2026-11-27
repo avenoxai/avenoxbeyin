@@ -14,12 +14,13 @@ from unittest.mock import patch
 from urllib.parse import urlparse
 
 from v3_yakala_defuddle_consent_test import approved_test_state
-from v3_package_helpers import inherited_env
+from v3_package_helpers import inherited_env, isolate_user_state
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
 sys.path.insert(0, str(SCRIPTS))
 import beyin_v3_yakala as yakala  # noqa: E402
+isolate_user_state(yakala)  # card locks stay out of the real user state root
 
 NO_TOOLS = {key: None for key in ('npx', 'yt_dlp', 'whisper', 'pdftotext', 'ffmpeg')}
 PUBLIC = '8.8.8.8'  # the address the fake resolver gives a "public" test name

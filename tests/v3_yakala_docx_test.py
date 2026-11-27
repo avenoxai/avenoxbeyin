@@ -10,12 +10,13 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from v3_package_helpers import inherited_env
+from v3_package_helpers import inherited_env, isolate_user_state
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
 sys.path.insert(0, str(SCRIPTS))
 import beyin_v3_yakala as yakala
+isolate_user_state(yakala)  # card locks stay out of the real user state root
 from beyin_v3_docx import extract_docx
 
 W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'

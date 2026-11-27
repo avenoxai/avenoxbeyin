@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
 sys.path.insert(0, str(SCRIPTS))
 import beyin_v3_yakala as yakala  # noqa: E402
+from v3_package_helpers import isolate_user_state  # noqa: E402
+isolate_user_state(yakala)  # card locks stay out of the real user state root
 
 NO_TOOLS = {key: None for key in ('npx', 'yt_dlp', 'whisper', 'pdftotext', 'ffmpeg')}
 

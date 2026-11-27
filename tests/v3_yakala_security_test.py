@@ -17,11 +17,12 @@ import warnings
 from unittest.mock import patch
 
 from v3_yakala_defuddle_consent_test import approved_test_state
-from v3_package_helpers import build_package, inherited_env, isolated_env
+from v3_package_helpers import build_package, inherited_env, isolated_env, isolate_user_state
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
 import beyin_v3_yakala as yakala  # noqa: E402
+isolate_user_state(yakala)  # card locks stay out of the real user state root
 
 
 class YakalaSecurityTest(unittest.TestCase):

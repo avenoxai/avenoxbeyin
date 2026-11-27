@@ -7,6 +7,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'template/.claude/scripts'))
 import beyin_v3_yakala
+from v3_package_helpers import isolate_user_state  # noqa: E402
+isolate_user_state(beyin_v3_yakala)  # card locks stay out of the real user state root
 from v3_yakala_defuddle_consent_test import approved_test_state
 
 class TestYakalaHardenings(unittest.TestCase):

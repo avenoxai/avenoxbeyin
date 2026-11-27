@@ -21,7 +21,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-from v3_package_helpers import inherited_env
+from v3_package_helpers import inherited_env, isolate_user_state
 from v3_yakala_defuddle_consent_test import TerminalInput, approved_test_state
 from v3_package_helpers import clean_environ, isolated_path
 
@@ -30,6 +30,7 @@ SCRIPTS = ROOT / 'template/.claude/scripts'
 INBOX = '📥 000-Inbox/Yakala'
 sys.path.insert(0, str(SCRIPTS))
 import beyin_v3_yakala as yakala  # noqa: E402
+isolate_user_state(yakala)  # card locks stay out of the real user state root
 
 
 @contextmanager
