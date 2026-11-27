@@ -1888,18 +1888,20 @@ def main(argv=None, return_result=False):
                 prefs = result['preferences']
                 if prefs['context_mode'] == 'off':
                     result['companion_rules_opening'] = {'status': 'context_off'}
+                    result['companion_opening'] = {'status': 'context_off'}
                 else:
                     from beyin_v3_hook import receipt_context
                     budget = companion.client_budget('claude', companion.opening_budget(state, prefs['context_chars']))
                     ro_store = engine.MemoryStore(state, vault, read_only=True)
                     opening_receipt = receipt_context(vault, state)
-                    rules = companion.rules_opening(ro_store, budget, opening_receipt)
+                    rules, opening = companion.opening_report(ro_store, budget, opening_receipt)
                     result['companion_rules_opening'] = dict(
                         rules or {}, status='stale' if rules and rules.get('stale') else
                         'clipped' if rules and rules['clipped'] else 'ok' if rules else 'no_rules',
                         budget=budget, harness='claude')
                     if rules and not rules.get('stale'):
                         result['companion_rules_opening']['measurement'] = 'reference_opening'
+                    result['companion_opening'] = opening
                     scanned = {}
                     project_rules = companion.project_rules_opening(ro_store, budget, opening_receipt, report=scanned)
                     if project_rules:
@@ -1910,6 +1912,7 @@ def main(argv=None, return_result=False):
                                                                  project_rules_total=scanned['total'])
             except Exception as exc:  # never hides the rest of doctor
                 result['companion_rules_opening'] = {'status': 'unavailable', 'error': type(exc).__name__}
+                result['companion_opening'] = {'status': 'unavailable', 'error': type(exc).__name__}
             try:
                 import beyin_v3_references as references
                 result['instruction_references'] = references.check(vault)

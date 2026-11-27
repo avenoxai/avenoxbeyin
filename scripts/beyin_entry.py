@@ -607,6 +607,28 @@ def human_result(result, command, installed_version=None):
         if isinstance(checked, int) and isinstance(total, int) and checked < total:
             lines.append(f'Proje Kurallar.md olcumu ilk {checked} dosyayla sinirli (bilgi): {total} dosyanin '
                          f'{total - checked} tanesi olculmedi.')
+        opening = result.get('companion_opening') or {}
+        opening_files = opening.get('files') if isinstance(opening.get('files'), dict) else {}
+        if opening.get('status') == 'warn':
+            ident = plain_text(opening.get('identity') or 'Core.md')
+            ientry = opening_files.get(opening.get('identity') or 'Core.md') or {}
+            if ientry.get('omitted'):
+                lines.append(f'{ident} acilisa sigmiyor (uyari): {ientry.get("chars", "?")} karakter; '
+                             f'Claude Code acilisi ({opening.get("budget")} karakter) yalniz okuma isareti gosteriyor. '
+                             'Dosyayi kisalt ya da acilis butcesini (--companion-context-chars) gozden gecir.')
+            else:
+                lines.append(f'{ident} acilista cok kirpiliyor (uyari): {ientry.get("chars", "?")} karakterin '
+                             f'yalniz {ientry.get("share", 0)} karakteri gorunuyor '
+                             f'(butce {opening.get("budget")} karakter). Dosyayi kisalt veya acilis butcesini gozden gecir.')
+        journal_entry = opening_files.get('Journal.md')
+        if isinstance(journal_entry, dict) and (journal_entry.get('omitted') or
+                (journal_entry.get('clipped') and journal_entry.get('share', 0) < 100)):
+            if journal_entry.get('omitted'):
+                lines.append(f'Journal.md acilisa sigmiyor (bilgi): son giris {journal_entry.get("chars", "?")} karakter; '
+                             'yalniz okuma isareti gosteriliyor.')
+            else:
+                lines.append(f'Journal.md acilista kirpiliyor (bilgi): son giris {journal_entry.get("chars", "?")} karakterin '
+                             f'yalniz {journal_entry.get("share", 0)} karakteri gorunuyor.')
         references = result.get('instruction_references') or {}
         if references.get('status') == 'unavailable':
             lines.append('Talimat ve skill baglanti denetimi tamamlanamadi (bilgi): ' +

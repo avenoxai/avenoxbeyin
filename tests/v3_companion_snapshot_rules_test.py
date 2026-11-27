@@ -284,6 +284,36 @@ class SnapshotTest(unittest.TestCase):
                 self.assertTrue(shown.startswith(companion.CLIP_MARKER + '- X000 '), shown[:80])
                 self.assertEqual(report, {})
 
+    def test_starved_identity_and_journal_emit_omission_pointer_not_half_heading(self):
+        # #916: when the protected core forces Core.md/Journal.md down to <=50 chars, replace the
+        # 14-char broken half heading with a clear single-line omission pointer and report it.
+        core = '# Düşünme ortağı\n\n' + ('Kimlik tercihi ve çalışma bağlamı notu.\n' * 120)
+        rules = rules_file(3700, exact=True)[0]
+        last = '## 2026-11-27 10:00 · handoff · 12345678\n' + ('Son oturum ayrıntısı ve açık adım.\n' * 55)
+        threads = '## Active Threads\n' + ''.join(
+            f'### Topic {i:02d}\n- [ ] 2026-11-27: Durum özeti {i}. ' + 'x' * 550 + '\n' for i in range(11))
+        journal = '## 2026-11-27 · Gözlem\n' + ('Uzun gözlem ve öğrenim notu.\n' * 150)
+        for name, body in (('Core.md', core), ('Kurallar.md', rules), ('Last-Session.md', last),
+                           ('Threads.md', threads), ('Journal.md', journal)):
+            self.write(name, body)
+        report = {}
+        shown = companion.context(self.store, 8000, '0' * 24, 'claude', report=report)
+        self.assertLessEqual(len(shown), 8000)
+        core_part = section(shown, 'Core.md')
+        self.assertEqual(core_part.strip(), f'[omitted ({len(core)} chars); read source]')
+        self.assertNotIn('# Düşünme orta', core_part)
+        self.assertTrue(report['files']['Core.md']['omitted'])
+        self.assertEqual(report['files']['Core.md']['share'], 0)
+        self.assertTrue(report['files']['Journal.md']['omitted'])
+        _, opening = companion.opening_report(self.store, 8000)
+        self.assertEqual(opening['status'], 'warn')
+        self.assertEqual(opening['identity'], 'Core.md')
+        # Roomy budget delivers Core.md without warning or omission.
+        _, roomy = companion.opening_report(self.store, 20000)
+        self.assertNotEqual(roomy['status'], 'warn')
+        self.assertFalse(roomy['files']['Core.md']['omitted'])
+        self.assertGreater(roomy['files']['Core.md']['share'], companion.IDENTITY_WARN_SHARE)
+
     def test_doctor_reads_what_every_project_opening_shares_once(self):
         # #893: doctor measures each project's rules with SessionStart's own context(). The
         # knowledge map and the unqueried retrieval in it are the same for every project, so
@@ -583,6 +613,53 @@ class InstalledOpeningTest(unittest.TestCase):
             (self.vault / parent / name / 'Kurallar.md').write_text(
                 '# Rules\n- STALE_PROJECT_CANARY.\n', encoding='utf-8', newline='\n')
         self.assertEqual(project_rules(), [(source, 'stale') for source in expected])
+
+    def test_doctor_reports_companion_opening_and_warns_when_identity_starved(self):
+        # #916: when Kurallar + Last-Session + Threads fill the opening budget, Core.md and
+        # Journal.md drop to an omission pointer (not a half heading) and doctor reports it.
+        comp = self.vault / '🔮 850-Companion'
+        core = '# Düşünme ortağı\n\n' + ('Kimlik tercihi ve çalışma bağlamı notu.\n' * 120)
+        rules = rules_file(3700, exact=True)[0]
+        last = '## 2026-11-27 10:00 · handoff · 12345678\n' + ('Son oturum ayrıntısı ve açık adım.\n' * 55)
+        threads = '## Active Threads\n' + ''.join(
+            f'### Topic {i:02d}\n- [ ] 2026-11-27: Durum özeti {i} ve sonraki adım ayrıntısı. ' + 'x' * 550 + '\n'
+            for i in range(11))
+        journal = '## 2026-11-27 · Gözlem\n' + ('Uzun gözlem ve öğrenim notu.\n' * 200)
+        for name, body in (('Core.md', core), ('Kurallar.md', rules), ('Last-Session.md', last),
+                           ('Threads.md', threads), ('Journal.md', journal)):
+            (comp / name).write_text(body, encoding='utf-8', newline='\n')
+        self.run_cli(self.vault / 'beyin.py', '--vault', self.vault, '--state', self.state,
+                     'preferences', '--companion-context-chars', '8000')
+        self.run_cli(self.vault / 'beyin.py', '--vault', self.vault, '--state', self.state, 'sync')
+
+        before = self.tree()
+        raw = self.run_cli(self.vault / 'beyin.py', 'doctor', '--json')
+        human = self.run_cli(self.vault / 'beyin.py', 'doctor', '--human')
+        self.assertEqual(self.tree(), before, 'doctor must not write')
+        opening = json.loads(raw)['companion_opening']
+        self.assertEqual(opening['status'], 'warn')
+        self.assertEqual(opening['identity'], 'Core.md')
+        self.assertTrue(opening['files']['Core.md']['clipped'])
+        self.assertTrue(opening['files']['Core.md']['omitted'])
+        self.assertEqual(opening['files']['Core.md']['share'], 0)
+        self.assertTrue(opening['files']['Journal.md']['omitted'])
+        self.assertIn('Core.md acilisa sigmiyor (uyari)', human)
+        self.assertIn('Journal.md acilisa sigmiyor (bilgi)', human)
+
+        # Actual SessionStart opening replaces the broken 14-char half heading with an explicit pointer.
+        payload = {'hook_event_name': 'SessionStart', 'session_id': 'issue-916', 'source': 'startup',
+                   'cwd': str(self.vault)}
+        ctx = json.loads(self.run_cli(
+            self.vault / '.claude/scripts/beyin_v3_hook.py', '--vault', self.vault, '--state', self.state,
+            '--harness', 'claude', payload=payload))['hookSpecificOutput']['additionalContext']
+        self.assertIn(f'[omitted ({len(core)} chars); read source]', ctx)
+        self.assertNotIn('# Düşünme orta\n[truncated', ctx)
+
+        # Negative control: context_mode off reports context_off without failing.
+        self.run_cli(self.vault / 'beyin.py', '--vault', self.vault, '--state', self.state,
+                     'preferences', '--context-mode', 'off')
+        off = json.loads(self.run_cli(self.vault / 'beyin.py', 'doctor', '--json'))['companion_opening']
+        self.assertEqual(off, {'status': 'context_off'})
 
 
 if __name__ == '__main__':
