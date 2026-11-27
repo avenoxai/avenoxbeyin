@@ -43,30 +43,41 @@ _NAME_START = r"(?a:(?<![a-z0-9_]))"
 # ("API key: `OPENAI_API_KEY` okunur"), so it stays text; the check is
 # case-sensitive under the pattern's (?i).
 _LINE_END = r"(?=[ \t]*(?:\r?\n|\Z))"
-# What may follow a closed value and stay outside the mask: up to three
-# punctuation marks before a space or the end ("`value`.", "value,").
+# What may follow a closing backtick run and stay outside the mask: up to three
+# punctuation marks before a space or the end ("`value`.", "`value`, sonra").
 _AFTER_VALUE = r"""[.,;:!?)\]}'"*_~|]{0,3}(?:\s|\Z)"""
-# Text glued to a closing quote is part of the value ("abc"def is one shell
-# word), so the rest of the token goes with it unless only punctuation follows.
-_QUOTED_VALUE = (r"""\\{0,8}["\']\S{8,}\\{0,8}["\'](?:(?=\x60*""" + _AFTER_VALUE
-                 + r""")|\S*)""")
+# A Turkish suffix after inline code ("`NAME=value`'yi ayarla", "`...`’nin")
+# also follows a closing run. It is short and lower case, so it cannot take
+# with it a piece of a value that holds a quote after a backtick.
+_TURKISH_SUFFIX = r"['\u2019](?-i:[a-zçğıöşü]){1,8}(?=" + _AFTER_VALUE + ")"
+# A quoted value ends at its closing quote, as in 3.17.0.
+_QUOTED_VALUE = r"""\\{0,8}["\']\S{8,}\\{0,8}["\']"""
 
 
-def _unquoted_value(separators, characters, start=""):
-    """A value that no quote opens, kept inside one non-space token.
+def _unquoted_value(start="", head_runs=False):
+    """A value that no quote or backtick opens, kept inside one non-space token.
 
-    It starts with eight characters that are not separators, as before. A
-    separator run that a value character follows belongs to the value
-    ("Xy7#kL9a`mN2$pQ4!", "Xy7kL9am,N2pQ4zR8"); a run that a space, the end or
-    up to three punctuation marks before them follow ends it and stays outside
-    ("- `NAME=value`", "NAME=value, sonra"), so an inline-code span keeps its
-    closing backtick and no tail of the value is left visible.
+    A comma or a semicolon ends it, as in 3.17.0: "token=Xy7kL9am,mode=fast"
+    and "Password=Xy7kL9am;Database=foo" keep the next setting. A value that
+    holds one of them has to be quoted. A backtick run that a value character
+    follows belongs to the value ("Xy7#kL9a`mN2$pQ4!"); a run that a space, the
+    end, up to three punctuation marks before them or a Turkish suffix follow
+    closes the inline-code span around the assignment and stays outside
+    ("- `NAME=value`", "`NAME=value`'yi ayarla"). The run is one step that
+    needs a value character after it, so a long run cannot make the scan
+    quadratic.
+
+    An assignment value starts with eight characters that are not backticks,
+    as in 3.17.0, so a JSON-escaped fence after a label ("Token:\\n```js")
+    stays text. A setx value counted backticks among its first eight in 3.17.0
+    (head_runs) and keeps doing so.
     """
-    # Backticks after the run only need their own step when the run cannot hold
-    # them; two quantifiers over the same backticks would make a long run quadratic.
-    after = ("" if "\\x60" in separators else "\\x60*") + _AFTER_VALUE
-    return (start + "[^\"'" + separators + r"\s]" + characters + "{7,}(?:(?![" + separators
-            + "]+" + after + ")[" + separators + "]+" + characters + "*)*")
+    character = r"[^\x60\s,;]"
+    inner_run = (r"\x60+(?=" + character + r")(?!" + _AFTER_VALUE + "|"
+                 + _TURKISH_SUFFIX + ")")
+    step = "(?:" + character + "|" + inner_run + ")"
+    head = step + "{7,}" if head_runs else character + "{7,}" + step + "*"
+    return start + r"[^\"'\x60\s,;]" + head
 
 
 def _backtick_value(opener, close, before_line_end):
@@ -93,12 +104,14 @@ def _backtick_value(opener, close, before_line_end):
 
 # The fence run is capped so a chain of ever shorter openers in one token
 # cannot make the scan quadratic; a longer run is left as written.
-_SECRET_VALUE = ("(?:" + _QUOTED_VALUE
-                 + r"""|(?!(?-i:\x60+[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\x60))(?:"""
-                 + _backtick_value(r"\x60", r"\x60", r"\x60*") + "|"
-                 + _backtick_value(r"\x60\x60", r"\x60\x60", r"\x60*") + "|"
-                 + _backtick_value(r"(?P<fence>\x60{3,16})", r"(?P=fence)", r"\x60+")
-                 + ")|" + _unquoted_value(r"\x60,;", r"[^\x60\s,;]") + ")")
+def _backtick_span():
+    return (r"""(?!(?-i:\x60+[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\x60))(?:"""
+            + _backtick_value(r"\x60", r"\x60", r"\x60*") + "|"
+            + _backtick_value(r"\x60\x60", r"\x60\x60", r"\x60*") + "|"
+            + _backtick_value(r"(?P<fence>\x60{3,16})", r"(?P=fence)", r"\x60+") + ")")
+
+
+_SECRET_VALUE = ("(?:" + _QUOTED_VALUE + "|" + _backtick_span() + "|" + _unquoted_value() + ")")
 
 
 BUILTIN_PATTERNS = (
@@ -114,8 +127,8 @@ BUILTIN_PATTERNS = (
     re.compile(r"""(?i)(?a:(?<![a-z0-9_-]))(?:(?:setx(?:[ \t]+/m)?|set[ \t]+-[a-z]{0,3}x[a-z]{0,3})"""
                r"""[ \t]+["\']?""" + _SECRET_NAME + r"""["\']?[ \t]+|setenvironmentvariable\([ \t]*["\']"""
                + _SECRET_NAME + r"""["\'][ \t]*,[ \t]*)"""
-               + "(?:" + _QUOTED_VALUE + "|"
-               + _unquoted_value(",;", r"[^\s,;]", start=r"(?=[^\s,;]*\d)") + ")"),
+               + "(?:" + _QUOTED_VALUE + r"|(?=\S*\d)" + _backtick_span() + "|"
+               + _unquoted_value(start=r"(?=[^\s,;]*\d)", head_runs=True) + ")"),
     re.compile(r"(?<=://)[^/\s?#:]*:[^/\s?#]*(?=@[^/\s?#@]+)"),
     re.compile(r"\bgh(?:p|o|u|s|r)_[A-Za-z0-9]{20,255}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,255}\b"),

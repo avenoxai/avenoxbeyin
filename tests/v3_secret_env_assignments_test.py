@@ -224,20 +224,19 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
         self.assertGreater(outcomes['masked'], 0)
         self.assertGreater(outcomes['kept'], 0)
 
-    def test_unquoted_value_holding_a_separator_is_masked_whole(self):
-        # The unquoted branch stopped at the first backtick, comma or semicolon,
-        # reported a mask and left the tail of the value in the note.
+    def test_unquoted_value_holding_a_backtick_is_masked_whole(self):
+        # The unquoted branch stopped at the first backtick, reported a mask and
+        # left the tail of the value in the note (on main since 3.16.0); a setx
+        # span split at a comma the same way.
         store = runtime.MemoryStore(self.state, self.vault)
         for text, expected in (
                 ("DB_PASSWORD=Xy7#kL9a`mN2$pQ4!", "[REDACTED]"),
                 ("export DB_PASSWORD=Xy7#kL9a``mN2$pQ4! ve devam", "export [REDACTED] ve devam"),
-                ("DB_PASSWORD=Xy7#kL9a,mN2$pQ4!", "[REDACTED]"),
-                ("API_KEY: Xy7#kL9a;mN2$pQ4!.", "[REDACTED]"),
                 ("- `OPENAI_API_KEY=Xy7#kL9a`mN2$pQ4!`", "- `[REDACTED]`"),
+                ("API_KEY: Xy7#kL9a`'mN2$pQ4! sonra", "[REDACTED] sonra"),
                 ("setx API_KEY `Xy7kL9am,N2pQ4zR8`", "[REDACTED]"),
-                ("setx API_KEY Xy7kL9am;N2pQ4zR8, sonra", "[REDACTED], sonra"),
-                ('password="Xy7#kL9a"mN2$pQ4!', "[REDACTED]"),
-                ("setx API_KEY 'Xy7kL9am'N2pQ4zR8", "[REDACTED]")):
+                ("setx API_KEY `Xy7kL9am,N2pQ4zR8`, sonra", "[REDACTED], sonra"),
+                ("setx API_KEY Xy7kL9am`N2pQ4zR8", "[REDACTED]")):
             with self.subTest(text=text):
                 result, count = redact(text, self.state)
                 self.assertEqual((result, count), (expected, 1))
@@ -245,14 +244,35 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
                     self.assertNotIn(part, result)
                 with self.assertRaises(ValueError):
                     advisor._safe(store, {'statement': text})
-        # A separator run that a space, the end or trailing punctuation follows
-        # ends the value and stays outside, so inline code stays balanced.
+        # A backtick run that a space, the end, trailing punctuation or a Turkish
+        # suffix follows closes the inline code around the assignment and stays
+        # outside, as in 3.17.0.
         for text, expected in (
                 (f"- `OPENAI_API_KEY={VALUE}`", "- `[REDACTED]`"),
                 (f"`API_KEY={VALUE}`, `TOKEN=x`", "`[REDACTED]`, `TOKEN=x`"),
-                (f"API_KEY={VALUE}; next", "[REDACTED]; next"),
-                (f'password="{VALUE}".', "[REDACTED]."),
-                (f"setx API_KEY {VALUE}, sonra", "[REDACTED], sonra")):
+                ("`API_KEY=abcdefghij`'yi ayarla", "`[REDACTED]`'yi ayarla"),
+                ("`API_KEY=abcdefghij`’nin değeri", "`[REDACTED]`’nin değeri"),
+                (f"`setx API_KEY {VALUE}` komutu", "`[REDACTED]` komutu")):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text, self.state), (expected, 1))
+
+    def test_comma_semicolon_and_closing_quote_end_a_value_as_in_3_17_0(self):
+        # A comma or a semicolon ends an unquoted value and a closing quote ends
+        # a quoted one, so the next setting in compact JSON, a connection string
+        # or a key=value list stays readable. A value holding one of these
+        # characters has to be quoted or put in backticks (known limit).
+        for text, expected in (
+                ('{"password":"abcdefghij","host":"db.example.com","port":5432}',
+                 '{[REDACTED]:5432}'),
+                ("Server=x;Password=abcdefgh;Database=foo;", "Server=x;[REDACTED];Database=foo;"),
+                ("token=abcdefgh,mode=fast", "[REDACTED],mode=fast"),
+                ("DB_PASSWORD=Xy7#kL9a,mN2$pQ4!", "[REDACTED],mN2$pQ4!"),
+                ("API_KEY: Xy7#kL9a;mN2$pQ4!.", "[REDACTED];mN2$pQ4!."),
+                ("setx API_KEY Xy7kL9am;N2pQ4zR8, sonra", "[REDACTED];N2pQ4zR8, sonra"),
+                ('password="Xy7#kL9a"mN2$pQ4!', "[REDACTED]mN2$pQ4!"),
+                ("setx API_KEY 'Xy7kL9am'N2pQ4zR8", "[REDACTED]N2pQ4zR8"),
+                ('DB_PASSWORD="Xy7#kL9a,mN2$pQ4!"', "[REDACTED]"),
+                ("DB_PASSWORD=`Xy7#kL9a,mN2$pQ4!`", "[REDACTED]")):
             with self.subTest(text=text):
                 self.assertEqual(redact(text, self.state), (expected, 1))
 
@@ -261,16 +281,19 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
         # the prefixes, a value holding 0-3 backticks, commas or semicolons in a
         # row, a wrapper (none, closing backticks, one backtick, quotes) and the
         # text after it. Either the input is unchanged and Jev accepts it, or no
-        # 6-character piece of the value is left and Jev rejects it.
+        # 6-character piece of the value is left and Jev rejects it. A comma or
+        # a semicolon ends an unquoted value as in 3.17.0: there the result is
+        # the head of the value redacted on its own, followed by the rest of
+        # the text as written.
         store = runtime.MemoryStore(self.state, self.vault)
         values = (('Xy7#kL9a', 'mN2$pQ4!'), ('Xy7#k', 'L9amN2$pQ4!'),
-                  ('Xy7#kL9amN2', '$pQ4!z'), ('Xy7#\u200bkL9a', 'mN2$pQ4!'))
+                  ('Xy7#kL9amN2', '$pQ4!z'), ('Xy7#​kL9a', 'mN2$pQ4!'))
         wrappers = (('', ''), ('', '`'), ('', '``'), ('', '```'), ('`', '`'), ('`', ''),
                     ('"', '"'), ("'", "'"))
         inners = [''.join(run) for size in range(4) for run in itertools.product('`,;', repeat=size)]
         afters = ('', ' ve devam', '.', ', sonra', "'yi kullan", 'değerini',
                   '\nsonraki satır', '\r\nsonraki satır', ' `kod` sonra')
-        failures, outcomes = [], {'masked': 0, 'kept': 0}
+        failures, outcomes = [], {'masked': 0, 'kept': 0, 'split': 0}
         for prefix, (opening, closing), inner, (head, tail), after in itertools.product(
                 ('DB_PASSWORD=', 'export DB_PASSWORD=', 'API_KEY: ', 'setx API_KEY ',
                  '- `OPENAI_API_KEY='), wrappers, inners, values, afters):
@@ -282,12 +305,19 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
                 accepted = True
             except ValueError:
                 accepted = False
-            if result == text:
+            cut = min((value.index(mark) for mark in ',;' if mark in value), default=None)
+            if not opening and cut is not None:
+                outcomes['split'] += 1
+                start = prefix + value[:cut]
+                expected = redact(start, self.state)
+                ok = ((result, count) == (expected[0] + text[len(start):], expected[1])
+                      and accepted == (count == 0))
+            elif result == text:
                 outcomes['kept'] += 1
                 ok = count == 0 and accepted
             else:
                 outcomes['masked'] += 1
-                pieces = {plain[i:i + 6] for plain in (value, value.replace('\u200b', ''))
+                pieces = {plain[i:i + 6] for plain in (value, value.replace('​', ''))
                           for i in range(len(plain) - 5)}
                 ok = (count >= 1 and '[REDACTED]' in result and not accepted
                       and not any(piece in result for piece in pieces))
@@ -297,6 +327,7 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
         self.assertEqual(sum(outcomes.values()), 5 * 8 * 40 * 4 * 9)
         self.assertGreater(outcomes['masked'], 0)
         self.assertGreater(outcomes['kept'], 0)
+        self.assertGreater(outcomes['split'], 0)
 
     def test_variable_name_in_backticks_after_a_secret_label_stays_text(self):
         # Docs name the variable that holds a credential; masking the name hid
