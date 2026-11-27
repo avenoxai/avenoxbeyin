@@ -1002,6 +1002,51 @@ def _strict_terms(terms):
     return {t for t in terms if len(t) >= 2 and not (t.isdigit() and len(t) < 3)}
 
 
+def _delivered_text(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return ' '.join(_delivered_text(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return ' '.join(_delivered_text(item) for item in value)
+    return str(value) if value is not None else ''
+
+
+# Pronouns and auxiliaries a prompt carries around its topic. Not retrieval stopwords (that list
+# changes ranking); they only stay out of the automatic context's term coverage (#909).
+_COVERAGE_FILLERS = _tokens(
+    "i me we us you your he she they them their be been being am can could should would will shall "
+    "may might must there here any some many much so if then than also just not as by into out up all "
+    "use using need want "
+    "ben sen biz siz onlar da de ki gibi daha cok var ama fakat her hep sey neden niye nerede kac gerek lazim")
+
+
+def query_term_coverage(query, records):
+    """(terms, unmatched): a prompt's topical words and, in prompt order, those no record contains.
+
+    The explicit context command's unmatched_terms rule (#768) for automatic context (#909):
+    a word matches by its stem in the records' text, title, fact values and aliases as given
+    (a clipped text counts only as far as it was clipped). Question wrappers, stopwords,
+    pronouns and auxiliaries, single letters and short numbers are not terms, and one stem
+    counts once. This is lexical coverage only: a synonym, a clipped tail or a scope filter
+    also leaves a word unmatched.
+    """
+    covered = set()
+    for record in records:
+        covered.update(_tokens(' '.join(_delivered_text(record.get(key, ''))
+                                        for key in ('text', 'title', 'facts', 'aliases'))))
+    terms, unmatched, seen = [], [], set()
+    for word in re.findall(r'[a-z0-9]+', _fold(strip_query_fillers(query or ''))):
+        stem = _stem(word)
+        if stem in seen or stem in STOPWORDS or stem in _COVERAGE_FILLERS or not _strict_terms({stem}):
+            continue
+        seen.add(stem)
+        terms.append(word)
+        if stem not in covered:
+            unmatched.append(word)
+    return terms, unmatched
+
+
 # bu and su are stopwords; their oblique stem (bunu, sunun, bunlar -> bun) is not a topic either.
 _PRONOUN_ROOTS = frozenset(("bun", "sun"))
 
