@@ -225,6 +225,45 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(omitted, last - first + 1)
         self.assertNotIn('pinned_omitted', report)
 
+    def test_pin_written_after_the_reason_survives_dropping_reasons(self):
+        # #890: the installed template writes `- **kural:** ... **neden:** ...`; a pin at the
+        # end of that item, or on its reason line, must stay when the reasons go.
+        def item(n, pin, continued):
+            reason = f'**neden:** Gerekçe {n:02d} uzun bir açıklama taşır ve yer kaplar.'
+            joint = '\n  ' if continued else ' '
+            return f'- **kural:** Kural {n:02d} metni biraz uzun bir cümle olarak durur.{joint}{reason}{pin}\n'
+        for continued in (False, True):
+            with self.subTest(continued=continued):
+                text = HEAD + ''.join(item(n, ' <!-- beyin:pin -->' if n == 20 else '', continued)
+                                      for n in range(1, 41))
+                stripped = companion.without_reasons(text)
+                self.assertNotIn('Gerekçe', stripped)
+                self.assertIn('Kural 20 metni biraz uzun bir cümle olarak durur. <!-- beyin:pin -->\n', stripped)
+                self.assertEqual(len(companion.PINNED_RULE.findall(stripped)), 1)
+                report = {}
+                shown = companion.clip(stripped, 1500, both=True, tail=True, rules_report=report)
+                self.assertLessEqual(len(shown), 1500)
+                self.assertIn('Kural 20 ', shown)
+                first, last, omitted, total = map(int, MARKER.search(shown).groups())
+                self.assertTrue(first < 20 < last, (first, last))
+                self.assertEqual((omitted, total), (last - first, 40))
+                self.assertNotIn('pinned_omitted', report)
+
+    def test_pinned_rule_alone_in_the_cut_names_no_empty_rule_range(self):
+        # When the only rule in the cut is a pinned one shown before the marker, only the
+        # prose before the first rule was left out; "rules 1-1 (0 of 5)" would misreport it.
+        items = ''.join(f'- X{i:03d} ' + 'k' * 60 + (' <!-- beyin:pin -->' if i == 0 else '') + '\n'
+                        for i in range(5))
+        for latest in (False, True):
+            text = (companion.LATEST_RULES + '\n' if latest else '') + '# Kurallar\n' + 'giriş metni ' * 30 + '\n' + items
+            with self.subTest(latest=latest):
+                report = {}
+                shown = companion.clip(text, 419, both=True, tail=True, rules_report=report)
+                self.assertLessEqual(len(shown), 419)
+                self.assertIsNone(MARKER.search(shown), shown)
+                self.assertTrue(shown.startswith(companion.CLIP_MARKER + '- X000 '), shown[:80])
+                self.assertEqual(report, {})
+
     def test_rules_notice_keeps_long_receipt_within_total_budget(self):
         for name, body in self.bodies.items():
             self.write(name, body)

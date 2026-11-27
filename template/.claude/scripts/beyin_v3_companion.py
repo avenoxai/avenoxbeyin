@@ -1004,8 +1004,14 @@ REASON = re.compile(r'(?:\n[ \t]*|[ \t]*)\*\*(?:neden|gerekçe|gerekce|why|reaso
                     r'.*?(?=\n[ \t]*(?:[-*+][ \t]|\d+[.)][ \t]|#)|\n[ \t]*\n|\n?\Z)', re.S | re.I)
 
 
+def _drop_reason(match):
+    # A pin written after the reason (`... **neden:** ... <!-- beyin:pin -->`) stays with its
+    # rule when the reason goes (#890).
+    return ' ' + PINNED_RULE.search(match[0])[0] if PINNED_RULE.search(match[0]) else ''
+
+
 def without_reasons(text):
-    stripped, count = REASON.subn('', text)
+    stripped, count = REASON.subn(_drop_reason, text)
     if not count:
         return text
     return stripped.rstrip('\n') + f'\n[{count} rule reasons (**neden:**) omitted to fit the opening; read source]\n'
@@ -1114,6 +1120,13 @@ def _rule_gap(head, tail, first, last, total, report, items=(), shown=()):
     """head, the pinned items shown from first-last, the marker, tail. The marker and the
     report count only the rules really left out of that range."""
     count = last - first + 1 - len(shown)
+    if not count:
+        # Every rule of the range is a pinned one shown here: only the prose before the
+        # first rule was left out, so name no rule range.
+        if report is not None:
+            report.pop('omitted_rules', None)
+            report.pop('pinned_omitted', None)
+        return head + CLIP_MARKER + ''.join(items[i] for i in shown) + tail
     pinned_omitted = sum(1 for i in range(first - 1, last) if i not in shown and PINNED_RULE.search(items[i])) if items else 0
     if report is not None:
         report['omitted_rules'] = {'first': first, 'last': last, 'count': count, 'total': total}

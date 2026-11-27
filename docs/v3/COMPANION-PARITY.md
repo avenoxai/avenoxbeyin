@@ -323,8 +323,9 @@ içeriğini açıklamadan `companion_rules_opening.omitted_rules` alanında bild
 kural metnine kalan payı ve atlanan aralığı değiştirebilir.
 
 Kırpılmaması gereken birkaç kural maddesine `<!-- beyin:pin -->` işareti
-koyabilirsiniz (maddenin herhangi bir satırına; Obsidian'da görünmez). Kırpma
-gerektiğinde işaretli maddeler önce yer alır: atlanan aralıktan gelenler kırpma
+koyabilirsiniz (maddenin herhangi bir satırına, `**neden:**` gerekçesinden sonra da;
+gerekçeler açılışa sığmadığı için atıldığında işaret maddede kalır; Obsidian'ın okuma görünümünde
+görünmez). Kırpma gerektiğinde işaretli maddeler önce yer alır: atlanan aralıktan gelenler kırpma
 işaretinin hemen önünde, tam madde olarak gösterilir ve işaretteki sayı yalnız
 gerçekten gösterilmeyen maddeleri sayar. Bu iki düzende de (baştan ve sondan ya da
 `rules-order=latest`) geçerlidir; ana `Kurallar.md` ile proje `Kurallar.md`
