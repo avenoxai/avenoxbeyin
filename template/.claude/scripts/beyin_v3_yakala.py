@@ -1895,10 +1895,18 @@ def _section(body, name):
     return match.group(1).strip() if match else ''
 
 
+# The Web Clipper template ends with `## Icerik`, and `{{content}}` carries the page's own `##`
+# headings. The section therefore runs to the next heading that this module itself appends to a card:
+# a re-capture note (`capture`) or the `## Islendi` summary (`finish`). Anything else is page text.
+_CLIPPER_SECTION = re.compile(r'^## (Icerik|\u0130\u00e7erik)\s*$(.*?)'
+                              r'(?=^## (?:Islendi|Yeniden yakalandi \(\d{4}-\d{2}-\d{2} \d{2}:\d{2}\))[ \t]*$|\Z)',
+                              re.M | re.S)
+
+
 def _clipper_section(body):
-    """Web Clipper template places content as the last section; keep its internal ## headings."""
-    match = re.search(r'^## (?:Icerik|\u0130\u00e7erik)\s*$(.*?)(?=^## Islendi\b|\Z)', body, re.M | re.S)
-    return match.group(1).strip() if match else ''
+    """The clipped page body under `## Icerik`, including its internal ## headings."""
+    match = _CLIPPER_SECTION.search(body)
+    return match.group(2).strip() if match else ''
 
 
 def _without_section(body, name, replacement):
@@ -1906,8 +1914,8 @@ def _without_section(body, name, replacement):
 
 
 def _without_clipper_section(body, replacement):
-    """Replace entire Web Clipper content section without leaving trailing internal headings."""
-    return re.sub(r'^## (?:Icerik|\u0130\u00e7erik)\s*$.*?(?=^## Islendi\b|\Z)', '## Icerik\n\n' + replacement + '\n\n', body, count=1, flags=re.M | re.S)
+    """Replace the whole clipped page body; the card's own later sections stay in the card."""
+    return _CLIPPER_SECTION.sub(lambda match: '## ' + match.group(1) + '\n\n' + replacement + '\n\n', body, count=1)
 
 
 def _windows_reserved_name(part):

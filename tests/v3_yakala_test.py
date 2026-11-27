@@ -529,6 +529,41 @@ class YakalaUnitTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             yakala.finish(self.vault, note['id'], ['knowledge/concepts/yok.md'])
 
+    def test_web_clipper_body_keeps_page_headings_and_card_sections(self):
+        # Issue #908: the clipped page keeps its own headings, but a later re-capture note is the card's own.
+        env = patch.dict(os.environ, {'XDG_STATE_HOME': str(Path(self.tmp.name) / 'state')})
+        env.start()
+        self.addCleanup(env.stop)
+        none = {name: None for name in ('npx', 'yt_dlp', 'whisper', 'pdftotext', 'ffmpeg')}
+        article = ('Giriş paragrafı. ' * 15 + '\n\n## Kurulum\n\nİlk adım.\n\n```md\n## kod içinde başlık\n```\n\n'
+                   'Setext başlık\n=============\n\n# Tek diyez\n\n## Kaynaklar ve Şifre Arşivi\n\nSon cümle.')
+        for heading in ('Icerik', 'İçerik'):
+            with self.subTest(heading=heading):
+                url = 'https://ornek.com/' + ('a' if heading == 'Icerik' else 'b')
+                path = self.vault / INBOX / ('clip-' + url[-1] + '.md')
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, 'w', encoding='utf-8', newline='\n') as handle:
+                    handle.write('---\ntur: yakala\ndurum: bekliyor\nkaynak_turu: ""\nbaslik: "Yazı"\nurl: "' + url + '"\n'
+                                 'arac: web-clipper\nvisibility: internal\n---\n# Yazı\n\n## Neden\n\n\n\n## Kaynak\n\n'
+                                 + url + '\n\n## Secim\n\n\n\n## ' + heading + '\n\n' + article + '\n')
+                with patch.object(yakala, 'tools', return_value=none), patch.object(socket, 'getaddrinfo', return_value=[
+                        (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('8.8.8.8', 443))]):
+                    yakala.capture(self.vault, url=url, why='fiyat bölümüne tekrar bak',
+                                   extra_urls=[url + '/ek'])
+                    entry = yakala.process(self.vault, [path.stem])['kartlar'][0]
+                self.assertEqual((entry['durum'], entry['yontem'], entry['karakter']), ('cikarildi', 'web-clipper', len(article)))
+                raw = (self.vault / entry['ham']).read_text(encoding='utf-8')
+                source = raw.split(':baslangic -->\n', 1)[1].rsplit('\n<!-- yakala-kaynak:', 1)[0]
+                self.assertEqual(source, article)  # the whole page, byte for byte, behind the untrusted boundary
+                self.assertNotIn('fiyat bölümüne', raw)
+                card = path.read_text(encoding='utf-8')
+                for page_text in ('Giriş paragrafı.', '## Kurulum', 'kod içinde', 'Son cümle.'):
+                    self.assertNotIn(page_text, card)
+                self.assertIn('## ' + heading + '\n\nTam metin ham dosyaya tasindi: `' + entry['ham'] + '`', card)
+                self.assertIn('## Yeniden yakalandi (', card)
+                self.assertIn('fiyat bölümüne tekrar bak', card)
+                self.assertIn('## Ek bağlantılar\n\n- ' + url + '/ek', card)
+
     def test_vtt_text(self):
         raw = ('WEBVTT\nKind: captions\n\n00:00:00.000 --> 00:00:02.000\nmerhaba <c>dunya</c>\n\n'
                '00:00:02.000 --> 00:00:04.000\nmerhaba dunya\nikinci satir\n\n00:00:40.000 --> 00:00:42.000\nyeni paragraf\n'
