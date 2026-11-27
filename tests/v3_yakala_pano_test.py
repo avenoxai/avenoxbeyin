@@ -20,13 +20,14 @@ import unittest
 from unittest.mock import Mock, patch
 import zlib
 
-from v3_package_helpers import inherited_env
+from v3_package_helpers import inherited_env, isolate_user_state
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
 INBOX = '📥 000-Inbox/Yakala'
 sys.path.insert(0, str(SCRIPTS))
 import beyin_v3_yakala as yakala  # noqa: E402
+isolate_user_state(yakala)  # card locks stay out of the real user state root
 
 BYTE_OF = {0xFF: 0, 0xFF00: 1, 0xFF0000: 2, 0xFF000000: 3}
 REPORTED = ('C:/Users/Özdemir/AppData/Local/Packages/MicrosoftWindows.Client.Core_cw5n1h2txyewy/'

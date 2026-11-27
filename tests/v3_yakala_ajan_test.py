@@ -25,13 +25,14 @@ from unittest import mock
 from unittest.mock import Mock, patch
 import uuid
 
-from v3_package_helpers import inherited_env
+from v3_package_helpers import inherited_env, isolate_user_state
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'template/.claude/scripts'
 sys.path.insert(0, str(SCRIPTS))
 import beyin_v3_yakala as yakala  # noqa: E402
+isolate_user_state(yakala)  # card locks stay out of the real user state root
 
 
 class AgentFiles(unittest.TestCase):
@@ -560,6 +561,7 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import beyin_v3_yakala as y
 vault, state, trace, active = map(Path, sys.argv[2:])
+y.default_state = lambda vault: state  # the parent's card-lock domain, not the user's state root
 y._agent_notify = lambda *args, **kwargs: None
 def run(vault, state, job):
     fd = os.open(active, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
