@@ -1909,6 +1909,50 @@ def _clipper_section(body):
     return match.group(2).strip() if match else ''
 
 
+_CLIPPER_POINTER = re.compile(r'Tam metin ham dosyaya tasindi: `([^`\n]+)`[ \t]*(?:\n|\Z)')
+_CLIPPER_LEGACY_NOTE = ('Onceki surumde ilk alt baslikta kesilen Web Clipper metni, ham dosyadaki '
+                        'girisle birlestirilerek yeniden yazildi.')
+
+
+def _clipper_text(vault, card, clipped):
+    """Return (page text, note) for the `## Icerik` section of a card that may already be processed.
+
+    After `isle`, the section holds only the pointer to the raw file; that is no clipped page. Before
+    3.18.0 (#908) `isle` cut the page at its first `##` heading: the intro went to the raw file and
+    the rest stayed in the card under the pointer. Such a card is rebuilt from both halves, so a
+    second `isle` repairs it instead of overwriting the raw intro with the leftover sections.
+    """
+    pointer = _CLIPPER_POINTER.match(clipped)
+    if not pointer:
+        return clipped, None
+    rest = clipped[pointer.end():].strip()
+    if not rest:
+        return '', None
+    raw = card['path'].parent / RAW / (card['id'] + '.md')
+    try:
+        if pointer.group(1) != raw.relative_to(vault).as_posix() or not raw.is_file():
+            return '', None
+        stored = raw.read_text(encoding='utf-8').replace('\r\n', '\n')
+    except (OSError, ValueError, UnicodeDecodeError):
+        return '', None
+    head = stored.split('\n---\n', 1)[0] + '\n'
+    kart = card['path'].relative_to(vault).as_posix()
+    boundary = re.search(r'^<!-- yakala-kaynak:([0-9a-f]{32}):baslangic -->\n', stored, re.M)
+    if not boundary or '\nkart: ' + json.dumps(kart, ensure_ascii=False) + '\n' not in head \
+            or '\nyontem: "web-clipper"\n' not in head:
+        return '', None  # not this card's clipped intro: the old fallback, the raw file stays as it is
+    closing = '\n<!-- yakala-kaynak:' + boundary.group(1) + ':bitis -->'
+    intro = stored[boundary.end():]
+    if closing not in intro:
+        return '', None
+    intro = intro.rsplit(closing, 1)[0].strip()
+    if not intro:
+        return '', None
+    if rest in intro:
+        return intro, _CLIPPER_LEGACY_NOTE  # repaired by hand already
+    return intro + '\n\n' + rest, _CLIPPER_LEGACY_NOTE
+
+
 def _without_section(body, name, replacement):
     return re.sub(r'^## ' + name + r'\s*$.*?(?=^## |\Z)', '## ' + name + '\n\n' + replacement + '\n\n', body, count=1, flags=re.M | re.S)
 
@@ -2009,9 +2053,9 @@ def extract(vault, card, found, allow_audio=True, info=None, state=None):
         _safe_source_url(url)  # Cards can also be edited, clipped or synced.
         if kind == 'youtube' and kind_of(url) != 'youtube':
             kind = kind_of(url)  # an edited field never hands another site to yt-dlp's generic extractor
-    clipped = _clipper_section(body)
+    clipped, legacy = _clipper_text(vault, card, _clipper_section(body))
     if clipped and len(clipped) > 200 and kind != 'youtube':
-        return clipped, 'web-clipper', None
+        return clipped, 'web-clipper', legacy
     if kind == 'youtube' and url:
         _safe_network_url(url)
         return via_youtube(url, found, allow_audio, info, state)

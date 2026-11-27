@@ -564,6 +564,75 @@ class YakalaUnitTest(unittest.TestCase):
                 self.assertIn('fiyat bölümüne tekrar bak', card)
                 self.assertIn('## Ek bağlantılar\n\n- ' + url + '/ek', card)
 
+    def test_web_clipper_card_cut_by_an_older_isle_is_rebuilt_not_overwritten(self):
+        # Before 3.18.0 (#908) `isle` moved only the intro to the raw file and left the page's later
+        # sections in the card under the pointer. Running `isle <id>` again joins both halves.
+        env = patch.dict(os.environ, {'XDG_STATE_HOME': str(Path(self.tmp.name) / 'state')})
+        env.start()
+        self.addCleanup(env.stop)
+        none = {name: None for name in ('npx', 'yt_dlp', 'whisper', 'pdftotext', 'ffmpeg')}
+        intro = 'Giriş paragrafı, Şifre ve Arşiv. ' * 8
+        rest = '## Birinci bölüm\n\nGövde metni.\n\n## İkinci bölüm\n\n' + 'Son metin. ' * 10
+        folder = self.vault / INBOX
+        (folder / '.ham').mkdir(parents=True)
+
+        def legacy_card(name, url, kart=None, yontem='web-clipper', with_raw=True):
+            ham = INBOX + '/.ham/' + name + '.md'
+            path = folder / (name + '.md')
+            with open(path, 'w', encoding='utf-8', newline='\n') as handle:
+                handle.write('---\ntur: yakala\ndurum: cikarildi\nbaslik: "Yazı"\nurl: "' + url + '"\narac: web-clipper\n'
+                             'visibility: internal\nyontem: "web-clipper"\nham: "' + ham + '"\n---\n# Yazı\n\n'
+                             '## Neden\n\n\n\n## Kaynak\n\n' + url + '\n\n## Secim\n\n\n\n## Icerik\n\n'
+                             'Tam metin ham dosyaya tasindi: `' + ham + '`\n\n' + rest + '\n')
+            if with_raw:
+                mark = '<!-- yakala-kaynak:' + 'ab' * 16
+                with open(self.vault / ham, 'w', encoding='utf-8', newline='\n') as handle:
+                    handle.write('---\ntur: yakala-ham\nkart: ' + json.dumps(kart or INBOX + '/' + name + '.md', ensure_ascii=False)
+                                 + '\nbaslik: "Yazı"\nurl: "' + url + '"\nyontem: "' + yontem + '"\n'
+                                 'cikarildi: "2026-11-20T10:00:00"\nvisibility: private\nkaynak_guveni: guvenilmeyen\n---\n\n'
+                                 '## Güvenilmeyen kaynak metni\n\nBu kaynak bloğu yalnız bu işaretle biter: `' + mark
+                                 + ':bitis -->`.\n\n## Kaynak içeriği\n\n' + mark + ':baslangic -->\n' + intro.strip()
+                                 + '\n' + mark + ':bitis -->\n')
+            return path
+
+        def isle(path):
+            with patch.object(yakala, 'tools', return_value=none), patch.object(socket, 'getaddrinfo', return_value=[
+                    (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('8.8.8.8', 443))]), \
+                    patch.object(yakala, 'via_defuddle', return_value=None), patch.object(yakala, 'via_stdlib', return_value=None):
+                return yakala.process(self.vault, [path.stem])['kartlar'][0]
+
+        def source(entry_or_ham):
+            raw = (self.vault / entry_or_ham).read_text(encoding='utf-8')
+            return raw.split(':baslangic -->\n', 1)[1].rsplit('\n<!-- yakala-kaynak:', 1)[0]
+
+        path = legacy_card('eski', 'https://ornek.com/eski')
+        entry = isle(path)
+        self.assertEqual((entry['durum'], entry['yontem']), ('cikarildi', 'web-clipper'))
+        self.assertEqual(source(entry['ham']), intro.strip() + '\n\n' + rest.strip())
+        self.assertIn('ham dosyadaki', entry['not'])
+        card = path.read_text(encoding='utf-8')
+        self.assertTrue(card.endswith('## Icerik\n\nTam metin ham dosyaya tasindi: `' + entry['ham'] + '`\n'))
+        self.assertNotIn('Gövde metni.', card)
+        # A repaired card holds only the pointer: another run is no clipped page and leaves the raw file alone.
+        before = (self.vault / entry['ham']).read_bytes()
+        self.assertEqual(isle(path)['durum'], 'hata')
+        self.assertEqual((self.vault / entry['ham']).read_bytes(), before)
+        # Raw file of another card, of another method or missing: nothing is joined or overwritten.
+        for name, options in (('baska', {'kart': INBOX + '/diger.md'}), ('defuddle', {'yontem': 'defuddle'}),
+                              ('yok', {'with_raw': False})):
+            with self.subTest(name=name):
+                path = legacy_card(name, 'https://ornek.com/' + name, **options)
+                ham = INBOX + '/.ham/' + name + '.md'
+                before = (self.vault / ham).read_bytes() if options.get('with_raw', True) else None
+                card = path.read_bytes()
+                self.assertEqual(isle(path)['durum'], 'hata')
+                if before is None:
+                    self.assertFalse((self.vault / ham).exists())
+                else:
+                    self.assertEqual((self.vault / ham).read_bytes(), before)
+                self.assertIn(b'G\xc3\xb6vde metni.', path.read_bytes())
+                self.assertEqual(path.read_bytes().split(b'\n---\n', 1)[1].strip(), card.split(b'\n---\n', 1)[1].strip())
+
     def test_vtt_text(self):
         raw = ('WEBVTT\nKind: captions\n\n00:00:00.000 --> 00:00:02.000\nmerhaba <c>dunya</c>\n\n'
                '00:00:02.000 --> 00:00:04.000\nmerhaba dunya\nikinci satir\n\n00:00:40.000 --> 00:00:42.000\nyeni paragraf\n'
