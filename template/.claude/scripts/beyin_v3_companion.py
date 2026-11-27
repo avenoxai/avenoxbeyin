@@ -1009,7 +1009,8 @@ REASON = re.compile(r'(?:\n[ \t]*|[ \t]*)\*\*(?:neden|gerekçe|gerekce|why|reaso
 def _drop_reason(match):
     # A pin written after the reason (`... **neden:** ... <!-- beyin:pin -->`) stays with its
     # rule when the reason goes (#890).
-    return ' ' + PINNED_RULE.search(match[0])[0] if _is_pinned(match[0]) else ''
+    found = _pin_match(match[0])
+    return ' ' + found[0] if found else ''
 
 
 def without_reasons(text):
@@ -1103,24 +1104,69 @@ def rule_starts(text):
 
 LATEST_RULES = '<!-- beyin:rules-order=latest -->'
 PINNED_RULE = re.compile(r'<!--\s*beyin:pin\s*-->', re.I)
+ITEM_FENCE = re.compile(r'^[ \t]*(`{3,}|~{3,})(.*)$')
+
+
+def _strip_inline_code(line):
+    """Remove Markdown inline code spans (`...`, ``...``) on one line."""
+    if '`' not in line:
+        return line
+    out, i, n = [], 0, len(line)
+    while i < n:
+        if line[i] != '`':
+            out.append(line[i])
+            i += 1
+            continue
+        end = i
+        while end < n and line[end] == '`':
+            end += 1
+        ticks = end - i
+        j = end
+        closed = False
+        while j < n:
+            if line[j] == '`':
+                k = j
+                while k < n and line[k] == '`':
+                    k += 1
+                if k - j == ticks:
+                    i = k
+                    closed = True
+                    break
+                j = k
+            else:
+                j += 1
+        if not closed:
+            out.append(line[i:end])
+            i = end
+    return ''.join(out)
+
+
+def _pin_match(item):
+    """First <!-- beyin:pin --> outside fenced blocks and inline code spans (#890)."""
+    if not PINNED_RULE.search(item):
+        return None
+    fence = None
+    for raw_line in item.split('\n'):
+        line = raw_line.rstrip('\r')
+        if fence:
+            closing = re.match(r'^[ \t]*(' + re.escape(fence[0]) + r'{3,})[ \t]*$', line)
+            if closing and len(closing[1]) >= len(fence):
+                fence = None
+            continue
+        match = ITEM_FENCE.match(line)
+        if match and not (match[1][0] == '`' and '`' in match[2]):
+            fence = match[1]
+            continue
+        found = PINNED_RULE.search(_strip_inline_code(line))
+        if found:
+            return found
+    return None
 
 
 def _is_pinned(item):
-    """A <!-- beyin:pin --> outside fenced code (#890): a marker in an example block, as
-    rule_starts treats a list item there, pins nothing."""
-    if not PINNED_RULE.search(item):
-        return False
-    fence = None
-    for line in item.split('\n'):
-        match = FENCE.match(line)
-        if fence:
-            if match and match[1][0] == fence[0] and len(match[1]) >= len(fence):
-                fence = None
-        elif match:
-            fence = match[1]
-        elif PINNED_RULE.search(line):
-            return True
-    return False
+    """A <!-- beyin:pin --> outside fenced code and inline code (#890): a marker quoted
+    as an example does not pin the rule that carries it."""
+    return _pin_match(item) is not None
 
 
 def _pinned(items, room):
