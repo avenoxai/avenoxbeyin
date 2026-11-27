@@ -1344,8 +1344,8 @@ class SyncEngine:
                 db.execute("DELETE FROM metadata WHERE key='receipt_scan_signature'")
         for entry in completed:
             entry.unlink(missing_ok=True)
-        # Numbered copy warnings are informational; they don't degrade the sync status.
-        degraded_warnings = [w for w in warnings if not str(w.get('reason', '')).startswith('possible file sync copy')]
+        # Numbered copy and missing-receipt-source warnings are informational; they don't degrade the sync status.
+        degraded_warnings = [w for w in warnings if not str(w.get('reason', '')).startswith('possible file sync copy') and w.get('kind') != 'missing_receipt_source']
         result = {'status': 'conflict' if conflicts else 'degraded' if degraded_warnings else 'succeeded', 'indexed': len(records), 'deleted': deleted, 'warnings': warnings, 'conflicts': conflicts}
         if recover_views:
             result['recovered_views'] = recovered_views or []

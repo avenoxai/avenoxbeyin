@@ -852,10 +852,33 @@ def _receipt_view_contents(engine, db, warnings=None, *, include_human_daily=Fal
                              '' if withheld else event['event_id']))
     desired = {}
     outcomes = []
+    existing_receipts = None
+    if not released_format and receipt_sources is None:
+        receipts_dir = engine.root / 'receipts'
+        try:
+            if not receipts_dir.is_symlink() and receipts_dir.is_dir():
+                existing_receipts = set(os.listdir(receipts_dir))
+            else:
+                existing_receipts = set()
+        except OSError:
+            existing_receipts = set()
+    missing_warned = set()
     for day, items in sorted(grouped.items()):
         entries = []
         for _, at, source, summary, event_id in sorted(items):
-            link = f'[[{source}]]' if released_format else _receipt_link(source, event_id)
+            filename = source[len('receipts/'):]
+            if existing_receipts is not None and filename not in existing_receipts:
+                alias = ' '.join(re.sub(r'[\[\]|#^]', ' ', event_id).split())[:80].strip()
+                link = f'`{source}` ({alias}, dosya diskte yok)' if alias else f'`{source}` (dosya diskte yok)'
+                if warnings is not None and source not in missing_warned:
+                    missing_warned.add(source)
+                    warnings.append({
+                        'source': source,
+                        'kind': 'missing_receipt_source',
+                        'reason': 'receipt source file missing on disk; rendered without wikilink',
+                    })
+            else:
+                link = f'[[{source}]]' if released_format else _receipt_link(source, event_id)
             entries.append(f'## {at}\n\n{summary}\n\nSource: {link}\n')
             outcomes.append(f'- {day}: {summary}\n  Source: {link}\n')
         relative = f'daily/{day}.md' if layout == 'flat' else f'daily/v3/{day}.md'
