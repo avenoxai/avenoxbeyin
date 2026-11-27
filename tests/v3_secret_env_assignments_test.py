@@ -1,4 +1,5 @@
 """Prefixed environment assignments: synthetic credentials and offline transports only."""
+import itertools
 import json
 import os
 from pathlib import Path
@@ -88,7 +89,7 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
                 (f"PASSWORD: `{VALUE}`; next", "[REDACTED]; next"),
                 (f"secret=`{VALUE}`)", "[REDACTED])"),
                 (f"API_KEY=`\"{VALUE}\"`", "[REDACTED]"),
-                (f"API_KEY=``{VALUE}``", "[REDACTED]`"),
+                (f"API_KEY=``{VALUE}``", "[REDACTED]"),
                 (f"- `OPENAI_API_KEY=`{VALUE}``", "- `[REDACTED]`"),
                 (f"`API_KEY={VALUE}`", "`[REDACTED]`"),
                 (f"API_KEY=`{VALUE}", "[REDACTED]"),
@@ -115,15 +116,15 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
         store = runtime.MemoryStore(self.state, self.vault)
         inner = 'Xy7#kL9a`mN2$pQ4!'
         for text, expected in (
-                (f"DB_PASSWORD=``{inner}``", "[REDACTED]`"),
-                (f"API_KEY=``abcdefgh`ijklmnop``", "[REDACTED]`"),
-                (f"export DB_PASSWORD=``{inner}`` ve devam", "export [REDACTED]` ve devam"),
-                (f"password: ``{inner}``.", "[REDACTED]`."),
-                (f"- `OPENAI_API_KEY=``{inner}```", "- `[REDACTED]``"),
+                (f"DB_PASSWORD=``{inner}``", "[REDACTED]"),
+                (f"API_KEY=``abcdefgh`ijklmnop``", "[REDACTED]"),
+                (f"export DB_PASSWORD=``{inner}`` ve devam", "export [REDACTED] ve devam"),
+                (f"password: ``{inner}``.", "[REDACTED]."),
+                (f"- `OPENAI_API_KEY=``{inner}```", "- `[REDACTED]`"),
                 (f"API_KEY=``{inner}", "[REDACTED]"),
                 (f"API_KEY=``{inner}`", "[REDACTED]"),
                 (f"API_KEY=``{inner}\r\nsonra``", "[REDACTED]\r\nsonra``"),
-                (f"API_KEY=``a`bcdefgh`` ve TOKEN=``{inner}``", "[REDACTED]` ve [REDACTED]`")):
+                (f"API_KEY=``a`bcdefgh`` ve TOKEN=``{inner}``", "[REDACTED] ve [REDACTED]")):
             with self.subTest(text=text):
                 result, count = redact(text, self.state)
                 self.assertEqual(result, expected)
@@ -152,7 +153,76 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
                 self.assertEqual(redact(text, self.state), (text, 0))
                 advisor._safe(store, {'statement': text})
         # A closed triple-backtick value is still masked whole.
-        self.assertEqual(redact(f"API_KEY=```{VALUE}```", self.state), ("[REDACTED]``", 1))
+        self.assertEqual(redact(f"API_KEY=```{VALUE}```", self.state), ("[REDACTED]", 1))
+
+    def test_longer_backtick_span_holding_backticks_is_masked_whole(self):
+        # Markdown writes a value that holds `` with a triple span (```a``b```).
+        # The three-or-more branch closed on the first inner backtick, reported
+        # a mask and left the tail in the note and in memory.sqlite3.
+        store = runtime.MemoryStore(self.state, self.vault)
+        for text, expected in (
+                ("API_KEY=```Xy7#kL9a`mN2$pQ4!```", "[REDACTED]"),
+                ("API_KEY=```Xy7#kL9a``mN2$pQ4!``` ve", "[REDACTED] ve"),
+                ("API_KEY=````Xy7#kL9a```mN2$pQ4!````", "[REDACTED]"),
+                ("API key: ```Xy7#kL9a`mN2$pQ4!``` kullan", "[REDACTED] kullan"),
+                ("API_KEY=```Xy7#kL9a`mN2$pQ4!`", "[REDACTED]"),
+                # A single span that a backtick interrupts, or a closing run
+                # glued to more text, goes whole instead of leaving its tail.
+                ("API_KEY=`Xy7#kL9a`mN2$pQ4!` sonra", "[REDACTED] sonra"),
+                ("API_KEY=`Xy7#kL9a`mN2$pQ4! sonra", "[REDACTED] sonra"),
+                ("API_KEY=``Xy7#kL9a``mN2$pQ4!``", "[REDACTED]"),
+                ("password: `Xy7#kL9amN2$pQ4!`'yi sakla", "[REDACTED] sakla")):
+            with self.subTest(text=text):
+                result, count = redact(text, self.state)
+                self.assertEqual((result, count), (expected, 1))
+                self.assertNotIn('mN2$pQ4!', result)
+                with self.assertRaises(ValueError):
+                    advisor._safe(store, {'statement': text})
+        # A spaced span stays prose instead of losing only its first word.
+        for text in ("API_KEY=```abcdefgh` ijk```", "API_KEY=````abcdefgh``` ijk````",
+                     "Token: ```GITHUB_TOKEN```"):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text, self.state), (text, 0))
+                advisor._safe(store, {'statement': text})
+
+    def test_backtick_spans_are_masked_whole_or_left_as_written(self):
+        # Class check over a fixed grid rather than single examples: every
+        # opening run of 1-6 backticks, a value holding 0-3 backticks in a row,
+        # a closing run of 0-6 backticks and the text after it. The result is
+        # the input unchanged (and Jev accepts it) or no 6-character piece of
+        # the value is left (and Jev rejects it); never a mask with a tail.
+        store = runtime.MemoryStore(self.state, self.vault)
+        values = (('Xy7#kL9a', 'mN2$pQ4!'), ('Xy7#k', 'L9amN2$pQ4!'),
+                  ('Xy7#kL9amN2', '$pQ4!z'), ('Xy7#​kL9a', 'mN2$pQ4!'))
+        afters = ('', ' ve devam', '.', ', sonra', "'yi kullan", 'değerini',
+                  '\nsonraki satır', '\r\nsonraki satır', ' `kod` sonra')
+        failures, outcomes = [], {'masked': 0, 'kept': 0}
+        for prefix, opening, inner, (head, tail), closing, after in itertools.product(
+                ('API_KEY=', 'password: ', '- `OPENAI_API_KEY='), range(1, 7), range(4),
+                values, range(7), afters):
+            value = head + '`' * inner + tail
+            text = prefix + '`' * opening + value + '`' * closing + after
+            result, count = redact(text, self.state)
+            try:
+                advisor._safe(store, {'statement': text})
+                accepted = True
+            except ValueError:
+                accepted = False
+            if result == text:
+                outcomes['kept'] += 1
+                ok = count == 0 and accepted
+            else:
+                outcomes['masked'] += 1
+                pieces = {plain[i:i + 6] for plain in (value, value.replace('​', ''))
+                          for i in range(len(plain) - 5)}
+                ok = (count >= 1 and '[REDACTED]' in result and not accepted
+                      and not any(piece in result for piece in pieces))
+            if not ok:
+                failures.append((text, result, count, accepted))
+        self.assertEqual(failures[:10], [])
+        self.assertEqual(sum(outcomes.values()), 3 * 6 * 4 * 4 * 7 * 9)
+        self.assertGreater(outcomes['masked'], 0)
+        self.assertGreater(outcomes['kept'], 0)
 
     def test_variable_name_in_backticks_after_a_secret_label_stays_text(self):
         # Docs name the variable that holds a credential; masking the name hid

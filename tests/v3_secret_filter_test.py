@@ -420,7 +420,11 @@ class SecretFilterTest(unittest.TestCase):
                      'password=`' + 'A_' * 100000 + 'A`', 'password=' + '`' * 100000 + 'A_B',
                      'password:\n```javascript\n' * 20000,
                      'password=``' + 'a`' * 50000, 'password=``' + 'a`' * 50000 + ' x',
-                     'API_KEY: ``' + 'ab`' * 50000 + '`', 'password=``' * 20000):
+                     'API_KEY: ``' + 'ab`' * 50000 + '`', 'password=``' * 20000,
+                     'password=```' + 'a`' * 100000 + ' x', 'password=```' + 'a``' * 70000 + ' x',
+                     'password=```abcdefgh' * 15000 + ' x', 'API_KEY=```' + 'a`' * 100000,
+                     ''.join('password=' + '`' * n + 'abcdefgh' for n in range(600, 0, -1)) + ' x',
+                     'password: ' + '```abcdefgh`` ' * 30000, 'API_KEY=`abcdefgh' + '`' * 200000 + 'x y'):
             with self.subTest(text=text[:12], length=len(text)):
                 started = time.monotonic()
                 redact(text, self.state)
