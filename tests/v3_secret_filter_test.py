@@ -431,7 +431,9 @@ class SecretFilterTest(unittest.TestCase):
                      'setx API_KEY `' + 'a1' * 100000 + ' x', 'setx API_KEY ' + '`' * 200000 + '1',
                      'setx API_KEY `1' + '.' * 200000 + 'x', 'setx API_KEY `1abcdefg' + '.,' * 100000,
                      'setx API_KEY `$' + 'a`$' * 70000 + '1 /M', 'setx API_KEY `1abcdefg ' * 20000,
-                     'set -x API_KEY ' + '`a1' * 70000 + '``` x'):
+                     'set -x API_KEY ' + '`a1' * 70000 + '``` x',
+                     'password=`' + 'A_' * 100000 + 'A=' + '`' * 100000 + 'x',
+                     'Token: `A_B=` ' * 20000, 'password=`A_B=``' * 20000):
             with self.subTest(text=text[:12], length=len(text)):
                 started = time.monotonic()
                 redact(text, self.state)

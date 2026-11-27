@@ -535,6 +535,46 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(redact(text, self.state), (expected, 1))
 
+    def test_variable_name_with_an_empty_assignment_after_a_label_stays_text(self):
+        # "Token: `OPENAI_API_KEY=` gerekli" names the variable to set; the span
+        # branch masked it (3.17.0 left it) because only a bare name was kept.
+        # The expected output for a form without a value is the 3.17.0 output,
+        # which is the input; a form that carries a value is still masked whole.
+        store = runtime.MemoryStore(self.state, self.vault)
+        secret = 'Xy7kL9amN2pQ4zR8'
+        labels = ('Token: ', 'API key: ', 'password: ', '- Secret: ', 'OPENAI_API_KEY=')
+        names = ('OPENAI_API_KEY', 'GITHUB_TOKEN', 'DB_PASSWORD')
+        wraps = (('`', '`'), ('``', '``'))
+        afters = ('', ' gerekli', '.', ', sonra', "'yi ayarla", ' ve `ANTHROPIC_API_KEY=` gerekli',
+                  '\nsonra')
+        for label, name, (opening, closing), after in itertools.product(labels, names, wraps, afters):
+            for form in (name, name + '=', name + '=""', name + "=''"):
+                text = label + opening + form + closing + after
+                with self.subTest(text=text):
+                    self.assertEqual(redact(text, self.state), (text, 0))
+                    # 3.17.0 already read ="" before a JSON-escaped line break as a
+                    # quoted value, so Jev refuses that pair; it is not checked here.
+                    if not (form.endswith(('""', "''")) and after.startswith('\n')):
+                        advisor._safe(store, {'statement': text})
+            for form in (name + '=' + secret, secret, name + '=`' + secret):
+                text = label + opening + form + closing + after
+                with self.subTest(text=text):
+                    result, count = redact(text, self.state)
+                    self.assertGreaterEqual(count, 1)
+                    self.assertNotIn('Xy7kL9', result)
+                    self.assertNotIn('N2pQ4zR8', result)
+                    with self.assertRaises(ValueError):
+                        advisor._safe(store, {'statement': text})
+        for text in ("Token: `OPENAI_API_KEY=` gerekli",
+                     "API key: `OPENAI_API_KEY=` ve `ANTHROPIC_API_KEY=` gerekli"):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text, self.state), (text, 0))
+        for text, expected in (("Token: `OPENAI_API_KEY=sk-abc12345`", "[REDACTED]"),
+                               (f"Token: `{secret}`", "[REDACTED]"),
+                               (f"Token: `OPENAI_API_KEY=`{secret} devam", "[REDACTED] devam")):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text, self.state), (expected, 1))
+
     def test_pem_body_is_masked_without_trailer_and_does_not_swallow_prose(self):
         begin = "-----BEGIN PRIVATE KEY-----"
         body = "QUJD" * 16  # Synthetic base64, no private key.
