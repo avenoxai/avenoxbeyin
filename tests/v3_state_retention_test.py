@@ -187,6 +187,46 @@ class StateRetentionTest(unittest.TestCase):
         self.assertFalse(any(path.exists() for path in removed))
         self.assertTrue(all(path.exists() for path in kept))
 
+    def test_antigravity_session_markers_go_after_a_day_and_the_key_stays(self):
+        # #903: one marker per Antigravity conversation; without pruning the folder only grew.
+        folder = self.state / 'antigravity-sessions'
+        old = [self.stale(folder / (HEX64 + '.json')),
+               self.stale(folder / ('0123456789abcdef' * 4 + '.json'), age=retention.SESSION_MARKER_MAX_AGE_SECONDS + 60)]
+        temp = [self.stale(folder / (HEX64 + '.json.' + HEX32 + '.tmp')),
+                self.stale(folder / ('key.json.' + HEX32 + '.tmp'))]
+        kept = [self.stale(folder / ('c' * 64 + '.json'), age=60),
+                self.stale(folder / ('d' * 64 + '.json'), age=retention.SESSION_MARKER_MAX_AGE_SECONDS - 60),
+                self.stale(folder / 'key.json', age=30 * DAY),
+                self.stale(folder / ('E' * 64 + '.json')),
+                self.stale(folder / ('e' * 63 + '.json')),
+                self.stale(self.state / (HEX64 + '.json')),
+                self.stale(self.vault / 'antigravity-sessions' / (HEX64 + '.json'))]
+        (folder / ('9' * 64 + '.json')).mkdir()
+        self.assertEqual(retention.stale_session_markers(self.state), sorted(old))
+        self.assertEqual(retention.stale_temp_files(self.state), sorted(temp))
+        plan = retention.compact(self.store, dry_run=True)
+        self.assertEqual((plan['status'], plan['stale_session_markers']), ('planned', 2))
+        self.assertTrue(all(path.exists() for path in old))
+        result = retention.maintain(self.store)
+        self.assertEqual((result['session_markers_removed'], result['temp_files_removed']), (2, 2))
+        self.assertFalse(any(path.exists() for path in old + temp))
+        self.assertTrue(all(path.exists() for path in kept))
+        again = self.stale(folder / ('f' * 64 + '.json'))
+        self.assertEqual(retention.compact(self.store)['session_markers_removed'], 1)
+        self.assertFalse(again.exists())
+        self.assertEqual(retention.sweep_session_markers(self.state), 0)
+
+    def test_session_marker_sweep_ignores_missing_and_linked_folders(self):
+        self.assertEqual(retention.sweep_session_markers(self.state), 0)
+        if os.name == 'nt':
+            self.skipTest('directory symlinks need extra privileges on Windows')
+        outside = self.root / 'outside markers'
+        old = self.stale(outside / (HEX64 + '.json'))
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / 'antigravity-sessions').symlink_to(outside, target_is_directory=True)
+        self.assertEqual(retention.sweep_session_markers(self.state), 0)
+        self.assertTrue(old.exists())
+
     @unittest.skipUnless(os.name == 'posix', 'cleanup fails closed without POSIX directory descriptors')
     def test_jev_cache_sweep_removes_only_expired_entries(self):
         """#772: expired Jev score entries never leave `.cache/jev` unless the same request returns."""

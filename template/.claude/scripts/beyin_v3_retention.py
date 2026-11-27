@@ -29,9 +29,15 @@ command, which also switches the file to incremental auto-vacuum; after that, an
 for every index created by this release, the worker returns a bounded number of
 free pages to the file system.
 
-Stale temp files are removed only in the state root and the two hook folders, only
+Stale temp files are removed only in the state root and the hook folders, only
 when their names match a temp name this runtime itself writes there, and only when
 they are older than TEMP_MAX_AGE_SECONDS.
+
+Antigravity's once-per-conversation markers (`antigravity-sessions/<sha256>.json`, #903)
+are per-session state like the dedupe, parallel-session and context-fill files, and go
+after the same day (SESSION_MARKER_MAX_AGE_SECONDS, by modification time). A conversation
+idle longer than that gets its opening once more, the behaviour before the marker existed.
+The folder's `key.json` (the prompt digest key) is never removed.
 
 Expired Jev score entries (#772) go the same way: `<state>/.cache/jev/<sha256>.json`
 is replaced only when the same request returns, so entries of requests that never
@@ -56,6 +62,7 @@ CHECK_INTERVAL_SECONDS = 86400
 MARK_INTERVAL_SECONDS = 86400
 TEMP_MAX_AGE_SECONDS = 86400
 JEV_CACHE_MAX_AGE_SECONDS = 86400  # the cache_ttl cap in beyin_v3_jev_client._validated
+SESSION_MARKER_MAX_AGE_SECONDS = 24 * 3600  # as beyin_v3_dedupe/parallel/context_fill session files
 INCREMENTAL_VACUUM_PAGES = 1024
 COMPACT_HINT_BYTES = 64 * 1024 * 1024
 MARKS_KEY = 'event_retention_marks'
@@ -72,6 +79,11 @@ _ROOT_TEMP = re.compile(
 _FOLDER_TEMP = {
     'hook-queue': re.compile(r'[0-9a-f]{64}\.json\.[0-9a-f]{32}\.tmp'),
     'receipt-reminders': re.compile(r'[0-9a-f]{64}\.edited\.[0-9a-f]{32}\.tmp'),
+    'antigravity-sessions': re.compile(r'(?:[0-9a-f]{64}|key)\.json\.[0-9a-f]{32}\.tmp'),
+}
+# Per-conversation markers the hook and the global bridge write (#903); never key.json.
+_SESSION_MARKERS = {
+    'antigravity-sessions': re.compile(r'[0-9a-f]{64}\.json'),
 }
 
 _JEV_CACHE_ENTRY = re.compile(r'[0-9a-f]{64}\.json')
@@ -190,6 +202,42 @@ def stale_temp_files(state, now=None):
     return sorted(found)
 
 
+def stale_session_markers(state, now=None):
+    """Per-conversation markers older than SESSION_MARKER_MAX_AGE_SECONDS; never follows a link."""
+    now = time.time() if now is None else now
+    found = []
+    for name, pattern in _SESSION_MARKERS.items():
+        folder = Path(state) / name
+        try:
+            if folder.is_symlink() or not folder.is_dir():
+                continue
+            with os.scandir(folder) as listing:
+                entries = list(listing)
+        except OSError:
+            continue
+        for entry in entries:
+            if not pattern.fullmatch(entry.name):
+                continue
+            try:
+                info = os.lstat(entry.path)
+            except OSError:
+                continue
+            if stat.S_ISREG(info.st_mode) and now - info.st_mtime > SESSION_MARKER_MAX_AGE_SECONDS:
+                found.append(Path(entry.path))
+    return sorted(found)
+
+
+def sweep_session_markers(state, now=None):
+    removed = 0
+    for path in stale_session_markers(state, now):
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            pass  # gone already, or still held open on Windows; the next sweep retries
+    return removed
+
+
 def sweep_temp_files(state, now=None):
     removed = 0
     for path in stale_temp_files(state, now):
@@ -296,7 +344,7 @@ def maintain(store, now=None, batch=PRUNE_BATCH):
     """Bounded background maintenance for the queue worker; throttled to once a day."""
     now = time.time() if now is None else now
     result = {'status': 'done', 'events_removed': 0, 'pages_freed': 0, 'temp_files_removed': 0,
-              'jev_cache_removed': 0}
+              'jev_cache_removed': 0, 'session_markers_removed': 0}
     try:
         with store._connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -318,6 +366,7 @@ def maintain(store, now=None, batch=PRUNE_BATCH):
         return dict(result, status='busy')
     result['temp_files_removed'] = sweep_temp_files(store.state_dir, now)
     result['jev_cache_removed'] = sweep_jev_cache(store.state_dir, now)
+    result['session_markers_removed'] = sweep_session_markers(store.state_dir, now)
     return result
 
 
@@ -340,7 +389,8 @@ def compact(store, dry_run=False, now=None):
             count, size = prunable_events(db, now)
         return dict(before, status='planned', events_prunable=count, event_bytes_prunable=size,
                     stale_temp_files=len(stale_temp_files(store.state_dir, now)),
-                    expired_jev_cache=len(expired_jev_cache(store.state_dir, now)))
+                    expired_jev_cache=len(expired_jev_cache(store.state_dir, now)),
+                    stale_session_markers=len(stale_session_markers(store.state_dir, now)))
     result = {'status': 'compacted', 'events_removed': 0, 'database_bytes_before': before['database_bytes']}
     try:
         while True:
@@ -359,6 +409,7 @@ def compact(store, dry_run=False, now=None):
         result.update(status='busy', vacuum='skipped')  # the uncommitted batch rolled back whole
     result['temp_files_removed'] = sweep_temp_files(store.state_dir, now)
     result['jev_cache_removed'] = sweep_jev_cache(store.state_dir, now)
+    result['session_markers_removed'] = sweep_session_markers(store.state_dir, now)
     if result['status'] == 'compacted':
         try:
             with closing(sqlite3.connect(store.database, timeout=store.busy_timeout, isolation_level=None)) as db:

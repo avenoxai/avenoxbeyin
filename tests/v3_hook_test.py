@@ -56,6 +56,33 @@ class HookInstallerTest(unittest.TestCase):
             for tool in ('Bash', 'exec_command', 'Read'):
                 self.assertIsNone(matcher.fullmatch(tool))
 
+    def test_install_antigravity_events_follow_its_hook_contract(self):
+        # Antigravity CLI 1.5.18 hooks.json: SessionStart/PreInvocation/Stop are flat handler lists,
+        # PostToolUse groups handlers under a tool-name regex (#903, #905).
+        self.install()
+        managed = json.loads((self.vault / '.agents/hooks.json').read_text(encoding='utf-8'))['beyin-v3']
+        self.assertEqual(list(managed), ['SessionStart', 'PreInvocation', 'PostToolUse', 'Stop'])
+        for event in ('SessionStart', 'PreInvocation', 'Stop'):
+            self.assertEqual(len(managed[event]), 1)
+            self.assertIn('command', managed[event][0])
+            self.assertNotIn('matcher', managed[event][0])
+        group, = managed['PostToolUse']
+        self.assertEqual(set(group), {'matcher', 'hooks'})
+        self.assertEqual(group['matcher'], self.hook.ANTIGRAVITY_EDIT_MATCHER)
+        spec = importlib.util.spec_from_file_location('v3_hook_test_bridge', SCRIPTS / 'beyin_v3_bridge.py')
+        bridge = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bridge)
+        self.assertEqual(bridge.ANTIGRAVITY_EDIT_MATCHER, group['matcher'])
+        matcher = re.compile(group['matcher'])
+        self.assertLessEqual({'write_to_file', 'replace_file_content', 'multi_replace_file_content'},
+                             set(self.hook.ANTIGRAVITY_WRITE_TOOLS))  # the IDE agent's file tools
+        for tool in self.hook.ANTIGRAVITY_WRITE_TOOLS:
+            self.assertIsNotNone(matcher.search(tool))
+        for tool in ('read_file', 'view_file', 'list_dir', 'grep_search', 'run_command', 'multi_edit_file_preview',
+                     'write_file2', 'replace_file_content_preview'):
+            self.assertIsNone(matcher.search(tool))
+        self.assertIn('--event PostToolUse', decoded_command(group['hooks'][0]['command']).replace("'", '').replace('"', ''))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='v3-hook-test-')
         self.addCleanup(self.tmp.cleanup)
@@ -852,6 +879,95 @@ class HookInstallerTest(unittest.TestCase):
         self.assertEqual(self.invoke(dict(stop, fullyIdle=True), 'antigravity'), {'decision': 'stop'})
         self.assertEqual(len(list((self.state / 'hook-queue').glob('*.json'))), before + 1)
 
+    def agy_tool(self, session, name, args, **fields):
+        # Antigravity CLI 1.5.18 PostToolUse shape: toolCall name/args, error "" on success, camelCase.
+        payload = dict({'hookEventName': 'PostToolUse', 'conversationId': session, 'cwd': str(self.vault),
+                        'error': '', 'stepIdx': 3, 'toolCall': {'id': 'call-1', 'name': name, 'args': args}}, **fields)
+        return self.invoke(payload, 'antigravity', extra=['--event', 'PostToolUse'])
+
+    def test_antigravity_stop_receipt_reminder_continues_model(self):
+        self.seed()
+        session = 'ag-reminder-session'
+        reminders = self.state / 'receipt-reminders'
+        edited = reminders / (hashlib.sha256(session.encode()).hexdigest() + '.edited')
+        note = str((self.vault / 'notes/task.md').resolve())
+        outside = str((self.root / 'outside project/app.py').resolve())
+        # Reads, shell steps, failed writes and writes outside the vault open no edit window;
+        # PostToolUse answers {} as Antigravity's contract expects.
+        self.assertEqual(self.agy_tool(session, 'read_file', {'Path': note}), {})
+        self.assertEqual(self.agy_tool(session, 'run_command', {'CommandLine': 'ls'}), {})
+        self.assertEqual(self.agy_tool(session, 'write_file', {'Path': note, 'Content': 'x'}, error='denied'), {})
+        self.assertEqual(self.agy_tool(session, 'write_file', {'Path': outside, 'Content': 'x'}), {})
+        self.assertFalse(edited.exists())
+        stop = {'hookEventName': 'Stop', 'conversationId': session, 'fullyIdle': True,
+                'continuationActive': False, 'lastUserInput': 'edit the note'}
+        self.assertEqual(self.invoke(stop, 'antigravity', extra=['--event', 'Stop']), {'decision': 'stop'})
+        # A vault write (edit_file with Path) does.
+        self.assertEqual(self.agy_tool(session, 'edit_file', {'Path': note, 'Target': 'a', 'Replacement': 'b'}), {})
+        self.assertTrue(edited.exists())
+        # A Stop that ends work a Stop hook asked for (continuationActive) is not asked again.
+        self.assertEqual(self.invoke(dict(stop, continuationActive=True), 'antigravity', extra=['--event', 'Stop']),
+                         {'decision': 'stop'})
+        res = self.invoke(stop, 'antigravity', extra=['--event', 'Stop'])
+        self.assertEqual(res.get('decision'), 'continue')
+        self.assertIn('Receipt session=', res.get('reason', ''))
+        self.assertIn('--harness antigravity', res['reason'])
+        # One reminder per session.
+        self.assertEqual(self.invoke(stop, 'antigravity', extra=['--event', 'Stop']), {'decision': 'stop'})
+
+    def test_antigravity_continued_stop_by_execution_num_asks_nothing_more_that_turn(self):
+        # Recorded on Antigravity CLI 1.5.18: the Stop right after {"decision":"continue"} came with
+        # continuationActive false and executionNum 1; the next user message's first Stop has 0 again.
+        engine = self.seed()
+        session = 'agy-execution-num'
+        note = str((self.vault / 'notes/task.md').resolve())
+        self.assertEqual(self.agy_tool(session, 'write_file', {'Path': note, 'Content': 'x'}), {})
+        stop = {'hookEventName': 'Stop', 'conversationId': session, 'fullyIdle': True, 'continuationActive': False,
+                'executionNum': 0, 'terminationReason': 'NO_TOOL_CALL', 'error': '', 'lastUserInput': 'edit the note'}
+        first = self.invoke(stop, 'antigravity', extra=['--event', 'Stop'])
+        self.assertEqual(first['decision'], 'continue')
+        self.assertIn('Receipt session=', first['reason'])
+        # The model answers with a receipt that declares a learning but writes no knowledge note.
+        engine.receipt('agy-execution-num-receipt', 'Not güncellendi.\nÖğrenilen: Nebula kalibrasyonu haftalık.',
+                       ['notes/task.md'], 'antigravity', session=hashlib.sha256(session.encode()).hexdigest()[:24])
+        # The continued Stop of the same turn asks nothing more (no second continue in one turn).
+        self.assertEqual(self.invoke(dict(stop, executionNum=1), 'antigravity', extra=['--event', 'Stop']),
+                         {'decision': 'stop'})
+        # The learning reminder comes at the next message's Stop, once.
+        later = self.invoke(stop, 'antigravity', extra=['--event', 'Stop'])
+        self.assertEqual(later['decision'], 'continue')
+        self.assertIn('knowledge/concepts/', later['reason'])
+        self.assertEqual(self.invoke(stop, 'antigravity', extra=['--event', 'Stop']), {'decision': 'stop'})
+        continued = self.hook.antigravity_continued_stop
+        for value in (True, '1', 1.0, -1, 0, None):  # only a positive integer counts
+            with self.subTest(executionNum=value):
+                self.assertFalse(continued({'executionNum': value, 'continuationActive': False}))
+        self.assertTrue(continued({'executionNum': 2}))
+        self.assertTrue(continued({'executionNum': 0, 'continuationActive': True}))
+
+    def test_antigravity_tool_input_maps_only_successful_file_writes(self):
+        for call, error, expected in (
+                ({'name': 'write_file', 'args': {'Path': '/v/a.md', 'Content': 'x'}}, '', {'file_path': '/v/a.md'}),
+                ({'name': 'edit_file', 'args': {'Path': '/v/a.md'}}, None, {'file_path': '/v/a.md'}),
+                ({'name': 'code_action', 'args': {'TargetFile': '/v/b.md'}}, '', {'file_path': '/v/b.md'}),
+                ({'name': 'code_action', 'args': {'AbsolutePath': '/v/c.md'}}, '', {'file_path': '/v/c.md'}),
+                # The IDE agent's file tools, named in the Antigravity 1.5.18 binary with TargetFile.
+                ({'name': 'write_to_file', 'args': {'TargetFile': '/v/d.md', 'CodeContent': 'x'}}, '', {'file_path': '/v/d.md'}),
+                ({'name': 'replace_file_content', 'args': {'TargetFile': '/v/e.md'}}, '', {'file_path': '/v/e.md'}),
+                ({'name': 'multi_replace_file_content', 'args': {'TargetFile': '/v/f.md'}}, '', {'file_path': '/v/f.md'}),
+                ({'name': 'replace_file_content', 'args': {'TargetFile': '/v/e.md'}}, 'target content not found', None),
+                ({'name': 'view_file', 'args': {'AbsolutePath': '/v/a.md'}}, '', None),
+                ({'name': 'list_dir', 'args': {'DirectoryPath': '/v'}}, '', None),
+                ({'name': 'write_file', 'args': {}}, '', {}),
+                ({'name': 'write_file', 'args': None}, '', {}),
+                ({'name': 'write_file', 'args': {'Path': '/v/a.md'}}, 'exit status 1', None),
+                ({'name': 'read_file', 'args': {'Path': '/v/a.md'}}, '', None),
+                ({'name': 'run_command', 'args': {'CommandLine': 'ls'}}, '', None),
+                ('write_file', '', None), (None, '', None)):
+            with self.subTest(call=call, error=error):
+                payload = {'toolCall': call} if error is None else {'toolCall': call, 'error': error}
+                self.assertEqual(self.hook.antigravity_tool_input(payload), expected)
+
     def test_antigravity_filters_nested_turns_before_checkpointing(self):
         self.seed()
         transcript = (self.vault / 'antigravity.jsonl').resolve()
@@ -887,7 +1003,133 @@ class HookInstallerTest(unittest.TestCase):
         self.assertIn('injectSteps', self.invoke(payload, 'antigravity'))
         transcript.write_text('{"step_index":0,"type":"PLANNER_RESPONSE"}\n', encoding='utf-8')
         self.env['BEYIN_V3_FILTER_HARNESS_TURNS'] = '0'
-        self.assertIn('injectSteps', self.invoke(payload, 'antigravity'))
+        # A new conversation: the first one already had its opening (#903).
+        self.assertIn('injectSteps', self.invoke(dict(payload, conversationId='antigravity-unknown-2'), 'antigravity'))
+
+    def test_antigravity_opening_once_per_conversation_then_per_message_retrieval(self):
+        # Antigravity CLI 1.5.18: SessionStart runs once per conversation (not on resume), and
+        # PreInvocation's invocationNum restarts at 0 for every user message (#903).
+        self.seed()
+        conversation = 'agy-903'
+        queue = self.state / 'hook-queue'
+        base = {'conversationId': conversation, 'cwd': str(self.vault), 'workspacePaths': [str(self.vault)]}
+        first = 'Nebula calibration status?'
+        start = self.invoke(dict(base, hookEventName='SessionStart', lastUserInput=first), 'antigravity',
+                            extra=['--event', 'SessionStart'])
+        opening = start['injectSteps'][0]['ephemeralMessage']
+        self.assertIn('Synthetic Reviewer', opening)
+        turn = dict(base, hookEventName='PreInvocation', invocationNum=0, initialNumSteps=1, lastUserInput=first)
+        # The first message's PreInvocation is already answered by the start.
+        self.assertEqual(self.invoke(turn, 'antigravity', extra=['--event', 'PreInvocation']), {})
+        self.assertEqual(self.invoke(dict(turn, invocationNum=1, initialNumSteps=4), 'antigravity',
+                                     extra=['--event', 'PreInvocation']), {})
+        queued = len(list(queue.glob('*.json')))
+        # A later user message gets source-backed retrieval for its own text, not the opening again.
+        second = dict(turn, initialNumSteps=9, lastUserInput='Who owns Nebula calibration?')
+        result = self.invoke(second, 'antigravity', extra=['--event', 'PreInvocation'])
+        text = result['injectSteps'][0]['ephemeralMessage']
+        self.assertIn('companion protocol', opening)
+        self.assertIn('"records"', text)
+        self.assertIn('Synthetic Reviewer', text)
+        self.assertNotIn('companion protocol', text)
+        self.assertEqual(len(list(queue.glob('*.json'))), queued + 1)
+        events = [json.loads(path.read_text(encoding='utf-8'))['event'] for path in queue.glob('*.json')]
+        self.assertEqual(sorted(events), ['SessionStart', 'UserPromptSubmit'])
+        # An unrelated message injects nothing at all.
+        self.assertEqual(self.invoke(dict(second, lastUserInput='zzqx'), 'antigravity',
+                                     extra=['--event', 'PreInvocation']), {})
+
+    def test_antigravity_opt_out_in_the_first_message_still_counts(self):
+        # The opening answers the first message, so its PreInvocation is quiet; [kaydetme] still applies.
+        self.seed()
+        conversation = 'agy-optout'
+        first = 'Bunu [kaydetme], sadece bak'
+        self.invoke({'hookEventName': 'SessionStart', 'conversationId': conversation, 'lastUserInput': first},
+                    'antigravity', extra=['--event', 'SessionStart'])
+        turn = {'hookEventName': 'PreInvocation', 'conversationId': conversation, 'invocationNum': 0,
+                'initialNumSteps': 1, 'lastUserInput': first}
+        self.assertEqual(self.invoke(turn, 'antigravity', extra=['--event', 'PreInvocation']), {})
+        digest = hashlib.sha256(conversation.encode()).hexdigest()
+        self.assertTrue((self.state / 'receipt-reminders' / (digest + '.optout')).exists())
+
+    def test_antigravity_without_session_start_opens_once_then_retrieves(self):
+        # A client without SessionStart, or a conversation begun before the update: the first
+        # human PreInvocation still opens the conversation, once.
+        self.seed()
+        turn = {'hookEventName': 'PreInvocation', 'conversationId': 'agy-legacy', 'invocationNum': 0,
+                'initialNumSteps': 1, 'lastUserInput': 'Nebula calibration status?', 'cwd': str(self.vault)}
+        opening = self.invoke(turn, 'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertIn('companion protocol', opening['injectSteps'][0]['ephemeralMessage'])
+        again = self.invoke(dict(turn, initialNumSteps=5), 'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertIn('"records"', again['injectSteps'][0]['ephemeralMessage'])
+        self.assertNotIn('companion protocol', again['injectSteps'][0]['ephemeralMessage'])
+
+    def test_antigravity_nested_session_start_is_silent(self):
+        # #885: a nested agent's conversation starts without user input; it gets no opening or checkpoint.
+        self.seed()
+        start = {'hookEventName': 'SessionStart', 'conversationId': 'agy-nested', 'lastUserInput': ''}
+        self.assertEqual(self.invoke(start, 'antigravity', extra=['--event', 'SessionStart']), {})
+        self.assertEqual(list((self.state / 'hook-queue').glob('*.json')), [])
+        self.assertFalse((self.state / 'antigravity-sessions').exists())
+        self.env['BEYIN_V3_FILTER_HARNESS_TURNS'] = '0'
+        self.assertIn('injectSteps', self.invoke(start, 'antigravity', extra=['--event', 'SessionStart']))
+
+    def test_antigravity_marker_only_for_a_conversation_the_hook_serves(self):
+        # A skipped, internal or no-memory run answers nothing, so it leaves no conversation marker either.
+        self.seed()
+        markers = self.state / 'antigravity-sessions'
+        start = {'hookEventName': 'SessionStart', 'conversationId': 'agy-skip', 'lastUserInput': 'Nebula calibration?'}
+        turn = {'hookEventName': 'PreInvocation', 'conversationId': 'agy-skip', 'invocationNum': 0,
+                'initialNumSteps': 1, 'lastUserInput': 'Nebula calibration?'}
+        for variable in ('BEYIN_V3_SKIP', 'BEYIN_V3_INTERNAL'):
+            with self.subTest(variable=variable):
+                self.env[variable] = '1'
+                self.assertEqual(self.invoke(start, 'antigravity', extra=['--event', 'SessionStart']), {})
+                self.assertEqual(self.invoke(turn, 'antigravity', extra=['--event', 'PreInvocation']), {})
+                del self.env[variable]
+        self.assertEqual(self.invoke(dict(start, no_memory=True), 'antigravity', extra=['--event', 'SessionStart']), {})
+        self.assertEqual(self.invoke(dict(turn, no_memory=True), 'antigravity', extra=['--event', 'PreInvocation']), {})
+        self.assertFalse(markers.exists())
+        self.assertIn('injectSteps', self.invoke(start, 'antigravity', extra=['--event', 'SessionStart']))
+        self.assertEqual(len(list(markers.glob('[0-9a-f]*.json'))), 1)
+
+    def test_antigravity_marker_keeps_a_keyed_digest_never_the_plain_prompt_hash(self):
+        self.seed()
+        prompt = 'evet'
+        markers = self.state / 'antigravity-sessions'
+        self.invoke({'hookEventName': 'SessionStart', 'conversationId': 'agy-hmac', 'lastUserInput': prompt},
+                    'antigravity', extra=['--event', 'SessionStart'])
+        marker = markers / (hashlib.sha256(b'agy-hmac').hexdigest() + '.json')
+        pending = json.loads(marker.read_text(encoding='utf-8'))['pending']
+        self.assertNotEqual(pending, hashlib.sha256(prompt.encode()).hexdigest())
+        key = bytes.fromhex(json.loads((markers / 'key.json').read_text(encoding='utf-8'))['key'])
+        self.assertEqual(len(key), 32)
+        import hmac
+        self.assertEqual(pending, hmac.new(key, prompt.encode(), hashlib.sha256).hexdigest())
+        if os.name == 'posix':
+            self.assertEqual((markers / 'key.json').stat().st_mode & 0o077, 0)
+        # The keyed digest still recognises the prompt the start answered.
+        turn = {'hookEventName': 'PreInvocation', 'conversationId': 'agy-hmac', 'invocationNum': 0,
+                'initialNumSteps': 1, 'lastUserInput': prompt}
+        self.assertEqual(self.invoke(turn, 'antigravity', extra=['--event', 'PreInvocation']), {})
+        self.assertNotIn('pending', json.loads(marker.read_text(encoding='utf-8')))
+
+    def test_antigravity_unreadable_marker_key_fails_open_to_retrieval(self):
+        # Without a usable key no digest is kept; the first message then gets retrieval, never silence.
+        self.seed()
+        markers = self.state / 'antigravity-sessions'
+        markers.mkdir(parents=True)
+        (markers / 'key.json').write_text('not json', encoding='utf-8', newline='\n')
+        first = 'Who owns Nebula calibration?'
+        self.invoke({'hookEventName': 'SessionStart', 'conversationId': 'agy-nokey', 'lastUserInput': first},
+                    'antigravity', extra=['--event', 'SessionStart'])
+        marker = markers / (hashlib.sha256(b'agy-nokey').hexdigest() + '.json')
+        self.assertNotIn('pending', json.loads(marker.read_text(encoding='utf-8')))
+        turn = {'hookEventName': 'PreInvocation', 'conversationId': 'agy-nokey', 'invocationNum': 0,
+                'initialNumSteps': 1, 'lastUserInput': first}
+        result = self.invoke(turn, 'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertIn('"records"', result['injectSteps'][0]['ephemeralMessage'])
+        self.assertEqual((markers / 'key.json').read_text(encoding='utf-8'), 'not json')
 
     def test_internal_recursion_guard_skips_queue(self):
         self.env['BEYIN_V3_INTERNAL'] = '1'
@@ -1171,8 +1413,9 @@ class HookInstallerTest(unittest.TestCase):
         for harness in ('claude', 'codex'):
             response = self.invoke(dict(payload, session_id='hygiene-cap-' + harness), harness)
             self.assertIn('Bolum SINYALI', response['hookSpecificOutput']['additionalContext'])
-        antigravity = self.invoke(dict(payload, session_id='hygiene-cap-antigravity'), 'antigravity')
-        self.assertEqual(antigravity, {'decision': 'stop'})
+        antigravity = self.invoke(dict(payload, session_id='hygiene-cap-antigravity',
+                                       toolCall={'name': 'write_file', 'args': {'Path': str(big)}}), 'antigravity')
+        self.assertEqual(antigravity, {})  # PostToolUse takes {} in Antigravity's contract
 
     def test_custom_max_words_is_honoured(self):
         self.seed()

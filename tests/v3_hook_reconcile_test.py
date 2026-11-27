@@ -145,6 +145,34 @@ class HookReconcileTest(unittest.TestCase):
         report_after = self.doctor_report()
         self.assertEqual(report_after["hook_paths"]["status"], "ok")
 
+    def test_antigravity_session_start_and_grouped_post_tool_use_are_reconciled(self):
+        # #903: SessionStart is flat, PostToolUse sits under a matcher group; a moved vault repairs both.
+        self.install()
+        stale_posix, stale_win = self.stale_hook_commands()
+        stale_cmd = stale_win if os.name == "nt" else stale_posix
+        path = self.vault / ".agents/hooks.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        managed = data["beyin-v3"]
+        self.assertEqual(set(managed), {"SessionStart", "PreInvocation", "PostToolUse", "Stop"})
+        managed["SessionStart"][0]["command"] = stale_cmd
+        managed["PostToolUse"][0]["hooks"][0]["command"] = stale_cmd
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        self.assertEqual(self.doctor_report()["hook_paths"]["status"], "stale")
+        result = subprocess.run(
+            [sys.executable, str(CLI), "--vault", str(self.vault), "--state", str(self.state), "hook-reconcile"],
+            capture_output=True, text=True, encoding="utf-8", cwd=self.vault, env=self.env, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        managed = json.loads(path.read_text(encoding="utf-8"))["beyin-v3"]
+        for event, command in (("SessionStart", managed["SessionStart"][0]["command"]),
+                               ("PostToolUse", managed["PostToolUse"][0]["hooks"][0]["command"])):
+            with self.subTest(event=event):
+                self.assertNotEqual(command, stale_cmd)
+                self.assertIn(str(self.vault / ".claude/scripts/beyin_v3_hook.py"), decoded_command(command))
+                self.assertIn("--event " + event, decoded_command(command).replace("'", "").replace('"', ""))
+        self.assertTrue(managed["PostToolUse"][0]["matcher"])
+        self.assertEqual(self.doctor_report()["hook_paths"]["status"], "ok")
+
     def test_hook_reconcile_human_output_and_doctor_hint(self):
         self.install()
         stale_posix, stale_win = self.stale_hook_commands()

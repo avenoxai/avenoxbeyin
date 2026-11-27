@@ -13,6 +13,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import time
 
 sys.dont_write_bytecode = True
 EVENTS = ('SessionStart', 'Stop', 'PreCompact', 'SessionEnd')
@@ -20,14 +21,20 @@ EVENTS = ('SessionStart', 'Stop', 'PreCompact', 'SessionEnd')
 # installed command line stays the one older bridges parse, and they answer {} for this event.
 EDIT_EVENT = 'PostToolUse'
 EDIT_MATCHER = 'Edit|Write|apply_patch|MultiEdit|NotebookEdit'
-# Antigravity has no SessionEnd/PreCompact; its first invocation and idle Stop are the boundaries.
+# Antigravity has no SessionEnd/PreCompact; its conversation start and idle Stop are the boundaries.
+# --native-event keeps the two values every bridge since 3.10 parses. SessionStart and PostToolUse
+# handlers carry no --native-event: the bridge reads hookEventName, and the 3.17.0 bridge (the one
+# tested) answers {} for them, so a rollback to it that leaves them in hooks.json breaks nothing (#903).
 ANTIGRAVITY = {'PreInvocation': 'SessionStart', 'Stop': 'Stop'}
+ANTIGRAVITY_NATIVE = dict(ANTIGRAVITY, SessionStart='SessionStart', PostToolUse=EDIT_EVENT)
+# Mirrors beyin_v3_hook.ANTIGRAVITY_EDIT_MATCHER: the tools whose PostToolUse opens the edit window.
+ANTIGRAVITY_EDIT_MATCHER = '^(?:write_file|edit_file|code_action|write_to_file|replace_file_content|multi_replace_file_content)$'
 
 
 def handled_events(harness, events):
-    """Selected lifecycle events, plus edit observation whenever Stop can remind (Claude, Codex)."""
+    """Selected lifecycle events, plus edit observation whenever Stop can remind (Claude, Codex, Antigravity)."""
     events = list(events)
-    if harness in ('claude', 'codex') and 'Stop' in events:
+    if harness in ('claude', 'codex', 'antigravity') and 'Stop' in events:
         events.append(EDIT_EVENT)
     return events
 
@@ -42,6 +49,25 @@ def hook_groups(shell, harness, events):
             handler['commandWindows'] = shell
         groups[event] = ({'matcher': EDIT_MATCHER, 'hooks': [handler]} if event == EDIT_EVENT
                          else {'hooks': [handler]})
+    return groups
+
+
+def antigravity_groups(command, events):
+    """The named hook's event lists; --install and --print-config write the same JSON.
+
+    Antigravity's SessionStart runs once per conversation, while PreInvocation's invocationNum
+    restarts at 0 on every user message (#903): PreInvocation starts a conversation only when
+    no SessionStart did (a client without that event, or a conversation begun before it was
+    installed). PostToolUse is grouped under a tool-name matcher, the other events are flat."""
+    def handler(argv):
+        return {'type': 'command', 'command': shell_command(argv), 'timeout': 20 if os.name == 'nt' else 5}
+    groups = {}
+    if 'SessionStart' in events:
+        groups['SessionStart'] = [handler(command)]
+        groups['PreInvocation'] = [handler(command + ['--native-event', 'PreInvocation'])]
+    if 'Stop' in events:
+        groups['PostToolUse'] = [{'matcher': ANTIGRAVITY_EDIT_MATCHER, 'hooks': [handler(command)]}]
+        groups['Stop'] = [handler(command + ['--native-event', 'Stop'])]
     return groups
 
 
@@ -1104,14 +1130,7 @@ def install_bridge(vault, state, harness, roots, events=None, context_chars=1500
             raise ValueError('Invalid global hooks configuration; preserved')
 
     if harness == 'antigravity':
-        data['beyin-v3-bridge'] = {
-            native: [{
-                'type': 'command',
-                'command': shell_command(command + ['--native-event', native]),
-                'timeout': 20 if os.name == 'nt' else 5
-            }]
-            for native, ev in ANTIGRAVITY.items() if ev in events
-        }
+        data['beyin-v3-bridge'] = antigravity_groups(command, events)
     else:
         wanted = hook_groups(shell_command(command), harness, events)
         hooks_map = data.setdefault('hooks', {})
@@ -1341,11 +1360,8 @@ def _main(argv=None):
             for event in events:
                 command.extend(['--event', event])
             if args.harness == 'antigravity':
-                # One named hook with flat handler lists, as in the vault's .agents/hooks.json.
-                print(json.dumps({'beyin-v3-bridge': {native: [{
-                    'type': 'command', 'command': shell_command(command + ['--native-event', native]),
-                    'timeout': 20 if os.name == 'nt' else 5}] for native, event in ANTIGRAVITY.items()
-                    if event in events}}, indent=2))
+                # One named hook, as in the vault's .agents/hooks.json.
+                print(json.dumps({'beyin-v3-bridge': antigravity_groups(command, events)}, indent=2))
                 return 0
             groups = hook_groups(shell_command(command), args.harness, events)
             print(json.dumps({'hooks': {event: [group] for event, group in groups.items()}}, indent=2))
@@ -1359,15 +1375,37 @@ def _main(argv=None):
         if not isinstance(payload, dict):
             raise ValueError('Invalid hook payload')
         if args.harness == 'antigravity':
-            # Same boundaries as the vault adapter: first invocation of a run, fully idle Stop.
-            first = (payload.get('invocationNum') == 0 if args.native_event == 'PreInvocation'
-                     else payload.get('fullyIdle') is True)
+            from beyin_v3_hook import (antigravity_tool_input, antigravity_session_marker, antigravity_continued_stop,
+                                       _antigravity_nonhuman_start, _antigravity_nonhuman_turn)
+            native = args.native_event or payload.get('hookEventName')
+            if native == 'Stop':
+                quiet = '{"decision":"stop"}'
+            conversation = payload.get('conversationId')
+            # Keyed like the receipt session: one conversation id in two projects is two sessions.
+            marker = (antigravity_session_marker(state, json.dumps(['bridge', conversation, payload.get('workspacePaths')]))
+                      if isinstance(conversation, str) and conversation else None)
+            # Same boundaries as the vault adapter: the conversation's start, once (#903), and a
+            # fully idle Stop; a PostToolUse counts only for a successful file write. A nested
+            # agent's start and turns (#885: no user input) stay silent here as they do there.
+            if native == 'SessionStart':
+                first = not _antigravity_nonhuman_start(payload)
+            elif native == 'PreInvocation':
+                first = (payload.get('invocationNum') == 0 and not (marker is not None and marker.exists())
+                         and not _antigravity_nonhuman_turn(payload, native))
+            elif native == 'PostToolUse':
+                payload['tool_input'] = antigravity_tool_input(payload)
+                first = payload['tool_input'] is not None
+            else:
+                first = (native == 'Stop' and payload.get('fullyIdle') is True
+                         and not _antigravity_nonhuman_turn(payload, native))
             paths = payload.get('workspacePaths')
             # A vault among the workspaces runs its own local hooks; do not count the session twice.
             if (not first or not isinstance(paths, list) or not all(isinstance(p, str) and Path(p).is_absolute() for p in paths)
                     or any(vault_owned(Path(p).resolve(), vault) for p in paths)):
                 print(quiet); return 0
-            payload.update(hook_event_name=ANTIGRAVITY[args.native_event], session_id=payload.get('conversationId'))
+            if native == 'Stop' and antigravity_continued_stop(payload):
+                payload['stop_hook_active'] = True  # a Stop that ends work a Stop hook asked for
+            payload.update(hook_event_name=ANTIGRAVITY_NATIVE[native], session_id=conversation)
         event = payload.get('hook_event_name')
         if event not in handled_events(args.harness, events) or payload.get('no_memory') is True or os.environ.get('BEYIN_V3_INTERNAL') or os.environ.get('BEYIN_V3_SKIP') == '1':
             print(quiet); return 0
@@ -1384,6 +1422,14 @@ def _main(argv=None):
         settings = read(vault)
         if not settings['auto_sync']:
             print(quiet); return 0
+        if args.harness == 'antigravity' and native in ('SessionStart', 'PreInvocation') and marker is not None:
+            # Only now, once this conversation is one the bridge serves (an allowed project, no
+            # skip or no-memory, sync on), does it leave the once-per-conversation marker.
+            try:
+                from beyin_v3_hook import atomic
+                atomic(marker, {'at': time.time()})
+            except OSError:
+                pass  # without the marker a later message repeats the bootstrap, as before #903
         # Stable per-project session namespace prevents identical session IDs in
         # two external projects from satisfying each other's receipt checkpoints.
         payload['cwd'] = str(cwd)
