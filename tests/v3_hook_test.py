@@ -1034,6 +1034,63 @@ class HookInstallerTest(unittest.TestCase):
         self.env['BEYIN_V3_FILTER_HARNESS_TURNS'] = '0'
         self.assertIn('injectSteps', self.invoke(start, 'antigravity', extra=['--event', 'SessionStart']))
 
+    def test_antigravity_marker_only_for_a_conversation_the_hook_serves(self):
+        # A skipped, internal or no-memory run answers nothing, so it leaves no conversation marker either.
+        self.seed()
+        markers = self.state / 'antigravity-sessions'
+        start = {'hookEventName': 'SessionStart', 'conversationId': 'agy-skip', 'lastUserInput': 'Nebula calibration?'}
+        turn = {'hookEventName': 'PreInvocation', 'conversationId': 'agy-skip', 'invocationNum': 0,
+                'initialNumSteps': 1, 'lastUserInput': 'Nebula calibration?'}
+        for variable in ('BEYIN_V3_SKIP', 'BEYIN_V3_INTERNAL'):
+            with self.subTest(variable=variable):
+                self.env[variable] = '1'
+                self.assertEqual(self.invoke(start, 'antigravity', extra=['--event', 'SessionStart']), {})
+                self.assertEqual(self.invoke(turn, 'antigravity', extra=['--event', 'PreInvocation']), {})
+                del self.env[variable]
+        self.assertEqual(self.invoke(dict(start, no_memory=True), 'antigravity', extra=['--event', 'SessionStart']), {})
+        self.assertEqual(self.invoke(dict(turn, no_memory=True), 'antigravity', extra=['--event', 'PreInvocation']), {})
+        self.assertFalse(markers.exists())
+        self.assertIn('injectSteps', self.invoke(start, 'antigravity', extra=['--event', 'SessionStart']))
+        self.assertEqual(len(list(markers.glob('[0-9a-f]*.json'))), 1)
+
+    def test_antigravity_marker_keeps_a_keyed_digest_never_the_plain_prompt_hash(self):
+        self.seed()
+        prompt = 'evet'
+        markers = self.state / 'antigravity-sessions'
+        self.invoke({'hookEventName': 'SessionStart', 'conversationId': 'agy-hmac', 'lastUserInput': prompt},
+                    'antigravity', extra=['--event', 'SessionStart'])
+        marker = markers / (hashlib.sha256(b'agy-hmac').hexdigest() + '.json')
+        pending = json.loads(marker.read_text(encoding='utf-8'))['pending']
+        self.assertNotEqual(pending, hashlib.sha256(prompt.encode()).hexdigest())
+        key = bytes.fromhex(json.loads((markers / 'key.json').read_text(encoding='utf-8'))['key'])
+        self.assertEqual(len(key), 32)
+        import hmac
+        self.assertEqual(pending, hmac.new(key, prompt.encode(), hashlib.sha256).hexdigest())
+        if os.name == 'posix':
+            self.assertEqual((markers / 'key.json').stat().st_mode & 0o077, 0)
+        # The keyed digest still recognises the prompt the start answered.
+        turn = {'hookEventName': 'PreInvocation', 'conversationId': 'agy-hmac', 'invocationNum': 0,
+                'initialNumSteps': 1, 'lastUserInput': prompt}
+        self.assertEqual(self.invoke(turn, 'antigravity', extra=['--event', 'PreInvocation']), {})
+        self.assertNotIn('pending', json.loads(marker.read_text(encoding='utf-8')))
+
+    def test_antigravity_unreadable_marker_key_fails_open_to_retrieval(self):
+        # Without a usable key no digest is kept; the first message then gets retrieval, never silence.
+        self.seed()
+        markers = self.state / 'antigravity-sessions'
+        markers.mkdir(parents=True)
+        (markers / 'key.json').write_text('not json', encoding='utf-8', newline='\n')
+        first = 'Who owns Nebula calibration?'
+        self.invoke({'hookEventName': 'SessionStart', 'conversationId': 'agy-nokey', 'lastUserInput': first},
+                    'antigravity', extra=['--event', 'SessionStart'])
+        marker = markers / (hashlib.sha256(b'agy-nokey').hexdigest() + '.json')
+        self.assertNotIn('pending', json.loads(marker.read_text(encoding='utf-8')))
+        turn = {'hookEventName': 'PreInvocation', 'conversationId': 'agy-nokey', 'invocationNum': 0,
+                'initialNumSteps': 1, 'lastUserInput': first}
+        result = self.invoke(turn, 'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertIn('"records"', result['injectSteps'][0]['ephemeralMessage'])
+        self.assertEqual((markers / 'key.json').read_text(encoding='utf-8'), 'not json')
+
     def test_internal_recursion_guard_skips_queue(self):
         self.env['BEYIN_V3_INTERNAL'] = '1'
         self.assertEqual(self.invoke(self.payload), {})

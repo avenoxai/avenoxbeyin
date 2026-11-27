@@ -1399,12 +1399,6 @@ def _main(argv=None):
             if (not first or not isinstance(paths, list) or not all(isinstance(p, str) and Path(p).is_absolute() for p in paths)
                     or any(vault_owned(Path(p).resolve(), vault) for p in paths)):
                 print(quiet); return 0
-            if native in ('SessionStart', 'PreInvocation') and marker is not None:
-                try:
-                    from beyin_v3_hook import atomic
-                    atomic(marker, {'at': time.time()})
-                except OSError:
-                    pass  # without the marker a later message repeats the bootstrap, as before #903
             if native == 'Stop' and payload.get('continuationActive') is True:
                 payload['stop_hook_active'] = True  # Antigravity's loop guard for a Stop that continued
             payload.update(hook_event_name=ANTIGRAVITY_NATIVE[native], session_id=conversation)
@@ -1424,6 +1418,14 @@ def _main(argv=None):
         settings = read(vault)
         if not settings['auto_sync']:
             print(quiet); return 0
+        if args.harness == 'antigravity' and native in ('SessionStart', 'PreInvocation') and marker is not None:
+            # Only now, once this conversation is one the bridge serves (an allowed project, no
+            # skip or no-memory, sync on), does it leave the once-per-conversation marker.
+            try:
+                from beyin_v3_hook import atomic
+                atomic(marker, {'at': time.time()})
+            except OSError:
+                pass  # without the marker a later message repeats the bootstrap, as before #903
         # Stable per-project session namespace prevents identical session IDs in
         # two external projects from satisfying each other's receipt checkpoints.
         payload['cwd'] = str(cwd)

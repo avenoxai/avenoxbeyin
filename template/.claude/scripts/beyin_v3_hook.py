@@ -797,8 +797,42 @@ def antigravity_session_marker(state, conversation):
     return Path(state) / 'antigravity-sessions' / (digest + '.json')
 
 
-def _antigravity_prompt_digest(text):
-    return hashlib.sha256((text if isinstance(text, str) else '').encode('utf-8', 'replace')).hexdigest()
+def _antigravity_marker_key(folder):
+    """This state's random key for prompt digests, created on first use; None when unavailable.
+
+    The key lives beside the markers (`key.json`, never pruned, 0600 under the hook's umask).
+    Two first-ever hooks racing may each write one; the later file wins, and a digest made
+    with the other key only fails to match, which costs one extra retrieval, never a skip."""
+    path = Path(folder) / 'key.json'
+    for attempt in range(2):
+        try:
+            data = json.loads(path.read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            if attempt:
+                return None
+            try:
+                import secrets
+                atomic(path, {'key': secrets.token_hex(32)})
+            except OSError:
+                return None
+            continue
+        except (OSError, ValueError):
+            return None
+        key = data.get('key') if isinstance(data, dict) else None
+        return bytes.fromhex(key) if isinstance(key, str) and re.fullmatch(r'[0-9a-f]{64}', key) else None
+    return None
+
+
+def _antigravity_prompt_digest(folder, text):
+    """A keyed HMAC of the prompt the native SessionStart answered, or None without a key.
+
+    The marker only has to recognise the same prompt again; a plain hash of a short prompt
+    could be reversed by guessing, so the digest is keyed with this state's random key."""
+    key = _antigravity_marker_key(folder)
+    if key is None:
+        return None
+    import hmac
+    return hmac.new(key, (text if isinstance(text, str) else '').encode('utf-8', 'replace'), hashlib.sha256).hexdigest()
 
 
 def _antigravity_nonhuman_start(payload):
@@ -826,7 +860,10 @@ def _antigravity_turn_event(marker, last_input):
         return 'SessionStart'
     except (OSError, ValueError):
         return 'UserPromptSubmit'
-    if isinstance(data, dict) and data.get('pending') == _antigravity_prompt_digest(last_input):
+    pending = data.get('pending') if isinstance(data, dict) else None
+    digest = _antigravity_prompt_digest(marker.parent, last_input) if isinstance(pending, str) else None
+    import hmac
+    if digest is not None and hmac.compare_digest(pending.encode('utf-8', 'replace'), digest.encode('ascii')):
         try:
             atomic(marker, {'at': data.get('at', time.time())})
         except OSError:
@@ -885,18 +922,24 @@ def main():
             payload["session_id"] = payload.get("session_id") or payload.get("conversationId", "unknown")
         if args.harness == "antigravity":
             conversation = payload.get("conversationId")
-            # The global bridge forwards its own SessionStart (--metadata-only); only native
-            # starts and turns of the vault's hooks keep the per-conversation marker.
+            # The per-conversation marker is kept only for a conversation this hook serves: never
+            # for the global bridge's forward (--metadata-only, the bridge keeps its own), a skipped
+            # or internal run, or a no-memory payload, which all end below without a word.
+            serves = (not args.metadata_only and not os.environ.get("BEYIN_V3_INTERNAL")
+                      and os.environ.get("BEYIN_V3_SKIP") != "1" and payload.get("no_memory") is not True)
             marker = (antigravity_session_marker(state, conversation)
-                      if not args.metadata_only and isinstance(conversation, str) and conversation else None)
+                      if serves and isinstance(conversation, str) and conversation else None)
             if event == "SessionStart" and not args.metadata_only:
                 if _antigravity_nonhuman_start(payload):
                     print("{}")
                     return
                 if marker is not None:
                     try:
-                        atomic(marker, {"at": time.time(),
-                                        "pending": _antigravity_prompt_digest(payload.get("lastUserInput"))})
+                        record = {"at": time.time()}
+                        digest = _antigravity_prompt_digest(marker.parent, payload.get("lastUserInput"))
+                        if digest is not None:
+                            record["pending"] = digest
+                        atomic(marker, record)
                     except OSError:
                         pass  # the first PreInvocation then repeats the opening, as before #903
             elif event == "PreInvocation":
@@ -907,11 +950,10 @@ def main():
                          if marker is not None else "SessionStart")
                 if event is None:
                     # The opening already answered this prompt; only its [kaydetme] opt-out still applies.
-                    if (not os.environ.get("BEYIN_V3_INTERNAL") and os.environ.get("BEYIN_V3_SKIP") != "1"
-                            and payload.get("no_memory") is not True):
-                        receipt_reminder(dict(payload, session_id=conversation, hook_event_name="UserPromptSubmit",
-                                              prompt=payload.get("lastUserInput") or ""),
-                                         state, args.harness, "UserPromptSubmit", vault=vault)
+                    # (A marker exists only when the hook serves, so skipped runs never get here.)
+                    receipt_reminder(dict(payload, session_id=conversation, hook_event_name="UserPromptSubmit",
+                                          prompt=payload.get("lastUserInput") or ""),
+                                     state, args.harness, "UserPromptSubmit", vault=vault)
                     print("{}")
                     return
             elif event == "PostToolUse":

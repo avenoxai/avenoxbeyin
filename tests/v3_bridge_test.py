@@ -1093,6 +1093,30 @@ class BridgeTest(unittest.TestCase):
         self.assertIn('injectSteps', self.agy_run(turn, legacy))
         self.assertEqual(self.agy_run(turn, dict(legacy, lastUserInput='second')), {})
 
+    def test_antigravity_marker_only_for_a_conversation_the_bridge_serves(self):
+        # The global hook sees every Antigravity conversation on the machine; one outside the allowed
+        # project roots, or a skipped run, must not leave a marker behind.
+        markers = self.state / 'antigravity-sessions'
+        elsewhere = self.root / 'elsewhere'; elsewhere.mkdir()
+        def run(native, workspace, **fields):
+            payload = dict(conversationId='agy-scope', workspacePaths=[str(workspace)], lastUserInput='hi', **fields)
+            if native == 'SessionStart':  # installed without --native-event: read from hookEventName
+                return self.invoke(dict(payload, hookEventName='SessionStart'), harness='antigravity', cwd=self.home)
+            return self.invoke(dict(payload, invocationNum=0), extra=['--native-event', native],
+                               harness='antigravity', cwd=self.home)
+        for native in ('SessionStart', 'PreInvocation'):
+            with self.subTest(native=native):
+                self.assertEqual(run(native, elsewhere), {})
+                self.assertEqual(run(native, self.project, no_memory=True), {})
+                self.env['BEYIN_V3_SKIP'] = '1'
+                self.assertEqual(run(native, self.project), {})
+                del self.env['BEYIN_V3_SKIP']
+        self.assertFalse(markers.exists())
+        self.assertEqual(self.queued(), [])
+        self.assertIn('injectSteps', run('PreInvocation', self.project))
+        self.assertEqual(len(list(markers.glob('*.json'))), 1)
+        self.assertEqual(run('PreInvocation', self.project), {})  # once per conversation
+
     def test_antigravity_post_tool_use_opens_the_receipt_window_and_stop_continues_once(self):
         # #903 (OzzWizard): PostToolUse under a matcher group answers {}; Stop asks once with
         # decision "continue" and honours continuationActive.
