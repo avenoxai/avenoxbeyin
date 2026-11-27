@@ -272,6 +272,17 @@ class InstalledOpeningTest(unittest.TestCase):
         numbers = [int(n) for n in re.findall(r'(?m)^- R(\d{4}) ', shown)]
         self.assertEqual(numbers, list(range(1, first)) + list(range(last + 1, count + 1)))
 
+    def test_pinned_rules_remain_visible_when_rules_clipped(self):
+        text, count = rules_file(25000)
+        # Pin rule 50 (which would otherwise be in the omitted middle range)
+        text = text.replace('- R0050 ', '- R0050 <!-- beyin:pin --> ')
+        self.rules(text)
+        context = self.session_start()
+        self.assertLessEqual(len(context), 5000)
+        shown = section(context, 'Kurallar.md')
+        self.assertIn('R0050', shown)
+        self.assertIn('<!-- beyin:pin -->', shown)
+
     def test_latest_rule_order_preserves_complete_newest_items(self):
         raw, count = rules_file(15600)
         self.rules('<!-- beyin:rules-order=latest -->\n' + raw)
