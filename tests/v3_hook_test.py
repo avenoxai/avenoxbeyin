@@ -1006,6 +1006,224 @@ class HookInstallerTest(unittest.TestCase):
         # A new conversation: the first one already had its opening (#903).
         self.assertIn('injectSteps', self.invoke(dict(payload, conversationId='antigravity-unknown-2'), 'antigravity'))
 
+    def _write_large_antigravity_transcript(self, path, first_type, last_type, *, extra_bytes=256 * 1024, gap_at_end=False):
+        target = self.hook.ANTIGRAVITY_TRANSCRIPT_LIMIT + extra_bytes
+        pad = 'x' * 8192
+        lines = [json.dumps({'step_index': 0, 'type': first_type, 'detail': 'synthetic-start'}) + '\n']
+        size = len(lines[0].encode('utf-8'))
+        step = 1
+        while size < target:
+            line = json.dumps({'step_index': step, 'type': 'TOOL_OUTPUT', 'detail': pad}) + '\n'
+            lines.append(line)
+            size += len(line.encode('utf-8'))
+            step += 1
+        final_index = step + 2 if gap_at_end else step
+        lines.append(json.dumps({'step_index': final_index, 'type': last_type, 'detail': 'synthetic-end'}) + '\n')
+        path.write_text(''.join(lines), encoding='utf-8', newline='\n')
+        self.assertGreater(path.stat().st_size, self.hook.ANTIGRAVITY_TRANSCRIPT_LIMIT)
+        return final_index + 1
+
+    def test_antigravity_large_transcript_preinvocation_tail_filters_nonhuman_and_preserves_human(self):
+        self.seed()
+        transcript = (self.vault / 'antigravity-large.jsonl').resolve()
+        queue = self.state / 'hook-queue'
+        count = self._write_large_antigravity_transcript(transcript, 'USER_INPUT', 'PLANNER_RESPONSE')
+        nonhuman = {'hook_event_name': 'PreInvocation', 'conversationId': 'agy-large-nonhuman',
+                    'invocationNum': 0, 'lastUserInput': 'old prompt', 'initialNumSteps': count,
+                    'transcriptPath': str(transcript)}
+        self.assertTrue(self.hook._antigravity_nonhuman_turn(nonhuman, 'PreInvocation'))
+        self.assertEqual(self.invoke(nonhuman, 'antigravity'), {})
+        self.assertEqual(list(queue.glob('*.json')), [])
+        # Out-of-bounds or unread middle-gap step indices fail open (preserve the turn).
+        self.assertFalse(self.hook._antigravity_nonhuman_turn(dict(nonhuman, initialNumSteps=count + 1), 'PreInvocation'))
+        self.assertFalse(self.hook._antigravity_nonhuman_turn(dict(nonhuman, initialNumSteps=15), 'PreInvocation'))
+
+        # When initial - 1 is USER_INPUT in a >2 MB transcript, the human turn proceeds normally.
+        count_human = self._write_large_antigravity_transcript(transcript, 'USER_INPUT', 'USER_INPUT')
+        human = dict(nonhuman, conversationId='agy-large-human', lastUserInput='new prompt',
+                     initialNumSteps=count_human)
+        self.assertFalse(self.hook._antigravity_nonhuman_turn(human, 'PreInvocation'))
+        self.assertIn('injectSteps', self.invoke(human, 'antigravity'))
+
+        # A non-contiguous step_index in the tail fails open.
+        count_corrupt = self._write_large_antigravity_transcript(
+            transcript, 'USER_INPUT', 'PLANNER_RESPONSE', gap_at_end=True)
+        self.assertFalse(self.hook._antigravity_nonhuman_turn(
+            dict(nonhuman, initialNumSteps=count_corrupt), 'PreInvocation'))
+
+    def test_antigravity_large_transcript_stop_filters_subagent_and_preserves_human(self):
+        self.seed()
+        transcript = (self.vault / 'antigravity-large-stop.jsonl').resolve()
+        queue = self.state / 'hook-queue'
+        count = self._write_large_antigravity_transcript(transcript, 'PLANNER_RESPONSE', 'PLANNER_RESPONSE')
+        stop = {'hook_event_name': 'Stop', 'conversationId': 'agy-large-subagent',
+                'fullyIdle': True, 'lastUserInput': '', 'initialNumSteps': count,
+                'transcriptPath': str(transcript)}
+        self.assertTrue(self.hook._antigravity_nonhuman_turn(stop, 'Stop'))
+        self.assertEqual(self.invoke(stop, 'antigravity'), {'decision': 'stop'})
+        self.assertEqual(list(queue.glob('*.json')), [])
+
+        # A >2 MB transcript with USER_INPUT at step 0 (only in the head chunk) is NOT a subagent.
+        count_human = self._write_large_antigravity_transcript(transcript, 'USER_INPUT', 'PLANNER_RESPONSE')
+        human_stop = dict(stop, conversationId='agy-large-human-stop', initialNumSteps=count_human)
+        self.assertFalse(self.hook._antigravity_nonhuman_turn(human_stop, 'Stop'))
+        self.assertEqual(self.invoke(human_stop, 'antigravity'), {'decision': 'stop'})
+        self.assertEqual(len(list(queue.glob('*.json'))), 1)
+
+        # Overlapping head+tail (just over 2 MB) with CRLF endings still classifies accurately.
+        count_overlap = self._write_large_antigravity_transcript(
+            transcript, 'PLANNER_RESPONSE', 'PLANNER_RESPONSE', extra_bytes=1024)
+        transcript.write_bytes(transcript.read_bytes().replace(b'\n', b'\r\n'))
+        self.assertTrue(self.hook._antigravity_nonhuman_turn(
+            dict(stop, initialNumSteps=count_overlap), 'Stop'))
+        self.assertTrue(self.hook._antigravity_nonhuman_turn(
+            dict(stop, initialNumSteps=count_overlap), 'PreInvocation'))
+
+        # If step 0 itself exceeds the 64 KB head chunk, Stop fails open while PreInvocation still reads tail.
+        giant_step0 = json.dumps({'step_index': 0, 'type': 'USER_INPUT', 'detail': 'u' * (70 * 1024)}) + '\n'
+        pad = 'x' * 8192
+        lines = [giant_step0]
+        size = len(giant_step0.encode('utf-8'))
+        step = 1
+        while size < self.hook.ANTIGRAVITY_TRANSCRIPT_LIMIT + 128 * 1024:
+            line = json.dumps({'step_index': step, 'type': 'TOOL_OUTPUT', 'detail': pad}) + '\n'
+            lines.append(line)
+            size += len(line.encode('utf-8'))
+            step += 1
+        lines.append(json.dumps({'step_index': step, 'type': 'PLANNER_RESPONSE'}) + '\n')
+        transcript.write_text(''.join(lines), encoding='utf-8', newline='\n')
+        self.assertFalse(self.hook._antigravity_nonhuman_turn(dict(stop, initialNumSteps=step + 1), 'Stop'))
+        self.assertTrue(self.hook._antigravity_nonhuman_turn(dict(stop, initialNumSteps=step + 1), 'PreInvocation'))
+
+    def test_antigravity_large_transcript_security_rejects_symlinks_and_reparse_points(self):
+        import stat
+        real_dir = (self.root / 'real-transcripts').resolve()
+        real_dir.mkdir()
+        transcript = real_dir / 'subagent.jsonl'
+        count = self._write_large_antigravity_transcript(transcript, 'PLANNER_RESPONSE', 'PLANNER_RESPONSE')
+        payload = {'lastUserInput': '', 'initialNumSteps': count, 'transcriptPath': str(transcript)}
+        # Control: the direct regular >2 MB transcript is accepted.
+        self.assertTrue(self.hook._antigravity_nonhuman_turn(payload, 'PreInvocation'))
+
+        # Direct file symlink to >2 MB transcript must fail open when OS allows symlinks.
+        link = self.root / 'linked-large.jsonl'
+        try:
+            link.symlink_to(transcript)
+        except OSError:
+            pass
+        else:
+            self.assertFalse(self.hook._antigravity_nonhuman_turn(
+                dict(payload, transcriptPath=str(link)), 'PreInvocation'))
+            self.assertIsNone(self.hook._antigravity_transcript_steps(str(link)))
+
+        # On Windows, directory junctions work without admin and must also be rejected.
+        if os.name == 'nt':
+            junction = self.root / 'junction-transcripts'
+            created = subprocess.run(['cmd', '/c', 'mklink', '/J', str(junction), str(real_dir)],
+                                     capture_output=True, text=True, timeout=15)
+            if created.returncode == 0:
+                self.addCleanup(lambda: os.rmdir(junction) if junction.exists() else None)
+                via_junction = str(junction / transcript.name)
+                self.assertFalse(self.hook._antigravity_nonhuman_turn(
+                    dict(payload, transcriptPath=via_junction), 'PreInvocation'))
+                self.assertIsNone(self.hook._antigravity_transcript_steps(via_junction))
+
+        # Simulated Windows reparse point attribute on >2 MB regular file must be rejected before open.
+        real_lstat = Path.lstat
+        class FakeStat:
+            def __init__(self, inner):
+                self._inner = inner
+                self.st_mode = inner.st_mode
+                self.st_size = inner.st_size
+                self.st_file_attributes = getattr(inner, 'st_file_attributes', 0) | stat.FILE_ATTRIBUTE_REPARSE_POINT
+        with patch.object(Path, 'lstat', autospec=True,
+                          side_effect=lambda p: FakeStat(real_lstat(p)) if p == transcript else real_lstat(p)), \
+                patch.object(os, 'open', side_effect=AssertionError('reparse point must not be opened')):
+            self.assertFalse(self.hook._antigravity_nonhuman_turn(payload, 'PreInvocation'))
+
+        # Non-regular directory, relative path, and NUL byte fail open.
+        folder = (self.root / 'folder.jsonl').resolve()
+        folder.mkdir()
+        for bad in (str(folder), 'relative.jsonl', str(transcript) + '\0.jsonl'):
+            with self.subTest(bad=bad):
+                self.assertFalse(self.hook._antigravity_nonhuman_turn(
+                    dict(payload, transcriptPath=bad), 'PreInvocation'))
+
+    def test_antigravity_fast_path_skips_heavy_imports_on_later_preinvocation_and_non_idle_stop(self):
+        probe = (
+            'import contextlib, io, json, sys\n'
+            'sys.path.insert(0, sys.argv[1])\n'
+            'import beyin_v3_hook\n'
+            'raw_input = sys.stdin.read()\n'
+            'sys.argv = ["beyin_v3_hook.py"] + sys.argv[2:]\n'
+            'sys.stdin = io.StringIO(raw_input)\n'
+            'out = io.StringIO()\n'
+            'with contextlib.redirect_stdout(out):\n'
+            '    beyin_v3_hook.main()\n'
+            'loaded = sorted(m for m in ("beyin_v3", "beyin_v3_preferences", "beyin_v3_sync") if m in sys.modules)\n'
+            'print(json.dumps({"output": out.getvalue().strip(), "loaded": loaded}))\n'
+        )
+        cases = [
+            (['--event', 'PreInvocation'],
+             {'hookEventName': 'PreInvocation', 'conversationId': 'fast-1', 'invocationNum': 3}, '{}'),
+            ([],
+             {'hook_event_name': 'PreInvocation', 'conversationId': 'fast-2', 'invocationNum': 2}, '{}'),
+            (['--event', 'Stop'],
+             {'hookEventName': 'Stop', 'conversationId': 'fast-3', 'fullyIdle': False}, '{"decision":"stop"}'),
+            ([],
+             {'hook_event_name': 'Stop', 'conversationId': 'fast-4', 'fullyIdle': None}, '{"decision":"stop"}'),
+            (['--event', 'PreInvocation'],
+             '\ufeff' + json.dumps({'hookEventName': 'PreInvocation', 'conversationId': 'fast-bom', 'invocationNum': 1}),
+             '{}'),
+        ]
+        for extra, payload, expected in cases:
+            with self.subTest(extra=extra, expected=expected):
+                raw = payload if isinstance(payload, str) else json.dumps(payload)
+                result = subprocess.run(
+                    [sys.executable, '-c', probe, str(SCRIPTS),
+                     '--vault', str(self.vault), '--state', str(self.state),
+                     '--harness', 'antigravity', *extra],
+                    input=raw, text=True, encoding='utf-8', capture_output=True,
+                    cwd=self.vault, env=self.env, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                report = json.loads(result.stdout)
+                self.assertEqual(report['output'], expected)
+                self.assertEqual(report['loaded'], [])
+
+    def test_antigravity_fast_path_preserves_malformed_json_error_and_in_vault_state_refusal(self):
+        # Malformed JSON and non-dict JSON still fail open and write hook-error.json.
+        for event, raw_bytes, expected_error in (
+                ('PreInvocation', b'{invalid json', 'JSONDecodeError'),
+                ('Stop', b'{invalid json', 'JSONDecodeError'),
+                ('PreInvocation', b'[]', 'AttributeError')):
+            with self.subTest(event=event, expected_error=expected_error):
+                error_path = self.state / 'hook-error.json'
+                if error_path.exists():
+                    error_path.unlink()
+                result = subprocess.run(
+                    [sys.executable, str(HOOK), '--vault', str(self.vault), '--state', str(self.state),
+                     '--harness', 'antigravity', '--event', event],
+                    input=raw_bytes, capture_output=True, cwd=self.vault, env=self.env, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr.decode())
+                self.assertEqual(result.stdout.strip(), b'{}')
+                self.assertTrue(error_path.exists())
+                self.assertEqual(json.loads(error_path.read_text(encoding='utf-8'))['error'], expected_error)
+
+        # In-vault --state still raises ValueError even on fast-path payloads without writing inside vault.
+        inside = self.vault / '.state'
+        for event, payload in (
+                ('PreInvocation', {'hookEventName': 'PreInvocation', 'invocationNum': 3}),
+                ('Stop', {'hookEventName': 'Stop', 'fullyIdle': False})):
+            with self.subTest(in_vault_event=event):
+                result = subprocess.run(
+                    [sys.executable, str(HOOK), '--vault', str(self.vault), '--state', str(inside),
+                     '--harness', 'antigravity', '--event', event],
+                    input=json.dumps(payload).encode('utf-8'), capture_output=True,
+                    cwd=self.vault, env=self.env, timeout=20)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Runtime state must be outside vault', result.stderr.decode())
+                self.assertFalse(inside.exists())
+
     def test_antigravity_opening_once_per_conversation_then_per_message_retrieval(self):
         # Antigravity CLI 1.5.18: SessionStart runs once per conversation (not on resume), and
         # PreInvocation's invocationNum restarts at 0 for every user message (#903).
