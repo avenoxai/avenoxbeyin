@@ -36,7 +36,46 @@ _SECRET_NAME = (r"(?!(?:pad|eos|bos|unk|sep|cls|mask)_token(?a:(?![a-z0-9_])))"
 # the Turkish İ and ı, which hid the whole value of KİŞİSEL_API_KEY=... while
 # MÜŞTERI_API_KEY=... was masked.
 _NAME_START = r"(?a:(?<![a-z0-9_]))"
-_SECRET_VALUE = r"""(?:\\{0,8}["\']\S{8,}\\{0,8}["\']|[^"\'\x60\s,;][^\x60\s,;]{7,})"""
+# An unquoted value stops at a backtick, so `NAME=value` keeps its closing
+# inline-code backtick. A backtick-quoted value is masked whole or not at all:
+# a mask that reports success but leaves the tail of the value in the note is
+# the worst outcome. _backtick_value builds one branch per opening run.
+# A span holding only an upper-case snake_case name documents a variable
+# ("API key: `OPENAI_API_KEY` okunur"), so it stays text; the check is
+# case-sensitive under the pattern's (?i).
+_LINE_END = r"(?=[ \t]*(?:\r?\n|\Z))"
+
+
+def _backtick_value(opener, close, before_line_end):
+    """A value opened by a run of backticks, kept inside one non-space token.
+
+    Markdown writes a value that holds backticks with a longer opening run
+    (``Xy7`mN2``, ```Xy7``mN2```), so a backtick run that a non-space character
+    follows is part of the value. A run at least as long as the opener closes
+    it; when only backticks and up to three punctuation marks follow before a
+    space, they stay outside ("`value`."), otherwise the rest of the token goes
+    with the value ("`Xy7`mN2" or "`value`'yi"), so no tail is left visible.
+    One or two backticks may also end at the line end, as an inline span may be
+    unclosed or wrap; three or more open a fenced block whose info string ends
+    the line ("API key:\\n```javascript"), so that run needs a closing run or
+    at least a backtick at the line end, which an info string cannot hold.
+    A span with a space inside stays prose (``value` rest``); nothing masks
+    only its first word.
+    """
+    ending = (close + r"""(?:(?=\x60*[.,;:!?)\]}'"*_~|]{0,3}(?:\s|\Z))|\S*)""")
+    ending += "|" + before_line_end + _LINE_END
+    return (opener + r"[^\x60\s](?:[^\x60\s]|\x60+(?=[^\x60\s])){7,}?(?:"
+            + ending + ")")
+
+
+# The fence run is capped so a chain of ever shorter openers in one token
+# cannot make the scan quadratic; a longer run is left as written.
+_SECRET_VALUE = (r"""(?:\\{0,8}["\']\S{8,}\\{0,8}["\']"""
+                 r"""|(?!(?-i:\x60+[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\x60))(?:"""
+                 + _backtick_value(r"\x60", r"\x60", r"\x60*") + "|"
+                 + _backtick_value(r"\x60\x60", r"\x60\x60", r"\x60*") + "|"
+                 + _backtick_value(r"(?P<fence>\x60{3,16})", r"(?P=fence)", r"\x60+")
+                 + r""")|[^"\'\x60\s,;][^\x60\s,;]{7,})""")
 
 
 BUILTIN_PATTERNS = (
