@@ -19,6 +19,7 @@ SETTINGS = 'chat-trace.json'
 SESSIONS = 'chat-trace-sessions'
 MAX_PARAGRAPH = 450
 MAX_NOTE_BYTES = 256_000
+ANTIGRAVITY_META_LIMIT = 65_536
 
 
 def _read(path, limit=4096):
@@ -67,6 +68,72 @@ def _human_content(payload):
     return True
 
 
+def _scan_antigravity_lines(raw):
+    """True when a JSON object row carries USER_INPUT + USER_EXPLICIT; None on bad JSON."""
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except (ValueError, UnicodeError, RecursionError):
+            return None
+        if not isinstance(row, dict):
+            return None
+        if row.get('type') == 'USER_INPUT' and row.get('source') == 'USER_EXPLICIT':
+            return True
+    return False
+
+
+def _antigravity_human_transcript(value):
+    """Verify bounded metadata of an Antigravity transcript; never retain message bodies."""
+    if not isinstance(value, str) or '\0' in value or value.startswith(('\\\\', '//')):
+        return False
+    path = Path(value)
+    if not path.is_absolute() or path.suffix.lower() != '.jsonl' or path.drive.startswith(('\\', '//')):
+        return False
+    try:
+        info = path.lstat()
+        reparse = getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)
+        if (not stat.S_ISREG(info.st_mode)
+                or getattr(info, 'st_reparse_tag', 0)
+                or getattr(info, 'st_file_attributes', 0) & reparse
+                or path.resolve(strict=True) != path):
+            return False
+        flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0)
+        flags |= getattr(os, 'O_NONBLOCK', 0)
+        with os.fdopen(os.open(path, flags), 'rb') as handle:
+            opened = os.fstat(handle.fileno())
+            if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(info, opened):
+                return False
+            head = handle.read(ANTIGRAVITY_META_LIMIT + 1)
+            more = len(head) > ANTIGRAVITY_META_LIMIT
+            if more:
+                head = head[:ANTIGRAVITY_META_LIMIT]
+                if not head.endswith(b'\n'):
+                    head = head.rsplit(b'\n', 1)[0] if b'\n' in head else b''
+            found = _scan_antigravity_lines(head)
+            if found is True:
+                return True
+            if found is None or not more:
+                return False
+            tail_offset = opened.st_size - ANTIGRAVITY_META_LIMIT
+            if tail_offset <= 0:
+                return False
+            handle.seek(tail_offset - 1)
+            chunk = handle.read(ANTIGRAVITY_META_LIMIT + 2)
+        tail_more = len(chunk) > ANTIGRAVITY_META_LIMIT + 1
+        if tail_more:
+            chunk = chunk[:ANTIGRAVITY_META_LIMIT + 1]
+        _, sep, tail = chunk.partition(b'\n')
+        if not sep:
+            return False
+        if tail_more and not tail.endswith(b'\n'):
+            tail = tail.rsplit(b'\n', 1)[0] if b'\n' in tail else b''
+        return _scan_antigravity_lines(tail) is True
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def human_turn(harness, payload):
     """Conservative pilot policy; these signals are not a client-wide identity API."""
     if not _human_content(payload):
@@ -77,6 +144,13 @@ def human_turn(harness, payload):
         if entry in ('sdk-cli', 'cli') or attended in ('0', 'false'):
             return False
         return entry == 'claude-desktop' or attended in ('1', 'true')
+    if harness == 'antigravity':
+        from beyin_v3_hook import _antigravity_nonhuman_turn, prompt_text
+        check = (payload if isinstance(payload.get('lastUserInput'), str)
+                 else dict(payload, lastUserInput=prompt_text(payload)))
+        if _antigravity_nonhuman_turn(check, 'PreInvocation'):
+            return False
+        return _antigravity_human_transcript(payload.get('transcriptPath'))
     if harness != 'codex' or payload.get('originator') == 'codex_exec' or payload.get('agent_id'):
         return False
     # Codex 0.163.0 does not include originator in UserPromptSubmit JSON. Read only
@@ -131,7 +205,7 @@ def _lock(state):
 
 
 def _marker(folder, harness, session, now):
-    if harness not in ('claude', 'codex') or not re.fullmatch(r'[0-9a-f]{24}', session):
+    if harness not in ('claude', 'codex', 'antigravity') or not re.fullmatch(r'[0-9a-f]{24}', session):
         raise ValueError('use the 24-character Receipt session value and its harness')
     path = folder / (harness + '-' + session + '.json')
     try:
@@ -176,6 +250,10 @@ def hint(state, harness, payload):
                 atomic(path, json.dumps(value))
                 return ''
             event_id = payload.get('event_id') or payload.get('turn_id')
+            if (not isinstance(event_id, str) or not event_id) and harness == 'antigravity':
+                steps = payload.get('initialNumSteps')
+                if type(steps) is int and steps >= 0:
+                    event_id = f'antigravity:{steps}'
             event = hashlib.sha256(event_id.encode()).hexdigest() if isinstance(event_id, str) and event_id else ''
             if event and event == value['last_event']:
                 return ''
