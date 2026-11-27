@@ -12,6 +12,8 @@ Geliştiriciler için: [kaynak ve dağıtım sınırları envanteri](MODULE-BOUN
 
 Üçüncü taraf [topluluk araçları](../COMMUNITY-TOOLS.md): proje tarafından desteklenmez ve denetlenmez.
 
+Ajana link veya web sayfası inceletirken: [dış içerik güvenliği](DIS-ICERIK-GUVENLIGI.md) (prompt injection, izinler, Claude Code sandbox'ı).
+
 ## Kullanıcı paketi
 
 Kurucu ortak motoru, `beyin`, `beyin-doktor`, `beyin-guncelle`, `beyin-kontrol`, `veri-cek` skill'lerini, kurulu `beyin.py` girişini ve işletim sistemine uygun güncelleme kısayolunu dağıtır. Paket ZIP olarak açılıp kullanılabilir; Git gerekmez. Kurulu vault kaynak repo klasöründen bağımsız çalışır.
