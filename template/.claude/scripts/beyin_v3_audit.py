@@ -14,10 +14,8 @@ from collections import Counter
 from datetime import datetime, timezone
 import os
 from pathlib import Path
-import posixpath
 import re
 import sys
-from urllib.parse import unquote
 
 _MODULE_DIR = str(Path(__file__).resolve().parent)
 if _MODULE_DIR not in sys.path:
@@ -29,6 +27,8 @@ from beyin_v3 import (
     _tokens,
     _status_word,
     _trusted_record,
+    _link_fold,
+    _link_keys,
     RETIRED_STATUSES,
     resolve_supersedes,
     STOPWORDS,
@@ -126,66 +126,57 @@ def _auditable(path: Path, rel_path: str, *, strict: bool = False) -> tuple[dict
     return meta, body
 
 
-_WIKILINK_RE = re.compile(r'\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]')
-_MD_LINK_RE = re.compile(r'(?<!!)\[[^\]]*\]\(([^)]+)\)')
-_FENCED_CODE_RE = re.compile(r'```[\s\S]*?```|~~~[\s\S]*?~~~')
+# Fenced blocks (``` or ~~~, any fence length) and inline code spans quote links, they do not make them.
+_CODE_RE = re.compile(r'(?ms)^[ \t]*(`{3,}|~{3,})[^\n]*\n.*?^[ \t]*\1[`~]*[ \t]*$|(`+)[^\n]*?\2')
 
 
-def _extract_internal_links(body: str, rel_path: str) -> tuple[frozenset[str], frozenset[str]]:
-    """Return referenced relative markdown paths and bare wikilink stems (all casefolded)."""
-    cleaned = _FENCED_CODE_RE.sub('', body)
-    base_dir = posixpath.dirname(rel_path.replace('\\', '/'))
-    link_paths = set()
-    wiki_stems = set()
+def _link_keys_from_body(body: str, rel_path: str) -> tuple[tuple[bool, str], ...]:
+    """(is_wikilink, folded vault key) for each link in the note body outside code.
 
-    def _add_path(raw: str):
-        norm = posixpath.normpath(raw.replace('\\', '/')).lstrip('./')
-        if not norm or norm.startswith('../') or norm == '..':
-            return
-        if not norm.casefold().endswith('.md'):
-            norm = norm + '.md'
-        link_paths.add(norm.casefold())
+    Parsing is the core's (`_link_keys`, the same reader `rejected_dependents` uses) so
+    [[note|alias]], [[note#heading]], [[note^block]], .md suffixes, URL-encoded and
+    folder-relative Markdown paths read the same everywhere; keys are NFC + casefold so an
+    NFD (macOS/iCloud) file name still matches the link a person typed.
+    """
+    text = _CODE_RE.sub(' ', body)
+    keys = []
+    for raw, key in _link_keys({'text': text, 'source': rel_path}):
+        folded = _link_fold(key)
+        if folded:
+            keys.append((raw.startswith('[['), folded))
+    return tuple(dict.fromkeys(keys))
 
-    for m in _WIKILINK_RE.finditer(cleaned):
-        raw = m.group(1).strip().replace('\\', '/')
-        if not raw:
-            continue
-        if '/' in raw:
-            target = posixpath.normpath(posixpath.join(base_dir, raw)) if raw.startswith('./') or raw.startswith('../') else raw
-            _add_path(target)
-        else:
-            stem = raw[:-3] if raw.casefold().endswith('.md') else raw
-            if stem:
-                wiki_stems.add(stem.casefold())
 
-    for m in _MD_LINK_RE.finditer(cleaned):
-        raw = m.group(1).strip()
-        if raw.startswith('<') and raw.endswith('>'):
-            raw = raw[1:-1].strip()
-        raw = re.sub(r'\s+["\'].*$', '', raw).strip()
-        if not raw or raw.startswith('#') or re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*:', raw):
-            continue
-        raw = unquote(raw.split('#', 1)[0].split('?', 1)[0]).strip().replace('\\', '/')
-        if not raw or not raw.casefold().endswith('.md'):
-            continue
-        joined = raw.lstrip('/') if raw.startswith('/') else (posixpath.join(base_dir, raw) if base_dir else raw)
-        _add_path(joined)
+def _resolve_links(pool: list[dict]) -> None:
+    """Set each candidate's `linked` to the vault paths of the other candidates it links to.
 
-    return frozenset(link_paths), frozenset(wiki_stems)
+    A Markdown link names a vault path and matches only that path. A wikilink matches a whole
+    vault path, else the one note whose path ends with it ([[note]], [[folder/note]]); a name
+    two notes share links neither, so an ambiguous link never silences an unrelated pair.
+    """
+    by_path, by_name = {}, {}
+    for c in pool:
+        key = _link_fold(c['path'])
+        by_path[key] = c['path']
+        by_name.setdefault(key.rsplit('/', 1)[-1], []).append((key, c['path']))
+    for c in pool:
+        linked = set()
+        for is_wiki, key in c.get('link_keys', ()):
+            target = by_path.get(key)
+            if target is None and is_wiki:
+                matches = [path for folded, path in by_name.get(key.rsplit('/', 1)[-1], ())
+                           if folded.endswith('/' + key)]
+                if len(matches) == 1:
+                    target = matches[0]
+            if target is not None and target != c['path']:
+                linked.add(target)
+        c['linked'] = frozenset(linked)
 
 
 def _notes_linked(a: dict, b: dict) -> bool:
-    """True when either note directly links to the other via path or bare wikilink."""
-    path_a = a['path'].replace('\\', '/').casefold()
-    path_b = b['path'].replace('\\', '/').casefold()
-    stem_a = Path(path_a).stem.casefold()
-    stem_b = Path(path_b).stem.casefold()
-    return (
-        path_b in a.get('link_paths', ()) or
-        path_a in b.get('link_paths', ()) or
-        stem_b in a.get('wiki_stems', ()) or
-        stem_a in b.get('wiki_stems', ())
-    )
+    """True when either note links to the other (one direction is enough: a summary names its detail)."""
+    return b['path'] in a.get('linked', ()) or a['path'] in b.get('linked', ())
+
 
 
 def _candidate(path: Path, rel_path: str, meta: dict, body: str) -> dict:
@@ -214,7 +205,6 @@ def _candidate(path: Path, rel_path: str, meta: dict, body: str) -> dict:
     elif not isinstance(supersedes, list):
         supersedes = []
     note_id = meta.get('id')
-    link_paths, wiki_stems = _extract_internal_links(body, rel_path)
     return {
         # The id sync gives the record, so `supersedes: [<id>]` from note-create resolves here too.
         'id': note_id if isinstance(note_id, str) and note_id else 'md-' + _hash(rel_path)[:24],
@@ -227,8 +217,8 @@ def _candidate(path: Path, rel_path: str, meta: dict, body: str) -> dict:
         'updated_ts': updated_ts,
         'words_count': sum(1 for _ in _WORD_RE.finditer(body)),
         'supersedes': [str(s).strip() for s in supersedes if s],
-        'link_paths': link_paths,
-        'wiki_stems': wiki_stems,
+        # Read from the body already in memory; resolved against the whole pool in audit_memory.
+        'link_keys': _link_keys_from_body(body, rel_path),
     }
 
 
@@ -411,10 +401,6 @@ def _evaluate_pair(a: dict, b: dict, threshold: float, min_shared: int) -> dict 
             f"olarak degismis gorunuyor. Eski kaydi tarihsel (supersedes veya status: archived) olarak "
             f"isaretlemeyi ya da guncel durumu tek kaynakta toplamayi degerlendir."
         )
-    elif _notes_linked(a, b):
-        # Explicitly linked notes (e.g. summary <-> detail pairs) still surface status
-        # contradictions above, without repeating near_duplicate/overlap "link them" noise.
-        return None
     elif overlap >= 0.80 and jaccard >= 0.30 and vocab_ratio <= 3.0:
         finding_type = 'near_duplicate'
         severity = 'warning' if overlap >= 0.85 else 'info'
@@ -434,6 +420,10 @@ def _evaluate_pair(a: dict, b: dict, threshold: float, min_shared: int) -> dict 
             f"baglamayi ([[link]]) veya tek kaynakta birlestirmeyi degerlendir."
         )
     else:
+        return None
+    if not conflict and _notes_linked(a, b):
+        # Explicitly linked notes (e.g. summary <-> detail pairs) still surface status
+        # contradictions, without repeating near_duplicate/overlap "link them" noise.
         return None
 
     finding = {
@@ -516,6 +506,7 @@ def audit_memory(
     candidates = [c for c in candidates if c['id'] not in retired]
     if target_candidate is not None and target_candidate['id'] in retired:
         raise ValueError("audit target is retired by supersedes")
+    _resolve_links(pool)
 
     findings = []
     pairs_compared = 0
