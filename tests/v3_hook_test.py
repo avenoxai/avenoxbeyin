@@ -999,6 +999,19 @@ class HookInstallerTest(unittest.TestCase):
         self.assertEqual(self.invoke(dict(second, lastUserInput='zzqx'), 'antigravity',
                                      extra=['--event', 'PreInvocation']), {})
 
+    def test_antigravity_opt_out_in_the_first_message_still_counts(self):
+        # The opening answers the first message, so its PreInvocation is quiet; [kaydetme] still applies.
+        self.seed()
+        conversation = 'agy-optout'
+        first = 'Bunu [kaydetme], sadece bak'
+        self.invoke({'hookEventName': 'SessionStart', 'conversationId': conversation, 'lastUserInput': first},
+                    'antigravity', extra=['--event', 'SessionStart'])
+        turn = {'hookEventName': 'PreInvocation', 'conversationId': conversation, 'invocationNum': 0,
+                'initialNumSteps': 1, 'lastUserInput': first}
+        self.assertEqual(self.invoke(turn, 'antigravity', extra=['--event', 'PreInvocation']), {})
+        digest = hashlib.sha256(conversation.encode()).hexdigest()
+        self.assertTrue((self.state / 'receipt-reminders' / (digest + '.optout')).exists())
+
     def test_antigravity_without_session_start_opens_once_then_retrieves(self):
         # A client without SessionStart, or a conversation begun before the update: the first
         # human PreInvocation still opens the conversation, once.

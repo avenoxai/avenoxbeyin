@@ -906,6 +906,12 @@ def main():
                 event = (_antigravity_turn_event(marker, payload.get("lastUserInput"))
                          if marker is not None else "SessionStart")
                 if event is None:
+                    # The opening already answered this prompt; only its [kaydetme] opt-out still applies.
+                    if (not os.environ.get("BEYIN_V3_INTERNAL") and os.environ.get("BEYIN_V3_SKIP") != "1"
+                            and payload.get("no_memory") is not True):
+                        receipt_reminder(dict(payload, session_id=conversation, hook_event_name="UserPromptSubmit",
+                                              prompt=payload.get("lastUserInput") or ""),
+                                         state, args.harness, "UserPromptSubmit", vault=vault)
                     print("{}")
                     return
             elif event == "PostToolUse":

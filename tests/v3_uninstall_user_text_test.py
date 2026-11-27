@@ -195,7 +195,7 @@ class UninstallKeepsUserTextTest(unittest.TestCase):
                     data = json.loads(self.path(name).read_bytes())
                     if name == '.agents/hooks.json':
                         self.assertEqual(data['kendi'], {'Stop': [own_hook]})
-                        self.assertEqual(set(data['beyin-v3']), {'PreInvocation', 'Stop'})
+                        self.assertEqual(set(data['beyin-v3']), {'SessionStart', 'PreInvocation', 'PostToolUse', 'Stop'})
                         continue
                     handlers = [h for group in data['hooks']['Stop'] for h in group['hooks']]
                     self.assertIn(own_hook, handlers, name)
