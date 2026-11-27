@@ -109,6 +109,21 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(redact(text, self.state), (text, 0))
 
+    def test_fenced_block_after_a_secret_label_stays_text_and_passes_jev(self):
+        # The separator crosses newlines, so a label line followed by a code fence
+        # reached the backtick branch; an unclosed run of three backticks took the
+        # info string as a value and dropped the label and the opening fence.
+        store = runtime.MemoryStore(self.state, self.vault)
+        for text in ("## API key:\n```javascript\nconst x = 1\n```",
+                     "Access token:\n```typescript\nconst t = process.env.TOKEN\n```\nSonraki paragraf",
+                     "Password:\n```sh-session\n$ ls\n```", "Token: ```javascript",
+                     "Secret key:\r\n````markdown\r\n```js\r\nx\r\n```\r\n````"):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text, self.state), (text, 0))
+                advisor._safe(store, {'statement': text})
+        # A closed triple-backtick value is still masked whole.
+        self.assertEqual(redact(f"API_KEY=```{VALUE}```", self.state), ("[REDACTED]``", 1))
+
     def test_pem_body_is_masked_without_trailer_and_does_not_swallow_prose(self):
         begin = "-----BEGIN PRIVATE KEY-----"
         body = "QUJD" * 16  # Synthetic base64, no private key.

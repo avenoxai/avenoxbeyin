@@ -40,10 +40,13 @@ _NAME_START = r"(?a:(?<![a-z0-9_]))"
 # inline-code backtick. A backtick-quoted value (NAME=`value`, NAME=``value``)
 # is masked whole when a backtick closes it or the line ends, as an inline code
 # span may wrap to the next line; only one closing backtick is taken, so
-# `NAME=`value`` keeps the outer span's. A span with a space inside stays prose:
-# no branch masks only its first word.
+# `NAME=`value`` keeps the outer span's. Three or more backticks open a fenced
+# block whose info string ends the line ("API key:\n```javascript"), so that run
+# needs a closing backtick. A span with a space inside stays prose: no branch
+# masks only its first word.
 _SECRET_VALUE = (r"""(?:\\{0,8}["\']\S{8,}\\{0,8}["\']"""
-                 r"""|\x60+[^\x60\s]{8,}(?:\x60|(?=[ \t]*(?:\r?\n|\Z)))"""
+                 r"""|\x60{1,2}[^\x60\s]{8,}(?:\x60|(?=[ \t]*(?:\r?\n|\Z)))"""
+                 r"""|\x60{3,}[^\x60\s]{8,}\x60"""
                  r"""|[^"\'\x60\s,;][^\x60\s,;]{7,})""")
 
 
