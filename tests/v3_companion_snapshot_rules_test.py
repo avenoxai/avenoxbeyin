@@ -474,6 +474,36 @@ class InstalledOpeningTest(unittest.TestCase):
         clean_report = json.loads(self.run_cli(self.vault / 'beyin.py', 'doctor', '--json'))['companion_rules_opening']
         self.assertNotIn('project_rules', clean_report)
 
+    def test_doctor_reports_project_rules_under_the_parent_folder_real_spelling(self):
+        # On a case-insensitive file system (macOS, Windows) `projects` opens `Projects/` and
+        # `Projeler` opens `projeler/`; doctor must still use the spelling SessionStart labels
+        # the rules with (#893).
+        self.rules('# Rules\n- Short global rule.\n')
+        sources = {'Projects': 'alpha', 'projeler': 'beta'}
+        for parent, name in sources.items():
+            (self.vault / parent / name).mkdir(parents=True)
+            (self.vault / parent / name / 'Kurallar.md').write_text(
+                rules_file(16000)[0], encoding='utf-8', newline='\n')
+        self.run_cli(self.vault / 'beyin.py', '--vault', self.vault, '--state', self.state, 'sync')
+        expected = sorted(f'{parent}/{name}/Kurallar.md' for parent, name in sources.items())
+        for source in expected:
+            payload = {'hook_event_name': 'SessionStart', 'session_id': 'issue-893', 'source': 'startup',
+                       'cwd': str(self.vault / Path(source).parent)}
+            context = json.loads(self.run_cli(
+                self.vault / '.claude/scripts/beyin_v3_hook.py', '--vault', self.vault, '--state', self.state,
+                '--harness', 'claude', payload=payload))['hookSpecificOutput']['additionalContext']
+            self.assertIn(f'[{source}]', context)
+
+        def project_rules():
+            report = json.loads(self.run_cli(self.vault / 'beyin.py', 'doctor', '--json'))['companion_rules_opening']
+            return sorted((e['source'], e['status']) for e in report.get('project_rules') or [])
+
+        self.assertEqual(project_rules(), [(source, 'clipped') for source in expected])
+        for parent, name in sources.items():
+            (self.vault / parent / name / 'Kurallar.md').write_text(
+                '# Rules\n- STALE_PROJECT_CANARY.\n', encoding='utf-8', newline='\n')
+        self.assertEqual(project_rules(), [(source, 'stale') for source in expected])
+
 
 if __name__ == '__main__':
     unittest.main()

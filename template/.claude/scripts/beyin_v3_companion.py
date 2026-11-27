@@ -2013,7 +2013,16 @@ def _project_rule_candidates(vault, state=None, max_projects=50):
     except Exception:
         pass
     seen_parents = set()
-    parent_names = list(dict.fromkeys(['projects', 'Projeler', 'projeler', *candidate_project_folders(vault)]))
+    # Take the parent spellings from the vault itself: on a case-insensitive file system
+    # `vault / 'projects'` opens `Projects/`, and the label SessionStart reports, the real
+    # spelling, would then never match the one built here.
+    try:
+        entries = sorted(entry.name for entry in vault.iterdir())
+    except OSError:
+        entries = []
+    parent_names = list(dict.fromkeys(
+        name for wanted in ['projects', 'Projeler', 'projeler', *candidate_project_folders(vault)]
+        for name in entries if _scope_key(name) == _scope_key(wanted)))
     for parent_name in parent_names:
         parent = vault / parent_name
         try:
