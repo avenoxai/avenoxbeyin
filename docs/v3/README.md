@@ -18,7 +18,7 @@ Ajana link veya web sayfası inceletirken: [dış içerik güvenliği](DIS-ICERI
 
 Kurucu ortak motoru, `beyin`, `beyin-doktor`, `beyin-guncelle`, `beyin-kontrol`, `veri-cek` skill'lerini, kurulu `beyin.py` girişini ve işletim sistemine uygun güncelleme kısayolunu dağıtır. Paket ZIP olarak açılıp kullanılabilir; Git gerekmez. Kurulu vault kaynak repo klasöründen bağımsız çalışır.
 
-[Son kararlı release](https://github.com/avenoxai/avenoxbeyin/releases/latest) ve içindeki `beyin-v3-X.Y.Z.zip` paketi stable dağıtım noktasıdır. V3.17.0 sürüm kapısı tam çevrimdışı test paketini, 10 development ve 6 holdout semantik senaryosunu kapsar; CI aynı paketi Windows, macOS ve Linux'ta doğrular.
+[Son kararlı release](https://github.com/avenoxai/avenoxbeyin/releases/latest) ve içindeki `beyin-v3-X.Y.Z.zip` paketi stable dağıtım noktasıdır. V3.18.0 sürüm kapısı tam çevrimdışı test paketini, 10 development ve 6 holdout semantik senaryosunu kapsar; CI aynı paketi Windows, macOS ve Linux'ta doğrular.
 
 ## Davranış
 
