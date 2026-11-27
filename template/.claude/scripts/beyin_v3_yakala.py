@@ -1895,8 +1895,19 @@ def _section(body, name):
     return match.group(1).strip() if match else ''
 
 
+def _clipper_section(body):
+    """Web Clipper template places content as the last section; keep its internal ## headings."""
+    match = re.search(r'^## (?:Icerik|\u0130\u00e7erik)\s*$(.*?)(?=^## Islendi\b|\Z)', body, re.M | re.S)
+    return match.group(1).strip() if match else ''
+
+
 def _without_section(body, name, replacement):
     return re.sub(r'^## ' + name + r'\s*$.*?(?=^## |\Z)', '## ' + name + '\n\n' + replacement + '\n\n', body, count=1, flags=re.M | re.S)
+
+
+def _without_clipper_section(body, replacement):
+    """Replace entire Web Clipper content section without leaving trailing internal headings."""
+    return re.sub(r'^## (?:Icerik|\u0130\u00e7erik)\s*$.*?(?=^## Islendi\b|\Z)', '## Icerik\n\n' + replacement + '\n\n', body, count=1, flags=re.M | re.S)
 
 
 def _windows_reserved_name(part):
@@ -1990,7 +2001,7 @@ def extract(vault, card, found, allow_audio=True, info=None, state=None):
         _safe_source_url(url)  # Cards can also be edited, clipped or synced.
         if kind == 'youtube' and kind_of(url) != 'youtube':
             kind = kind_of(url)  # an edited field never hands another site to yt-dlp's generic extractor
-    clipped = _section(body, 'Icerik') or _section(body, 'İçerik')
+    clipped = _clipper_section(body)
     if clipped and len(clipped) > 200 and kind != 'youtube':
         return clipped, 'web-clipper', None
     if kind == 'youtube' and url:
@@ -2151,8 +2162,8 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
                            '## Kaynak içeriği\n\n' + opening + '\n')
                 raw_write = (raw, '\n'.join(header) + '\n\n' + warning + text.strip() + '\n' + closing + '\n')
                 if method == 'web-clipper':
-                    body = _without_section(body, 'Icerik' if _section(body, 'Icerik') else 'İçerik',
-                                            'Tam metin ham dosyaya tasindi: `' + raw.relative_to(vault).as_posix() + '`')
+                    body = _without_clipper_section(body,
+                                                    'Tam metin ham dosyaya tasindi: `' + raw.relative_to(vault).as_posix() + '`')
                 meta.update(durum='cikarildi', yontem=method, ham=raw.relative_to(vault).as_posix())
                 meta.pop('hata', None)
                 # Video, DOCX and the web completeness check report these; only explicit

@@ -494,7 +494,8 @@ class YakalaUnitTest(unittest.TestCase):
         note = yakala.capture(self.vault, text='Bağlam kaybı en pahalı kalem.', why='ders')
         clipped = self.vault / INBOX / 'clip.md'
         clipped.write_text('---\ntur: yakala\ndurum: bekliyor\nkaynak_turu: makale\nurl: "https://ornek.com/yazi"\n---\n\n'
-                           '# Yazı\n\n## Neden\n\n\n\n## Icerik\n\n' + ('Uzun makale metni. ' * 30) + '\n', encoding='utf-8')
+                           '# Yazı\n\n## Neden\n\n\n\n## Icerik\n\nGiris paragrafi.\n\n'
+                           '## Birinci bolum\n\nGovde metni.\n\n## Ikinci bolum\n\n' + ('Son metin. ' * 30) + '\n', encoding='utf-8')
         video = yakala.capture(self.vault, url='https://www.youtube.com/watch?v=zzz')
         with patch.object(yakala, 'tools', return_value=none), patch.object(socket, 'getaddrinfo', return_value=[
                 (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('8.8.8.8', 443))]):
@@ -504,10 +505,18 @@ class YakalaUnitTest(unittest.TestCase):
         self.assertEqual(by_id['clip']['yontem'], 'web-clipper')
         self.assertEqual(by_id[video['id']]['durum'], 'hata')
         raw = (self.vault / by_id['clip']['ham']).read_text(encoding='utf-8')
-        self.assertIn('Uzun makale metni.', raw)
+        self.assertIn('Giris paragrafi.', raw)
+        self.assertIn('## Birinci bolum', raw)
+        self.assertIn('Govde metni.', raw)
+        self.assertIn('## Ikinci bolum', raw)
+        self.assertIn('Son metin.', raw)
         self.assertIn('visibility: private', raw)
-        # The clipped page body moves out of the indexed card into the dot folder.
-        self.assertNotIn('Uzun makale metni.', (self.vault / INBOX / 'clip.md').read_text(encoding='utf-8'))
+        # The clipped page body and internal headings move out of the indexed card into the dot folder.
+        card_text = (self.vault / INBOX / 'clip.md').read_text(encoding='utf-8')
+        self.assertNotIn('Giris paragrafi.', card_text)
+        self.assertNotIn('## Birinci bolum', card_text)
+        self.assertNotIn('Son metin.', card_text)
+        self.assertIn('Tam metin ham dosyaya tasindi:', card_text)
         self.assertEqual(yakala.pending(self.vault), 0)
         concept = self.vault / 'knowledge/concepts/baglam.md'
         concept.parent.mkdir(parents=True)
