@@ -1131,6 +1131,60 @@ class HookInstallerTest(unittest.TestCase):
         self.assertIn('"records"', result['injectSteps'][0]['ephemeralMessage'])
         self.assertEqual((markers / 'key.json').read_text(encoding='utf-8'), 'not json')
 
+    def test_antigravity_hook_lifecycle_receipt_coverage_parity(self):
+        # End-to-end Antigravity lifecycle (#903): SessionStart + PreInvocation + PostToolUse + Stop
+        # feeds receipt coverage with per-turn scope and edit observation matching Claude/Codex.
+        engine = self.seed()
+        note = str((self.vault / 'notes/task.md').resolve())
+
+        edited = 'agy-cov-edited'
+        edited_base = {'conversationId': edited, 'cwd': str(self.vault), 'workspacePaths': [str(self.vault)]}
+        self.assertIn('injectSteps', self.invoke(
+            dict(edited_base, hookEventName='SessionStart', lastUserInput='Update notes/task.md'),
+            'antigravity', extra=['--event', 'SessionStart']))
+        self.assertEqual(self.invoke(
+            dict(edited_base, hookEventName='PreInvocation', invocationNum=0, initialNumSteps=1,
+                 lastUserInput='Update notes/task.md'),
+            'antigravity', extra=['--event', 'PreInvocation']), {})
+        self.assertEqual(self.agy_tool(edited, 'write_file', {'Path': note, 'Content': 'x'}), {})
+        time.sleep(0.02)
+        edited_hash = hashlib.sha256(edited.encode()).hexdigest()[:24]
+        engine.receipt('agy-cov-receipt', 'Updated task note.', ['notes/task.md'], 'antigravity', session=edited_hash)
+        stop_edited = dict(edited_base, hookEventName='Stop', fullyIdle=True, continuationActive=False, executionNum=0)
+        self.assertEqual(self.invoke(stop_edited, 'antigravity', extra=['--event', 'Stop']), {'decision': 'stop'})
+        time.sleep(0.02)
+        # Follow-up question-only turn must not reopen the covered Antigravity session.
+        self.invoke(dict(edited_base, hookEventName='PreInvocation', invocationNum=0, initialNumSteps=6,
+                         lastUserInput='Thanks, what is the status?'),
+                    'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertEqual(self.invoke(stop_edited, 'antigravity', extra=['--event', 'Stop']), {'decision': 'stop'})
+
+        readonly = 'agy-cov-readonly'
+        ro_base = {'conversationId': readonly, 'cwd': str(self.vault), 'workspacePaths': [str(self.vault)]}
+        self.assertIn('injectSteps', self.invoke(
+            dict(ro_base, hookEventName='SessionStart', lastUserInput='Just checking status'),
+            'antigravity', extra=['--event', 'SessionStart']))
+        self.assertEqual(self.invoke(
+            dict(ro_base, hookEventName='PreInvocation', invocationNum=0, initialNumSteps=1,
+                 lastUserInput='Just checking status'),
+            'antigravity', extra=['--event', 'PreInvocation']), {})
+        self.assertEqual(self.invoke(
+            dict(ro_base, hookEventName='Stop', fullyIdle=True, continuationActive=False, executionNum=0),
+            'antigravity', extra=['--event', 'Stop']), {'decision': 'stop'})
+
+        self.assertEqual(self.hook.drain_queue(self.vault, self.state)['failed'], 0)
+        gaps = json.loads((self.state / 'receipt-gaps.json').read_text(encoding='utf-8'))
+        ro_hash = hashlib.sha256(readonly.encode()).hexdigest()[:24]
+        self.assertEqual([item['session'] for item in gaps['checkpoints']], [ro_hash])
+        self.assertEqual(gaps['checkpoints'][0]['harness'], 'antigravity')
+        self.assertEqual(gaps['checkpoints'][0]['scope'], 'turn')
+        self.assertIs(gaps['checkpoints'][0].get('no_observed_edit'), True)
+        self.assertEqual((gaps['potential_missing_receipts'], gaps['no_observed_edit']), (1, 1))
+        self.assertNotIn('antigravity', gaps['scope_limits'])
+        cov = gaps['receipt_coverage']
+        self.assertEqual((cov['total'], cov['covered'], cov['missing'], cov['no_observed_edit'], cov['missing_no_observed_edit']),
+                         (2, 1, 1, 1, 1))
+
     def test_internal_recursion_guard_skips_queue(self):
         self.env['BEYIN_V3_INTERNAL'] = '1'
         self.assertEqual(self.invoke(self.payload), {})
