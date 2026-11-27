@@ -164,7 +164,8 @@ Genel ayarlar kullanıcıya aittir ve vault güncellemesinin rollback kapsamına
   konuşma başına bir kez çalışan `SessionStart` başlangıç talimatını verir. `invocationNum` her
   kullanıcı mesajında 0'dan başladığı için `PreInvocation` yalnız `SessionStart` gelmemiş bir
   konuşmada (o olayı göndermeyen istemci, güncellemeden önce açılmış konuşma) bir kez başlangıç
-  sayılır (#903). `PostToolUse` yalnız başarılı dosya yazımında (`write_file`, `edit_file`,
+  sayılır (#903). Kullanıcı girdisi olmadan başlayan iç içe ajan konuşması (#885) vault
+  adaptöründe olduğu gibi açılış ve checkpoint almaz. `PostToolUse` yalnız başarılı dosya yazımında (`write_file`, `edit_file`,
   `code_action`, IDE'deki `write_to_file`, `replace_file_content`, `multi_replace_file_content`;
   `matcher` grubu içinde) düzenleme penceresini açar ve `{}` döner. `Stop` yalnız
   `fullyIdle: true` iken sayılır; receipt eksikse bir kez `{"decision":"continue"}` döner,

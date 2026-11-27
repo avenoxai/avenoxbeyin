@@ -1117,6 +1117,31 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(len(list(markers.glob('*.json'))), 1)
         self.assertEqual(run('PreInvocation', self.project), {})  # once per conversation
 
+    def test_antigravity_nested_agent_conversation_stays_silent_like_the_vault_adapter(self):
+        # #885 parity: a nested agent's conversation starts without user input; the vault adapter
+        # gives it no opening or checkpoint, and neither does the bridge.
+        config = self.agy_config()
+        transcript = (self.root / 'nested transcript.jsonl').resolve()
+        transcript.write_text('{"step_index":0,"type":"PLANNER_RESPONSE"}\n', encoding='utf-8', newline='\n')
+        base = dict(conversationId='agy-nested', workspacePaths=[str(self.project)], lastUserInput='',
+                    transcriptPath=str(transcript))
+        start = config['SessionStart'][0]['command']
+        self.assertEqual(self.agy_run(start, dict(base, hookEventName='SessionStart')), {})
+        turn = config['PreInvocation'][0]['command']
+        self.assertEqual(self.agy_run(turn, dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                                 initialNumSteps=0)), {})
+        self.assertEqual(self.agy_run(turn, dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                                 initialNumSteps=1)), {})
+        stop = dict(base, hookEventName='Stop', fullyIdle=True, initialNumSteps=1, executionNum=0)
+        self.assertEqual(self.agy_run(config['Stop'][0]['command'], stop), {'decision': 'stop'})
+        self.assertEqual(self.queued(), [])
+        self.assertFalse((self.state / 'antigravity-sessions').exists())
+        # A human conversation is unaffected, and the filter opt-out restores the old behaviour.
+        self.assertIn('injectSteps', self.agy_run(start, dict(base, conversationId='agy-human',
+                                                              hookEventName='SessionStart', lastUserInput='hi')))
+        self.env['BEYIN_V3_FILTER_HARNESS_TURNS'] = '0'
+        self.assertIn('injectSteps', self.agy_run(start, dict(base, hookEventName='SessionStart')))
+
     def test_antigravity_post_tool_use_opens_the_receipt_window_and_stop_continues_once(self):
         # #903 (OzzWizard): PostToolUse under a matcher group answers {}; Stop asks once with
         # decision "continue" and honours continuationActive.

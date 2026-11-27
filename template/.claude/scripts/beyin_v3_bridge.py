@@ -1375,7 +1375,8 @@ def _main(argv=None):
         if not isinstance(payload, dict):
             raise ValueError('Invalid hook payload')
         if args.harness == 'antigravity':
-            from beyin_v3_hook import antigravity_tool_input, antigravity_session_marker, antigravity_continued_stop
+            from beyin_v3_hook import (antigravity_tool_input, antigravity_session_marker, antigravity_continued_stop,
+                                       _antigravity_nonhuman_start, _antigravity_nonhuman_turn)
             native = args.native_event or payload.get('hookEventName')
             if native == 'Stop':
                 quiet = '{"decision":"stop"}'
@@ -1384,16 +1385,19 @@ def _main(argv=None):
             marker = (antigravity_session_marker(state, json.dumps(['bridge', conversation, payload.get('workspacePaths')]))
                       if isinstance(conversation, str) and conversation else None)
             # Same boundaries as the vault adapter: the conversation's start, once (#903), and a
-            # fully idle Stop; a PostToolUse counts only for a successful file write.
+            # fully idle Stop; a PostToolUse counts only for a successful file write. A nested
+            # agent's start and turns (#885: no user input) stay silent here as they do there.
             if native == 'SessionStart':
-                first = True
+                first = not _antigravity_nonhuman_start(payload)
             elif native == 'PreInvocation':
-                first = payload.get('invocationNum') == 0 and not (marker is not None and marker.exists())
+                first = (payload.get('invocationNum') == 0 and not (marker is not None and marker.exists())
+                         and not _antigravity_nonhuman_turn(payload, native))
             elif native == 'PostToolUse':
                 payload['tool_input'] = antigravity_tool_input(payload)
                 first = payload['tool_input'] is not None
             else:
-                first = native == 'Stop' and payload.get('fullyIdle') is True
+                first = (native == 'Stop' and payload.get('fullyIdle') is True
+                         and not _antigravity_nonhuman_turn(payload, native))
             paths = payload.get('workspacePaths')
             # A vault among the workspaces runs its own local hooks; do not count the session twice.
             if (not first or not isinstance(paths, list) or not all(isinstance(p, str) and Path(p).is_absolute() for p in paths)
