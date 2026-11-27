@@ -224,6 +224,80 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
         self.assertGreater(outcomes['masked'], 0)
         self.assertGreater(outcomes['kept'], 0)
 
+    def test_unquoted_value_holding_a_separator_is_masked_whole(self):
+        # The unquoted branch stopped at the first backtick, comma or semicolon,
+        # reported a mask and left the tail of the value in the note.
+        store = runtime.MemoryStore(self.state, self.vault)
+        for text, expected in (
+                ("DB_PASSWORD=Xy7#kL9a`mN2$pQ4!", "[REDACTED]"),
+                ("export DB_PASSWORD=Xy7#kL9a``mN2$pQ4! ve devam", "export [REDACTED] ve devam"),
+                ("DB_PASSWORD=Xy7#kL9a,mN2$pQ4!", "[REDACTED]"),
+                ("API_KEY: Xy7#kL9a;mN2$pQ4!.", "[REDACTED]"),
+                ("- `OPENAI_API_KEY=Xy7#kL9a`mN2$pQ4!`", "- `[REDACTED]`"),
+                ("setx API_KEY `Xy7kL9am,N2pQ4zR8`", "[REDACTED]"),
+                ("setx API_KEY Xy7kL9am;N2pQ4zR8, sonra", "[REDACTED], sonra"),
+                ('password="Xy7#kL9a"mN2$pQ4!', "[REDACTED]"),
+                ("setx API_KEY 'Xy7kL9am'N2pQ4zR8", "[REDACTED]")):
+            with self.subTest(text=text):
+                result, count = redact(text, self.state)
+                self.assertEqual((result, count), (expected, 1))
+                for part in ('mN2$pQ4', 'N2pQ4zR8'):
+                    self.assertNotIn(part, result)
+                with self.assertRaises(ValueError):
+                    advisor._safe(store, {'statement': text})
+        # A separator run that a space, the end or trailing punctuation follows
+        # ends the value and stays outside, so inline code stays balanced.
+        for text, expected in (
+                (f"- `OPENAI_API_KEY={VALUE}`", "- `[REDACTED]`"),
+                (f"`API_KEY={VALUE}`, `TOKEN=x`", "`[REDACTED]`, `TOKEN=x`"),
+                (f"API_KEY={VALUE}; next", "[REDACTED]; next"),
+                (f'password="{VALUE}".', "[REDACTED]."),
+                (f"setx API_KEY {VALUE}, sonra", "[REDACTED], sonra")):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text, self.state), (expected, 1))
+
+    def test_unquoted_spans_are_masked_whole_or_left_as_written(self):
+        # Same class check as the backtick grid, for values no backtick opens:
+        # the prefixes, a value holding 0-3 backticks, commas or semicolons in a
+        # row, a wrapper (none, closing backticks, one backtick, quotes) and the
+        # text after it. Either the input is unchanged and Jev accepts it, or no
+        # 6-character piece of the value is left and Jev rejects it.
+        store = runtime.MemoryStore(self.state, self.vault)
+        values = (('Xy7#kL9a', 'mN2$pQ4!'), ('Xy7#k', 'L9amN2$pQ4!'),
+                  ('Xy7#kL9amN2', '$pQ4!z'), ('Xy7#\u200bkL9a', 'mN2$pQ4!'))
+        wrappers = (('', ''), ('', '`'), ('', '``'), ('', '```'), ('`', '`'), ('`', ''),
+                    ('"', '"'), ("'", "'"))
+        inners = [''.join(run) for size in range(4) for run in itertools.product('`,;', repeat=size)]
+        afters = ('', ' ve devam', '.', ', sonra', "'yi kullan", 'değerini',
+                  '\nsonraki satır', '\r\nsonraki satır', ' `kod` sonra')
+        failures, outcomes = [], {'masked': 0, 'kept': 0}
+        for prefix, (opening, closing), inner, (head, tail), after in itertools.product(
+                ('DB_PASSWORD=', 'export DB_PASSWORD=', 'API_KEY: ', 'setx API_KEY ',
+                 '- `OPENAI_API_KEY='), wrappers, inners, values, afters):
+            value = head + inner + tail
+            text = prefix + opening + value + closing + after
+            result, count = redact(text, self.state)
+            try:
+                advisor._safe(store, {'statement': text})
+                accepted = True
+            except ValueError:
+                accepted = False
+            if result == text:
+                outcomes['kept'] += 1
+                ok = count == 0 and accepted
+            else:
+                outcomes['masked'] += 1
+                pieces = {plain[i:i + 6] for plain in (value, value.replace('\u200b', ''))
+                          for i in range(len(plain) - 5)}
+                ok = (count >= 1 and '[REDACTED]' in result and not accepted
+                      and not any(piece in result for piece in pieces))
+            if not ok:
+                failures.append((text, result, count, accepted))
+        self.assertEqual(failures[:10], [])
+        self.assertEqual(sum(outcomes.values()), 5 * 8 * 40 * 4 * 9)
+        self.assertGreater(outcomes['masked'], 0)
+        self.assertGreater(outcomes['kept'], 0)
+
     def test_variable_name_in_backticks_after_a_secret_label_stays_text(self):
         # Docs name the variable that holds a credential; masking the name hid
         # nothing secret and made Jev's _safe skip every query that found the note.
