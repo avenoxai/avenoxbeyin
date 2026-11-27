@@ -249,6 +249,25 @@ class SnapshotTest(unittest.TestCase):
                 self.assertEqual((omitted, total), (last - first, 40))
                 self.assertNotIn('pinned_omitted', report)
 
+    def test_pin_marker_inside_fenced_code_pins_nothing(self):
+        # #890: rule_starts does not count a list item inside a fenced block as a rule; a
+        # marker shown there as an example does not pin the rule that carries the block.
+        text, count = rules_file(12000)
+        sample = '  ```markdown\n  - örnek <!-- beyin:pin -->\n  ```\n'
+        for fenced, pinned in ((True, False), (False, True)):
+            item = '- R0050 kural metni burada durur, kısa ve tek satır.\n'
+            extra = sample if fenced else '  Not satırı <!-- beyin:pin -->\n'
+            source = text.replace(item, item + extra)
+            with self.subTest(fenced=fenced):
+                self.assertEqual(companion._is_pinned(item + extra), pinned)
+                report = {}
+                shown = companion.clip(source, 1500, both=True, tail=True, rules_report=report)
+                first, last, omitted, total = map(int, MARKER.search(shown).groups())
+                self.assertTrue(first < 50 < last, (first, last))
+                self.assertEqual('- R0050 ' in shown, pinned)
+                self.assertEqual((omitted, total), (last - first + 1 - pinned, count))
+                self.assertNotIn('pinned_omitted', report)
+
     def test_pinned_rule_alone_in_the_cut_names_no_empty_rule_range(self):
         # When the only rule in the cut is a pinned one shown before the marker, only the
         # prose before the first rule was left out; "rules 1-1 (0 of 5)" would misreport it.

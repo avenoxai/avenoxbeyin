@@ -1008,7 +1008,7 @@ REASON = re.compile(r'(?:\n[ \t]*|[ \t]*)\*\*(?:neden|gerekçe|gerekce|why|reaso
 def _drop_reason(match):
     # A pin written after the reason (`... **neden:** ... <!-- beyin:pin -->`) stays with its
     # rule when the reason goes (#890).
-    return ' ' + PINNED_RULE.search(match[0])[0] if PINNED_RULE.search(match[0]) else ''
+    return ' ' + PINNED_RULE.search(match[0])[0] if _is_pinned(match[0]) else ''
 
 
 def without_reasons(text):
@@ -1104,6 +1104,24 @@ LATEST_RULES = '<!-- beyin:rules-order=latest -->'
 PINNED_RULE = re.compile(r'<!--\s*beyin:pin\s*-->', re.I)
 
 
+def _is_pinned(item):
+    """A <!-- beyin:pin --> outside fenced code (#890): a marker in an example block, as
+    rule_starts treats a list item there, pins nothing."""
+    if not PINNED_RULE.search(item):
+        return False
+    fence = None
+    for line in item.split('\n'):
+        match = FENCE.match(line)
+        if fence:
+            if match and match[1][0] == fence[0] and len(match[1]) >= len(fence):
+                fence = None
+        elif match:
+            fence = match[1]
+        elif PINNED_RULE.search(line):
+            return True
+    return False
+
+
 def _pinned(items, room):
     """Pinned items (#890) in source order, as many as fit in half the rule room.
 
@@ -1111,7 +1129,7 @@ def _pinned(items, room):
     clip like any other rule and the report counts them as pinned_omitted."""
     chosen, used = [], 0
     for i, item in enumerate(items):
-        if PINNED_RULE.search(item) and used + len(item) <= max(0, room) // 2:
+        if _is_pinned(item) and used + len(item) <= max(0, room) // 2:
             chosen.append(i)
             used += len(item)
     return chosen
@@ -1128,7 +1146,7 @@ def _rule_gap(head, tail, first, last, total, report, items=(), shown=()):
             report.pop('omitted_rules', None)
             report.pop('pinned_omitted', None)
         return head + CLIP_MARKER + ''.join(items[i] for i in shown) + tail
-    pinned_omitted = sum(1 for i in range(first - 1, last) if i not in shown and PINNED_RULE.search(items[i])) if items else 0
+    pinned_omitted = sum(1 for i in range(first - 1, last) if i not in shown and _is_pinned(items[i])) if items else 0
     if report is not None:
         report['omitted_rules'] = {'first': first, 'last': last, 'count': count, 'total': total}
         if pinned_omitted:
