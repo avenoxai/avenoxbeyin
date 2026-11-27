@@ -436,15 +436,15 @@ def _bridge_cli(command):
 
 
 def _shell_edit(payload, vault, state, harness):
-    """A Bash edit of this turn as {'at', 'knowledge'}, or None; Claude Code transcripts only.
+    """A shell edit of this turn as {'at', 'knowledge'}, or None; Claude Code and Antigravity transcripts.
 
     Codex PostToolUse and Stop inputs carry no comparable verified record of shell calls, so
     Codex keeps the editor-only window.
     """
-    if harness != "claude" or vault is None:
+    if harness not in ("claude", "antigravity") or vault is None:
         return None
     from beyin_v3_shell_edits import shell_edit
-    return shell_edit(payload, vault, state)
+    return shell_edit(payload, vault, state, harness=harness)
 
 
 def _queue_observed_edit(vault, state, payload, harness, observed, at=None):
@@ -498,7 +498,7 @@ def receipt_reminder(payload, state, harness, event, vault=None, bridge_cli=None
     Installed PostToolUse hooks match Edit|Write|apply_patch|MultiEdit|NotebookEdit for Claude and
     Codex. Known vault-external edits do not mark the session; unknown/pathless
     events retain the legacy reminder behavior without reading transcripts.
-    Without such an edit, a Claude Stop reads the bounded tail of its own transcript once:
+    Without such an edit, a Claude or Antigravity Stop reads the bounded tail of its own transcript once:
     a vault Markdown file named by a shell command of this turn and modified while that
     command ran opens the same window (#212, beyin_v3_shell_edits). A note or task written
     with beyin.py through the Bash tool opens the window itself; its flag reaches coverage here.

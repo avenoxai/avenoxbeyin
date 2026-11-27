@@ -1,4 +1,4 @@
-"""Vault Markdown edits made through the Claude Code shell tool, seen at Stop (#212).
+"""Vault Markdown edits made through the Claude Code or Antigravity shell tool, seen at Stop (#212).
 
 PostToolUse hooks match only file-editing tools, so `sed -i`, a heredoc or an inline Python
 write left the receipt reminder silent. Matching Bash itself would start a hook process for
@@ -67,18 +67,32 @@ def _stamp(value):
 
 def _tail(raw):
     """The complete lines in the last TAIL_BYTES of a regular, non-link .jsonl file."""
-    if not isinstance(raw, str) or not raw.strip() or '\0' in raw:
+    if not isinstance(raw, str) or not raw.strip() or '\0' in raw or raw.startswith(('\\\\', '//')):
         return None
     path = Path(raw)
-    if not path.is_absolute() or path.suffix.lower() != '.jsonl' or path.is_symlink():
+    if not path.is_absolute() or path.suffix.lower() != '.jsonl' or path.drive.startswith(('\\', '//')):
         return None
-    with path.open('rb') as handle:
-        info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode):
+    try:
+        info = path.lstat()
+        reparse = getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)
+        if not stat.S_ISREG(info.st_mode) or (getattr(info, 'st_file_attributes', 0) & reparse):
             return None
-        start = max(0, info.st_size - TAIL_BYTES)
-        handle.seek(start)
-        data = handle.read(TAIL_BYTES)
+        flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+        fd = os.open(path, flags)
+        try:
+            handle = os.fdopen(fd, 'rb')
+        except BaseException:
+            os.close(fd)
+            raise
+        with handle:
+            opened = os.fstat(handle.fileno())
+            if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(info, opened):
+                return None
+            start = max(0, opened.st_size - TAIL_BYTES)
+            handle.seek(start)
+            data = handle.read(TAIL_BYTES)
+    except (OSError, ValueError):
+        return None
     lines = data.split(b'\n')
     return lines[1:] if start else lines  # the first line of a cut tail is partial
 
@@ -169,6 +183,62 @@ def turn_commands(lines):
     return found
 
 
+def antigravity_turn_commands(lines, *, powershell=None):
+    """[(issued, finished, command, None, powershell)] of the current Antigravity turn, oldest first.
+
+    Read backward from the end to the current turn's USER_INPUT or CHECKPOINT compaction boundary.
+    Reads only step-level metadata (type, created_at, tool_calls[].name, tool_calls[].args.CommandLine),
+    never untrusted GENERIC content. A run_command without a valid subsequent timestamp
+    (finished >= issued) in the tail is omitted.
+    """
+    is_powershell = (os.name == 'nt') if powershell is None else bool(powershell)
+    calls = []
+    next_planner = None
+    latest_after = None
+    for index in range(len(lines) - 1, -1, -1):
+        line = lines[index]
+        if not line or not line.strip():
+            continue
+        if next_planner is not None:
+            if isinstance(line, bytes):
+                if b'PLANNER_RESPONSE' not in line and b'USER_INPUT' not in line and b'CHECKPOINT' not in line:
+                    continue
+            elif isinstance(line, str):
+                if 'PLANNER_RESPONSE' not in line and 'USER_INPUT' not in line and 'CHECKPOINT' not in line:
+                    continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        step_type = row.get('type')
+        if step_type in ('USER_INPUT', 'CHECKPOINT'):
+            break
+        moment = _stamp(row.get('created_at'))
+        if step_type == 'PLANNER_RESPONSE':
+            finished = next_planner if next_planner is not None else latest_after
+            tool_calls = row.get('tool_calls')
+            if moment is not None and finished is not None and finished >= moment and isinstance(tool_calls, list):
+                for call in reversed(tool_calls):
+                    if not isinstance(call, dict) or call.get('name') != 'run_command':
+                        continue
+                    args = call.get('args')
+                    command = args.get('CommandLine') if isinstance(args, dict) else None
+                    if isinstance(command, str) and command.strip():
+                        calls.append((moment, finished, command[:MAX_COMMAND_CHARS], None, is_powershell))
+                        if len(calls) >= MAX_COMMANDS:
+                            break
+            if moment is not None:
+                next_planner = moment
+            if len(calls) >= MAX_COMMANDS:
+                break
+        if moment is not None and (latest_after is None or moment > latest_after):
+            latest_after = moment
+    calls.reverse()
+    return calls
+
+
 def markdown_tokens(command, powershell=False):
     """Path-like `.md` words of a command: quoted strings first, then the unquoted words.
 
@@ -211,6 +281,8 @@ class _Probe:
     def relative(self, path):
         """The vault-relative Markdown source this path names, or None (outside, link, dot folder)."""
         try:
+            if path.drive.startswith(('\\', '//')) and not self.root.drive.startswith(('\\', '//')):
+                return None
             if path.is_symlink():
                 return None
             resolved = path.resolve()
@@ -295,6 +367,8 @@ class _Probe:
 
     def relative_dir(self, path):
         try:
+            if path.drive.startswith(('\\', '//')) and not self.root.drive.startswith(('\\', '//')):
+                return None
             if path.is_symlink():
                 return None
             key = self._key(path.resolve())
@@ -320,24 +394,40 @@ def _paths(token, bases, powershell=False):
                 yield base / path
 
 
-def shell_edit(payload, vault, state=None):
+def shell_edit(payload, vault, state=None, *, harness='claude'):
     """{'at': stamp, 'knowledge': bool} for the first shell command of this turn that changed a
     vault Markdown file it names, or None. `at` is the command's own call stamp."""
     try:
-        lines = _tail(payload.get('transcript_path'))
-        if not lines:
+        if harness == 'claude':
+            lines = _tail(payload.get('transcript_path'))
+            commands = turn_commands(lines) if lines else []
+        elif harness == 'antigravity':
+            lines = _tail(payload.get('transcriptPath'))
+            commands = antigravity_turn_commands(lines) if lines else []
+        else:
             return None
-        commands = turn_commands(lines)
         if not commands:
             return None
         probe = _Probe(vault, state)
         cwd = payload.get('cwd')
+        workspaces = payload.get('workspacePaths') if harness == 'antigravity' else None
+        workspace_bases = ([item for item in workspaces[:16]
+                            if isinstance(item, str) and item.strip() and '\0' not in item
+                            and not item.startswith(('\\\\', '//'))]
+                           if isinstance(workspaces, (list, tuple)) else [])
         first, knowledge = None, False
         for moment, done, command, record_cwd, powershell in commands:
             bases = []
-            for base in (record_cwd, cwd, str(probe.root)):
-                if isinstance(base, str) and base.strip() and Path(base).is_absolute() and Path(base) not in bases:
-                    bases.append(Path(base))
+            for base in (record_cwd, cwd, *workspace_bases, str(probe.root)):
+                if not isinstance(base, str) or not base.strip() or '\0' in base:
+                    continue
+                if base != str(probe.root) and base.startswith(('\\\\', '//')):
+                    continue
+                candidate = Path(base)
+                if (candidate.is_absolute()
+                        and (base == str(probe.root) or not candidate.drive.startswith(('\\', '//')))
+                        and candidate not in bases):
+                    bases.append(candidate)
             limit = len(bases) + MAX_DIRS
             for match in _CHANGE_DIR.finditer(command):
                 folder = match.group(1).strip('\'"')
