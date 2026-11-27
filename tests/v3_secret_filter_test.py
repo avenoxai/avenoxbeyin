@@ -416,7 +416,9 @@ class SecretFilterTest(unittest.TestCase):
                      'password: "' + 'a' * 20000, 'password: "a' * 2000,
                      'password=' + ' ' * 100000 + '"' + 'A' * 7,
                      'password=' + '`' * 100000, 'password=`' + 'a' * 100000 + ' x',
-                     'password=`' * 20000, 'password=' + '`a' * 50000):
+                     'password=`' * 20000, 'password=' + '`a' * 50000,
+                     'password=`' + 'A_' * 100000 + 'A`', 'password=' + '`' * 100000 + 'A_B',
+                     'password:\n```javascript\n' * 20000):
             with self.subTest(text=text[:12], length=len(text)):
                 started = time.monotonic()
                 redact(text, self.state)

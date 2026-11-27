@@ -124,6 +124,25 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
         # A closed triple-backtick value is still masked whole.
         self.assertEqual(redact(f"API_KEY=```{VALUE}```", self.state), ("[REDACTED]``", 1))
 
+    def test_variable_name_in_backticks_after_a_secret_label_stays_text(self):
+        # Docs name the variable that holds a credential; masking the name hid
+        # nothing secret and made Jev's _safe skip every query that found the note.
+        store = runtime.MemoryStore(self.state, self.vault)
+        for text in ("API key: `OPENAI_API_KEY` ortam değişkeninden okunur.",
+                     "Token: `GITHUB_TOKEN` kullan", "password: `DB_PASSWORD` alanına yaz",
+                     "Token:\n`GITHUB_TOKEN`", "Token: ``GITHUB_TOKEN``",
+                     "Kurulum: Token: `GITHUB_TOKEN` ortam değişkenini ayarla."):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text, self.state), (text, 0))
+                advisor._safe(store, {'statement': text})
+        # Mixed case, lower case, no underscore or an unclosed span is still a value.
+        for text, expected in ((f"API_KEY=`{VALUE.upper()}`", "[REDACTED]"),
+                               ("API_KEY=`Abcd1234_EFGH5678`", "[REDACTED]"),
+                               ("API_KEY=`abcd1234_efgh5678`", "[REDACTED]"),
+                               ("TOKEN=`GITHUB_TOKEN_VALUE", "[REDACTED]")):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text, self.state), (expected, 1))
+
     def test_pem_body_is_masked_without_trailer_and_does_not_swallow_prose(self):
         begin = "-----BEGIN PRIVATE KEY-----"
         body = "QUJD" * 16  # Synthetic base64, no private key.
