@@ -334,9 +334,10 @@ dosyalarında aynı çalışır. Sabitlenenler kural payının en fazla yarısı
 (dosyadaki sırayla, sığanlar); sığmayan işaretli maddeler normal kırpılır ve
 `doctor` bunları `pinned_omitted` alanında ve `--human` çıktısında bildirir.
 
-`doctor`, proje klasörlerindeki (`projects/`, `Projects/`, `Projeler/`, `projeler/` ve
-`🏰 300-Projects/` altındaki `<proje>/Kurallar.md`, ayrıca proje kapsamı eşlemeleri; klasör
-adı kasadaki yazımıyla okunur) kural dosyalarını da aynı referans açılışla ölçer ve yalnız
+`doctor`, proje klasörlerindeki (`projects/`, `Projects/`, `Projeler/`, `projeler/`,
+`🏰 300-Projects/`, `300-Projects/` ve adı `-projects`, `-projeler`, `_projects` ya da
+`_projeler` ile biten kök klasörler altındaki `<proje>/Kurallar.md`, ayrıca proje kapsamı
+eşlemeleri; klasör adı kasadaki yazımıyla okunur) kural dosyalarını da aynı referans açılışla ölçer ve yalnız
 kırpılan ya da `sync` sonrası değişmiş (`stale`) olanları
 `companion_rules_opening.project_rules` altında listeler. Gizli (`visibility: private`),
 güvenilmeyen ya da dışlanan klasördeki proje kuralları listelenmez; tanı salt okunurdur
