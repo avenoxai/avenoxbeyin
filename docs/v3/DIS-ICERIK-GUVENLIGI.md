@@ -186,7 +186,7 @@ normal bir terminalden çalıştır.
 Claude Code'un sandbox'ı Windows'ta doğrudan çalışmaz; komutlar sandbox'sız çalışır.
 Sandbox için Claude Code'u WSL2 (Windows içinde çalışan Linux) içinde kullanmak gerekir;
 WSL1 desteklenmez. Beyin'in Windows kurulumu ise doğrudan Windows içindir
-([SETUP-WINDOWS.md](../../SETUP-WINDOWS.md)). Aynı kasayı hem Windows'tan hem WSL2'den
+([SETUP-V3.md](../../SETUP-V3.md)). Aynı kasayı hem Windows'tan hem WSL2'den
 kullanan bir düzeni denemedik ve önermiyoruz.
 
 Windows'ta pratik yol: 1. adımdaki `ask` kuralı, 2. adımdaki `Kurallar.md` maddesi ve
