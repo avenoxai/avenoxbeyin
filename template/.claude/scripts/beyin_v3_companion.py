@@ -1,5 +1,6 @@
 """User-owned companion bootstrap and compact, source-verified session context."""
 import bisect
+import copy
 from datetime import datetime
 import hashlib
 import json
@@ -1005,8 +1006,14 @@ REASON = re.compile(r'(?:\n[ \t]*|[ \t]*)\*\*(?:neden|gerekçe|gerekce|why|reaso
                     r'.*?(?=\n[ \t]*(?:[-*+][ \t]|\d+[.)][ \t]|#)|\n[ \t]*\n|\n?\Z)', re.S | re.I)
 
 
+def _drop_reason(match):
+    # A pin written after the reason (`... **neden:** ... <!-- beyin:pin -->`) stays with its
+    # rule when the reason goes (#890).
+    return ' ' + PINNED_RULE.search(match[0])[0] if _is_pinned(match[0]) else ''
+
+
 def without_reasons(text):
-    stripped, count = REASON.subn('', text)
+    stripped, count = REASON.subn(_drop_reason, text)
     if not count:
         return text
     return stripped.rstrip('\n') + f'\n[{count} rule reasons (**neden:**) omitted to fit the opening; read source]\n'
@@ -1095,12 +1102,61 @@ def rule_starts(text):
 
 
 LATEST_RULES = '<!-- beyin:rules-order=latest -->'
+PINNED_RULE = re.compile(r'<!--\s*beyin:pin\s*-->', re.I)
 
 
-def _rule_gap(head, tail, first, last, total, report):
-    count = last - first + 1
+def _is_pinned(item):
+    """A <!-- beyin:pin --> outside fenced code (#890): a marker in an example block, as
+    rule_starts treats a list item there, pins nothing."""
+    if not PINNED_RULE.search(item):
+        return False
+    fence = None
+    for line in item.split('\n'):
+        match = FENCE.match(line)
+        if fence:
+            if match and match[1][0] == fence[0] and len(match[1]) >= len(fence):
+                fence = None
+        elif match:
+            fence = match[1]
+        elif PINNED_RULE.search(line):
+            return True
+    return False
+
+
+def _pinned(items, room):
+    """Pinned items (#890) in source order, as many as fit in half the rule room.
+
+    The cap keeps pinning from bringing back the clipping it works around: pins past it
+    clip like any other rule and the report counts them as pinned_omitted."""
+    chosen, used = [], 0
+    for i, item in enumerate(items):
+        if _is_pinned(item) and used + len(item) <= max(0, room) // 2:
+            chosen.append(i)
+            used += len(item)
+    return chosen
+
+
+def _rule_gap(head, tail, first, last, total, report, items=(), shown=()):
+    """head, the pinned items shown from first-last, the marker, tail. The marker and the
+    report count only the rules really left out of that range. When those pins are the whole
+    range, only the prose before the first rule was left out: the plain marker stands where
+    that prose was, before the pins."""
+    count = last - first + 1 - len(shown)
+    if not count:
+        # Every rule of the range is a pinned one shown here: only the prose before the
+        # first rule was left out, so name no rule range.
+        if report is not None:
+            report.pop('omitted_rules', None)
+            report.pop('pinned_omitted', None)
+        return head + CLIP_MARKER + ''.join(items[i] for i in shown) + tail
+    pinned_omitted = sum(1 for i in range(first - 1, last) if i not in shown and _is_pinned(items[i])) if items else 0
     if report is not None:
         report['omitted_rules'] = {'first': first, 'last': last, 'count': count, 'total': total}
+        if pinned_omitted:
+            report['pinned_omitted'] = pinned_omitted
+        else:
+            report.pop('pinned_omitted', None)
+    head += ''.join(items[i] for i in shown)
     return head + f'\n[truncated: rules {first}-{last} ({count} of {total}) omitted here; read source]\n' + tail
 
 
@@ -1110,6 +1166,9 @@ def ends(text, budget, *, rules_report=None):
     The first marker is sized with the widest form the final one can take, so the
     final one, naming only what was really dropped, can never be longer and the
     result stays inside budget. Text with no list items keeps the character count.
+    Rules marked <!-- beyin:pin --> take up to half the room first (#890); a pinned
+    rule from the omitted range is shown just before the marker (after it when only the
+    prose before the first rule was left out).
     """
     if len(text) <= budget:
         return text
@@ -1120,16 +1179,22 @@ def ends(text, budget, *, rules_report=None):
         widest = f'\n[truncated: rules {total}-{total} ({total} of {total}) omitted here; read source]\n'
         gap = max(gap, widest, key=len)
     keep = budget - len(gap)
+    items = [text[rules[i]:rules[i + 1] if i + 1 < total else len(text)] for i in range(total)]
     if total and text.startswith(LATEST_RULES + '\n'):
         if keep < 0:
             return CLIP_MARKER.strip()[:budget]
-        # Keep complete items from the source's end within its existing allocation.
-        first_kept = next((i for i, offset in enumerate(rules) if len(text) - offset <= keep), total)
+        pins = _pinned(items, keep)
+        # Room the pins before item i take; complete items from the source's end use the rest.
+        before = [0] * (total + 1)
+        for i in range(total):
+            before[i + 1] = before[i] + (len(items[i]) if i in pins else 0)
+        first_kept = next((i for i, offset in enumerate(rules) if len(text) - offset + before[i] <= keep), total)
         tail = text[rules[first_kept]:] if first_kept < total else ''
         if first_kept == 0:
             # Only prose before the first item was omitted.
             return '\n[truncated: read source]\n' + tail
-        return _rule_gap('', tail, 1, first_kept, total, rules_report)
+        return _rule_gap('', tail, 1, first_kept, total, rules_report, items,
+                         [p for p in pins if p < first_kept])
     if keep < 80:
         return None
     if not total:
@@ -1155,11 +1220,18 @@ def ends(text, budget, *, rules_report=None):
         return head + f'\n[truncated: {what} omitted here; read source]\n' + closing
 
     # Cut on rule boundaries so multi-line rules are never split in half (#535);
-    # the closing part also takes whatever the opening gave back.
-    target = keep - keep // 2
+    # the closing part also takes whatever the opening gave back. Pinned rules (#890)
+    # reserve their room first; a pin that lands in head or closing gives it back.
+    pins = _pinned(items, keep)
+    room = keep - sum(len(items[p]) for p in pins)
+
+    def pinned_gap(k, j):
+        return sum(len(items[p]) for p in pins if k <= p < j)
+
+    target = room - room // 2
     k = sum(r <= target for r in rules[1:]) if rules[0] <= target else 0
-    head = text[:rules[k]] if (k > 0 or rules[0] <= keep) else ''
-    rem = keep - len(head)
+    head = text[:rules[k]] if (k > 0 or rules[0] <= room) else ''
+    rem = room - len(head)
     j = total
     for candidate in range(k + 1, total):
         if len(text) - rules[candidate] <= rem:
@@ -1174,18 +1246,18 @@ def ends(text, budget, *, rules_report=None):
         grown = False
         if j - 1 > k:
             cand_len = len(text) - rules[j - 1]
-            if len(head) + cand_len <= keep:
+            if len(head) + cand_len + pinned_gap(k, j - 1) <= keep:
                 j -= 1
                 closing = text[rules[j]:]
                 grown = True
         if k + 1 < j:
             cand_len = rules[k + 1]
-            if cand_len + len(closing) <= keep:
+            if cand_len + len(closing) + pinned_gap(k + 1, j) <= keep:
                 k += 1
                 head = text[:rules[k]]
                 grown = True
 
-    return _rule_gap(head, closing, k + 1, j, total, rules_report)
+    return _rule_gap(head, closing, k + 1, j, total, rules_report, items, [p for p in pins if k <= p < j])
 
 
 CLIP_MARKER = '\n[truncated: read source]\n'
@@ -1832,17 +1904,23 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
                         parts = parts[:i] + [(label, view, name)] + parts[i + 1:]
                         lengths = share(available, parts, protect=True)
         h = header if header_text is None else header_text
-        rendered, rules = h + notice, None
+        rendered, rules, project_rules = h + notice, None, []
         for i, (label, body, name) in enumerate(parts):
             rules_report = None
-            if name == 'Kurallar.md' and i < len(records):  # project rule files come after the records
-                rules = {'chars': len(sections[i][1]), 'share': lengths[i], 'clipped': lengths[i] < len(body),
+            if name == 'Kurallar.md':
+                entry = {'chars': len(sections[i][1]), 'share': lengths[i], 'clipped': lengths[i] < len(body),
                          'reasons_omitted': body != sections[i][1]}
-                rules_report = rules
+                if i < len(records):  # project rule files come after the records
+                    rules = entry
+                    rules_report = rules
+                else:
+                    entry['source'] = label.strip().strip('[]').strip()
+                    project_rules.append(entry)
+                    rules_report = entry
             rendered += label + (thread_view(body, lengths[i], brief) if name == 'Threads.md' else
                                  clip(body, lengths[i], both=name == 'Kurallar.md', rules_report=rules_report,
                                       tail=name == 'Kurallar.md' or (name == 'Journal.md' and not re.search(r'(?m)^## ', body))))
-        return rendered, rules
+        return rendered, rules, project_rules
 
     needed = sum(len(body) for _, body, _ in sections)
     # Reserve the protected core before maps, receipts or retrieval. If even this core
@@ -1855,7 +1933,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         core_size = budget
     available = max(0, max(int(budget * .83), core_size if core_size <= budget else 0) - fixed)
     companion_clipped = needed > available
-    text, rules = companion(available)
+    text, rules, project_rules = companion(available)
     extra = ''
     related_records = []
     index = knowledge_map(store)
@@ -1928,9 +2006,9 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         extra += clip(receipt, budget - len(text) - len(extra))
     # Retrieval takes its share first; every character it did not use goes back to the
     # clipped companion sources instead of being dropped.
-    regained, regained_rules = companion(budget - fixed - len(extra))
+    regained, regained_rules, regained_project_rules = companion(budget - fixed - len(extra))
     if len(text) < len(regained) <= budget - len(extra):
-        text, rules = regained, regained_rules
+        text, rules, project_rules = regained, regained_rules, regained_project_rules
     if rules and rules.get('clipped'):
         # Reserve the longest possible numeric share before allocating. Reclaiming
         # its spare digits can oscillate (999 -> 1000 -> 999), so keep this small
@@ -1944,8 +2022,14 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         if new_fixed > budget:
             final_rules = dict(rules, share=0)
             final_rules.pop('omitted_rules', None)
+            final_rules.pop('pinned_omitted', None)
             if report is not None:
                 report['Kurallar.md'] = final_rules
+                if project_rules:
+                    report['project_rules'] = [
+                        {k: v for k, v in dict(item, share=0).items() if k not in ('omitted_rules', 'pinned_omitted')}
+                        for item in project_rules
+                    ]
             full_header = hygiene_line + hygiene_notice(None, rules=final_rules) + header_tail
             return clip(full_header + notice + 'Read companion files: ' + ', '.join(r['source'] for r in records), budget)
         # Optional retrieval/receipt text was chosen before adding the rules notice.
@@ -1954,13 +2038,15 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         if new_fixed + len(extra) > budget:
             extra = ''
         allocation = budget - new_fixed - len(extra)
-        _, final_rules = companion(allocation, header_text=reserved_header)
+        _, final_rules, _ = companion(allocation, header_text=reserved_header)
         full_header = hygiene_line + hygiene_notice(None, rules=final_rules) + header_tail
-        text, final_rules = companion(allocation, header_text=full_header)
+        text, final_rules, project_rules = companion(allocation, header_text=full_header)
         if report is not None and final_rules:
             report['Kurallar.md'] = final_rules
     elif report is not None and rules:
         report['Kurallar.md'] = rules
+    if report is not None and project_rules:
+        report['project_rules'] = project_rules
     if report is not None and extra:
         report['related_records'] = related_records
     return text + extra
@@ -1988,3 +2074,159 @@ def rules_opening(store, budget, receipt=''):
         if snapshot['stale_excluded']:
             return {'stale': True}
     return None
+
+
+def _project_rule_candidates(vault, state=None, max_projects=50, report=None):
+    """Discover non-symlink project rule files within vault boundaries for doctor diagnostics.
+
+    The first max_projects found are returned; report, a dict, receives how many there are."""
+    vault = Path(vault).resolve()
+    excluded_keys = frozenset()
+    if state is not None:
+        try:
+            from beyin_v3_index import exclusions
+            excluded_keys, _ = exclusions(state, vault)
+        except Exception:
+            excluded_keys = frozenset()
+    from beyin_v3 import _path_redirected
+    from beyin_v3_hygiene import sensitive_source
+    from beyin_v3_index import dir_key
+    from beyin_v3_projects import candidate_project_folders, read_project_scopes, _scope_key
+
+    raw_dirs = []
+    try:
+        scopes = read_project_scopes(vault)
+        if scopes and scopes.get('folders'):
+            for f_key, proj_name in scopes['folders']:
+                d = project_rule_directory(vault, f_key)
+                if d is not None:
+                    raw_dirs.append((proj_name, d))
+    except Exception:
+        pass
+    seen_parents = set()
+    # Take the parent spellings from the vault itself: on a case-insensitive file system
+    # `vault / 'projects'` opens `Projects/`, and the label SessionStart reports, the real
+    # spelling, would then never match the one built here.
+    try:
+        entries = sorted(entry.name for entry in vault.iterdir())
+    except OSError:
+        entries = []
+    parent_names = list(dict.fromkeys(
+        name for wanted in ['projects', 'Projeler', 'projeler', *candidate_project_folders(vault)]
+        for name in entries if _scope_key(name) == _scope_key(wanted)))
+    for parent_name in parent_names:
+        parent = vault / parent_name
+        try:
+            if parent.is_symlink() or not parent.is_dir():
+                continue
+            resolved_parent = parent.resolve()
+            if not resolved_parent.is_relative_to(vault):
+                continue
+            identity = (resolved_parent.stat().st_dev, resolved_parent.stat().st_ino)
+            if identity in seen_parents:
+                continue
+            seen_parents.add(identity)
+            for entry in sorted(parent.iterdir()):
+                if entry.is_dir() and not entry.is_symlink():
+                    raw_dirs.append((entry.name, entry))
+        except OSError:
+            continue
+
+    found = []
+    seen = set()
+    for proj_name, cand_dir in raw_dirs:
+        try:
+            resolved_dir = cand_dir.resolve()
+            if not resolved_dir.is_relative_to(vault):
+                continue
+            rel_parts = resolved_dir.relative_to(vault).parts
+            key_parts = tuple(dir_key(p) for p in rel_parts)
+            if any(dir_key(p) in excluded_keys for p in rel_parts) or key_parts in excluded_keys:
+                continue
+            p_rel = resolved_dir.relative_to(vault).as_posix()
+            dedupe_key = (_scope_key(proj_name), dir_key(p_rel))
+            if dedupe_key in seen:
+                continue
+            for p_name in ('Kurallar.md', '.rules.md', 'rules.md'):
+                lexical = cand_dir / p_name
+                if any(_path_redirected(part) for part in (lexical, *lexical.parents)
+                       if part != vault and part.is_relative_to(vault)):
+                    continue
+                candidate = lexical.resolve()
+                if not candidate.is_relative_to(vault) or candidate.is_symlink() or not candidate.is_file():
+                    continue
+                rel_source = f'{p_rel}/{p_name}'
+                if sensitive_source(rel_source):
+                    continue
+                seen.add(dedupe_key)
+                found.append((proj_name, p_rel, p_name))
+                break
+        except (ValueError, OSError):
+            continue
+    if report is not None:
+        report['total'] = len(found)
+    found = found[:max_projects]
+    found.sort(key=lambda item: (_scope_key(item[0]), item[1]))
+    return found
+
+
+class _SharedOpeningStore:
+    """The read-only store doctor's per-project openings share (#893).
+
+    Each opening is SessionStart's own context(); its unqueried retrieval and knowledge map
+    do not depend on the project whose rules are measured, so each distinct call is read once
+    for all projects and handed out as a copy. Reads with a text transform (the rule files,
+    person notes) pass straight through."""
+
+    def __init__(self, store):
+        self._store = store
+        self._read = {}
+
+    def __getattr__(self, name):
+        return getattr(self._store, name)
+
+    def _once(self, name, key, call):
+        key = (name, key)
+        if key not in self._read:
+            self._read[key] = call()
+        return copy.deepcopy(self._read[key])
+
+    def snapshot_context(self, **kwargs):
+        return self._once('snapshot_context', tuple(sorted(kwargs.items())),
+                          lambda: self._store.snapshot_context(**kwargs))
+
+    def due_tasks_context(self, **kwargs):
+        return self._once('due_tasks_context', tuple(sorted(kwargs.items())),
+                          lambda: self._store.due_tasks_context(**kwargs))
+
+    def source_snapshot(self, source_names, **kwargs):
+        if kwargs.get('text_transform') is not None:
+            return self._store.source_snapshot(source_names, **kwargs)
+        return self._once('source_snapshot', (tuple(source_names), tuple(sorted(kwargs.items()))),
+                          lambda: self._store.source_snapshot(source_names, **kwargs))
+
+
+def project_rules_opening(store, budget, receipt='', max_projects=50, report=None):
+    """Read-only: detect project Kurallar.md files that clip or are stale at SessionStart.
+
+    Only the first max_projects rule files are measured; report, a dict, receives how many
+    there are (total) and how many were measured (checked), so a cut is never silent."""
+    results = []
+    store = _SharedOpeningStore(store)
+    counted = {}
+    candidates = _project_rule_candidates(store.vault_root, store.state_dir, max_projects=max_projects, report=counted)
+    if report is not None:
+        report.update(checked=len(candidates), total=counted['total'])
+    for project_name, p_rel, p_name in candidates:
+        source = f'{p_rel}/{p_name}'
+        report = {}
+        context(store, budget, '0' * 24, 'claude', receipt=receipt, rules_project=project_name, report=report)
+        matched = [item for item in (report.get('project_rules') or []) if item.get('source') == source]
+        if matched:
+            if matched[0].get('clipped'):
+                results.append(dict(matched[0], project=project_name, status='clipped'))
+            continue
+        snapshot = store.source_snapshot([p_name], budget_chars=0, source_directory=p_rel)
+        if snapshot['stale_excluded']:
+            results.append({'project': project_name, 'source': source, 'status': 'stale'})
+    return results

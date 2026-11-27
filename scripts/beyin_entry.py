@@ -206,6 +206,13 @@ def rewrite_note(entry):
     return '; dosyayi sinir icinde yeniden yaz.'
 
 
+def pinned_overflow(count, source=None):
+    """Doctor line for <!-- beyin:pin --> rules past their cap of half the rule room (#890)."""
+    where = f' ({source})' if source else ''
+    return (f'Sabitlenmis (beyin:pin) {count} kural acilis payina sigmiyor{where} (bilgi): sabitlenenler '
+            'kural payinin en fazla yarisini kullanir. Isareti en onemli birkac maddeye indir.')
+
+
 def human_result(result, command, installed_version=None):
     status = result.get('status', '')
     if command == 'scheduled-check' and 'status' in result:
@@ -575,6 +582,31 @@ def human_result(result, command, installed_version=None):
             if omitted:
                 lines.append(f'Gosterilmeyen kural siralari {omitted["first"]}-{omitted["last"]} '
                              f'({omitted["count"]}/{omitted["total"]}).')
+            if rules_opening.get('pinned_omitted'):
+                lines.append(pinned_overflow(rules_opening['pinned_omitted']))
+        for proj in rules_opening.get('project_rules') or []:
+            source = plain_text(proj.get('source') or proj.get('project') or 'Kurallar.md')
+            if proj.get('status') == 'stale':
+                lines.append('Proje Kurallar.md kaynak dogrulamasi guncel degil (bilgi): ' + source +
+                             '; acilis olcumu icin beyin.py sync calistir.')
+            elif proj.get('status') == 'clipped':
+                lines.append('Proje Kurallar.md acilista kirpiliyor (bilgi): ' + source + ' ' +
+                             str(proj['chars']) + ' karakter; Claude Code proje acilisi bu ayarlarla (' +
+                             str(rules_opening.get('budget')) + ' karakter) en fazla ' + str(proj['share']) +
+                             ' karakterini tam gosterir' +
+                             (' (gerekceler de cikarildi)' if proj.get('reasons_omitted') else '') +
+                             '. Kurallari kisa tut; eski/uzun ayrintiyi arsiv veya detay notuna tasi.')
+                p_omitted = proj.get('omitted_rules')
+                if p_omitted:
+                    lines.append(f'Gosterilmeyen proje kural siralari ({source}) '
+                                 f'{p_omitted["first"]}-{p_omitted["last"]} '
+                                 f'({p_omitted["count"]}/{p_omitted["total"]}).')
+                if proj.get('pinned_omitted'):
+                    lines.append(pinned_overflow(proj['pinned_omitted'], source))
+        checked, total = rules_opening.get('project_rules_checked'), rules_opening.get('project_rules_total')
+        if isinstance(checked, int) and isinstance(total, int) and checked < total:
+            lines.append(f'Proje Kurallar.md olcumu ilk {checked} dosyayla sinirli (bilgi): {total} dosyanin '
+                         f'{total - checked} tanesi olculmedi.')
         references = result.get('instruction_references') or {}
         if references.get('status') == 'unavailable':
             lines.append('Talimat ve skill baglanti denetimi tamamlanamadi (bilgi): ' +
