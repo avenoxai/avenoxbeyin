@@ -23,8 +23,8 @@ EDIT_EVENT = 'PostToolUse'
 EDIT_MATCHER = 'Edit|Write|apply_patch|MultiEdit|NotebookEdit'
 # Antigravity has no SessionEnd/PreCompact; its conversation start and idle Stop are the boundaries.
 # --native-event keeps the two values every bridge since 3.10 parses. SessionStart and PostToolUse
-# handlers carry no --native-event: the bridge reads hookEventName, and an older bridge answers {}
-# for them, so a rollback that leaves them in hooks.json breaks nothing (#903).
+# handlers carry no --native-event: the bridge reads hookEventName, and the 3.17.0 bridge (the one
+# tested) answers {} for them, so a rollback to it that leaves them in hooks.json breaks nothing (#903).
 ANTIGRAVITY = {'PreInvocation': 'SessionStart', 'Stop': 'Stop'}
 ANTIGRAVITY_NATIVE = dict(ANTIGRAVITY, SessionStart='SessionStart', PostToolUse=EDIT_EVENT)
 # Mirrors beyin_v3_hook.ANTIGRAVITY_EDIT_MATCHER: the tools whose PostToolUse opens the edit window.

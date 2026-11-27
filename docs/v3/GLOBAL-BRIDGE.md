@@ -173,7 +173,7 @@ Genel ayarlar kullanıcıya aittir ve vault güncellemesinin rollback kapsamına
   devamdan sonraki `Stop`'u `continuationActive: false`, `executionNum: 1` ile gönderdi) aynı turda
   yeniden sormaz. `SessionStart` ve `PostToolUse`
   komutları `--native-event` taşımaz, olayı payload'daki `hookEventName`'den okur; bu yüzden
-  3.17.0 ve öncesine dönülürse eski köprü bu iki kayda `{}` döner. Hook komutu `hooks.json` klasöründe çalıştığı için proje, payload'daki ilk
+  3.17.0'a dönülürse o sürümün köprüsü bu iki kayda `{}` döner (yalnız 3.17.0 köprüsü sınandı). Hook komutu `hooks.json` klasöründe çalıştığı için proje, payload'daki ilk
   `workspacePaths` girdisidir; işlem çalışma dizinine düşülmez. Çalışma alanlarından biri vault
   veya kurulu başka bir vault ise köprü sessiz kalır, olaylar o vault'un yerel hook'larına kalır.
 - `--context-chars 1500` başlangıç talimatı sınırıdır (0–4000). `0` enjeksiyonu
