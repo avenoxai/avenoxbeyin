@@ -107,7 +107,10 @@ karşılaştırıldı. Antigravity biçimi (adlandırılmış hook, `PreInvocati
 düz liste, `conversationId` ve `workspacePaths` alanları, komutun `hooks.json`
 klasöründe çalışması) Antigravity CLI 1.2.16 ikilisine gömülü `hooks.json` belgesinden
 alındı ve 10 Ekim 2026'da aynı sürümle Windows 11'de gerçek bir oturumda denendi;
-1.2.3'e (macOS) gömülü belge de aynı biçimi tarif eder. macOS ve Linux'ta canlı teslim
+1.2.3'e (macOS) gömülü belge de aynı biçimi tarif eder. `SessionStart` (düz liste), `PostToolUse`
+(`matcher` ve `hooks` grubu), `toolCall.name`/`toolCall.args.Path` ve `continuationActive`
+alanları 27 Kasım 2026'da Antigravity CLI 1.5.18 ikilisine gömülü belgeyle karşılaştırıldı ve
+macOS'ta iki canlı `agy` oturumunda gözlendi. macOS ve Linux'ta canlı teslim
 denenmedi. CLI simülasyonu gerçek Desktop hook teslimi kanıtı değildir;
 kurulumdan sonra her istemcide aşağıdaki geri okumayı yapın.
 
@@ -158,8 +161,15 @@ Genel ayarlar kullanıcıya aittir ve vault güncellemesinin rollback kapsamına
   seçilmezse `PostToolUse` handler'ı da kurulmaz. Yeniden kurulum önceki köprü
   handler'larının hepsini kaldırıp seçilen kümeyi yazar.
 - Antigravity'de `PreCompact` ve `SessionEnd` yoktur. Vault adaptörüyle aynı sınırlar kullanılır:
-  `PreInvocation` yalnız `invocationNum: 0` iken `SessionStart`, `Stop` yalnız `fullyIdle: true`
-  iken `Stop` sayılır. Hook komutu `hooks.json` klasöründe çalıştığı için proje, payload'daki ilk
+  konuşma başına bir kez çalışan `SessionStart` başlangıç talimatını verir. `invocationNum` her
+  kullanıcı mesajında 0'dan başladığı için `PreInvocation` yalnız `SessionStart` gelmemiş bir
+  konuşmada (o olayı göndermeyen istemci, güncellemeden önce açılmış konuşma) bir kez başlangıç
+  sayılır (#903). `PostToolUse` yalnız başarılı dosya yazımında (`write_file`, `edit_file`,
+  `code_action`; `matcher` grubu içinde) düzenleme penceresini açar ve `{}` döner. `Stop` yalnız
+  `fullyIdle: true` iken sayılır; receipt eksikse bir kez `{"decision":"continue"}` döner,
+  `continuationActive: true` olan `Stop` yeniden sormaz. `SessionStart` ve `PostToolUse`
+  komutları `--native-event` taşımaz, olayı payload'daki `hookEventName`'den okur; bu yüzden
+  3.17.0 ve öncesine dönülürse eski köprü bu iki kayda `{}` döner. Hook komutu `hooks.json` klasöründe çalıştığı için proje, payload'daki ilk
   `workspacePaths` girdisidir; işlem çalışma dizinine düşülmez. Çalışma alanlarından biri vault
   veya kurulu başka bir vault ise köprü sessiz kalır, olaylar o vault'un yerel hook'larına kalır.
 - `--context-chars 1500` başlangıç talimatı sınırıdır (0–4000). `0` enjeksiyonu

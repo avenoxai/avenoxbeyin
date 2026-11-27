@@ -69,6 +69,10 @@ class HookInstallerTest(unittest.TestCase):
         group, = managed['PostToolUse']
         self.assertEqual(set(group), {'matcher', 'hooks'})
         self.assertEqual(group['matcher'], self.hook.ANTIGRAVITY_EDIT_MATCHER)
+        spec = importlib.util.spec_from_file_location('v3_hook_test_bridge', SCRIPTS / 'beyin_v3_bridge.py')
+        bridge = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bridge)
+        self.assertEqual(bridge.ANTIGRAVITY_EDIT_MATCHER, group['matcher'])
         matcher = re.compile(group['matcher'])
         for tool in self.hook.ANTIGRAVITY_WRITE_TOOLS:
             self.assertIsNotNone(matcher.search(tool))

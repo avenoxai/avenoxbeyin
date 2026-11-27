@@ -1054,7 +1054,7 @@ class BridgeTest(unittest.TestCase):
     def test_antigravity_config_is_a_named_hook_whose_command_runs(self):
         config = self.invoke(extra=['--print-config'], harness='antigravity')
         self.assertEqual(list(config), ['beyin-v3-bridge'])
-        self.assertEqual(set(config['beyin-v3-bridge']), {'PreInvocation', 'Stop'})
+        self.assertEqual(set(config['beyin-v3-bridge']), {'SessionStart', 'PreInvocation', 'PostToolUse', 'Stop'})
         command = config['beyin-v3-bridge']['PreInvocation'][0]['command']
         payload = dict(conversationId='agy-config', invocationNum=0, workspacePaths=[str(self.project)])
         result = subprocess.run(command, shell=True, input=json.dumps(payload), capture_output=True,
@@ -1062,9 +1062,59 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('Receipt session=', json.loads(result.stdout)['injectSteps'][0]['ephemeralMessage'])
         narrowed = self.invoke(extra=['--print-config', '--event', 'SessionStart'], harness='antigravity')
-        self.assertEqual(set(narrowed['beyin-v3-bridge']), {'PreInvocation'})
+        self.assertEqual(set(narrowed['beyin-v3-bridge']), {'SessionStart', 'PreInvocation'})
         with self.assertRaises(AssertionError):
             self.invoke(extra=['--print-config', '--event', 'SessionEnd'], harness='antigravity')
+
+    def agy_config(self):
+        return self.invoke(extra=['--print-config'], harness='antigravity')['beyin-v3-bridge']
+
+    def agy_run(self, command, payload):
+        result = subprocess.run(command, shell=True, input=json.dumps(payload), capture_output=True,
+                                text=True, encoding='utf-8', env=self.env, cwd=self.home, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_antigravity_session_start_bootstraps_once_per_conversation(self):
+        # Antigravity CLI 1.5.18: SessionStart runs once per conversation, PreInvocation's
+        # invocationNum restarts at 0 on every user message (#903). The bootstrap is said once.
+        config = self.agy_config()
+        start_command = config['SessionStart'][0]['command']
+        self.assertNotIn("--native-event", bridge._decoded_command(start_command))  # read from hookEventName
+        base = dict(conversationId='agy-once', workspacePaths=[str(self.project)], lastUserInput='first')
+        start = self.agy_run(start_command, dict(base, hookEventName='SessionStart'))
+        self.assertIn('Receipt session=', start['injectSteps'][0]['ephemeralMessage'])
+        turn = config['PreInvocation'][0]['command']
+        for fields in ({'invocationNum': 0}, {'invocationNum': 1}, {'invocationNum': 0, 'lastUserInput': 'second'}):
+            self.assertEqual(self.agy_run(turn, dict(base, hookEventName='PreInvocation', **fields)), {})
+        self.assertEqual([e['event'] for e in self.queued()], ['SessionStart'])
+        # A client without SessionStart still gets the bootstrap from the first PreInvocation, once.
+        legacy = dict(base, conversationId='agy-legacy', hookEventName='PreInvocation', invocationNum=0)
+        self.assertIn('injectSteps', self.agy_run(turn, legacy))
+        self.assertEqual(self.agy_run(turn, dict(legacy, lastUserInput='second')), {})
+
+    def test_antigravity_post_tool_use_opens_the_receipt_window_and_stop_continues_once(self):
+        # #903 (OzzWizard): PostToolUse under a matcher group answers {}; Stop asks once with
+        # decision "continue" and honours continuationActive.
+        config = self.agy_config()
+        group, = config['PostToolUse']
+        self.assertEqual(group['matcher'], bridge.ANTIGRAVITY_EDIT_MATCHER)
+        edit = group['hooks'][0]['command']
+        self.assertNotIn("--native-event", bridge._decoded_command(edit))
+        stop_command = config['Stop'][0]['command']
+        base = dict(conversationId='agy-edit', workspacePaths=[str(self.project)], lastUserInput='edit it')
+        target = str(self.project / 'app.py')
+        tool = dict(base, hookEventName='PostToolUse', error='', toolCall={'name': 'read_file', 'args': {'Path': target}})
+        stop = dict(base, hookEventName='Stop', fullyIdle=True, continuationActive=False)
+        self.assertEqual(self.agy_run(edit, tool), {})
+        self.assertEqual(self.agy_run(stop_command, stop), {'decision': 'stop'})
+        self.assertEqual(self.agy_run(edit, dict(tool, toolCall={'name': 'write_file', 'args': {'Path': target}})), {})
+        self.assertEqual(self.agy_run(stop_command, dict(stop, continuationActive=True)), {'decision': 'stop'})
+        reminder = self.agy_run(stop_command, stop)
+        self.assertEqual(reminder['decision'], 'continue')
+        self.assertIn('note-create', reminder['reason'])
+        self.assertIn('--harness antigravity', reminder['reason'])
+        self.assertEqual(self.agy_run(stop_command, stop), {'decision': 'stop'})
 
     def test_folder_below_another_installed_vault_is_skipped_for_every_client(self):
         # The owning vault is found by walking up, so a subfolder is as silent as the vault root.
@@ -1084,8 +1134,11 @@ class BridgeTest(unittest.TestCase):
         config = self.invoke(extra=['--print-config'], harness='antigravity',
                              script=self.vault / '.claude/scripts/beyin_v3_bridge.py')['beyin-v3-bridge']
         # The global hook keeps the timeout the installer chose for the vault's Antigravity hooks.
-        self.assertEqual({native: handlers[0]['timeout'] for native, handlers in config.items()},
-                         {native: handlers[0]['timeout'] for native, handlers in local.items()})
+        def timeouts(events):
+            return {native: [handler['timeout'] for group in groups for handler in group.get('hooks', [group])]
+                    for native, groups in events.items()}
+        self.assertEqual(timeouts(config), timeouts(local))
+        self.assertEqual(config['PostToolUse'][0]['matcher'], local['PostToolUse'][0]['matcher'])
         hook_folder = self.vault / '.agents'  # Antigravity runs a hook where its hooks.json lives.
         cases = {'agy-vault': (dict(workspacePaths=[str(self.vault)]), self.vault.name),
                  'agy-first-of-two': (dict(workspacePaths=[str(self.project), str(self.vault)]), self.project.name),
