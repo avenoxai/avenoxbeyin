@@ -1467,7 +1467,7 @@ def _main(argv=None):
         if event == 'Stop':
             # After the Stop checkpoint is queued: one block per session when edits have no receipt.
             reminder = receipt_reminder(payload, state, args.harness, event, vault=vault, bridge_cli=command)
-            if not reminder and args.harness == 'claude' and (state / 'context-fill.json').is_file():
+            if not reminder and args.harness in ('claude', 'antigravity') and (state / 'context-fill.json').is_file():
                 from beyin_v3_context_fill import context_fill_reminder
                 reminder = context_fill_reminder(payload, state, args.harness, event, transcript_session=original_session)
             if reminder:
