@@ -385,6 +385,144 @@ class ShellEditReminderTest(unittest.TestCase):
         self.assertTrue(self.marker('pi-cli').exists())
         self.assertFalse((folder / (hashlib.sha256(b'pi-cli').hexdigest() + '.cli')).exists())
 
+    def agy_cli(self, conv_id, *args, payload=None, cwd=None, extra_env=None):
+        env = dict(self.env, ANTIGRAVITY_CONVERSATION_ID=conv_id)
+        if extra_env:
+            env.update(extra_env)
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
+                                 '--state', str(self.state), *args],
+                                input=json.dumps(payload) if payload is not None else None,
+                                text=True, encoding='utf-8', capture_output=True,
+                                cwd=cwd or self.vault, env=env, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return json.loads(result.stdout)
+
+    def agy_stop(self, conv_id, **fields):
+        self.count += 1
+        payload = dict({'hookEventName': 'Stop', 'conversationId': conv_id, 'fullyIdle': True,
+                        'continuationActive': False, 'lastUserInput': 'not yaz',
+                        'event_id': 'ag-stop-%d' % self.count}, **fields)
+        result = subprocess.run([sys.executable, str(HOOK), '--vault', str(self.vault), '--state', str(self.state),
+                                 '--harness', 'antigravity', '--event', 'Stop'],
+                                input=json.dumps(payload), text=True, encoding='utf-8',
+                                capture_output=True, cwd=self.vault, env=self.env, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout.strip())
+
+    def test_antigravity_cli_writes_and_stop_queue_observed_edit_and_continue(self):
+        folder = self.state / 'receipt-reminders'
+        self.engine().sync()
+
+        # 1. note-create under ANTIGRAVITY_CONVERSATION_ID writes both .edited and .cli; Stop consumes .cli,
+        #    queues an observed PostToolUse for harness="antigravity", and returns decision="continue".
+        self.agy_cli('ag-note', 'note-create', '--file', '-',
+                     payload={'source': 'notes/ag-note.md', 'text': '# Antigravity Note\n'})
+        written_at = time.time()
+        note_key = hashlib.sha256(b'ag-note').hexdigest()
+        note_flag = folder / (note_key + '.cli')
+        note_edited = folder / (note_key + '.edited')
+        self.assertTrue(note_flag.is_file())
+        self.assertTrue(note_edited.is_file())
+        self.assertLessEqual(json.loads(note_flag.read_text(encoding='utf-8'))['at'], written_at)
+        self.assertNotIn('knowledge', json.loads(note_edited.read_text(encoding='utf-8')))
+
+        res = self.agy_stop('ag-note')
+        self.assertEqual(res.get('decision'), 'continue')
+        self.assertIn('--harness antigravity', res.get('reason', ''))
+        self.assertIn('Receipt session=' + digest('ag-note'), res.get('reason', ''))
+        self.assertFalse(note_flag.exists())
+        queued = [json.loads(p.read_text(encoding='utf-8')) for p in (self.state / 'hook-queue').glob('*.json')]
+        cli_events = [ev for ev in queued if ev.get('observed') == 'cli' and ev.get('session') == digest('ag-note')]
+        self.assertEqual([(ev['event'], ev['harness'], ev['observed']) for ev in cli_events],
+                         [('PostToolUse', 'antigravity', 'cli')])
+        self.assertLessEqual(cli_events[0]['at'], written_at)
+        # One-shot reminder: second Stop finishes cleanly.
+        self.assertEqual(self.agy_stop('ag-note'), {'decision': 'stop'})
+
+        # 2. task-create under ANTIGRAVITY_CONVERSATION_ID also creates .edited and .cli.
+        self.agy_cli('ag-task', 'task-create', '--file', '-',
+                     payload={'source': 'tasks/ag-task.md', 'text': 'Synthetic task.',
+                              'metadata': {'id': 'ag-task', 'title': 'AG Task', 'status': 'inbox', 'owner': 'ben'}})
+        task_key = hashlib.sha256(b'ag-task').hexdigest()
+        self.assertTrue((folder / (task_key + '.edited')).is_file())
+        self.assertTrue((folder / (task_key + '.cli')).is_file())
+
+        # 3. Distilled knowledge write sets knowledge=True; receipt auto-detects ANTIGRAVITY_CONVERSATION_ID
+        #    even when outer CLAUDE_CODE_SESSION_ID is set, closing Stop cleanly without knowledge reminder.
+        self.agy_cli('ag-know', 'note-create', '--file', '-',
+                     payload={'source': 'knowledge/concepts/ag-lesson.md', 'text': '# Synthetic lesson\n'})
+        know_key = hashlib.sha256(b'ag-know').hexdigest()
+        self.assertTrue((folder / (know_key + '.cli')).is_file())
+        self.assertIs(json.loads((folder / (know_key + '.edited')).read_text(encoding='utf-8')).get('knowledge'), True)
+        time.sleep(0.01)
+        receipt = self.agy_cli('ag-know', 'receipt', '--harness', 'antigravity', '--event-id', 'ag-know-1',
+                               '--summary', 'Öğrenilen: sentetik kavram kaydedildi.',
+                               '--ref', 'knowledge/concepts/ag-lesson.md',
+                               extra_env={'CLAUDE_CODE_SESSION_ID': 'outer-claude'})
+        receipt_text = (self.vault / receipt['source']).read_text(encoding='utf-8')
+        self.assertIn('"session": "' + digest('ag-know') + '"', receipt_text)
+        self.assertNotIn(digest('outer-claude'), receipt_text)
+        self.assertEqual(self.agy_stop('ag-know'), {'decision': 'stop'})
+        self.assertFalse((folder / (know_key + '.cli')).exists())
+        queued = [json.loads(p.read_text(encoding='utf-8')) for p in (self.state / 'hook-queue').glob('*.json')]
+        know_cli = [ev for ev in queued if ev.get('observed') == 'cli' and ev.get('session') == digest('ag-know')]
+        self.assertEqual([(ev['event'], ev['harness']) for ev in know_cli], [('PostToolUse', 'antigravity')])
+
+        # 4. learn without --session resolves ANTIGRAVITY_CONVERSATION_ID when CLAUDE_CODE_SESSION_ID is absent.
+        self.agy_cli('ag-know', 'learn', '--candidate', 'Antigravity aday öğrenim.',
+                     '--source', 'knowledge/concepts/ag-lesson.md')
+        listed = self.agy_cli('ag-know', 'learn', '--list', '--session', digest('ag-know'))
+        self.assertEqual([item['session'] for item in listed['candidates']], [digest('ag-know')])
+
+    def test_antigravity_external_cwd_bridge_and_continued_stop_consume_cli_flag(self):
+        import beyin_v3_hook as hook
+        folder = self.state / 'receipt-reminders'
+        project = self.root / 'Projects' / 'AntigravityDemo'
+        project.mkdir(parents=True)
+        cli = 'python3 ' + str(self.vault / 'beyin.py')
+
+        # External project write uses [str(cwd), conv_id] namespace for both .edited and .cli.
+        self.agy_cli('ag-ext', 'note-create', '--file', '-', cwd=project,
+                     payload={'source': 'notes/ag-ext.md', 'text': '# External AG\n'})
+        namespaced = json.dumps([str(project.resolve()), 'ag-ext'])
+        ns_key = hashlib.sha256(namespaced.encode('utf-8')).hexdigest()
+        raw_key = hashlib.sha256(b'ag-ext').hexdigest()
+        ns_flag = folder / (ns_key + '.cli')
+        self.assertTrue((folder / (ns_key + '.edited')).is_file())
+        self.assertTrue(ns_flag.is_file())
+        self.assertFalse((folder / (raw_key + '.edited')).exists())
+        self.assertFalse((folder / (raw_key + '.cli')).exists())
+
+        # Codex Stop must NOT consume the Antigravity .cli flag.
+        codex_payload = {'hook_event_name': 'Stop', 'session_id': namespaced, 'cwd': str(project)}
+        self.assertEqual(hook.receipt_reminder(codex_payload, self.state, 'codex', 'Stop', vault=self.vault, bridge_cli=cli)['decision'], 'block')
+        self.assertTrue(ns_flag.exists())
+        # Clear codex's .done so the Antigravity bridge Stop still reminds.
+        (folder / (ns_key + '.done')).unlink()
+
+        # Antigravity bridge Stop consumes .cli, queues observed PostToolUse with harness="antigravity",
+        # and returns decision="continue" naming the bridge CLI.
+        ag_payload = {'hook_event_name': 'Stop', 'session_id': namespaced, 'conversationId': namespaced,
+                      'workspacePaths': [str(project)], 'event_id': 'ag-bridge-stop-1'}
+        reminder = hook.receipt_reminder(ag_payload, self.state, 'antigravity', 'Stop', vault=self.vault, bridge_cli=cli)
+        self.assertEqual(reminder['decision'], 'continue')
+        self.assertIn(cli, reminder['reason'])
+        self.assertFalse(ns_flag.exists())
+        queued = [json.loads(p.read_text(encoding='utf-8')) for p in (self.state / 'hook-queue').glob('*.json')]
+        bridge_cli_events = [ev for ev in queued if ev.get('observed') == 'cli' and ev.get('session') == digest(namespaced)]
+        self.assertEqual([(ev['event'], ev['harness'], ev['observed']) for ev in bridge_cli_events],
+                         [('PostToolUse', 'antigravity', 'cli')])
+
+        # Continued Stop (stop_hook_active) with a corrupt .cli flag still consumes .cli and fails open.
+        corrupt_key = hashlib.sha256(b'ag-corrupt').hexdigest()
+        corrupt_flag = folder / (corrupt_key + '.cli')
+        corrupt_flag.write_text('{not-json', encoding='utf-8')
+        self.assertEqual(self.agy_stop('ag-corrupt', continuationActive=True), {'decision': 'stop'})
+        self.assertFalse(corrupt_flag.exists())
+        queued = [json.loads(p.read_text(encoding='utf-8')) for p in (self.state / 'hook-queue').glob('*.json')]
+        corrupt_events = [ev for ev in queued if ev.get('observed') == 'cli' and ev.get('session') == digest('ag-corrupt')]
+        self.assertEqual([(ev['event'], ev['harness']) for ev in corrupt_events], [('PostToolUse', 'antigravity')])
+
     def test_doctor_names_missing_sessions_without_observed_edits(self):
         sys.path.insert(0, str(ROOT / 'scripts'))
         self.addCleanup(lambda: sys.path.remove(str(ROOT / 'scripts')))

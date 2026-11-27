@@ -38,6 +38,8 @@ class NoteFixture(unittest.TestCase):
         self.environment.start()
         self.addCleanup(self.environment.stop)
         os.environ.pop('CLAUDE_CODE_SESSION_ID', None)
+        os.environ.pop('ANTIGRAVITY_CONVERSATION_ID', None)
+        os.environ.pop('PI_SESSION_ID', None)
         os.environ.pop('BEYIN_V3_NO_RECEIPT_REMINDER', None)
 
     def write(self, source='Threads.md', raw=b'alpha\nbeta\n'):

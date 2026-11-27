@@ -38,6 +38,8 @@ class NoteEditTest(unittest.TestCase):
         self.environment.start()
         self.addCleanup(self.environment.stop)
         os.environ.pop('CLAUDE_CODE_SESSION_ID', None)
+        os.environ.pop('ANTIGRAVITY_CONVERSATION_ID', None)
+        os.environ.pop('PI_SESSION_ID', None)
         os.environ.pop('BEYIN_V3_NO_RECEIPT_REMINDER', None)
 
     def write(self, source='Threads.md', raw=b'alpha\nbeta\n'):
@@ -406,6 +408,39 @@ with locked(engine):
         external_id = json.dumps([str(ROOT.resolve()), 'synthetic-note-session'])
         external_key = hashlib.sha256(external_id.encode()).hexdigest()
         self.assertTrue((self.state / 'receipt-reminders' / (external_key + '.edited')).is_file())
+
+    def test_antigravity_conversation_id_note_edit_marks_edited_cli_knowledge_and_bridge(self):
+        self.write()
+        self.write('knowledge/concepts/ag-note.md', b'# Concept\nold body\n')
+        os.environ['ANTIGRAVITY_CONVERSATION_ID'] = 'ag-conv-note-edit'
+        # Unchanged edit must not create markers.
+        unchanged = self.run_cli('note-edit', self.request('alpha', 'alpha'), cwd=self.vault)
+        self.assertEqual(unchanged.returncode, 0, unchanged.stdout + unchanged.stderr)
+        self.assertEqual(json.loads(unchanged.stdout)['status'], 'unchanged')
+        key = hashlib.sha256(b'ag-conv-note-edit').hexdigest()
+        reminders = self.state / 'receipt-reminders'
+        self.assertFalse((reminders / (key + '.edited')).exists())
+        self.assertFalse((reminders / (key + '.cli')).exists())
+        # Written edit inside vault records both .edited and .cli without knowledge flag.
+        written = self.run_cli('note-edit', self.request('alpha', 'ALPHA'), cwd=self.vault)
+        self.assertEqual(written.returncode, 0, written.stdout + written.stderr)
+        self.assertEqual(json.loads(written.stdout)['status'], 'written')
+        self.assertTrue((reminders / (key + '.cli')).is_file())
+        edited = json.loads((reminders / (key + '.edited')).read_text(encoding='utf-8'))
+        self.assertIn('at', edited)
+        self.assertNotIn('knowledge', edited)
+        # Editing a distilled concept note adds knowledge=True to the same marker.
+        k_req = self.request('old body', 'new body', source='knowledge/concepts/ag-note.md')
+        k_written = self.run_cli('note-edit', k_req, cwd=self.vault)
+        self.assertEqual(k_written.returncode, 0, k_written.stdout + k_written.stderr)
+        self.assertIs(json.loads((reminders / (key + '.edited')).read_text(encoding='utf-8')).get('knowledge'), True)
+        # An edit from an external project cwd uses the [str(cwd), conv_id] bridge namespace.
+        external = self.run_cli('note-edit', self.request('ALPHA', 'EXTERNAL'), cwd=ROOT)
+        self.assertEqual(external.returncode, 0, external.stdout + external.stderr)
+        external_id = json.dumps([str(ROOT.resolve()), 'ag-conv-note-edit'])
+        external_key = hashlib.sha256(external_id.encode('utf-8')).hexdigest()
+        self.assertTrue((reminders / (external_key + '.edited')).is_file())
+        self.assertTrue((reminders / (external_key + '.cli')).is_file())
 
     def test_two_real_processes_one_wins_other_conflicts_then_merges(self):
         self.write()

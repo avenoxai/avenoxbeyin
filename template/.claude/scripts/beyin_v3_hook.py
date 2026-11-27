@@ -459,10 +459,10 @@ def _queue_observed_edit(vault, state, payload, harness, observed, at=None):
         pass  # coverage bookkeeping never costs the reminder
 
 
-def _queue_cli_edit(flag, vault, state, payload):
-    """Consume the flag `beyin.py` left for a note or task written through the Claude Bash tool
-    (mark_session_edit): Bash queues no PostToolUse, so this Stop queues one at the write's time.
-    Runs before the one-shot reminder checks, as an editor PostToolUse is queued regardless of them."""
+def _queue_cli_edit(flag, vault, state, payload, harness="claude"):
+    """Consume the flag `beyin.py` left for a note or task written through a client shell tool
+    (mark_session_edit): shell commands queue no PostToolUse, so this Stop queues one at the write's
+    time. Runs before the one-shot reminder checks, as an editor PostToolUse is queued regardless of them."""
     try:
         try:
             at = json.loads(flag.read_text(encoding="utf-8")).get("at")
@@ -472,7 +472,7 @@ def _queue_cli_edit(flag, vault, state, payload):
             at = None
         flag.unlink(missing_ok=True)
         valid = isinstance(at, (int, float)) and not isinstance(at, bool) and 0 < at <= time.time()
-        _queue_observed_edit(vault, state, payload, "claude", "cli", at=float(at) if valid else None)
+        _queue_observed_edit(vault, state, payload, harness, "cli", at=float(at) if valid else None)
     except Exception:
         pass  # coverage bookkeeping never costs the reminder
 
@@ -528,8 +528,8 @@ def receipt_reminder(payload, state, harness, event, vault=None, bridge_cli=None
         pending_receipt = folder / (digest + ".pending-receipt")
         pending_knowledge = folder / (digest + ".pending-knowledge")
         next_prompt = event == "UserPromptSubmit"
-        if event == "Stop" and harness == "claude":
-            _queue_cli_edit(folder / (digest + ".cli"), vault, state, payload)
+        if event == "Stop" and harness in ("claude", "antigravity"):
+            _queue_cli_edit(folder / (digest + ".cli"), vault, state, payload, harness=harness)
         if next_prompt:
             # Quoted worker output is data, not the user's instruction to opt out.
             if is_synthetic_prompt(payload):

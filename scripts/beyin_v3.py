@@ -37,18 +37,21 @@ class NoteUsageError(ValueError):
 
 
 def mark_session_edit(state: Path, vault: Path | None = None, source: str | None = None) -> None:
-    """Open the Stop edit window for a CLI write from Claude or Pi's shell tool (#212).
+    """Open the Stop edit window for a CLI write from Claude, Antigravity, or Pi's shell tool (#212).
 
-    Shell writes have no editor PostToolUse event. Both clients expose the real session ID to
-    shell subprocesses (CLAUDE_CODE_SESSION_ID, PI_SESSION_ID), as their hooks receive it; never
-    guess an ID in a plain shell. External project writes use the same cwd/session namespace as
-    the global bridge; successful distilled-note writes retain knowledge evidence even though the
-    note mtime precedes this marker. Bookkeeping cannot cost the write itself.
-    A Claude write also leaves its time in a `.cli` flag: no PostToolUse event exists for it, so the
-    next Claude Stop of that session queues it for receipt coverage as an observed edit.
+    Shell writes have no editor PostToolUse event. These clients expose the real session ID to
+    shell subprocesses (CLAUDE_CODE_SESSION_ID, ANTIGRAVITY_CONVERSATION_ID, PI_SESSION_ID), as
+    their hooks receive it; never guess an ID in a plain shell. External project writes use the
+    same cwd/session namespace as the global bridge; successful distilled-note writes retain
+    knowledge evidence even though the note mtime precedes this marker. Bookkeeping cannot cost
+    the write itself.
+    A Claude or Antigravity write also leaves its time in a `.cli` flag: no PostToolUse event
+    exists for it, so the next Stop of that session queues it for receipt coverage as an observed edit.
     """
     claude = os.environ.get("CLAUDE_CODE_SESSION_ID")
-    session = claude or os.environ.get("PI_SESSION_ID")
+    antigravity = os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
+    pi = os.environ.get("PI_SESSION_ID")
+    session = claude or antigravity or pi
     if not session or os.environ.get("BEYIN_V3_NO_RECEIPT_REMINDER") == "1":
         return
     try:
@@ -66,8 +69,8 @@ def mark_session_edit(state: Path, vault: Path | None = None, source: str | None
             temporary.write_text(json.dumps(value), encoding="utf-8")
             os.replace(temporary, path)
 
-        if claude:
-            # First: an unreadable window marker cannot drop it. Only a Claude Stop consumes it.
+        if claude or antigravity:
+            # First: an unreadable window marker cannot drop it. Claude and Antigravity Stops consume it.
             put(folder / (name + ".cli"), {"at": now})
         edited = folder / (name + ".edited")
         previous = json.loads(edited.read_text(encoding="utf-8")) if edited.exists() else None
@@ -92,12 +95,14 @@ def mark_session_edit(state: Path, vault: Path | None = None, source: str | None
 def env_session(harness=None):
     """Hashed session of the agent whose shell runs this command, as its hooks key it (#212).
 
-    Claude Code and Pi export their real session ID to shell subprocesses. A receipt names its
-    client, so `--harness pi` reads Pi's ID even when Pi itself runs inside a Claude Code shell
-    and inherits the outer CLAUDE_CODE_SESSION_ID. Nothing is guessed in a plain shell.
+    Claude Code, Antigravity, and Pi export their real session ID to shell subprocesses. A receipt
+    names its client, so `--harness pi` or `--harness antigravity` reads that client's ID even when
+    it runs inside a Claude Code shell and inherits the outer CLAUDE_CODE_SESSION_ID. Nothing is
+    guessed in a plain shell.
     """
     names = (("PI_SESSION_ID", "BEYIN_V3_SESSION_ID") if harness == "pi"
-             else ("CLAUDE_CODE_SESSION_ID", "BEYIN_V3_SESSION_ID", "PI_SESSION_ID") if harness is None
+             else ("ANTIGRAVITY_CONVERSATION_ID", "BEYIN_V3_SESSION_ID") if harness == "antigravity"
+             else ("CLAUDE_CODE_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID", "BEYIN_V3_SESSION_ID", "PI_SESSION_ID") if harness is None
              else ("CLAUDE_CODE_SESSION_ID", "BEYIN_V3_SESSION_ID"))
     raw = next((os.environ[name] for name in names if os.environ.get(name)), None)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24] if raw else None
@@ -2313,7 +2318,7 @@ def main(argv=None, return_result=False):
                 session = args.session if re.fullmatch(r"[0-9a-f]{24}", args.session) else usage.session_key(args.session)
             else:
                 identities = {os.environ[name] for name in (
-                    "BEYIN_V3_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "PI_SESSION_ID", "CODEX_THREAD_ID"
+                    "BEYIN_V3_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID", "PI_SESSION_ID", "CODEX_THREAD_ID"
                 ) if os.environ.get(name)}
                 session = usage.session_key(identities.pop()) if len(identities) == 1 else None
             result = usage.record_feedback(state, args.target, args.verdict, session=session)
@@ -2534,7 +2539,8 @@ def main(argv=None, return_result=False):
         if ((args.command in SOURCE_WRITE_COMMANDS or
              (args.command == "mutation-queue" and args.replay and result.get("applied", 0) > 0))
                 and (args.command not in ("note-edit", "homepage-create") or result.get('status') == 'written')
-                and (os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID"))):
+                and (os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
+                     or os.environ.get("PI_SESSION_ID"))):
             mark_session_edit(state, vault, result.get("source"))
         if return_result:
             return result, 0
