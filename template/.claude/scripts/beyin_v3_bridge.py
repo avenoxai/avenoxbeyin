@@ -1375,7 +1375,7 @@ def _main(argv=None):
         if not isinstance(payload, dict):
             raise ValueError('Invalid hook payload')
         if args.harness == 'antigravity':
-            from beyin_v3_hook import antigravity_tool_input, antigravity_session_marker
+            from beyin_v3_hook import antigravity_tool_input, antigravity_session_marker, antigravity_continued_stop
             native = args.native_event or payload.get('hookEventName')
             if native == 'Stop':
                 quiet = '{"decision":"stop"}'
@@ -1399,8 +1399,8 @@ def _main(argv=None):
             if (not first or not isinstance(paths, list) or not all(isinstance(p, str) and Path(p).is_absolute() for p in paths)
                     or any(vault_owned(Path(p).resolve(), vault) for p in paths)):
                 print(quiet); return 0
-            if native == 'Stop' and payload.get('continuationActive') is True:
-                payload['stop_hook_active'] = True  # Antigravity's loop guard for a Stop that continued
+            if native == 'Stop' and antigravity_continued_stop(payload):
+                payload['stop_hook_active'] = True  # a Stop that ends work a Stop hook asked for
             payload.update(hook_event_name=ANTIGRAVITY_NATIVE[native], session_id=conversation)
         event = payload.get('hook_event_name')
         if event not in handled_events(args.harness, events) or payload.get('no_memory') is True or os.environ.get('BEYIN_V3_INTERNAL') or os.environ.get('BEYIN_V3_SKIP') == '1':

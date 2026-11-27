@@ -835,6 +835,17 @@ def _antigravity_prompt_digest(folder, text):
     return hmac.new(key, (text if isinstance(text, str) else '').encode('utf-8', 'replace'), hashlib.sha256).hexdigest()
 
 
+def antigravity_continued_stop(payload):
+    """True for a Stop that ends work a Stop hook asked to continue (Claude's stop_hook_active).
+
+    Antigravity documents continuationActive for this, but CLI 1.5.18 sent the Stop after a
+    {"decision":"continue"} with continuationActive false and executionNum 1, while the first
+    Stop of every user message had executionNum 0. Either signal counts; the one-shot reminder
+    markers (.done, .kdone) stay the real loop guard."""
+    count = payload.get('executionNum')
+    return payload.get('continuationActive') is True or (type(count) is int and count > 0)
+
+
 def _antigravity_nonhuman_start(payload):
     """A native SessionStart without user input is a nested agent's conversation (#885)."""
     return (os.environ.get('BEYIN_V3_FILTER_HARNESS_TURNS') != '0'
@@ -966,8 +977,8 @@ def main():
                                       or _antigravity_nonhuman_turn(payload, event)):
                 print('{"decision":"stop"}')
                 return
-            if event == "Stop" and payload.get("continuationActive") is True:
-                # Antigravity's loop guard: this Stop ends work a Stop hook asked for.
+            if event == "Stop" and antigravity_continued_stop(payload):
+                # This Stop ends work a Stop hook asked for: no second reminder in the same turn.
                 payload["stop_hook_active"] = True
             if (event in ("SessionStart", "UserPromptSubmit") and not payload.get("prompt")
                     and isinstance(payload.get("lastUserInput"), str)):

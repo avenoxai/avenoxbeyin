@@ -167,7 +167,9 @@ Genel ayarlar kullanıcıya aittir ve vault güncellemesinin rollback kapsamına
   sayılır (#903). `PostToolUse` yalnız başarılı dosya yazımında (`write_file`, `edit_file`,
   `code_action`; `matcher` grubu içinde) düzenleme penceresini açar ve `{}` döner. `Stop` yalnız
   `fullyIdle: true` iken sayılır; receipt eksikse bir kez `{"decision":"continue"}` döner,
-  `continuationActive: true` olan `Stop` yeniden sormaz. `SessionStart` ve `PostToolUse`
+  devam ettirilen `Stop` (`continuationActive: true` ya da `executionNum` 0'dan büyük; 1.5.18
+  devamdan sonraki `Stop`'u `continuationActive: false`, `executionNum: 1` ile gönderdi) aynı turda
+  yeniden sormaz. `SessionStart` ve `PostToolUse`
   komutları `--native-event` taşımaz, olayı payload'daki `hookEventName`'den okur; bu yüzden
   3.17.0 ve öncesine dönülürse eski köprü bu iki kayda `{}` döner. Hook komutu `hooks.json` klasöründe çalıştığı için proje, payload'daki ilk
   `workspacePaths` girdisidir; işlem çalışma dizinine düşülmez. Çalışma alanlarından biri vault

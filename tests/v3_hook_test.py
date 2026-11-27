@@ -912,6 +912,36 @@ class HookInstallerTest(unittest.TestCase):
         # One reminder per session.
         self.assertEqual(self.invoke(stop, 'antigravity', extra=['--event', 'Stop']), {'decision': 'stop'})
 
+    def test_antigravity_continued_stop_by_execution_num_asks_nothing_more_that_turn(self):
+        # Recorded on Antigravity CLI 1.5.18: the Stop right after {"decision":"continue"} came with
+        # continuationActive false and executionNum 1; the next user message's first Stop has 0 again.
+        engine = self.seed()
+        session = 'agy-execution-num'
+        note = str((self.vault / 'notes/task.md').resolve())
+        self.assertEqual(self.agy_tool(session, 'write_file', {'Path': note, 'Content': 'x'}), {})
+        stop = {'hookEventName': 'Stop', 'conversationId': session, 'fullyIdle': True, 'continuationActive': False,
+                'executionNum': 0, 'terminationReason': 'NO_TOOL_CALL', 'error': '', 'lastUserInput': 'edit the note'}
+        first = self.invoke(stop, 'antigravity', extra=['--event', 'Stop'])
+        self.assertEqual(first['decision'], 'continue')
+        self.assertIn('Receipt session=', first['reason'])
+        # The model answers with a receipt that declares a learning but writes no knowledge note.
+        engine.receipt('agy-execution-num-receipt', 'Not güncellendi.\nÖğrenilen: Nebula kalibrasyonu haftalık.',
+                       ['notes/task.md'], 'antigravity', session=hashlib.sha256(session.encode()).hexdigest()[:24])
+        # The continued Stop of the same turn asks nothing more (no second continue in one turn).
+        self.assertEqual(self.invoke(dict(stop, executionNum=1), 'antigravity', extra=['--event', 'Stop']),
+                         {'decision': 'stop'})
+        # The learning reminder comes at the next message's Stop, once.
+        later = self.invoke(stop, 'antigravity', extra=['--event', 'Stop'])
+        self.assertEqual(later['decision'], 'continue')
+        self.assertIn('knowledge/concepts/', later['reason'])
+        self.assertEqual(self.invoke(stop, 'antigravity', extra=['--event', 'Stop']), {'decision': 'stop'})
+        continued = self.hook.antigravity_continued_stop
+        for value in (True, '1', 1.0, -1, 0, None):  # only a positive integer counts
+            with self.subTest(executionNum=value):
+                self.assertFalse(continued({'executionNum': value, 'continuationActive': False}))
+        self.assertTrue(continued({'executionNum': 2}))
+        self.assertTrue(continued({'executionNum': 0, 'continuationActive': True}))
+
     def test_antigravity_tool_input_maps_only_successful_file_writes(self):
         for call, error, expected in (
                 ({'name': 'write_file', 'args': {'Path': '/v/a.md', 'Content': 'x'}}, '', {'file_path': '/v/a.md'}),

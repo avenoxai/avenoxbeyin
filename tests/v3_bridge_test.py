@@ -1134,7 +1134,9 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(self.agy_run(stop_command, stop), {'decision': 'stop'})
         self.assertEqual(self.agy_run(edit, dict(tool, toolCall={'name': 'write_file', 'args': {'Path': target}})), {})
         self.assertEqual(self.agy_run(stop_command, dict(stop, continuationActive=True)), {'decision': 'stop'})
-        reminder = self.agy_run(stop_command, stop)
+        # Antigravity CLI 1.5.18 sent the continued Stop with continuationActive false, executionNum 1.
+        self.assertEqual(self.agy_run(stop_command, dict(stop, executionNum=1)), {'decision': 'stop'})
+        reminder = self.agy_run(stop_command, dict(stop, executionNum=0))
         self.assertEqual(reminder['decision'], 'continue')
         self.assertIn('note-create', reminder['reason'])
         self.assertIn('--harness antigravity', reminder['reason'])
