@@ -247,14 +247,13 @@ class MemoryAuditorTest(unittest.TestCase):
         self.assertEqual(report['linked_pairs_skipped'], 0)
 
     def test_link_in_crlf_fenced_code_does_not_count(self):
-        """A fenced block in a CRLF (Windows) note still hides the link it quotes."""
-        self._note('knowledge/ornek-plan-detay.md', 'Ornek Plan Detay', 'Komut ornekleri eklendi.')
-        with open(self.knowledge / 'ornek-plan.md', 'w', encoding='utf-8', newline='') as handle:
-            handle.write("---\r\ntitle: Ornek Plan Ozeti\r\ncreated: 2026-10-02\r\n---\r\n"
-                         f"# Ornek Plan Ozeti\r\n{self._PAIR_TEXT}\r\n```\r\n[[ornek-plan-detay]]\r\n```\r\nSon.\r\n")
-        report = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
-        self.assertEqual(self._overlap_paths(report), [{'knowledge/ornek-plan.md', 'knowledge/ornek-plan-detay.md'}])
-        self.assertEqual(report['linked_pairs_skipped'], 0)
+        """A fenced block with CRLF line endings still hides the link it quotes.
+
+        File reads normalise newlines, so this pins the helper for callers that pass raw text.
+        """
+        body = "Ozet\r\n```\r\n[[kod-ornegi]]\r\n```\r\nDetay: [[ornek-plan-detay]]\r\n"
+        self.assertEqual(audit_module._link_keys_from_body(body, 'knowledge/ornek-plan.md'),
+                         ((True, 'ornek-plan-detay'),))
 
     def test_nfc_wikilink_matches_nfd_file_name(self):
         """A macOS/iCloud NFD file name still matches the composed [[Şube Özeti]] a person typed."""
