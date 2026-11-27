@@ -28,6 +28,8 @@ def abstain_coverage():
     except ValueError:
         return None
     return value if 0 < value <= 1 else None
+
+
 # A client that sandboxes its hook commands (a workspace-write profile, a read-only home) can read
 # the vault and the index the previous sync committed, but not the runtime state. Both refusals
 # below therefore keep the turn's context: it comes from that index with one line saying why it will

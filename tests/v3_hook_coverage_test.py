@@ -42,7 +42,7 @@ class QueryTermCoverageTest(unittest.TestCase):
 
     def test_wrappers_fillers_short_tokens_and_repeats_are_not_terms(self):
         terms, missing = beyin_v3.query_term_coverage(
-            'how many boxes should we order? melamin hakkında neler biliyoruz, melamin 7 x', [])
+            'how often and how many boxes should we order? melamin hakkında neler biliyoruz, melamin 7 x', [])
         self.assertEqual(terms, ['boxes', 'order', 'melamin'])
         self.assertEqual(missing, terms)
 
@@ -57,12 +57,27 @@ class QueryTermCoverageTest(unittest.TestCase):
         record = {'text': 'supplier' + beyin_v3.CONTEXT_MARKER, 'text_truncated': True}
         self.assertEqual(beyin_v3.query_term_coverage('supplier zircon', [record])[1], ['zircon'])
 
+    def test_hyphenated_name_is_one_term_held_by_its_joined_spelling(self):
+        # Retrieval reads claude-mem as one name that a note may write as claudemem (#430).
+        self.assertEqual(beyin_v3.query_term_coverage('claude-mem kurulumu nasıl', [{'text': 'claudemem kurulum'}]),
+                         (['claude-mem', 'kurulumu'], []))
+        self.assertEqual(beyin_v3.query_term_coverage('e-posta SMTP portu', [{'text': 'eposta SMTP port'}]),
+                         (['e-posta', 'smtp', 'portu'], []))
+
+    def test_hyphenated_name_needs_every_part_when_not_joined(self):
+        self.assertEqual(beyin_v3.query_term_coverage('claude-mem kurulumu', [{'text': 'claude mem kurulum'}])[1], [])
+        self.assertEqual(beyin_v3.query_term_coverage('claude-mem kurulumu', [{'text': 'Claude kurulum'}])[1],
+                         ['claude-mem'])
+        self.assertEqual(beyin_v3.query_term_coverage('gpt-4o claude-mem claude', [])[0], ['gpt-4o', 'claude-mem'])
+
     def test_empty_prompt_has_no_terms(self):
         self.assertEqual(beyin_v3.query_term_coverage('', [{'text': 'x'}]), ([], []))
         self.assertEqual(beyin_v3.query_term_coverage(None, []), ([], []))
 
 
 class HookVault(unittest.TestCase):
+    notes = NOTES
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='v3-hook-coverage-')
         self.addCleanup(self.tmp.cleanup)
@@ -78,7 +93,7 @@ class HookVault(unittest.TestCase):
         for key in ('SYSTEMROOT', 'WINDIR'):
             if key in os.environ:
                 self.env[key] = os.environ[key]
-        for relative, text in NOTES.items():
+        for relative, text in self.notes.items():
             path = self.vault / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, 'w', encoding='utf-8', newline='\n') as handle:
@@ -166,6 +181,29 @@ class HookAbstainThresholdTest(HookVault):
 
     def test_prompt_without_matches_stays_silent(self):
         self.assertEqual(self.invoke('recommend a recipe for lentil soup', BEYIN_V3_ABSTAIN_COVERAGE='0.6'), '')
+
+
+class HookHyphenatedNameTest(HookVault):
+    """A hyphenated prompt name matched by its joined spelling is covered (#430 with #909)."""
+    notes = {
+        'knowledge/mem.md': 'claudemem kurulum adımları: npm ile kur, sonra config dosyasını düzenle.',
+        'knowledge/eposta.md': 'eposta ayarları: SMTP sunucusu mail.example.org, port 587.',
+    }
+    CASES = (('claude-mem kurulumu nasıl', 'knowledge/mem.md'), ('e-posta SMTP portu', 'knowledge/eposta.md'))
+
+    def test_default_turn_does_not_call_the_name_unmatched(self):
+        for prompt, source in self.CASES:
+            with self.subTest(prompt=prompt):
+                body = envelope(self.invoke(prompt))
+                self.assertEqual([r['source'] for r in body['records']], [source])
+                self.assertNotIn('unmatched_terms', body)
+
+    def test_threshold_keeps_the_matching_record(self):
+        for prompt, source in self.CASES:
+            with self.subTest(prompt=prompt):
+                body = envelope(self.invoke(prompt, BEYIN_V3_ABSTAIN_COVERAGE='0.5'))
+                self.assertFalse(body['abstained'])
+                self.assertEqual([r['source'] for r in body['records']], [source])
 
 
 if __name__ == '__main__':

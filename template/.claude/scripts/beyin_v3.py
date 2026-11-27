@@ -868,6 +868,12 @@ def _fold(text):
 
 def _compounds(text):
     """(joined spelling, parts) of every hyphenated name in folded text."""
+    for _start, _end, joined, parts in _compound_spans(text):
+        yield joined, parts
+
+
+def _compound_spans(text):
+    """(start, end, joined spelling, parts) of every hyphenated name in folded text."""
     end = 0
     for hyphen in _HYPHEN.finditer(text):
         at = hyphen.start()
@@ -882,7 +888,7 @@ def _compounds(text):
         parts = compound.group().replace("\u2010", "-").split("-")
         joined = "".join(parts)
         if len(joined) <= 64 and not joined.isdigit():
-            yield joined, parts
+            yield compound.start(), end, joined, parts
 
 
 def _token_counts(text):
@@ -1017,7 +1023,7 @@ def _delivered_text(value):
 _COVERAGE_FILLERS = _tokens(
     "i me we us you your he she they them their be been being am can could should would will shall "
     "may might must there here any some many much so if then than also just not as by into out up all "
-    "use using need want "
+    "use using need want often "
     "ben sen biz siz onlar da de ki gibi daha cok var ama fakat her hep sey neden niye nerede kac gerek lazim")
 
 
@@ -1028,21 +1034,45 @@ def query_term_coverage(query, records):
     a word matches by its stem in the records' text, title, fact values and aliases as given
     (a clipped text counts only as far as it was clipped). Question wrappers, stopwords,
     pronouns and auxiliaries, single letters and short numbers are not terms, and one stem
-    counts once. This is lexical coverage only: a synonym, a clipped tail or a scope filter
-    also leaves a word unmatched.
+    counts once. A hyphenated name (claude-mem, e-posta) is one term, as retrieval reads it
+    (#430): a record holds it by its joined spelling or by every part that is a term itself.
+    This is lexical coverage only: a synonym, a clipped tail or a scope filter also leaves a
+    word unmatched.
     """
     covered = set()
     for record in records:
         covered.update(_tokens(' '.join(_delivered_text(record.get(key, ''))
                                         for key in ('text', 'title', 'facts', 'aliases'))))
-    terms, unmatched, seen = [], [], set()
-    for word in re.findall(r'[a-z0-9]+', _fold(strip_query_fillers(query or ''))):
-        stem = _stem(word)
-        if stem in seen or stem in STOPWORDS or stem in _COVERAGE_FILLERS or not _strict_terms({stem}):
+
+    def is_term(stem):
+        return stem not in STOPWORDS and stem not in _COVERAGE_FILLERS and _strict_terms({stem})
+
+    text = _fold(strip_query_fillers(query or ''))
+    spans = list(_compound_spans(text))
+    terms, unmatched, seen, at = [], [], set(), 0
+    for match in re.finditer(r'[a-z0-9]+', text):
+        while at < len(spans) and spans[at][1] <= match.start():
+            at += 1
+        if at < len(spans) and spans[at][0] < match.end():
+            start, end, joined, parts = spans[at]
+            if match.start() > start:
+                continue  # a later part of a name already counted
+            word, stem = text[start:end].replace('\u2010', '-'), _stem(joined)
+            needed = [part for part in map(_stem, parts) if is_term(part)]
+            if not needed:
+                continue  # every part is a wrapper, a single letter or a short number
+            found = stem in covered or all(part in covered for part in needed)
+            keys = {stem, *needed}
+        else:
+            word, stem = match.group(), _stem(match.group())
+            if not is_term(stem):
+                continue
+            found, keys = stem in covered, {stem}
+        if stem in seen:
             continue
-        seen.add(stem)
+        seen.update(keys)
         terms.append(word)
-        if stem not in covered:
+        if not found:
             unmatched.append(word)
     return terms, unmatched
 
