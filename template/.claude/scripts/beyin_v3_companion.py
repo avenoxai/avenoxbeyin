@@ -1097,10 +1097,31 @@ LATEST_RULES = '<!-- beyin:rules-order=latest -->'
 PINNED_RULE = re.compile(r'<!--\s*beyin:pin\s*-->', re.I)
 
 
-def _rule_gap(head, tail, first, last, total, report):
-    count = last - first + 1
+def _pinned(items, room):
+    """Pinned items (#890) in source order, as many as fit in half the rule room.
+
+    The cap keeps pinning from bringing back the clipping it works around: pins past it
+    clip like any other rule and the report counts them as pinned_omitted."""
+    chosen, used = [], 0
+    for i, item in enumerate(items):
+        if PINNED_RULE.search(item) and used + len(item) <= max(0, room) // 2:
+            chosen.append(i)
+            used += len(item)
+    return chosen
+
+
+def _rule_gap(head, tail, first, last, total, report, items=(), shown=()):
+    """head, the pinned items shown from first-last, the marker, tail. The marker and the
+    report count only the rules really left out of that range."""
+    count = last - first + 1 - len(shown)
+    pinned_omitted = sum(1 for i in range(first - 1, last) if i not in shown and PINNED_RULE.search(items[i])) if items else 0
     if report is not None:
         report['omitted_rules'] = {'first': first, 'last': last, 'count': count, 'total': total}
+        if pinned_omitted:
+            report['pinned_omitted'] = pinned_omitted
+        else:
+            report.pop('pinned_omitted', None)
+    head += ''.join(items[i] for i in shown)
     return head + f'\n[truncated: rules {first}-{last} ({count} of {total}) omitted here; read source]\n' + tail
 
 
@@ -1110,7 +1131,8 @@ def ends(text, budget, *, rules_report=None):
     The first marker is sized with the widest form the final one can take, so the
     final one, naming only what was really dropped, can never be longer and the
     result stays inside budget. Text with no list items keeps the character count.
-    Rules containing <!-- beyin:pin --> are prioritized to remain visible.
+    Rules marked <!-- beyin:pin --> take up to half the room first (#890); a pinned
+    rule from the omitted range is shown just before the marker.
     """
     if len(text) <= budget:
         return text
@@ -1121,25 +1143,22 @@ def ends(text, budget, *, rules_report=None):
         widest = f'\n[truncated: rules {total}-{total} ({total} of {total}) omitted here; read source]\n'
         gap = max(gap, widest, key=len)
     keep = budget - len(gap)
-    items = [text[rules[i]:rules[i + 1] if i + 1 < total else len(text)] for i in range(total)] if total else []
-    pinned = [i for i, itm in enumerate(items) if PINNED_RULE.search(itm)] if items else []
-
+    items = [text[rules[i]:rules[i + 1] if i + 1 < total else len(text)] for i in range(total)]
     if total and text.startswith(LATEST_RULES + '\n'):
         if keep < 0:
             return CLIP_MARKER.strip()[:budget]
-        # Keep complete items from the source\'s end within its existing allocation.
-        first_kept = next((i for i, offset in enumerate(rules) if len(text) - offset <= keep), total)
+        pins = _pinned(items, keep)
+        # Room the pins before item i take; complete items from the source's end use the rest.
+        before = [0] * (total + 1)
+        for i in range(total):
+            before[i + 1] = before[i] + (len(items[i]) if i in pins else 0)
+        first_kept = next((i for i, offset in enumerate(rules) if len(text) - offset + before[i] <= keep), total)
         tail = text[rules[first_kept]:] if first_kept < total else ''
         if first_kept == 0:
             # Only prose before the first item was omitted.
             return '\n[truncated: read source]\n' + tail
-        head = ''
-        omitted_pinned = [p for p in pinned if p < first_kept]
-        if omitted_pinned:
-            pinned_str = ''.join(items[p] for p in omitted_pinned)
-            if len(pinned_str) + len(tail) <= keep:
-                head = pinned_str
-        return _rule_gap(head, tail, 1, first_kept, total, rules_report)
+        return _rule_gap('', tail, 1, first_kept, total, rules_report, items,
+                         [p for p in pins if p < first_kept])
     if keep < 80:
         return None
     if not total:
@@ -1165,11 +1184,18 @@ def ends(text, budget, *, rules_report=None):
         return head + f'\n[truncated: {what} omitted here; read source]\n' + closing
 
     # Cut on rule boundaries so multi-line rules are never split in half (#535);
-    # the closing part also takes whatever the opening gave back.
-    target = keep - keep // 2
+    # the closing part also takes whatever the opening gave back. Pinned rules (#890)
+    # reserve their room first; a pin that lands in head or closing gives it back.
+    pins = _pinned(items, keep)
+    room = keep - sum(len(items[p]) for p in pins)
+
+    def pinned_gap(k, j):
+        return sum(len(items[p]) for p in pins if k <= p < j)
+
+    target = room - room // 2
     k = sum(r <= target for r in rules[1:]) if rules[0] <= target else 0
-    head = text[:rules[k]] if (k > 0 or rules[0] <= keep) else ''
-    rem = keep - len(head)
+    head = text[:rules[k]] if (k > 0 or rules[0] <= room) else ''
+    rem = room - len(head)
     j = total
     for candidate in range(k + 1, total):
         if len(text) - rules[candidate] <= rem:
@@ -1184,38 +1210,18 @@ def ends(text, budget, *, rules_report=None):
         grown = False
         if j - 1 > k:
             cand_len = len(text) - rules[j - 1]
-            if len(head) + cand_len <= keep:
+            if len(head) + cand_len + pinned_gap(k, j - 1) <= keep:
                 j -= 1
                 closing = text[rules[j]:]
                 grown = True
         if k + 1 < j:
             cand_len = rules[k + 1]
-            if cand_len + len(closing) <= keep:
+            if cand_len + len(closing) + pinned_gap(k + 1, j) <= keep:
                 k += 1
                 head = text[:rules[k]]
                 grown = True
 
-    omitted_pinned = [p for p in pinned if k <= p < j]
-    if omitted_pinned:
-        pinned_items = [items[p] for p in omitted_pinned]
-        needed = sum(len(it) for it in pinned_items)
-        slack = keep - len(head) - len(closing)
-        while needed > slack and (k > 0 or j < total):
-            if j < total and (j not in pinned) and (len(text) - rules[j] > 0):
-                nxt_j = j + 1
-                closing = text[rules[nxt_j]:] if nxt_j < total else ''
-                j = nxt_j
-            elif k > 0 and ((k - 1) not in pinned):
-                prev_k = k - 1
-                head = text[:rules[prev_k]] if prev_k > 0 else (text[:rules[0]] if rules[0] <= keep else '')
-                k = prev_k
-            else:
-                break
-            slack = keep - len(head) - len(closing)
-        if needed <= slack:
-            head = head + ''.join(pinned_items)
-
-    return _rule_gap(head, closing, k + 1, j, total, rules_report)
+    return _rule_gap(head, closing, k + 1, j, total, rules_report, items, [p for p in pins if k <= p < j])
 
 
 CLIP_MARKER = '\n[truncated: read source]\n'
@@ -1914,11 +1920,12 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         if new_fixed > budget:
             final_rules = dict(rules, share=0)
             final_rules.pop('omitted_rules', None)
+            final_rules.pop('pinned_omitted', None)
             if report is not None:
                 report['Kurallar.md'] = final_rules
                 if project_rules:
                     report['project_rules'] = [
-                        {k: v for k, v in dict(item, share=0).items() if k != 'omitted_rules'}
+                        {k: v for k, v in dict(item, share=0).items() if k not in ('omitted_rules', 'pinned_omitted')}
                         for item in project_rules
                     ]
             full_header = hygiene_line + hygiene_notice(None, rules=final_rules) + header_tail

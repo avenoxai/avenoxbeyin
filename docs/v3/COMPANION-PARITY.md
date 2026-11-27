@@ -322,4 +322,21 @@ içeriğini açıklamadan `companion_rules_opening.omitted_rules` alanında bild
 `doctor` standart bir referans açılışı ölçer. Canlı oturuma özel bildirimler
 kural metnine kalan payı ve atlanan aralığı değiştirebilir.
 
+Kırpılmaması gereken birkaç kural maddesine `<!-- beyin:pin -->` işareti
+koyabilirsiniz (maddenin herhangi bir satırına; Obsidian'da görünmez). Kırpma
+gerektiğinde işaretli maddeler önce yer alır: atlanan aralıktan gelenler kırpma
+işaretinin hemen önünde, tam madde olarak gösterilir ve işaretteki sayı yalnız
+gerçekten gösterilmeyen maddeleri sayar. Bu iki düzende de (baştan ve sondan ya da
+`rules-order=latest`) geçerlidir; ana `Kurallar.md` ile proje `Kurallar.md`
+dosyalarında aynı çalışır. Sabitlenenler kural payının en fazla yarısını kullanır
+(dosyadaki sırayla, sığanlar); sığmayan işaretli maddeler normal kırpılır ve
+`doctor` bunları `pinned_omitted` alanında ve `--human` çıktısında bildirir.
+
+`doctor`, proje klasörlerindeki (`projects/<proje>/Kurallar.md`, `🏰 300-Projects/<proje>/Kurallar.md`
+ve proje kapsamı eşlemeleri) kural dosyalarını da aynı referans açılışla ölçer ve yalnız
+kırpılan ya da `sync` sonrası değişmiş (`stale`) olanları
+`companion_rules_opening.project_rules` altında listeler. Gizli (`visibility: private`),
+güvenilmeyen ya da dışlanan klasördeki proje kuralları listelenmez; tanı salt okunurdur
+ve tek çağrıda en fazla 50 proje dosyasına bakar.
+
 Doctor, kaynak doğrulamasından geçmeyen Kurallar.md için açılış ölçümünü `stale` olarak bildirir; `beyin.py sync` sonrasında yeniden kontrol edin. Bu tanı salt okunurdur, dışlanan kural metnini göstermez ve kuralları arşive taşımaz.

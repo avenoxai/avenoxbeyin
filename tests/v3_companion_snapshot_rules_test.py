@@ -190,6 +190,41 @@ class SnapshotTest(unittest.TestCase):
                 expected = companion.clip(rules_file(45600)[0], rules['share'], both=True, tail=True)
                 self.assertEqual(section(text, 'Kurallar.md'), expected)
 
+    def test_pinned_rules_take_at_most_half_the_room_in_both_orders(self):
+        # #890: pinned rules from the omitted range come before the marker, whole; the
+        # marker and report count only what is left out; pins past half the room clip.
+        text, count = rules_file(12000)
+        pins = {7, 40, 90, 120}
+        for n in pins:
+            text = text.replace(f'- R{n:04d} ', f'- R{n:04d} <!-- beyin:pin --> ')
+        for latest in (False, True):
+            source = (companion.LATEST_RULES + '\n' if latest else '') + text
+            for budget in (900, 1500, 2600, 4000):
+                with self.subTest(latest=latest, budget=budget):
+                    report = {}
+                    shown = companion.clip(source, budget, both=True, tail=True, rules_report=report)
+                    self.assertLessEqual(len(shown), budget)
+                    first, last, omitted, total = map(int, MARKER.search(shown).groups())
+                    numbers = [int(n) for n in re.findall(r'(?m)^- R(\d{4}) ', shown)]
+                    self.assertEqual(len(numbers), len(set(numbers)))
+                    inside = [n for n in numbers if first <= n <= last]
+                    self.assertTrue(set(inside) <= pins, inside)
+                    self.assertEqual(omitted, last - first + 1 - len(inside))
+                    self.assertEqual(report['omitted_rules'], {'first': first, 'last': last, 'count': omitted, 'total': total})
+                    self.assertEqual(report.get('pinned_omitted', 0),
+                                     sum(first <= n <= last and n not in inside for n in pins))
+                    gap = len(f'\n[truncated: rules {total}-{total} ({total} of {total}) omitted here; read source]\n')
+                    pinned_chars = sum(len(re.search(rf'(?m)^- R{n:04d} .*\n', source)[0]) for n in inside)
+                    self.assertLessEqual(pinned_chars, (budget - gap) // 2)
+                    if budget >= 1500:
+                        self.assertTrue(pins & set(numbers) >= {7, 40}, numbers)
+        # Without a pin the cut is the one before #890.
+        report = {}
+        plain = companion.clip(rules_file(12000)[0], 1500, both=True, tail=True, rules_report=report)
+        first, last, omitted, total = map(int, MARKER.search(plain).groups())
+        self.assertEqual(omitted, last - first + 1)
+        self.assertNotIn('pinned_omitted', report)
+
     def test_rules_notice_keeps_long_receipt_within_total_budget(self):
         for name, body in self.bodies.items():
             self.write(name, body)
@@ -279,9 +314,42 @@ class InstalledOpeningTest(unittest.TestCase):
         self.rules(text)
         context = self.session_start()
         self.assertLessEqual(len(context), 5000)
+        self.assertLessEqual(len(context.encode('utf-16-le')) // 2, 10000)
         shown = section(context, 'Kurallar.md')
         self.assertIn('R0050', shown)
         self.assertIn('<!-- beyin:pin -->', shown)
+        # The marker counts only the rules really left out: the pinned one is shown (#890).
+        first, last, omitted, total = map(int, MARKER.search(shown).groups())
+        self.assertTrue(first < 50 < last, (first, last))
+        numbers = [int(n) for n in re.findall(r'(?m)^- R(\d{4}) ', shown)]
+        self.assertEqual(omitted, last - first + 1 - sum(first <= n <= last for n in numbers))
+        self.assertEqual(omitted, last - first)
+        report = json.loads(self.run_cli(self.vault / 'beyin.py', 'doctor', '--json'))['companion_rules_opening']
+        self.assertEqual(report['omitted_rules'], {'first': first, 'last': last, 'count': omitted, 'total': total})
+        self.assertNotIn('pinned_omitted', report)
+
+    def test_doctor_reports_pins_past_their_cap_for_main_and_project_rules(self):
+        # Pinning every rule cannot bring the clipping back (#890): pins take at most half
+        # the rule room, the rest clip as usual and doctor counts them.
+        text, count = rules_file(25000)
+        pinned = re.sub(r'(?m)^- (R\d{4}) ', r'- \1 <!-- beyin:pin --> ', text)
+        (self.vault / 'projects' / 'alpha').mkdir(parents=True)
+        (self.vault / 'projects' / 'alpha' / 'Kurallar.md').write_text(pinned, encoding='utf-8', newline='\n')
+        self.rules(pinned)
+        context = self.session_start()
+        self.assertLessEqual(len(context.encode('utf-16-le')) // 2, 10000)
+        before = self.tree()
+        report = json.loads(self.run_cli(self.vault / 'beyin.py', 'doctor', '--json'))['companion_rules_opening']
+        human = self.run_cli(self.vault / 'beyin.py', 'doctor', '--human')
+        self.assertEqual(self.tree(), before, 'doctor must not write')
+        self.assertEqual(report['status'], 'clipped')
+        self.assertEqual(report['pinned_omitted'], report['omitted_rules']['count'])
+        self.assertIn(f'Sabitlenmis (beyin:pin) {report["pinned_omitted"]} kural acilis payina sigmiyor (bilgi)', human)
+        project = report['project_rules'][0]
+        self.assertEqual((project['source'], project['status']), ('projects/alpha/Kurallar.md', 'clipped'))
+        self.assertEqual(project['pinned_omitted'], project['omitted_rules']['count'])
+        self.assertIn(f'Sabitlenmis (beyin:pin) {project["pinned_omitted"]} kural acilis payina sigmiyor '
+                      '(projects/alpha/Kurallar.md) (bilgi)', human)
 
     def test_latest_rule_order_preserves_complete_newest_items(self):
         raw, count = rules_file(15600)
