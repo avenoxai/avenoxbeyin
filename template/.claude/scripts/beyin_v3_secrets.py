@@ -36,7 +36,15 @@ _SECRET_NAME = (r"(?!(?:pad|eos|bos|unk|sep|cls|mask)_token(?a:(?![a-z0-9_])))"
 # the Turkish İ and ı, which hid the whole value of KİŞİSEL_API_KEY=... while
 # MÜŞTERI_API_KEY=... was masked.
 _NAME_START = r"(?a:(?<![a-z0-9_]))"
-_SECRET_VALUE = r"""(?:\\{0,8}["\']\S{8,}\\{0,8}["\']|\x60[^\x60\s]{8,}\x60|[^"\'\x60\s,;][^\x60\s,;]{7,})"""
+# An unquoted value stops at a backtick, so `NAME=value` keeps its closing
+# inline-code backtick. A backtick-quoted value (NAME=`value`, NAME=``value``)
+# is masked whole when a backtick closes it or the line ends, as an inline code
+# span may wrap to the next line; only one closing backtick is taken, so
+# `NAME=`value`` keeps the outer span's. A span with a space inside stays prose:
+# no branch masks only its first word.
+_SECRET_VALUE = (r"""(?:\\{0,8}["\']\S{8,}\\{0,8}["\']"""
+                 r"""|\x60+[^\x60\s]{8,}(?:\x60|(?=[ \t]*(?:\r?\n|\Z)))"""
+                 r"""|[^"\'\x60\s,;][^\x60\s,;]{7,})""")
 
 
 BUILTIN_PATTERNS = (

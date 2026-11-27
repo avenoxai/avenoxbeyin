@@ -78,6 +78,37 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
             with self.subTest(format=text.split()[0]):
                 self.assertEqual(redact(text, self.state), ("[REDACTED]", 1))
 
+    def test_backtick_quoted_values_are_masked_whole_and_keep_markdown(self):
+        # 3.16.0 stopped the unquoted value at a backtick, which left NAME=`value`
+        # visible (#907); each case below keeps all of VALUE out of the result.
+        for text, expected in (
+                (f"export API_KEY=`{VALUE}`", "export [REDACTED]"),
+                (f"```bash\nexport OPENAI_API_KEY=`{VALUE}`\n```", "```bash\nexport [REDACTED]\n```"),
+                (f"API_KEY=`{VALUE}`.", "[REDACTED]."),
+                (f"PASSWORD: `{VALUE}`; next", "[REDACTED]; next"),
+                (f"secret=`{VALUE}`)", "[REDACTED])"),
+                (f"API_KEY=`\"{VALUE}\"`", "[REDACTED]"),
+                (f"API_KEY=``{VALUE}``", "[REDACTED]`"),
+                (f"- `OPENAI_API_KEY=`{VALUE}``", "- `[REDACTED]`"),
+                (f"`API_KEY={VALUE}`", "`[REDACTED]`"),
+                (f"API_KEY=`{VALUE}", "[REDACTED]"),
+                (f"API_KEY=`{VALUE}\r\nsonra`", "[REDACTED]\r\nsonra`"),
+                (f"API_KEY=`{VALUE}` ve TOKEN=`{VALUE}x`", "[REDACTED] ve [REDACTED]")):
+            with self.subTest(text=text):
+                result, count = redact(text, self.state)
+                self.assertEqual(result, expected)
+                self.assertGreaterEqual(count, 1)
+                self.assertNotIn(VALUE[:8], result)
+        # Variable names, short or spaced inline code and non-secret names stay text.
+        for text in ("Use `SECRET_KEY` or `API_KEY=` in the example.",
+                     "`SECRET_KEY=`\n`NEXT_SETTING_NAME`",
+                     "Set `API_KEY=`, `TOKEN=` ve `SECRET=` adlari.",
+                     "TOKEN: `npm run build`", "password: `correct horse battery staple`",
+                     "TOKEN=`config.secrets.token --flag`", "`KEY=${VAR}`",
+                     f"KEY=`{VALUE}`", "TOKEN=```\nnot_a_secret_here\n```"):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text, self.state), (text, 0))
+
     def test_pem_body_is_masked_without_trailer_and_does_not_swallow_prose(self):
         begin = "-----BEGIN PRIVATE KEY-----"
         body = "QUJD" * 16  # Synthetic base64, no private key.

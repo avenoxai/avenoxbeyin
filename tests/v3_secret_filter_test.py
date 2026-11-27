@@ -414,7 +414,9 @@ class SecretFilterTest(unittest.TestCase):
     def test_pathological_runs_stay_linear(self):
         for text in ('\\' * 20000 + 'password', 'x://' + ':' * 20000, 'x://' + 'a:' * 10000,
                      'password: "' + 'a' * 20000, 'password: "a' * 2000,
-                     'password=' + ' ' * 100000 + '"' + 'A' * 7):
+                     'password=' + ' ' * 100000 + '"' + 'A' * 7,
+                     'password=' + '`' * 100000, 'password=`' + 'a' * 100000 + ' x',
+                     'password=`' * 20000, 'password=' + '`a' * 50000):
             with self.subTest(text=text[:12], length=len(text)):
                 started = time.monotonic()
                 redact(text, self.state)
