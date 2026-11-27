@@ -1167,6 +1167,87 @@ class BridgeTest(unittest.TestCase):
         self.assertIn('--harness antigravity', reminder['reason'])
         self.assertEqual(self.agy_run(stop_command, stop), {'decision': 'stop'})
 
+    def test_antigravity_abnormal_stop_respects_termination_reason_and_error(self):
+        # Abnormal/terminal Stop reasons and non-empty errors must stop immediately without
+        # queuing, spawning a worker, or clearing the external-project .edited marker.
+        abnormal_reasons = (
+            'USER_CANCELED',
+            'ERROR',
+            'MAX_INVOCATIONS',
+            'MAX_FORCED_INVOCATIONS',
+            'MAX_TOKEN_BUDGET_EXCEEDED',
+            'TERMINAL_STEP_TYPE',
+            'TERMINAL_CUSTOM_HOOK',
+            'INJECTED_RESPONSE',
+        )
+        session = 'agy-bridge-abnormal'
+        target = str(self.project / 'app.py')
+        tool = dict(hookEventName='PostToolUse', conversationId=session, workspacePaths=[str(self.project)],
+                    lastUserInput='edit it', error='', toolCall={'name': 'write_file', 'args': {'Path': target}})
+        self.assertEqual(self.invoke(tool, harness='antigravity', cwd=self.home), {})
+        namespaced = json.dumps([str(self.project.resolve()), session])
+        digest = hashlib.sha256(namespaced.encode('utf-8')).hexdigest()
+        edited = self.state / 'receipt-reminders' / (digest + '.edited')
+        done = self.state / 'receipt-reminders' / (digest + '.done')
+        self.assertTrue(edited.exists())
+        self.assertEqual(self.queued(), [])
+
+        base_stop = dict(hookEventName='Stop', conversationId=session, workspacePaths=[str(self.project)],
+                         fullyIdle=True, continuationActive=False, executionNum=0, lastUserInput='edit it')
+
+        def stop_run(**fields):
+            return self.invoke(dict(base_stop, **fields), extra=['--native-event', 'Stop'],
+                               harness='antigravity', cwd=self.home)
+
+        for reason in abnormal_reasons:
+            with self.subTest(terminationReason=reason):
+                res = stop_run(terminationReason=reason, error='')
+                self.assertEqual(res, {'decision': 'stop'})
+                self.assertTrue(edited.exists())
+                self.assertFalse(done.exists())
+                self.assertEqual(self.queued(), [])
+
+        for fields in ({'terminationReason': 'NO_TOOL_CALL', 'error': 'model failure'}, {'error': 'tool failure'}):
+            with self.subTest(error_case=fields):
+                res = stop_run(**fields)
+                self.assertEqual(res, {'decision': 'stop'})
+                self.assertTrue(edited.exists())
+                self.assertFalse(done.exists())
+                self.assertEqual(self.queued(), [])
+
+        # In-process verification: abnormal Stop never invokes hook.main or spawns a worker.
+        inproc_payload = dict(base_stop, terminationReason='USER_CANCELED', error='')
+        argv = ['--vault', str(self.vault), '--state', str(self.state), '--harness', 'antigravity',
+                '--project-root', str(self.root / 'Projects'), '--native-event', 'Stop']
+        out = io.StringIO()
+        with patch.object(sys, 'stdin', io.StringIO(json.dumps(inproc_payload))), \
+                contextlib.redirect_stdout(out), \
+                patch.object(hook, 'main') as hook_mock, \
+                patch.object(subprocess, 'Popen') as popen_mock:
+            code = bridge.main(argv)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue()), {'decision': 'stop'})
+        hook_mock.assert_not_called()
+        popen_mock.assert_not_called()
+
+        # Next normal NO_TOOL_CALL turn still sees preserved .edited and asks for a receipt.
+        normal = stop_run(terminationReason='NO_TOOL_CALL', error='')
+        self.assertEqual(normal.get('decision'), 'continue')
+        self.assertIn('note-create', normal.get('reason', ''))
+        self.assertIn('--harness antigravity', normal['reason'])
+
+        # Legacy clients omitting terminationReason and error keep normal reminder behaviour.
+        legacy_session = 'agy-bridge-legacy'
+        self.assertEqual(self.invoke(dict(tool, conversationId=legacy_session),
+                                     harness='antigravity', cwd=self.home), {})
+        legacy_payload = dict(hookEventName='Stop', conversationId=legacy_session,
+                              workspacePaths=[str(self.project)], fullyIdle=True,
+                              continuationActive=False, lastUserInput='edit it')
+        legacy_res = self.invoke(legacy_payload, extra=['--native-event', 'Stop'],
+                                 harness='antigravity', cwd=self.home)
+        self.assertEqual(legacy_res.get('decision'), 'continue')
+        self.assertIn('note-create', legacy_res.get('reason', ''))
+
     def test_folder_below_another_installed_vault_is_skipped_for_every_client(self):
         # The owning vault is found by walking up, so a subfolder is as silent as the vault root.
         below = self.root / 'Projects' / 'second-vault' / 'notes' / 'deep'; below.mkdir(parents=True)
