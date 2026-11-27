@@ -1,4 +1,4 @@
-"""Optional context-fill reminder for Claude Code Stop events.
+"""Optional context-fill reminder for Claude Code and Antigravity Stop events.
 
 Tracks accumulated context tokens per session and reminds the agent to write a
 handoff card and receipt before the context window fills up.
@@ -76,9 +76,13 @@ def load_session_state(state_dir, session_digest):
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             return dict(tokens=0, last_reminded_at=0, reminders_sent=0)
-        return {key: value for key, value in data.items()
-                if key in ("tokens", "last_reminded_at", "last_reminded_tokens", "reminders_sent")
-                and type(value) in (float, int) and value >= 0}
+        result = {key: value for key, value in data.items()
+                  if key in ("tokens", "last_reminded_at", "last_reminded_tokens", "reminders_sent")
+                  and type(value) in (float, int) and value >= 0}
+        cp = data.get("checkpoint_step")
+        if type(cp) is int and cp >= 0:
+            result["checkpoint_step"] = cp
+        return result
     except (json.JSONDecodeError, UnicodeDecodeError, OSError):
         return dict(tokens=0, last_reminded_at=0, reminders_sent=0)
 
@@ -117,6 +121,64 @@ def _usage_tokens(usage):
         return 0
     keys = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
     return sum(usage[k] for k in keys if type(usage.get(k)) is int and usage[k] > 0)
+
+
+def _has_optout_text(value):
+    if isinstance(value, str):
+        return "[kaydetme]" in value.casefold()
+    if isinstance(value, list):
+        return any(_has_optout_text(item.get("text") if isinstance(item, dict) else item) for item in value)
+    return False
+
+
+def _antigravity_step_tokens(row):
+    if not isinstance(row, dict):
+        return 0
+    return sum(row[k] for k in ("input_tokens", "cache_read_tokens")
+               if type(row.get(k)) is int and row[k] > 0)
+
+
+def _extract_antigravity_context_tokens(payload):
+    """Read only the bounded tail of an Antigravity transcript. Never persist transcript content.
+
+    Returns (tokens, checkpoint_step): newest PLANNER_RESPONSE context size after the turn's
+    USER_INPUT or latest CHECKPOINT, and the highest integer CHECKPOINT step_index in the tail.
+    """
+    from beyin_v3_hook import _antigravity_tail
+    lines = _antigravity_tail(payload.get("transcriptPath"))
+    if not lines:
+        return 0, None
+    tokens = 0
+    checkpoint_step = None
+    turn_done = False
+    for raw in reversed(lines):
+        if not raw.strip():
+            continue
+        if turn_done and b"CHECKPOINT" not in raw:
+            continue
+        try:
+            row = json.loads(raw)
+        except (ValueError, UnicodeError):
+            continue
+        if not isinstance(row, dict):
+            continue
+        kind = row.get("type")
+        if kind == "CHECKPOINT" and row.get("source") in (None, "SYSTEM"):
+            turn_done = True
+            step = row.get("step_index")
+            if type(step) is int and step >= 0 and (checkpoint_step is None or step > checkpoint_step):
+                checkpoint_step = step
+            continue
+        if turn_done:
+            continue
+        if kind == "USER_INPUT":
+            if _has_optout_text(row.get("content")):
+                return 0, None
+            turn_done = True
+            continue
+        if not tokens and kind == "PLANNER_RESPONSE" and row.get("source") in (None, "MODEL"):
+            tokens = _antigravity_step_tokens(row)
+    return tokens, checkpoint_step
 
 
 def _extract_context_tokens(payload, transcript_session=None):
@@ -212,11 +274,12 @@ def should_remind(state_dir, session_id, config, state):
 def context_fill_reminder(payload, state_dir, harness, event, *, transcript_session=None):
     """Main entry point for context-fill reminder at Stop event.
 
-    Returns a dict with {"decision": "block", "reason": "..."} if reminder should fire,
+    Returns {"decision": "block", "reason": "..."} for Claude Code or
+    {"decision": "continue", "reason": "..."} for Antigravity if reminder should fire,
     or None if no reminder needed.
     """
-    # Only for claude harness at Stop event
-    if harness != "claude" or event != "Stop":
+    # Only for claude and antigravity harnesses at Stop event
+    if harness not in ("claude", "antigravity") or event != "Stop":
         return None
 
     # Silencing conditions
@@ -224,6 +287,10 @@ def context_fill_reminder(payload, state_dir, harness, event, *, transcript_sess
         return None
     if payload.get("stop_hook_active") is True:
         return None
+    if harness == "antigravity":
+        count = payload.get("executionNum")
+        if payload.get("continuationActive") is True or (type(count) is int and count > 0):
+            return None
 
     try:
         session_id = payload.get("session_id")
@@ -237,33 +304,57 @@ def context_fill_reminder(payload, state_dir, harness, event, *, transcript_sess
 
         # Check for [kaydetme] opt-out in prompt (same as receipt_reminder)
         prompt = payload.get("prompt") or ""
-        if "[kaydetme]" in str(prompt):
+        if _has_optout_text(prompt) or (prompt and "[kaydetme]" in str(prompt).casefold()):
             return None
+        if harness == "antigravity":
+            last_input = payload.get("lastUserInput") or ""
+            if _has_optout_text(last_input) or (last_input and "[kaydetme]" in str(last_input).casefold()):
+                return None
 
-        # Extract context tokens from the last assistant message
-        tokens = _extract_context_tokens(payload, transcript_session)
-        if tokens == 0:
+        # Extract context tokens from the last model response
+        if harness == "antigravity":
+            tokens, checkpoint_step = _extract_antigravity_context_tokens(payload)
+        else:
+            tokens, checkpoint_step = _extract_context_tokens(payload, transcript_session), None
+        if tokens == 0 and checkpoint_step is None:
             return None
 
         # Load session state
         session_digest = _session_digest(session_id)
+        if tokens == 0 and not _session_state_path(state_dir, session_digest).is_file():
+            return None
         folder = _state_dir(state_dir)
         _unlinked(folder)
         folder.mkdir(parents=True, exist_ok=True, mode=0o700)
         with _ledger_lock(folder, timeout=0, lock_name="writer.lock"):
             state = load_session_state(state_dir, session_digest)
+            saved_cp = state.get("checkpoint_step")
+            compacted = checkpoint_step is not None and (saved_cp is None or checkpoint_step > saved_cp)
+            had_progress = False
+            if compacted:
+                had_progress = (state.get("reminders_sent", 0) > 0
+                                or state.get("last_reminded_tokens", 0) > 0
+                                or _session_state_path(state_dir, session_digest).is_file())
+                state = dict(tokens=0, last_reminded_at=0, reminders_sent=0, checkpoint_step=checkpoint_step)
+                if tokens == 0:
+                    if had_progress:
+                        save_session_state(state_dir, session_digest, state)
+                    return None
+            elif tokens == 0:
+                return None
             state["tokens"] = tokens
             threshold = _threshold(config, state)
             remind, new_state, _ = should_remind(state_dir, session_id, config, state)
             if not remind:
+                if compacted and had_progress:
+                    save_session_state(state_dir, session_digest, state)
                 return None
             save_session_state(state_dir, session_digest, new_state)
             _cleanup_old_states(state_dir)
 
-        # Return blocking decision
         return {
-            "decision": "block",
-            "reason": reminder_reason(tokens, threshold)
+            "decision": "continue" if harness == "antigravity" else "block",
+            "reason": reminder_reason(tokens, threshold),
         }
 
     except Exception:
