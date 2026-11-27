@@ -9,10 +9,22 @@ import unittest
 from v3_package_helpers import inherited_env
 
 
+# Pin what the isolated config would otherwise leave to the Git version or platform:
+# the branch name of a clone of the empty remote, signing, line endings and auto-gc.
+PINNED_CONFIG = (
+    '-c', 'init.defaultBranch=main', '-c', 'commit.gpgSign=false',
+    '-c', 'core.autocrlf=false', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false',
+)
+
+
+def write_text(path, contents):
+    path.write_text(contents, encoding='utf-8', newline='\n')
+
+
 def write_checkpoint(vault, writer, contents):
     if (vault / 'writer.lock').read_text(encoding='utf-8').strip() != writer:
         raise PermissionError('writer does not hold the local lock')
-    (vault / 'checkpoint.md').write_text(contents, encoding='utf-8')
+    write_text(vault / 'checkpoint.md', contents)
 
 
 @unittest.skipUnless(shutil.which('git'), 'Git is not installed')
@@ -23,18 +35,22 @@ class MultiMachineOfflineSimTest(unittest.TestCase):
             remote, a, b = (root / name for name in ('remote.git', 'vault-a', 'vault-b'))
             template = root / 'empty-template'
             template.mkdir()
+            # GIT_CONFIG_GLOBAL does not cover the user's XDG ignore and attributes files.
+            home = root / 'home'
+            home.mkdir()
             env = {key: value for key, value in inherited_env().items()
                    if not key.upper().startswith('GIT_')}
             env.update(GIT_ALLOW_PROTOCOL='file', GIT_CONFIG_NOSYSTEM='1',
                        GIT_CONFIG_GLOBAL=os.devnull, GIT_TEMPLATE_DIR=str(template),
+                       HOME=str(home), XDG_CONFIG_HOME=str(home / '.config'),
                        GIT_AUTHOR_NAME='Simulation', GIT_COMMITTER_NAME='Simulation',
                        GIT_AUTHOR_EMAIL='simulation.invalid',
                        GIT_COMMITTER_EMAIL='simulation.invalid', LC_ALL='C')
 
             def git(repo, *args, expected=0):
                 result = subprocess.run(
-                    ['git', *map(str, args)], cwd=repo, env=env, capture_output=True,
-                    encoding='utf-8', errors='replace', timeout=30,
+                    ['git', *PINNED_CONFIG, *map(str, args)], cwd=repo, env=env,
+                    capture_output=True, encoding='utf-8', errors='replace', timeout=30,
                 )
                 self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
                 return result
@@ -46,7 +62,7 @@ class MultiMachineOfflineSimTest(unittest.TestCase):
 
             git(root, 'init', '--bare', '--initial-branch=main', remote)
             git(root, 'clone', remote, a)
-            (a / 'checkpoint.md').write_text('## Shared checkpoint\nBaseline\n', encoding='utf-8')
+            write_text(a / 'checkpoint.md', '## Shared checkpoint\nBaseline\n')
             commit(a, 'Create shared checkpoint')
             git(a, 'push', 'origin', 'main')
             git(root, 'clone', remote, b)
@@ -57,7 +73,7 @@ class MultiMachineOfflineSimTest(unittest.TestCase):
             for vault, writer, contents in ((a, 'A', contents_a), (b, 'B', contents_b)):
                 lock = vault / 'writer.lock'
                 self.assertFalse(lock.exists())
-                lock.write_text(writer + '\n', encoding='utf-8')
+                write_text(lock, writer + '\n')
                 write_checkpoint(vault, writer, contents)
             tip_a = commit(a, 'Save offline edit A')
             tip_b = commit(b, 'Save offline edit B')
@@ -89,13 +105,13 @@ class MultiMachineOfflineSimTest(unittest.TestCase):
 
             (a / 'writer.lock').unlink()
             handoff = 'A releases the writer lock for B.\n'
-            (a / 'handoff.md').write_text(handoff, encoding='utf-8')
+            write_text(a / 'handoff.md', handoff)
             commit(a, 'Hand off from A to B')
             git(a, 'push', 'origin', 'main')
             git(b, 'pull', '--ff-only')
             self.assertEqual((b / 'handoff.md').read_text(encoding='utf-8'), handoff)
             self.assertFalse((b / 'writer.lock').exists())
-            (b / 'writer.lock').write_text('B\n', encoding='utf-8')
+            write_text(b / 'writer.lock', 'B\n')
             commit(b, 'Acquire the writer lock for B')
             online_contents = '## Shared checkpoint\nOnline edit after hand-off\n'
             write_checkpoint(b, 'B', online_contents)
