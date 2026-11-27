@@ -1258,7 +1258,7 @@ def parser(note_namespace=None, is_json=False):
     state_compact.add_argument("--dry-run", action="store_true", help="Report what would be removed without writing")
     trace = sub.add_parser("chat-trace", help="Opt-in short conversation checkpoints; never saves transcripts")
     trace.add_argument("action", choices=("status", "on", "off", "write", "backfill"))
-    trace.add_argument("--harness", choices=("claude", "codex"))
+    trace.add_argument("--harness", choices=("claude", "codex", "antigravity"))
     trace.add_argument("--session", help="The 24-character Receipt session value shown by the hook")
     trace_text = trace.add_mutually_exclusive_group()
     trace_text.add_argument("--text", help="Explicit short summary; dated paragraph must fit 450 characters")

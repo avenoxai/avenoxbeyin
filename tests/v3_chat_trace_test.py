@@ -352,6 +352,175 @@ class TraceTest(unittest.TestCase):
             self.trace.configure(self.state, False)
         self.assertTrue(json.loads(external.read_text())['enabled'])
 
+    def _ag_transcript(self, name, rows):
+        path = (self.root / name).resolve()
+        path.write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8')
+        return path
+
+    def test_antigravity_human_turn_requires_explicit_user_transcript_metadata(self):
+        self.enable()
+        valid = self._ag_transcript('ag-human.jsonl', [
+            {'step_index': 0, 'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'content': CANARY},
+        ])
+        base = {'session_id': 'synthetic-ag', 'prompt': CANARY, 'lastUserInput': CANARY,
+                'initialNumSteps': 1, 'transcriptPath': str(valid)}
+        self.assertTrue(self.trace.human_turn('antigravity', base))
+
+        # Multi-turn human transcript ending on a fresh USER_INPUT step.
+        multi = self._ag_transcript('ag-multi.jsonl', [
+            {'step_index': 0, 'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'content': 'ilk'},
+            {'step_index': 1, 'type': 'PLANNER_RESPONSE', 'source': 'MODEL', 'content': 'cevap'},
+            {'step_index': 2, 'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'content': 'ikinci'},
+        ])
+        self.assertTrue(self.trace.human_turn('antigravity', dict(base, initialNumSteps=3, transcriptPath=str(multi))))
+
+        # Large (> 64 KiB) transcript with USER_EXPLICIT in head passes without reading the whole file.
+        big_head = (self.root / 'ag-big-head.jsonl').resolve()
+        big_head.write_text(
+            json.dumps({'step_index': 0, 'type': 'USER_INPUT', 'source': 'USER_EXPLICIT'}) + '\n'
+            + 'THIS IS HUGE AND NOT JSON ' + ('x' * 70_000) + '\n',
+            encoding='utf-8',
+        )
+        self.assertTrue(self.trace.human_turn('antigravity', {'session_id': 'synthetic-ag', 'prompt': CANARY,
+                                                              'transcriptPath': str(big_head)}))
+
+        # Large (> 64 KiB) transcript with USER_EXPLICIT only in bounded tail still verifies.
+        big_tail = (self.root / 'ag-big-tail.jsonl').resolve()
+        big_tail.write_text(
+            json.dumps({'step_index': 0, 'type': 'PLANNER_RESPONSE', 'content': 'x' * 70_000}) + '\n'
+            + json.dumps({'step_index': 1, 'type': 'USER_INPUT', 'source': 'USER_EXPLICIT'}) + '\n',
+            encoding='utf-8',
+        )
+        self.assertTrue(self.trace.human_turn('antigravity', {'session_id': 'synthetic-ag', 'prompt': CANARY,
+                                                              'transcriptPath': str(big_tail)}))
+
+        # Missing, relative, UNC, non-.jsonl, non-canonical, and malformed transcript paths fail closed.
+        non_jsonl = (self.root / 'ag-human.json').resolve()
+        non_jsonl.write_text(valid.read_text(encoding='utf-8'), encoding='utf-8')
+        sub = self.root / 'sub'
+        sub.mkdir()
+        non_canonical = str(sub / '..' / valid.name)
+        for bad_path in (None, '', 'ag-human.jsonl', r'\\server\share\ag.jsonl', '//server/share/ag.jsonl',
+                         str(non_jsonl), non_canonical, str(self.root / 'missing.jsonl'), str(valid) + '\0'):
+            with self.subTest(bad_path=bad_path):
+                self.assertFalse(self.trace.human_turn('antigravity', dict(base, transcriptPath=bad_path)))
+
+        # Subagent / programmatic / malformed transcripts without USER_EXPLICIT fail closed.
+        for label, content in (
+            ('planner-only', json.dumps({'step_index': 0, 'type': 'PLANNER_RESPONSE', 'source': 'MODEL'}) + '\n'),
+            ('system-source', json.dumps({'step_index': 0, 'type': 'USER_INPUT', 'source': 'SYSTEM'}) + '\n'),
+            ('missing-source', json.dumps({'step_index': 0, 'type': 'USER_INPUT'}) + '\n'),
+            ('malformed-json', 'not-json\n'),
+            ('empty', ''),
+        ):
+            with self.subTest(transcript=label):
+                bad = (self.root / f'ag-{label}.jsonl').resolve()
+                bad.write_text(content, encoding='utf-8')
+                self.assertFalse(self.trace.human_turn('antigravity', dict(base, transcriptPath=str(bad))))
+
+        # Wakeup turn after PLANNER_RESPONSE (both with and without lastUserInput) is rejected.
+        wakeup = self._ag_transcript('ag-wakeup.jsonl', [
+            {'step_index': 0, 'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'content': 'eski'},
+            {'step_index': 1, 'type': 'PLANNER_RESPONSE', 'source': 'MODEL', 'content': 'sonuc'},
+        ])
+        self.assertFalse(self.trace.human_turn('antigravity', dict(base, initialNumSteps=2, transcriptPath=str(wakeup))))
+        without_last = {'session_id': 'synthetic-ag', 'prompt': CANARY,
+                        'initialNumSteps': 2, 'transcriptPath': str(wakeup)}
+        self.assertFalse(self.trace.human_turn('antigravity', without_last))
+
+        # Delegated / synthetic / no_memory signals still fail closed.
+        self.assertFalse(self.trace.human_turn('antigravity', dict(base, agent_id='worker')))
+        self.assertFalse(self.trace.human_turn('antigravity', dict(base, no_memory=True)))
+        self.assertFalse(self.trace.human_turn('antigravity', dict(base, prompt='<task-notification>done')))
+
+        # Reparse point / symlinked transcript is rejected (real symlink if supported, plus stat guard).
+        import stat
+        real_stat = valid.lstat()
+        fake_reparse = type('FakeStat', (), {
+            'st_mode': real_stat.st_mode,
+            'st_size': real_stat.st_size,
+            'st_reparse_tag': 0xA000000C,
+            'st_file_attributes': getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400),
+        })()
+        with patch.object(Path, 'lstat', return_value=fake_reparse):
+            self.assertFalse(self.trace.human_turn('antigravity', base))
+
+        link = (self.root / 'ag-link.jsonl').resolve()
+        try:
+            link.symlink_to(valid)
+        except OSError:
+            pass
+        else:
+            self.assertFalse(self.trace.human_turn('antigravity', dict(base, transcriptPath=str(link))))
+
+        self.assertFalse((self.state / self.trace.SESSIONS).exists())
+
+    def test_antigravity_hint_dedupes_steps_resets_on_receipt_and_suppresses(self):
+        from beyin_v3_sync import SyncEngine
+        self.enable()
+        raw_session = 'synthetic-ag-chat'
+        ag_session = hashlib.sha256(raw_session.encode()).hexdigest()[:24]
+        transcript = self._ag_transcript('ag-session.jsonl', [
+            {'step_index': 0, 'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'content': CANARY},
+            {'step_index': 1, 'type': 'PLANNER_RESPONSE', 'source': 'MODEL'},
+            {'step_index': 2, 'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'content': CANARY},
+            {'step_index': 3, 'type': 'PLANNER_RESPONSE', 'source': 'MODEL'},
+            {'step_index': 4, 'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'content': CANARY},
+            {'step_index': 5, 'type': 'PLANNER_RESPONSE', 'source': 'MODEL'},
+            {'step_index': 6, 'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'content': CANARY},
+        ])
+
+        def ag_payload(steps, **extra):
+            return dict({'session_id': raw_session, 'prompt': CANARY, 'lastUserInput': CANARY,
+                         'initialNumSteps': steps, 'transcriptPath': str(transcript)}, **extra)
+
+        # Turn 1 (step 1) and duplicate invocation at step 1 do not double-count.
+        self.assertEqual(self.trace.hint(self.state, 'antigravity', ag_payload(1)), '')
+        self.assertEqual(self.trace.hint(self.state, 'antigravity', ag_payload(1)), '')
+        marker_path = self.state / self.trace.SESSIONS / ('antigravity-' + ag_session + '.json')
+        self.assertEqual(json.loads(marker_path.read_text(encoding='utf-8'))['turns'], 1)
+
+        # Turn 2 (step 3) reaches next_due == 2 and emits hint naming --harness antigravity.
+        nudge = self.trace.hint(self.state, 'antigravity', ag_payload(3))
+        self.assertIn(NOTICE, nudge)
+        self.assertIn('--harness antigravity --session ' + ag_session, nudge)
+        # Repeated same initialNumSteps does not count again.
+        self.assertEqual(self.trace.hint(self.state, 'antigravity', ag_payload(3)), '')
+        raw_marker = marker_path.read_text(encoding='utf-8')
+        self.assertEqual(json.loads(raw_marker)['turns'], 2)
+        self.assertNotIn(CANARY, raw_marker)
+        self.assertNotIn(raw_session, raw_marker)
+
+        # Real receipt for this antigravity session resets next_due to turns + 2.
+        engine = SyncEngine(self.vault, self.state)
+        ref = self.vault / 'notes' / 'synthetic-ag.md'
+        ref.parent.mkdir()
+        ref.write_text('Antigravity sentetik notu.', encoding='utf-8')
+        engine.receipt('ag-receipt-1', 'Öğrenilen: adım sayacı kontrolü.', ['notes/synthetic-ag.md'],
+                       'antigravity', session=ag_session)
+        self.assertEqual(self.trace.hint(self.state, 'antigravity', ag_payload(5)), '')
+        self.assertIn(NOTICE, self.trace.hint(self.state, 'antigravity', ag_payload(7)))
+
+        # [kaydetme] suppresses a session (even without transcriptPath) and blocks explicit write.
+        opt_raw = 'synthetic-ag-optout'
+        opt_session = hashlib.sha256(opt_raw.encode()).hexdigest()[:24]
+        self.assertEqual(self.trace.hint(self.state, 'antigravity',
+                                         {'session_id': opt_raw, 'prompt': 'Bunu [kaydetme]'}), '')
+        self.assertEqual(self.trace.hint(self.state, 'antigravity', ag_payload(1, session_id=opt_raw)), '')
+        self.assertEqual(self.trace.hint(self.state, 'antigravity', ag_payload(3, session_id=opt_raw)), '')
+        with self.assertRaisesRegex(ValueError, 'suppressed'):
+            self.trace.write(self.vault, self.state, 'antigravity', opt_session, 'Sentetik özet')
+
+    def test_antigravity_write_creates_and_replays_monthly_trace(self):
+        self.enable()
+        first = self.trace.write(self.vault, self.state, 'antigravity', self.session,
+                                 'Antigravity zirkon planı: sabit ray denendi.')
+        self.assertEqual(first['status'], 'written')
+        self.assertFalse(first['remote_allowed'])
+        self.assertEqual(self.trace.write(self.vault, self.state, 'antigravity', self.session,
+                                          'Antigravity zirkon planı: sabit ray denendi.')['status'], 'unchanged')
+        self.assertTrue((self.state / self.trace.SESSIONS / ('antigravity-' + self.session + '.json')).is_file())
+
 
 class InstalledTraceTest(unittest.TestCase):
     def setUp(self):
@@ -418,6 +587,73 @@ class InstalledTraceTest(unittest.TestCase):
             self.assertEqual(done.returncode, 0, done.stderr + done.stdout)
         self.assertFalse((self.vault / '.beyin-preferences.json').exists())
         self.assertEqual(len(list((self.vault / 'knowledge/conversations').glob('*.md'))), 1)
+
+    def test_installed_antigravity_cli_write_and_preinvocation_hint(self):
+        conversation = 'synthetic-ag-installed'
+        session = hashlib.sha256(conversation.encode()).hexdigest()[:24]
+        transcript = (self.root / 'ag-installed.jsonl').resolve()
+        rows = [
+            {'step_index': 0, 'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'content': 'ilk'},
+            {'step_index': 1, 'type': 'PLANNER_RESPONSE', 'source': 'MODEL'},
+            {'step_index': 2, 'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'content': 'ikinci'},
+            {'step_index': 3, 'type': 'PLANNER_RESPONSE', 'source': 'MODEL'},
+            {'step_index': 4, 'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'content': 'ucuncu'},
+            {'step_index': 5, 'type': 'PLANNER_RESPONSE', 'source': 'MODEL'},
+        ]
+        transcript.write_text(''.join(json.dumps(r) + '\n' for r in rows), encoding='utf-8')
+
+        def ag_hook(event, **fields):
+            done = subprocess.run(
+                [sys.executable, str(self.vault / '.claude/scripts/beyin_v3_hook.py'),
+                 '--vault', str(self.vault), '--state', str(self.state),
+                 '--harness', 'antigravity', '--event', event],
+                input=json.dumps({'hookEventName': event, 'conversationId': conversation,
+                                  'cwd': str(self.vault), 'transcriptPath': str(transcript), **fields}),
+                capture_output=True, text=True, encoding='utf-8', env=self.env, timeout=30)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            return json.loads(done.stdout)
+
+        # Turn chat-trace on via installed CLI.
+        on_res = subprocess.run([sys.executable, str(self.vault / 'beyin.py'), 'chat-trace', 'on'],
+                                capture_output=True, text=True, encoding='utf-8', env=self.env,
+                                cwd=self.vault, timeout=30)
+        self.assertEqual(on_res.returncode, 0, on_res.stderr + on_res.stdout)
+
+        # SessionStart answers the first prompt; its matching PreInvocation is quiet.
+        ag_hook('SessionStart', lastUserInput='ilk soru')
+        self.assertEqual(ag_hook('PreInvocation', invocationNum=0, initialNumSteps=1, lastUserInput='ilk soru'), {})
+
+        # Turn 2 (1st UserPromptSubmit): counted once, duplicate step does not double-count.
+        t2 = ag_hook('PreInvocation', invocationNum=0, initialNumSteps=3, lastUserInput='ikinci soru')
+        self.assertNotIn(NOTICE, json.dumps(t2))
+        t2_dup = ag_hook('PreInvocation', invocationNum=0, initialNumSteps=3, lastUserInput='ikinci soru')
+        self.assertNotIn(NOTICE, json.dumps(t2_dup))
+
+        # Turn 3 (2nd UserPromptSubmit): emits [Sohbet izi] hint with --harness antigravity.
+        t3 = ag_hook('PreInvocation', invocationNum=0, initialNumSteps=5, lastUserInput='ucuncu soru')
+        ephemeral = t3.get('injectSteps', [{}])[0].get('ephemeralMessage', '')
+        self.assertIn(NOTICE, ephemeral)
+        self.assertIn('--harness antigravity --session ' + session, ephemeral)
+
+        # Wakeup turn after PLANNER_RESPONSE stays quiet.
+        self.assertEqual(ag_hook('PreInvocation', invocationNum=0, initialNumSteps=6, lastUserInput='ucuncu soru'), {})
+
+        # CLI chat-trace write --harness antigravity succeeds.
+        write_res = subprocess.run([sys.executable, str(self.vault / 'beyin.py'),
+                                    'chat-trace', 'write', '--harness', 'antigravity',
+                                    '--session', session, '--text', 'Antigravity CLI özeti.'],
+                                   capture_output=True, text=True, encoding='utf-8', env=self.env,
+                                   cwd=self.vault, timeout=30)
+        self.assertEqual(write_res.returncode, 0, write_res.stderr + write_res.stdout)
+        self.assertEqual(len(list((self.vault / 'knowledge/conversations').glob('*.md'))), 1)
+
+        # Backfill remains Claude Code only even with antigravity accepted on --harness.
+        backfill_res = subprocess.run([sys.executable, str(self.vault / 'beyin.py'),
+                                       'chat-trace', 'backfill', '--harness', 'antigravity'],
+                                      capture_output=True, text=True, encoding='utf-8', env=self.env,
+                                      cwd=self.vault, timeout=30)
+        self.assertEqual(backfill_res.returncode, 1, backfill_res.stdout)
+        self.assertIn('Claude Code transcripts only', backfill_res.stderr)
 
 
 if __name__ == '__main__':
