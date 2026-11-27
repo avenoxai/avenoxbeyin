@@ -178,6 +178,9 @@ def _notes_linked(a: dict, b: dict) -> bool:
     return b['path'] in a.get('linked', ()) or a['path'] in b.get('linked', ())
 
 
+# _evaluate_pair's answer for an overlap it would report but the two notes already link each other.
+_LINKED_PAIR = object()
+
 
 def _candidate(path: Path, rel_path: str, meta: dict, body: str) -> dict:
     title = str(meta.get('title') or '').strip()
@@ -423,8 +426,9 @@ def _evaluate_pair(a: dict, b: dict, threshold: float, min_shared: int) -> dict 
         return None
     if not conflict and _notes_linked(a, b):
         # Explicitly linked notes (e.g. summary <-> detail pairs) still surface status
-        # contradictions, without repeating near_duplicate/overlap "link them" noise.
-        return None
+        # contradictions, without repeating near_duplicate/overlap "link them" noise; the
+        # report counts them so a silenced pair is not invisible.
+        return _LINKED_PAIR
 
     finding = {
         'type': finding_type,
@@ -510,6 +514,7 @@ def audit_memory(
 
     findings = []
     pairs_compared = 0
+    linked_pairs_skipped = 0
 
     if target_candidate:
         for c in candidates:
@@ -517,7 +522,9 @@ def audit_memory(
                 continue
             pairs_compared += 1
             f = _evaluate_pair(target_candidate, c, threshold=threshold, min_shared=min_shared)
-            if f:
+            if f is _LINKED_PAIR:
+                linked_pairs_skipped += 1
+            elif f:
                 findings.append(f)
     else:
         # Inverted index for fast candidate selection
@@ -540,7 +547,9 @@ def audit_memory(
                         evaluated_pairs.add(pair_key)
                         pairs_compared += 1
                         f = _evaluate_pair(candidates[i], candidates[j], threshold=threshold, min_shared=min_shared)
-                        if f:
+                        if f is _LINKED_PAIR:
+                            linked_pairs_skipped += 1
+                        elif f:
                             findings.append(f)
 
     # Sort findings: status contradictions first, then highest overlap
@@ -554,6 +563,8 @@ def audit_memory(
         'target': target_rel,
         'notes_scanned': len(candidates),
         'pairs_compared': pairs_compared,
+        # Overlaps not reported because one note already links the other (summary <-> detail).
+        'linked_pairs_skipped': linked_pairs_skipped,
         'threshold': threshold,
         'min_shared': min_shared,
         'findings': findings,
@@ -567,12 +578,16 @@ def format_audit_human(report: dict) -> str:
     notes_scanned = report.get('notes_scanned', 0)
     pairs_compared = report.get('pairs_compared', 0)
     findings = report.get('findings', [])
+    linked_skipped = report.get('linked_pairs_skipped', 0)
 
     if target:
         lines.append(f"Hedef Not: {target}")
         lines.append(f"Karsilastirilan Not: {notes_scanned} | Bulgu: {len(findings)}\n")
     else:
         lines.append(f"Taranan Not: {notes_scanned} | Aday Karsilastirma: {pairs_compared} | Bulgu: {len(findings)}\n")
+
+    if linked_skipped:
+        lines.append(f"Birbirine bagli oldugu icin raporlanmayan ortusme: {linked_skipped} cift\n")
 
     if not findings:
         lines.append("Belirgin bir tekrar, celiski veya guncellik sorunu tespit edilmedi; hafiza durumu dengeli.")

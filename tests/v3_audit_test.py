@@ -203,6 +203,20 @@ class MemoryAuditorTest(unittest.TestCase):
         return [{f['older_note'], f['newer_note']} for f in report['findings']
                 if f['type'] in ('near_duplicate', 'substantial_overlap')]
 
+    def test_linked_pairs_are_counted_in_json_and_human_report(self):
+        """A silenced linked pair leaves a count, so the report does not hide it entirely."""
+        self._note('knowledge/ornek-plan.md', 'Ornek Plan Ozeti', 'Tam dokum: [[ornek-plan-detay]].')
+        self._note('knowledge/ornek-plan-detay.md', 'Ornek Plan Detay', 'Komut ornekleri eklendi.')
+        report = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+        self.assertEqual(report['findings'], [])
+        self.assertEqual(report['linked_pairs_skipped'], 1)
+        text = audit_module.format_audit_human(report)
+        self.assertIn('Birbirine bagli oldugu icin raporlanmayan ortusme: 1 cift', text)
+
+        target = audit_module.audit_memory(self.vault, state=self.state, target_file='knowledge/ornek-plan-detay.md',
+                                           threshold=0.60, min_shared=5)
+        self.assertEqual((target['findings'], target['linked_pairs_skipped']), ([], 1))
+
     def test_ambiguous_wikilink_name_does_not_silence_either_same_named_note(self):
         """[[name]] that two notes share links neither, so the real overlap is still reported."""
         self._note('knowledge/ornek-plan.md', 'Ornek Plan Ozeti', 'Tam dokum: [[detay]].')
@@ -212,6 +226,7 @@ class MemoryAuditorTest(unittest.TestCase):
         found = self._overlap_paths(report)
         self.assertIn({'knowledge/ornek-plan.md', 'projects/alfa/detay.md'}, found)
         self.assertIn({'knowledge/ornek-plan.md', 'projects/beta/detay.md'}, found)
+        self.assertEqual(report['linked_pairs_skipped'], 0)
 
     def test_folder_wikilink_resolves_by_unique_path_suffix(self):
         """[[concepts/ornek-plan]] names knowledge/concepts/ornek-plan.md the way Obsidian does."""
@@ -219,6 +234,7 @@ class MemoryAuditorTest(unittest.TestCase):
         self._note('knowledge/ornek-plan-detay.md', 'Ornek Plan Detay', 'Ozet: [[concepts/ornek-plan|ozet]].')
         report = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
         self.assertEqual(self._overlap_paths(report), [])
+        self.assertEqual(report['linked_pairs_skipped'], 1)
 
     def test_links_in_code_or_outside_the_vault_do_not_count(self):
         """A link quoted in inline/fenced code, or a Markdown path above the vault root, links nothing."""
@@ -228,6 +244,7 @@ class MemoryAuditorTest(unittest.TestCase):
                    'Dis kopya: [dis](../../ornek-plan-detay.md).')
         report = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
         self.assertEqual(self._overlap_paths(report), [{'knowledge/ornek-plan.md', 'ornek-plan-detay.md'}])
+        self.assertEqual(report['linked_pairs_skipped'], 0)
 
     def test_nfc_wikilink_matches_nfd_file_name(self):
         """A macOS/iCloud NFD file name still matches the composed [[Şube Özeti]] a person typed."""
@@ -238,6 +255,7 @@ class MemoryAuditorTest(unittest.TestCase):
         report = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
         self.assertEqual(report['notes_scanned'], 2)
         self.assertEqual(self._overlap_paths(report), [])
+        self.assertEqual(report['linked_pairs_skipped'], 1)
 
     def test_privacy_and_trust_boundary_excluded(self):
         """Notes with visibility: private, sensitive directory, or untrusted status are never audited."""
