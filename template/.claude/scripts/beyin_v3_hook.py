@@ -1004,7 +1004,7 @@ def main():
             payload["session_id"] = payload.get("conversationId", "unknown")
         payload["hook_event_name"] = event
         if event not in EVENTS or os.environ.get("BEYIN_V3_INTERNAL") or os.environ.get("BEYIN_V3_SKIP") == "1" or payload.get('no_memory') is True:
-            print("{}")
+            print(quiet(args.harness, event))
             return
         if event == 'SessionStart' and not args.metadata_only:
             from beyin_v3_releases import session_start
@@ -1481,7 +1481,7 @@ def main():
         if not args.metadata_only and locals().get("event") in ("SessionStart", "UserPromptSubmit"):
             print(json.dumps(output_context(args.harness, event, notice + "V3 source sync failed or conflicted. Run the local CLI doctor and verify current Markdown sources.")))
         else:
-            print("{}")
+            print(quiet(args.harness, locals().get("event") or args.event))
 
 
 if __name__ == "__main__":
