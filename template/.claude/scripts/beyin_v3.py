@@ -1036,6 +1036,8 @@ def query_term_coverage(query, records):
     pronouns and auxiliaries, single letters and short numbers are not terms, and one stem
     counts once. A hyphenated name (claude-mem, e-posta) is one term, as retrieval reads it
     (#430): a record holds it by its joined spelling or by every part that is a term itself.
+    A possessive also counts as held by its short Turkish root (boyum by Boy, _query_roots),
+    and two words on one root are one term ("boyum boyun").
     This is lexical coverage only: a synonym, a clipped tail or a scope filter also leaves a
     word unmatched.
     """
@@ -1062,13 +1064,19 @@ def query_term_coverage(query, records):
             if not needed:
                 continue  # every part is a wrapper, a single letter or a short number
             found = stem in covered or all(part in covered for part in needed)
-            keys = {stem, *needed}
+            keys, own = {stem, *needed}, {stem}
         else:
             word, stem = match.group(), _stem(match.group())
             if not is_term(stem):
                 continue
-            found, keys = stem in covered, {stem}
-        if stem in seen:
+            # A possessive meets its short root as in _query_roots (boyum -> Boy); the
+            # delivered records stand in for the frequency check retrieval already passed.
+            root = None if stem in _WHOLE_WORDS else _short_root(stem)
+            if root in _PRONOUN_ROOTS or root in STOPWORDS:
+                root = None
+            found = stem in covered or root in covered
+            keys = own = {stem, root} - {None}
+        if not own.isdisjoint(seen):
             continue
         seen.update(keys)
         terms.append(word)

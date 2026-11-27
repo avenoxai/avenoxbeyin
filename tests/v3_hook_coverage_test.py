@@ -70,6 +70,24 @@ class QueryTermCoverageTest(unittest.TestCase):
                          ['claude-mem'])
         self.assertEqual(beyin_v3.query_term_coverage('gpt-4o claude-mem claude', [])[0], ['gpt-4o', 'claude-mem'])
 
+    def test_possessive_is_held_by_its_short_root(self):
+        # Retrieval answers boyum with a note that says Boy (_query_roots); coverage must agree.
+        self.assertEqual(beyin_v3.query_term_coverage('benim boyum kaç cm?', [{'text': 'Boy: 180 cm.'}]),
+                         (['boyum', 'cm'], []))
+        self.assertEqual(beyin_v3.query_term_coverage('BOYUM KAÇ CM', [{'text': 'Boy: 180 cm.'}]),
+                         (['boyum', 'cm'], []))
+        self.assertEqual(beyin_v3.query_term_coverage('benim boyum kaç cm?', [{'text': 'Kilo: 75 kg, 180 cm.'}])[1],
+                         ['boyum'])
+
+    def test_short_root_counts_once_and_keeps_its_exceptions(self):
+        self.assertEqual(beyin_v3.query_term_coverage('boyum boyun', [{'text': 'Boy: 180'}]), (['boyum'], []))
+        self.assertEqual(beyin_v3.query_term_coverage('boy boyum', [])[0], ['boy'])
+        # A word of its own and a pronoun never fall back to the shorter word.
+        self.assertEqual(beyin_v3.query_term_coverage('durum raporu', [{'text': 'dur rapor'}])[1], ['durum'])
+        self.assertEqual(beyin_v3.query_term_coverage('bunu sunu', [{'text': 'bun sun'}])[1], ['bunu', 'sunu'])
+        # A plain word before a hyphenated name does not hide the name.
+        self.assertEqual(beyin_v3.query_term_coverage('claude claude-mem', [])[0], ['claude', 'claude-mem'])
+
     def test_empty_prompt_has_no_terms(self):
         self.assertEqual(beyin_v3.query_term_coverage('', [{'text': 'x'}]), ([], []))
         self.assertEqual(beyin_v3.query_term_coverage(None, []), ([], []))
@@ -204,6 +222,32 @@ class HookHyphenatedNameTest(HookVault):
                 body = envelope(self.invoke(prompt, BEYIN_V3_ABSTAIN_COVERAGE='0.5'))
                 self.assertFalse(body['abstained'])
                 self.assertEqual([r['source'] for r in body['records']], [source])
+
+
+class HookShortRootTest(HookVault):
+    """A possessive question answered by its short root is covered (TurkishShortRootTest with #909)."""
+    notes = {
+        'body/saglik.md': 'Boy: 180 cm. Kilo: 75 kg.',
+        'notes/pano.md': 'Pano ölçüsü 120 cm x 80 cm, parçalar 20 cm.',
+        'notes/kamera.md': 'Kamera odak mesafesi 30 cm.',
+    }
+    PROMPTS = ('benim boyum kaç cm?', 'BOYUM KAÇ CM')
+
+    def test_default_turn_does_not_call_the_possessive_unmatched(self):
+        for prompt in self.PROMPTS:
+            with self.subTest(prompt=prompt):
+                body = envelope(self.invoke(prompt))
+                self.assertEqual([r['source'] for r in body['records']], ['body/saglik.md'])
+                self.assertFalse(body['abstained'])
+                self.assertNotIn('unmatched_terms', body)
+
+    def test_threshold_keeps_the_answering_record(self):
+        for prompt in self.PROMPTS:
+            with self.subTest(prompt=prompt):
+                body = envelope(self.invoke(prompt, BEYIN_V3_ABSTAIN_COVERAGE='0.6'))
+                self.assertFalse(body['abstained'])
+                self.assertEqual([r['source'] for r in body['records']], ['body/saglik.md'])
+                self.assertNotIn('note', body)
 
 
 if __name__ == '__main__':
