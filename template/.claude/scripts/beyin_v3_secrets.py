@@ -40,15 +40,20 @@ _NAME_START = r"(?a:(?<![a-z0-9_]))"
 # inline-code backtick. A backtick-quoted value (NAME=`value`, NAME=``value``)
 # is masked whole when a backtick closes it or the line ends, as an inline code
 # span may wrap to the next line; only one closing backtick is taken, so
-# `NAME=`value`` keeps the outer span's. Three or more backticks open a fenced
+# `NAME=`value`` keeps the outer span's. Markdown writes a value that holds a
+# backtick as a double-backtick span (``Xy7`mN2``), so inside one a backtick that
+# a non-space character follows is part of the value, and the span closes only
+# at a second backtick or the line end. Three or more backticks open a fenced
 # block whose info string ends the line ("API key:\n```javascript"), so that run
 # needs a closing backtick. A span holding only an upper-case snake_case name
 # documents a variable ("API key: `OPENAI_API_KEY` okunur"), so it stays text;
 # the check is case-sensitive under the pattern's (?i). A span with a space
-# inside stays prose: no branch masks only its first word.
+# inside stays prose (``value` rest``): no branch masks only its first word.
 _SECRET_VALUE = (r"""(?:\\{0,8}["\']\S{8,}\\{0,8}["\']"""
                  r"""|(?!(?-i:\x60+[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\x60))"""
-                 r"""(?:\x60{1,2}[^\x60\s]{8,}(?:\x60|(?=[ \t]*(?:\r?\n|\Z)))"""
+                 r"""(?:\x60[^\x60\s]{8,}(?:\x60|(?=[ \t]*(?:\r?\n|\Z)))"""
+                 r"""|\x60\x60[^\x60\s](?:[^\x60\s]|\x60(?=[^\x60\s])){7,}"""
+                 r"""(?:\x60(?=\x60|[ \t]*(?:\r?\n|\Z))|(?=[ \t]*(?:\r?\n|\Z)))"""
                  r"""|\x60{3,}[^\x60\s]{8,}\x60)"""
                  r"""|[^"\'\x60\s,;][^\x60\s,;]{7,})""")
 

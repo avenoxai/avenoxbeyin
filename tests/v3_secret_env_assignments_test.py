@@ -109,6 +109,36 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(redact(text, self.state), (text, 0))
 
+    def test_double_backtick_value_holding_a_backtick_is_masked_whole(self):
+        # Markdown writes a value that holds a backtick as ``value``; the branch
+        # closed on the inner backtick, reported a mask and left the tail visible.
+        store = runtime.MemoryStore(self.state, self.vault)
+        inner = 'Xy7#kL9a`mN2$pQ4!'
+        for text, expected in (
+                (f"DB_PASSWORD=``{inner}``", "[REDACTED]`"),
+                (f"API_KEY=``abcdefgh`ijklmnop``", "[REDACTED]`"),
+                (f"export DB_PASSWORD=``{inner}`` ve devam", "export [REDACTED]` ve devam"),
+                (f"password: ``{inner}``.", "[REDACTED]`."),
+                (f"- `OPENAI_API_KEY=``{inner}```", "- `[REDACTED]``"),
+                (f"API_KEY=``{inner}", "[REDACTED]"),
+                (f"API_KEY=``{inner}`", "[REDACTED]"),
+                (f"API_KEY=``{inner}\r\nsonra``", "[REDACTED]\r\nsonra``"),
+                (f"API_KEY=``a`bcdefgh`` ve TOKEN=``{inner}``", "[REDACTED]` ve [REDACTED]`")):
+            with self.subTest(text=text):
+                result, count = redact(text, self.state)
+                self.assertEqual(result, expected)
+                self.assertGreaterEqual(count, 1)
+                for part in ('Xy7#kL9a', 'mN2$pQ4!', 'ijklmnop', 'bcdefgh'):
+                    self.assertNotIn(part, result)
+                with self.assertRaises(ValueError):
+                    advisor._safe(store, {'statement': text})
+        # A backtick that a space follows ends a spaced span, which stays prose
+        # rather than masking only its first word; variable names stay text.
+        for text in ("API_KEY=``abcdefgh` ijk``", "API_KEY=`` Xy7#kL9a`mN2 ``",
+                     "Token: ``GITHUB_TOKEN``"):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text, self.state), (text, 0))
+
     def test_fenced_block_after_a_secret_label_stays_text_and_passes_jev(self):
         # The separator crosses newlines, so a label line followed by a code fence
         # reached the backtick branch; an unclosed run of three backticks took the
