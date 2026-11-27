@@ -20,6 +20,8 @@ sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parents[1]
 START, END = "<!-- beyin-v3:start -->", "<!-- beyin-v3:end -->"
+# Antigravity PostToolUse tools that write files; mirrors ANTIGRAVITY_EDIT_MATCHER in beyin_v3_hook.py (#903).
+ANTIGRAVITY_EDIT_MATCHER = "^(?:write_file|edit_file|code_action)$"
 # By default Claude Code skips AGENTS.md whenever a CLAUDE.md exists; an import keeps it loaded once (#84).
 AGENTS_IMPORT = re.compile(r"(?m)^@(?:\./)?AGENTS\.md\s*$")
 CLAUDE_IMPORT = b"@AGENTS.md\n"
@@ -1150,9 +1152,14 @@ def _install(vault, state, uninstall=False, plan_only=False, version="3.0.0", le
             add(".agents/hooks.json", jbytes(data))
     else:
         managed = {}
-        for event in ("PreInvocation", "PostToolUse", "Stop"):
+        # SessionStart runs once per conversation; PreInvocation's invocationNum restarts at 0 on every
+        # user message, so it serves per-message retrieval (#903). PostToolUse is the one grouped event:
+        # its handlers sit under a tool-name matcher (the hook's ANTIGRAVITY_EDIT_MATCHER).
+        for event in ("SessionStart", "PreInvocation", "PostToolUse", "Stop"):
             posix, windows = commands([sys.executable, hook, "--vault", vault, "--state", state, "--harness", "antigravity", "--event", event])
-            managed[event] = [{"type": "command", "command": windows if os.name == "nt" else posix, "timeout": 20 if os.name == "nt" else 5}]
+            handler = {"type": "command", "command": windows if os.name == "nt" else posix, "timeout": 20 if os.name == "nt" else 5}
+            managed[event] = ([{"matcher": ANTIGRAVITY_EDIT_MATCHER, "hooks": [handler]}] if event == "PostToolUse"
+                              else [handler])
         data["beyin-v3"] = managed
         add(".agents/hooks.json", jbytes(data))
     cfg = vault / ".codex/config.toml"

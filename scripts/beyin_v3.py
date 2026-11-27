@@ -863,14 +863,17 @@ def hook_reconcile(vault: Path, state: Path, force: bool = False) -> dict:
         elif name == ".agents/hooks.json":
             managed = data.get("beyin-v3")
             if isinstance(managed, dict):
-                for event in ("PreInvocation", "Stop"):
+                for event in ("SessionStart", "PreInvocation", "PostToolUse", "Stop"):
                     if event in managed and isinstance(managed[event], list):
                         posix, windows = _hook_commands([sys.executable, hook_script, "--vault", vault, "--state", state,
                                                          "--harness", "antigravity", "--event", event])
                         all_new_commands.extend([posix, windows])
                         target_cmd = windows if os.name == "nt" else posix
                         timeout = 20 if os.name == "nt" else 5
-                        for handler in managed[event]:
+                        # PostToolUse handlers sit in matcher groups (#903); the other events are flat.
+                        handlers = [handler for group in managed[event] if isinstance(group, dict)
+                                    for handler in (group.get("hooks") if isinstance(group.get("hooks"), list) else [group])]
+                        for handler in handlers:
                             if isinstance(handler, dict):
                                 old_cmd = handler.get("command", "")
                                 if not isinstance(old_cmd, str):

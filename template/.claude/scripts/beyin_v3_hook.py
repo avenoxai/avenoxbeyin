@@ -187,6 +187,12 @@ def output_context(harness, event, text):
     return {"injectSteps": [{"ephemeralMessage": text}]} if harness == "antigravity" else {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
 
 
+def quiet(harness, event):
+    """The answer that changes nothing: Antigravity's Stop takes a decision, its PreInvocation and
+    PostToolUse results take none ({} per its hook contract), and every other client takes {}."""
+    return '{"decision":"stop"}' if harness == "antigravity" and event == "Stop" else "{}"
+
+
 def prompt_text(payload):
     """The user's prompt as text; retrieval and the opt-out check need a string. Claude Code (checked on 2.1.285,
     where task notifications arrive as <task-notification> text), Codex and the bundled OpenCode, Hermes and OMP
@@ -757,6 +763,78 @@ def _antigravity_nonhuman_turn(payload, event):
     return 'USER_INPUT' not in steps and 'PLANNER_RESPONSE' in steps
 
 
+# Antigravity file writes for the receipt edit window (#903). write_file and edit_file with their Path
+# argument were observed in Antigravity CLI 1.5.18 PostToolUse payloads; code_action (TargetFile or
+# AbsolutePath) is the step-type name the IDE reported in #905. The installed PostToolUse matcher
+# names the same tools, so a read or shell step does not start Python at all.
+ANTIGRAVITY_WRITE_TOOLS = ('write_file', 'edit_file', 'code_action')
+ANTIGRAVITY_EDIT_MATCHER = '^(?:' + '|'.join(ANTIGRAVITY_WRITE_TOOLS) + ')$'
+ANTIGRAVITY_PATH_ARGS = ('Path', 'TargetFile', 'AbsolutePath')
+
+
+def antigravity_tool_input(payload):
+    """A Claude-shaped tool_input for one successful Antigravity file write, or None.
+
+    Antigravity sends toolCall.name/args, not tool_input. A failed step (non-empty error) or
+    any other tool changes no file, so it opens no edit window. A write without a known path
+    argument keeps the pathless behaviour: it counts as an edit."""
+    call = payload.get('toolCall')
+    if not isinstance(call, dict) or call.get('name') not in ANTIGRAVITY_WRITE_TOOLS:
+        return None
+    if payload.get('error'):
+        return None
+    args = call.get('args')
+    args = args if isinstance(args, dict) else {}
+    for key in ANTIGRAVITY_PATH_ARGS:
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return {'file_path': value}
+    return {}
+
+
+def antigravity_session_marker(state, conversation):
+    digest = hashlib.sha256(conversation.encode('utf-8', 'replace')).hexdigest()
+    return Path(state) / 'antigravity-sessions' / (digest + '.json')
+
+
+def _antigravity_prompt_digest(text):
+    return hashlib.sha256((text if isinstance(text, str) else '').encode('utf-8', 'replace')).hexdigest()
+
+
+def _antigravity_nonhuman_start(payload):
+    """A native SessionStart without user input is a nested agent's conversation (#885)."""
+    return (os.environ.get('BEYIN_V3_FILTER_HARNESS_TURNS') != '0'
+            and payload.get('lastUserInput') == '')
+
+
+def _antigravity_turn_event(marker, last_input):
+    """The event the first PreInvocation of a human turn stands for (#903).
+
+    Antigravity counts invocationNum per turn, so it is 0 again for every user message, while
+    its SessionStart hook runs once per conversation. A conversation without a start marker
+    (a client without SessionStart, or one begun before this hook) gets the opening here once;
+    every later message gets per-message retrieval, as UserPromptSubmit does elsewhere. The
+    prompt the native SessionStart already answered is not searched a second time. None means
+    the turn needs nothing. A marker that cannot be written keeps the opening (fail open)."""
+    try:
+        data = json.loads(marker.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        try:
+            atomic(marker, {'at': time.time()})
+        except OSError:
+            pass
+        return 'SessionStart'
+    except (OSError, ValueError):
+        return 'UserPromptSubmit'
+    if isinstance(data, dict) and data.get('pending') == _antigravity_prompt_digest(last_input):
+        try:
+            atomic(marker, {'at': data.get('at', time.time())})
+        except OSError:
+            pass
+        return None
+    return 'UserPromptSubmit'
+
+
 def main():
     started = time.monotonic()
     if hasattr(sys.stdin, "reconfigure"):
@@ -806,18 +884,46 @@ def main():
             # the Claude-shaped payload, so only the session field needs mapping.
             payload["session_id"] = payload.get("session_id") or payload.get("conversationId", "unknown")
         if args.harness == "antigravity":
-            if event == "PreInvocation":
+            conversation = payload.get("conversationId")
+            # The global bridge forwards its own SessionStart (--metadata-only); only native
+            # starts and turns of the vault's hooks keep the per-conversation marker.
+            marker = (antigravity_session_marker(state, conversation)
+                      if not args.metadata_only and isinstance(conversation, str) and conversation else None)
+            if event == "SessionStart" and not args.metadata_only:
+                if _antigravity_nonhuman_start(payload):
+                    print("{}")
+                    return
+                if marker is not None:
+                    try:
+                        atomic(marker, {"at": time.time(),
+                                        "pending": _antigravity_prompt_digest(payload.get("lastUserInput"))})
+                    except OSError:
+                        pass  # the first PreInvocation then repeats the opening, as before #903
+            elif event == "PreInvocation":
                 if payload.get("invocationNum") != 0 or _antigravity_nonhuman_turn(payload, event):
                     print("{}")
                     return
-                # Treat as SessionStart to inject companion baseline
-                event = "SessionStart"
-                if not payload.get("prompt") and payload.get("lastUserInput"):
-                    payload["prompt"] = payload["lastUserInput"]
+                event = (_antigravity_turn_event(marker, payload.get("lastUserInput"))
+                         if marker is not None else "SessionStart")
+                if event is None:
+                    print("{}")
+                    return
+            elif event == "PostToolUse":
+                tool_input = antigravity_tool_input(payload)
+                if tool_input is None:
+                    print("{}")
+                    return
+                payload["tool_input"] = tool_input
             elif event == "Stop" and (payload.get("fullyIdle") is not True
                                       or _antigravity_nonhuman_turn(payload, event)):
                 print('{"decision":"stop"}')
                 return
+            if event == "Stop" and payload.get("continuationActive") is True:
+                # Antigravity's loop guard: this Stop ends work a Stop hook asked for.
+                payload["stop_hook_active"] = True
+            if (event in ("SessionStart", "UserPromptSubmit") and not payload.get("prompt")
+                    and isinstance(payload.get("lastUserInput"), str)):
+                payload["prompt"] = payload["lastUserInput"]
             payload["session_id"] = payload.get("conversationId", "unknown")
         payload["hook_event_name"] = event
         if event not in EVENTS or os.environ.get("BEYIN_V3_INTERNAL") or os.environ.get("BEYIN_V3_SKIP") == "1" or payload.get('no_memory') is True:
@@ -896,7 +1002,7 @@ def main():
             except Exception:
                 pass
         if not settings['auto_sync']:
-            print(json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == 'antigravity' else '{}'))
+            print(json.dumps(output_context(args.harness, event, notice)) if notice else quiet(args.harness, event))
             return
         turn = None
         try:
@@ -966,7 +1072,7 @@ def main():
                 pass
         inject = settings['context_mode'] == 'turn' or (settings['context_mode'] == 'session' and event == 'SessionStart')
         if not inject or args.metadata_only or (event == 'UserPromptSubmit' and is_synthetic_prompt(payload)):
-            print(json.dumps(reminder) if reminder else (json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == 'antigravity' else '{}')))
+            print(json.dumps(reminder) if reminder else (json.dumps(output_context(args.harness, event, notice)) if notice else quiet(args.harness, event)))
             return
         if event in ("SessionStart", "UserPromptSubmit"):
             deferred = not due and not disabled and not sync_note
@@ -1230,7 +1336,7 @@ def main():
             output = output_context(args.harness, event, shown)
             print(json.dumps(output))
         else:
-            print(json.dumps(reminder) if reminder else (json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == "antigravity" else "{}")))
+            print(json.dumps(reminder) if reminder else (json.dumps(output_context(args.harness, event, notice)) if notice else quiet(args.harness, event)))
     except Exception as exc:
         if (locals().get("pending") is True or locals().get("deferred") is True) and type(exc).__module__ == "sqlite3":
             # The previous index stayed locked past the hook budget: the

@@ -72,6 +72,7 @@ _ROOT_TEMP = re.compile(
 _FOLDER_TEMP = {
     'hook-queue': re.compile(r'[0-9a-f]{64}\.json\.[0-9a-f]{32}\.tmp'),
     'receipt-reminders': re.compile(r'[0-9a-f]{64}\.edited\.[0-9a-f]{32}\.tmp'),
+    'antigravity-sessions': re.compile(r'[0-9a-f]{64}\.json\.[0-9a-f]{32}\.tmp'),
 }
 
 _JEV_CACHE_ENTRY = re.compile(r'[0-9a-f]{64}\.json')
