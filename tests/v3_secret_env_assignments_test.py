@@ -236,7 +236,8 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
                 ("API_KEY: Xy7#kL9a`'mN2$pQ4! sonra", "[REDACTED] sonra"),
                 ("setx API_KEY `Xy7kL9am,N2pQ4zR8`", "[REDACTED]"),
                 ("setx API_KEY `Xy7kL9am,N2pQ4zR8`, sonra", "[REDACTED], sonra"),
-                ("setx API_KEY Xy7kL9am`N2pQ4zR8", "[REDACTED]")):
+                ("setx API_KEY Xy7kL9am`N2pQ4zR8", "[REDACTED]"),
+                ("DB_PASSWORD=`Xy7#kL9a,mN2$pQ4!`", "[REDACTED]")):
             with self.subTest(text=text):
                 result, count = redact(text, self.state)
                 self.assertEqual((result, count), (expected, 1))
@@ -271,8 +272,7 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
                 ("setx API_KEY Xy7kL9am;N2pQ4zR8, sonra", "[REDACTED];N2pQ4zR8, sonra"),
                 ('password="Xy7#kL9a"mN2$pQ4!', "[REDACTED]mN2$pQ4!"),
                 ("setx API_KEY 'Xy7kL9am'N2pQ4zR8", "[REDACTED]N2pQ4zR8"),
-                ('DB_PASSWORD="Xy7#kL9a,mN2$pQ4!"', "[REDACTED]"),
-                ("DB_PASSWORD=`Xy7#kL9a,mN2$pQ4!`", "[REDACTED]")):
+                ('DB_PASSWORD="Xy7#kL9a,mN2$pQ4!"', "[REDACTED]")):
             with self.subTest(text=text):
                 self.assertEqual(redact(text, self.state), (expected, 1))
 
