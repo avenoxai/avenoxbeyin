@@ -468,7 +468,8 @@ class PrivacyNormalizationInvariantTest(unittest.TestCase):
 
     def test_explicit_no_values_keep_an_alias_open(self):
         for key in self.ALIAS_KEYS:
-            for value in (False, 'false', 'False', 'no', 'NO', 'n', 'off', 0, '0', 'hayır', 'HAYIR', 'Hayir', 'yok', None, ''):
+            for value in (False, 'false', 'False', 'no', 'NO', 'n', 'off', 0, '0', 'hayır', 'HAYIR', 'Hayir', 'yok',
+                          'yanlış', 'YANLIŞ', 'Yanlis', None, ''):
                 with self.subTest(key=key, value=value):
                     metadata = {key: value, 'title': 'T'}
                     normalized, warnings, _ = beyin_v3.normalize_privacy_metadata(metadata)
@@ -504,6 +505,19 @@ class PrivacyNormalizationInvariantTest(unittest.TestCase):
                             self.assertEqual(beyin_v3.effective_visibility(metadata), 'internal')
                         count += 1
         self.assertGreater(count, 1000)
+
+    def test_privacy_tag_warning_names_only_the_tag_root(self):
+        # The warning reaches sync JSON and hook-health.json; a nested tag would say what the
+        # hidden note is about.
+        for tags, shown in ((['work', 'Private/terapi'], "'Private/...'"), (['#gizli/borc/banka'], "'#gizli/...'"),
+                            ('gizli', "'gizli'"), (['private'], "'private'")):
+            with self.subTest(tags=tags):
+                normalized, warnings, _ = beyin_v3.normalize_privacy_metadata({'tags': tags})
+                self.assertEqual(normalized['visibility'], 'private')
+                self.assertEqual(len(warnings), 1)
+                self.assertIn(shown, warnings[0])
+                for secret in ('terapi', 'borc', 'banka'):
+                    self.assertNotIn(secret, warnings[0])
 
     def test_empty_or_unknown_visibility_never_becomes_internal(self):
         for header in ('visibility:', 'Visibility:', 'Visibility: secret', 'visibility: gizli',

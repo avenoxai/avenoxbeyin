@@ -46,7 +46,8 @@ VALID_VISIBILITIES = ("public", "internal", "private")
 PRIVACY_ALIAS_KEYS = ("private", "gizli")
 # A `private`/`gizli` flag is honored unless its value is an explicit no (fail closed):
 # `private: 1`, `on`, `y` or `doğru` must not leave the note open. An empty property says nothing.
-PRIVACY_FALSY_VALUES = ("", "false", "no", "n", "off", "0", "hayir", "yok")
+# Folded spellings: `hayır`/`HAYIR` fold to "hayir", `yanlış`/`YANLIŞ` to "yanliş".
+PRIVACY_FALSY_VALUES = ("", "false", "no", "n", "off", "0", "hayir", "yok", "yanlis", "yanli\u015f")
 PRIVACY_TAG_KEYS = ("tags", "tag")
 
 
@@ -185,8 +186,11 @@ def normalize_privacy_metadata(metadata, *, pairs=None):
         elif tag_match is not None:
             tag_key, tag_val = tag_match
             final, has_final = "private", True
+            # Only the root of a nested tag: `private/terapi` would say what the hidden note is
+            # about in sync output and hook-health.json, which agents read.
+            root, nested, _ = tag_val.partition("/")
             warnings.append(
-                f"privacy tag '{tag_val}' in '{tag_key}' is not a visibility gate by itself; "
+                f"privacy tag '{root}{'/...' if nested else ''}' in '{tag_key}' is not a visibility gate by itself; "
                 "treating note as private - add 'visibility: private'"
             )
 
