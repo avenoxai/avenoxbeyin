@@ -49,6 +49,11 @@ sıfırlanmaz. Event/turn kimliği varsa anlık tekrar teslim sayılmaz.
 | --- | --- | --- |
 | Claude | `CLAUDE_CODE_ENTRYPOINT=claude-desktop` veya attended=`1/true` | `sdk-cli`, `cli`, attended=`0/false`, bilinen sentetik istemler ve belirsiz köken |
 | Codex | Hook'un verdiği dosyanın ilk `session_meta` satırında eşleşen `id`, `originator=codex_cli_rs`, `source=cli` | `codex_exec`, alt ajan, diğer/belirsiz köken, yok/bozuk/aşırı büyük metadata |
+| Antigravity | `transcriptPath` dosyasının ilk ya da son 64 KiB'ında `type=USER_INPUT`, `source=USER_EXPLICIT` satırı | iç içe ajan ve uyanma turu, bağlantılı/kanonik olmayan yol, yok/bozuk metadata |
+
+Antigravity'de turu açan `PreInvocation` `UserPromptSubmit` sayılır; olay kimliği
+taşımadığı için aynı turun tekrarı `initialNumSteps` ile ayıklanır. Transcript
+satırlarının yalnız `type` ve `source` alanlarına bakılır; mesaj metni saklanmaz.
 
 Codex 0.163.0 hook JSON'u doğrudan `originator` taşımaz. Yalnız ilk metadata satırı
 en fazla 65.536 bayt okunur; sohbet satırları okunmaz veya saklanmaz. Bu kural bir
