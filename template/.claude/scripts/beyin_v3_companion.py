@@ -1010,18 +1010,28 @@ REASON = re.compile(r'(?:\n[ \t]*|[ \t]*)\*\*(?:neden|gerekçe|gerekce|why|reaso
                     r'.*?(?=\n[ \t]*(?:[-*+][ \t]|\d+[.)][ \t]|#)|\n[ \t]*\n|\n?\Z)', re.S | re.I)
 
 
-def _drop_reason(match):
-    # A pin written after the reason (`... **neden:** ... <!-- beyin:pin -->`) stays with its
-    # rule when the reason goes (#890).
-    found = _pin_match(match[0])
-    return ' ' + found[0] if found else ''
-
-
 def without_reasons(text):
-    stripped, count = REASON.subn(_drop_reason, text)
+    # REASON reads code as opaque (#924): a `**neden:**` quoted in inline code or in a fence is
+    # no reason, and a reason runs past a fence instead of stopping inside it. So the drop never
+    # cuts a code span or a fence in two, and text that cannot hold code drops as in 3.18.0.
+    masked = _masked_code(text)
+    out, last, count = [], 0, 0
+    for match in REASON.finditer(masked):
+        start, end = match.span()
+        out.append(text[last:start])
+        # A pin written after the reason (`... **neden:** ... <!-- beyin:pin -->`) stays with
+        # its rule when the reason goes (#890); a marker the reason quotes as code does not.
+        found = _pin_match(text[start:end])
+        if found:
+            # Right after a fence's closing line the marker takes a line of its own: on that
+            # line it would keep the fence from closing.
+            after_fence = start > 0 and masked[start] == '\n' and masked[start - 1] == FENCED != text[start - 1]
+            out.append(re.match(r'\n[ \t]*', text[start:end])[0] + found[0] if after_fence else ' ' + found[0])
+        last, count = end, count + 1
     if not count:
         return text
-    return stripped.rstrip('\n') + f'\n[{count} rule reasons (**neden:**) omitted to fit the opening; read source]\n'
+    out.append(text[last:])
+    return ''.join(out).rstrip('\n') + f'\n[{count} rule reasons (**neden:**) omitted to fit the opening; read source]\n'
 
 
 RULE = re.compile(r'^(?:[-*+]|\d+[.)])[ \t]')
@@ -1111,44 +1121,52 @@ PINNED_RULE = re.compile(r'<!--\s*beyin:pin\s*-->', re.I)
 ITEM_FENCE = re.compile(r'^[ \t]*(`{3,}|~{3,})(.*)$')
 
 
-def _strip_inline_code(line):
-    """Remove Markdown inline code spans (`...`, ``...``) on one line."""
-    if '`' not in line:
-        return line
-    out, i, n = [], 0, len(line)
+def _inline_spans(line):
+    """(start, end) of each Markdown inline code span (`...`, ``...``) on one line. A backtick
+    run with no run of the same length after it is a literal."""
+    spans, i, n = [], 0, len(line)
     while i < n:
         if line[i] != '`':
-            out.append(line[i])
             i += 1
             continue
         end = i
         while end < n and line[end] == '`':
             end += 1
-        ticks = end - i
-        j = end
-        closed = False
+        j, close = end, None
         while j < n:
-            if line[j] == '`':
-                k = j
-                while k < n and line[k] == '`':
-                    k += 1
-                if k - j == ticks:
-                    i = k
-                    closed = True
-                    break
-                j = k
-            else:
+            if line[j] != '`':
                 j += 1
-        if not closed:
-            out.append(line[i:end])
+                continue
+            k = j
+            while k < n and line[k] == '`':
+                k += 1
+            if k - j == end - i:
+                close = k
+                break
+            j = k
+        if close is None:
             i = end
+        else:
+            spans.append((i, close))
+            i = close
+    return spans
+
+
+def _strip_inline_code(line):
+    """Remove Markdown inline code spans (`...`, ``...``) on one line."""
+    if '`' not in line:
+        return line
+    out, last = [], 0
+    for start, end in _inline_spans(line):
+        out.append(line[last:start])
+        last = end
+    out.append(line[last:])
     return ''.join(out)
 
 
-def _pin_match(item):
-    """First <!-- beyin:pin --> outside fenced blocks and inline code spans (#890)."""
-    if not PINNED_RULE.search(item):
-        return None
+def _item_lines(item):
+    """(line, fenced) for each line of one list item; fenced covers a fence's opening line,
+    body and closing line, at any indent a list item can use."""
     fence = None
     for raw_line in item.split('\n'):
         line = raw_line.rstrip('\r')
@@ -1156,15 +1174,52 @@ def _pin_match(item):
             closing = re.match(r'^[ \t]*(' + re.escape(fence[0]) + r'{3,})[ \t]*$', line)
             if closing and len(closing[1]) >= len(fence):
                 fence = None
+            yield raw_line, True
             continue
         match = ITEM_FENCE.match(line)
         if match and not (match[1][0] == '`' and '`' in match[2]):
             fence = match[1]
+            yield raw_line, True
             continue
-        found = PINNED_RULE.search(_strip_inline_code(line))
+        yield raw_line, False
+
+
+def _pin_match(item):
+    """First <!-- beyin:pin --> outside fenced blocks and inline code spans (#890)."""
+    if not PINNED_RULE.search(item):
+        return None
+    for line, fenced in _item_lines(item):
+        found = None if fenced else PINNED_RULE.search(_strip_inline_code(line.rstrip('\r')))
         if found:
             return found
     return None
+
+
+FENCED, INLINE = '\0', '\1'
+
+
+def _masked_code(text):
+    """text with its code masked for REASON (#924), read item by item as _pin_match reads it:
+    every character of a fenced line turns into FENCED, of an inline code span into INLINE. An
+    empty line in a fence takes its line break along, so it ends no reason. Offsets stay."""
+    if '`' not in text and '~' not in text:
+        return text
+    out = []
+    bounds = sorted({0, len(text), *rule_starts(text)})
+    for a, b in zip(bounds, bounds[1:]):
+        lines = list(_item_lines(text[a:b]))
+        for index, (line, fenced) in enumerate(lines):
+            if index:
+                out.append(FENCED if fenced and not line and index < len(lines) - 1 else '\n')
+            if fenced:
+                out.append(FENCED * len(line))
+                continue
+            last = 0
+            for start, end in _inline_spans(line):
+                out.append(line[last:start] + INLINE * (end - start))
+                last = end
+            out.append(line[last:])
+    return ''.join(out)
 
 
 def _is_pinned(item):

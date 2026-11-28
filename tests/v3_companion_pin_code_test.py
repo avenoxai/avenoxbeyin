@@ -1,6 +1,7 @@
 """A <!-- beyin:pin --> quoted as code pins nothing (#890, #924). Class test: every place a
-rule can carry the marker crossed with every code context, plus the 3.18.0 parity rule for
-rule text that cannot hold code. Synthetic rules only."""
+rule can carry the marker crossed with every code context, a generated grammar for the reason
+drop (code is opaque to REASON), plus the 3.18.0 parity rule for rule text that cannot hold
+code. Synthetic rules only."""
 import importlib.util
 import os
 from pathlib import Path
@@ -36,12 +37,18 @@ INLINE = (
     ('`a`{m}`b`', True),
     ('`x {m}', True),
     ('``{m}`', True),
+    # The reason keyword itself quoted in the span, before or after the marker.
+    ('`**neden:** x {m}`', False),
+    ('``a **neden:** {m}``', False),
+    ('`{m} **neden:** x`', False),
+    ('` **neden:** x ` {m} `', True),
 )
-# The line the inline context lands on: rule line (start, end), its own continuation line,
-# after a reason, on the reason's continuation line, before a reason.
+# The line the inline context lands on: rule line (start, middle, end), its own continuation
+# line, after a reason, on the reason's continuation line, before a reason.
 HOSTS = (
     '- Kural metni {c}\n',
     '- {c} kural metni\n',
+    '- **kural:** Pin yazımı {c} sonra.\n',
     '- Kural metni\n  devam {c}\n',
     '- **kural:** Kural. **neden:** gerekçe {c}\n',
     '- **kural:** Kural. **neden:** gerekçe\n  devam {c}\n',
@@ -81,6 +88,35 @@ def grid():
                 yield host.format(b='\n'.join(lines).format(m=MARKER)), pins
 
 
+WORDS = ('Kural', 'x', 'gerekçe', '`', '``', '`a`', '``b``', '**neden:**', '**why:**', '**kural:**',
+         MARKER, MARKER, '` ' + MARKER + ' `')
+FENCE_LINES = ('```', '~~~', '````', '~~~~', '```md', '``` a`b')
+
+
+def generated_item(rng, indents, fences):
+    """One list item from a small grammar of rule lines, reason keywords, markers and code."""
+    def words(most):
+        return ' '.join(rng.choice(WORDS) for _ in range(rng.randint(1, most)))
+
+    lines = ['- R ' + words(6)]
+    for _ in range(rng.randint(0, 7)):
+        kind = rng.random()
+        if kind < .3:
+            lines.append(rng.choice(('  ', '    ')) + words(5))
+        elif kind < .55:
+            lines.append(rng.choice(indents) + rng.choice(fences))
+        elif kind < .65:
+            lines.append('')
+        elif kind < .75:
+            lines.append(rng.choice(('  ', '    ')) + '- ' + words(4))
+        elif kind < .8:
+            lines.append('# başlık')
+        else:
+            lines.append(rng.choice(indents) + rng.choice((MARKER, '**neden:** ' + MARKER, '**neden:** y',
+                                                           '`' + MARKER + '`')))
+    return '\n'.join(lines) + '\n'
+
+
 def reference_without_reasons(text):
     """3.18.0's without_reasons for text that cannot hold code: a reason keeps its first marker."""
     def drop(match):
@@ -107,6 +143,67 @@ class PinCodeContextTest(unittest.TestCase):
                     self.assertEqual(companion._is_pinned(stripped), pins, stripped)
                     if '**neden:**' in item:
                         self.assertNotIn('gerekçe', stripped)
+
+    def test_reason_drop_keeps_every_pin_in_a_generated_grammar(self):
+        # Invariant for the reason drop (#924): REASON reads code as opaque, so dropping the
+        # reasons never cuts a code span or a fence in two. A rule that pins keeps pinning and
+        # a rule that only quotes the marker never starts. The grammar mixes reason keywords,
+        # markers and backticks with fences at any indent, blank lines, sub-items and headings.
+        rng = random.Random(9240)
+        for _ in range(3000):
+            item = generated_item(rng, ('', '  ', '    ', '      '), FENCE_LINES)
+            for newline in ('\n', '\r\n'):
+                text = item.replace('\n', newline)
+                with self.subTest(item=text):
+                    self.assertEqual(companion._is_pinned(companion.without_reasons(text)),
+                                     companion._is_pinned(text))
+
+    def test_reason_drop_keeps_rule_boundaries_and_pins_of_every_rule(self):
+        # The same invariant over whole rule files: rule_starts finds the same rules after the
+        # drop and each one keeps its pin. Fences here are the ones rule_starts also knows
+        # (indent 0-3, bare closing line), so the two readings of code agree.
+        rng = random.Random(9241)
+
+        def rules(text):
+            starts = companion.rule_starts(text)
+            return [text[a:b] for a, b in zip(starts, starts[1:] + [len(text)])]
+
+        for _ in range(1500):
+            text = '# Kurallar\n\n' + ''.join(generated_item(rng, ('', '  ', '   '), ('```', '~~~', '````', '~~~~'))
+                                              for _ in range(rng.randint(2, 5)))
+            if rng.random() < .2:
+                text = text.replace('\n', '\r\n')
+            with self.subTest(text=text):
+                before, after = rules(text), rules(companion.without_reasons(text))
+                self.assertEqual(len(after), len(before))
+                self.assertEqual([companion._is_pinned(item) for item in after],
+                                 [companion._is_pinned(item) for item in before])
+
+    def test_quoted_reason_is_kept_and_real_reason_is_dropped(self):
+        # A `**neden:**` quoted as code is no reason: the code stays whole, the real reason goes.
+        cases = (
+            ('- Biçim: `**neden:** ... ' + MARKER + '` ile yazılır.\n',
+             '- Biçim: `**neden:** ... ' + MARKER + '` ile yazılır.\n'),
+            ('- Biçim: `- kural ' + MARKER + ' **neden:** gerekçe` diye. **neden:** asıl gerekçe\n',
+             '- Biçim: `- kural ' + MARKER + ' **neden:** gerekçe` diye.\n'
+             '[1 rule reasons (**neden:**) omitted to fit the opening; read source]\n'),
+            # A reason with a fenced example list goes whole, fence included.
+            ('- Kural. **neden:** örnek:\n  ```\n  - a\n\n  - b\n  ```\n- Sonraki ' + MARKER + '\n',
+             '- Kural.\n- Sonraki ' + MARKER + '\n'
+             '[1 rule reasons (**neden:**) omitted to fit the opening; read source]\n'),
+            # A blank line still ends a reason before a fence that is not part of it.
+            ('- Kural. **neden:** kısa.\n\n  ```\n  make test\n  ```\n',
+             '- Kural.\n\n  ```\n  make test\n  ```\n'
+             '[1 rule reasons (**neden:**) omitted to fit the opening; read source]\n'),
+            # Right after a fence's closing line the kept marker takes a line of its own.
+            ('- Kural:\n  ```\n  make test\n  ```\n  **neden:** CI ister. ' + MARKER + '\n',
+             '- Kural:\n  ```\n  make test\n  ```\n  ' + MARKER + '\n'
+             '[1 rule reasons (**neden:**) omitted to fit the opening; read source]\n'),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(companion.without_reasons(text), expected)
+                self.assertEqual(companion._is_pinned(expected), companion._is_pinned(text))
 
     def test_text_that_cannot_hold_code_pins_as_in_3_18_0(self):
         # Parity rule: without a backtick or a tilde there is no code, so the pin check and the

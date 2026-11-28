@@ -336,7 +336,9 @@ Kırpılmaması gereken birkaç kural maddesine `<!-- beyin:pin -->` işareti
 koyabilirsiniz (maddenin herhangi bir satırına, `**neden:**` gerekçesinden sonra da;
 gerekçeler açılışa sığmadığı için atıldığında işaret maddede kalır; Obsidian'ın okuma görünümünde
 görünmez). Kod bloğu (liste içinde girintili olanlar dahil) ya da satır içi kod içinde örnek
-olarak yazılan işaret maddeyi sabitlemez; gerekçe atılırken de canlı işarete dönüşmez. Kırpma gerektiğinde işaretli maddeler önce yer alır: atlanan aralıktan gelenler kırpma
+olarak yazılan işaret maddeyi sabitlemez. Gerekçeler atılırken kod olduğu gibi kalır: kod içinde
+yazılan `**neden:**` gerekçe sayılmaz ve bir gerekçe kod bloğunu ortadan bölmez; böylece örnek
+işaret canlıya dönüşmez, canlı işaret de maddesinde kalır. Kırpma gerektiğinde işaretli maddeler önce yer alır: atlanan aralıktan gelenler kırpma
 işaretinin hemen önünde, tam madde olarak gösterilir ve işaretteki sayı yalnız
 gerçekten gösterilmeyen maddeleri sayar. Kesilen yalnız ilk maddeden önceki metinse
 işaret o metnin yerinde, sabitlenen maddelerin önünde durur. Bu iki düzende de (baştan ve sondan ya da
