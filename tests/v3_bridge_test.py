@@ -1142,6 +1142,70 @@ class BridgeTest(unittest.TestCase):
         self.env['BEYIN_V3_FILTER_HARNESS_TURNS'] = '0'
         self.assertIn('injectSteps', self.agy_run(start, dict(base, hookEventName='SessionStart')))
 
+    def test_antigravity_bridge_large_transcript_filters_nonhuman_turn(self):
+        config = self.agy_config()
+        turn = config['PreInvocation'][0]['command']
+        pad = 'x' * 8192
+        def write_large(path, last_type):
+            lines = [json.dumps({'step_index': 0, 'type': 'USER_INPUT'}) + '\n']
+            size = len(lines[0].encode('utf-8'))
+            step = 1
+            while size < hook.ANTIGRAVITY_TRANSCRIPT_LIMIT + 256 * 1024:
+                line = json.dumps({'step_index': step, 'type': 'TOOL_OUTPUT', 'detail': pad}) + '\n'
+                lines.append(line)
+                size += len(line.encode('utf-8'))
+                step += 1
+            lines.append(json.dumps({'step_index': step, 'type': last_type}) + '\n')
+            path.write_text(''.join(lines), encoding='utf-8', newline='\n')
+            return step + 1
+
+        transcript = (self.root / 'bridge-large.jsonl').resolve()
+        count = write_large(transcript, 'PLANNER_RESPONSE')
+        base = dict(conversationId='agy-bridge-large', workspacePaths=[str(self.project)],
+                    hookEventName='PreInvocation', invocationNum=0, lastUserInput='old prompt',
+                    initialNumSteps=count, transcriptPath=str(transcript))
+        self.assertEqual(self.agy_run(turn, base), {})
+        self.assertEqual(self.queued(), [])
+
+        count_human = write_large(transcript, 'USER_INPUT')
+        self.assertIn('injectSteps', self.agy_run(turn, dict(base, conversationId='agy-bridge-large-human',
+                                                             initialNumSteps=count_human, lastUserInput='new prompt')))
+
+    def test_antigravity_bridge_fast_path_skips_hook_and_preferences_imports(self):
+        probe = (
+            'import contextlib, io, json, sys\n'
+            'sys.path.insert(0, sys.argv[1])\n'
+            'import beyin_v3_bridge\n'
+            'raw_input = sys.stdin.read()\n'
+            'sys.stdin = io.StringIO(raw_input)\n'
+            'out = io.StringIO()\n'
+            'with contextlib.redirect_stdout(out):\n'
+            '    code = beyin_v3_bridge.main(sys.argv[2:])\n'
+            'loaded = sorted(m for m in ("beyin_v3_hook", "beyin_v3", "beyin_v3_preferences") if m in sys.modules)\n'
+            'print(json.dumps({"code": code, "output": out.getvalue().strip(), "loaded": loaded}))\n'
+        )
+        cases = [
+            (['--native-event', 'PreInvocation'],
+             {'hookEventName': 'PreInvocation', 'conversationId': 'fast-b1', 'invocationNum': 3,
+              'workspacePaths': [str(self.project)]}, '{}'),
+            (['--native-event', 'Stop'],
+             {'hookEventName': 'Stop', 'conversationId': 'fast-b2', 'fullyIdle': False,
+              'workspacePaths': [str(self.project)]}, '{"decision":"stop"}'),
+        ]
+        for extra, payload, expected in cases:
+            with self.subTest(extra=extra):
+                result = subprocess.run(
+                    [sys.executable, '-c', probe, str(SCRIPTS),
+                     '--vault', str(self.vault), '--state', str(self.state),
+                     '--harness', 'antigravity', '--project-root', str(self.root / 'Projects'), *extra],
+                    input=json.dumps(payload), text=True, encoding='utf-8', capture_output=True,
+                    cwd=self.home, env=self.env, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                report = json.loads(result.stdout)
+                self.assertEqual(report['code'], 0)
+                self.assertEqual(report['output'], expected)
+                self.assertEqual(report['loaded'], [])
+
     def test_antigravity_post_tool_use_opens_the_receipt_window_and_stop_continues_once(self):
         # #903 (OzzWizard): PostToolUse under a matcher group answers {}; Stop asks once with
         # decision "continue" and honours continuationActive.

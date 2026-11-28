@@ -1311,6 +1311,23 @@ def _main(argv=None):
         if not args.project_root:
             print(quiet); return 0
 
+        payload = None
+        if args.harness == 'antigravity' and not (args.print_config or args.install or args.uninstall):
+            # Antigravity runs PreInvocation on every model call (invocationNum=1, 2, ...) and Stop
+            # on non-idle pauses; exit before resolving roots or importing hook/preferences modules.
+            if hasattr(sys.stdin, 'reconfigure'):
+                sys.stdin.reconfigure(encoding='utf-8-sig', errors='replace')
+            payload = json.loads(sys.stdin.read(1_000_000).lstrip('\ufeff').strip() or '{}')
+            if not isinstance(payload, dict):
+                raise ValueError('Invalid hook payload')
+            early_native = args.native_event or payload.get('hookEventName')
+            if early_native == 'Stop':
+                quiet = '{"decision":"stop"}'
+            if early_native == 'PreInvocation' and payload.get('invocationNum') != 0:
+                print(quiet); return 0
+            if early_native == 'Stop' and payload.get('fullyIdle') is not True:
+                print(quiet); return 0
+
         vault = args.vault.expanduser().resolve()
         if not vault.is_dir() or not 0 <= args.context_chars <= 4000:
             raise ValueError('Invalid vault or context budget')
@@ -1369,11 +1386,12 @@ def _main(argv=None):
         # A payload cut at the read limit is not JSON: the handler below answers '{}'.
         # Parser/help and management calls do not consume the embedding host's input.
         # Reconfigure only the hook stream, immediately before reading its payload.
-        if hasattr(sys.stdin, 'reconfigure'):
-            sys.stdin.reconfigure(encoding='utf-8-sig', errors='replace')
-        payload = json.loads(sys.stdin.read(1_000_000).lstrip('\ufeff').strip() or '{}')
-        if not isinstance(payload, dict):
-            raise ValueError('Invalid hook payload')
+        if payload is None:
+            if hasattr(sys.stdin, 'reconfigure'):
+                sys.stdin.reconfigure(encoding='utf-8-sig', errors='replace')
+            payload = json.loads(sys.stdin.read(1_000_000).lstrip('\ufeff').strip() or '{}')
+            if not isinstance(payload, dict):
+                raise ValueError('Invalid hook payload')
         if args.harness == 'antigravity':
             from beyin_v3_hook import (antigravity_tool_input, antigravity_session_marker, antigravity_continued_stop,
                                        antigravity_abnormal_stop, _antigravity_nonhuman_start, _antigravity_nonhuman_turn)
