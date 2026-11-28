@@ -17,6 +17,19 @@ ENTRY_PATH = ROOT / 'scripts/beyin_entry.py'
 SCRIPTS = ROOT / 'template/.claude/scripts'
 
 
+SHORT_NOTICE = 'V3 sync needs attention; consult current sources and doctor.\n'
+
+
+def attention_notice(count):
+    """The opening line while the last sync has actionable warnings: a count and where the names are.
+
+    A source the sync could not parse has unknown visibility, so its path never enters the agent
+    context (beyin_v3_projections._hidden_ref_sources); doctor, a local command, names it."""
+    label = 'warning' if count == 1 else 'warnings'
+    return (f'V3 sync needs attention ({count} sync {label}, such as notes it could not read; '
+            '`beyin.py doctor --human` names them); consult current sources and doctor.\n')
+
+
 def load_entry():
     spec = importlib.util.spec_from_file_location('beyin_entry_964_test', ENTRY_PATH)
     module = importlib.util.module_from_spec(spec)
@@ -161,27 +174,29 @@ class DoctorUnreadableAndCompanionTest(unittest.TestCase):
         self.assertIn('+2 not daha', human)
 
         ctx = self.invoke_session_start()
-        self.assertIn('V3 sync needs attention (7 warnings:', ctx)
-        for idx in range(1, 6):
-            self.assertIn(f'notes/broken-{idx}.md', ctx)
-        self.assertNotIn('notes/broken-6.md', ctx)
-        self.assertNotIn('notes/broken-7.md', ctx)
-        self.assertIn('+2 more', ctx)
+        self.assertIn(attention_notice(7), ctx)
         for idx in range(1, 8):
+            self.assertNotIn(f'broken-{idx}.md', ctx)
             self.assertNotIn(f'BODY_CANARY_{idx}', ctx)
 
-    def test_session_start_reports_two_broken_notes_with_count_and_filenames(self):
+    def test_session_start_reports_the_count_of_two_broken_notes_and_doctor_names_them(self):
         notes = self.vault / 'notes'
         notes.mkdir()
-        (notes / 'broken.md').write_text('---\ntitle: Unclosed\nSECRET_NOTE_BODY\n', encoding='utf-8')
+        (notes / 'broken.md').write_text('---\ntitle: Unclosed\nSECRET_NOTE_BODY\n', encoding='utf-8', newline='\n')
         (notes / 'other-editor.md').write_bytes('Türkçe metin'.encode('cp1254'))
 
         self.drain_hook()
         ctx = self.invoke_session_start()
-        self.assertIn('V3 sync needs attention (2 warnings: notes/broken.md, notes/other-editor.md); consult current sources and doctor.', ctx)
+        self.assertIn(attention_notice(2), ctx)
+        self.assertNotIn('broken.md', ctx)
+        self.assertNotIn('other-editor.md', ctx)
         self.assertNotIn('SECRET_NOTE_BODY', ctx)
+        human = self.beyin('doctor', '--human')
+        self.assertIn('Okunamayan veya indekslenmeyen notlar (2):', human)
+        self.assertIn('notes/broken.md', human)
+        self.assertIn('notes/other-editor.md', human)
 
-    def test_session_start_sanitizes_control_chars_and_skips_sensitive_paths(self):
+    def test_session_start_names_no_crafted_warning_source(self):
         # First produce a valid index so SessionStart renders context.
         self.drain_hook()
         health_path = self.state / 'hook-health.json'
@@ -195,16 +210,12 @@ class DoctorUnreadableAndCompanionTest(unittest.TestCase):
             ],
             'conflicts': [],
         }
-        health_path.write_text(json.dumps(health_data), encoding='utf-8')
+        health_path.write_text(json.dumps(health_data), encoding='utf-8', newline='\n')
         ctx = self.invoke_session_start()
         notice_lines = [line for line in ctx.splitlines() if line.startswith('V3 sync needs attention')]
-        self.assertEqual(len(notice_lines), 1, ctx)
-        notice = notice_lines[0]
-        self.assertIn('(2 warnings:', notice)
-        self.assertIn('notes/ok-name.md', notice)
-        self.assertNotIn('Kasa/secret-note.md', notice)
-        self.assertNotIn('\u202e', notice)
-        self.assertNotIn('\nINJECTED:', ctx)
+        self.assertEqual(notice_lines, [attention_notice(3).rstrip('\n')], ctx)
+        for fragment in ('ok-name.md', 'secret-note.md', 'INJECTED', '\u202e', 'name.md'):
+            self.assertNotIn(fragment, ctx)
 
     def test_deleted_core_md_is_reported_in_doctor_human_and_json(self):
         core = self.vault / '🔮 850-Companion/Core.md'
@@ -305,7 +316,8 @@ class DoctorUnreadableAndCompanionTest(unittest.TestCase):
         self.assertTrue(ctx.startswith('V3 sync needs attention; consult current sources and doctor.\n'), ctx[:300])
         self.assertNotIn('kirik-not-', ctx)
         opening = self.invoke_session_start()
-        self.assertIn('V3 sync needs attention (3 warnings: notes/kirik-not-1.md', opening)
+        self.assertIn(attention_notice(3), opening)
+        self.assertNotIn('kirik-not-', opening)
 
     def test_newer_cli_sync_keeps_homepage_degradation_reported_by_the_hook(self):
         # sync() refreshes homepages after its row is committed: a newer CLI row must not hide
@@ -321,6 +333,99 @@ class DoctorUnreadableAndCompanionTest(unittest.TestCase):
         doc = self.beyin_json('doctor')
         self.assertEqual(doc['sync_warnings']['count'], 0)
         self.assertEqual(doc['status'], 'needs_attention')
+
+    def session_start_output(self, harness):
+        payload = {'hook_event_name': 'SessionStart', 'session_id': f'synthetic-unreadable-964-{harness}',
+                   'event_id': f'evt-964-start-{harness}', 'prompt': 'Zirkon kayitlari'}
+        done = run_python(self.vault / '.claude/scripts/beyin_v3_hook.py',
+                          ['--vault', self.vault, '--state', self.state, '--harness', harness],
+                          self.vault, self.env, payload=payload)
+        self.assertEqual(done.returncode, 0, done.stderr.decode('utf-8', errors='replace'))
+        text = done.stdout.decode('utf-8')
+        try:  # the decoded context, so a name escaped inside JSON is still found
+            data = json.loads(text)
+            text += data['hookSpecificOutput']['additionalContext']
+        except (ValueError, KeyError, TypeError):
+            pass
+        return text
+
+    def assert_no_names(self, opening, sources):
+        import unicodedata
+        for source in sources:
+            for form in ('NFC', 'NFD'):
+                for name in (source, source.rsplit('/', 1)[-1]):
+                    self.assertNotIn(unicodedata.normalize(form, name), opening)
+
+    def test_broken_private_note_is_not_named_when_the_hook_syncs(self):
+        # v3_receipt_unreadable_source_test synced by the hook, as in a real session: breaking a
+        # private note's metadata must not put its path into the opening of any harness.
+        private = self.vault / 'notlar/gizli.md'
+        private.parent.mkdir()
+        private.write_text('---\nvisibility: private\n---\nGizli not.\n', encoding='utf-8', newline='\n')
+        self.drain_hook()
+        self.beyin('receipt', '--event-id', 'synthetic-private-964', '--summary', 'Zirkongizli ayrinti kaydi.',
+                   '--ref', 'notlar/gizli.md', '--json')
+        private.write_text('---\nvisibility: private\ninvalid: [\n---\nGizli not.\n', encoding='utf-8', newline='\n')
+        self.drain_hook()
+        health = json.loads((self.state / 'hook-health.json').read_text(encoding='utf-8'))
+        self.assertIn('notlar/gizli.md', [w.get('source') for w in health['sync']['warnings']])
+        for harness in ('claude', 'codex'):
+            opening = self.session_start_output(harness)
+            self.assertNotIn('gizli.md', opening, harness)
+            self.assertNotIn('Zirkongizli', opening, harness)
+            self.assertIn(attention_notice(1), opening, harness)
+        self.assertIn('notlar/gizli.md', self.beyin('doctor', '--human'))
+
+    def test_session_start_names_no_sync_warning_source_of_a_real_sync(self):
+        # The class, not one case: whatever made a source unreadable or invalid (private or
+        # workspace-scoped metadata, a validation error on a note that parses, another encoding,
+        # a Turkish name, a file-sync clash copy), its path stays out of the opening.
+        cases = {
+            'notlar/gizli.md': b'---\nvisibility: private\ninvalid: [\n---\nGizli not.\n',
+            'notlar/okurlar.md': b'---\nworkspace_readers: [ekip-a]\ninvalid: [\n---\nKisitli not.\n',
+            'notlar/gecersiz-revizyon.md': b'---\nvisibility: private\nrevision: 0\n---\nGizli not.\n',
+            'notlar/kapanmamis.md': b'---\ntitle: Acik kalmis\n\nGovde.\n',
+            'notlar/baska-duzenleyici.md': '# Başlık\nUTF-16 içerik\n'.encode('utf-16'),
+            'notlar/Çığ kırık.md': '---\ntitle: Kapanmadı\n'.encode('utf-8'),
+            'notlar/gizli.sync-conflict-20261128-101010-ABCDEF1.md': b'---\nvisibility: private\n---\nGizli kopya.\n',
+        }
+        (self.vault / 'notlar').mkdir()
+        for relative, data in cases.items():
+            (self.vault / relative).write_bytes(data)
+        self.drain_hook()
+        health = json.loads((self.state / 'hook-health.json').read_text(encoding='utf-8'))
+        import unicodedata
+        warned = {unicodedata.normalize('NFC', w.get('source', '')) for w in health['sync']['warnings']}
+        self.assertLessEqual({unicodedata.normalize('NFC', name) for name in cases}, warned)
+        count = self.beyin_json('doctor')['sync_warnings']['count']
+        self.assertGreaterEqual(count, len(cases))
+        for harness in ('claude', 'codex'):
+            opening = self.session_start_output(harness)
+            self.assert_no_names(opening, cases)
+            self.assertIn(attention_notice(count), opening, harness)
+        human = self.beyin('doctor', '--human')
+        self.assertIn('notlar/gizli.md', human)
+
+    def test_session_start_without_actionable_warnings_keeps_the_3_18_line(self):
+        # Difference rule: with no actionable warning the opening is 3.18.0's line, and a conflict
+        # source is never named either.
+        self.drain_hook()
+        health_path = self.state / 'hook-health.json'
+        for sync in (
+            {'status': 'degraded', 'conflicts': [], 'warnings': [
+                {'source': 'notlar/kopya 2.md', 'reason': 'possible file sync copy; compare it with the original'},
+                {'source': 'receipts/abc.md', 'reason': 'missing source', 'kind': 'missing_receipt_source'}],
+             'workspace_homepages': {'warnings': [{'reason': 'homepage refresh failed'}]}},
+            {'status': 'conflict', 'warnings': [],
+             'conflicts': [{'id': 'md-1', 'source': 'notlar/gizli-cakisma.md', 'reason': 'revision conflict'}]},
+        ):
+            data = json.loads(health_path.read_text(encoding='utf-8'))
+            data['sync'] = sync
+            health_path.write_text(json.dumps(data), encoding='utf-8', newline='\n')
+            opening = self.session_start_output('claude')
+            self.assertIn(SHORT_NOTICE, opening)
+            self.assertNotIn('V3 sync needs attention (', opening)
+            self.assert_no_names(opening, ['notlar/kopya 2.md', 'notlar/gizli-cakisma.md'])
 
     def test_deleted_bootstrapped_companion_directory_reports_all_missing_sources(self):
         import shutil

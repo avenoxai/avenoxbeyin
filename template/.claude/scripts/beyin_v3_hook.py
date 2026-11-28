@@ -12,28 +12,12 @@ import subprocess
 import sys
 sys.dont_write_bytecode = True
 import time
-import unicodedata
 import uuid
 EVENTS = {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "PreCompact", "SessionEnd"}
 HOOK_BUDGET = 3.8  # seconds; installed POSIX hooks are killed at 5
 SYNC_WAIT = 1.5  # seconds the prompt hook waits for the source sync before reading the last index
 UNMATCHED_SHOWN = 8  # prompt words listed as unmatched (#909); each at most 64 characters
 HOOK_HEALTH_MAX_BYTES = 8 * 1024 * 1024
-_BIDI_CONTROLS = frozenset('\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069')
-
-
-def _sanitize_hook_path(value):
-    """One safe line fragment for a warning path: strip controls/bidi and bound length (#964)."""
-    text = str(value).replace('\r\n', '\n')
-    cleaned = ''.join(
-        ' ' if ch in '\n\r\t\u2028\u2029\x85'
-        else '?' if unicodedata.category(ch) == 'Cc' or ch in _BIDI_CONTROLS
-        else ch
-        for ch in text
-    ).strip()
-    if len(cleaned) > 120:
-        return cleaned[:117] + '...'
-    return cleaned
 
 
 def _read_hook_health(path):
@@ -55,40 +39,20 @@ def _read_hook_health(path):
 
 
 def _sync_attention_notice(sync):
-    """Format the degraded-sync hook notice with bounded, sanitized warning filenames (#964)."""
-    from beyin_v3 import sensitive_source
-    from beyin_v3_projections import is_actionable_sync_warning, is_receipt_view_conflict
-    sources = []
-    seen = set()
+    """The SessionStart line for a degraded sync (#964): how many actionable warnings, never which files.
+
+    A source the sync could not read or parse has unknown visibility, so its path is withheld like a
+    private one (beyin_v3_projections._hidden_ref_sources). This line reaches every harness and every
+    project unasked, so it names no source at all; doctor, a local command, names them. The count is
+    doctor's: actionable warnings of the sync this hook recorded."""
+    from beyin_v3_projections import is_actionable_sync_warning
     warnings = sync.get('warnings') if isinstance(sync.get('warnings'), list) else []
-    conflicts = sync.get('conflicts') if isinstance(sync.get('conflicts'), list) else []
-    for item in warnings:
-        if not is_actionable_sync_warning(item):
-            continue
-        src = item.get('source')
-        if isinstance(src, str) and src.strip() and not sensitive_source(src):
-            clean = _sanitize_hook_path(src)
-            if clean and clean not in seen:
-                seen.add(clean)
-                sources.append(clean)
-    for item in conflicts:
-        if not isinstance(item, dict) or is_receipt_view_conflict(item):
-            continue
-        src = item.get('source')
-        if isinstance(src, str) and src.strip() and not sensitive_source(src):
-            clean = _sanitize_hook_path(src)
-            if clean and clean not in seen:
-                seen.add(clean)
-                sources.append(clean)
-    if not sources:
+    count = sum(1 for item in warnings if is_actionable_sync_warning(item))
+    if not count:
         return "V3 sync needs attention; consult current sources and doctor.\n"
-    limit = 5
-    shown = ', '.join(sources[:limit])
-    extra = len(sources) - limit
-    if extra > 0:
-        shown += f', +{extra} more'
-    label = 'warning' if len(sources) == 1 else 'warnings'
-    return f"V3 sync needs attention ({len(sources)} {label}: {shown}); consult current sources and doctor.\n"
+    label = 'warning' if count == 1 else 'warnings'
+    return (f"V3 sync needs attention ({count} sync {label}, such as notes it could not read; "
+            "`beyin.py doctor --human` names them); consult current sources and doctor.\n")
 
 
 def abstain_coverage():
@@ -1290,14 +1254,14 @@ def main():
                 warning += "V3 sync needs attention; consult current sources and doctor.\n"
             elif health_present and isinstance(sync, dict):
                 if sync.get("status") not in ("ok", "succeeded", "synced"):
-                    # Count and names open the session only (#964): a turn keeps the short line,
-                    # so its records keep their room for as long as a note stays unreadable.
+                    # The count opens the session only (#964), never a file name: a turn keeps the
+                    # short line, so its records keep their room while a note stays unreadable.
                     attention = "V3 sync needs attention; consult current sources and doctor.\n"
                     if event == 'SessionStart':
                         try:
                             attention = _sync_attention_notice(sync)
                         except Exception:
-                            pass  # the names are a hint; the short line still warns
+                            pass  # the count is a hint; the short line still warns
                     warning += attention
                 from beyin_v3_projections import is_receipt_view_conflict
                 if any(is_receipt_view_conflict(c) for c in (sync.get('conflicts') or []) + (sync.get('warnings') or [])):
