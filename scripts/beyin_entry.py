@@ -531,12 +531,7 @@ def _companion_hygiene_entries(hygiene):
     return entries
 
 
-def human_result(result, command, installed_version=None, *, stream=None):
-    text = _render_human_result(result, command, installed_version)
-    return safe_stream_text(text, stream) if stream is not None else text
-
-
-def _render_human_result(result, command, installed_version=None):
+def human_result(result, command, installed_version=None):
     status = result.get('status', '')
     if command == 'scheduled-check' and 'status' in result:
         # Exit 4 (needs attention) prints here like a finished check: the check ran and found something.
