@@ -1064,6 +1064,53 @@ class HookInstallerTest(unittest.TestCase):
                 self.assertTrue(abnormal({'terminationReason': reason, 'error': ''}))
         self.assertTrue(abnormal({'terminationReason': 'UNSPECIFIED', 'error': 'model failure'}))
 
+    def test_antigravity_stop_contract_docs_name_every_input_the_stop_decision_reads(self):
+        # docs/v3/PLATFORM-TESTS.md and GLOBAL-BRIDGE.md are the Antigravity Stop contract. #937 made
+        # Stop read terminationReason and error without a word in them, so the docs said "continue"
+        # where the code said stop. Invariant: every payload field the Stop decision reads (recorded
+        # from the helpers it calls, so a new field cannot slip past), every terminationReason value
+        # it treats as a normal end and the bounded transcript read's sizes are named in the
+        # paragraph that holds the Stop contract.
+        class Recorder(dict):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.read = set()
+
+            def get(self, key, default=None):
+                self.read.add(key)
+                return super().get(key, default)
+
+            def __getitem__(self, key):
+                self.read.add(key)
+                return super().__getitem__(key)
+
+            def __contains__(self, key):
+                self.read.add(key)
+                return super().__contains__(key)
+
+        # A fully idle Stop without user input reaches every check, the transcript read included.
+        payload = Recorder(fullyIdle=True, lastUserInput='', initialNumSteps=1,
+                           transcriptPath=str(self.root / 'missing.jsonl'))
+        self.hook.antigravity_abnormal_stop(payload)
+        self.hook.antigravity_continued_stop(payload)
+        self.hook._antigravity_nonhuman_turn(payload, 'Stop')
+        fields = payload.read | {'fullyIdle'}  # main() reads fullyIdle inline
+        self.assertLessEqual({'error', 'terminationReason', 'executionNum', 'continuationActive',
+                              'initialNumSteps', 'lastUserInput', 'transcriptPath'}, fields)
+        # A field may be written `name` or `name: value`.
+        names = [r'`%s[`:]' % re.escape(field) for field in sorted(fields)]
+        names += [r'`%s`' % re.escape(value) for value in self.hook.ANTIGRAVITY_NORMAL_TERMINATIONS]
+        names += [r'\b%d MB\b' % (self.hook.ANTIGRAVITY_TRANSCRIPT_LIMIT // (1024 * 1024)),
+                  r'\b%d KB\b' % (self.hook.ANTIGRAVITY_TRANSCRIPT_HEAD // 1024),
+                  re.escape('{"decision":"continue"}'), re.escape('{"decision":"stop"}')]
+        for doc in ('PLATFORM-TESTS.md', 'GLOBAL-BRIDGE.md'):
+            text = (ROOT / 'docs' / 'v3' / doc).read_text(encoding='utf-8')
+            blocks = [block for block in re.split(r'\n\s*\n|\n(?=- )', text) if '`fullyIdle' in block]
+            self.assertEqual(len(blocks), 1, doc)
+            for name in names:
+                with self.subTest(doc=doc, name=name):
+                    self.assertRegex(blocks[0], name)
+
     def test_antigravity_tool_input_maps_only_successful_file_writes(self):
         for call, error, expected in (
                 ({'name': 'write_file', 'args': {'Path': '/v/a.md', 'Content': 'x'}}, '', {'file_path': '/v/a.md'}),

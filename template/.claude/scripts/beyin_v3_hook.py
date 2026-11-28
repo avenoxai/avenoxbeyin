@@ -930,6 +930,11 @@ def antigravity_continued_stop(payload):
     return payload.get('continuationActive') is True or (type(count) is int and count > 0)
 
 
+# The terminationReason values of a normal Antigravity turn end; docs/v3/PLATFORM-TESTS.md and
+# GLOBAL-BRIDGE.md name each of them (tests check it).
+ANTIGRAVITY_NORMAL_TERMINATIONS = ('NO_TOOL_CALL', 'UNSPECIFIED')
+
+
 def antigravity_abnormal_stop(payload):
     """True when an Antigravity Stop ended with an error or non-normal terminationReason.
 
@@ -948,7 +953,7 @@ def antigravity_abnormal_stop(payload):
     reason = payload.get('terminationReason')
     if isinstance(reason, str):
         reason = reason.strip()
-        if reason and reason not in ('NO_TOOL_CALL', 'UNSPECIFIED'):
+        if reason and reason not in ANTIGRAVITY_NORMAL_TERMINATIONS:
             return True
     return False
 
