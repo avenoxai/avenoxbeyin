@@ -700,6 +700,33 @@ def _replay_idempotency(engine, path, source, fingerprint, source_path, refs=(),
     return answer
 
 
+def _to_crlf(value):
+    return value.replace('\r\n', '\n').replace('\n', '\r\n')
+
+
+def _count_anchor_occurrences(text, anchor):
+    count = 0
+    start = 0
+    while True:
+        position = text.find(anchor, start)
+        if position < 0:
+            return count
+        count += 1
+        start = position + 1
+
+
+def _find_anchor(text, old, newline):
+    """Locate old in text, falling back to CRLF endings in CRLF notes (#951)."""
+    if newline == '\r\n' and '\n' in old:
+        candidate = _to_crlf(old)
+        if candidate != old:
+            position = text.find(old)
+            if position < 0 or (old.startswith('\n') and position > 0 and text[position - 1] == '\r'):
+                return candidate, text.find(candidate)
+            return old, position
+    return old, text.find(old)
+
+
 def _apply(engine, request, committed, finalize=None):
     from beyin_v3_sync import _hash, _safe_replace
     if not isinstance(request, dict):
@@ -751,6 +778,7 @@ def _apply(engine, request, committed, finalize=None):
                 raise ValueError('existing source requires nonempty targeted edits, not content')
             text = decode_utf8(raw)
             _human(text)
+            newline = '\r\n' if '\r\n' in text else '\n'
             for edit in request['edits']:
                 if not isinstance(edit, dict):
                     raise ValueError('each edit must be an object')
@@ -760,10 +788,16 @@ def _apply(engine, request, committed, finalize=None):
                 empty_source_edit = raw == b'' and len(request['edits']) == 1 and old == ''
                 if not isinstance(old, str) or (not old and not empty_source_edit) or not isinstance(new, str):
                     raise ValueError('each edit requires nonempty old and string new')
-                position = text.find(old)
-                if position < 0 or text.find(old, position + 1) >= 0:
-                    raise NoteConflict('edit anchor must occur exactly once')
-                text = text.replace(old, new, 1)
+                anchor, position = _find_anchor(text, old, newline)
+                if position < 0:
+                    raise NoteConflict('edit anchor not found; must occur exactly once')
+                if text.find(anchor, position + 1) >= 0:
+                    count = _count_anchor_occurrences(text, anchor)
+                    raise NoteConflict(f'edit anchor occurs {count} times; must occur exactly once')
+                replacement = new
+                if newline == '\r\n' and '\n' in new and not (anchor == old and new == old):
+                    replacement = _to_crlf(new)
+                text = text[:position] + replacement + text[position + len(anchor):]
         _human(text)  # Do not create a managed source or convert a human note into one.
         updated = text.encode('utf-8')  # Keeps BOM and untouched CRLF bytes exactly.
         if updated == raw:
