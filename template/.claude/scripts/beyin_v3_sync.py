@@ -21,7 +21,7 @@ _MODULE_DIR = str(Path(__file__).resolve().parent)
 if _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
-from beyin_v3 import (HARNESSES, MAX_RECEIPT_LINKS, PRIVACY_ALIAS_KEYS, RECEIPT_CLIENT_NAME, RECEIPT_CLIENTS, REJECTED_AT, RETIRED_STATUSES, VALID_VISIBILITIES, MemoryStore, ReceiptConflict, RevisionConflict, _fold_privacy_token, _is_privacy_truthy, _json,
+from beyin_v3 import (HARNESSES, MAX_RECEIPT_LINKS, RECEIPT_CLIENT_NAME, RECEIPT_CLIENTS, REJECTED_AT, RETIRED_STATUSES, VALID_VISIBILITIES, MemoryStore, ReceiptConflict, RevisionConflict, _fold_privacy_token, _json,
                       _receipt_lf, _receipt_same_summary,
                       _path_redirected, _plain_link, _rejected_inference, _status_word, normalize_privacy_metadata, rejected_dependents, resolve_supersedes)
 from beyin_v3_index import applied_keys, dir_key, exclusions as index_exclusions, prune as prune_excluded
@@ -187,6 +187,9 @@ def _parse_yaml_value(value):
 # Keys that narrow what context may show. Nested under another key they would be
 # silently ignored (only top-level metadata reaches the gates), so such a source
 # stays excluded with a warning, as before nested mappings were read (#179).
+# Exact spelling only: the privacy aliases and case variants of #963 are read at the top
+# level. Nested under another key, `private: true` (a GitHub repo, an account) says nothing
+# about the note, so a nested mapping reads exactly as in 3.18.0.
 GATE_KEYS = ('visibility', 'trust', 'trusted', 'remote_allowed')
 COMMA_LIST_KEYS = ('tags', 'aliases')
 
@@ -196,10 +199,7 @@ def _mapping_value(sub_key, value):
     parsed = _parse_yaml_value(value)
     if isinstance(parsed, dict):
         raise ValueError('unsupported YAML metadata; use JSON frontmatter')
-    folded = _fold_privacy_token(sub_key)
-    if (folded in GATE_KEYS
-            or (folded in PRIVACY_ALIAS_KEYS and _is_privacy_truthy(parsed))
-            or (folded in ('status', 'kind') and parsed == 'untrusted')):
+    if sub_key in GATE_KEYS or (sub_key in ('status', 'kind') and parsed == 'untrusted'):
         raise ValueError(f'nested {sub_key} is not applied; move it to top-level frontmatter')
     return parsed
 

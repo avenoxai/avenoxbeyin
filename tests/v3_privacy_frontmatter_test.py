@@ -207,10 +207,23 @@ class PrivacyFrontmatterTest(unittest.TestCase):
         self.assertEqual(self.records(audience='public'), [])
         self.assertEqual(self.records(audience='private'), [])
 
-    def test_nested_case_variant_and_alias_gate_keys_stay_excluded(self):
-        for header in ('metadata:\n  Visibility: private', 'metadata:\n  private: true', 'metadata:\n  gizli: evet'):
+    def test_nested_mapping_keys_read_as_released(self):
+        # `private: true` under `github:` describes the repository, not the note: 3.18.0 indexed
+        # such a note and so does this release, without a warning that would send the user to
+        # make the whole note private. Case variants of gate keys nested elsewhere are plain too.
+        for header in ('title: Proje Repo\ngithub:\n  repo: acme/site\n  private: true',
+                       'metadata:\n  Visibility: private', 'metadata:\n  gizli: evet',
+                       'meta:\n  Trust: high', 'meta:\n  Status: untrusted'):
             with self.subTest(header=header):
-                self.write_note('notes/nested.md', f'---\n{header}\n---\nZirkon NESTED_CANARY.\n')
+                self.write_note('notes/nested.md', f'---\n{header}\n---\nZirkon NESTEDKANARYA deploy.\n')
+                report = self.engine.sync()
+                self.assertEqual(report['status'], 'succeeded', report)
+                self.assertEqual(report['warnings'], [])
+                self.assertEqual([r['source'] for r in self.records(audience='internal')], ['notes/nested.md'])
+        # The exact gate keys of #179 still keep a nested source out, as before.
+        for header in ('metadata:\n  visibility: private', 'metadata:\n  trust: untrusted'):
+            with self.subTest(header=header):
+                self.write_note('notes/nested.md', f'---\n{header}\n---\nZirkon NESTEDKANARYA deploy.\n')
                 report = self.engine.sync()
                 self.assertEqual(report['status'], 'degraded', report)
                 self.assertEqual(report['indexed'], 0)
@@ -461,6 +474,36 @@ class PrivacyNormalizationInvariantTest(unittest.TestCase):
                     normalized, warnings, _ = beyin_v3.normalize_privacy_metadata(metadata)
                     self.assertIs(normalized, metadata)
                     self.assertEqual(warnings, [])
+
+    def test_nested_mappings_parse_exactly_as_released(self):
+        # Difference rule for nested mappings: only the exact #179 gate keys refuse a source
+        # (3.18.0's rule, frozen here); every other nested key, alias or case variant included,
+        # is read as plain metadata and never sets or narrows the note's visibility.
+        parents = ('github', 'repo', 'meta', 'Hesap')
+        sub_keys = ('private', 'Private', 'PRIVATE', 'gizli', 'Gizli', 'GİZLİ', 'gİzlİ', 'visibility',
+                    'Visibility', 'VISIBILITY', 'trust', 'Trust', 'trusted', 'Trusted', 'remote_allowed',
+                    'Remote_Allowed', 'status', 'Status', 'kind', 'Kind', 'tags', 'Tags', 'name')
+        values = ('true', 'false', 'yes', 'evet', 'hayır', '1', 'on', 'private', 'Private', 'untrusted',
+                  'high', 'acme/site', "''", '')
+        count = 0
+        for parent in parents:
+            for sub_key in sub_keys:
+                for value in values:
+                    text = f'---\ntitle: Probe\n{parent}:\n  {sub_key}: {value}\n  other: x\n---\nbody\n'
+                    expected = beyin_v3_sync._parse_yaml_value(value)
+                    refused = (sub_key in ('visibility', 'trust', 'trusted', 'remote_allowed')
+                               or (sub_key in ('status', 'kind') and expected == 'untrusted'))
+                    with self.subTest(parent=parent, sub_key=sub_key, value=value):
+                        if refused:
+                            with self.assertRaisesRegex(ValueError, f'nested {sub_key} is not applied'):
+                                beyin_v3_sync.parse(text)
+                        else:
+                            metadata, body, warnings, conflict = beyin_v3_sync._parse_frontmatter(text)
+                            self.assertEqual(metadata, {'title': 'Probe', parent: {sub_key: expected, 'other': 'x'}})
+                            self.assertEqual((body, warnings, conflict), ('body\n', [], False))
+                            self.assertEqual(beyin_v3.effective_visibility(metadata), 'internal')
+                        count += 1
+        self.assertGreater(count, 1000)
 
     def test_empty_or_unknown_visibility_never_becomes_internal(self):
         for header in ('visibility:', 'Visibility:', 'Visibility: secret', 'visibility: gizli',
