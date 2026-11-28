@@ -128,7 +128,6 @@ class WriteFieldErrorsTest(unittest.TestCase):
             ({'source': 'notes/a.md', 'content': '   '}, 'text'),
             ({'source': 'notes/a.md', 'content': 42}, 'text'),
             ({'source': 'notes/a.md', 'text': 'one', 'content': 'two'}, 'not both with different values'),
-            ({'source': 'notes/a.md', 'text': 'one', 'content': None}, 'not both with different values'),
             ({'source': 'notes/a.md', 'text': 1, 'content': True}, 'not both with different values'),
             ({'source': 'notes/a.md', 'text': 'ok', 'metadata': ['bad']}, 'metadata'),
         )
@@ -251,7 +250,7 @@ class WriteFieldErrorsTest(unittest.TestCase):
     def test_note_edit_new_file_rejects_conflicting_content_and_text_before_lock(self):
         cases = (
             {'source': 'notes/conflict.md', 'expected_sha256': None, 'content': 'a', 'text': 'b'},
-            {'source': 'notes/conflict.md', 'expected_sha256': None, 'content': 'a', 'text': None},
+            {'source': 'notes/conflict.md', 'expected_sha256': None, 'content': None, 'text': 'b'},
             {'source': 'notes/conflict.md', 'expected_sha256': None, 'content': 1, 'text': True},
         )
         for request in cases:
@@ -329,9 +328,46 @@ class WriteFieldErrorsTest(unittest.TestCase):
         )
         for request in cases:
             with self.subTest(request=request):
-                with self.assertRaisesRegex(ValueError, 'existing source requires nonempty targeted edits, not content'):
+                field = 'content' if 'content' in request else 'text'
+                with self.assertRaisesRegex(ValueError, 'existing source requires nonempty targeted edits, not ' + field):
                     self.engine.note_edit(request)
         self.assertEqual(path.read_bytes(), b'alpha\nbeta\n')
+
+    def test_null_alias_counts_as_absent_so_requests_without_it_are_unchanged(self):
+        # A request that only names the existing field, plus a null alias, behaves as in 3.18.0.
+        res, code = self.invoke('note-create', {
+            'source': 'notes/null-content.md', 'text': 'Text body.', 'content': None})
+        self.assertEqual(code, 0, res)
+        self.assertEqual(parse((self.vault / 'notes/null-content.md').read_text(encoding='utf-8'))[1],
+                         'Text body.\n')
+        res, code = self.invoke('task-create', {
+            'source': 'tasks/null-content.md', 'text': 'Task body.', 'content': None,
+            'metadata': dict(self.task_meta, id='synthetic-task-null')})
+        self.assertEqual(code, 0, res)
+
+        created = self.engine.note_edit({'source': 'notes/null-text.md', 'expected_sha256': None,
+                                         'content': 'Content body.\n', 'text': None})
+        self.assertEqual(created['status'], 'written')
+        self.assertEqual((self.vault / 'notes/null-text.md').read_bytes(), b'Content body.\n')
+
+        # On an existing note a null alias does not turn targeted edits into a refused replacement,
+        # and it does not change the retry identity of the same edit.
+        path = self.write()
+        sha = self.engine.note_read('Threads.md')['sha256']
+        edits = [{'old': 'alpha', 'new': 'ALPHA'}]
+        first = self.engine.note_edit({'source': 'Threads.md', 'expected_sha256': sha, 'edits': edits,
+                                       'text': None, 'idempotency_key': 'null-alias-edit'})
+        self.assertEqual(first['status'], 'written')
+        self.assertEqual(path.read_bytes(), b'ALPHA\nbeta\n')
+        retry = self.engine.note_edit({'source': 'Threads.md', 'expected_sha256': sha, 'edits': edits,
+                                       'idempotency_key': 'null-alias-edit'})
+        self.assertTrue(retry.get('idempotent'))
+
+        # Both fields null still names the missing body instead of raising KeyError.
+        res, code = self.invoke('note-create', {'source': 'notes/none.md', 'text': None, 'content': None})
+        self.assertEqual(code, 1)
+        self.assertEqual(res['error'], 'ValueError')
+        self.assertIn("'text' (or 'content')", res['message'])
 
     def test_note_edit_wrong_edit_keys_keeps_clear_error(self):
         self.write()

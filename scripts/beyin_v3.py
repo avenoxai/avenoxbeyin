@@ -1097,9 +1097,13 @@ def note_request(filename, args):
 
 
 def _body_text(payload, command):
-    """Accept 'text' or 'content' as the body field; refuse conflicting duplicates."""
-    has_text = "text" in payload
-    has_content = "content" in payload
+    """Accept 'text' or 'content' as the body field; refuse conflicting duplicates.
+
+    A null field counts as absent, so a request that names only 'text' (plus a null
+    'content') behaves exactly as before the alias existed.
+    """
+    has_text = payload.get("text") is not None
+    has_content = payload.get("content") is not None
     if has_text and has_content:
         if type(payload["text"]) is not type(payload["content"]) or payload["text"] != payload["content"]:
             raise ValueError("provide either 'text' or 'content', not both with different values")

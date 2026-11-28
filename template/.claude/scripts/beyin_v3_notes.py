@@ -741,8 +741,9 @@ def _apply(engine, request, committed, finalize=None):
         raise ValueError('expected_sha256 must be a SHA-256 hex digest or null')
     _require_request_text(request)  # Before the lock: invalid text writes nothing at all.
     # 'text' is an alias for 'content' on new-file creation; both may be sent only if equal.
+    # A null 'text' counts as absent, so a request without the alias behaves as before it.
     has_content = 'content' in request
-    has_text = 'text' in request
+    has_text = request.get('text') is not None
     if has_content and has_text:
         if type(request['content']) is not type(request['text']) or request['content'] != request['text']:
             raise ValueError("provide either 'content' or 'text', not both with different values")
@@ -783,7 +784,8 @@ def _apply(engine, request, committed, finalize=None):
             text = body_value
         else:
             if has_body:
-                raise ValueError('existing source requires nonempty targeted edits, not content')
+                raise ValueError('existing source requires nonempty targeted edits, not '
+                                 + ('content' if has_content else 'text'))
             if 'edits' in request and not isinstance(request['edits'], list):
                 raise ValueError('edits must be a list of {old, new} objects')
             if not request.get('edits'):
