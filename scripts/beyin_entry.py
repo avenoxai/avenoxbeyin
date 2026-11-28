@@ -103,9 +103,18 @@ def turkish_to_ascii(value):
     """Transliterate Turkish diacritics to ASCII equivalents without introducing '?'.
 
     NFC first: a decomposed name (s + U+0327, as macOS file names often arrive) would keep
-    its combining mark and print as 's?'.
+    its combining mark and print as 's?'. A mark NFC cannot compose stays after an ASCII
+    letter ('İ'.lower() is i + U+0307) and is dropped, so it does not print as 'i?'.
     """
-    return unicodedata.normalize('NFC', str(value if value is not None else '?')).translate(_TURKISH_ASCII)
+    text = unicodedata.normalize('NFC', str(value if value is not None else '?')).translate(_TURKISH_ASCII)
+    if not any(unicodedata.combining(ch) for ch in text):
+        return text
+    kept = []
+    for ch in text:
+        if unicodedata.combining(ch) and kept and kept[-1].isascii() and kept[-1].isalpha():
+            continue
+        kept.append(ch)
+    return ''.join(kept)
 
 
 def stream_supports_turkish(stream=None):

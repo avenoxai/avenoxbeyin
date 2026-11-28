@@ -487,6 +487,13 @@ class DoctorHumanLanguageUnitTest(unittest.TestCase):
                 self.assertEqual(self.entry.safe_stream_text(decomposed, stream), 'Arsiv Istanbul Kagit igusoc')
         stream = io.TextIOWrapper(io.BytesIO(), encoding='cp1254', errors='strict')
         self.assertEqual(self.entry.safe_stream_text(decomposed, stream), unicodedata.normalize('NFC', decomposed))
+        # 'İ'.lower() leaves i + U+0307, which NFC cannot compose; precomposed é still reaches cp1252.
+        lowered = 'İstanbul Café'.lower()
+        self.assertEqual(lowered[1], '̇')
+        for encoding, expected in (('ascii', 'istanbul caf?'), ('cp1252', 'istanbul café'), ('cp437', 'istanbul café')):
+            with self.subTest(encoding=encoding):
+                stream = io.TextIOWrapper(io.BytesIO(), encoding=encoding, errors='strict')
+                self.assertEqual(self.entry.safe_stream_text(lowered, stream), expected)
         # A stream that takes the text as it is gets it unchanged, decomposed or not.
         stream = io.TextIOWrapper(io.BytesIO(), encoding='utf-8', errors='strict')
         self.assertEqual(self.entry.safe_stream_text(decomposed, stream), decomposed)
