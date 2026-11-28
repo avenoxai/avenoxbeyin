@@ -44,7 +44,9 @@ RECENCY_ALIASES = ("updated", "modified", "last_modified", "date_modified")
 
 VALID_VISIBILITIES = ("public", "internal", "private")
 PRIVACY_ALIAS_KEYS = ("private", "gizli")
-PRIVACY_TRUTHY_VALUES = ("true", "yes", "evet")
+# A `private`/`gizli` flag is honored unless its value is an explicit no (fail closed):
+# `private: 1`, `on`, `y` or `doğru` must not leave the note open. An empty property says nothing.
+PRIVACY_FALSY_VALUES = ("", "false", "no", "n", "off", "0", "hayir", "yok")
 PRIVACY_TAG_KEYS = ("tags", "tag")
 
 
@@ -60,11 +62,16 @@ def _fold_privacy_token(value):
 
 
 def _is_privacy_truthy(value):
+    """True unless the flag is missing or an explicit no; unknown values fail closed (#963)."""
+    if value is None or value is False:
+        return False
     if value is True:
         return True
+    if isinstance(value, (int, float)):
+        return value != 0
     if isinstance(value, str):
-        return _fold_privacy_token(value) in PRIVACY_TRUTHY_VALUES
-    return False
+        return _fold_privacy_token(value) not in PRIVACY_FALSY_VALUES
+    return True
 
 
 def _privacy_tag_match(entries):
@@ -98,6 +105,10 @@ def normalize_privacy_metadata(metadata, *, pairs=None):
 
     Returns (normalized_dict, warnings, conflict). Unrelated metadata is left untouched;
     no 'visibility' key is added unless a visibility key or privacy-intent alias is present.
+    Metadata without such a key or alias, or with one canonical lowercase `visibility`
+    and no alias, is returned as the same object: key order and rendered bytes stay as
+    released. Every other reinterpretation carries a warning, so sync never changes the
+    meaning of a note silently.
     """
     if not isinstance(metadata, dict):
         return metadata, [], False
@@ -107,16 +118,19 @@ def normalize_privacy_metadata(metadata, *, pairs=None):
     tag_match = _privacy_tag_match(entries)
     if not vis_entries and alias_key is None and tag_match is None:
         return metadata, [], False
+    if (alias_key is None and tag_match is None and len(vis_entries) == 1
+            and vis_entries[0][0] == "visibility" and isinstance(vis_entries[0][1], str)
+            and vis_entries[0][1] in VALID_VISIBILITIES):
+        return metadata, [], False
 
-    result = dict(metadata)
     warnings = []
     conflict = False
     valid_visibility = None
     has_invalid_visibility = False
 
+    # `final` may legitimately be None (`visibility:` left empty stays invalid), so track presence.
+    final, has_final = None, False
     if vis_entries:
-        for k, _ in vis_entries:
-            result.pop(k, None)
         normalized_values = []
         for _, v in vis_entries:
             if isinstance(v, str):
@@ -134,41 +148,61 @@ def normalize_privacy_metadata(metadata, *, pairs=None):
                 conflict = True
                 valid_visibility = "private"
                 has_invalid_visibility = False
-                result["visibility"] = "private"
+                final, has_final = "private", True
                 warnings.append(
                     f"conflicting visibility keys ({key_names}); treating note as private "
                     "- keep a single lowercase 'visibility: private' key"
                 )
             else:
                 valid_visibility = next(iter(unique_valid))
-                result["visibility"] = valid_visibility
+                final, has_final = valid_visibility, True
                 warnings.append(
                     f"duplicate visibility keys ({key_names}); using 'visibility: {valid_visibility}' "
                     "- keep a single lowercase 'visibility' key"
                 )
         else:
-            _, raw_value = vis_entries[0]
+            raw_key, raw_value = vis_entries[0]
             if not has_invalid_visibility:
                 valid_visibility = normalized_values[0]
-                result["visibility"] = valid_visibility
+                final, has_final = valid_visibility, True
+                if raw_key != "visibility" or raw_value != valid_visibility:
+                    # Older releases ignore `Visibility:` and refuse `visibility: Private`;
+                    # a rollback would open or drop the note, so name the canonical form.
+                    warnings.append(
+                        f"non-standard visibility spelling '{raw_key}: {raw_value}'; reading it as "
+                        f"'visibility: {valid_visibility}' - write the lowercase 'visibility: {valid_visibility}'"
+                    )
             else:
-                result["visibility"] = raw_value
+                final, has_final = raw_value, True
 
     if not has_invalid_visibility and valid_visibility != "private":
         if alias_key is not None:
-            result["visibility"] = "private"
+            final, has_final = "private", True
             warnings.append(
                 f"privacy frontmatter alias '{alias_key}' is non-standard; treating note as private "
                 "- use 'visibility: private' instead"
             )
         elif tag_match is not None:
             tag_key, tag_val = tag_match
-            result["visibility"] = "private"
+            final, has_final = "private", True
             warnings.append(
                 f"privacy tag '{tag_val}' in '{tag_key}' is not a visibility gate by itself; "
                 "treating note as private - add 'visibility: private'"
             )
 
+    # One lowercase `visibility` takes the place of the first visibility key, so a rewrite
+    # (task-update, homepages) keeps the frontmatter order; an alias appends it at the end.
+    result = {}
+    placed = False
+    for key, value in metadata.items():
+        if _fold_privacy_token(key) == "visibility":
+            if not placed and has_final:
+                result["visibility"] = final
+                placed = True
+            continue
+        result[key] = value
+    if not placed and has_final:
+        result["visibility"] = final
     return result, warnings, conflict
 
 

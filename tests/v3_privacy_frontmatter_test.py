@@ -61,7 +61,12 @@ class PrivacyFrontmatterTest(unittest.TestCase):
 
         report = self.engine.sync()
         self.assertEqual(report['status'], 'succeeded', report)
-        self.assertEqual(report['warnings'], [])
+        # Every non-canonical spelling is named: 3.18.0 ignores `Visibility:` and refuses
+        # `visibility: Private`, so after a rollback such a note would be open or dropped.
+        self.assertEqual({w['source'] for w in report['warnings']}, {rel for rel, _, _ in cases})
+        for w in report['warnings']:
+            self.assertEqual(w.get('kind'), 'privacy_frontmatter', w)
+            self.assertIn('non-standard visibility spelling', w['reason'], w)
         self.assertEqual(report['indexed'], len(cases))
 
         internal_sources = {r['source'] for r in self.records(audience='internal')}
@@ -333,7 +338,8 @@ class PrivacyFrontmatterTest(unittest.TestCase):
         sync_out = json.loads(sync_proc.stdout)
         self.assertEqual(sync_out['status'], 'succeeded', sync_out)
         self.assertEqual(sync_out['indexed'], 6)
-        self.assertEqual({w['source'] for w in sync_out['warnings']}, {'notes/c.md', 'notes/d.md', 'notes/e.md'})
+        self.assertEqual({w['source'] for w in sync_out['warnings']},
+                         {'notes/a.md', 'notes/b.md', 'notes/c.md', 'notes/d.md', 'notes/e.md'})
 
         ctx_proc = subprocess.run(
             [sys.executable, cli, '--vault', str(self.vault), '--state', str(self.state), 'context', 'Zirkon'],
@@ -344,6 +350,162 @@ class PrivacyFrontmatterTest(unittest.TestCase):
         self.assertEqual([r['source'] for r in ctx_out['records']], ['notes/open.md'])
         for canary in ('ISSUE963_A_CANARY', 'ISSUE963_B_CANARY', 'ISSUE963_C_CANARY', 'ISSUE963_D_CANARY', 'ISSUE963_E_CANARY'):
             self.assertNotIn(canary, ctx_proc.stdout)
+
+
+class PrivacyNormalizationInvariantTest(unittest.TestCase):
+    """Class tests for normalize_privacy_metadata instead of one example per spelling."""
+
+    NEUTRAL = (
+        ('title', 'Toplanti'), ('status', 'active'), ('project', 'Acme, Inc'),
+        ('tags', ['work', 'private-notes', 'privacy', 'notes/private']), ('tags', 'private-equity'),
+        ('private', False), ('private', 'false'), ('private', 'no'), ('private', 0), ('private', None),
+        ('gizli', 'hayır'), ('gizli', 'HAYIR'), ('Gizli', 'yok'), ('gizli', 'off'), ('gizli', ''),
+        ('visibility', 'public'), ('visibility', 'internal'), ('visibility', 'private'),
+    )
+    ALIAS_KEYS = ('private', 'Private', 'PRIVATE', 'gizli', 'Gizli', 'GİZLİ', 'gızlı', 'PRİVATE')
+    ALIAS_ON = (True, 'true', 'TRUE', 'yes', 'Yes', 'evet', 'EVET', 1, 'on', 'y', 'doğru', 'var', [], 'x')
+    PRIVATE_TAGS = (['private'], ['work', 'Gizli'], 'private', 'work, gizli', ['#private'], ['private/banka'],
+                    ['GİZLİ'], ['gızlı/kişisel'])
+
+    def neutral_grid(self):
+        for size in (1, 2, 3):
+            for start in range(len(self.NEUTRAL)):
+                picked, keys = [], set()
+                for key, value in self.NEUTRAL[start:] + self.NEUTRAL[:start]:
+                    if key.casefold() not in keys:
+                        picked.append((key, value))
+                        keys.add(key.casefold())
+                    if len(picked) == size:
+                        break
+                for order in (picked, picked[::-1]):
+                    yield dict(order)
+
+    def test_metadata_without_a_privacy_signal_is_returned_unchanged(self):
+        # Difference rule: no case variant, no alias, no private tag means byte-identical
+        # behavior with 3.18.0, including key order (task-update renders this dict back).
+        count = 0
+        for metadata in self.neutral_grid():
+            with self.subTest(metadata=metadata):
+                snapshot = list(metadata.items())
+                normalized, warnings, conflict = beyin_v3.normalize_privacy_metadata(metadata)
+                self.assertIs(normalized, metadata)
+                self.assertEqual(list(normalized.items()), snapshot)
+                self.assertEqual((warnings, conflict), ([], False))
+                self.assertEqual(beyin_v3.effective_visibility(metadata), metadata.get('visibility', 'internal'))
+                count += 1
+        self.assertGreater(count, 80)
+
+    def test_canonical_task_frontmatter_round_trips_byte_for_byte(self):
+        for visibility in ('public', 'internal', 'private'):
+            text = ('---\n{\n  "id": "t1",\n  "kind": "task",\n  "visibility": "' + visibility +
+                    '",\n  "title": "X",\n  "revision": 1\n}\n---\nbody\n')
+            metadata, body = beyin_v3_sync.parse(text)
+            self.assertEqual(beyin_v3_sync.render(metadata, body), text)
+        metadata, _ = beyin_v3_sync.parse('---\ntitle: X\nVisibility: Private\nstatus: active\n---\nb\n')
+        self.assertEqual(list(metadata.items()), [('title', 'X'), ('visibility', 'private'), ('status', 'active')])
+
+    def test_any_privacy_signal_makes_the_note_private_with_a_warning(self):
+        count = 0
+        for neutral in self.neutral_grid():
+            if any(beyin_v3._fold_privacy_token(key) in ('private', 'gizli', 'tags') for key in neutral):
+                continue
+            signals = [{key: value} for key in self.ALIAS_KEYS for value in self.ALIAS_ON]
+            signals += [{key: tags} for key in ('tags', 'Tags', 'tag') for tags in self.PRIVATE_TAGS]
+            signals += [{'Visibility': 'private'}, {'VİSİBİLİTY': 'PRİVATE'}]
+            if 'visibility' not in neutral:
+                signals += [{'visibility': 'Private'}, {'visibility': ' PRIVATE '}]
+            for signal in signals:
+                metadata = dict(neutral, **signal)
+                with self.subTest(metadata=metadata):
+                    normalized, warnings, _ = beyin_v3.normalize_privacy_metadata(metadata)
+                    self.assertEqual(normalized['visibility'], 'private')
+                    if neutral.get('visibility') != 'private':
+                        self.assertTrue(warnings)  # never narrowed silently
+                    self.assertEqual([k for k in normalized if beyin_v3._fold_privacy_token(k) == 'visibility'],
+                                     ['visibility'])
+                    # A stale index row written before the fix (3.18.0 kept these keys beside an
+                    # open `visibility`, or none) is narrowed the same way at read time.
+                    if 'visibility' not in signal:
+                        self.assertEqual(beyin_v3.effective_visibility(dict(metadata, visibility=neutral.get(
+                            'visibility', 'internal'))), 'private')
+                    count += 1
+        self.assertGreater(count, 1000)
+
+    def test_explicit_no_values_keep_an_alias_open(self):
+        for key in self.ALIAS_KEYS:
+            for value in (False, 'false', 'False', 'no', 'NO', 'n', 'off', 0, '0', 'hayır', 'HAYIR', 'Hayir', 'yok', None, ''):
+                with self.subTest(key=key, value=value):
+                    metadata = {key: value, 'title': 'T'}
+                    normalized, warnings, _ = beyin_v3.normalize_privacy_metadata(metadata)
+                    self.assertIs(normalized, metadata)
+                    self.assertEqual(warnings, [])
+
+    def test_empty_or_unknown_visibility_never_becomes_internal(self):
+        for header in ('visibility:', 'Visibility:', 'Visibility: secret', 'visibility: gizli',
+                       'visibility: [private]', 'Visibility: secret\nprivate: true'):
+            with self.subTest(header=header):
+                metadata, _ = beyin_v3_sync.parse('---\n' + header + '\n---\nx\n')
+                self.assertIn('visibility', metadata)
+                self.assertNotIn(metadata['visibility'], ('public', 'internal'))
+                self.assertNotEqual(beyin_v3.effective_visibility(metadata), 'internal')
+
+
+class PrivacyAliasBackgroundAndReplayTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='beyin-privacy-alias-bg-')
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name).resolve()
+        self.vault, self.state = root / 'vault', root / 'state'
+        self.vault.mkdir()
+
+    def write(self, relative, content):
+        path = self.vault / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding='utf-8', newline='\n')
+        return path
+
+    def test_yakala_background_job_does_not_read_alias_private_notes(self):
+        import beyin_v3_yakala as yakala
+        private = {
+            'notes/a.md': '---\nprivate: true\n---\nZirkon BG_ALIAS_CANARY\n',
+            'notes/b.md': '---\nGizli: Evet\n---\nZirkon BG_GIZLI_CANARY\n',
+            'notes/c.md': '---\ntags:\n  - work\n  - private\n---\nZirkon BG_TAG_CANARY\n',
+            'notes/d.md': '---\n{"tags": ["#gizli"]}\n---\nZirkon BG_JSON_TAG_CANARY\n',
+            'notes/e.md': '---\nprivate: 1\n---\nZirkon BG_ONE_CANARY\n',
+        }
+        open_notes = {
+            'notes/f.md': '---\nprivate: false\n---\nZirkon BG_OPEN_FALSE\n',
+            'notes/g.md': '---\ntags: [private-notes]\n---\nZirkon BG_OPEN_TAG\n',
+            'notes/h.md': 'Zirkon BG_OPEN_PLAIN\n',
+        }
+        for rel, text in {**private, **open_notes}.items():
+            self.write(rel, text)
+        for rel in private:
+            with self.subTest(rel=rel):
+                with self.assertRaisesRegex(ValueError, 'private'):
+                    yakala._agent_read_note(self.vault / rel)
+                # The job's own files keep their exemption.
+                self.assertIn('Zirkon', yakala._agent_read_note(self.vault / rel, own=True))
+        for rel in open_notes:
+            with self.subTest(rel=rel):
+                self.assertIn('Zirkon', yakala._agent_read_note(self.vault / rel))
+        found = yakala._agent_note_search(self.vault, 'Zirkon', state=self.state)
+        self.assertEqual({m['path'] for m in found['matches']}, set(open_notes))
+        self.assertNotIn('CANARY', json.dumps(found))
+
+    def test_mutation_replay_recognizes_a_created_alias_note(self):
+        import beyin_v3_mutation as mutation
+        engine = beyin_v3_sync.SyncEngine(self.vault, self.state)
+        self.addCleanup(engine.store.close)
+        for index, metadata in enumerate(({'Visibility': 'Private'}, {'private': True}, {'tags': ['gizli']})):
+            with self.subTest(metadata=metadata):
+                source = f'notes/replay-{index}.md'
+                payload = {'text': 'Zirkon replay body.', 'metadata': dict(metadata)}
+                engine.note_create(source, payload['text'], dict(metadata))
+                self.assertEqual((self.vault / source).read_bytes(), mutation._created_note(engine, payload))
+        self.assertIsNone(mutation._created_note(engine, {'text': 'x', 'metadata': {
+            'visibility': 'internal', 'Visibility': 'private'}}))
+        self.assertEqual(mutation._stored_task_fields(engine, {'visibility': 'Private'})['visibility'], 'private')
 
 
 if __name__ == '__main__':

@@ -10985,9 +10985,21 @@ def _agent_read_note(path, own=False):
                 metadata.get('sensitivity') in ('sensitive', 'secret', 'restricted', 'confidential', 'hassas', 'gizli') or
                 metadata.get('kaynak_guveni') in ('blocked', 'engellendi', 'yasak')):
             raise ValueError('This note\'s frontmatter forbids remote/background reading.')
-        if metadata.get('visibility') == 'private' and not own:
+        if not own and (metadata.get('visibility') == 'private' or _agent_index_private(text)):
             raise ValueError('visibility: private notes stay out of background jobs, as they stay out of hook context.')
     return text
+
+
+def _agent_index_private(text):
+    """True when sync indexes the note as private: `private: true`, `gizli: evet`, a private tag
+    or a case variant of `visibility` keep it out of hook context (#963), so out of this job too.
+    A header sync cannot read yields no record at all; the strict reader above has decided it."""
+    from beyin_v3_sync import parse
+    try:
+        metadata, _ = parse(text)
+    except (TypeError, ValueError, RecursionError):
+        return False
+    return metadata.get('visibility') == 'private'
 
 
 _AGENT_SEARCH_FOLD = {0x130: 'i', 0x131: 'i'}  # İ and ı meet I/i; the user may type either
