@@ -1414,6 +1414,42 @@ class HookInstallerTest(unittest.TestCase):
                 self.assertEqual(report['output'], expected)
                 self.assertEqual(report['loaded'], [])
 
+    def test_antigravity_abnormal_stop_is_answered_before_any_transcript_read(self):
+        # A fully idle Stop without user input runs the nested-agent check, which can read 2 MB + 64 KB
+        # of transcript. The cheap abnormal-end check comes first, so a cancelled or failed turn never
+        # pays that read. The normal control proves the probe is live.
+        probe = (
+            'import contextlib, io, json, sys\n'
+            'sys.path.insert(0, sys.argv[1])\n'
+            'import beyin_v3_hook\n'
+            'reads = []\n'
+            'beyin_v3_hook._antigravity_transcript_steps = lambda value: reads.append(value)\n'
+            'raw_input = sys.stdin.read()\n'
+            'sys.argv = ["beyin_v3_hook.py"] + sys.argv[2:]\n'
+            'sys.stdin = io.StringIO(raw_input)\n'
+            'out = io.StringIO()\n'
+            'with contextlib.redirect_stdout(out):\n'
+            '    beyin_v3_hook.main()\n'
+            'print(json.dumps({"output": out.getvalue().strip(), "reads": len(reads)}))\n'
+        )
+        base = {'hookEventName': 'Stop', 'fullyIdle': True, 'continuationActive': False, 'executionNum': 0,
+                'lastUserInput': '', 'initialNumSteps': 2,
+                'transcriptPath': str(self.root / 'agy-transcript.jsonl')}
+        for fields, reads in (({'conversationId': 'agy-order-1', 'terminationReason': 'USER_CANCELED', 'error': ''}, 0),
+                              ({'conversationId': 'agy-order-2', 'terminationReason': 'NO_TOOL_CALL', 'error': 'boom'}, 0),
+                              ({'conversationId': 'agy-order-3', 'terminationReason': 'NO_TOOL_CALL', 'error': ''}, 1)):
+            with self.subTest(fields=fields):
+                result = subprocess.run(
+                    [sys.executable, '-c', probe, str(SCRIPTS), '--vault', str(self.vault),
+                     '--state', str(self.state), '--harness', 'antigravity', '--event', 'Stop'],
+                    input=json.dumps(dict(base, **fields)), text=True, encoding='utf-8', capture_output=True,
+                    cwd=self.vault, env=self.env, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                report = json.loads(result.stdout.strip().splitlines()[-1])
+                self.assertEqual(report['reads'], reads)
+                if not reads:
+                    self.assertEqual(report['output'], '{"decision":"stop"}')
+
     def test_antigravity_fast_path_preserves_malformed_json_error_and_in_vault_state_refusal(self):
         # Malformed JSON and non-dict JSON still fail open and write hook-error.json; Stop keeps
         # its quiet decision on the error path (#928).

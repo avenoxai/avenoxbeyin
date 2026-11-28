@@ -801,17 +801,6 @@ def _antigravity_transcript_steps(value):
         return None
 
 
-def _antigravity_step_types(value):
-    """Read only metadata from a complete, bounded Antigravity transcript."""
-    parsed = _antigravity_transcript_steps(value)
-    if not parsed:
-        return None
-    head, tail = parsed
-    if head is not tail:
-        return None
-    return [head[index] for index in range(len(head))]
-
-
 def _antigravity_nonhuman_turn(payload, event):
     if os.environ.get('BEYIN_V3_FILTER_HARNESS_TURNS') == '0':
         return False
@@ -1132,8 +1121,8 @@ def main():
                     return
                 payload["tool_input"] = tool_input
             elif event == "Stop" and (payload.get("fullyIdle") is not True
-                                      or _antigravity_nonhuman_turn(payload, event)
-                                      or antigravity_abnormal_stop(payload)):
+                                      or antigravity_abnormal_stop(payload)  # before any transcript read
+                                      or _antigravity_nonhuman_turn(payload, event)):
                 print('{"decision":"stop"}')
                 return
             if event == "Stop" and antigravity_continued_stop(payload):

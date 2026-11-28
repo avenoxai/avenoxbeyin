@@ -1279,20 +1279,31 @@ class BridgeTest(unittest.TestCase):
                 self.assertFalse(done.exists())
                 self.assertEqual(self.queued(), [])
 
-        # In-process verification: abnormal Stop never invokes hook.main or spawns a worker.
-        inproc_payload = dict(base_stop, terminationReason='USER_CANCELED', error='')
+        # In-process: an abnormal Stop is answered before the nested-agent check reads the transcript
+        # (up to 2 MB + 64 KB) and spawns nothing. The control, a normal Stop in a workspace the
+        # bridge skips, shows the probe is live: it does read the transcript before answering.
         argv = ['--vault', str(self.vault), '--state', str(self.state), '--harness', 'antigravity',
                 '--project-root', str(self.root / 'Projects'), '--native-event', 'Stop']
-        out = io.StringIO()
-        with patch.object(sys, 'stdin', io.StringIO(json.dumps(inproc_payload))), \
-                contextlib.redirect_stdout(out), \
-                patch.object(hook, 'main') as hook_mock, \
-                patch.object(subprocess, 'Popen') as popen_mock:
-            code = bridge.main(argv)
-        self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out.getvalue()), {'decision': 'stop'})
-        hook_mock.assert_not_called()
-        popen_mock.assert_not_called()
+        wakeup = dict(base_stop, lastUserInput='', initialNumSteps=2,
+                      transcriptPath=str(self.root / 'agy-transcript.jsonl'))
+        for fields, reads in (({'terminationReason': 'USER_CANCELED', 'error': ''}, 0),
+                              ({'terminationReason': 'NO_TOOL_CALL', 'error': 'boom'}, 0),
+                              ({'terminationReason': 'NO_TOOL_CALL', 'error': '',
+                                'workspacePaths': ['relative/project']}, 1)):
+            with self.subTest(inprocess=fields):
+                out = io.StringIO()
+                with patch.object(sys, 'stdin', io.StringIO(json.dumps(dict(wakeup, **fields)))), \
+                        contextlib.redirect_stdout(out), \
+                        patch.object(hook, '_antigravity_transcript_steps', return_value=None) as read_mock, \
+                        patch.object(subprocess, 'Popen') as popen_mock:
+                    code = bridge.main(argv)
+                self.assertEqual(code, 0)
+                self.assertEqual(json.loads(out.getvalue()), {'decision': 'stop'})
+                self.assertEqual(read_mock.call_count, reads)
+                popen_mock.assert_not_called()
+        self.assertTrue(edited.exists())
+        self.assertFalse(done.exists())
+        self.assertEqual(self.queued(), [])
 
         # Next normal NO_TOOL_CALL turn still sees preserved .edited and asks for a receipt.
         normal = stop_run(terminationReason='NO_TOOL_CALL', error='')

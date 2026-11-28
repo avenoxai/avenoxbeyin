@@ -1415,8 +1415,8 @@ def _main(argv=None):
                 first = payload['tool_input'] is not None
             else:
                 first = (native == 'Stop' and payload.get('fullyIdle') is True
-                         and not _antigravity_nonhuman_turn(payload, native)
-                         and not antigravity_abnormal_stop(payload))
+                         and not antigravity_abnormal_stop(payload)  # before any transcript read
+                         and not _antigravity_nonhuman_turn(payload, native))
             paths = payload.get('workspacePaths')
             # A vault among the workspaces runs its own local hooks; do not count the session twice.
             if (not first or not isinstance(paths, list) or not all(isinstance(p, str) and Path(p).is_absolute() for p in paths)
