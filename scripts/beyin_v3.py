@@ -1813,6 +1813,14 @@ def main(argv=None, return_result=False):
             for filename in ("hook-health.json", "hook-error.json", "receipt-gaps.json"):
                 path = state / filename
                 result[filename] = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+            # A note kept private through a non-standard spelling (#963) is named by `sync`, where the
+            # user fixes it; doctor output reaches agents, so it carries only the count, not the path.
+            last_sync = (result["hook-health.json"] or {}).get("sync") if isinstance(result["hook-health.json"], dict) else None
+            if isinstance(last_sync, dict) and isinstance(last_sync.get("warnings"), list):
+                spelled = [w for w in last_sync["warnings"] if isinstance(w, dict) and w.get("kind") == "privacy_frontmatter"]
+                if spelled:
+                    last_sync["warnings"] = [w for w in last_sync["warnings"] if not any(w is item for item in spelled)]
+                    last_sync["privacy_frontmatter_count"] = len(spelled)
             result['legacy_external_schedules'] = 'not_inspected; review custom OS/compiler schedules before migration'
             try:  # information only: the last scheduled-check run, if the user set one up (#267)
                 _ensure_scripts_path()

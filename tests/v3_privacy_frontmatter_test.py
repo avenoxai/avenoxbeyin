@@ -19,6 +19,7 @@ import beyin_v3_lint  # noqa: E402
 import beyin_v3_projections  # noqa: E402
 import beyin_v3_sync  # noqa: E402
 import beyin_v3_triage  # noqa: E402
+from v3_package_helpers import inherited_env  # noqa: E402
 
 
 class PrivacyFrontmatterTest(unittest.TestCase):
@@ -321,6 +322,27 @@ class PrivacyFrontmatterTest(unittest.TestCase):
         self.assertIn('notes/alias.md', text)
         self.assertIn('visibility: private', text)
 
+    def test_doctor_counts_privacy_spelling_warnings_without_naming_the_notes(self):
+        self.write_note('notes/Saglik Raporu.md', '---\nprivate: true\n---\nZirkon DOCTOR_ALIAS_CANARY.\n')
+        self.write_note('notes/Banka Sifresi.md', '---\nVisibility: private\n---\nZirkon DOCTOR_CASE_CANARY.\n')
+        self.write_note('notes/broken.md', '---\nvisibility: secret\n---\nZirkon broken.\n')
+        result = self.engine.sync()
+        self.assertEqual(len([w for w in result['warnings'] if w.get('kind') == 'privacy_frontmatter']), 2)
+        # The hook worker stores the last sync this way; doctor reads it back.
+        (self.state / 'hook-health.json').write_text(json.dumps({'at': 1.0, 'worker_pid': 1, 'sync': result}),
+                                                     encoding='utf-8', newline='\n')
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault), '--state', str(self.state),
+             'doctor'], capture_output=True, text=True, encoding='utf-8', timeout=120, env=inherited_env(),
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        doctor = json.loads(proc.stdout)
+        last_sync = doctor['hook-health.json']['sync']
+        self.assertEqual(last_sync['privacy_frontmatter_count'], 2)
+        self.assertEqual([w['source'] for w in last_sync['warnings']], ['notes/broken.md'])
+        for leaked in ('Saglik Raporu', 'Banka Sifresi', 'CANARY'):
+            self.assertNotIn(leaked, proc.stdout)
+
     def test_cli_sync_and_context_repro_from_issue_963(self):
         self.write_note('notes/a.md', '---\nVisibility: private\n---\nZirkon ISSUE963_A_CANARY.\n')
         self.write_note('notes/b.md', '---\nvisibility: Private\n---\nZirkon ISSUE963_B_CANARY.\n')
@@ -332,7 +354,7 @@ class PrivacyFrontmatterTest(unittest.TestCase):
         cli = str(ROOT / 'scripts/beyin_v3.py')
         sync_proc = subprocess.run(
             [sys.executable, cli, '--vault', str(self.vault), '--state', str(self.state), 'sync'],
-            capture_output=True, text=True, encoding='utf-8', timeout=60,
+            capture_output=True, text=True, encoding='utf-8', timeout=60, env=inherited_env(),
         )
         self.assertEqual(sync_proc.returncode, 0, sync_proc.stderr)
         sync_out = json.loads(sync_proc.stdout)
@@ -343,7 +365,7 @@ class PrivacyFrontmatterTest(unittest.TestCase):
 
         ctx_proc = subprocess.run(
             [sys.executable, cli, '--vault', str(self.vault), '--state', str(self.state), 'context', 'Zirkon'],
-            capture_output=True, text=True, encoding='utf-8', timeout=60,
+            capture_output=True, text=True, encoding='utf-8', timeout=60, env=inherited_env(),
         )
         self.assertEqual(ctx_proc.returncode, 0, ctx_proc.stderr)
         ctx_out = json.loads(ctx_proc.stdout)
