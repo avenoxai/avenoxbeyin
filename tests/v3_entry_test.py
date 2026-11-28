@@ -501,7 +501,8 @@ class LeadingGlobalOptionsTest(unittest.TestCase):
             with patch.object(entry, '__file__', str(self.vault / 'beyin.py')), \
                  patch.object(sys, 'stdout', out), patch.object(sys, 'stderr', err), \
                  patch.object(out, 'isatty', return_value=True), \
-                 patch.dict(os.environ, self.env, clear=False):
+                 patch.dict(os.environ, self.env, clear=False), \
+                 patch.dict(sys.modules):  # the installed modules leave with the temporary vault
                 code = entry.main(['--vault', str(self.vault), 'note-read', 'notes/TtyRead.md'])
         finally:
             sys.path[:] = original_path
@@ -523,7 +524,8 @@ class LeadingGlobalOptionsTest(unittest.TestCase):
             with patch.object(entry, '__file__', str(self.vault / 'beyin.py')), \
                  patch.object(sys, 'stdout', out2), patch.object(sys, 'stderr', err2), \
                  patch.object(out2, 'isatty', return_value=True), \
-                 patch.dict(os.environ, self.env, clear=False):
+                 patch.dict(os.environ, self.env, clear=False), \
+                 patch.dict(sys.modules):  # the installed modules leave with the temporary vault
                 code2 = entry.main(['--vault', str(self.vault), 'note-edit', '--file', str(req_file)])
         finally:
             sys.path[:] = original_path
