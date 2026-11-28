@@ -705,14 +705,16 @@ def _replay_idempotency(engine, path, source, fingerprint, source_path, refs=(),
 _ANCHOR_LINE_BREAK = r'(?:\r\n|(?<!\r)\n)'
 
 
-def _anchor_matches(text, old):
+def _anchor_matches(text, old, crlf):
     """(start, end) of every occurrence of old in text, overlapping ones included.
 
-    A note without CRLF keeps the exact byte search. In a note with CRLF endings a line break
+    crlf says whether the note had CRLF endings before the request, decided once per request,
+    so an edit that brings a CRLF into an LF note cannot change how later edits match. A note
+    without CRLF keeps the exact byte search of 3.18.0. In a note with CRLF endings a line break
     in old matches either ending, so an agent's LF anchor finds CRLF and mixed lines, and every
     spelling counts towards 'exactly once' instead of the first one found winning (#951).
     """
-    if '\r\n' not in text or '\n' not in old:
+    if not crlf or '\n' not in old:
         found, start = [], text.find(old)
         while start >= 0:
             found.append((start, start + len(old)))
@@ -794,8 +796,10 @@ def _apply(engine, request, committed, finalize=None):
             _human(text)
             # Like checkpoint: any CRLF makes new edit text CRLF, so a note mixed by an older
             # LF edit heals instead of mixing further. A note without CRLF keeps exact bytes.
-            # The line endings are read once, from the note as it stood before this request.
-            newline = '\r\n' if '\r\n' in text else '\n'
+            # The line endings are read once, from the note as it stood before this request:
+            # both how anchors match and how new text is written follow that one reading.
+            crlf = '\r\n' in text
+            newline = '\r\n' if crlf else '\n'
             for edit in request['edits']:
                 if not isinstance(edit, dict):
                     raise ValueError('each edit must be an object')
@@ -805,7 +809,7 @@ def _apply(engine, request, committed, finalize=None):
                 empty_source_edit = raw == b'' and len(request['edits']) == 1 and old == ''
                 if not isinstance(old, str) or (not old and not empty_source_edit) or not isinstance(new, str):
                     raise ValueError('each edit requires nonempty old and string new')
-                matches = _anchor_matches(text, old)
+                matches = _anchor_matches(text, old, crlf)
                 if not matches:
                     raise NoteConflict('edit anchor not found; must occur exactly once')
                 if len(matches) > 1:

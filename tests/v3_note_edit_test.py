@@ -875,11 +875,13 @@ with locked(engine):
         for lf_text in sorted(texts):
             crlf_text = lf_text.replace('\n', '\r\n')
             for old in olds:
-                self.assertEqual([start for start, _ in _anchor_matches(lf_text, old)], literal(lf_text, old))
-                self.assertEqual(_anchor_matches(lf_text, old.replace('\n', '\r\n')),
+                self.assertEqual([start for start, _ in _anchor_matches(lf_text, old, False)],
+                                 literal(lf_text, old))
+                self.assertEqual(_anchor_matches(lf_text, old.replace('\n', '\r\n'), False),
                                  [(start, start + len(old) + old.count('\n'))
                                   for start in literal(lf_text, old.replace('\n', '\r\n'))])
-                self.assertEqual(len(_anchor_matches(crlf_text, old)), len(literal(lf_text, old)))
+                self.assertEqual(len(_anchor_matches(crlf_text, old, '\r\n' in crlf_text)),
+                                 len(literal(lf_text, old)))
                 checked += 1
         self.assertGreater(checked, 500)
 
@@ -902,6 +904,92 @@ with locked(engine):
                     self.engine.note_edit(self.request(old, new, source=source))
                     written = expected.replace('\n', '\r\n') if crlf else expected
                     self.assertEqual(path.read_bytes(), written.encode('utf-8'))
+
+    def test_multi_edit_grid_reads_line_endings_once_per_request(self):
+        # The note's line endings are read once, before the request. An earlier edit that puts a
+        # CRLF pair into an LF note (CRLF in new, or a lone CR joined to an LF) must not switch
+        # later edits to line-ending-insensitive matching. Invariants over a fixed grid:
+        # 1. a note without CRLF gives the exact bytes or conflict of 3.18.0, edit after edit;
+        # 2. a pure CRLF note edited with LF old/new behaves as its LF form, written as CRLF.
+        def as_3_18(text, edits):
+            # The 3.18.0 edit loop: literal search, overlapping occurrences, first one replaced.
+            for old, new in edits:
+                position = text.find(old)
+                if position < 0 or text.find(old, position + 1) >= 0:
+                    return None
+                text = text.replace(old, new, 1)
+            return text
+
+        backups = self.vault / LOCAL_DIRECTORY / 'backups'
+
+        def check(raw_text, edits, expected):
+            source = 'Batch.md'  # One note rewritten per case: each write rescans the whole vault.
+            raw = raw_text.encode('utf-8')
+            path = self.write(source=source, raw=raw)
+            request = {'source': source, 'expected_sha256': hashlib.sha256(raw).hexdigest(),
+                       'edits': [{'old': old, 'new': new} for old, new in edits]}
+            with self.subTest(text=raw_text, edits=edits):
+                if expected is None:
+                    before = sorted(backups.glob('*.json')) if backups.exists() else []
+                    with self.assertRaises(NoteConflict):
+                        self.engine.note_edit(request)
+                    self.assertEqual(path.read_bytes(), raw)
+                    self.assertEqual(sorted(backups.glob('*.json')) if backups.exists() else [], before)
+                    return
+                result = self.engine.note_edit(request)
+                self.assertEqual(result['status'], 'unchanged' if expected == raw_text else 'written')
+                self.assertEqual(path.read_bytes(), expected.encode('utf-8'))
+
+        def anchors(text):
+            # Every 1-3 character piece holding a line break or a CR: unique and repeated ones.
+            return sorted({text[i:i + size] for size in (1, 2, 3) for i in range(len(text) - size + 1)
+                           if '\n' in text[i:i + size] or '\r' in text[i:i + size]})
+
+        # Invariant 1. Second anchors come from the text as edit 1 left it, so most apply.
+        lf_notes = ('a\nb\nc\n', 'x\ry\nz\n', 'a\rb\nc', 'p\nq\r', 'a b\nc\n\nd', 'm\n\rn\no\n', 'k\nk\rk\n')
+        firsts = (('c', 'a\r\nb'), ('y', ''), ('b\n', 'b\r\n'), ('q', 'q\r\nr'), ('a', 'A'),
+                  ('\r', '\r\n'), ('c', 'c\r\nd'), ('\nz', '\r\nb\nz'))
+        cases = writes = conflicts = triggered = 0
+        for text in lf_notes:
+            self.assertNotIn('\r\n', text)
+            for first in firsts:
+                after = as_3_18(text, (first,))
+                if after is None:
+                    continue
+                for old in anchors(after):
+                    edits = (first, (old, ('Q', 'R\r\nS')[cases % 2]))
+                    expected = as_3_18(text, edits)
+                    cases += 1
+                    writes += expected not in (None, text)
+                    conflicts += expected is None
+                    triggered += '\r\n' in after and '\n' in old
+                    check(text, edits, expected)
+        # Not vacuous: both outcomes, and many second edits run after a CRLF entered the text.
+        self.assertGreater(writes, 150)
+        self.assertGreater(conflicts, 20)
+        self.assertGreater(triggered, 100)
+        # The two shapes found in review: a conflict and a different write before the fix.
+        check('a\nb\nc\n', (('c', 'a\r\nb'), ('a\nb', 'A')), 'A\na\r\nb\n')
+        check('x\ry\nz\n', (('y', ''), ('\nz', 'Q')), 'x\rQ\n')
+
+        # Invariant 2, for batches whose anchors never cover the whole note (those keep bytes).
+        lf_forms = ('a\nb\nc\n', 'a\n\nb', 'a b\nb\n', '- x\n- y\n- x\n')
+        lf_firsts = (('b', 'b\nc'), ('a\nb', 'z'), ('\n\n', '\n'), ('- y', '- y\n- w'), ('c\n', ''))
+        cases = 0
+        for text in lf_forms:
+            for first in lf_firsts:
+                after = as_3_18(text, (first,))
+                if after is None or first[0] == text:
+                    continue
+                for old in anchors(after):
+                    if old == after:
+                        continue
+                    edits = (first, (old, ('Q', 'R\nS')[cases % 2]))
+                    expected = as_3_18(text, edits)
+                    cases += 1
+                    check(text.replace('\n', '\r\n'), edits,
+                          None if expected is None else expected.replace('\n', '\r\n'))
+        self.assertGreater(cases, 40)
 
 if __name__ == '__main__':
     unittest.main()
