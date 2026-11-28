@@ -496,6 +496,27 @@ class NoteCreateProjectPathsTest(unittest.TestCase):
         self.assertFalse(outside.exists())
         self.assert_no_journal()
 
+    def test_spelling_check_never_lists_a_linked_folder(self):
+        # The spelling check lists folders along the path; a link is refused before any listing,
+        # so an entry name from outside the vault never reaches the error message.
+        outside = self.root / 'outside'
+        outside.mkdir()
+        (outside / 'Private-Plan.md').write_text('outside\n', encoding='utf-8', newline='\n')
+        (self.vault / 'projects').mkdir()
+        try:
+            (self.vault / 'projects/linked').symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            if getattr(exc, 'winerror', None) != 1314:  # ERROR_PRIVILEGE_NOT_HELD
+                raise
+            self.skipTest('symlink not permitted here: ' + str(exc))
+        for source in ('projects/linked/private-plan.md', 'projects/linked/sub/Kurallar.md'):
+            with self.subTest(source=source):
+                with self.assertRaisesRegex(ValueError, 'symlink') as caught:
+                    self.engine.note_create(source, 'Body.\n', {})
+                self.assertNotIn('Private-Plan', str(caught.exception))
+        self.assertEqual([path.name for path in outside.iterdir()], ['Private-Plan.md'])
+        self.assert_no_journal()
+
     def test_existing_notes_and_knowledge_roots_remain_allowed(self):
         for source in ('notes/plain.md', 'notes/sub/item.md', 'knowledge/concept.md', 'knowledge/sub/item.md'):
             with self.subTest(source=source):

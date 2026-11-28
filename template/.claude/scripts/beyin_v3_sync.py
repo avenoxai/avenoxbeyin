@@ -1513,6 +1513,8 @@ class SyncEngine:
         opens a second folder for the same project. Refuse before writing, naming the entry.
         """
         from beyin_v3_projects import _scope_key
+        # Links first: the listing below must never read a folder outside the vault.
+        self._check_note_create_path(source)
         cursor, parts = self.root, source.split('/')
         for index, part in enumerate(parts):
             try:
