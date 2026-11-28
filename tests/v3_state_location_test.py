@@ -328,8 +328,11 @@ beyin_v3_hook.main()
         self.assertIn("https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/UPDATE.md", lines[1])
         self.assertIn("(C)", lines[2])
         self.assertIn("https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/MULTI-MACHINE.md", lines[3])
+        # The ASCII fallback folds every letter of these lines: a legacy console never sees '?'.
         ascii_stream = io.TextIOWrapper(io.BytesIO(), encoding="ascii", errors="strict")
-        self.assertTrue(all(entry.safe_stream_text(line, ascii_stream).isascii() for line in lines))
+        for line in lines:
+            self.assertEqual(entry.safe_stream_text(line, ascii_stream), entry.turkish_to_ascii(line))
+            self.assertTrue(entry.turkish_to_ascii(line).isascii(), line)
         quiet = entry.human_result({"status": "observed_metadata",
                                     "state_location": {"status": "unavailable", "warnings": []}}, "doctor", "3.4.0")
         self.assertNotIn("Çalışma dizini konumu", quiet)

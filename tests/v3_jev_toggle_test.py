@@ -388,7 +388,9 @@ class StatusReportTest(JevToggleTestCase):
             self.assertEqual(rendered[index], rendered[index].encode('ascii', 'replace').decode('ascii'))
         ascii_stream = io.TextIOWrapper(io.BytesIO(), encoding='ascii', errors='strict')
         for index in (1, 2, 4, 6):
+            # Every non-ASCII letter is one the fallback folds: an ASCII console never sees '?'.
             fallback = entry.safe_stream_text(rendered[index], ascii_stream)
+            self.assertEqual(fallback, entry.turkish_to_ascii(rendered[index]))
             self.assertTrue(fallback.isascii())
         self.assertIn('Jev: acik', rendered[0])
         self.assertIn('otomatik bağlam: açık', rendered[1])

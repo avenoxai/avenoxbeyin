@@ -159,8 +159,10 @@ class ReceiptLineEndingsTest(unittest.TestCase):
         text = ENTRY.human_result({"status": "never_seen", "receipt_line_endings": warning}, "doctor", "3.7.1")
         lines = [line for line in text.splitlines() if line.startswith("Oturum kaydı satır sonu (bilgi): ")]
         self.assertEqual(len(lines), 1)
+        # The ASCII fallback folds every letter of the line: a legacy console never sees '?'.
         ascii_stream = io.TextIOWrapper(io.BytesIO(), encoding="ascii", errors="strict")
-        ENTRY.safe_stream_text(lines[0], ascii_stream).encode("ascii")
+        self.assertEqual(ENTRY.safe_stream_text(lines[0], ascii_stream), ENTRY.turkish_to_ascii(lines[0]))
+        ENTRY.turkish_to_ascii(lines[0]).encode("ascii")
         self.assertIn("receipts/** -text", lines[0])
         self.assertIn("https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/MULTI-MACHINE.md", lines[0])
         quiet = ENTRY.human_result({"status": "never_seen", "receipt_line_endings": {"status": "ok"}}, "doctor", "3.7.1")

@@ -19,6 +19,8 @@ _TURKISH_ASCII = str.maketrans({
     'ö': 'o', 'Ö': 'O',
     'ş': 's', 'Ş': 'S',
     'ü': 'u', 'Ü': 'U',
+    # Circumflex vowels of older spelling (Kâğıt, hâlâ) show up in note names and text.
+    'â': 'a', 'Â': 'A', 'î': 'i', 'Î': 'I', 'û': 'u', 'Û': 'U',
 })
 
 
@@ -49,7 +51,7 @@ def update_lines(result):
                     'recovery_required': 'Tamamlanmamış güncelleme veya geri alma var. Kurtarmak için: ' + command + ' beyin.py recover',
                     'unavailable': 'Sürüm kontrolü yapılamadı; güncellik doğrulanmadı.',
                     'up_to_date': 'Beyin güncel: ' + str(result.get('current_version', '?')),
-                    'ahead': 'Kurulu sürüm resmî kararlı sürümden ileride.'}
+                    'ahead': 'Kurulu sürüm resmi kararlı sürümden ileride.'}
         lines = [messages.get(status, 'Sürüm bilgisi alınamadı.')]
     if result.get('checked_at'):
         from datetime import datetime, timezone
@@ -98,8 +100,12 @@ def ascii_text(value):
 
 
 def turkish_to_ascii(value):
-    """Transliterate Turkish diacritics to ASCII equivalents without introducing '?'."""
-    return str(value if value is not None else '?').translate(_TURKISH_ASCII)
+    """Transliterate Turkish diacritics to ASCII equivalents without introducing '?'.
+
+    NFC first: a decomposed name (s + U+0327, as macOS file names often arrive) would keep
+    its combining mark and print as 's?'.
+    """
+    return unicodedata.normalize('NFC', str(value if value is not None else '?')).translate(_TURKISH_ASCII)
 
 
 def stream_supports_turkish(stream=None):
@@ -127,8 +133,8 @@ def safe_stream_text(text, stream=None):
         return adapted
     except LookupError:
         return adapted.encode('ascii', 'replace').decode('ascii')
-    except UnicodeEncodeError:
-        return adapted.encode(encoding, 'replace').decode(encoding)
+    except UnicodeEncodeError:  # composing first keeps decomposed Turkish letters on cp1254/cp857
+        return unicodedata.normalize('NFC', adapted).encode(encoding, 'replace').decode(encoding)
 
 
 def print_human(text, stream=None):
@@ -831,7 +837,7 @@ def _render_human_result(result, command, installed_version=None):
             lines.append('Not geçerlilik kontrolü tamamlanamadı; ayrıntı için --json çıktısına bakın.')
         elif val.get('ignored_rejection_count'):
             lines.append('Not geçerlilik uyarısı: ' + str(val['ignored_rejection_count']) +
-                         ' reddedilmiş kayıt hâlâ etkin notlarda duruyor; notları gözden geçirin.')
+                         ' reddedilmiş kayıt hala etkin notlarda duruyor; notları gözden geçirin.')
         omp_global = result.get('omp_global_hook') if isinstance(result.get('omp_global_hook'), dict) else {}
         if omp_global.get('stale'):
             lines.append('Genel OMP kanca kopyası güncel değil: ' + plain_text(omp_global.get('path')) +

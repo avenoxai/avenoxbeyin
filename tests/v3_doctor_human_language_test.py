@@ -321,6 +321,31 @@ class DoctorHumanLanguageUnitTest(unittest.TestCase):
                 if expected:
                     self.assertTrue(new, 'counted but printed nothing: ' + label)
 
+    def test_ascii_fallback_folds_every_letter_doctor_prints(self):
+        # Doctor's own wording uses only letters the fallback folds, so a cp1252/cp437/ascii
+        # console never shows '?' in it (resmî and hâlâ did before).
+        reports = [healthy_report()] + [dict(healthy_report(), **overrides) for _, overrides, _ in ATTENTION_GRID]
+        reports.append(dict(healthy_report(), updates={'status': 'ahead'}))
+        reports.append(dict(healthy_report(), lifecycle={'claude': {'status': 'observed_metadata', 'events': ['Stop']}}))
+        for report in reports:
+            text = self.entry.human_result(report, 'doctor', '3.12.0')
+            folded = self.entry.turkish_to_ascii(text)
+            self.assertTrue(folded.isascii(), sorted({ch for ch in folded if not ch.isascii()}))
+
+    def test_ascii_fallback_composes_decomposed_letters_and_keeps_utf8_bytes(self):
+        import unicodedata
+        decomposed = unicodedata.normalize('NFD', 'Arşiv İstanbul Kâğıt ığüşöç')
+        self.assertNotEqual(decomposed, unicodedata.normalize('NFC', decomposed))
+        for encoding in ('ascii', 'cp1252', 'cp437'):
+            with self.subTest(encoding=encoding):
+                stream = io.TextIOWrapper(io.BytesIO(), encoding=encoding, errors='strict')
+                self.assertEqual(self.entry.safe_stream_text(decomposed, stream), 'Arsiv Istanbul Kagit igusoc')
+        stream = io.TextIOWrapper(io.BytesIO(), encoding='cp1254', errors='strict')
+        self.assertEqual(self.entry.safe_stream_text(decomposed, stream), unicodedata.normalize('NFC', decomposed))
+        # A stream that takes the text as it is gets it unchanged, decomposed or not.
+        stream = io.TextIOWrapper(io.BytesIO(), encoding='utf-8', errors='strict')
+        self.assertEqual(self.entry.safe_stream_text(decomposed, stream), decomposed)
+
     def test_stream_encoding_fallback_handles_utf8_cp1254_cp1252_ascii_and_unknown(self):
         sample = self.entry.human_result(
             dict(
