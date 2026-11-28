@@ -145,6 +145,7 @@ def require_utf8_values(value, what):
 
 def _require_request_text(request):
     require_utf8_text(request.get('content'), 'content')
+    require_utf8_text(request.get('text'), 'text')
     # Evidence paths are hashed into the retry identity and checked as vault paths (#443).
     require_utf8_values(request.get('evidence_refs'), 'evidence_refs')
     edits = request.get('edits')
@@ -744,6 +745,14 @@ def _apply(engine, request, committed, finalize=None):
                                  not re.fullmatch('[0-9a-f]{64}', expected)):
         raise ValueError('expected_sha256 must be a SHA-256 hex digest or null')
     _require_request_text(request)  # Before the lock: invalid text writes nothing at all.
+    # 'text' is an alias for 'content' on new-file creation; both may be sent only if equal.
+    has_content = 'content' in request
+    has_text = 'text' in request
+    if has_content and has_text:
+        if type(request['content']) is not type(request['text']) or request['content'] != request['text']:
+            raise ValueError("provide either 'content' or 'text', not both with different values")
+    has_body = has_content or has_text
+    body_value = request['content'] if has_content else request.get('text')
     idempotency_key = check_idempotency_key(request.get('idempotency_key'))
     refs = evidence_refs(engine, request.get('evidence_refs'), existing=False)
     with locked(engine) as folder:
@@ -751,9 +760,13 @@ def _apply(engine, request, committed, finalize=None):
         source = path.relative_to(engine.root).as_posix()
         _refuse_tracked_view(engine, source)
         idempotency_file = None
-        # Bind the key to the canonical request, so the alias spelling cannot split a retry.
-        fingerprint = _request_digest(dict({field: request[field] for field in ('content', 'edits')
-                                            if field in request},
+        # Bind the key to the canonical request, so alias spellings cannot split a retry.
+        canonical_fields = {}
+        if has_body:
+            canonical_fields['content'] = body_value
+        if 'edits' in request:
+            canonical_fields['edits'] = request['edits']
+        fingerprint = _request_digest(dict(canonical_fields,
                                            operation='note-edit', source=source,
                                            expected_sha256=expected, evidence_refs=refs))
         if idempotency_key is not None:
@@ -770,12 +783,16 @@ def _apply(engine, request, committed, finalize=None):
             # A missing note is a create. Same name gates as note-create, before any write.
             validate_source_name(source)
             refuse_unicode_alias(engine.root, source)
-            if 'edits' in request or not isinstance(request.get('content'), str):
-                raise ValueError('new source requires content and expected_sha256:null')
-            text = request['content']
+            if 'edits' in request or not has_body or not isinstance(body_value, str):
+                raise ValueError('new source requires content (or text) and expected_sha256:null')
+            text = body_value
         else:
-            if 'content' in request or not isinstance(request.get('edits'), list) or not request['edits']:
+            if has_body:
                 raise ValueError('existing source requires nonempty targeted edits, not content')
+            if 'edits' in request and not isinstance(request['edits'], list):
+                raise ValueError('edits must be a list of {old, new} objects')
+            if not request.get('edits'):
+                raise ValueError('existing source requires nonempty targeted edits')
             text = decode_utf8(raw)
             _human(text)
             newline = '\r\n' if '\r\n' in text else '\n'
