@@ -9,10 +9,13 @@ import tempfile
 import unittest
 from urllib.parse import unquote
 
-from v3_package_helpers import install, isolated_env
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'template/.claude/scripts'))
+from v3_package_helpers import inherited_env, install, isolated_env
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
+import beyin_v3 as runtime
 from beyin_v3 import MemoryStore, _delivery_view, workspace_read_grant
 from beyin_v3_jev import remote_allowed
+import beyin_v3_selftest as selftest
 
 
 class WorkspaceResumeTest(unittest.TestCase):
@@ -75,18 +78,24 @@ class WorkspaceResumeTest(unittest.TestCase):
                 self.assertNotIn(other_id, ids)
             self.assertFalse(failures, '\n'.join(failures))
             natural_owner = cli('context', 'Pompa bakımı işine nereden devam ederim?')
+            self.assertEqual(natural_owner['project'], 'bakim')
+            self.assertNotIn('named_workspaces', natural_owner)
             self.assertIn('pompa-esas', [item['id'] for item in natural_owner['records']])
             self.assertNotIn('sergi-esas', [item['id'] for item in natural_owner['records']])
             global_lookup = cli('context', 'Conta ölçüsünü doğrula')
+            self.assertIsNone(global_lookup['project'])
+            self.assertNotIn('named_workspaces', global_lookup)
             self.assertIn('pompa-esas', [item['id'] for item in global_lookup['records']])
-            ambiguous = subprocess.run([sys.executable, str(vault / 'beyin.py'),
-                '--vault', str(vault), '--state', str(state), '--json', 'context',
-                'Pompa bakımı ve Gece sergisi ne durumda?'], env=env,
-                capture_output=True, text=True, encoding='utf-8', timeout=40)
-            self.assertNotEqual(ambiguous.returncode, 0)
-            self.assertIn('multiple Workspaces', ambiguous.stdout + ambiguous.stderr)
+            cross = cli('context', 'Pompa bakımı ve Gece sergisi ne durumda?')
+            self.assertIsNone(cross['project'])
+            self.assertEqual(cross['named_workspaces'], ['bakim', 'sergi'])
+            cross_ids = [item['id'] for item in cross['records']]
+            self.assertIn('pompa-esas', cross_ids)
+            self.assertIn('sergi-esas', cross_ids)
             explicit = cli('context', 'Pompa bakımı ve Gece sergisi ne durumda?',
                 '--project', 'bakim')
+            self.assertEqual(explicit['project'], 'bakim')
+            self.assertNotIn('named_workspaces', explicit)
             self.assertNotIn('sergi-esas', [item['id'] for item in explicit['records']])
             request = base / 'cross-homepage.json'
             request.write_text(json.dumps({'source': 'projects/bakim/Ilerleme.md',
@@ -239,6 +248,168 @@ class WorkspaceResumeTest(unittest.TestCase):
                 env=env, capture_output=True, text=True, encoding='utf-8', timeout=40)
             self.assertNotEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn('workspace registry', run.stdout + run.stderr)
+
+    def test_context_query_naming_multiple_workspaces_searches_unscoped(self):
+        with tempfile.TemporaryDirectory(prefix='workspace-multi-') as tmp:
+            base = Path(tmp).resolve()
+            vault, state = base / 'vault', base / 'state'
+            vault.mkdir()
+            env = inherited_env()
+
+            def run_cli(*args):
+                return subprocess.run(
+                    [sys.executable, str(ROOT / 'scripts/beyin_v3.py'),
+                     '--vault', str(vault), '--state', str(state), *args],
+                    env=env, capture_output=True, text=True, encoding='utf-8', timeout=40)
+
+            def cli(*args):
+                run = run_cli(*args)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                return json.loads(run.stdout)
+
+            for wid, name, body in (
+                ('garden', 'Garden', 'Garden plan: plant tomatoes near the sunny fence.'),
+                ('kitchen', 'Kitchen', 'Kitchen plan: organize spices and cast iron pans.'),
+            ):
+                cli('workspace', 'provision', wid, '--name', name, '--kind', 'general')
+                note = vault / 'projects' / wid / 'plan.md'
+                note.write_text('---\n' + json.dumps({
+                    'id': f'{wid}-plan', 'kind': 'note', 'project': wid,
+                    'visibility': 'internal',
+                }) + '\n---\n# ' + name + ' plan\n\n' + body + '\n', encoding='utf-8')
+
+            # Private and untrusted records must stay excluded during unscoped multi-workspace fallback.
+            (vault / 'projects/kitchen/secret.md').write_text(
+                '---\n{"id":"kitchen-secret","kind":"note","project":"kitchen","visibility":"private"}\n'
+                '---\nGarden and kitchen plan PRIVATE_CANARY.\n', encoding='utf-8')
+            (vault / 'projects/kitchen/untrusted.md').write_text(
+                '---\n{"id":"kitchen-untrusted","kind":"note","project":"kitchen","visibility":"internal","trust":"untrusted"}\n'
+                '---\nGarden and kitchen plan UNTRUSTED_CANARY.\n', encoding='utf-8')
+            cli('sync')
+
+            # Single workspace named: preserves strict auto-scoping with no named_workspaces noise.
+            single = cli('context', 'garden plan')
+            self.assertEqual(single['project'], 'garden')
+            self.assertNotIn('named_workspaces', single)
+            single_ids = [item['id'] for item in single['records']]
+            self.assertIn('garden-plan', single_ids)
+            self.assertNotIn('kitchen-plan', single_ids)
+
+            # Two workspaces named without --project: unscoped search + deterministic named_workspaces (#956).
+            for query in ('garden and kitchen plan', 'Kitchen and Garden plan'):
+                with self.subTest(query=query):
+                    multi = cli('context', query)
+                    self.assertIsNone(multi['project'])
+                    self.assertEqual(multi['named_workspaces'], ['garden', 'kitchen'])
+                    ids = [item['id'] for item in multi['records']]
+                    self.assertIn('garden-plan', ids)
+                    self.assertIn('kitchen-plan', ids)
+                    self.assertNotIn('kitchen-secret', ids)
+                    self.assertNotIn('kitchen-untrusted', ids)
+
+            # Read-only --no-sync preserves the same multi-workspace behavior without writing.
+            no_sync = cli('context', 'garden and kitchen plan', '--no-sync')
+            self.assertIsNone(no_sync['project'])
+            self.assertEqual(no_sync['named_workspaces'], ['garden', 'kitchen'])
+            self.assertEqual(no_sync['source_sync'], {'status': 'skipped', 'reason': 'explicit_no_sync'})
+            self.assertIn('garden-plan', [item['id'] for item in no_sync['records']])
+            self.assertIn('kitchen-plan', [item['id'] for item in no_sync['records']])
+
+            # Explicit --project honors the requested scope and suppresses named_workspaces.
+            explicit = cli('context', 'garden and kitchen plan', '--project', 'garden')
+            self.assertEqual(explicit['project'], 'garden')
+            self.assertNotIn('named_workspaces', explicit)
+            explicit_ids = [item['id'] for item in explicit['records']]
+            self.assertIn('garden-plan', explicit_ids)
+            self.assertNotIn('kitchen-plan', explicit_ids)
+
+            # Explicit project in --file JSON also honors the scope; null falls back unscoped.
+            req_file = base / 'context-request.json'
+            req_file.write_text(json.dumps({'query': 'garden and kitchen plan', 'project': 'garden'}), encoding='utf-8')
+            file_scoped = cli('context', '--file', str(req_file))
+            self.assertEqual(file_scoped['project'], 'garden')
+            self.assertNotIn('named_workspaces', file_scoped)
+            self.assertNotIn('kitchen-plan', [item['id'] for item in file_scoped['records']])
+
+            req_file.write_text(json.dumps({'query': 'garden and kitchen plan', 'project': None}), encoding='utf-8')
+            file_unscoped = cli('context', '--file', str(req_file))
+            self.assertIsNone(file_unscoped['project'])
+            self.assertEqual(file_unscoped['named_workspaces'], ['garden', 'kitchen'])
+            self.assertIn('garden-plan', [item['id'] for item in file_unscoped['records']])
+            self.assertIn('kitchen-plan', [item['id'] for item in file_unscoped['records']])
+
+            # Zero workspaces named: unscoped without named_workspaces.
+            general = cli('context', 'tomatoes spices')
+            self.assertIsNone(general['project'])
+            self.assertNotIn('named_workspaces', general)
+
+            # Remote --jev still refuses without an explicit single project.
+            jev_run = run_cli('context', 'garden and kitchen plan', '--jev')
+            self.assertNotEqual(jev_run.returncode, 0)
+            self.assertIn('advisor_requires_explicit_project', jev_run.stdout + jev_run.stderr)
+
+            # Three active workspaces sort deterministically; archiving one narrows matching back to active ones.
+            cli('workspace', 'provision', 'attic', '--name', 'Attic', '--kind', 'general')
+            (vault / 'projects/attic/plan.md').write_text(
+                '---\n{"id":"attic-plan","kind":"note","project":"attic","visibility":"internal"}\n'
+                '---\n# Attic plan\n\nAttic plan: label storage boxes.\n', encoding='utf-8')
+            cli('sync')
+            triple = cli('context', 'kitchen attic garden plan')
+            self.assertIsNone(triple['project'])
+            self.assertEqual(triple['named_workspaces'], ['attic', 'garden', 'kitchen'])
+
+            cli('workspace', 'archive', 'kitchen')
+            after_archive = cli('context', 'garden and kitchen plan')
+            self.assertEqual(after_archive['project'], 'garden')
+            self.assertNotIn('named_workspaces', after_archive)
+
+    def test_context_workspaces_and_selftest_handle_multiple_workspaces(self):
+        with tempfile.TemporaryDirectory(prefix='workspace-helper-') as tmp:
+            base = Path(tmp).resolve()
+            vault, state = base / 'vault', base / 'state'
+            vault.mkdir()
+            # Without workspace/scope files, helpers return empty without importing workspaces module.
+            self.assertEqual(runtime.context_workspaces(vault, 'garden and kitchen plan'), (None, []))
+            self.assertIsNone(runtime.context_project(vault, 'garden and kitchen plan'))
+
+            env = inherited_env()
+            for wid, name, body in (
+                ('garden', 'Garden', 'Garden plan: plant tomatoes.'),
+                ('kitchen', 'Kitchen', 'Kitchen plan: organize spices.'),
+            ):
+                res = subprocess.run(
+                    [sys.executable, str(ROOT / 'scripts/beyin_v3.py'),
+                     '--vault', str(vault), '--state', str(state),
+                     'workspace', 'provision', wid, '--name', name, '--kind', 'general'],
+                    env=env, capture_output=True, text=True, encoding='utf-8', timeout=40)
+                self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+                (vault / 'projects' / wid / 'plan.md').write_text(
+                    '---\n' + json.dumps({'id': f'{wid}-plan', 'kind': 'note', 'project': wid,
+                                          'visibility': 'internal'}) + '\n---\n' + body + '\n',
+                    encoding='utf-8')
+            res = subprocess.run(
+                [sys.executable, str(ROOT / 'scripts/beyin_v3.py'),
+                 '--vault', str(vault), '--state', str(state), 'sync'],
+                env=env, capture_output=True, text=True, encoding='utf-8', timeout=40)
+            self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+
+            self.assertEqual(runtime.context_workspaces(vault, 'garden plan'), ('garden', ['garden']))
+            self.assertEqual(runtime.context_project(vault, 'garden plan'), 'garden')
+            self.assertEqual(runtime.context_workspaces(vault, 'kitchen and garden plan'),
+                             (None, ['garden', 'kitchen']))
+            self.assertIsNone(runtime.context_project(vault, 'kitchen and garden plan'))
+
+            questions = vault / 'selftest-questions.json'
+            questions.write_text(json.dumps({
+                'questions': [
+                    {'query': 'garden and kitchen plan', 'source': 'projects/garden/plan.md',
+                     'sentence': 'plant tomatoes'},
+                ],
+                'controls': [],
+            }), encoding='utf-8')
+            report = selftest.run_selftest(vault, state, questions.name, mode='context', budget=8000)
+            self.assertEqual(report['status'], 'ok', report)
+            self.assertEqual(report['passed'], 1, report)
 
 
 if __name__ == '__main__':
