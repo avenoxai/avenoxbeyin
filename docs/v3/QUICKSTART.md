@@ -237,6 +237,12 @@ sonra aynı oturum kimliği ve aynı istekle tekrar çalıştır. Receipt için 
 `event_id` değerini koru. Kart ve Threads içindeki görünmez Markdown işaretleri
 tekrar denemede tamamlanan yazıların tanınmasını sağlar.
 
+Sıkıştırma adımı kart ve Threads yazımından sonra çalışır; yeni kart dosyayı
+sınırın üstüne çıkarırsa aynı çağrı bunu görür. Bu çağrının kartı, üstüne yeni
+bir kart yazılmadığı sürece tekrar denemede de arşive taşınmaz. Taşınacak eski
+kayıt kalmazsa `steps.compact` değeri `needs_rewrite`, sonuç `partial` olur;
+önizleme de aynı sonucu gösterir.
+
 Checkpoint makbuzu, bağımsız `receipt` komutuyla aynı yerel not atfı sayacını kullanır.
 Uygun notlara yapılan atıflar bir `event_id` için yalnız bir kez sayılır. Sayaç yazılamazsa
 makbuz geçerli kalır; aynı makbuz tekrar gönderildiğinde eksik sayaç tamamlanabilir.

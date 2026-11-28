@@ -3,6 +3,7 @@ import unittest
 import tempfile
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 from datetime import datetime, timedelta, timezone
@@ -715,6 +716,158 @@ class CheckpointTest(unittest.TestCase):
         self.assertEqual(second["steps"]["card"], "unchanged")
         self.assertEqual(second["steps"]["compact"], "skipped_within_limit")
         self.assertEqual(second["status"], "succeeded")
+
+    def _own_card_marks(self, req, session):
+        from beyin_v3_checkpoint import _prepare_card
+        _, owner, marker, end, _ = _prepare_card("", req["card"], session, datetime.fromisoformat(req["now"]))
+        return owner, marker, end
+
+    def _archive_moves(self, name="Last-Session.md", vault=None):
+        from beyin_v3_compact import _records
+        vault = vault or self.vault
+        comp = vault / self.comp.name
+        source = f"{comp.relative_to(vault).as_posix()}/{name}"
+        payloads = []
+        archive_dir = comp / "Arşiv"
+        if archive_dir.is_dir():
+            for path in sorted(archive_dir.glob(f"{Path(name).stem}-*.md")):
+                moves, _, _, _ = _records(path.read_text(encoding="utf-8"), source)
+                payloads.extend(moves.values())  # verbatim moved text, one entry per move record
+        return payloads
+
+    def test_retry_after_needs_rewrite_keeps_own_card_live(self):
+        # A retry of the same request finds its card live and still leading the file. Compaction
+        # must protect it again; otherwise the ahead-clock card stays and the handoff leaves.
+        card = self.comp / "Last-Session.md"
+        future_card = "## 2026-11-25 12:00 · ileride · ffffffff\nILERI_KART " + ("ileri saat notu. " * 75) + "\n"
+        card.write_text("# Last-Session\n\n" + future_card, encoding="utf-8", newline="\n")
+        req = {"card": {"label": "taze", "body": "TAZE_KART " + ("yeni detay. " * 165)}, "now": "2026-11-21T10:05:00"}
+        _, marker, end = self._own_card_marks(req, "retry-own-card")
+
+        first = run_checkpoint(self.sync, self.vault, self.state, req, session="retry-own-card")
+        self.assertEqual(first["steps"]["compact"], "needs_rewrite")
+        preview = run_checkpoint(None, self.vault, self.state, req, session="retry-own-card", dry_run=True)
+        self.assertEqual(preview["steps"]["compact"], "needs_rewrite")
+        retry = run_checkpoint(self.sync, self.vault, self.state, req, session="retry-own-card")
+        self.assertEqual(retry["steps"]["card"], "unchanged")
+        self.assertEqual(retry["steps"]["compact"], "needs_rewrite")
+        live = card.read_text(encoding="utf-8")
+        self.assertIn(marker, live)
+        self.assertIn(end, live)
+        self.assertFalse(any(marker in moved for moved in self._archive_moves()))
+
+    def test_retry_after_interrupted_compaction_reuses_the_committed_move(self):
+        import beyin_v3_compact
+
+        card = self.comp / "Last-Session.md"
+        future_card = "## 2026-11-25 12:00 · ileride · ffffffff\nILERI_KART " + ("ileri saat notu. " * 60) + "\n"
+        old_card = "## 2026-11-01 10:00 · eski · 11111111\nESKI_KART " + ("eski kayıt. " * 40) + "\n"
+        card.write_text("# Last-Session\n\n" + future_card + "\n" + old_card, encoding="utf-8", newline="\n")
+        req = {"card": {"label": "taze", "body": "TAZE_KART " + ("yeni detay. " * 170)}, "now": "2026-11-21T10:05:00"}
+        _, marker, end = self._own_card_marks(req, "interrupted")
+        real_write = beyin_v3_compact._write
+
+        def crash_before_live_replace(path, text):
+            if Path(path).name == "Last-Session.md":
+                raise OSError("simulated interruption after the archive append")
+            return real_write(path, text)
+
+        with patch.object(beyin_v3_compact, "_write", crash_before_live_replace):
+            first = run_checkpoint(self.sync, self.vault, self.state, req, session="interrupted")
+        self.assertEqual(first["steps"]["card"], "written")
+        self.assertEqual(first["steps"]["compact"]["status"], "error")
+        self.assertEqual(len(self._archive_moves()), 1)
+
+        retry = run_checkpoint(self.sync, self.vault, self.state, req, session="interrupted")
+        self.assertEqual(retry["steps"]["card"], "unchanged")
+        moves = self._archive_moves()
+        self.assertEqual(len(moves), 1, "the retry must reuse the interrupted run's archive move")
+        self.assertIn("ESKI_KART", moves[0])
+        self.assertNotIn(marker, moves[0])
+        live = card.read_text(encoding="utf-8")
+        self.assertIn(marker, live)
+        self.assertIn(end, live)
+        self.assertNotIn("ESKI_KART", live)
+
+    def test_post_write_threads_compaction_keeps_replay_markers_live(self):
+        # #877: compaction now runs after the Threads write. The keys it just committed must stay
+        # in the live preamble, so a retry is recognized even after the edited thread moved.
+        threads = self.comp / "Threads.md"
+        closed = "\n## Closed Threads\n" + "".join(
+            f"### Eski iş {i}\n- 2026-10-{i + 1:02d} kapanan eski iş kaydı {i}.\n" for i in range(20))
+        threads.write_text("# Threads\n\n## Active Threads\n### Aktif İşler\n"
+                           + ("- aktif ayrıntı satırı burada yer alır.\n" * 110) + closed
+                           + ("- kapanan dolgu satırı.\n" * 60), encoding="utf-8", newline="\n")
+        step = "YENI_ADIM " + ("uzun yeni görev açıklaması " * 40).strip()
+        req = {"threads": [{"heading": "Aktif İşler", "next_step": step},
+                           {"old": "### Eski iş 3\n", "new": "### Eski iş 3 (taşındı)\n"}],
+               "now": "2026-11-21T10:00:00"}
+        first = run_checkpoint(self.sync, self.vault, self.state, req, session="threads-877")
+        self.assertEqual(first["steps"], {"threads": "written", "compact": "compacted"})
+        live = threads.read_text(encoding="utf-8")
+        self.assertNotIn("Eski iş 3 (taşındı)", live)
+        self.assertEqual(len(re.findall(r"^<!-- beyin-checkpoint-thread:[a-f0-9]{64} -->$", live, re.MULTILINE)), 2)
+        for _ in range(2):
+            retry = run_checkpoint(self.sync, self.vault, self.state, req, session="threads-877")
+            self.assertEqual(retry["steps"], {"threads": "unchanged", "compact": "skipped_within_limit"})
+            self.assertEqual(threads.read_text(encoding="utf-8"), live)
+
+    def test_own_card_never_leaves_live_file_and_nothing_is_lost_grid(self):
+        # Invariant over a fixed grid: after a checkpoint and its retry (no newer card written
+        # above it in between), the request's own card is whole in the live file, never in an
+        # archive move, and every other line of the file before the call is either still live
+        # or in an archive move. A retry superseded by a newer card may still archive its own
+        # card (test_card_retry_recognizes_a_compacted_card).
+        from itertools import product
+
+        futures = ([], [("2026-11-25 12:00", 300)], [("2026-11-26 09:00", 1400), ("2026-11-25 12:00", 300)])
+        olds = ([], [("2026-11-02 10:00", 600)], [("2026-11-03 10:00", 600), ("2026-11-02 10:00", 1200)])
+
+        def card_text(stamp, size, tag):
+            return f"## {stamp} · {tag} · {tag[:8]:0<8}\n{tag.upper()}_GOVDE " + ("x" * size) + "\n"
+
+        for index, (future, old, history, prior, size) in enumerate(
+                product(futures, olds, (False, True), (False, True), (80, 1200, 3300))):
+            with self.subTest(future=len(future), old=len(old), history=history, prior=prior, size=size):
+                vault = Path(self.test_dir) / f"grid-{index}" / "vault"
+                state = vault.parent / "state"
+                comp = vault / self.comp.name
+                comp.mkdir(parents=True)
+                state.mkdir()
+                sync = SyncEngine(vault, state)
+                session = f"grid-{index}"
+                parts = ["# Last-Session\n\n"]
+                parts += [card_text(stamp, n, f"ileri{i}") + "\n" for i, (stamp, n) in enumerate(future)]
+                parts += [card_text(stamp, n, f"eski{i}") + "\n" for i, (stamp, n) in enumerate(old)]
+                if history:
+                    parts.append("## Önceki oturumlar\n- 2026-10-01 GECMIS_SATIRI " + ("y" * 200) + "\n")
+                live_path = comp / "Last-Session.md"
+                live_path.write_text("".join(parts), encoding="utf-8", newline="\n")
+                limits = state / "companion-limits.json"
+                if prior:
+                    limits.write_text('{"Last-Session.md": 0}', encoding="utf-8")
+                    run_checkpoint(sync, vault, state,
+                                   {"card": {"label": "önceki", "body": "ONCEKI_SURUM " + ("z" * 400)},
+                                    "now": "2026-11-20T09:00:00"}, session=session)
+                    limits.unlink()
+                before = live_path.read_text(encoding="utf-8")
+                req = {"card": {"label": "taze", "body": "TAZE_GOVDE " + ("t" * size)}, "now": "2026-11-21T10:00:00"}
+                owner, marker, end = self._own_card_marks(req, session)
+                for attempt in ("call", "retry"):
+                    res = run_checkpoint(sync, vault, state, req, session=session)
+                    self.assertIn(res["steps"]["compact"], ("compacted", "needs_rewrite", "skipped_within_limit"),
+                                  (attempt, res))
+                    live = live_path.read_text(encoding="utf-8")
+                    self.assertIn(marker, live, attempt)
+                    self.assertIn(end, live, attempt)
+                    self.assertIn("TAZE_GOVDE " + ("t" * size), live, attempt)
+                    moved = self._archive_moves(vault=vault)
+                    self.assertFalse(any(marker in payload for payload in moved), attempt)
+                    kept = set(live.splitlines()) | {line for payload in moved for line in payload.splitlines()}
+                    lost = [line for line in before.splitlines()
+                            if line.strip() and "ONCEKI_SURUM" not in line and owner not in line
+                            and line not in kept]
+                    self.assertEqual(lost, [], attempt)
 
 if __name__ == "__main__":
     unittest.main()

@@ -133,12 +133,24 @@ def _prepare_card(content, card, session, now):
     return updated, owner, marker, end, "prepend"
 
 
+def _leads_file(content, owner):
+    """True when this owner's card is still the first level-2 card: nothing was prepended above it."""
+    starts = headings(content, 2)
+    return bool(starts) and re.match(
+        rf"## [^\r\n]+ <!-- beyin-checkpoint:{owner}:[a-f0-9]{{64}} -->\r?$", content[starts[0]:],
+        re.MULTILINE) is not None
+
+
 def _update_card(sync, source, card, session, now):
     previous = note_read(sync, source)
     content = previous["content"] or ""
     updated, owner, marker, end, mode = _prepare_card(content, card, session, now)
     if mode == "replayed":
-        return _confirm_replayed_note(sync, source, previous), None
+        # A retry after an interrupted or needs_rewrite run finds its card live. While no newer
+        # card sits above it, it is still the handoff this call wrote: protect it again so the
+        # retry neither archives it nor plans a different archive move than the first run.
+        status = _confirm_replayed_note(sync, source, previous)
+        return status, owner if _leads_file(content, owner) else None
     if mode == "prepend":
         # Automatic compaction can move a completed card before its retry.
         note = sync.root / previous["source"]
@@ -289,6 +301,8 @@ def run_checkpoint(sync, vault, state, request, harness=None, session=None, dry_
                             updated = None
                     if updated is not None and updated != content:
                         preview_overrides["Last-Session.md"] = updated
+                        protected_owners.add(owner)
+                    elif mode == "replayed" and _leads_file(content, owner):
                         protected_owners.add(owner)
                 except (ValueError, TypeError, AttributeError, OSError, UnicodeError):
                     pass
