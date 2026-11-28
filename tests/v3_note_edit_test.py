@@ -839,6 +839,17 @@ with locked(engine):
         self.assertEqual(path.read_bytes(), b'- fruit\r\n- dairy\r\n- tea\r\n')
         self.assertNotIn(b'\r\r\n', path.read_bytes())
 
+    def test_whole_note_replacement_in_crlf_note_keeps_requested_bytes(self):
+        # Internal writers (mutation queue, checkpoint, chat trace, homepages) replace the whole
+        # note and then verify or replay their exact bytes; only partial edits adapt endings.
+        raw = b'# Title\r\n\r\nbefore\r\n'
+        path = self.write(source='Whole.md', raw=raw)
+        content = self.engine.note_read('Whole.md')['content']
+        replacement = '---\n{}\n---\nafter\nsecond\n'
+        result = self.engine.note_edit(self.request(content, replacement, source='Whole.md'))
+        self.assertEqual(result['status'], 'written')
+        self.assertEqual(path.read_bytes(), replacement.encode('utf-8'))
+
     def test_line_ending_grid_matches_lf_semantics(self):
         # Invariants over a fixed grid, checked in-process on the matcher and end to end:
         # 1. a note without CRLF is searched exactly as before (literal, overlapping, byte for byte);

@@ -794,6 +794,7 @@ def _apply(engine, request, committed, finalize=None):
             _human(text)
             # Like checkpoint: any CRLF makes new edit text CRLF, so a note mixed by an older
             # LF edit heals instead of mixing further. A note without CRLF keeps exact bytes.
+            # The line endings are read once, from the note as it stood before this request.
             newline = '\r\n' if '\r\n' in text else '\n'
             for edit in request['edits']:
                 if not isinstance(edit, dict):
@@ -810,9 +811,12 @@ def _apply(engine, request, committed, finalize=None):
                 if len(matches) > 1:
                     raise NoteConflict(f'edit anchor occurs {len(matches)} times; must occur exactly once')
                 if new != old:  # An exact no-op leaves the matched bytes, line endings included.
-                    if newline == '\r\n':
-                        new = new.replace('\r\n', '\n').replace('\n', '\r\n')
                     start, end = matches[0]
+                    # A whole-note replacement states its exact bytes: the mutation queue,
+                    # checkpoint, chat trace and homepages verify or replay them as sent.
+                    # Only a partial edit takes the note's line endings.
+                    if newline == '\r\n' and (start, end) != (0, len(text)):
+                        new = new.replace('\r\n', '\n').replace('\n', '\r\n')
                     text = text[:start] + new + text[end:]
         _human(text)  # Do not create a managed source or convert a human note into one.
         updated = text.encode('utf-8')  # Keeps BOM and untouched CRLF bytes exactly.
