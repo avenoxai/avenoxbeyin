@@ -1350,6 +1350,10 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(self.agy_run(stop_cmd, dict(stop, fullyIdle=False)), {'decision': 'stop'})
         self.assertEqual(self.agy_run(stop_cmd, dict(stop, executionNum=1)), {'decision': 'stop'})
 
+        # An abnormal end gets no context-fill reminder either (#937 with #943 in 3.19.0).
+        self.assertEqual(self.agy_run(stop_cmd, dict(stop, terminationReason='USER_CANCELED')), {'decision': 'stop'})
+        self.assertEqual(self.agy_run(stop_cmd, dict(stop, error='model failed')), {'decision': 'stop'})
+
         # First idle Stop above threshold returns decision "continue".
         first = self.agy_run(stop_cmd, stop)
         self.assertEqual(first['decision'], 'continue')

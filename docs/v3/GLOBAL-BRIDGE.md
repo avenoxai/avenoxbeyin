@@ -177,7 +177,8 @@ Genel ayarlar kullanıcıya aittir ve vault güncellemesinin rollback kapsamına
   iptali, hata, çağrı ya da token bütçesi sınırı gibi) `{"decision":"stop"}` döner; checkpoint
   kuyruğa alınmaz, hatırlatma yapılmaz ve düzenleme işareti sonraki normal `Stop`'a kalır. Bu iki
   alanı göndermeyen istemcide davranış değişmez. Normal bir `Stop`'ta receipt eksikse bir kez
-  `{"decision":"continue"}` döner, devam ettirilen `Stop` (`continuationActive: true` ya da
+  `{"decision":"continue"}` döner; `--context-fill on` açıksa en yeni `PLANNER_RESPONSE` eşiği
+  aştığında da döner (bkz. `PREFERENCES.md`). Devam ettirilen `Stop` (`continuationActive: true` ya da
   `executionNum` 0'dan büyük; 1.5.18 devamdan sonraki `Stop`'u `continuationActive: false`, `executionNum: 1` ile gönderdi) aynı turda
   yeniden sormaz. `SessionStart` ve `PostToolUse`
   komutları `--native-event` taşımaz, olayı payload'daki `hookEventName`'den okur; bu yüzden

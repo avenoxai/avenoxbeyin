@@ -974,6 +974,17 @@ def _antigravity_notice_path(state, conversation):
     return Path(state) / 'antigravity-notices' / (digest + '.json')
 
 
+def _antigravity_notice_waiting(state, conversation):
+    """True when a post-edit notice file exists for this conversation (stdlib only: the fast exit uses it)."""
+    if not isinstance(conversation, str) or not conversation:
+        return False
+    try:
+        _antigravity_notice_path(state, conversation).lstat()
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def _read_antigravity_notice(path, info, max_age=ANTIGRAVITY_NOTICE_MAX_AGE):
     """Read a verified regular notice file. Returns None on security/size mismatch, '' when stale/invalid."""
     if (not stat.S_ISREG(info.st_mode) or _is_link_or_reparse(info)
@@ -1263,7 +1274,10 @@ def main():
                     pass
                 if isinstance(early_payload, dict):
                     early_event = early_payload.get("hook_event_name", args.event)
-                    if early_event == "PreInvocation" and early_payload.get("invocationNum") != 0:
+                    if (early_event == "PreInvocation" and early_payload.get("invocationNum") != 0
+                            and not _antigravity_notice_waiting(candidate_state, early_payload.get("conversationId"))):
+                        # A post-edit notice (#945) is the only thing a later model call of a turn can
+                        # deliver; one lstat for it, no vault module (#941).
                         print("{}")
                         return
                     if early_event == "Stop" and early_payload.get("fullyIdle") is not True:

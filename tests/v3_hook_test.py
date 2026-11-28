@@ -1400,19 +1400,34 @@ class HookInstallerTest(unittest.TestCase):
              '\ufeff' + json.dumps({'hookEventName': 'PreInvocation', 'conversationId': 'fast-bom', 'invocationNum': 1}),
              '{}'),
         ]
+        def run(extra, payload):
+            raw = payload if isinstance(payload, str) else json.dumps(payload)
+            result = subprocess.run(
+                [sys.executable, '-c', probe, str(SCRIPTS),
+                 '--vault', str(self.vault), '--state', str(self.state),
+                 '--harness', 'antigravity', *extra],
+                input=raw, text=True, encoding='utf-8', capture_output=True,
+                cwd=self.vault, env=self.env, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+
         for extra, payload, expected in cases:
             with self.subTest(extra=extra, expected=expected):
-                raw = payload if isinstance(payload, str) else json.dumps(payload)
-                result = subprocess.run(
-                    [sys.executable, '-c', probe, str(SCRIPTS),
-                     '--vault', str(self.vault), '--state', str(self.state),
-                     '--harness', 'antigravity', *extra],
-                    input=raw, text=True, encoding='utf-8', capture_output=True,
-                    cwd=self.vault, env=self.env, timeout=20)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                report = json.loads(result.stdout)
+                report = run(extra, payload)
                 self.assertEqual(report['output'], expected)
                 self.assertEqual(report['loaded'], [])
+        # 3.19.0 merges #941 with #945: a post-edit notice waits for the next model call of the turn.
+        # One waiting for another conversation keeps this exit fast; one for this conversation
+        # sends the call down the full path that delivers it.
+        notices = self.state / 'antigravity-notices'
+        notices.mkdir(parents=True, exist_ok=True)
+        later = (['--event', 'PreInvocation'], cases[0][1])
+        (notices / (hashlib.sha256(b'other-conversation').hexdigest() + '.json')).write_text(
+            '{}', encoding='utf-8', newline='\n')
+        self.assertEqual(run(*later), {'output': '{}', 'loaded': []})
+        (notices / (hashlib.sha256(b'fast-1').hexdigest() + '.json')).write_text(
+            '{}', encoding='utf-8', newline='\n')
+        self.assertNotEqual(run(*later)['loaded'], [])
 
     def test_antigravity_abnormal_stop_is_answered_before_any_transcript_read(self):
         # A fully idle Stop without user input runs the nested-agent check, which can read 2 MB + 64 KB
@@ -1732,9 +1747,16 @@ class HookInstallerTest(unittest.TestCase):
         rows.append({'step_index': 4, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE',
                      'input_tokens': 10000, 'cache_read_tokens': 190000})
         write_rows()
-        stop1 = self.invoke(dict(base, hookEventName='Stop', fullyIdle=True, executionNum=0,
-                                 continuationActive=False, lastUserInput='Who owns Nebula calibration?'),
-                            'antigravity', extra=['--event', 'Stop'])
+        idle = dict(base, hookEventName='Stop', fullyIdle=True, executionNum=0,
+                    continuationActive=False, lastUserInput='Who owns Nebula calibration?')
+        # A cancelled, failed or budget-ended turn gets no context-fill reminder either (#937 with
+        # #943 in 3.19.0), and it does not use up the reminder of the next normal Stop.
+        for abnormal in ({'terminationReason': 'USER_CANCELED'}, {'terminationReason': 'MAX_INVOCATIONS'},
+                         {'error': 'model failed'}):
+            with self.subTest(abnormal=abnormal):
+                self.assertEqual(self.invoke(dict(idle, **abnormal), 'antigravity', extra=['--event', 'Stop']),
+                                 {'decision': 'stop'})
+        stop1 = self.invoke(idle, 'antigravity', extra=['--event', 'Stop'])
         self.assertEqual(stop1.get('decision'), 'continue')
         self.assertIn('200.000', stop1.get('reason', ''))
         fill_digest = hashlib.sha256(conversation.encode('utf-8')).hexdigest()[:24]
