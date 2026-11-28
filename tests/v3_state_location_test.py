@@ -311,7 +311,8 @@ beyin_v3_hook.main()
         self.assertEqual(doctor["state_location"]["status"], "unavailable")
         self.assertIn("lifecycle", doctor)
 
-    def test_human_doctor_names_each_warning_in_ascii(self):
+    def test_human_doctor_names_each_warning_with_ascii_fallback(self):
+        import io
         spec = importlib.util.spec_from_file_location("state_location_entry", ROOT / "scripts/beyin_entry.py")
         entry = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(entry)
@@ -327,7 +328,11 @@ beyin_v3_hook.main()
         self.assertIn("https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/UPDATE.md", lines[1])
         self.assertIn("(C)", lines[2])
         self.assertIn("https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/MULTI-MACHINE.md", lines[3])
-        self.assertTrue(all(line.isascii() for line in lines))
+        # The ASCII fallback folds every letter of these lines: a legacy console never sees '?'.
+        ascii_stream = io.TextIOWrapper(io.BytesIO(), encoding="ascii", errors="strict")
+        for line in lines:
+            self.assertEqual(entry.safe_stream_text(line, ascii_stream), entry.turkish_to_ascii(line))
+            self.assertTrue(entry.turkish_to_ascii(line).isascii(), line)
         quiet = entry.human_result({"status": "observed_metadata",
                                     "state_location": {"status": "unavailable", "warnings": []}}, "doctor", "3.4.0")
         self.assertNotIn("State konumu", quiet)

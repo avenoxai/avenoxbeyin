@@ -447,7 +447,7 @@ class ArchiveHintTest(unittest.TestCase):
             }
         }
         human = entry.human_result(result, 'doctor')
-        self.assertIn('Arsiv kapsami (bilgi): arsiv klasorlerinde emekli edilmemis (canli sayilan) 4 not indeksli (📦 900-Archive: 4).', human)
+        self.assertIn('Arşiv kapsamı (bilgi): arşiv klasörlerinde emekli edilmemiş (canlı sayılan) 4 not indeksli (📦 900-Archive: 4).', human)
         self.assertIn('--index-exclude-dir "📦 900-Archive"', human)
         self.assertIn('status: archived', human)
 
@@ -524,7 +524,7 @@ class InstalledCliTest(unittest.TestCase):
                                   'vendored_hint': {'notes': 3, 'dirs': [{'dir': 'proje/3rdparty', 'notes': 3}],
                                                     'names': ['3rdparty'], 'truncated': False}})
         human = self.beyin('doctor', human=True)[1]
-        self.assertIn('Indeks kapsami (bilgi): baska projelerin kod kopyasi gibi gorunen klasorlerde 3 not indeksli '
+        self.assertIn('İndeks kapsamı (bilgi): başka projelerin kod kopyası gibi görünen klasörlerde 3 not indeksli '
                       '(proje/3rdparty: 3).', human)
         self.assertIn('beyin.py preferences --index-exclude-dir 3rdparty', human)
         self.assertNotIn('Vendor', human, 'a notes folder without upstream documents is not pointed at')
@@ -538,16 +538,16 @@ class InstalledCliTest(unittest.TestCase):
 
         code, saved = self.beyin('preferences', '--index-exclude-dir', '3rdparty')
         self.assertEqual((code, saved['status'], saved['index_exclusions']), (0, 'saved', {'excluded_dirs': ['3rdparty']}))
-        self.assertIn('Indeks disi klasor adlari (senin listen, her derinlikte): 3rdparty.', self.beyin('preferences', human=True)[1])
+        self.assertIn('İndeks dışı klasör adları (sizin listeniz, her derinlikte): 3rdparty.', self.beyin('preferences', human=True)[1])
         code, synced = self.beyin('sync')
         self.assertEqual((synced['status'], synced['deleted']), ('succeeded', 3))
         self.assertEqual(synced['index_exclusions'], {'excluded_dirs': ['3rdparty'], 'pruned': 1, 'pruned_dirs': ['proje/3rdparty']})
-        self.assertIn('3rdparty (bu taramada 1 klasor atlandi).', self.beyin('sync', human=True)[1])
+        self.assertIn('3rdparty (bu taramada 1 klasör atlandı).', self.beyin('sync', human=True)[1])
         self.assertEqual([source for source in self.indexed() if '3rdparty' in source], [])
         self.assertIn('Vendor/Acme Tedarik.md', self.indexed())
         report = self.beyin('doctor')[1]['index_exclusions']
         self.assertEqual((report['status'], report['excluded_dirs'], 'vendored_hint' in report), ('active', ['3rdparty'], False))
-        self.assertIn('Indeks disi klasor adlari (senin listen, her derinlikte): 3rdparty.', self.beyin('doctor', human=True)[1])
+        self.assertIn('İndeks dışı klasör adları (sizin listeniz, her derinlikte): 3rdparty.', self.beyin('doctor', human=True)[1])
 
         # A damaged file is shown by all three commands and refused by the next change.
         (self.state / 'index.json').write_bytes(b'{not json')
@@ -556,8 +556,8 @@ class InstalledCliTest(unittest.TestCase):
         self.assertEqual(len([source for source in self.indexed() if '3rdparty' in source]), 3)
         code, doctor = self.beyin('doctor')
         self.assertEqual((doctor['index_exclusions']['status'], doctor['index_exclusions']['error']), ('invalid', 'not valid JSON'))
-        self.assertIn('index.json gecersiz (not valid JSON); klasor haric tutma listesi uygulanmiyor', self.beyin('doctor', human=True)[1])
-        self.assertIn('index.json gecersiz', self.beyin('preferences', human=True)[1])
+        self.assertIn('index.json geçersiz (not valid JSON); klasör hariç tutma listesi uygulanmıyor', self.beyin('doctor', human=True)[1])
+        self.assertIn('index.json geçersiz', self.beyin('preferences', human=True)[1])
         code, refused = self.beyin('preferences', '--index-exclude-dir', 'target')
         self.assertEqual(code, 1)
         self.assertIn('fix or remove it first', refused['message'])

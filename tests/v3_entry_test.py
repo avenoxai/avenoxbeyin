@@ -77,6 +77,130 @@ class EntryPresentationTest(unittest.TestCase):
         self.assertNotIn('Codex', older)
         self.assertNotIn('Hook tanimi', entry.human_result(dict(updated, trust_review_required=False), 'update'))
 
+    def test_human_doctor_formats_project_companion_over_limit_without_keyerror(self):
+        spec = importlib.util.spec_from_file_location('v3_entry_hygiene_proj', ROOT / 'scripts/beyin_entry.py')
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        result = {
+            'status': 'ok',
+            'companion_hygiene': {
+                'status': 'over_limit',
+                'files': {'Last-Session.md': {'chars': 120, 'limit': 3000, 'over_limit': False}},
+                'over_limit': ['projects/demo/Last-Session.md'],
+                'projects': [{
+                    'directory': 'projects/demo',
+                    'status': 'over_limit',
+                    'files': {'Last-Session.md': {'chars': 3500, 'limit': 3000, 'over_limit': True}},
+                    'over_limit': ['Last-Session.md'],
+                }],
+            },
+        }
+        text = entry.human_result(result, 'doctor')
+        self.assertIn('projects/demo/Last-Session.md 3500 karakter (sınır 3000)', text)
+        line = next(line for line in text.splitlines() if 'projects/demo/Last-Session.md' in line)
+        # companion-compact only shortens the main companion folder; it must not be the advice here.
+        self.assertIn('bu proje dosyasını kapsamaz', line)
+        self.assertNotIn('çalıştırmasını söyleyin', line)
+        self.assertEqual(text.splitlines()[0], 'Bakmanız gereken 1 şey var.')
+
+        # End-to-end CLI check: doctor --human on an installed vault with an over-limit project handoff file.
+        with tempfile.TemporaryDirectory(prefix='v3-entry-proj-hygiene-') as t:
+            root = Path(t); vault = root / 'vault'; vault.mkdir(); state = root / 'state'; env = isolated_env(root / 'home')
+            installed = install(vault, state, env)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            proj = vault / 'projects' / 'demo'
+            proj.mkdir(parents=True)
+            (proj / 'Last-Session.md').write_text('# Demo\n' + 'x' * 3500, encoding='utf-8', newline='\n')
+            human = run_python(vault / 'beyin.py', ['doctor', '--human'], vault, env)
+            self.assertEqual(human.returncode, 0, human.stderr.decode('utf-8', errors='replace'))
+            out = human.stdout.decode('utf-8')
+            self.assertIn('projects/demo/Last-Session.md', out)
+            self.assertIn('bu proje dosyasını kapsamaz', out)
+            # The reason for that advice: the compactor leaves project folders alone. If it ever
+            # learns them, the doctor line above should name it again.
+            dry = run_python(vault / 'beyin.py', ['companion-compact', '--dry-run', '--json'], vault, env)
+            self.assertEqual(dry.returncode, 0, dry.stderr.decode('utf-8', errors='replace'))
+            self.assertNotIn('projects/demo', dry.stdout.decode('utf-8'))
+
+    def test_human_doctor_prints_one_line_per_over_limit_companion_file(self):
+        spec = importlib.util.spec_from_file_location('v3_entry_hygiene_lines', ROOT / 'scripts/beyin_entry.py')
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        hygiene = {
+            'status': 'over_limit',
+            'files': {'Threads.md': {'chars': 9000, 'limit': 8000, 'over_limit': True}},
+            # Root name, project name, a project name with no matching report, and a duplicate.
+            'over_limit': ['Threads.md', 'projects/a/Threads.md', 'projects/gone/Last-Session.md', 'Threads.md'],
+            'projects': [{'directory': 'projects/a', 'files': {'Threads.md': {'chars': 8100, 'limit': 8000}},
+                          'over_limit': ['Threads.md']}],
+        }
+        text = entry.human_result({'status': 'observed_metadata', 'companion_hygiene': hygiene}, 'doctor')
+        lines = [line for line in text.splitlines() if line.startswith('Hafıza hijyeni: ')]
+        self.assertEqual(len(lines), 3, text)
+        self.assertEqual(text.splitlines()[0], 'Bakmanız gereken 3 şey var.')
+        self.assertIn('Threads.md 9000 karakter (sınır 8000). Ajanınıza', lines[0])
+        self.assertIn('projects/a/Threads.md 8100 karakter (sınır 8000).', lines[1])
+        self.assertIn('bu proje dosyasını kapsamaz', lines[1])
+        self.assertIn('projects/gone/Last-Session.md sınırı aşıyor.', lines[2])
+
+    def test_human_doctor_respects_parallel_sessions_for_last_session_hygiene(self):
+        spec = importlib.util.spec_from_file_location('v3_entry_hygiene_parallel', ROOT / 'scripts/beyin_entry.py')
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        base_hygiene = {
+            'status': 'over_limit',
+            'files': {
+                'Last-Session.md': {'chars': 6400, 'limit': 3000, 'over_limit': True},
+                'Threads.md': {'chars': 9200, 'limit': 8000, 'over_limit': True},
+            },
+            'over_limit': ['Last-Session.md', 'Threads.md'],
+            'projects': [],
+        }
+        # Parallel sessions ON: Last-Session.md avoids blind compaction; Threads.md keeps companion-compact.
+        with_parallel = entry.human_result({
+            'status': 'ok',
+            'companion_hygiene': base_hygiene,
+            'parallel_sessions': {'enabled': True, 'valid': True, 'markers': 2, 'active': 2},
+        }, 'doctor')
+        last_line = next(line for line in with_parallel.splitlines() if 'Last-Session.md' in line)
+        threads_line = next(line for line in with_parallel.splitlines() if 'Threads.md' in line)
+        self.assertIn('Paralel oturum bildirimi açık', last_line)
+        self.assertIn('--last-session-chars 7000', last_line)
+        self.assertNotIn('companion-compact', last_line)
+        self.assertIn('companion-compact', threads_line)
+
+        # Parallel sessions OFF (negative control): Last-Session.md still recommends companion-compact.
+        without_parallel = entry.human_result({
+            'status': 'ok',
+            'companion_hygiene': base_hygiene,
+            'parallel_sessions': {'enabled': False, 'valid': True, 'markers': 0, 'active': 0},
+        }, 'doctor')
+        last_off = next(line for line in without_parallel.splitlines() if 'Last-Session.md' in line)
+        self.assertIn('companion-compact', last_off)
+        self.assertNotIn('--last-session-chars', last_off)
+
+        # Root and project Last-Session.md both over: one limit serves both, so both lines name the
+        # size that fits the larger file; the project line does not point at companion-compact.
+        both = dict(base_hygiene, over_limit=['Last-Session.md', 'projects/demo/Last-Session.md'], projects=[
+            {'directory': 'projects/demo', 'over_limit': ['Last-Session.md'],
+             'files': {'Last-Session.md': {'chars': 3500, 'limit': 3000, 'over_limit': True}}}])
+        text = entry.human_result({'status': 'ok', 'companion_hygiene': both,
+                                   'parallel_sessions': {'enabled': True, 'valid': True, 'active': 2}}, 'doctor')
+        lines = [line for line in text.splitlines() if 'Last-Session.md' in line and 'Hafıza hijyeni' in line]
+        self.assertEqual(len(lines), 2, text)
+        for line in lines:
+            self.assertIn('--last-session-chars 7000"', line)
+        self.assertIn('Sıkıştırmayı diğer oturumlar bittikten sonra yapın.', lines[0])
+        self.assertIn('ayrı bir arşiv notuna taşıyın; companion-compact bu proje dosyasını kapsamaz.', lines[1])
+        self.assertNotIn('Sıkıştırmayı', lines[1])
+        # A root file past the 200000 cap cannot be fitted; the project line keeps its own fit.
+        huge = dict(both, files=dict(both['files'], **{'Last-Session.md': {'chars': 250000, 'limit': 3000}}))
+        text = entry.human_result({'status': 'ok', 'companion_hygiene': huge,
+                                   'parallel_sessions': {'enabled': True, 'valid': True, 'active': 2}}, 'doctor')
+        lines = [line for line in text.splitlines() if 'Last-Session.md' in line and 'Hafıza hijyeni' in line]
+        self.assertIn('sınır tavanını aşıyor', lines[0])
+        self.assertIn('--last-session-chars 4000"', lines[1])
+
 
 # The installer pins a resolved absolute path; this is one another OS wrote into a synced vault (#249).
 FOREIGN_PIN = ('/home/ada/.local/state/beyin-v3/ab12' if sys.platform == 'win32' else
@@ -125,7 +249,7 @@ class CrossPlatformPinTest(unittest.TestCase):
         self.assertEqual(list(elsewhere.iterdir()), [])
         human = run_python(self.vault / 'beyin.py', ['doctor', '--human'], elsewhere, self.env)
         self.assertEqual(human.returncode, 0, human.stderr)
-        self.assertIn('mutlak bir yol degil', human.stdout.decode('utf-8'))
+        self.assertIn('mutlak bir yol değil', human.stdout.decode('utf-8'))
 
     def test_every_command_says_it_on_stderr_and_stdout_stays_the_result(self):
         # #205: the fallback was visible only in doctor; sync, context and receipt changed state silently.

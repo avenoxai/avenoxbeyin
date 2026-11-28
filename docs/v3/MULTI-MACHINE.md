@@ -517,7 +517,10 @@ Anahtar `<state>/mutation-queue-settings.json` dosyasındadır, `.beyin-preferen
 eklenmez: eski sürümler bilinmeyen tercih alanını reddettiği için rollback güvenli kalır. Bozuk
 bir anahtar dosyası kapalı sayılır ve üzerine yazılmaz. Kuyruk kapalıyken `--enqueue` ve
 `--replay` hata verir ve hiçbir kuyruk, kimlik ya da kilit dosyası açılmaz; `doctor` yalnız
-`mutation_queue: {"enabled": false}` gösterir.
+`mutation_queue: {"enabled": false}` gösterir. Kuyrukta bekleyen, çakışan ya da başarısız kayıt
+varsa `doctor --human` bunu özet satırında bir madde sayar ve sıradaki komutu yazar: bekleyen
+kayıt için `--replay`, çakışan ya da başarısız kayıt için `--list`, inceledikten sonra
+`--retry <id>` ya da `--dismiss <id>`.
 
 Komutlar:
 

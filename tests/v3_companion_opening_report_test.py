@@ -151,9 +151,9 @@ class OpeningReportTest(unittest.TestCase):
         self.assertEqual(opening['status'], 'warn')
         human = entry.human_result({'status': 'ok', 'companion_rules_opening': dict(rules, status='ok'),
                                     'companion_opening': opening}, 'doctor', '3.18.0')
-        line = next(text for text in human.splitlines() if text.startswith('Core.md acilisa sigmiyor (uyari)'))
-        self.assertIn('Acilis payini once Kurallar.md, Last-Session.md ve Threads.md aliyor', line)
-        self.assertNotIn('Dosyayi kisalt', line)
+        line = next(text for text in human.splitlines() if text.startswith('Core.md açılışa sığmıyor (uyarı)'))
+        self.assertIn('Açılış payını önce Kurallar.md, Last-Session.md ve Threads.md alıyor', line)
+        self.assertNotIn('dosyayı kısalt', line)
 
 
 if __name__ == '__main__':

@@ -814,9 +814,9 @@ class MutationQueueTest(unittest.TestCase):
         self.assertEqual(dismissed, 'Kuyruk kaydi ' + item['mutation_id'] + ': dismissed.')
         lines = beyin_entry.human_result({'status': 'observed_metadata', 'mutation_queue': mutation.doctor(self.state)},
                                          'doctor').splitlines()
-        self.assertIn('Cevrimdisi mutasyon kuyrugu: acik (0 bekleyen, 0 cakisma, 0 basarisiz)', lines)
+        self.assertIn('Çevrimdışı işlem kuyruğu: açık (0 bekleyen, 0 çakışma, 0 başarısız)', lines)
         quiet = beyin_entry.human_result({'status': 'observed_metadata', 'mutation_queue': {'enabled': False}}, 'doctor')
-        self.assertNotIn('kuyrug', quiet)
+        self.assertNotIn('kuyruğ', quiet)
 
     # Input checks and review exits.
 
