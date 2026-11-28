@@ -214,8 +214,15 @@ A new semantic knowledge note can be created from UTF-8 JSON:
 }
 ```
 
-`note-create` only creates new `notes/` or `knowledge/` Markdown files and refuses
-an existing destination. It does not invent facts or overwrite existing prose.
+`note-create` only creates new Markdown files under `notes/`, `knowledge/`, a project
+folder inside a project parent that already exists in the vault (`<project parent>/<project>/...`,
+for example `🏰 300-Projects/<project>/Kurallar.md` or `projects/<project>/Kurallar.md`), or a
+folder registered in `.beyin-workspaces.json` (`rules_file`, `note_roots`) or
+`.beyin-projects.json`, and refuses an existing destination. A project or workspace
+path must use the spelling already on disk (letter case and Unicode form); a missing
+project parent is not created. `knowledge/v3/`, the generated knowledge view, is now refused
+like `tasks/`, `receipts/` and `daily/v3/` (3.18.0 created a note there); those paths need
+their dedicated command. It does not invent facts or overwrite existing prose.
 `note-create`, `task-create` and a creating `note-edit` also refuse, before writing
 anything, a name that would not move between Windows, macOS and Linux: Windows
 device names (`CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9`, also with an

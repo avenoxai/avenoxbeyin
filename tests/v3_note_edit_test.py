@@ -708,5 +708,303 @@ with locked(engine):
                     with locked(self.engine, timeout=timeout):
                         pass
 
+    def test_crlf_note_edit_adapts_lf_anchors_and_replacements_preserving_bom(self):
+        original = b'\xef\xbb\xbf# List\r\n- bread\r\n'
+        path = self.write(raw=original)
+        # Step 1 (#951): single-line old + multi-line LF new must keep pure CRLF (0 lone LF).
+        first = self.engine.note_edit(self.request('- bread', '- bread\n- butter\n- milk'))
+        self.assertEqual(first['status'], 'written')
+        after_first = path.read_bytes()
+        self.assertEqual(after_first, b'\xef\xbb\xbf# List\r\n- bread\r\n- butter\r\n- milk\r\n')
+        self.assertNotIn(b'\n', after_first.replace(b'\r\n', b''))
+
+        # Step 2 (#951): subsequent multi-line LF old + LF new matches CRLF lines and preserves BOM.
+        second = self.engine.note_edit(
+            self.request('- bread\n- butter', '- sourdough\n- salted butter')
+        )
+        self.assertEqual(second['status'], 'written')
+        after_second = path.read_bytes()
+        self.assertEqual(after_second, b'\xef\xbb\xbf# List\r\n- sourdough\r\n- salted butter\r\n- milk\r\n')
+        self.assertNotIn(b'\n', after_second.replace(b'\r\n', b''))
+
+        # Step 3: leading-LF anchor in a CRLF file must not split CRLF into CR+CRLF.
+        third = self.engine.note_edit(self.request('\n- milk', '\n- oat milk'))
+        self.assertEqual(third['status'], 'written')
+        after_third = path.read_bytes()
+        self.assertEqual(after_third, b'\xef\xbb\xbf# List\r\n- sourdough\r\n- salted butter\r\n- oat milk\r\n')
+        self.assertNotIn(b'\r\r\n', after_third)
+        self.assertNotIn(b'\n', after_third.replace(b'\r\n', b''))
+
+        # Step 4: LF no-op edit on a CRLF file reports unchanged and adds no backup.
+        backups_before = list((self.vault / LOCAL_DIRECTORY / 'backups').glob('*.json'))
+        noop = self.engine.note_edit(self.request('- sourdough\n- salted butter', '- sourdough\n- salted butter'))
+        self.assertEqual(noop['status'], 'unchanged')
+        self.assertEqual(path.read_bytes(), after_third)
+        self.assertEqual(list((self.vault / LOCAL_DIRECTORY / 'backups').glob('*.json')), backups_before)
+
+    def test_crlf_note_edit_batch_and_mixed_line_endings(self):
+        # Sequential edits in one request stay pure CRLF when edit 2 matches lines added by edit 1.
+        path = self.write(raw=b'# List\r\n- bread\r\n')
+        request = {
+            'source': 'Threads.md',
+            'expected_sha256': self.engine.note_read('Threads.md')['sha256'],
+            'edits': [
+                {'old': '- bread', 'new': '- bread\n- butter'},
+                {'old': '- bread\n- butter', 'new': '- bread\n- butter\n- milk'},
+            ],
+        }
+        self.assertEqual(self.engine.note_edit(request)['status'], 'written')
+        written = path.read_bytes()
+        self.assertEqual(written, b'# List\r\n- bread\r\n- butter\r\n- milk\r\n')
+        self.assertNotIn(b'\n', written.replace(b'\r\n', b''))
+
+        # Pre-existing mixed file: exact LF anchor matches and exact no-op leaves bytes untouched.
+        mixed = b'# Header\r\n- bread\n- butter\r\n- keep\n'
+        path = self.write(source='Mixed.md', raw=mixed)
+        self.assertEqual(
+            self.engine.note_edit(self.request('- bread\n- butter', '- bread\n- butter', source='Mixed.md'))['status'],
+            'unchanged',
+        )
+        self.assertEqual(path.read_bytes(), mixed)
+        self.assertEqual(
+            self.engine.note_edit(self.request('- bread\n- butter', '- bread\n- jam', source='Mixed.md'))['status'],
+            'written',
+        )
+        self.assertEqual(path.read_bytes(), b'# Header\r\n- bread\r\n- jam\r\n- keep\n')
+
+    def test_lf_only_note_edit_preserves_pure_lf_bytes(self):
+        original = b'# List\n- bread\n- butter\n'
+        path = self.write(raw=original)
+        first = self.engine.note_edit(self.request('- bread', '- bread\n- milk'))
+        self.assertEqual(first['status'], 'written')
+        self.assertEqual(path.read_bytes(), b'# List\n- bread\n- milk\n- butter\n')
+        self.assertNotIn(b'\r', path.read_bytes())
+
+        second = self.engine.note_edit(self.request('- bread\n- milk', '- sourdough\n- oat milk'))
+        self.assertEqual(second['status'], 'written')
+        self.assertEqual(path.read_bytes(), b'# List\n- sourdough\n- oat milk\n- butter\n')
+        self.assertNotIn(b'\r', path.read_bytes())
+
+    def test_anchor_conflict_distinguishes_missing_from_repeated_occurrences(self):
+        # Missing anchor (0 occurrences) on LF and CRLF notes.
+        lf_path = self.write(source='LF.md', raw=b'alpha\nbeta\n')
+        with self.assertRaisesRegex(NoteConflict, r'edit anchor not found; must occur exactly once'):
+            self.engine.note_edit(self.request('missing\nanchor', 'x', source='LF.md'))
+        self.assertEqual(lf_path.read_bytes(), b'alpha\nbeta\n')
+
+        crlf_path = self.write(source='CRLF.md', raw=b'alpha\r\nbeta\r\n')
+        with self.assertRaisesRegex(NoteConflict, r'edit anchor not found; must occur exactly once'):
+            self.engine.note_edit(self.request('alpha\ngamma', 'x', source='CRLF.md'))
+        self.assertEqual(crlf_path.read_bytes(), b'alpha\r\nbeta\r\n')
+
+        # Repeated anchor (2 and 3 occurrences), including CRLF normalized and overlapping matches.
+        self.write(source='Dup2.md', raw=b'alpha\r\nbeta\r\nalpha\r\nbeta\r\n')
+        with self.assertRaisesRegex(NoteConflict, r'edit anchor occurs 2 times; must occur exactly once'):
+            self.engine.note_edit(self.request('alpha\nbeta', 'x', source='Dup2.md'))
+
+        self.write(source='Dup3.md', raw=b'- item\n- item\n- item\n')
+        with self.assertRaisesRegex(NoteConflict, r'edit anchor occurs 3 times; must occur exactly once'):
+            self.engine.note_edit(self.request('- item', '- done', source='Dup3.md'))
+
+        self.write(source='Overlap.md', raw=b'aaa')
+        with self.assertRaisesRegex(NoteConflict, r'edit anchor occurs 2 times; must occur exactly once'):
+            self.engine.note_edit(self.request('aa', 'x', source='Overlap.md'))
+
+        self.write(source='OverlapCRLF.md', raw=b'x\r\nx\r\nx\r\n')
+        with self.assertRaisesRegex(NoteConflict, r'edit anchor occurs 2 times; must occur exactly once'):
+            self.engine.note_edit(self.request('x\nx', 'y', source='OverlapCRLF.md'))
+        self.assertFalse((self.vault / LOCAL_DIRECTORY / 'backups').exists())
+
+    def test_crlf_anchor_counts_every_line_ending_spelling(self):
+        # In a note with CRLF endings an LF anchor means "these lines": a bare-LF copy left by an
+        # older LF edit and a CRLF copy are both occurrences, so neither wins silently (#951).
+        cases = (
+            ('Ambiguous.md', b'# A\r\n- x\n- y\r\n# B\r\n- x\r\n- y\r\n', '- x\n- y', 2),
+            ('Lead.md', b'a\r\nb\nb\r\n', '\nb', 2),
+            ('Spelled.md', b'p\r\nq\r\np\nq\n', 'p\r\nq', 2),
+        )
+        for source, raw, old, count in cases:
+            with self.subTest(source=source):
+                path = self.write(source=source, raw=raw)
+                with self.assertRaisesRegex(NoteConflict, 'edit anchor occurs %d times' % count):
+                    self.engine.note_edit(self.request(old, 'z', source=source))
+                self.assertEqual(path.read_bytes(), raw)
+
+        # An anchor spanning a CRLF and a bare-LF ending (a note mixed by 3.18.0) still matches,
+        # and the replacement takes CRLF endings, healing that span.
+        path = self.write(source='Span.md', raw=b'- apples\r\n- bread\n- butter\r\n- tea\r\n')
+        result = self.engine.note_edit(self.request('- apples\n- bread\n- butter', '- fruit\n- dairy',
+                                                    source='Span.md'))
+        self.assertEqual(result['status'], 'written')
+        self.assertEqual(path.read_bytes(), b'- fruit\r\n- dairy\r\n- tea\r\n')
+        self.assertNotIn(b'\r\r\n', path.read_bytes())
+
+    def test_whole_note_replacement_in_crlf_note_keeps_requested_bytes(self):
+        # Internal writers (mutation queue, checkpoint, chat trace, homepages) replace the whole
+        # note and then verify or replay their exact bytes; only partial edits adapt endings.
+        raw = b'# Title\r\n\r\nbefore\r\n'
+        path = self.write(source='Whole.md', raw=raw)
+        content = self.engine.note_read('Whole.md')['content']
+        replacement = '---\n{}\n---\nafter\nsecond\n'
+        result = self.engine.note_edit(self.request(content, replacement, source='Whole.md'))
+        self.assertEqual(result['status'], 'written')
+        self.assertEqual(path.read_bytes(), replacement.encode('utf-8'))
+
+    def test_whole_note_anchor_in_long_crlf_note_skips_the_line_ending_scan(self):
+        # The lookahead scan took seconds on a long repetitive CRLF note (20k equal lines); the
+        # whole-note anchor of the internal writers is found directly, with the same result.
+        import beyin_v3_notes
+        for text in ('same line\r\n' * 20000, '\r\n' * 20000, 'a\r\nb\nc\r', '\r\n'):
+            with self.subTest(size=len(text)):
+                with patch.object(beyin_v3_notes.re, 'finditer', side_effect=AssertionError('scanned')):
+                    self.assertEqual(beyin_v3_notes._anchor_matches(text, text, True), [(0, len(text))])
+                    self.assertEqual(beyin_v3_notes._anchor_matches(text, text, False), [(0, len(text))])
+        raw = ('- item\r\n' * 20000).encode('utf-8')
+        path = self.write(source='Long.md', raw=raw)
+        result = self.engine.note_edit(self.request(raw.decode('utf-8'), '# Done\n', source='Long.md'))
+        self.assertEqual(result['status'], 'written')
+        self.assertEqual(path.read_bytes(), b'# Done\n')
+
+    def test_line_ending_grid_matches_lf_semantics(self):
+        # Invariants over a fixed grid, checked in-process on the matcher and end to end:
+        # 1. a note without CRLF is searched exactly as before (literal, overlapping, byte for byte);
+        # 2. a pure CRLF note behaves as its LF form edited with LF old/new, then written as CRLF.
+        from beyin_v3_notes import _anchor_matches
+
+        def literal(text, old):
+            found, start = [], text.find(old)
+            while start >= 0:
+                found.append(start)
+                start = text.find(old, start + 1)
+            return found
+
+        lines = ('a', 'b', 'a b', '')
+        texts = set()
+        for first in lines:
+            for second in lines:
+                for third in lines:
+                    texts.add('\n'.join((first, second, third)) + '\n')
+                    texts.add('\n'.join((first, second, third)))
+        olds = ('a', 'b', '\n', 'a\n', '\na', 'a\nb', 'b\na', '\n\n', 'a\n\n', 'a b\na', 'b\n', ' b\n')
+        checked = 0
+        for lf_text in sorted(texts):
+            crlf_text = lf_text.replace('\n', '\r\n')
+            for old in olds:
+                self.assertEqual([start for start, _ in _anchor_matches(lf_text, old, False)],
+                                 literal(lf_text, old))
+                self.assertEqual(_anchor_matches(lf_text, old.replace('\n', '\r\n'), False),
+                                 [(start, start + len(old) + old.count('\n'))
+                                  for start in literal(lf_text, old.replace('\n', '\r\n'))])
+                self.assertEqual(len(_anchor_matches(crlf_text, old, '\r\n' in crlf_text)),
+                                 len(literal(lf_text, old)))
+                checked += 1
+        self.assertGreater(checked, 500)
+
+        # End to end on a sample: identical bytes to the LF semantics, LF notes untouched otherwise.
+        samples = [('a\nb\na b\n', 'a\nb', 'x\ny'), ('a\nb\na b\n', 'b', 'b\nc'), ('a\na\n', 'a\n', 'z'),
+                   ('a b\n\nb\n', '\nb', '\nc'), ('a\n\nb', '\n\n', '\n'), ('a\nb\n', 'a\nb', 'a\nb')]
+        for index, (lf_text, old, new) in enumerate(samples):
+            occurrences = len(literal(lf_text, old))
+            expected = lf_text.replace(old, new, 1) if occurrences == 1 else None
+            for crlf in (False, True):
+                with self.subTest(text=lf_text, old=old, crlf=crlf):
+                    source = 'Grid%d%s.md' % (index, 'C' if crlf else 'L')
+                    raw = (lf_text.replace('\n', '\r\n') if crlf else lf_text).encode('utf-8')
+                    path = self.write(source=source, raw=raw)
+                    if expected is None:
+                        with self.assertRaisesRegex(NoteConflict, 'occurs %d times' % occurrences):
+                            self.engine.note_edit(self.request(old, new, source=source))
+                        self.assertEqual(path.read_bytes(), raw)
+                        continue
+                    self.engine.note_edit(self.request(old, new, source=source))
+                    written = expected.replace('\n', '\r\n') if crlf else expected
+                    self.assertEqual(path.read_bytes(), written.encode('utf-8'))
+
+    def test_multi_edit_grid_reads_line_endings_once_per_request(self):
+        # The note's line endings are read once, before the request. An earlier edit that puts a
+        # CRLF pair into an LF note (CRLF in new, or a lone CR joined to an LF) must not switch
+        # later edits to line-ending-insensitive matching. Invariants over a fixed grid:
+        # 1. a note without CRLF gives the exact bytes or conflict of 3.18.0, edit after edit;
+        # 2. a pure CRLF note edited with LF old/new behaves as its LF form, written as CRLF.
+        def as_3_18(text, edits):
+            # The 3.18.0 edit loop: literal search, overlapping occurrences, first one replaced.
+            for old, new in edits:
+                position = text.find(old)
+                if position < 0 or text.find(old, position + 1) >= 0:
+                    return None
+                text = text.replace(old, new, 1)
+            return text
+
+        backups = self.vault / LOCAL_DIRECTORY / 'backups'
+
+        def check(raw_text, edits, expected):
+            source = 'Batch.md'  # One note rewritten per case: each write rescans the whole vault.
+            raw = raw_text.encode('utf-8')
+            path = self.write(source=source, raw=raw)
+            request = {'source': source, 'expected_sha256': hashlib.sha256(raw).hexdigest(),
+                       'edits': [{'old': old, 'new': new} for old, new in edits]}
+            with self.subTest(text=raw_text, edits=edits):
+                if expected is None:
+                    before = sorted(backups.glob('*.json')) if backups.exists() else []
+                    with self.assertRaises(NoteConflict):
+                        self.engine.note_edit(request)
+                    self.assertEqual(path.read_bytes(), raw)
+                    self.assertEqual(sorted(backups.glob('*.json')) if backups.exists() else [], before)
+                    return
+                result = self.engine.note_edit(request)
+                self.assertEqual(result['status'], 'unchanged' if expected == raw_text else 'written')
+                self.assertEqual(path.read_bytes(), expected.encode('utf-8'))
+
+        def anchors(text):
+            # Every 1-3 character piece holding a line break or a CR: unique and repeated ones.
+            return sorted({text[i:i + size] for size in (1, 2, 3) for i in range(len(text) - size + 1)
+                           if '\n' in text[i:i + size] or '\r' in text[i:i + size]})
+
+        # Invariant 1. Second anchors come from the text as edit 1 left it, so most apply.
+        lf_notes = ('a\nb\nc\n', 'x\ry\nz\n', 'a\rb\nc', 'p\nq\r', 'a b\nc\n\nd', 'm\n\rn\no\n', 'k\nk\rk\n')
+        firsts = (('c', 'a\r\nb'), ('y', ''), ('b\n', 'b\r\n'), ('q', 'q\r\nr'), ('a', 'A'),
+                  ('\r', '\r\n'), ('c', 'c\r\nd'), ('\nz', '\r\nb\nz'))
+        cases = writes = conflicts = triggered = 0
+        for text in lf_notes:
+            self.assertNotIn('\r\n', text)
+            for first in firsts:
+                after = as_3_18(text, (first,))
+                if after is None:
+                    continue
+                for old in anchors(after):
+                    edits = (first, (old, ('Q', 'R\r\nS')[cases % 2]))
+                    expected = as_3_18(text, edits)
+                    cases += 1
+                    writes += expected not in (None, text)
+                    conflicts += expected is None
+                    triggered += '\r\n' in after and '\n' in old
+                    check(text, edits, expected)
+        # Not vacuous: both outcomes, and many second edits run after a CRLF entered the text.
+        self.assertGreater(writes, 150)
+        self.assertGreater(conflicts, 20)
+        self.assertGreater(triggered, 100)
+        # The two shapes found in review: a conflict and a different write before the fix.
+        check('a\nb\nc\n', (('c', 'a\r\nb'), ('a\nb', 'A')), 'A\na\r\nb\n')
+        check('x\ry\nz\n', (('y', ''), ('\nz', 'Q')), 'x\rQ\n')
+
+        # Invariant 2, for batches whose anchors never cover the whole note (those keep bytes).
+        lf_forms = ('a\nb\nc\n', 'a\n\nb', 'a b\nb\n', '- x\n- y\n- x\n')
+        lf_firsts = (('b', 'b\nc'), ('a\nb', 'z'), ('\n\n', '\n'), ('- y', '- y\n- w'), ('c\n', ''))
+        cases = 0
+        for text in lf_forms:
+            for first in lf_firsts:
+                after = as_3_18(text, (first,))
+                if after is None or first[0] == text:
+                    continue
+                for old in anchors(after):
+                    if old == after:
+                        continue
+                    edits = (first, (old, ('Q', 'R\nS')[cases % 2]))
+                    expected = as_3_18(text, edits)
+                    cases += 1
+                    check(text.replace('\n', '\r\n'), edits,
+                          None if expected is None else expected.replace('\n', '\r\n'))
+        self.assertGreater(cases, 40)
+
 if __name__ == '__main__':
     unittest.main()

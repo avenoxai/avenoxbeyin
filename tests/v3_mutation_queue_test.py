@@ -644,6 +644,25 @@ class MutationQueueTest(unittest.TestCase):
         self.assertEqual(path.read_bytes(), written)
         self.assertFalse(list(path.parent.glob('*.sync-conflict-*.md')))
 
+    def test_crash_between_note_update_and_queue_ack_on_crlf_note_is_reconciled(self):
+        # A queued note_update replaces the whole note; on a CRLF note the written bytes must stay
+        # the ones the replay predicts, or an interrupted update becomes a conflict copy (#951).
+        from unittest.mock import patch
+        path = self.vault / 'notes/crlf-crash.md'
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(b'# Title\r\n\r\nbefore line\r\n')
+        self.sync.sync()
+        mutation.enqueue_mutation(self.state, 'note_update', 'notes/crlf-crash.md',
+            {'text': 'after\nsecond', 'expected_hash': _hash(path.read_bytes())})
+        with patch.object(mutation, '_save_all_mutations', side_effect=Crash):
+            with self.assertRaises(Crash):
+                mutation.replay_mutations(self.vault, self.state, self.sync)
+        written = path.read_bytes()
+        result = mutation.replay_mutations(self.vault, self.state, self.sync)
+        self.assertEqual((result['applied'], result['conflicts']), (1, 0), result)
+        self.assertEqual(path.read_bytes(), written)
+        self.assertFalse(list(path.parent.glob('*.sync-conflict-*.md')))
+
     def test_crash_after_note_create_with_retry_key_or_evidence_is_reconciled(self):
         # note_create drops a metadata idempotency_key and stores evidence_refs canonically (#443);
         # the replay's byte prediction must match, or an interrupted create becomes a conflict copy.
