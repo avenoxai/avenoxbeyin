@@ -814,6 +814,89 @@ class ShellEditUnitTest(unittest.TestCase):
                 ['notes/Şifre Notu.md'],
             )
 
+    def test_network_paths_are_looked_up_only_on_the_vault_share(self):
+        # A transcript names any host; only the vault's own share can hold a vault file. A vault on
+        # a share keeps its own folders as bases and probes (the Claude path before #950).
+        from pathlib import PurePosixPath, PureWindowsPath as W
+        other = self.module.other_share
+        local, share = W(r'C:\Users\u\Kasa'), W(r'\\NAS\ev\Kasa')
+        for path, root, expected in (
+                (W(r'C:\Users\u\Kasa\notes\a.md'), local, False), (W(r'D:\x.md'), local, False),
+                (W(r'notes\a.md'), local, False), (W(r'\\evil\s\a.md'), local, True),
+                (W('//evil/s/a.md'), local, True), (W(r'\\?\C:\Users\u\Kasa\a.md'), local, True),
+                (W(r'\\.\pipe\a.md'), local, True), (W(r'\\nas\EV\Kasa\notes\a.md'), share, False),
+                (W('//NAS/ev/Kasa/notes'), share, False), (W(r'Z:\Kasa\a.md'), share, False),
+                (W(r'\\evil\ev\Kasa\a.md'), share, True), (W(r'\\NAS\other\a.md'), share, True),
+                (W(r'\\?\UNC\NAS\ev\Kasa\a.md'), share, True),
+                (PurePosixPath('//server/share/a.md'), PurePosixPath('/Users/u/Kasa'), False)):
+            with self.subTest(path=str(path), root=str(root)):
+                self.assertIs(other(path, root), expected)
+
+    def test_claude_and_antigravity_transcripts_count_the_same_commands(self):
+        # #950 ports the Claude rule to run_command and does not widen it: one command and one window
+        # give one answer in both transcript shapes, and a command that only reads never counts.
+        tool = 'PowerShell' if os.name == 'nt' else 'Bash'  # the tokenizer Antigravity uses here
+
+        def iso(at):
+            return datetime.fromtimestamp(at, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        def jsonl(path, rows):
+            path.write_text(''.join(json.dumps(row, ensure_ascii=False) + '\n' for row in rows),
+                            encoding='utf-8', newline='\n')
+            return str(path)
+
+        with tempfile.TemporaryDirectory(prefix='v3-shell-parity-') as folder:
+            root = Path(folder).resolve()
+            vault, state = root / 'Sentetik Kasa Ölçüm', root / 'state'
+            names = ('notes/a.md', 'notes/Günlük Not.md', 'knowledge/concepts/k.md',
+                     'daily/v3/2026-11-07.md', '.obsidian/x.md', 'notes/sub/c.md')
+            for name in names:
+                (vault / name).parent.mkdir(parents=True, exist_ok=True)
+                (vault / name).write_text('x\n', encoding='utf-8')
+            outside = root / 'dış.md'
+            outside.write_text('x\n', encoding='utf-8')
+            commands = (
+                ('cat notes/a.md', 'notes/a.md'), ('grep -n x "notes/Günlük Not.md"', 'notes/Günlük Not.md'),
+                ('ls notes/*.md', 'notes/a.md'), ('git log -- notes/a.md', None),
+                ('head -3 notes/a.md && wc -l notes/a.md', None), ('python3 beyin.py note-read notes/a.md', None),
+                ('python3 beyin.py context "notes/a.md"', None), ('echo x >> notes/a.md', 'notes/a.md'),
+                ("sed -i '' 's/a/b/' knowledge/concepts/k.md", 'knowledge/concepts/k.md'),
+                ('cd notes/sub && echo y >> c.md', 'notes/sub/c.md'),
+                ('cat daily/v3/2026-11-07.md', 'daily/v3/2026-11-07.md'),
+                ('echo z >> .obsidian/x.md', '.obsidian/x.md'), ('echo z >> "%s"' % outside, None),
+                ('echo z >> "%s"' % (vault / 'notes/a.md'), 'notes/a.md'), ('echo $X >> notes/a.md', 'notes/a.md'))
+            issued = int(time.time()) - 100  # whole seconds: Antigravity stamps carry no fraction
+            done = issued + 6
+            counted = 0
+            for number, (command, target) in enumerate(commands):
+                for when in ('inside', 'before', 'after', 'untouched'):
+                    with self.subTest(command=command, when=when):
+                        for name in names:
+                            os.utime(vault / name, (issued - 600, issued - 600))
+                        if target is not None and when != 'untouched':
+                            at = {'inside': issued + 3, 'before': issued - 10, 'after': done + 10}[when]
+                            os.utime(vault / target, (at, at))
+                        claude = jsonl(root / ('c%d-%s.jsonl' % (number, when)), [
+                            {'type': 'user', 'timestamp': iso(issued - 1), 'message': {'content': 'düzenle'}},
+                            {'type': 'assistant', 'timestamp': iso(issued), 'message': {'content': [
+                                {'type': 'tool_use', 'id': 't1', 'name': tool, 'input': {'command': command}}]}},
+                            {'type': 'user', 'timestamp': iso(done), 'message': {'content': [
+                                {'type': 'tool_result', 'tool_use_id': 't1', 'content': 'ok'}]}}])
+                        antigravity = jsonl(root / ('a%d-%s.jsonl' % (number, when)), [
+                            {'step_index': 0, 'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'created_at': iso(issued - 1)},
+                            {'step_index': 1, 'type': 'PLANNER_RESPONSE', 'source': 'MODEL', 'created_at': iso(issued),
+                             'tool_calls': [{'name': 'run_command', 'args': {'CommandLine': command}}]},
+                            {'step_index': 2, 'type': 'GENERIC', 'source': 'MODEL', 'created_at': iso(done - 1)},
+                            {'step_index': 3, 'type': 'PLANNER_RESPONSE', 'source': 'MODEL', 'created_at': iso(done)}])
+                        expected = self.module.shell_edit({'transcript_path': claude, 'cwd': str(vault)}, vault, state)
+                        found = self.module.shell_edit({'transcriptPath': antigravity, 'workspacePaths': [str(vault)]},
+                                                       vault, state, harness='antigravity')
+                        self.assertEqual(found, expected)
+                        if target is None or when == 'untouched':
+                            self.assertIsNone(found)
+                        counted += found is not None
+            self.assertGreaterEqual(counted, 5)  # the grid also proves real edits are seen
+
 
 class AntigravityShellEditReminderTest(unittest.TestCase):
     def setUp(self):

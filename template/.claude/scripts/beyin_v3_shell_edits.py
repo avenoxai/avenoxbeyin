@@ -54,6 +54,19 @@ def msys_drive(text):
     return _MSYS_DRIVE.sub(lambda match: match.group(1).upper() + ':/', text, count=1)
 
 
+def other_share(path, root):
+    """True for a network or device path (\\\\server\\share, \\\\?\\, \\\\.\\) off the vault's own share.
+
+    A command, run or refused, names it in the transcript; looking it up can open a connection to
+    that host. A vault file lives only on the vault's own share, so nothing else is ever touched,
+    while a vault on a share keeps its own folders (a session working in one of them) as before.
+    """
+    drive = path.drive
+    if not drive.startswith(('\\', '//')):
+        return False
+    return drive.replace('/', '\\').casefold() != root.drive.replace('/', '\\').casefold()
+
+
 def _stamp(value):
     """Epoch seconds of an ISO-8601 transcript stamp with an explicit zone, else None."""
     if not isinstance(value, str) or not value:
@@ -281,7 +294,7 @@ class _Probe:
     def relative(self, path):
         """The vault-relative Markdown source this path names, or None (outside, link, dot folder)."""
         try:
-            if path.drive.startswith(('\\', '//')) and not self.root.drive.startswith(('\\', '//')):
+            if other_share(path, self.root):
                 return None
             if path.is_symlink():
                 return None
@@ -367,7 +380,7 @@ class _Probe:
 
     def relative_dir(self, path):
         try:
-            if path.drive.startswith(('\\', '//')) and not self.root.drive.startswith(('\\', '//')):
+            if other_share(path, self.root):
                 return None
             if path.is_symlink():
                 return None
@@ -411,22 +424,16 @@ def shell_edit(payload, vault, state=None, *, harness='claude'):
         probe = _Probe(vault, state)
         cwd = payload.get('cwd')
         workspaces = payload.get('workspacePaths') if harness == 'antigravity' else None
-        workspace_bases = ([item for item in workspaces[:16]
-                            if isinstance(item, str) and item.strip() and '\0' not in item
-                            and not item.startswith(('\\\\', '//'))]
-                           if isinstance(workspaces, (list, tuple)) else [])
+        workspace_bases = list(workspaces[:16]) if isinstance(workspaces, (list, tuple)) else []
         first, knowledge = None, False
         for moment, done, command, record_cwd, powershell in commands:
             bases = []
             for base in (record_cwd, cwd, *workspace_bases, str(probe.root)):
                 if not isinstance(base, str) or not base.strip() or '\0' in base:
                     continue
-                if base != str(probe.root) and base.startswith(('\\\\', '//')):
-                    continue
                 candidate = Path(base)
-                if (candidate.is_absolute()
-                        and (base == str(probe.root) or not candidate.drive.startswith(('\\', '//')))
-                        and candidate not in bases):
+                # The same share rule as every lookup: a folder on the vault's own share stays a base.
+                if candidate.is_absolute() and not other_share(candidate, probe.root) and candidate not in bases:
                     bases.append(candidate)
             limit = len(bases) + MAX_DIRS
             for match in _CHANGE_DIR.finditer(command):
