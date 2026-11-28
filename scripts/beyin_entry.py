@@ -383,6 +383,12 @@ def human_result(result, command, installed_version=None):
         lines.append('Yerel kontroller model cagirmaz. Zamanlayici kurulmaz.')
         return '\n'.join(lines)
     if command == 'recap':
+        if isinstance(result.get('daily_summary'), dict):
+            try:
+                from beyin_v3_recap import format_human
+                return format_human(result)
+            except Exception:
+                pass
         # --since/--until select local calendar days (as daily/v3 is named); the --days window stays UTC.
         local = result.get('timezone') == 'local'
         lines = ['Kaynakli etkinlik: ' + (result['from'] or 'baslangic siniri yok') + ' - ' + result['through'] +
@@ -949,10 +955,28 @@ def load_cli(directory):
     return cli
 
 
+_TR_ASCII = str.maketrans({
+    'ğ': 'g', 'Ğ': 'G', 'ü': 'u', 'Ü': 'U', 'ş': 's', 'Ş': 'S',
+    'ı': 'i', 'İ': 'I', 'ö': 'o', 'Ö': 'O', 'ç': 'c', 'Ç': 'C',
+    '—': '-', '–': '-', '“': '"', '”': '"', '’': "'",
+})
+
+
+def _safe_print(text, stream):
+    """Write human output without failing on legacy non-UTF-8 consoles."""
+    try:
+        print(text, file=stream)
+    except UnicodeEncodeError:
+        encoding = getattr(stream, 'encoding', None) or 'ascii'
+        fallback = str(text).translate(_TR_ASCII)
+        print(fallback.encode(encoding, errors='replace').decode(encoding, errors='replace'), file=stream)
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     force_json = '--json' in argv or '--print-config' in argv
-    human = ('--human' in argv or sys.stdout.isatty()) and not force_json
+    explicit_human = '--human' in argv
+    human = (explicit_human or sys.stdout.isatty()) and not force_json
     argv = [arg for arg in argv if arg not in ('--human', '--json')]
     if human:
         # A piped or redirected Windows console uses a legacy code page (cp1252 has no s-cedilla);
@@ -960,10 +984,13 @@ def main(argv=None):
         # Keep the interactive terminal's encoding and replacement behavior.
         for stream in (sys.stdout, sys.stderr):
             if hasattr(stream, 'reconfigure'):
-                if stream.isatty():
-                    stream.reconfigure(errors='replace')
-                else:
-                    stream.reconfigure(encoding='utf-8', errors='replace')
+                try:
+                    if stream.isatty():
+                        stream.reconfigure(errors='replace')
+                    else:
+                        stream.reconfigure(encoding='utf-8', errors='replace')
+                except (OSError, ValueError):
+                    pass
     command = argv[0] if argv else 'doctor'
     if command in ('note-read', 'note-edit'):
         human = False  # These commands have a JSON contract, including on a terminal.
@@ -1050,7 +1077,17 @@ def main(argv=None):
             print(human_result(result, command, installed_version) if human else json.dumps(result, ensure_ascii=True, indent=2))
             return 0
         cli = cli or load_cli(directory)
-        cli_args = ['--vault', str(vault), '--state', str(state)] + (['--json'] if force_json else []) + (argv or ['doctor'])
+        forwarded = list(argv or ['doctor'])
+        if command == 'recap' and human:
+            recap_flags = forwarded[1:]
+            has_range = any(
+                a == '--since' or a.startswith('--since=') or a == '--until' or a.startswith('--until=')
+                for a in recap_flags
+            )
+            has_write = '--write' in recap_flags
+            if (not has_range and (explicit_human or not has_write)) or (explicit_human and has_write):
+                forwarded.append('--human')
+        cli_args = ['--vault', str(vault), '--state', str(state)] + (['--json'] if force_json else []) + forwarded
         if not human:
             return cli.main(cli_args)
         if hasattr(cli, 'main') and 'return_result' in getattr(getattr(cli, 'main'), '__code__', {}).co_varnames:
@@ -1074,12 +1111,12 @@ def main(argv=None):
                 message = human_result(result, command, installed_version)
             except (ValueError, TypeError, AttributeError):
                 message = 'Islem tamamlanamadi; ayrinti icin ayni komutu --json ile calistir.' if code else value.strip()
-        print(message, file=sys.stderr if code else sys.stdout)
+        _safe_print(message, sys.stderr if code else sys.stdout)
         return code
     except Exception as exc:
         error = {'error': type(exc).__name__, 'message': str(exc)}
         if human:
-            print(human_result(error, command, installed_version), file=sys.stderr)
+            _safe_print(human_result(error, command, installed_version), sys.stderr)
         else:
             print_error(error)
         return 1
