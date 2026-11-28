@@ -9,9 +9,10 @@ sha256 changes and the note is delivered again.
 The latest receipt block that a turn appends after its records is a session fact as well: `receipt`
 is the sha256 of the receipt text last delivered, so the same receipt is said once per session and
 again only when a new receipt (or an edited one) changes that text, or after the ledger is cleared.
-The receipt coverage notice (`Prior checkpoints may lack structured receipts ...`) follows the same
-rule under `notice`: the session hears it once, again only when its count changes. A release without
-these keys ignores them, so a rollback reads the ledger as before.
+The receipt coverage notice (`Prior checkpoints may lack structured receipts ...`) is also tracked
+under `notice`, independently of the `context-dedupe` toggle (#960): the session hears it once and
+not again on later turns even when its count changes, until the ledger is cleared on compaction or
+session end. A release without these keys ignores them, so a rollback reads the ledger as before.
 
 Turn context is passage based (#83): one long note answers different prompts with different windows
 under the same id and sha. A window is keyed by the hash of its first WINDOW_PREFIX characters, which
@@ -31,6 +32,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import tempfile
 import time
 
@@ -44,17 +46,32 @@ MAX_WINDOWS = 8      # windows remembered per id
 WINDOW_PREFIX = 150  # beyin_v3.MIN_CONTEXT_TEXT: clipping keeps at least this much of a window
 
 
+def _is_link_or_reparse(path):
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, 'st_reparse_tag', 0))
+
+
 def _session_file(state, harness, session, create=False):
     if not isinstance(session, str) or not session or session == 'unknown' or len(session) > 512:
         return None
     folder = Path(state) / DELIVERY_DIR
-    if folder.is_symlink():
+    if _is_link_or_reparse(folder):
         return None
     if create:
-        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError:
+            return None
+        if _is_link_or_reparse(folder):
+            return None
     digest = hashlib.sha256((str(harness) + '\0' + session).encode('utf-8')).hexdigest()
     path = folder / (digest + '.json')
-    return None if path.is_symlink() else path
+    return None if _is_link_or_reparse(path) else path
 
 
 def read_settings(state):
@@ -120,10 +137,22 @@ def receipt_key(receipt):
 def _read_ledger(path, now=None):
     """Return (records, receipt key or None, notice key or None) of a current ledger; ({}, None, None) for anything else."""
     try:
-        if path is None or not path.is_file() or path.is_symlink() or path.stat().st_size > MAX_FILE_BYTES:
+        if path is None:
+            return {}, None, None
+        info = os.lstat(path)
+        if (stat.S_ISLNK(info.st_mode) or getattr(info, 'st_reparse_tag', 0)
+                or not stat.S_ISREG(info.st_mode) or info.st_size > MAX_FILE_BYTES):
             return {}, None, None
         now = time.time() if now is None else now
-        value = json.loads(path.read_text(encoding='utf-8'))
+        with open(path, 'rb') as handle:
+            opened = os.fstat(handle.fileno())
+            if (not stat.S_ISREG(opened.st_mode) or not os.path.samestat(info, opened)
+                    or opened.st_size > MAX_FILE_BYTES):
+                return {}, None, None
+            raw = handle.read(MAX_FILE_BYTES + 1)
+        if len(raw) > MAX_FILE_BYTES:
+            return {}, None, None
+        value = json.loads(raw.decode('utf-8'))
         if not isinstance(value, dict) or value.get('version') != 1:
             return {}, None, None
         at = value.get('at')
@@ -214,8 +243,11 @@ def receipt_delivered(state, harness, session, receipt, now=None):
 
 
 def notice_delivered(state, harness, session, notice, now=None):
-    """True only if this exact notice text was already delivered in the session. Fail open: False."""
-    if not isinstance(notice, str) or not notice or not is_enabled(state):
+    """True only if this notice key was already delivered in the session.
+
+    Applies regardless of the context-dedupe toggle (#960). Fail open: False.
+    """
+    if not isinstance(notice, str) or not notice:
         return False
     path = _session_file(state, harness, session)
     if path is None:
@@ -225,12 +257,16 @@ def notice_delivered(state, harness, session, notice, now=None):
 
 def record_delivered(state, harness, session, records, now=None, receipt=None, notice=None):
     """Update the session delivery ledger with newly delivered records and, when the turn
-    showed them, the receipt and notice texts. Fail open."""
+    showed them, the receipt and notice keys.
+
+    Records and receipts are recorded only when context-dedupe is enabled; session notices
+    are always recorded so they stay once-per-session even when dedupe is off (#960). Fail open.
+    """
+    if not is_enabled(state):
+        records, receipt = [], None
     receipt = receipt_key(receipt) if isinstance(receipt, str) and receipt else None
     notice = receipt_key(notice) if isinstance(notice, str) and notice else None
     if not records and receipt is None and notice is None:
-        return
-    if not is_enabled(state):
         return
     now = time.time() if now is None else now
     path = _session_file(state, harness, session, create=True)
@@ -268,10 +304,13 @@ def record_delivered(state, harness, session, records, now=None, receipt=None, n
         parent = path.parent
         files = []
         for candidate in parent.glob('*.json'):
-            if candidate.is_symlink() or candidate == path:
+            if candidate == path or _is_link_or_reparse(candidate):
                 continue
             try:
-                mtime = candidate.stat().st_mtime
+                info = os.lstat(candidate)
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                mtime = info.st_mtime
             except OSError:
                 continue  # another hook removed it meanwhile
             if now - mtime >= MAX_AGE_SECONDS:
@@ -301,7 +340,7 @@ def reset_session(state, harness, session):
     """Remove the delivery ledger for a session (e.g. on compaction or session end)."""
     try:
         path = _session_file(state, harness, session)
-        if path is not None and path.is_file():
+        if path is not None and stat.S_ISREG(os.lstat(path).st_mode):
             path.unlink(missing_ok=True)
     except (OSError, ValueError):
         pass
@@ -312,10 +351,12 @@ def doctor(state):
     value, valid = read_settings(state)
     result = {'enabled': value, 'valid': valid, 'sessions': 0}
     folder = Path(state) / DELIVERY_DIR
-    if folder.is_dir() and not folder.is_symlink():
+    if folder.is_dir() and not _is_link_or_reparse(folder):
         try:
             with os.scandir(folder) as listing:
-                result['sessions'] = sum(1 for e in listing if e.name.endswith('.json') and not e.is_symlink())
+                result['sessions'] = sum(
+                    1 for e in listing if e.name.endswith('.json') and not _is_link_or_reparse(e.path)
+                )
         except OSError:
             pass
     return result
