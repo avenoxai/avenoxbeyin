@@ -153,8 +153,8 @@ Köken kuralı canlı kancayla aynıdır: rollout'ta `originator=codex_cli_rs` v
 `originator` sütunu boş olan eski satırlar belirsiz köken sayılır ve listelenmez;
 sütun yoksa SQLite okunmaz (`missing_column`). `[kaydetme]` kapanmamış bir bağlam
 etiketinden sonra yazılmışsa da oturum listelenmez. Döküm, vault dışındaki runtime
-klasörünü (`secret-patterns.txt`) açıkça ister. Toplam 2.000'den fazla konu
-(`threads` satırı) olan kurulumda SQLite okunmaz (`thread_limit`).
+klasörünü (`secret-patterns.txt`) açıkça ister. `threads` tablosunda toplam 2.000'den
+fazla oturum olan kurulumda SQLite okunmaz (`thread_limit`).
 
 ## Ayar ve rollback
 
