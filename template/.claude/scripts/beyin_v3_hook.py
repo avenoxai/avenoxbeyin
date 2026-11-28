@@ -17,6 +17,7 @@ EVENTS = {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "PreCompact
 HOOK_BUDGET = 3.8  # seconds; installed POSIX hooks are killed at 5
 SYNC_WAIT = 1.5  # seconds the prompt hook waits for the source sync before reading the last index
 UNMATCHED_SHOWN = 8  # prompt words listed as unmatched (#909); each at most 64 characters
+COVERAGE_NOTICE_KEY = 'receipt_coverage_gap'  # once-per-session key (#960), independent of N
 
 
 def abstain_coverage():
@@ -1212,7 +1213,7 @@ def main():
                            'Read current sources or use beyin.py context for fresh information.' + skip_hint + '\n')
             else:
                 warning = ''
-            coverage = ''
+            coverage_notice = ''
             health = state / "hook-health.json"
             if health.exists():
                 sync = json.loads(health.read_text(encoding="utf-8")).get("sync", {})
@@ -1227,31 +1228,33 @@ def main():
                 # Checkpoints without observed edits are reported separately (#462).
                 recent = sync.get('recent_missing_receipts')
                 no_edits = sync.get('recent_no_observed_edit', 0)
-                if isinstance(recent, int) and recent > 0:
-                    if isinstance(no_edits, int) and no_edits > 0:
+                if isinstance(recent, int) and not isinstance(recent, bool) and recent > 0:
+                    if isinstance(no_edits, int) and not isinstance(no_edits, bool) and no_edits > 0:
                         detail = f'{recent} in the last 7 days ({no_edits} without observed edits)'
                     else:
                         detail = f'{recent} in the last 7 days'
-                    coverage = (f'Prior checkpoints may lack structured receipts ({detail}); '
-                                'check Last-Session/Threads and current sources for unfinished work.\n')
+                    coverage_notice = (f'Prior checkpoints may lack structured receipts ({detail}); '
+                                       'check Last-Session/Threads and current sources for unfinished work.\n')
             topic_session = payload.get('session_id', 'unknown')
             dedupe_enabled = (state / 'context-dedupe.json').is_file() or os.environ.get('BEYIN_V3_CONTEXT_DEDUPE') == '1'
-            # The coverage notice is a session fact like the receipt: said once, again when its count changes.
-            if coverage and dedupe_enabled:
+            # The coverage notice is once per session regardless of context-dedupe (#960):
+            # keyed by category so parallel-session churn in N does not repeat it every turn,
+            # and cleared on compaction or session end with the session ledger.
+            if coverage_notice:
                 try:
                     from beyin_v3_dedupe import notice_delivered
-                    if notice_delivered(state, args.harness, topic_session, coverage):
-                        coverage = ''
+                    if notice_delivered(state, args.harness, topic_session, COVERAGE_NOTICE_KEY):
+                        coverage_notice = ''
                 except Exception:
                     pass
-            warning += coverage
+            warning += coverage_notice
             warning += review_notice
 
             def remember_notice(shown):
-                if coverage and dedupe_enabled and coverage.strip() in shown:
+                if coverage_notice and coverage_notice.strip() in shown:
                     try:
                         from beyin_v3_dedupe import record_delivered
-                        record_delivered(state, args.harness, topic_session, [], notice=coverage)
+                        record_delivered(state, args.harness, topic_session, [], notice=COVERAGE_NOTICE_KEY)
                     except Exception:
                         pass
             from beyin_v3_companion import (context as companion_context, relevant, opening_budget, client_budget,
