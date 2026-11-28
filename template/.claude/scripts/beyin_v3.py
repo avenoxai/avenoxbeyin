@@ -1245,7 +1245,9 @@ def query_term_coverage(query, records):
 
     The explicit context command's unmatched_terms rule (#768) for automatic context (#909):
     a word matches by its stem in the records' text, title, fact values and aliases as given
-    (a clipped text counts only as far as it was clipped). Question wrappers, stopwords,
+    (a clipped text counts only as far as it was clipped). The record's own project and its
+    source's file name also count, without folders or extension (#930): retrieval matches the
+    file name too, and both stand in the delivered record. Question wrappers, stopwords,
     pronouns and auxiliaries, single letters, short numbers and words over 64 characters (a
     pasted hex or base64 blob) are not terms, and one stem counts once. A hyphenated name (claude-mem, e-posta) is one term, as retrieval reads it
     (#430): a record holds it by its joined spelling or by every part that is a term itself.
@@ -1256,8 +1258,15 @@ def query_term_coverage(query, records):
     """
     covered = set()
     for record in records:
-        covered.update(_tokens(' '.join(_delivered_text(record.get(key, ''))
-                                        for key in ('text', 'title', 'facts', 'aliases'))))
+        pieces = [_delivered_text(record.get(key, ''))
+                  for key in ('text', 'title', 'facts', 'aliases', 'project')]
+        source = record.get('source')
+        if isinstance(source, str) and source.strip():
+            # Match retrieval's filename-stem salience without counting generic folders or .md.
+            stem = Path(source).stem.strip()
+            if stem:
+                pieces.append(stem)
+        covered.update(_tokens(' '.join(pieces)))
 
     def is_term(stem):
         return stem not in STOPWORDS and stem not in _COVERAGE_FILLERS and _strict_terms({stem})
@@ -2544,15 +2553,26 @@ def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0, *, e
     return packed
 
 
-def context_project(vault, query):
+def context_workspaces(vault, query):
+    """Resolve implicit Workspace scoping for a natural-language context query.
+
+    Returns (project, named_workspaces): one active Workspace scopes to it;
+    multiple active Workspaces stay unscoped (project=None) and return every
+    matched ID so callers can report them without failing the query (#956).
+    """
+    vault = Path(vault)
     files = (vault / ".beyin-workspaces.json", vault / ".beyin-projects.json")
     if not any(path.exists() or path.is_symlink() for path in files):
-        return None
+        return None, []
     from beyin_v3_workspaces import matching_workspace_ids
     named = matching_workspace_ids(vault, query)
-    if len(named) > 1:
-        raise ValueError("context query names multiple Workspaces; specify --project")
-    return named[0] if named else None
+    if len(named) == 1:
+        return named[0], named
+    return None, named
+
+
+def context_project(vault, query):
+    return context_workspaces(vault, query)[0]
 
 
 def shared_context(store, harness, query, **kwargs):

@@ -17,9 +17,10 @@ notun frontmatter'ındaki `workspace_readers: [bakim]`, mevcut sahibine ek olara
 `context "pompa bakımına nereden devam" --project bakim` okumasını açar. Aynı
 `id`, `source` ve not gövdesindeki sonraki adım döner; ikinci esas not üretilmez.
 Normal `context "Bakım Odası’nda pompa bakımına nereden devam ederim?"` sorgusu
-da kayıtlı tek aktif Workspace adını bulursa aynı kapsamı kullanır. İki alan
-adı geçtiğinde kapsam belirsizliği gösterir; `--project` açıkça seçildiğinde
-o seçim önceliklidir. Hiç alan adı geçmeyen genel arama önceki gibi çalışır.
+da kayıtlı tek aktif Workspace adını bulursa aynı kapsamı kullanır. Birden çok
+aktif alan adı geçtiğinde kapsam daraltmadan arar ve sonuçta `project: null`
+ile `named_workspaces` listesini döndürür; `--project` açıkça seçildiğinde o
+seçim önceliklidir. Hiç alan adı geçmeyen genel arama önceki gibi çalışır.
 Ana sayfaya bağlantı eklemek tek başına okuma üyeliği oluşturmaz. Üyelik normal
 `note-read`/`note-edit` ile seçilmiş nota yazılır ve `sync` ile dizine alınır.
 Üyelik kaldırılırsa kaynak değiştiği anda eski indeks yanıtı vermez; eşitleme
