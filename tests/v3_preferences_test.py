@@ -1,8 +1,10 @@
 """Offline preference and hook behavior contracts; synthetic vaults only."""
 from contextlib import closing
+import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import sys
@@ -464,6 +466,33 @@ class PreferencesTest(unittest.TestCase):
         self.assertIn('Ortam ayarlari', human)
         self.assertIn('ABSTAIN_COVERAGE=0.6', human)
         self.assertNotIn('should-not-appear', human)
+
+
+class EnvOverrideAllowlistTest(unittest.TestCase):
+    """#961: doctor and preferences name every BEYIN_V3_* toggle the runtime reads, and only those."""
+
+    # Read by the runtime yet never shown: a session identity and a file marker, not behavior toggles.
+    NOT_TOGGLES = frozenset(('BEYIN_V3_SESSION_ID', 'BEYIN_V3_LEGACY_RETIRED'))
+
+    def test_allowlist_equals_the_toggle_names_the_runtime_reads(self):
+        spec = importlib.util.spec_from_file_location('v3_env_allowlist_cli', ROOT / 'scripts/beyin_v3.py')
+        cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli)
+        allowlisted = [name for name, _ in cli.ENV_OVERRIDE_VARS]
+        self.assertEqual(len(allowlisted), len(set(allowlisted)))
+        quoted = re.compile(r"""['"](BEYIN_V3_[A-Z0-9_]+)['"]""")
+        read = set()
+        for folder in (ROOT / 'scripts', ROOT / 'template/.claude/scripts'):
+            for path in sorted(folder.glob('*.py')):
+                text = path.read_text(encoding='utf-8')
+                if path == ROOT / 'scripts/beyin_v3.py':
+                    head, _, rest = text.partition('ENV_OVERRIDE_VARS = (')
+                    self.assertTrue(rest, 'allowlist definition moved')
+                    text = head + rest.partition('\n)\n')[2]  # the allowlist itself reads nothing
+                read.update(quoted.findall(text))
+        # A new toggle must be added to the allowlist (and its help line); a removed one must leave it.
+        self.assertEqual(sorted(read - self.NOT_TOGGLES), sorted(allowlisted))
+        self.assertFalse(self.NOT_TOGGLES & set(allowlisted))
 
 
 if __name__ == '__main__':
