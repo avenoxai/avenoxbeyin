@@ -387,6 +387,7 @@ class WebWriteTest(WebFixture):
         cookie, csrf = self.login()
         with patch.dict(os.environ, {'PI_SESSION_ID': 'pi-oturumu-1'}):
             os.environ.pop('CLAUDE_CODE_SESSION_ID', None)
+            os.environ.pop('ANTIGRAVITY_CONVERSATION_ID', None)
             response, body = self.request('POST', '/api/gorev', self.write_headers(cookie, csrf),
                                           {'baslik': 'Sayfadan Pi görevi', 'sorumlu': 'ben'})
             self.assertEqual(response.status, 200, body)
@@ -394,9 +395,37 @@ class WebWriteTest(WebFixture):
         self.assertEqual(list((self.state / 'receipt-reminders').glob('*.edited')), [])
         with patch.dict(os.environ, {'PI_SESSION_ID': 'pi-oturumu-1'}):
             os.environ.pop('CLAUDE_CODE_SESSION_ID', None)
+            os.environ.pop('ANTIGRAVITY_CONVERSATION_ID', None)
             self.assertEqual(CLI.main(['--vault', str(self.vault), '--state', str(self.state), 'task-create',
                                        '--file', str(self.request_file())], return_result=True)[1], 0)
         self.assertEqual(len(list((self.state / 'receipt-reminders').glob('*.edited'))), 1)
+
+    def test_a_write_from_the_page_is_not_the_launching_antigravity_sessions_edit(self):
+        # Antigravity's shell tool exports ANTIGRAVITY_CONVERSATION_ID; web writes must scrub it.
+        cookie, csrf = self.login()
+        seen = []
+        original_main = self.core.cli.main
+        def observe_env(*args, **kwargs):
+            seen.append(os.environ.get('ANTIGRAVITY_CONVERSATION_ID'))
+            return original_main(*args, **kwargs)
+        with patch.object(self.core.cli, 'main', side_effect=observe_env), \
+                patch.dict(os.environ, {'ANTIGRAVITY_CONVERSATION_ID': 'ag-oturumu-1'}):
+            os.environ.pop('CLAUDE_CODE_SESSION_ID', None)
+            os.environ.pop('PI_SESSION_ID', None)
+            response, body = self.request('POST', '/api/gorev', self.write_headers(cookie, csrf),
+                                          {'baslik': 'Sayfadan Antigravity görevi', 'sorumlu': 'ben'})
+            self.assertEqual(response.status, 200, body)
+            self.assertEqual(os.environ.get('ANTIGRAVITY_CONVERSATION_ID'), 'ag-oturumu-1')
+        self.assertEqual(seen, [None])
+        self.assertEqual(list((self.state / 'receipt-reminders').glob('*.edited')), [])
+        self.assertEqual(list((self.state / 'receipt-reminders').glob('*.cli')), [])
+        with patch.dict(os.environ, {'ANTIGRAVITY_CONVERSATION_ID': 'ag-oturumu-1'}):
+            os.environ.pop('CLAUDE_CODE_SESSION_ID', None)
+            os.environ.pop('PI_SESSION_ID', None)
+            self.assertEqual(CLI.main(['--vault', str(self.vault), '--state', str(self.state), 'task-create',
+                                       '--file', str(self.request_file())], return_result=True)[1], 0)
+        self.assertEqual(len(list((self.state / 'receipt-reminders').glob('*.edited'))), 1)
+        self.assertEqual(len(list((self.state / 'receipt-reminders').glob('*.cli'))), 1)
 
     def request_file(self):
         path = self.state / 'cli-istek.json'

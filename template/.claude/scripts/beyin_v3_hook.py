@@ -474,15 +474,15 @@ def _bridge_cli(command):
 
 
 def _shell_edit(payload, vault, state, harness):
-    """A Bash edit of this turn as {'at', 'knowledge'}, or None; Claude Code transcripts only.
+    """A shell edit of this turn as {'at', 'knowledge'}, or None; Claude Code and Antigravity transcripts.
 
     Codex PostToolUse and Stop inputs carry no comparable verified record of shell calls, so
     Codex keeps the editor-only window.
     """
-    if harness != "claude" or vault is None:
+    if harness not in ("claude", "antigravity") or vault is None:
         return None
     from beyin_v3_shell_edits import shell_edit
-    return shell_edit(payload, vault, state)
+    return shell_edit(payload, vault, state, harness=harness)
 
 
 def _queue_observed_edit(vault, state, payload, harness, observed, at=None):
@@ -497,10 +497,10 @@ def _queue_observed_edit(vault, state, payload, harness, observed, at=None):
         pass  # coverage bookkeeping never costs the reminder
 
 
-def _queue_cli_edit(flag, vault, state, payload):
-    """Consume the flag `beyin.py` left for a note or task written through the Claude Bash tool
-    (mark_session_edit): Bash queues no PostToolUse, so this Stop queues one at the write's time.
-    Runs before the one-shot reminder checks, as an editor PostToolUse is queued regardless of them."""
+def _queue_cli_edit(flag, vault, state, payload, harness="claude"):
+    """Consume the flag `beyin.py` left for a note or task written through a client shell tool
+    (mark_session_edit): shell commands queue no PostToolUse, so this Stop queues one at the write's
+    time. Runs before the one-shot reminder checks, as an editor PostToolUse is queued regardless of them."""
     try:
         try:
             at = json.loads(flag.read_text(encoding="utf-8")).get("at")
@@ -510,7 +510,7 @@ def _queue_cli_edit(flag, vault, state, payload):
             at = None
         flag.unlink(missing_ok=True)
         valid = isinstance(at, (int, float)) and not isinstance(at, bool) and 0 < at <= time.time()
-        _queue_observed_edit(vault, state, payload, "claude", "cli", at=float(at) if valid else None)
+        _queue_observed_edit(vault, state, payload, harness, "cli", at=float(at) if valid else None)
     except Exception:
         pass  # coverage bookkeeping never costs the reminder
 
@@ -536,7 +536,7 @@ def receipt_reminder(payload, state, harness, event, vault=None, bridge_cli=None
     Installed PostToolUse hooks match Edit|Write|apply_patch|MultiEdit|NotebookEdit for Claude and
     Codex. Known vault-external edits do not mark the session; unknown/pathless
     events retain the legacy reminder behavior without reading transcripts.
-    Without such an edit, a Claude Stop reads the bounded tail of its own transcript once:
+    Without such an edit, a Claude or Antigravity Stop reads the bounded tail of its own transcript once:
     a vault Markdown file named by a shell command of this turn and modified while that
     command ran opens the same window (#212, beyin_v3_shell_edits). A note or task written
     with beyin.py through the Bash tool opens the window itself; its flag reaches coverage here.
@@ -566,8 +566,8 @@ def receipt_reminder(payload, state, harness, event, vault=None, bridge_cli=None
         pending_receipt = folder / (digest + ".pending-receipt")
         pending_knowledge = folder / (digest + ".pending-knowledge")
         next_prompt = event == "UserPromptSubmit"
-        if event == "Stop" and harness == "claude":
-            _queue_cli_edit(folder / (digest + ".cli"), vault, state, payload)
+        if event == "Stop" and harness in ("claude", "antigravity"):
+            _queue_cli_edit(folder / (digest + ".cli"), vault, state, payload, harness=harness)
         if next_prompt:
             # Quoted worker output is data, not the user's instruction to opt out.
             if is_synthetic_prompt(payload):

@@ -382,6 +382,39 @@ class CheckpointTest(unittest.TestCase):
         human_text = beyin_entry.human_result(data, "checkpoint")
         self.assertIn("Oturum kontrol noktasi (succeeded):", human_text)
 
+    def test_antigravity_checkpoint_with_chat_trace_succeeds(self):
+        beyin_v3_chat_trace.configure(self.state, True)
+        session_id = "abcdef1234567890abcdef12"
+        req = {
+            "card": {"label": "antigravity oturum", "body": "Antigravity ilerleme kaydedildi."},
+            "receipt": {
+                "event_id": "ev-ag-001",
+                "summary": "antigravity checkpoint testi",
+                "refs": ["knowledge/test.md"],
+            },
+            "chat_trace": "Antigravity sohbet izi özeti.",
+        }
+        res = run_checkpoint(self.sync, self.vault, self.state, req, harness="antigravity", session=session_id)
+        self.assertEqual(res["status"], "succeeded", res)
+        self.assertEqual(res["steps"]["card"], "written")
+        self.assertEqual(res["steps"]["receipt"], "succeeded")
+        self.assertEqual(res["steps"]["chat_trace"], "written")
+
+        # Replay via CLI --harness antigravity succeeds cleanly and is idempotent.
+        req_file = Path(self.test_dir) / "checkpoint_ag_req.json"
+        req_file.write_text(json.dumps(req), encoding="utf-8", newline="\n")
+        script_path = Path(__file__).resolve().parent.parent / "scripts" / "beyin_v3.py"
+        proc = subprocess.run(
+            [sys.executable, str(script_path), "--vault", str(self.vault), "--state", str(self.state),
+             "checkpoint", "--file", str(req_file), "--harness", "antigravity", "--session", session_id],
+            capture_output=True, text=True, encoding="utf-8",
+            env=inherited_env(), timeout=30,
+        )
+        self.assertEqual(proc.returncode, 0, f"stderr: {proc.stderr}")
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["status"], "succeeded", data)
+        self.assertEqual(data["steps"]["chat_trace"], "unchanged")
+
     def test_dry_run_leaves_entire_tree_unchanged(self):
         root = Path(self.test_dir)
         source = Path(__file__).resolve().parents[1]

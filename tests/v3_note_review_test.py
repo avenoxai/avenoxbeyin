@@ -37,6 +37,8 @@ class NoteReviewTest(unittest.TestCase):
         self.addCleanup(self.engine.store.close)
         self.env = dict(os.environ, BEYIN_V3_NO_SPAWN='1')
         self.env.pop('CLAUDE_CODE_SESSION_ID', None)
+        self.env.pop('ANTIGRAVITY_CONVERSATION_ID', None)
+        self.env.pop('PI_SESSION_ID', None)
 
     def write(self, source='Project/Threads.md', raw=b'alpha\nbeta\n'):
         path = self.vault / source

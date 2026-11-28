@@ -155,8 +155,13 @@ Genel ayarlar kullanıcıya aittir ve vault güncellemesinin rollback kapsamına
   Bu olay kuyruğa alınmaz, senkronizasyon başlatmaz ve bağlam eklemez; yalnız runtime
   klasöründe bu proje ve oturumun hash'iyle adlandırılmış küçük bir düzenleme işareti
   yazar. Yol, araç girdisi veya transcript saklanmaz. Kabuk komutuyla yapılan
-  düzenlemeler bu olayı tetiklemez; `beyin.py` ile Claude Code Bash aracından yazılan
-  not veya görev aynı işareti açar (Claude Code'un `CLAUDE_CODE_SESSION_ID` değeriyle).
+  düzenlemeler bu olayı tetiklemez; `beyin.py` ile Claude Code Bash aracından ya da
+  Antigravity `run_command` adımından yazılan not veya görev aynı işareti açar (Claude
+  Code'un `CLAUDE_CODE_SESSION_ID`, Antigravity'nin `ANTIGRAVITY_CONVERSATION_ID`
+  değeriyle). Bu işaretin adı komutun çalıştığı klasörden kurulur, köprünün Stop'u ise
+  oturumun klasörüne (Claude Code'da hook'un `cwd` alanı, Antigravity'de ilk çalışma
+  alanı) bakar: komut başka bir klasörde, örneğin projenin bir alt klasöründe çalıştıysa
+  köprünün Stop'u bu yazımı görmez.
 - `--event SessionStart --event SessionEnd` ile olay kümesi daraltılabilir. `Stop`
   seçilmezse `PostToolUse` handler'ı da kurulmaz. Yeniden kurulum önceki köprü
   handler'larının hepsini kaldırıp seçilen kümeyi yazar.
