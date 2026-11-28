@@ -344,7 +344,9 @@ class NoteCreateProjectPathsTest(unittest.TestCase):
             (self.vault / 'projects/linked').symlink_to(outside, target_is_directory=True)
             (self.vault / 'projects/linked-inside').symlink_to(inside, target_is_directory=True)
         except OSError as exc:
-            self.skipTest('symlink unavailable: ' + str(exc))
+            if getattr(exc, 'winerror', None) != 1314:  # ERROR_PRIVILEGE_NOT_HELD
+                raise
+            self.skipTest('symlink not permitted here: ' + str(exc))
 
         with self.assertRaisesRegex(ValueError, 'symlink'):
             self.engine.note_create('projects/linked/Kurallar.md', 'Escape attempt.\n', {})
