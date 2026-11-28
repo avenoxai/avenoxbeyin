@@ -47,6 +47,9 @@ _CHANGE_DIR = re.compile(r'(?:^|[;&|(\n])\s*(?:cd|pushd|Set-Location|sl)\s+("[^"
 MAX_DIRS = 4
 # Git Bash and Cygwin name C:\x as /c/x or /cygdrive/c/x; Python's Windows paths do not.
 _MSYS_DRIVE = re.compile(r'^/(?:cygdrive/)?([A-Za-z])(?:/|$)')
+# Antigravity cuts a long run_command argument to its quoted prefix followed by this marker.
+_TRUNCATED = re.compile(r'<truncated [0-9]+ bytes>\Z')
+_LAST_WORD = re.compile(r'\S*\Z')
 
 
 def msys_drive(text):
@@ -196,13 +199,48 @@ def turn_commands(lines):
     return found
 
 
+def antigravity_arg(value, *, prefix=False):
+    """A run_command string argument as the command received it, or None.
+
+    Antigravity writes every string argument JSON-quoted (`"\\"echo x >> a.md\\""`) and cuts a
+    long one to its quoted prefix followed by `<truncated N bytes>`. With `prefix`, such a cut
+    value keeps the whole words of that prefix (its last word may be cut). A value that does not
+    start with a quote is taken as written; any other quoted value is unreadable.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text.startswith('"'):
+        return text or None
+    decoded = None
+    if len(text) >= 2 and text.endswith('"'):
+        try:
+            decoded = json.loads(text)
+        except ValueError:
+            return None
+    elif prefix and _TRUNCATED.search(text):
+        head = text[:_TRUNCATED.search(text).start()]
+        for drop in range(7):  # the cut may split a backslash escape (at most six characters)
+            try:
+                decoded = json.loads(head[:len(head) - drop] + '"')
+            except ValueError:
+                continue
+            if isinstance(decoded, str):
+                decoded = _LAST_WORD.sub('', decoded)
+            break
+    if not isinstance(decoded, str) or not decoded.strip():
+        return None
+    return decoded
+
+
 def antigravity_turn_commands(lines, *, powershell=None):
-    """[(issued, finished, command, None, powershell)] of the current Antigravity turn, oldest first.
+    """[(issued, finished, command, cwd, powershell)] of the current Antigravity turn, oldest first.
 
     Read backward from the end to the current turn's USER_INPUT or CHECKPOINT compaction boundary.
-    Reads only step-level metadata (type, created_at, tool_calls[].name, tool_calls[].args.CommandLine),
-    never untrusted GENERIC content. A run_command without a valid subsequent timestamp
-    (finished >= issued) in the tail is omitted.
+    Reads only step-level metadata (type, created_at, tool_calls[].name and the CommandLine and
+    Cwd arguments of run_command), never untrusted GENERIC content. `cwd` is the command's own
+    working directory, the counterpart of a Claude record's cwd, or None. A run_command without a
+    valid subsequent timestamp (finished >= issued) in the tail is omitted.
     """
     is_powershell = (os.name == 'nt') if powershell is None else bool(powershell)
     calls = []
@@ -237,9 +275,12 @@ def antigravity_turn_commands(lines, *, powershell=None):
                     if not isinstance(call, dict) or call.get('name') != 'run_command':
                         continue
                     args = call.get('args')
-                    command = args.get('CommandLine') if isinstance(args, dict) else None
-                    if isinstance(command, str) and command.strip():
-                        calls.append((moment, finished, command[:MAX_COMMAND_CHARS], None, is_powershell))
+                    if not isinstance(args, dict):
+                        continue
+                    command = antigravity_arg(args.get('CommandLine'), prefix=True)
+                    if command is not None:
+                        cwd = antigravity_arg(args.get('Cwd'))
+                        calls.append((moment, finished, command[:MAX_COMMAND_CHARS], cwd, is_powershell))
                         if len(calls) >= MAX_COMMANDS:
                             break
             if moment is not None:

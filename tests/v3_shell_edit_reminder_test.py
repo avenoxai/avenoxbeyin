@@ -832,10 +832,85 @@ class ShellEditUnitTest(unittest.TestCase):
             with self.subTest(path=str(path), root=str(root)):
                 self.assertIs(other(path, root), expected)
 
+    def test_antigravity_arguments_are_read_as_antigravity_writes_them(self):
+        # Antigravity stores every run_command string argument JSON-quoted and cuts a long one to its
+        # quoted prefix plus `<truncated N bytes>`; read raw, a command was one quoted word and no
+        # named file was ever found (#950 before this fix).
+        arg = self.module.antigravity_arg
+        heredoc = "cat > \"notes/Günlük Not.md\" <<'EOF'\nsatır \\ \"tırnak\"\nEOF"
+        for value, expected in (
+                (json.dumps('echo x >> notes/a.md'), 'echo x >> notes/a.md'),
+                (json.dumps(heredoc, ensure_ascii=False), heredoc), (json.dumps(heredoc), heredoc),
+                ('  ' + json.dumps('/Users/u/Kasa/notes') + ' ', '/Users/u/Kasa/notes'),
+                ('echo x >> notes/a.md', 'echo x >> notes/a.md'),  # not quoted: taken as written
+                ('"echo x >> notes/a.md', None), ('"a.md" "b.md"', None), ('"\\q"', None),
+                (json.dumps(''), None), (json.dumps('   '), None), ('', None), (None, None), (7, None),
+                (['echo'], None)):
+            with self.subTest(value=value):
+                self.assertEqual(arg(value), expected)
+                self.assertEqual(arg(value, prefix=True), expected)
+        long = 'echo x >> notes/a.md && cat ' + ' '.join('notes/n%d.md' % n for n in range(400))
+        quoted = json.dumps(long)
+        for cut in range(1990, 2010):
+            with self.subTest(cut=cut):
+                value = quoted[:cut] + '<truncated %d bytes>' % (len(quoted) - cut)
+                self.assertIsNone(arg(value))  # a cut working directory is never a base
+                kept = arg(value, prefix=True)
+                self.assertTrue(long.startswith(kept), kept[-40:])
+                self.assertTrue(kept.endswith(' '), kept[-40:])  # whole words only: a cut name is dropped
+                self.assertEqual(self.module.markdown_tokens(kept)[:2], ['notes/a.md', 'notes/n0.md'])
+        # A cut inside a backslash escape (json.dumps writes the letter as six ASCII characters, and the
+        # quote and backslash as two) drops the partial escape, then the partial word.
+        escaped = json.dumps('echo x >> notes/a.md ' + 'ç' * 50 + ' "q" \\ son')
+        for cut in range(len(json.dumps('echo x >> notes/a.md ')) + 1, len(escaped) - 1):
+            with self.subTest(escape_cut=cut):
+                kept = arg(escaped[:cut] + '<truncated 9 bytes>', prefix=True)
+                self.assertEqual(self.module.markdown_tokens(kept), ['notes/a.md'])
+
+    def test_antigravity_run_command_cwd_is_the_commands_own_base(self):
+        # The run_command Cwd argument plays the part of a Claude record's cwd: relative names
+        # resolve there first. A folder outside the vault, a relative, network or cut Cwd adds no
+        # vault file.
+        def iso(at):
+            return datetime.fromtimestamp(at, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        with tempfile.TemporaryDirectory(prefix='v3-shell-ag-cwd-') as folder:
+            root = Path(folder).resolve()
+            vault, outside = root / 'Kasa Ölçüm', root / 'Dış Proje'
+            (vault / 'notes').mkdir(parents=True)
+            outside.mkdir()
+            for path in (vault / 'notes/a.md', outside / 'a.md'):
+                path.write_text('x\n', encoding='utf-8')
+            issued = int(time.time()) - 100
+            os.utime(vault / 'notes/a.md', (issued + 3, issued + 3))
+            os.utime(outside / 'a.md', (issued + 3, issued + 3))
+            log = root / 'ag.jsonl'
+            for cwd, expected in ((json.dumps(str(vault / 'notes'), ensure_ascii=False), True),
+                                  (json.dumps(str(vault / 'notes')), True), (str(vault / 'notes'), True),
+                                  (json.dumps(str(outside), ensure_ascii=False), False),
+                                  (json.dumps('notes'), False), (json.dumps('\\\\evil\\s'), False),
+                                  (json.dumps(str(vault / 'notes'))[:-3] + '<truncated 3 bytes>', False),
+                                  (None, False)):
+                with self.subTest(cwd=cwd):
+                    args = {'CommandLine': json.dumps('echo x >> a.md'), 'WaitMsBeforeAsync': '500'}
+                    if cwd is not None:
+                        args['Cwd'] = cwd
+                    log.write_text(''.join(json.dumps(row, ensure_ascii=False) + '\n' for row in (
+                        {'step_index': 0, 'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'created_at': iso(issued - 1)},
+                        {'step_index': 1, 'type': 'PLANNER_RESPONSE', 'created_at': iso(issued),
+                         'tool_calls': [{'name': 'run_command', 'args': args}]},
+                        {'step_index': 2, 'type': 'GENERIC', 'created_at': iso(issued + 1)},
+                        {'step_index': 3, 'type': 'PLANNER_RESPONSE', 'created_at': iso(issued + 6)})),
+                        encoding='utf-8', newline='\n')
+                    found = self.module.shell_edit({'transcriptPath': str(log), 'workspacePaths': [str(vault)]},
+                                                   vault, root / 'state', harness='antigravity')
+                    self.assertEqual(found, {'at': float(issued), 'knowledge': False} if expected else None)
+
     def test_claude_and_antigravity_transcripts_count_the_same_commands(self):
-        # #950 ports the Claude rule to run_command and does not widen it: one command and one window
-        # give one answer in both transcript shapes, and a read (cat, grep, ls, git log, note-read,
-        # context) whose named files did not change while it ran never counts.
+        # #950 ports the Claude rule to run_command and does not widen it: one command, one working
+        # directory and one window give one answer in both transcript shapes (Antigravity's own
+        # JSON-quoted arguments, its Cwd for the Claude record's cwd), and a read (cat, grep, ls,
+        # git log, note-read, context) whose named files did not change while it ran never counts.
         tool = 'PowerShell' if os.name == 'nt' else 'Bash'  # the tokenizer Antigravity uses here
 
         def iso(at):
@@ -865,38 +940,55 @@ class ShellEditUnitTest(unittest.TestCase):
                 ('cd notes/sub && echo y >> c.md', 'notes/sub/c.md'),
                 ('cat daily/v3/2026-11-07.md', 'daily/v3/2026-11-07.md'),
                 ('echo z >> .obsidian/x.md', '.obsidian/x.md'), ('echo z >> "%s"' % outside, None),
-                ('echo z >> "%s"' % (vault / 'notes/a.md'), 'notes/a.md'), ('echo $X >> notes/a.md', 'notes/a.md'))
+                ('echo z >> "%s"' % (vault / 'notes/a.md'), 'notes/a.md'), ('echo $X >> notes/a.md', 'notes/a.md'),
+                # Named relative to notes/: seen only from a working directory there.
+                ('echo x >> a.md', 'notes/a.md'), ('cat "Günlük Not.md"', 'notes/Günlük Not.md'),
+                ('cd sub && echo y >> c.md', 'notes/sub/c.md'), ('cat ../knowledge/concepts/k.md', 'knowledge/concepts/k.md'))
+            relative = {'echo x >> a.md', 'cat "Günlük Not.md"', 'cd sub && echo y >> c.md', 'cat ../knowledge/concepts/k.md'}
+            project = root / 'Dış Proje'
+            project.mkdir()
+            folders = {'none': None, 'vault': str(vault), 'notes': str(vault / 'notes'), 'outside': str(project),
+                       'share': '\\\\evil\\s', 'relative': 'notes'}
             issued = int(time.time()) - 100  # whole seconds: Antigravity stamps carry no fraction
             done = issued + 6
             counted = 0
             for number, (command, target) in enumerate(commands):
-                for when in ('inside', 'before', 'after', 'untouched'):
-                    with self.subTest(command=command, when=when):
-                        for name in names:
-                            os.utime(vault / name, (issued - 600, issued - 600))
-                        if target is not None and when != 'untouched':
-                            at = {'inside': issued + 3, 'before': issued - 10, 'after': done + 10}[when]
-                            os.utime(vault / target, (at, at))
-                        claude = jsonl(root / ('c%d-%s.jsonl' % (number, when)), [
-                            {'type': 'user', 'timestamp': iso(issued - 1), 'message': {'content': 'düzenle'}},
-                            {'type': 'assistant', 'timestamp': iso(issued), 'message': {'content': [
-                                {'type': 'tool_use', 'id': 't1', 'name': tool, 'input': {'command': command}}]}},
-                            {'type': 'user', 'timestamp': iso(done), 'message': {'content': [
-                                {'type': 'tool_result', 'tool_use_id': 't1', 'content': 'ok'}]}}])
-                        antigravity = jsonl(root / ('a%d-%s.jsonl' % (number, when)), [
-                            {'step_index': 0, 'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'created_at': iso(issued - 1)},
-                            {'step_index': 1, 'type': 'PLANNER_RESPONSE', 'source': 'MODEL', 'created_at': iso(issued),
-                             'tool_calls': [{'name': 'run_command', 'args': {'CommandLine': command}}]},
-                            {'step_index': 2, 'type': 'GENERIC', 'source': 'MODEL', 'created_at': iso(done - 1)},
-                            {'step_index': 3, 'type': 'PLANNER_RESPONSE', 'source': 'MODEL', 'created_at': iso(done)}])
-                        expected = self.module.shell_edit({'transcript_path': claude, 'cwd': str(vault)}, vault, state)
-                        found = self.module.shell_edit({'transcriptPath': antigravity, 'workspacePaths': [str(vault)]},
-                                                       vault, state, harness='antigravity')
-                        self.assertEqual(found, expected)
-                        if target is None or when == 'untouched':
-                            self.assertIsNone(found)
-                        counted += found is not None
-            self.assertGreaterEqual(counted, 5)  # the grid also proves real edits are seen
+                for where, folder in folders.items():
+                    for when in ('inside', 'before', 'after', 'untouched'):
+                        with self.subTest(command=command, cwd=where, when=when):
+                            for name in names:
+                                os.utime(vault / name, (issued - 600, issued - 600))
+                            if target is not None and when != 'untouched':
+                                at = {'inside': issued + 3, 'before': issued - 10, 'after': done + 10}[when]
+                                os.utime(vault / target, (at, at))
+                            call = {'type': 'assistant', 'timestamp': iso(issued), 'message': {'content': [
+                                {'type': 'tool_use', 'id': 't1', 'name': tool, 'input': {'command': command}}]}}
+                            args = {'CommandLine': json.dumps(command, ensure_ascii=False), 'WaitMsBeforeAsync': '500'}
+                            if folder is not None:
+                                call['cwd'] = folder
+                                args['Cwd'] = json.dumps(folder, ensure_ascii=False)
+                            claude = jsonl(root / ('c%d-%s-%s.jsonl' % (number, where, when)), [
+                                {'type': 'user', 'timestamp': iso(issued - 1), 'message': {'content': 'düzenle'}}, call,
+                                {'type': 'user', 'timestamp': iso(done), 'message': {'content': [
+                                    {'type': 'tool_result', 'tool_use_id': 't1', 'content': 'ok'}]}}])
+                            antigravity = jsonl(root / ('a%d-%s-%s.jsonl' % (number, where, when)), [
+                                {'step_index': 0, 'type': 'USER_INPUT', 'source': 'USER_EXPLICIT',
+                                 'created_at': iso(issued - 1)},
+                                {'step_index': 1, 'type': 'PLANNER_RESPONSE', 'source': 'MODEL', 'created_at': iso(issued),
+                                 'tool_calls': [{'name': 'run_command', 'args': args}]},
+                                {'step_index': 2, 'type': 'GENERIC', 'source': 'MODEL', 'created_at': iso(done - 1)},
+                                {'step_index': 3, 'type': 'PLANNER_RESPONSE', 'source': 'MODEL', 'created_at': iso(done)}])
+                            expected = self.module.shell_edit({'transcript_path': claude, 'cwd': str(vault)}, vault, state)
+                            found = self.module.shell_edit({'transcriptPath': antigravity, 'workspacePaths': [str(vault)]},
+                                                           vault, state, harness='antigravity')
+                            self.assertEqual(found, expected)
+                            # Seen: a named vault note (no dot folder, no receipt view the sync rewrites)
+                            # changed while the command ran, named from a base the command really had.
+                            seen = (target is not None and when == 'inside' and not target.startswith(('.', 'daily/'))
+                                    and (command not in relative or where == 'notes'))
+                            self.assertEqual(found is not None, seen)
+                            counted += found is not None
+            self.assertGreaterEqual(counted, 40)  # the grid also proves real edits are seen
 
 
 class AntigravityShellEditReminderTest(unittest.TestCase):
@@ -946,10 +1038,16 @@ class AntigravityShellEditReminderTest(unittest.TestCase):
         self.step(session, {'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': text}, at=at)
         return self.hook('PreInvocation', session, invocationNum=0, lastUserInput=text)
 
-    def run_cmd(self, session, command, write=None, issued=None, generic_at=None, done_at=None, generic_content=''):
+    def run_cmd(self, session, command, write=None, issued=None, generic_at=None, done_at=None, generic_content='',
+                cwd=None, raw=None):
+        # Antigravity's own transcript shape: string arguments JSON-quoted, numbers as plain text.
         base = time.time() if issued is None else issued
+        args = {'CommandLine': json.dumps(command, ensure_ascii=False) if raw is None else raw,
+                'WaitMsBeforeAsync': '500'}
+        if cwd is not None:
+            args['Cwd'] = json.dumps(str(cwd), ensure_ascii=False)
         self.step(session, {'source': 'MODEL', 'type': 'PLANNER_RESPONSE',
-                            'tool_calls': [{'name': 'run_command', 'args': {'CommandLine': command}}]}, at=base)
+                            'tool_calls': [{'name': 'run_command', 'args': args}]}, at=base)
         if write:
             write()
         self.step(session, {'source': 'MODEL', 'type': 'GENERIC', 'content': generic_content},
@@ -1178,6 +1276,30 @@ class AntigravityShellEditReminderTest(unittest.TestCase):
             scan.assert_not_called()
             self.assertIsNone(hook.receipt_reminder(payload, self.state, 'antigravity', 'Stop', vault=self.vault))
             self.assertEqual(scan.call_count, 1)
+
+    def test_cwd_and_cut_commands_reach_the_stop_hook(self):
+        # Through the installed hook: the command's own Cwd is its base, and a long heredoc write that
+        # Antigravity cut to a prefix is still seen by the name in its first words.
+        notes, project = self.vault / 'notes', self.root / 'Projects' / 'Dış'
+        project.mkdir(parents=True)
+        (project / 'a.md').write_text('x\n', encoding='utf-8')
+        heredoc = "cat > notes/b.md <<'EOF'\n" + 'uzun satır\n' * 400 + 'EOF'
+        quoted = json.dumps(heredoc, ensure_ascii=False)
+        cases = (
+            ('ag-cwd', dict(command='echo x >> a.md', cwd=notes), 'notes/a.md', 'continue'),
+            ('ag-cwd-out', dict(command='echo x >> a.md', cwd=project), None, 'stop'),
+            ('ag-cut', dict(command=heredoc, raw=quoted[:2000] + '<truncated %d bytes>' % (len(quoted) - 2000)),
+             'notes/b.md', 'continue'),
+            ('ag-unreadable', dict(command='', raw='"echo x >> notes/a.md'), 'notes/a.md', 'stop'),
+        )
+        for name, call, target, decision in cases:
+            with self.subTest(name):
+                self.user_turn(name, 'düzenle')
+                write = (lambda t=target: self.write(t, 'yeni\n', append=True)) if target else (
+                    lambda: (project / 'a.md').write_text('y\n', encoding='utf-8'))
+                self.run_cmd(name, call.pop('command'), write, **call)
+                self.assertEqual(self.stop(name).get('decision'), decision)
+                self.assertEqual(self.marker(name).exists(), decision == 'continue')
 
     def test_antigravity_shell_edit_closes_coverage_despite_later_question(self):
         import beyin_v3_hook as hook
