@@ -405,8 +405,10 @@ class CompanionEdgeCasesTest(unittest.TestCase):
         outside.write_text('# Outside\n', encoding='utf-8')
         try:
             (comp / 'Core.md').symlink_to(outside)
-        except OSError:
-            self.skipTest('symlinks require elevated privileges on this Windows host')
+        except OSError as error:
+            if getattr(error, 'winerror', None) != 1314:  # ERROR_PRIVILEGE_NOT_HELD
+                raise
+            self.skipTest(f'symlink not permitted here: {error}')
         doc = self.run_doctor()
         self.assertEqual(doc['companion_sources']['status'], 'missing')
         self.assertEqual(doc['companion_sources']['missing'], ['Core.md'])
