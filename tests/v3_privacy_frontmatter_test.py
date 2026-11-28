@@ -36,7 +36,7 @@ class PrivacyFrontmatterTest(unittest.TestCase):
     def write_note(self, relative, content):
         path = self.vault / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding='utf-8')
+        path.write_text(content, encoding='utf-8', newline='\n')
         return path
 
     def records(self, query='Zirkon', audience='internal'):
