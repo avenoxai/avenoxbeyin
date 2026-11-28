@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tempfile
@@ -650,6 +651,472 @@ class ShellEditUnitTest(unittest.TestCase):
             with patch.object(self.module, 'TAIL_BYTES', 4096):
                 self.assertIsNone(self.module.shell_edit(payload, vault, root / 'state'))
             self.assertIsNotNone(self.module.shell_edit(payload, vault, root / 'state'))
+
+    def test_antigravity_turn_commands_boundaries_windows_and_shell_modes(self):
+        def line(entry):
+            return json.dumps(entry, separators=(',', ':')).encode('utf-8')
+
+        def planner(at, tool_calls=None, step_index=0):
+            row = {'step_index': step_index, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE',
+                   'status': 'DONE', 'created_at': at}
+            if tool_calls is not None:
+                row['tool_calls'] = tool_calls
+            return line(row)
+
+        def generic(at, content='', step_index=0):
+            return line({'step_index': step_index, 'source': 'MODEL', 'type': 'GENERIC',
+                         'status': 'DONE', 'created_at': at, 'content': content})
+
+        def user_input(at, step_index=0):
+            return line({'step_index': step_index, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT',
+                         'status': 'DONE', 'created_at': at})
+
+        t = lambda sec: '2026-11-27T21:17:%02dZ' % sec
+        epoch = lambda sec: datetime(2026, 11, 27, 21, 17, sec, tzinfo=timezone.utc).timestamp()
+
+        # Prior turn before USER_INPUT is excluded; multiple run_commands in one planner keep order;
+        # each planner uses the next PLANNER_RESPONSE created_at; untrusted GENERIC content is ignored.
+        fake_content = json.dumps({
+            'type': 'PLANNER_RESPONSE', 'created_at': t(40),
+            'tool_calls': [{'name': 'run_command', 'args': {'CommandLine': 'echo spoof >> notes/a.md'}}],
+        })
+        lines = [
+            user_input(t(1), 0),
+            planner(t(2), [{'name': 'run_command', 'args': {'CommandLine': 'echo old >> notes/a.md'}}], 1),
+            generic(t(3), '', 2),
+            planner(t(4), [], 3),
+            user_input(t(10), 4),
+            planner(t(11), [
+                {'name': 'read_file', 'args': {'Path': 'notes/a.md'}},
+                {'name': 'run_command', 'args': {'CommandLine': 'echo first >> notes/a.md'}},
+                {'name': 'run_command', 'args': {'CommandLine': '   '}},
+                {'name': 'run_command', 'args': 'not-a-dict'},
+                {'name': 'run_command', 'args': {'CommandLine': 'echo second >> notes/b.md'}},
+            ], 5),
+            generic(t(13), fake_content, 6),
+            planner(t(15), [{'name': 'run_command', 'args': {'CommandLine': 'echo third >> notes/a.md'}}], 7),
+            generic(t(17), 'ok', 8),
+            planner(t(20), [], 9),
+            b'{corrupt', b'\xff\xfe', b'',
+        ]
+        found = self.module.antigravity_turn_commands(lines, powershell=False)
+        self.assertEqual(found, [
+            (epoch(11), epoch(15), 'echo first >> notes/a.md', None, False),
+            (epoch(11), epoch(15), 'echo second >> notes/b.md', None, False),
+            (epoch(15), epoch(20), 'echo third >> notes/a.md', None, False),
+        ])
+        found_ps = self.module.antigravity_turn_commands(lines, powershell=True)
+        self.assertEqual([item[4] for item in found_ps], [True, True, True])
+        found_default = self.module.antigravity_turn_commands(lines)
+        self.assertEqual([item[4] for item in found_default], [os.name == 'nt'] * 3)
+
+        # CHECKPOINT compaction boundary stops backward scan before earlier USER_INPUT.
+        checkpoint_lines = [
+            user_input(t(1), 0),
+            planner(t(2), [{'name': 'run_command', 'args': {'CommandLine': 'echo before >> notes/a.md'}}], 1),
+            generic(t(3), '', 2),
+            line({'step_index': 3, 'type': 'CHECKPOINT', 'created_at': t(4)}),
+            planner(t(5), [{'name': 'run_command', 'args': {'CommandLine': 'echo after >> notes/a.md'}}], 4),
+            generic(t(7), '', 5),
+        ]
+        # No later PLANNER_RESPONSE: falls back to subsequent GENERIC created_at.
+        self.assertEqual(
+            self.module.antigravity_turn_commands(checkpoint_lines, powershell=False),
+            [(epoch(5), epoch(7), 'echo after >> notes/a.md', None, False)],
+        )
+
+        # Still-running (no subsequent step), backwards clock (finished < issued), and naive stamps are omitted.
+        edge_lines = [
+            user_input(t(1), 0),
+            planner('2026-11-27T21:17:02', [{'name': 'run_command', 'args': {'CommandLine': 'naive'}}], 1),
+            planner(t(10), [{'name': 'run_command', 'args': {'CommandLine': 'skew'}}], 2),
+            planner(t(8), [{'name': 'run_command', 'args': {'CommandLine': 'still-running'}}], 3),
+        ]
+        self.assertEqual(self.module.antigravity_turn_commands(edge_lines, powershell=False), [])
+
+        # MAX_COMMAND_CHARS clipping and MAX_COMMANDS cap.
+        huge = 'echo ' + ('x' * (self.module.MAX_COMMAND_CHARS + 50)) + ' >> notes/a.md'
+        clipped = self.module.antigravity_turn_commands([
+            user_input(t(1), 0),
+            planner(t(2), [{'name': 'run_command', 'args': {'CommandLine': huge}}], 1),
+            planner(t(3), [], 2),
+        ], powershell=False)
+        self.assertEqual(len(clipped), 1)
+        self.assertEqual(len(clipped[0][2]), self.module.MAX_COMMAND_CHARS)
+        with patch.object(self.module, 'MAX_COMMANDS', 2):
+            capped = self.module.antigravity_turn_commands([
+                user_input(t(1), 0),
+                planner(t(2), [
+                    {'name': 'run_command', 'args': {'CommandLine': 'cmd1'}},
+                    {'name': 'run_command', 'args': {'CommandLine': 'cmd2'}},
+                    {'name': 'run_command', 'args': {'CommandLine': 'cmd3'}},
+                ], 1),
+                planner(t(3), [], 2),
+            ], powershell=False)
+            self.assertEqual([item[2] for item in capped], ['cmd2', 'cmd3'])
+
+    def test_tail_rejects_unc_reparse_point_and_samestat_mismatch(self):
+        with tempfile.TemporaryDirectory(prefix='v3-shell-sec-') as folder:
+            root = Path(folder).resolve()
+            log = root / 'ok.jsonl'
+            log.write_text('{"type":"USER_INPUT"}\n', encoding='utf-8')
+            self.assertIsNotNone(self.module._tail(str(log)))
+            for unc in (r'\\server\share\transcript.jsonl', '//server/share/transcript.jsonl',
+                        r'\\?\C:\transcript.jsonl'):
+                with self.subTest(unc=unc):
+                    self.assertIsNone(self.module._tail(unc))
+            real_lstat = log.lstat()
+
+            class FakeReparse:
+                st_mode = real_lstat.st_mode
+                st_ino = real_lstat.st_ino
+                st_dev = real_lstat.st_dev
+                st_size = real_lstat.st_size
+                st_file_attributes = stat.FILE_ATTRIBUTE_REPARSE_POINT
+
+            with patch.object(Path, 'lstat', return_value=FakeReparse()):
+                self.assertIsNone(self.module._tail(str(log)))
+            with patch('os.path.samestat', return_value=False):
+                self.assertIsNone(self.module._tail(str(log)))
+
+    def test_shell_edit_harness_dispatch_and_powershell_vs_posix_quoting(self):
+        with tempfile.TemporaryDirectory(prefix='v3-shell-ag-unit-') as folder:
+            root = Path(folder).resolve()
+            vault = root / 'vault'
+            (vault / 'notes').mkdir(parents=True)
+            note = vault / 'notes/a.md'
+            note.write_text('# a\n', encoding='utf-8')
+            now = time.time()
+            os.utime(note, (now, now))
+            log = root / 'ag.jsonl'
+            log.write_text(
+                json.dumps({'step_index': 0, 'type': 'USER_INPUT', 'created_at': stamp(now - 3)}) + '\n'
+                + json.dumps({'step_index': 1, 'type': 'PLANNER_RESPONSE', 'created_at': stamp(now - 2),
+                              'tool_calls': [{'name': 'run_command', 'args': {'CommandLine': 'echo x >> notes/a.md'}}]}) + '\n'
+                + json.dumps({'step_index': 2, 'type': 'PLANNER_RESPONSE', 'created_at': stamp(now + 1)}) + '\n',
+                encoding='utf-8',
+            )
+            # Unsupported harness returns None.
+            self.assertIsNone(self.module.shell_edit({'transcriptPath': str(log), 'cwd': str(vault)}, vault,
+                                                     harness='codex'))
+            # Antigravity resolves relative paths from workspacePaths even without cwd.
+            hit = self.module.shell_edit({'transcriptPath': str(log), 'workspacePaths': ['relative/skip', str(vault)]},
+                                         vault, harness='antigravity')
+            self.assertIsNotNone(hit)
+            self.assertFalse(hit['knowledge'])
+            # PowerShell-style quoting keeps Windows backslashes; POSIX unescapes spaces.
+            self.assertEqual(
+                self.module.markdown_tokens(r'Set-Content -Path "C:\vault\note.md" -Value "ok"', powershell=True),
+                [r'C:\vault\note.md'],
+            )
+            self.assertEqual(
+                self.module.markdown_tokens(r'echo x >> notes/Şifre\ Notu.md', powershell=False),
+                ['notes/Şifre Notu.md'],
+            )
+
+
+class AntigravityShellEditReminderTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='v3-ag-shell-edit-')
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.vault = self.root / 'Sentetik Kasa Ölçüm'
+        (self.vault / 'notes').mkdir(parents=True)
+        for name in ('a', 'b', 'Günlük Not'):
+            self.write('notes/' + name + '.md', '# ' + name + '\n')
+        old = time.time() - 600
+        for path in (self.vault / 'notes').iterdir():
+            os.utime(path, (old, old))
+        self.state = self.root / 'state outside vault'
+        self.logs = self.root / 'transcripts'
+        self.logs.mkdir()
+        home = self.root / 'home'
+        home.mkdir()
+        self.env = inherited_env(HOME=str(home), USERPROFILE=str(home), BEYIN_V3_NO_SPAWN='1',
+                                 BEYIN_UPDATES_OFF='1', PYTHONIOENCODING='utf-8', PYTHONDONTWRITEBYTECODE='1')
+        environment = clean_environ()
+        environment.start()
+        self.addCleanup(environment.stop)
+        sys.path.insert(0, str(SCRIPTS))
+        self.addCleanup(lambda: sys.path.remove(str(SCRIPTS)))
+        self.steps = {}
+        self.count = 0
+
+    def write(self, relative, text, append=False):
+        path = self.vault / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('a' if append else 'w', encoding='utf-8') as handle:
+            handle.write(text)
+        return path
+
+    def step(self, session, entry, at=None):
+        index = self.steps.get(session, 0)
+        self.steps[session] = index + 1
+        row = dict({'step_index': index, 'status': 'DONE',
+                    'created_at': stamp(time.time() if at is None else at)}, **entry)
+        with (self.logs / (session + '.jsonl')).open('a', encoding='utf-8') as handle:
+            handle.write(json.dumps(row, ensure_ascii=False, separators=(',', ':')) + '\n')
+        return row
+
+    def user_turn(self, session, text, at=None):
+        self.step(session, {'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': text}, at=at)
+        return self.hook('PreInvocation', session, invocationNum=0, lastUserInput=text)
+
+    def run_cmd(self, session, command, write=None, issued=None, generic_at=None, done_at=None, generic_content=''):
+        base = time.time() if issued is None else issued
+        self.step(session, {'source': 'MODEL', 'type': 'PLANNER_RESPONSE',
+                            'tool_calls': [{'name': 'run_command', 'args': {'CommandLine': command}}]}, at=base)
+        if write:
+            write()
+        self.step(session, {'source': 'MODEL', 'type': 'GENERIC', 'content': generic_content},
+                  at=base if generic_at is None else generic_at)
+        self.step(session, {'source': 'MODEL', 'type': 'PLANNER_RESPONSE'},
+                  at=base if done_at is None else done_at)
+
+    def hook(self, event, session, **fields):
+        self.count += 1
+        payload = dict({
+            'hookEventName': event,
+            'conversationId': session,
+            'event_id': '%s-%d' % (session, self.count),
+            'workspacePaths': [str(self.vault)],
+            'transcriptPath': str(self.logs / (session + '.jsonl')),
+        }, **fields)
+        result = subprocess.run(
+            [sys.executable, str(HOOK), '--vault', str(self.vault), '--state', str(self.state),
+             '--harness', 'antigravity', '--event', event],
+            input=json.dumps(payload), text=True, encoding='utf-8',
+            capture_output=True, cwd=self.vault, env=self.env, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        self.assertEqual(len(lines), 1, result.stdout)
+        return json.loads(lines[0])
+
+    def stop(self, session, **fields):
+        defaults = {'fullyIdle': True, 'continuationActive': False, 'executionNum': 0, 'lastUserInput': 'edit'}
+        defaults.update(fields)
+        return self.hook('Stop', session, **defaults)
+
+    def engine(self):
+        from beyin_v3_sync import SyncEngine
+        return SyncEngine(self.vault, self.state)
+
+    def marker(self, session):
+        return self.state / 'receipt-reminders' / (hashlib.sha256(session.encode('utf-8')).hexdigest() + '.edited')
+
+    def test_run_command_edit_opens_window_queues_observed_edit_and_continues_once(self):
+        self.user_turn('ag-edit', 'notları düzelt')
+        before = time.time()
+        self.run_cmd('ag-edit', 'sed -i "" "s/a/b/" "notes/Günlük Not.md"  # ' + CANARY,
+                     lambda: self.write('notes/Günlük Not.md', 'yeni\n', append=True))
+        # Non-idle Stop does not open the window or remind.
+        self.assertEqual(self.stop('ag-edit', fullyIdle=False), {'decision': 'stop'})
+        self.assertFalse(self.marker('ag-edit').exists())
+
+        res = self.stop('ag-edit')
+        self.assertEqual(res.get('decision'), 'continue')
+        self.assertIn('Receipt session=' + digest('ag-edit') + ';', res['reason'])
+        self.assertIn('--harness antigravity', res['reason'])
+        marker = json.loads(self.marker('ag-edit').read_text(encoding='utf-8'))
+        self.assertEqual(set(marker), {'at'})
+        self.assertGreaterEqual(marker['at'], before - 1)
+        self.assertLessEqual(marker['at'], time.time())
+
+        queued = [json.loads(p.read_text(encoding='utf-8')) for p in (self.state / 'hook-queue').glob('*.json')]
+        shell_events = [e for e in queued if e.get('observed') == 'shell']
+        self.assertEqual(
+            [(e['harness'], e['event'], e['session']) for e in shell_events],
+            [('antigravity', 'PostToolUse', digest('ag-edit'))],
+        )
+
+        # Continued Stops and repeat Stops do not remind a second time.
+        self.assertEqual(self.stop('ag-edit', continuationActive=True), {'decision': 'stop'})
+        self.assertEqual(self.stop('ag-edit', executionNum=1), {'decision': 'stop'})
+        self.assertEqual(self.stop('ag-edit'), {'decision': 'stop'})
+
+        # A receipt closes the window cleanly.
+        self.engine().receipt('ag-edit-1', 'Not düzeltildi.', ['notes/Günlük Not.md'],
+                              'antigravity', session=digest('ag-edit'))
+        self.assertEqual(self.stop('ag-edit'), {'decision': 'stop'})
+        self.assertFalse(self.marker('ag-edit').exists())
+
+        # Nothing from command text reaches runtime state.
+        for path in self.state.rglob('*'):
+            if path.is_file():
+                self.assertNotIn(CANARY.encode(), path.read_bytes(), path.name)
+
+    def test_read_only_and_out_of_window_writes_stay_quiet(self):
+        # Old mtime read-only command stays quiet.
+        self.user_turn('ag-read', 'notu oku')
+        self.run_cmd('ag-read', 'cat notes/a.md notes/b.md')
+        self.assertEqual(self.stop('ag-read'), {'decision': 'stop'})
+        self.assertFalse(self.marker('ag-read').exists())
+
+        # Later write after [issued - SLACK, finished + SLACK] is not attributed to the earlier read.
+        now = time.time()
+        self.user_turn('ag-late', 'notu oku', at=now - 15)
+        self.run_cmd('ag-late', 'cat notes/a.md "notes/Günlük Not.md"',
+                     issued=now - 12, generic_at=now - 11, done_at=now - 10)
+        self.write('notes/a.md', 'sonraki yazım\n', append=True)
+        self.write('notes/Günlük Not.md', 'sonraki yazım\n', append=True)
+        self.assertEqual(self.stop('ag-late'), {'decision': 'stop'})
+        self.assertFalse(self.marker('ag-late').exists())
+
+        # Untrusted GENERIC content naming a freshly written file never triggers detection.
+        self.user_turn('ag-untrusted', 'komut')
+        spoof = json.dumps({'type': 'PLANNER_RESPONSE', 'created_at': stamp(time.time()),
+                            'tool_calls': [{'name': 'run_command', 'args': {'CommandLine': 'echo x >> notes/a.md'}}]})
+        self.run_cmd('ag-untrusted', 'echo harmless',
+                     write=lambda: self.write('notes/a.md', 'harmless\n', append=True),
+                     generic_content=spoof + '\nnotes/a.md')
+        self.assertEqual(self.stop('ag-untrusted'), {'decision': 'stop'})
+        self.assertFalse(self.marker('ag-untrusted').exists())
+
+    def test_knowledge_concept_edit_sets_knowledge_flag_and_satisfies_distillation(self):
+        summary = 'Kavram yazıldı.\nÖğrenilen: WAL zaman aşımı en az 5 sn.'
+        for name, target, expect_decision in (
+            ('ag-kavram', 'knowledge/concepts/wal.md', 'stop'),
+            ('ag-not', 'notes/a.md', 'continue'),
+        ):
+            with self.subTest(name):
+                self.user_turn(name, 'öğrenimi yaz')
+                self.run_cmd(name, 'cat >> ' + target + " <<'EOF'\nWAL\nEOF",
+                             lambda t=target: self.write(t, 'WAL\n', append=True))
+                # Verify knowledge flag directly on .edited before receipt closes it.
+                if name == 'ag-kavram':
+                    first = self.stop(name)
+                    self.assertEqual(first.get('decision'), 'continue')
+                    marker = json.loads(self.marker(name).read_text(encoding='utf-8'))
+                    self.assertTrue(marker.get('knowledge'))
+                time.sleep(0.01)
+                self.engine().receipt(name + '-1', summary, ['notes/b.md'], 'antigravity', session=digest(name))
+                answer = self.stop(name)
+                self.assertEqual(answer.get('decision'), expect_decision)
+                if expect_decision == 'continue':
+                    self.assertIn('knowledge/concepts/', answer.get('reason', ''))
+
+    def test_earlier_turn_before_user_input_or_checkpoint_is_not_attributed(self):
+        now = time.time()
+        # Case 1: USER_INPUT boundary
+        self.user_turn('ag-turns', 'ilk tur', at=now - 20)
+        self.run_cmd('ag-turns', 'echo x >> notes/a.md',
+                     lambda: self.write('notes/a.md', 'x\n', append=True),
+                     issued=now - 19, generic_at=now - 18, done_at=now - 17)
+        os.utime(self.vault / 'notes/a.md', (now - 18, now - 18))
+        self.user_turn('ag-turns', 'yeni soru', at=now - 2)
+        self.step('ag-turns', {'source': 'MODEL', 'type': 'PLANNER_RESPONSE'}, at=now - 1)
+        self.assertEqual(self.stop('ag-turns'), {'decision': 'stop'})
+        self.assertFalse(self.marker('ag-turns').exists())
+
+        # Case 2: CHECKPOINT compaction boundary
+        self.user_turn('ag-ckpt', 'uzun tur', at=now - 20)
+        self.run_cmd('ag-ckpt', 'echo x >> notes/b.md',
+                     lambda: self.write('notes/b.md', 'x\n', append=True),
+                     issued=now - 19, generic_at=now - 18, done_at=now - 17)
+        os.utime(self.vault / 'notes/b.md', (now - 18, now - 18))
+        self.step('ag-ckpt', {'source': 'SYSTEM', 'type': 'CHECKPOINT'}, at=now - 5)
+        self.step('ag-ckpt', {'source': 'MODEL', 'type': 'PLANNER_RESPONSE'}, at=now - 1)
+        self.assertEqual(self.stop('ag-ckpt'), {'decision': 'stop'})
+        self.assertFalse(self.marker('ag-ckpt').exists())
+
+    def test_outside_vault_dot_folder_and_receipt_views_stay_quiet(self):
+        outside = self.root / 'outside.md'
+        self.write('.obsidian/workspace.md', 'x\n')
+        cases = {
+            'outside': ('echo x >> "%s"' % outside, lambda: outside.write_text('x\n', encoding='utf-8')),
+            'dot-folder': ('echo x >> .obsidian/workspace.md',
+                           lambda: self.write('.obsidian/workspace.md', 'y\n', append=True)),
+            'daily-view': ('cat daily/v3/2026-11-07.md',
+                           lambda: self.write('daily/v3/2026-11-07.md', 'görünüm\n')),
+            'outcomes-view': ('cat knowledge/v3/outcomes.md',
+                              lambda: self.write('knowledge/v3/outcomes.md', 'görünüm\n')),
+        }
+        for name, (command, write) in cases.items():
+            with self.subTest(name):
+                self.user_turn(name, 'kontrol')
+                self.run_cmd(name, command, write)
+                self.assertEqual(self.stop(name), {'decision': 'stop'})
+                self.assertFalse(self.marker(name).exists())
+
+    def test_unusable_transcript_paths_fail_open(self):
+        self.user_turn('ag-bad', 'düzenle')
+        self.run_cmd('ag-bad', 'echo x >> notes/a.md', lambda: self.write('notes/a.md', 'x\n', append=True))
+        log = self.logs / 'ag-bad.jsonl'
+        copy = self.root / 'ag-bad.txt'
+        copy.write_bytes(log.read_bytes())
+        broken = self.root / 'ag-broken.jsonl'
+        broken.write_bytes(b'{not json\n\xff\xfe\n')
+        for value in (None, '', 'ag-bad.jsonl', str(copy), str(self.logs), str(broken),
+                      str(self.root / 'missing.jsonl'), r'\\server\share\ag.jsonl', '//server/share/ag.jsonl', 7):
+            with self.subTest(value=value):
+                self.assertEqual(self.stop('ag-bad', transcriptPath=value), {'decision': 'stop'})
+        link = self.root / 'ag-link.jsonl'
+        try:
+            link.symlink_to(log)
+        except (OSError, NotImplementedError):
+            pass  # Windows without symlink privilege
+        else:
+            self.assertEqual(self.stop('ag-bad', transcriptPath=str(link)), {'decision': 'stop'})
+        self.assertFalse(self.marker('ag-bad').exists())
+        # Real transcript still works afterwards.
+        self.assertEqual(self.stop('ag-bad').get('decision'), 'continue')
+
+    def test_powershell_and_posix_paths_and_bridge_guard(self):
+        import beyin_v3_hook as hook
+        import beyin_v3_shell_edits
+        absolute_note = self.vault / 'notes' / 'a.md'
+        notes_dir = self.vault / 'notes'
+        cases = {
+            'ps-abs': ('Set-Content -Path "%s" -Value "x"' % absolute_note,
+                       lambda: self.write('notes/a.md', 'ps-abs\n', append=True)),
+            'ps-set-location': ('Set-Location "%s"; Add-Content -Path a.md -Value "x"' % notes_dir,
+                                lambda: self.write('notes/a.md', 'ps-sl\n', append=True)),
+            'posix-cd': ('cd notes && printf "x\\n" >> b.md',
+                         lambda: self.write('notes/b.md', 'posix-cd\n', append=True)),
+            'posix-rel': ('echo x >> "notes/Günlük Not.md"',
+                          lambda: self.write('notes/Günlük Not.md', 'posix-rel\n', append=True)),
+        }
+        for name, (command, write) in cases.items():
+            with self.subTest(name):
+                self.user_turn(name, 'düzenle')
+                self.run_cmd(name, command, write)
+                self.assertEqual(self.stop(name).get('decision'), 'continue')
+
+        # Global bridge keeps shell_edit disabled for Antigravity too (bridge_cli is not None).
+        project = self.root / 'Projects' / 'External'
+        project.mkdir(parents=True)
+        payload = {'hook_event_name': 'Stop', 'session_id': 'ag-bridge',
+                   'workspacePaths': [str(project)], 'transcriptPath': str(self.logs / 'ag-bridge.jsonl')}
+        with patch.object(beyin_v3_shell_edits, 'shell_edit', return_value=None) as scan:
+            self.assertIsNone(hook.receipt_reminder(payload, self.state, 'antigravity', 'Stop',
+                                                    vault=self.vault, bridge_cli='python3 beyin.py'))
+            scan.assert_not_called()
+            self.assertIsNone(hook.receipt_reminder(payload, self.state, 'antigravity', 'Stop', vault=self.vault))
+            self.assertEqual(scan.call_count, 1)
+
+    def test_antigravity_shell_edit_closes_coverage_despite_later_question(self):
+        import beyin_v3_hook as hook
+        self.engine().sync()
+        self.user_turn('ag-cov', 'notu güncelle')
+        self.run_cmd('ag-cov', 'echo x >> notes/a.md', lambda: self.write('notes/a.md', 'x\n', append=True))
+        time.sleep(0.01)
+        self.engine().receipt('ag-cov-1', 'Not güncellendi.', ['notes/a.md'], 'antigravity', session=digest('ag-cov'))
+        self.assertEqual(self.stop('ag-cov'), {'decision': 'stop'})
+        time.sleep(0.01)
+        self.user_turn('ag-cov', 'durum ne?')
+        self.step('ag-cov', {'source': 'MODEL', 'type': 'PLANNER_RESPONSE'})
+        self.assertEqual(self.stop('ag-cov'), {'decision': 'stop'})
+        self.assertEqual(hook.drain_queue(self.vault, self.state)['failed'], 0)
+        gaps = json.loads((self.state / 'receipt-gaps.json').read_text(encoding='utf-8'))
+        self.assertEqual(gaps['checkpoints'], [])
+        self.assertEqual((gaps['receipt_coverage']['covered'], gaps['receipt_coverage']['total']), (1, 1))
+        events = [json.loads(p.read_text(encoding='utf-8')) for p in (self.state / 'hook-done').glob('*.json')]
+        shell_events = [e for e in events if e.get('observed') == 'shell']
+        self.assertEqual(
+            [(e['harness'], e['event'], e['session']) for e in shell_events],
+            [('antigravity', 'PostToolUse', digest('ag-cov'))],
+        )
 
 
 if __name__ == '__main__':
