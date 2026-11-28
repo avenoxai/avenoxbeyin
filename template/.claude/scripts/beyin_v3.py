@@ -1046,8 +1046,15 @@ def query_term_coverage(query, records):
     """
     covered = set()
     for record in records:
-        covered.update(_tokens(' '.join(_delivered_text(record.get(key, ''))
-                                        for key in ('text', 'title', 'facts', 'aliases'))))
+        pieces = [_delivered_text(record.get(key, ''))
+                  for key in ('text', 'title', 'facts', 'aliases', 'project')]
+        source = record.get('source')
+        if isinstance(source, str) and source.strip():
+            # Match retrieval's filename-stem salience without counting generic folders or .md.
+            stem = Path(source).stem.strip()
+            if stem:
+                pieces.append(stem)
+        covered.update(_tokens(' '.join(pieces)))
 
     def is_term(stem):
         return stem not in STOPWORDS and stem not in _COVERAGE_FILLERS and _strict_terms({stem})

@@ -105,6 +105,15 @@ class QueryTermCoverageTest(unittest.TestCase):
         self.assertEqual(beyin_v3.query_term_coverage('', [{'text': 'x'}]), ([], []))
         self.assertEqual(beyin_v3.query_term_coverage(None, []), ([], []))
 
+    def test_project_and_source_stem_count_without_generic_folders_or_extension(self):
+        record = {'source': 'archivebox/alpha/deploy.md', 'project': 'alpha', 'title': 'Dagitim notu',
+                  'text': 'Port 8080 uzerinden systemd servisi calisir.'}
+        self.assertEqual(beyin_v3.query_term_coverage('alpha deploy systemd 8080', [record]),
+                         (['alpha', 'deploy', 'systemd', '8080'], []))
+        # Parent folder names and the .md extension must not falsely satisfy unrelated terms.
+        self.assertEqual(beyin_v3.query_term_coverage('archivebox md graphql systemd', [record])[1],
+                         ['archivebox', 'md', 'graphql'])
+
 
 class HookVault(unittest.TestCase):
     notes = NOTES
@@ -335,6 +344,21 @@ class HookShortRootTest(HookVault):
                 self.assertFalse(body['abstained'])
                 self.assertEqual([r['source'] for r in body['records']], ['body/saglik.md'])
                 self.assertNotIn('note', body)
+
+
+class HookProjectAndSourceStemCoverageTest(HookVault):
+    """A record retrieved by its project field or file stem must not be withheld as uncovered."""
+    notes = {
+        'projects/alpha/deploy.md': '---\nproject: alpha\nkind: fact\ntitle: Dagitim notu\n---\n'
+                                    'Port 8080 uzerinden systemd servisi calisir.',
+    }
+
+    def test_project_and_stem_terms_are_covered_and_pass_abstention_threshold(self):
+        body = envelope(self.invoke('alpha deploy systemd 8080', BEYIN_V3_ABSTAIN_COVERAGE='0.6'))
+        self.assertFalse(body['abstained'])
+        self.assertEqual([r['source'] for r in body['records']], ['projects/alpha/deploy.md'])
+        self.assertNotIn('unmatched_terms', body)
+        self.assertNotIn('note', body)
 
 
 if __name__ == '__main__':
