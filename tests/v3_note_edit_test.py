@@ -815,5 +815,82 @@ with locked(engine):
             self.engine.note_edit(self.request('x\nx', 'y', source='OverlapCRLF.md'))
         self.assertFalse((self.vault / LOCAL_DIRECTORY / 'backups').exists())
 
+    def test_crlf_anchor_counts_every_line_ending_spelling(self):
+        # In a note with CRLF endings an LF anchor means "these lines": a bare-LF copy left by an
+        # older LF edit and a CRLF copy are both occurrences, so neither wins silently (#951).
+        cases = (
+            ('Ambiguous.md', b'# A\r\n- x\n- y\r\n# B\r\n- x\r\n- y\r\n', '- x\n- y', 2),
+            ('Lead.md', b'a\r\nb\nb\r\n', '\nb', 2),
+            ('Spelled.md', b'p\r\nq\r\np\nq\n', 'p\r\nq', 2),
+        )
+        for source, raw, old, count in cases:
+            with self.subTest(source=source):
+                path = self.write(source=source, raw=raw)
+                with self.assertRaisesRegex(NoteConflict, 'edit anchor occurs %d times' % count):
+                    self.engine.note_edit(self.request(old, 'z', source=source))
+                self.assertEqual(path.read_bytes(), raw)
+
+        # An anchor spanning a CRLF and a bare-LF ending (a note mixed by 3.18.0) still matches,
+        # and the replacement takes CRLF endings, healing that span.
+        path = self.write(source='Span.md', raw=b'- apples\r\n- bread\n- butter\r\n- tea\r\n')
+        result = self.engine.note_edit(self.request('- apples\n- bread\n- butter', '- fruit\n- dairy',
+                                                    source='Span.md'))
+        self.assertEqual(result['status'], 'written')
+        self.assertEqual(path.read_bytes(), b'- fruit\r\n- dairy\r\n- tea\r\n')
+        self.assertNotIn(b'\r\r\n', path.read_bytes())
+
+    def test_line_ending_grid_matches_lf_semantics(self):
+        # Invariants over a fixed grid, checked in-process on the matcher and end to end:
+        # 1. a note without CRLF is searched exactly as before (literal, overlapping, byte for byte);
+        # 2. a pure CRLF note behaves as its LF form edited with LF old/new, then written as CRLF.
+        from beyin_v3_notes import _anchor_matches
+
+        def literal(text, old):
+            found, start = [], text.find(old)
+            while start >= 0:
+                found.append(start)
+                start = text.find(old, start + 1)
+            return found
+
+        lines = ('a', 'b', 'a b', '')
+        texts = set()
+        for first in lines:
+            for second in lines:
+                for third in lines:
+                    texts.add('\n'.join((first, second, third)) + '\n')
+                    texts.add('\n'.join((first, second, third)))
+        olds = ('a', 'b', '\n', 'a\n', '\na', 'a\nb', 'b\na', '\n\n', 'a\n\n', 'a b\na', 'b\n', ' b\n')
+        checked = 0
+        for lf_text in sorted(texts):
+            crlf_text = lf_text.replace('\n', '\r\n')
+            for old in olds:
+                self.assertEqual([start for start, _ in _anchor_matches(lf_text, old)], literal(lf_text, old))
+                self.assertEqual(_anchor_matches(lf_text, old.replace('\n', '\r\n')),
+                                 [(start, start + len(old) + old.count('\n'))
+                                  for start in literal(lf_text, old.replace('\n', '\r\n'))])
+                self.assertEqual(len(_anchor_matches(crlf_text, old)), len(literal(lf_text, old)))
+                checked += 1
+        self.assertGreater(checked, 500)
+
+        # End to end on a sample: identical bytes to the LF semantics, LF notes untouched otherwise.
+        samples = [('a\nb\na b\n', 'a\nb', 'x\ny'), ('a\nb\na b\n', 'b', 'b\nc'), ('a\na\n', 'a\n', 'z'),
+                   ('a b\n\nb\n', '\nb', '\nc'), ('a\n\nb', '\n\n', '\n'), ('a\nb\n', 'a\nb', 'a\nb')]
+        for index, (lf_text, old, new) in enumerate(samples):
+            occurrences = len(literal(lf_text, old))
+            expected = lf_text.replace(old, new, 1) if occurrences == 1 else None
+            for crlf in (False, True):
+                with self.subTest(text=lf_text, old=old, crlf=crlf):
+                    source = 'Grid%d%s.md' % (index, 'C' if crlf else 'L')
+                    raw = (lf_text.replace('\n', '\r\n') if crlf else lf_text).encode('utf-8')
+                    path = self.write(source=source, raw=raw)
+                    if expected is None:
+                        with self.assertRaisesRegex(NoteConflict, 'occurs %d times' % occurrences):
+                            self.engine.note_edit(self.request(old, new, source=source))
+                        self.assertEqual(path.read_bytes(), raw)
+                        continue
+                    self.engine.note_edit(self.request(old, new, source=source))
+                    written = expected.replace('\n', '\r\n') if crlf else expected
+                    self.assertEqual(path.read_bytes(), written.encode('utf-8'))
+
 if __name__ == '__main__':
     unittest.main()

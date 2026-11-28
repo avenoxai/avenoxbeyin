@@ -701,31 +701,26 @@ def _replay_idempotency(engine, path, source, fingerprint, source_path, refs=(),
     return answer
 
 
-def _to_crlf(value):
-    return value.replace('\r\n', '\n').replace('\n', '\r\n')
+# A line break in an edit anchor: a whole CRLF pair or a bare LF, never the LF half of a pair.
+_ANCHOR_LINE_BREAK = r'(?:\r\n|(?<!\r)\n)'
 
 
-def _count_anchor_occurrences(text, anchor):
-    count = 0
-    start = 0
-    while True:
-        position = text.find(anchor, start)
-        if position < 0:
-            return count
-        count += 1
-        start = position + 1
+def _anchor_matches(text, old):
+    """(start, end) of every occurrence of old in text, overlapping ones included.
 
-
-def _find_anchor(text, old, newline):
-    """Locate old in text, falling back to CRLF endings in CRLF notes (#951)."""
-    if newline == '\r\n' and '\n' in old:
-        candidate = _to_crlf(old)
-        if candidate != old:
-            position = text.find(old)
-            if position < 0 or (old.startswith('\n') and position > 0 and text[position - 1] == '\r'):
-                return candidate, text.find(candidate)
-            return old, position
-    return old, text.find(old)
+    A note without CRLF keeps the exact byte search. In a note with CRLF endings a line break
+    in old matches either ending, so an agent's LF anchor finds CRLF and mixed lines, and every
+    spelling counts towards 'exactly once' instead of the first one found winning (#951).
+    """
+    if '\r\n' not in text or '\n' not in old:
+        found, start = [], text.find(old)
+        while start >= 0:
+            found.append((start, start + len(old)))
+            start = text.find(old, start + 1)
+        return found
+    pattern = _ANCHOR_LINE_BREAK.join(re.escape(piece) for piece in re.split(r'\r?\n', old))
+    return [(match.start(), match.start() + len(match.group(1)))
+            for match in re.finditer('(?=(%s))' % pattern, text)]
 
 
 def _apply(engine, request, committed, finalize=None):
@@ -795,6 +790,8 @@ def _apply(engine, request, committed, finalize=None):
                 raise ValueError('existing source requires nonempty targeted edits')
             text = decode_utf8(raw)
             _human(text)
+            # Like checkpoint: any CRLF makes new edit text CRLF, so a note mixed by an older
+            # LF edit heals instead of mixing further. A note without CRLF keeps exact bytes.
             newline = '\r\n' if '\r\n' in text else '\n'
             for edit in request['edits']:
                 if not isinstance(edit, dict):
@@ -805,16 +802,16 @@ def _apply(engine, request, committed, finalize=None):
                 empty_source_edit = raw == b'' and len(request['edits']) == 1 and old == ''
                 if not isinstance(old, str) or (not old and not empty_source_edit) or not isinstance(new, str):
                     raise ValueError('each edit requires nonempty old and string new')
-                anchor, position = _find_anchor(text, old, newline)
-                if position < 0:
+                matches = _anchor_matches(text, old)
+                if not matches:
                     raise NoteConflict('edit anchor not found; must occur exactly once')
-                if text.find(anchor, position + 1) >= 0:
-                    count = _count_anchor_occurrences(text, anchor)
-                    raise NoteConflict(f'edit anchor occurs {count} times; must occur exactly once')
-                replacement = new
-                if newline == '\r\n' and '\n' in new and not (anchor == old and new == old):
-                    replacement = _to_crlf(new)
-                text = text[:position] + replacement + text[position + len(anchor):]
+                if len(matches) > 1:
+                    raise NoteConflict(f'edit anchor occurs {len(matches)} times; must occur exactly once')
+                if new != old:  # An exact no-op leaves the matched bytes, line endings included.
+                    if newline == '\r\n':
+                        new = new.replace('\r\n', '\n').replace('\n', '\r\n')
+                    start, end = matches[0]
+                    text = text[:start] + new + text[end:]
         _human(text)  # Do not create a managed source or convert a human note into one.
         updated = text.encode('utf-8')  # Keeps BOM and untouched CRLF bytes exactly.
         if updated == raw:
