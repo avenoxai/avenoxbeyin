@@ -56,6 +56,7 @@ MOC_SETTLE_SECONDS = 0.02
 LINT_REPORT_LIMIT = 100
 MAX_RAW_LINK_CHARS = 200
 _UNPARSEABLE_FRONTMATTER = object()
+_WITHHELD_SENTINEL = object()
 
 
 def _norm_key(text):
@@ -247,14 +248,14 @@ def _withheld_metadata(metadata):
 
 
 def _note_metadata(vault_root, path, *, include_withheld=False):
-    """Read note metadata, or flag unparseable frontmatter for the withheld index."""
+    """Read note metadata, or flag unparseable frontmatter / withheld path for the withheld index."""
     from beyin_v3_sync import _has_conflict_markers, parse
     try:
         relative = path.relative_to(vault_root).as_posix()
         if path.is_symlink() or not path.resolve().is_relative_to(vault_root.resolve()):
             return None
         if _withheld_path(relative):
-            return None
+            return _WITHHELD_SENTINEL if include_withheld and path.is_file() else None
         text = path.read_text(encoding='utf-8-sig')
         try:
             metadata, _ = parse(text)
@@ -312,7 +313,7 @@ def build_vault_index(vault_root, target_folder=None):
                 continue
 
             metadata = _note_metadata(vault_root, full_path, include_withheld=True)
-            if metadata is _UNPARSEABLE_FRONTMATTER:
+            if metadata is _UNPARSEABLE_FRONTMATTER or metadata is _WITHHELD_SENTINEL:
                 withheld_paths.append(rel_path)
                 continue
             if metadata is None:
