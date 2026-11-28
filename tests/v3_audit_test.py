@@ -681,5 +681,243 @@ class MemoryAuditorTest(unittest.TestCase):
         candidate = audit_module._candidate(path, 'massive.md', meta, body)
         self.assertEqual(candidate['words_count'], 100000)
 
+    def _write_card(self, rel: str, text: str) -> Path:
+        path = self.vault / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding='utf-8')
+        return path
+
+    def _customer_card(
+        self,
+        title: str,
+        legal_name: str,
+        city: str,
+        sector: str,
+        *,
+        website: str = '',
+        tax_number: str = '',
+        contact: str = '',
+        phone: str = '',
+        email: str = '',
+        products: str = '',
+        payment: str = '',
+        notes: str = '',
+        frontmatter: str = '',
+    ) -> str:
+        head = f"---\n{frontmatter.strip()}\n---\n" if frontmatter.strip() else ''
+        h1 = f"# {title}\n\n" if title else ''
+        return (
+            f"{head}{h1}"
+            "## Company\n"
+            f"- Legal name: {legal_name}\n"
+            f"- City: {city}\n"
+            f"- Sector: {sector}\n"
+            f"- Website: {website}\n"
+            f"- Tax number: {tax_number}\n"
+            "- Delivery address:\n\n"
+            "## Contact\n"
+            f"- Contact person: {contact}\n"
+            f"- Phone: {phone}\n"
+            f"- E-mail: {email}\n\n"
+            "## Trade\n"
+            f"- Products bought: {products}\n"
+            f"- Payment terms: {payment}\n\n"
+            "## Notes\n"
+            f"{notes}\n"
+        )
+
+    def test_template_sibling_cards_with_distinct_values_are_not_flagged(self):
+        """Issue #953: sibling cards sharing template headings and field labels with distinct values are skipped."""
+        self._write_card(
+            'notes/customers/north-bakery.md',
+            self._customer_card(
+                'North Bakery Ltd',
+                'North Bakery Ltd',
+                'Leeds',
+                'food',
+                frontmatter='title: North Bakery Ltd\ncreated: 2026-10-01',
+            ),
+        )
+        self._write_card(
+            'notes/customers/harbour-paints.md',
+            self._customer_card(
+                'Harbour Paints GmbH',
+                'Harbour Paints GmbH',
+                'Hamburg',
+                'coatings',
+                frontmatter='title: Harbour Paints GmbH\ncreated: 2026-10-02',
+            ),
+        )
+
+        # Verify raw lexical overlap would otherwise cross near_duplicate (>= 0.80, jaccard >= 0.65).
+        first, second = audit_module.scan_audit_candidates(self.vault, self.state)
+        raw_shared = len(first['tokens'] & second['tokens'])
+        self.assertGreaterEqual(raw_shared / min(len(first['tokens']), len(second['tokens'])), 0.80)
+        self.assertGreaterEqual(raw_shared / len(first['tokens'] | second['tokens']), 0.65)
+
+        report = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+        self.assertEqual(report['findings'], [], report['findings'])
+        self.assertEqual(report['template_pairs_skipped'], 1)
+        self.assertIn('1 cift', audit_module.format_audit_human(report))
+
+        target = audit_module.audit_memory(
+            self.vault, state=self.state, target_file='notes/customers/north-bakery.md',
+            threshold=0.60, min_shared=5,
+        )
+        self.assertEqual((target['findings'], target['template_pairs_skipped']), ([], 1))
+
+    def test_template_cards_with_duplicate_values_are_still_flagged(self):
+        """Genuine duplicate customer cards sharing both template AND actual values still flag near_duplicate."""
+        for label, extra in (
+            ('filled', dict(
+                website='https://northbakery.example',
+                contact='Clara Bennett',
+                phone='+44 113 555 0101',
+                email='clara@northbakery.example',
+                products='Industrial ovens',
+                payment='Net 30',
+                notes='Prefers morning deliveries.',
+            )),
+            ('sparse', {}),
+        ):
+            with self.subTest(case=label):
+                self._write_card(
+                    'notes/customers/north-bakery.md',
+                    self._customer_card(
+                        'North Bakery Ltd', 'North Bakery Ltd', 'Leeds', 'food',
+                        frontmatter='title: North Bakery Ltd\ncreated: 2026-10-01',
+                        **extra,
+                    ),
+                )
+                self._write_card(
+                    'notes/customers/north-bakery-copy.md',
+                    self._customer_card(
+                        'North Bakery Ltd', 'North Bakery Ltd', 'Leeds', 'food',
+                        frontmatter='title: North Bakery Ltd\ncreated: 2026-10-05',
+                        **extra,
+                    ),
+                )
+                report = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+                self.assertEqual(len(report['findings']), 1, report)
+                self.assertEqual(report['findings'][0]['type'], 'near_duplicate')
+                self.assertEqual(report['template_pairs_skipped'], 0)
+
+    def test_empty_duplicate_template_copies_are_still_flagged(self):
+        """Two empty template copies with no substantive values must not be silenced as distinct cards."""
+        for label, h1 in (('no-heading', ''), ('shared-heading', 'Customer Card')):
+            with self.subTest(case=label):
+                self._write_card('notes/customers/draft-one.md', self._customer_card(h1, '', '', ''))
+                self._write_card('notes/customers/draft-two.md', self._customer_card(h1, '', '', ''))
+                report = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+                self.assertEqual(len(report['findings']), 1, report)
+                self.assertEqual(report['findings'][0]['type'], 'near_duplicate')
+                self.assertEqual(report['template_pairs_skipped'], 0)
+
+    def test_plain_prose_duplicates_in_same_folder_are_still_flagged(self):
+        """Plain prose duplicate notes in the same folder (with 1 shared H1 or none) still flag near_duplicate."""
+        prose = (
+            "Konteyner orkestrasyonu katmaninda servis kesfi, saglik yoklamasi, "
+            "gunluk dondurme politikasi ve olcekleme esikleri belgelendi."
+        )
+        for label, heading in (('single-h1', '# Mimari Notu\n\n'), ('no-heading', '')):
+            with self.subTest(case=label):
+                self._write_card('notes/prose/not-a.md', f"{heading}{prose}\n")
+                self._write_card('notes/prose/not-b.md', f"{heading}{prose}\n")
+                report = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+                self.assertEqual(len(report['findings']), 1, report)
+                self.assertEqual(report['findings'][0]['type'], 'near_duplicate')
+                self.assertEqual(report['template_pairs_skipped'], 0)
+
+    def test_turkish_bold_template_field_labels_are_discounted_cleanly(self):
+        """Turkish bold field labels (- **Adı:** / - **Şehir**:) separate sibling cards while keeping real dupes."""
+        def tr_card(name: str, city: str, sector: str) -> str:
+            return (
+                f"---\ntitle: {name}\n---\n"
+                f"# {name}\n\n"
+                "## Sirket Bilgileri\n"
+                f"- **Adı:** {name}\n"
+                f"- **Şehir**: {city}\n"
+                f"- **Sektör:** {sector}\n"
+                "- **Web Sitesi:**\n"
+                "- **Vergi Numarasi**:\n\n"
+                "## Iletisim Bilgileri\n"
+                "- **İletişim Kişisi:**\n"
+                "- **Telefon:**\n"
+                "- **E-posta:**\n\n"
+                "## Ticari Bilgiler\n"
+                "- **Alınan Ürünler:**\n"
+                "- **Ödeme Koşulları:**\n\n"
+                "## Notlar\n"
+            )
+
+        self._write_card('notes/firmalar/kuzey-firin.md', tr_card('Kuzey Firin', 'Izmir', 'Gida'))
+        self._write_card('notes/firmalar/liman-boya.md', tr_card('Liman Boya', 'Bursa', 'Kimya'))
+        distinct = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+        self.assertEqual(distinct['notes_scanned'], 2)
+        self.assertEqual(distinct['findings'], [], distinct['findings'])
+        self.assertEqual(distinct['template_pairs_skipped'], 1)
+
+        self._write_card('notes/firmalar/kuzey-firin-kopya.md', tr_card('Kuzey Firin', 'Izmir', 'Gida'))
+        with_dupe = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+        self.assertEqual(with_dupe['notes_scanned'], 3)
+        self.assertEqual(len(with_dupe['findings']), 1, with_dupe['findings'])
+        self.assertEqual(with_dupe['findings'][0]['type'], 'near_duplicate')
+        self.assertEqual(
+            {with_dupe['findings'][0]['older_note'], with_dupe['findings'][0]['newer_note']},
+            {'notes/firmalar/kuzey-firin.md', 'notes/firmalar/kuzey-firin-kopya.md'},
+        )
+        self.assertEqual(with_dupe['template_pairs_skipped'], 2)
+
+    def test_template_siblings_with_different_statuses_do_not_raise_false_contradiction(self):
+        """Distinct template cards with different statuses are skipped, while same-entity flips still report."""
+        self._write_card(
+            'notes/customers/north-bakery.md',
+            self._customer_card(
+                'North Bakery Ltd', 'North Bakery Ltd', 'Leeds', 'food',
+                frontmatter='title: North Bakery Ltd\nupdated_at: 2026-09-01\nstatus: active',
+            ),
+        )
+        self._write_card(
+            'notes/customers/harbour-paints.md',
+            self._customer_card(
+                'Harbour Paints GmbH', 'Harbour Paints GmbH', 'Hamburg', 'coatings',
+                frontmatter='title: Harbour Paints GmbH\nupdated_at: 2026-10-01\nstatus: inactive',
+            ),
+        )
+        distinct = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+        self.assertEqual(distinct['findings'], [], distinct['findings'])
+        self.assertEqual(distinct['template_pairs_skipped'], 1)
+
+        self._write_card(
+            'notes/customers/north-bakery-v2.md',
+            self._customer_card(
+                'North Bakery Ltd', 'North Bakery Ltd', 'Leeds', 'food',
+                frontmatter='title: North Bakery Ltd\nupdated_at: 2026-10-15\nstatus: inactive',
+            ),
+        )
+        same_entity = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+        self.assertEqual(len(same_entity['findings']), 1, same_entity['findings'])
+        self.assertEqual(same_entity['findings'][0]['type'], 'status_contradiction')
+        self.assertEqual(
+            {same_entity['findings'][0]['older_note'], same_entity['findings'][0]['newer_note']},
+            {'notes/customers/north-bakery.md', 'notes/customers/north-bakery-v2.md'},
+        )
+
+    def test_fenced_code_key_values_are_not_discounted_as_template_fields(self):
+        """YAML/config lines inside fenced code blocks stay substantive content, never template scaffold."""
+        self._write_card(
+            'knowledge/cfg-a.md',
+            "---\ntitle: Config A\n---\n```yaml\nhost: app-one\nport: 8080\nmode: cluster\n"
+            "region: eu-west\nstorage: nvme\nworkers: four\n```\n",
+        )
+        self._write_card(
+            'knowledge/cfg-b.md',
+            "---\ntitle: Config B\n---\n```yaml\nhost: app-two\nport: 9090\nmode: cluster\n"
+            "region: eu-west\nstorage: nvme\nworkers: four\n```\n",
+        )
+        report = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+        self.assertEqual(len(report['findings']), 1, report)
+        self.assertEqual(report['template_pairs_skipped'], 0)
+
 if __name__ == '__main__':
     unittest.main()
