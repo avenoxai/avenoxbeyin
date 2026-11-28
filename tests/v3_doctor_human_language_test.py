@@ -175,7 +175,7 @@ INFORMATION_LINE = re.compile('|'.join((
     r'.*\(bilgi\)',
     r'Beyin \S', r'Henüz gerçek bir istemci oturumu gözlenmedi', r'Oturum olayları normal şekilde gözleniyor',
     r'Sağlık kontrolü tamamlandı', r'Bekleyen iş: 0$',
-    r'Kullanılmayan istemciler: ', r'[a-z]+: olay görüldü$',
+    r'Henüz oturum gözlenmeyen istemciler: ', r'[a-z]+: olay görüldü$',
     r'Akıllı bağlam desteği \(Jev\): ', r'Bağlam doluluk hatırlatması: (etkin|kapalı)',
     r'Son bilgi damıtması: (bugün|\d+ gün önce|henüz kavram notu)', r'Oturum kaydı kapsamı: ', r'Hermes: \d+ oturumda',
     r'Not kullanım takibi: ', r'Paralel oturum bildirimi: açık ', r'Oturum içi tekrar önleme: açık ',

@@ -533,7 +533,7 @@ def lifecycle_lines(result):
         else:
             lines.append(label + ': ' + state_text)
     if unused:
-        lines.append('Kullanılmayan istemciler: ' + ', '.join(unused) + ' (' + str(len(unused)) + ')')
+        lines.append('Henüz oturum gözlenmeyen istemciler: ' + ', '.join(unused) + ' (' + str(len(unused)) + ')')
     return lines
 
 
@@ -833,7 +833,7 @@ def human_result(result, command, installed_version=None):
             else f'Bakmanız gereken {attention_count} şey var.'
         )
         labels = {
-            'never_seen': 'Henüz gerçek bir istemci oturumu gözlenmedi; ilk sohbetinizi açtığınızda otomatik olarak izlenir.',
+            'never_seen': 'Henüz gerçek bir istemci oturumu gözlenmedi; ilk sohbetinizde izlenmeye başlar (Codex, Kiro ve Antigravity önce güven onayı ister).',
             'observed_metadata': 'Oturum olayları normal şekilde gözleniyor.',
             'pending': 'İşlenmeyi bekleyen oturum olayları var; eşitlemek için: ' + py_cmd + ' beyin.py sync',
             'needs_attention': 'Kontrol gerektiren bir sorun var; ayrıntılar aşağıda listelenmiştir.',
