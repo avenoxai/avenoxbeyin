@@ -157,6 +157,38 @@ class TestBeyinV3UsageFeedback(unittest.TestCase):
         self.assertNotIn("[Hafıza geri bildirimi]", self.hook("session-a", "a3", ""))
         self.assertNotIn("[Hafıza geri bildirimi]", self.hook("session-a", "a4", "yanlış"))
 
+    def test_feedback_auto_resolves_antigravity_conversation_id(self):
+        artemis = "knowledge/Artemis Guide.md"
+        self.note(artemis, "artemis", "Artemis calibration owner: synthetic antigravity note")
+        self.assertEqual(self.cli("sync").returncode, 0)
+        script = Path(beyin_v3_hook.__file__)
+        env = inherited_env(BEYIN_V3_NO_SPAWN="1", BEYIN_UPDATES_OFF="1", PYTHONIOENCODING="utf-8")
+        # Open the Antigravity conversation, then deliver Artemis on the next turn.
+        for ev_id, event, text in (
+            ("ag-s1", "SessionStart", "merhaba"),
+            ("ag-p1", "PreInvocation", "Artemis calibration owner"),
+        ):
+            payload = {"conversationId": "ag-fb-session", "event_id": ev_id,
+                       "invocationNum": 0, "lastUserInput": text}
+            res = subprocess.run(
+                [sys.executable, str(script), "--vault", str(self.vault_path), "--state", str(self.state_path),
+                 "--harness", "antigravity", "--event", event],
+                input=json.dumps(payload), capture_output=True, text=True, encoding="utf-8", timeout=60, env=env,
+            )
+            self.assertEqual(res.returncode, 0, res.stderr)
+        before = self.snapshot()
+        # Ambiguous outer Claude + Antigravity identities must fail without writing.
+        ambiguous = self.cli("feedback", artemis, "ok",
+                             ANTIGRAVITY_CONVERSATION_ID="ag-fb-session",
+                             CLAUDE_CODE_SESSION_ID="other-claude")
+        self.assertNotEqual(ambiguous.returncode, 0)
+        self.assertEqual(self.snapshot(), before)
+        # Sole ANTIGRAVITY_CONVERSATION_ID resolves the session and records feedback.
+        ok = self.cli("feedback", artemis, "ok", ANTIGRAVITY_CONVERSATION_ID="ag-fb-session")
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        self.assertEqual(json.loads(ok.stdout)["target"], "artemis")
+        self.assertEqual(self.rows(), {"artemis": (1, 0, 1, 0, 0)})
+
     def test_unresolved_session_fails_without_writing(self):
         self.state_path.rmdir()
         result = self.cli("feedback", "SYNTHETIC_PROMPT_TEXT_NOT_A_NOTE", "wrong")

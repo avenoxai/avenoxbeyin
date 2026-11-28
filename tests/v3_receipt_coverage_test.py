@@ -562,14 +562,18 @@ class ReceiptCoverageTest(unittest.TestCase):
         """mark_session_edit no-ops if session id is missing or reminder is disabled."""
         reminders_dir = self.state / "receipt-reminders"
 
-        # Missing CLAUDE_CODE_SESSION_ID
-        env_without_session = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+        # Missing session environment variables
+        env_without_session = {k: v for k, v in os.environ.items()
+                               if k not in ("CLAUDE_CODE_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID", "PI_SESSION_ID")}
         with patch.dict(os.environ, env_without_session, clear=True):
             mark_session_edit(self.state)
         self.assertFalse(reminders_dir.exists())
 
         # BEYIN_V3_NO_RECEIPT_REMINDER is set
         with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "sess-abc", "BEYIN_V3_NO_RECEIPT_REMINDER": "1"}, clear=False):
+            mark_session_edit(self.state)
+        self.assertFalse(reminders_dir.exists())
+        with patch.dict(os.environ, {"ANTIGRAVITY_CONVERSATION_ID": "ag-abc", "BEYIN_V3_NO_RECEIPT_REMINDER": "1"}, clear=False):
             mark_session_edit(self.state)
         self.assertFalse(reminders_dir.exists())
 
@@ -582,6 +586,69 @@ class ReceiptCoverageTest(unittest.TestCase):
         with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "sess-xyz"}, clear=False):
             # Must not raise
             mark_session_edit(invalid_state)
+        with patch.dict(os.environ, {"ANTIGRAVITY_CONVERSATION_ID": "ag-xyz"}, clear=False):
+            mark_session_edit(invalid_state)
+
+    def test_mark_session_edit_records_antigravity_marker_cli_and_knowledge(self):
+        """mark_session_edit records .edited, .cli and knowledge=True for ANTIGRAVITY_CONVERSATION_ID."""
+        conv_id = "ag-conv-uuid-5678"
+        concept = self.vault / "knowledge" / "concepts" / "pattern.md"
+        concept.parent.mkdir(parents=True, exist_ok=True)
+        concept.write_text("# Pattern\n", encoding="utf-8")
+        reminders_dir = self.state / "receipt-reminders"
+        expected_hash = hashlib.sha256(conv_id.encode("utf-8")).hexdigest()
+        original_cwd = os.getcwd()
+        os.chdir(self.vault)
+        try:
+            with patch.dict(os.environ, {"ANTIGRAVITY_CONVERSATION_ID": conv_id}, clear=False):
+                mark_session_edit(self.state, self.vault, "knowledge/concepts/pattern.md")
+        finally:
+            os.chdir(original_cwd)
+        edited = reminders_dir / f"{expected_hash}.edited"
+        cli_flag = reminders_dir / f"{expected_hash}.cli"
+        self.assertTrue(edited.is_file())
+        self.assertTrue(cli_flag.is_file())
+        edited_data = json.loads(edited.read_text(encoding="utf-8"))
+        cli_data = json.loads(cli_flag.read_text(encoding="utf-8"))
+        self.assertIn("at", edited_data)
+        self.assertIs(edited_data.get("knowledge"), True)
+        self.assertIn("at", cli_data)
+
+    def test_env_session_resolves_antigravity_and_isolates_harnesses(self):
+        """env_session('antigravity') uses ANTIGRAVITY_CONVERSATION_ID even inside a Claude shell."""
+        env_session = cli_beyin_v3.env_session
+        ag_digest = hashlib.sha256(b"ag-inner").hexdigest()[:24]
+        claude_digest = hashlib.sha256(b"claude-outer").hexdigest()[:24]
+        pi_digest = hashlib.sha256(b"pi-inner").hexdigest()[:24]
+        explicit_digest = hashlib.sha256(b"explicit-sess").hexdigest()[:24]
+
+        with patch.dict(os.environ, {
+            "CLAUDE_CODE_SESSION_ID": "claude-outer",
+            "ANTIGRAVITY_CONVERSATION_ID": "ag-inner",
+            "PI_SESSION_ID": "pi-inner",
+        }, clear=True):
+            self.assertEqual(env_session("antigravity"), ag_digest)
+            self.assertEqual(env_session("claude"), claude_digest)
+            self.assertEqual(env_session("pi"), pi_digest)
+            self.assertEqual(env_session(None), claude_digest)
+
+        # Without CLAUDE_CODE_SESSION_ID, harness=None resolves ANTIGRAVITY_CONVERSATION_ID before PI_SESSION_ID.
+        with patch.dict(os.environ, {
+            "ANTIGRAVITY_CONVERSATION_ID": "ag-inner",
+            "PI_SESSION_ID": "pi-inner",
+        }, clear=True):
+            self.assertEqual(env_session("antigravity"), ag_digest)
+            self.assertEqual(env_session(None), ag_digest)
+            self.assertIsNone(env_session("claude"))
+
+        # Fallback to BEYIN_V3_SESSION_ID when ANTIGRAVITY_CONVERSATION_ID is absent, never CLAUDE_CODE_SESSION_ID.
+        with patch.dict(os.environ, {
+            "CLAUDE_CODE_SESSION_ID": "claude-outer",
+            "BEYIN_V3_SESSION_ID": "explicit-sess",
+        }, clear=True):
+            self.assertEqual(env_session("antigravity"), explicit_digest)
+        with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "claude-outer"}, clear=True):
+            self.assertIsNone(env_session("antigravity"))
 
 
 if __name__ == '__main__':
