@@ -290,19 +290,34 @@ def _non_scaffold_tokens(cand: dict, shared_headings: frozenset[str], shared_fie
     return tokens
 
 
+def _record_words(title: str) -> frozenset[str]:
+    """Folded words of the record name a card carries: its title, or its file name without one."""
+    return frozenset(re.findall(r'[^\W_]+', fold(title)))
+
+
 def _template_only_overlap(a: dict, b: dict, threshold: float) -> bool:
     """True when two structured notes only crossed the overlap gate via shared template scaffold.
 
-    The test is the overlap gate itself, applied to what is left once the shared headings and
-    field labels are discounted: the smaller value set's containment (shared / smaller) stays
-    below `threshold`. No Jaccard or size-ratio condition, so a note whose values are a subset
-    of the other's always reports: the same card saved twice, or a later copy with more fields
-    or notes filled in. Two empty templates (no substantive values) also report, so accidental
-    blank duplicates stay visible. Only cards for different records go quiet (#953).
+    Only cards whose titles name different records can go quiet (#953). When every word of
+    one note's title (its file name if it has none) is in the other's, as with "North Bakery
+    Ltd" and "North Bakery Ltd 2", the notes are copies or revisions of one record: the rule
+    stays out and the pair reports exactly as without it, whatever share of the values was
+    revised and whether the status changed. Different records under one generic title
+    ("Weekly sync") therefore report as before too.
+
+    For the rest the test is the overlap gate itself, applied to what is left once the shared
+    headings and field labels are discounted: the smaller value set's containment (shared /
+    smaller) stays below `threshold`. So a note whose values are a subset of the other's
+    always reports, and two empty templates (no substantive values) report as well.
     """
     tpl_a = a.get('template')
     tpl_b = b.get('template')
     if not tpl_a or not tpl_b:
+        return False
+
+    words_a = tpl_a.get('record_words', frozenset())
+    words_b = tpl_b.get('record_words', frozenset())
+    if words_a <= words_b or words_b <= words_a:
         return False
 
     shared_headings = tpl_a['headings'] & tpl_b['headings']
@@ -343,6 +358,9 @@ def _candidate(path: Path, rel_path: str, meta: dict, body: str) -> dict:
     elif not isinstance(supersedes, list):
         supersedes = []
     note_id = meta.get('id')
+    template = _extract_template_structure(body, explicit_title, title_tokens)
+    if template is not None:
+        template['record_words'] = _record_words(title)
     return {
         # The id sync gives the record, so `supersedes: [<id>]` from note-create resolves here too.
         'id': note_id if isinstance(note_id, str) and note_id else 'md-' + _hash(rel_path)[:24],
@@ -350,7 +368,7 @@ def _candidate(path: Path, rel_path: str, meta: dict, body: str) -> dict:
         'full_path': path,
         'title': title,
         'tokens': body_tokens | title_tokens,
-        'template': _extract_template_structure(body, explicit_title, title_tokens),
+        'template': template,
         'status': str(meta.get('status', '')).lower().strip(),
         'created_ts': created_ts,
         'updated_ts': updated_ts,

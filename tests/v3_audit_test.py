@@ -904,6 +904,36 @@ class MemoryAuditorTest(unittest.TestCase):
             {'notes/customers/north-bakery.md', 'notes/customers/north-bakery-v2.md'},
         )
 
+    def test_revised_same_record_card_still_reports_status_contradiction(self):
+        """A same-record card whose contact, trade and notes were revised is not a template sibling."""
+        old = dict(website='https://northbakery.example', contact='Clara Bennett', phone='+44 113 555 0101',
+                   email='clara@northbakery.example', products='Industrial ovens', payment='Net 30',
+                   notes='Prefers morning deliveries.')
+        new = dict(website='https://northbakery.example', contact='John Carter', phone='+44 113 555 0199',
+                   email='john@northbakery.example', products='Commercial dough mixers', payment='Prepaid',
+                   notes='Account closed after the October price increase.')
+        layouts = {
+            # The record name in the title (front matter and H1) and in the Legal name field.
+            'titled': (('north-bakery.md', 'North Bakery Ltd', 'title: North Bakery Ltd\n'),
+                       ('north-bakery-2026.md', 'North Bakery Ltd', 'title: North Bakery Ltd\n')),
+            # No title at all: Obsidian shows the file name, and a duplicated file gets " 2".
+            'file_name': (('North Bakery Ltd.md', '', ''), ('North Bakery Ltd 2.md', '', '')),
+        }
+        for layout, ((old_name, old_h1, old_fm), (new_name, new_h1, new_fm)) in layouts.items():
+            with self.subTest(layout=layout):
+                folder = self.vault / 'notes' / layout
+                self._write_card(f'notes/{layout}/{old_name}', self._customer_card(
+                    old_h1, 'North Bakery Ltd', 'Leeds', 'food',
+                    frontmatter=f'{old_fm}updated_at: 2026-09-01\nstatus: active', **old))
+                self._write_card(f'notes/{layout}/{new_name}', self._customer_card(
+                    new_h1, 'North Bakery Ltd', 'Leeds', 'food',
+                    frontmatter=f'{new_fm}updated_at: 2026-10-15\nstatus: inactive', **new))
+                report = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+                self.assertEqual(report['template_pairs_skipped'], 0, report)
+                self.assertEqual([f['type'] for f in report['findings']], ['status_contradiction'], report)
+                self.assertEqual(report['findings'][0]['conflict']['newer_term'], 'inactive')
+                shutil.rmtree(folder)
+
     def test_fenced_code_key_values_are_not_discounted_as_template_fields(self):
         """YAML/config lines inside fenced code blocks stay substantive content, never template scaffold."""
         self._write_card(
@@ -925,10 +955,12 @@ class TemplatePairInvariantTest(unittest.TestCase):
     """#953 as a class: the template rule may only quiet pairs of different records.
 
     Every case is audited twice, with the rule and with `_template_only_overlap` switched off.
-    A pair whose values are a subset of the other note's (same card saved twice, a copy filled in
-    later or given extra notes, a same-record status flip) must give the identical report; notes
-    with fewer than three headings/field labels must too. Only sibling cards for different
-    records may disappear, and then they are counted in `template_pairs_skipped`.
+    Two kinds of pair must give the identical report: copies of one record, i.e. notes whose
+    titles (file names when untitled) name the same record, whatever share of the values was
+    revised and whether the status changed; and pairs whose values are a subset of the other
+    note's (same card saved twice, a copy filled in later or given extra notes). Notes with
+    fewer than three headings/field labels must too. Only sibling cards for different records
+    may disappear, and then they are counted in `template_pairs_skipped`.
     """
 
     LAYOUTS = {
@@ -959,6 +991,22 @@ class TemplatePairInvariantTest(unittest.TestCase):
         'dash_bold': ('###', '- **{label}**: {value}'),
         'dataview': ('##', '{label}:: {value}'),
     }
+    # A later revision of the first record: new values, applied in this order (last revised first).
+    REVISIONS = {
+        'en': (('Contact person', 'John Carter'), ('Phone', '+44 113 555 0199'),
+               ('E-mail', 'john@northbakery.example'), ('Products bought', 'Commercial dough mixers'),
+               ('Payment terms', 'Prepaid'), ('Website', 'northbakery-shop.example'), ('Sector', 'catering'),
+               ('City', 'York')),
+        'tr': (('İletişim Kişisi', 'Oğuz Güneş'), ('Telefon', '0232 555 0199'),
+               ('E-posta', 'oguz@kuzeyfirin.example'), ('Alınan Ürünler', 'Hamur yoğurma makinesi'),
+               ('Ödeme Koşulları', 'Peşin ödeme'), ('Web sitesi', 'kuzeyfirin-magaza.example'),
+               ('Sektör', 'hazır yemek'), ('Şehir', 'Manisa')),
+    }
+    # Where the record name sits besides the first field: front matter title + H1, H1 only, or
+    # nowhere but the file name (Obsidian shows it; a duplicated file gets " 2", a copy "-2026").
+    # 'h1_only' leaves the name field blank, so the name is in the H1 and nowhere else.
+    NAMINGS = ('title', 'h1', 'h1_only', 'file')
+    GENERIC_TITLES = {'en': ('Weekly sync', 'Customer card'), 'tr': ('Haftalık toplantı', 'Müşteri kartı')}
     SPARSE = 3  # the first three fields (name, city, sector) are filled, the rest left blank
     EXTRA = ('ziyaret bakim sozlesmesi yenileme sezon tahmini teslimat saati fatura itirazi satin alma '
              'muduru teklif talebi dolap uretim hatti kapasite planlamasi numune onayi kalite raporu '
@@ -969,13 +1017,16 @@ class TemplatePairInvariantTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix='v3-audit-template-')
         self.addCleanup(self.tmp.cleanup)
 
-    def card(self, lang, style, record, filled, *, notes='', status='', created='2026-10-01'):
+    def card(self, lang, style, record, filled, *, notes='', status='', created='2026-10-01', naming='title'):
         heading, line = self.STYLES[style]
         fields = [label for _head, labels in self.LAYOUTS[lang] for label in labels]
         keep = set(fields[:filled])
         name = record[fields[0]] if fields[0] in keep else ''
-        head = f"---\ntitle: {name or 'Kart'}\ncreated: {created}\n" + (f"status: {status}\n" if status else '') + "---\n"
-        body = f"# {name or 'Kart'}\n\n"
+        if naming == 'h1_only':
+            keep.discard(fields[0])
+        title = f"title: {name or 'Kart'}\n" if naming == 'title' else ''
+        head = f"---\n{title}created: {created}\n" + (f"status: {status}\n" if status else '') + "---\n"
+        body = f"# {name or 'Kart'}\n\n" if naming in ('title', 'h1', 'h1_only') else ''
         for section, labels in self.LAYOUTS[lang]:
             body += f"{heading} {section}\n"
             body += ''.join(line.format(label=label, value=record[label] if label in keep else '').rstrip() + '\n'
@@ -993,7 +1044,24 @@ class TemplatePairInvariantTest(unittest.TestCase):
         report = audit_module.audit_memory(vault, state=state)
         with mock.patch.object(audit_module, '_template_only_overlap', return_value=False):
             baseline = audit_module.audit_memory(vault, state=state)
+        self.last_vault, self.last_state = vault, state
         return report, baseline
+
+    def paths(self, lang, record, other=None):
+        """File names carrying the record name: the first card, then its copy (or `other`'s card)."""
+        def slug(rec):
+            return audit_module.fold(rec[self.LAYOUTS[lang][0][1][0]]).replace(' ', '-')
+        copy = f'{slug(other)}.md' if other else (f'{slug(record)}-2026.md' if lang == 'en' else f'{slug(record)} 2.md')
+        return f'notes/kart/{slug(record)}.md', f'notes/kart/{copy}'
+
+    def quieted_by_values_alone(self):
+        """Would the values test alone (titles ignored) have dropped the last audited pair?"""
+        a, b = audit_module.scan_audit_candidates(self.last_vault, self.last_state)
+        if not a['template'] or not b['template']:
+            return False
+        a = {**a, 'template': {**a['template'], 'record_words': frozenset({'a'})}}
+        b = {**b, 'template': {**b['template'], 'record_words': frozenset({'b'})}}
+        return audit_module._template_only_overlap(a, b, 0.60)
 
     def assert_unchanged(self, report, baseline, expected_type=None):
         self.assertEqual(report['template_pairs_skipped'], 0, report)
@@ -1003,51 +1071,111 @@ class TemplatePairInvariantTest(unittest.TestCase):
             self.assertEqual(report['findings'][0]['type'], expected_type)
 
     def test_same_record_copies_always_report_as_without_the_rule(self):
+        """Copies whose values are a subset of the other's report unchanged, also when nothing in
+        the titles ties them together ('file': untitled a.md and b.md, so the values decide)."""
         full = sum(len(labels) for _head, labels in self.LAYOUTS['en'])
         cases = 0
         for lang in self.LAYOUTS:
             record = self.RECORDS[lang][0]
             for style in self.STYLES:
-                for filled in (self.SPARSE, full):
-                    first = self.card(lang, style, record, filled)
-                    variants = {
-                        'identical': self.card(lang, style, record, filled, created='2026-10-05'),
-                        'filled_later': self.card(lang, style, record, full, created='2026-10-05'),
-                        'notes_12': self.card(lang, style, record, filled, created='2026-10-05',
-                                              notes=' '.join(self.EXTRA.split()[:12])),
-                        'notes_30': self.card(lang, style, record, filled, created='2026-10-05', notes=self.EXTRA),
-                        'filled_later_with_notes': self.card(lang, style, record, full, created='2026-10-05',
-                                                             notes=self.EXTRA),
-                    }
-                    for variant, second in variants.items():
-                        with self.subTest(lang=lang, style=style, filled=filled, variant=variant):
-                            self.assert_unchanged(*self.audit_both({'notes/kart/a.md': first, 'notes/kart/b.md': second}))
+                for naming in ('title', 'file'):
+                    for filled in (self.SPARSE, full):
+                        def card(filled_, **kw):
+                            return self.card(lang, style, record, filled_, naming=naming, **kw)
+                        first = card(filled)
+                        variants = {
+                            'identical': card(filled, created='2026-10-05'),
+                            'filled_later': card(full, created='2026-10-05'),
+                            'notes_12': card(filled, created='2026-10-05', notes=' '.join(self.EXTRA.split()[:12])),
+                            'notes_30': card(filled, created='2026-10-05', notes=self.EXTRA),
+                            'filled_later_with_notes': card(full, created='2026-10-05', notes=self.EXTRA),
+                        }
+                        for variant, second in variants.items():
+                            with self.subTest(lang=lang, style=style, naming=naming, filled=filled, variant=variant):
+                                self.assert_unchanged(*self.audit_both({'notes/kart/a.md': first,
+                                                                        'notes/kart/b.md': second}))
+                                cases += 1
+                        with self.subTest(lang=lang, style=style, naming=naming, filled=filled, variant='status_flip'):
+                            report, baseline = self.audit_both({
+                                'notes/kart/a.md': card(filled, status='active'),
+                                'notes/kart/b.md': card(filled, status='inactive', created='2026-10-05'),
+                            })
+                            self.assert_unchanged(report, baseline, 'status_contradiction')
                             cases += 1
-                    with self.subTest(lang=lang, style=style, filled=filled, variant='status_flip'):
-                        report, baseline = self.audit_both({
-                            'notes/kart/a.md': self.card(lang, style, record, filled, status='active'),
-                            'notes/kart/b.md': self.card(lang, style, record, filled, status='inactive',
-                                                         created='2026-10-05'),
-                        })
-                        self.assert_unchanged(report, baseline, 'status_contradiction')
-                        cases += 1
-        self.assertEqual(cases, 2 * 4 * 2 * 6)
+        self.assertEqual(cases, 2 * 4 * 2 * 2 * 6)
+
+    def test_revised_same_record_reports_as_without_the_rule(self):
+        """A later card for the same record, with 1..all values revised and with or without a
+        status flip, under any naming, reports exactly as without the template rule."""
+        full = sum(len(labels) for _head, labels in self.LAYOUTS['en'])
+        cases = rescued = 0
+        for lang in self.LAYOUTS:
+            record = self.RECORDS[lang][0]
+            first_path, copy_path = self.paths(lang, record)
+            for style in self.STYLES:
+                for naming in self.NAMINGS:
+                    for flip in (False, True):
+                        first = self.card(lang, style, record, full, naming=naming,
+                                          status='active' if flip else '')
+                        for revised in range(1, len(self.REVISIONS[lang]) + 1):
+                            later = {**record, **dict(self.REVISIONS[lang][:revised])}
+                            second = self.card(lang, style, later, full, naming=naming, created='2026-10-05',
+                                               status='inactive' if flip else '')
+                            with self.subTest(lang=lang, style=style, naming=naming, flip=flip, revised=revised):
+                                report, baseline = self.audit_both({first_path: first, copy_path: second})
+                                self.assertEqual(report['template_pairs_skipped'], 0, report)
+                                self.assertEqual(json.dumps(report, sort_keys=True),
+                                                 json.dumps(baseline, sort_keys=True))
+                                if revised == 1:
+                                    self.assertEqual(len(baseline['findings']), 1, baseline)
+                                if baseline['findings']:
+                                    self.assertIn(baseline['findings'][0]['type'],
+                                                  {'status_contradiction'} if flip
+                                                  else {'near_duplicate', 'substantial_overlap'})
+                                    rescued += self.quieted_by_values_alone()
+                            cases += 1
+        self.assertEqual(cases, 2 * 4 * 4 * 2 * 8)
+        # The grid really holds reported revisions that the values test alone would have dropped.
+        self.assertGreaterEqual(rescued, 2 * 4 * 4 * 2)
 
     def test_sibling_cards_for_different_records_are_counted_not_reported(self):
         for lang in self.LAYOUTS:
             ours, theirs = self.RECORDS[lang]
             for style in self.STYLES:
-                for filled in (self.SPARSE, 9):
-                    with self.subTest(lang=lang, style=style, filled=filled):
-                        report, baseline = self.audit_both({
-                            'notes/kart/a.md': self.card(lang, style, ours, filled, status='active'),
-                            'notes/kart/b.md': self.card(lang, style, theirs, filled, status='inactive',
-                                                         created='2026-10-05'),
-                        })
-                        self.assertEqual(report['findings'], [], report)
-                        self.assertEqual(report['template_pairs_skipped'], len(baseline['findings']))
-                        if filled == self.SPARSE:
-                            self.assertEqual(len(baseline['findings']), 1, baseline)  # 3.18.0 reported this pair
+                for naming in self.NAMINGS:
+                    ours_path, theirs_path = self.paths(lang, ours, theirs)
+                    for filled in (self.SPARSE, 9):
+                        with self.subTest(lang=lang, style=style, naming=naming, filled=filled):
+                            report, baseline = self.audit_both({
+                                ours_path: self.card(lang, style, ours, filled, status='active', naming=naming),
+                                theirs_path: self.card(lang, style, theirs, filled, status='inactive',
+                                                       created='2026-10-05', naming=naming),
+                            })
+                            self.assertEqual(report['findings'], [], report)
+                            self.assertEqual(report['template_pairs_skipped'], len(baseline['findings']))
+                            if filled == self.SPARSE:
+                                self.assertEqual(len(baseline['findings']), 1, baseline)  # 3.18.0 reported it
+
+    def test_same_generic_title_reports_as_without_the_rule(self):
+        """Different records under one generic title ("Weekly sync") report as without the rule.
+
+        The title gives no sign that they are different records, so the rule stays out, although
+        the values alone would have quieted every one of these pairs.
+        """
+        for lang, generics in self.GENERIC_TITLES.items():
+            ours, theirs = self.RECORDS[lang]
+            name = self.LAYOUTS[lang][0][1][0]
+            for generic in generics:
+                for style in self.STYLES:
+                    with self.subTest(lang=lang, generic=generic, style=style):
+                        # Front matter title and H1 carry the generic title; the name field keeps the record.
+                        first = self.card(lang, style, ours, self.SPARSE, status='active').replace(
+                            ours[name], generic, 2)
+                        second = self.card(lang, style, theirs, self.SPARSE, status='inactive',
+                                           created='2026-10-05').replace(theirs[name], generic, 2)
+                        report, baseline = self.audit_both({'notes/kart/a.md': first, 'notes/kart/b.md': second})
+                        self.assert_unchanged(report, baseline, 'status_contradiction')
+                        self.assertTrue(self.quieted_by_values_alone())
 
     def test_notes_without_three_template_slots_report_as_without_the_rule(self):
         prose = ('Konteyner orkestrasyonu katmaninda servis kesfi, saglik yoklamasi, gunluk dondurme politikasi '
