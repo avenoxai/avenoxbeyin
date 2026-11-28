@@ -1332,12 +1332,13 @@ def parser(note_namespace=None, is_json=False):
     context.add_argument("--project")
     context.add_argument("--audience", choices=("internal", "public"), default="internal")
     context.add_argument("--status", action="append", dest="statuses")
-    context.add_argument("--limit", type=int, default=5)
+    context.add_argument("--limit", type=int, default=None)
     context.add_argument("--budget-chars", type=int, default=8000)
     context.add_argument("--no-sync", action="store_true", help="Read an existing index without writing to the vault or runtime")
     context.add_argument("--strip-fillers", action="store_true", help="Drop Turkish question wrappers in local context searches")
     context.add_argument("--share", choices=("top", "balanced"), default=None,
                          help="Budget sharing across matched records in local context: top (default) or balanced")
+    context.add_argument("--list", action="store_true", dest="list_mode", help="Return a compact candidate list with short matching snippets instead of full note bodies")
     context.add_argument("--jev", action="store_true", help="Explicit optional remote advisor; requires state/jev.json and --project")
     review = sub.add_parser("jev-review", help="Advisory source review; never saves or approves a candidate")
     review.add_argument("--file", required=True, help="JSON proposal (maximum 24,000 characters)")
@@ -1544,6 +1545,8 @@ def main(argv=None, return_result=False):
             sys.dont_write_bytecode = True
         if read_only_context and args.jev:
             raise ValueError("context --no-sync cannot be combined with --jev")
+        if args.command == "context" and args.list_mode and args.jev:
+            raise ValueError("--list is only available for local context")
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
         engine = load_engine() if not context_selftest and args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "devices", "workspace", "lint", "moc", "triage", "feedback", "checkpoint") else None
         database = state / "memory.sqlite3"
@@ -2384,8 +2387,11 @@ def main(argv=None, return_result=False):
             else:
                 result = devices_mod.status(vault, state)
         elif args.command == "context":
+            default_limit = 20 if args.list_mode else 5
             params = {"query": args.query, "project": args.project, "audience": args.audience,
-                      "statuses": args.statuses, "limit": args.limit, "budget_chars": args.budget_chars}
+                      "statuses": args.statuses,
+                      "limit": default_limit if args.limit is None else args.limit,
+                      "budget_chars": args.budget_chars}
             explicit_share = args.share
             if args.file:
                 supplied = read_json(args.file)
@@ -2406,12 +2412,20 @@ def main(argv=None, return_result=False):
                 if args.jev:
                     raise ValueError("--strip-fillers is only available for local context")
                 params["query"] = engine.strip_query_fillers(params["query"])
+            if args.list_mode:
+                if args.jev:
+                    raise ValueError("--list is only available for local context")
+                if explicit_share is not None:
+                    raise ValueError("--share cannot be combined with --list")
+                params["list_mode"] = True
             if explicit_share is not None:
                 if args.jev:
                     raise ValueError("--share is only available for local context")
                 if explicit_share not in ("top", "balanced"):
                     raise ValueError("share must be 'top' or 'balanced'")
                 share = explicit_share
+            elif args.list_mode:
+                share = "top"  # a candidate list carries no note bodies to share a budget across
             elif not args.jev:
                 share_pref = state / "context-share.json"
                 if share_pref.exists() or share_pref.is_symlink():
@@ -2579,7 +2593,10 @@ def main(argv=None, return_result=False):
             mark_session_edit(state, vault, result.get("source"))
         if return_result:
             return result, 0
-        print(json.dumps(result, ensure_ascii=True, indent=2))
+        if args.command == "context" and args.list_mode:
+            print(json.dumps(result, ensure_ascii=True, separators=(",", ":")))
+        else:
+            print(json.dumps(result, ensure_ascii=True, indent=2))
         return 0
     except Exception as exc:
         # No traceback or raw input dump: callers retain their local source files.
