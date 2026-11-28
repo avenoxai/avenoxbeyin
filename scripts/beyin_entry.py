@@ -970,11 +970,60 @@ def load_cli(directory):
     return cli
 
 
+_GLOBAL_VALUE_FLAGS = frozenset(('--vault', '--state'))
+_ALWAYS_JSON_COMMANDS = frozenset(('note-read', 'note-edit', 'homepage-create'))
+
+
+def _scan_leading_argv(argv):
+    """Scan leading global options before the subcommand (#955).
+
+    Returns (command_or_none, can_default_doctor). can_default_doctor is True only
+    when no subcommand was given and argv had no help, terminator, unknown, or
+    dangling option that argparse should handle unchanged.
+    """
+    i = 0
+    can_default = True
+    while i < len(argv):
+        arg = argv[i]
+        if arg == '--':
+            if i + 1 < len(argv):
+                return argv[i + 1], False
+            return None, False
+        if arg in _GLOBAL_VALUE_FLAGS:
+            if i + 1 >= len(argv):
+                return None, False
+            nxt = argv[i + 1]
+            if nxt in ('-h', '--help', '--') or nxt.startswith('--'):
+                return None, False
+            i += 2
+            continue
+        if any(arg.startswith(flag + '=') for flag in _GLOBAL_VALUE_FLAGS):
+            i += 1
+            continue
+        if arg.startswith('-') and arg != '-':
+            if arg not in ('--json', '--human'):
+                can_default = False
+            i += 1
+            continue
+        return arg, False
+    return None, can_default
+
+
+def _extract_command(argv):
+    """Extract the subcommand after leading global options, defaulting to 'doctor'."""
+    command, _ = _scan_leading_argv(argv)
+    return command if command is not None else 'doctor'
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     force_json = '--json' in argv or '--print-config' in argv
     human = ('--human' in argv or sys.stdout.isatty()) and not force_json
     argv = [arg for arg in argv if arg not in ('--human', '--json')]
+    found_command, default_doctor = _scan_leading_argv(argv)
+    command = found_command if found_command is not None else 'doctor'
+    if command in _ALWAYS_JSON_COMMANDS:
+        human = False  # These commands have a JSON contract, including on a terminal.
     if human:
         # A piped or redirected Windows console uses a legacy code page (cp1252 has no s-cedilla);
         # write redirected human output as UTF-8 so stored text and paths survive intact.
@@ -985,9 +1034,6 @@ def main(argv=None):
                     stream.reconfigure(errors='replace')
                 else:
                     stream.reconfigure(encoding='utf-8', errors='replace')
-    command = argv[0] if argv else 'doctor'
-    if command in ('note-read', 'note-edit'):
-        human = False  # These commands have a JSON contract, including on a terminal.
     vault = Path(__file__).resolve().parent
     stamp = vault / '.beyin-version'
     installed_version = None
@@ -1071,7 +1117,8 @@ def main(argv=None):
             print(human_result(result, command, installed_version) if human else json.dumps(result, ensure_ascii=True, indent=2))
             return 0
         cli = cli or load_cli(directory)
-        cli_args = ['--vault', str(vault), '--state', str(state)] + (['--json'] if force_json else []) + (argv or ['doctor'])
+        cli_args = (['--vault', str(vault), '--state', str(state)] +
+                    (['--json'] if force_json else []) + argv + (['doctor'] if default_doctor else []))
         if not human:
             return cli.main(cli_args)
         if hasattr(cli, 'main') and 'return_result' in getattr(getattr(cli, 'main'), '__code__', {}).co_varnames:
