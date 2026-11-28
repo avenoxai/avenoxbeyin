@@ -1,5 +1,6 @@
 """Human entrypoint smoke: a novice sees an honest short status, tools retain JSON."""
 import importlib.util
+import io
 import hashlib
 import json
 import os
@@ -7,6 +8,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from v3_package_helpers import install, isolated_env, run_python
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -229,6 +231,207 @@ class CrossPlatformPinTest(unittest.TestCase):
         for key in ('SystemDrive', 'ProgramData'):
             if key in os.environ:
                 self.assertIn(key, env)
+
+
+class LeadingGlobalOptionsTest(unittest.TestCase):
+    """Leading global options (--vault, --state, --json, --human) preserve subcommand detection (#955)."""
+
+    @classmethod
+    def setUpClass(cls):
+        tmp = tempfile.TemporaryDirectory(prefix='v3-entry-leading-opts-')
+        cls.addClassCleanup(tmp.cleanup)
+        cls.root = Path(tmp.name).resolve()
+        cls.vault = cls.root / 'vault'
+        cls.state = cls.root / 'state'
+        cls.vault.mkdir()
+        cls.env = dict(isolated_env(cls.root / 'home'), BEYIN_UPDATES_OFF='1')
+        installed = install(cls.vault, cls.state, cls.env)
+        if installed.returncode != 0:
+            raise AssertionError(installed.stderr.decode('utf-8', errors='replace'))
+
+    def run_entry(self, *args, payload=None):
+        return run_python(self.vault / 'beyin.py', list(args), self.vault, self.env, payload=payload)
+
+    def load_entry_module(self, name):
+        spec = importlib.util.spec_from_file_location(name, ROOT / 'scripts/beyin_entry.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_extract_command_skips_leading_global_options(self):
+        entry = self.load_entry_module('v3_entry_extract_cmd')
+        cases = (
+            ([], 'doctor'),
+            (['doctor'], 'doctor'),
+            (['--vault', '/v', 'doctor'], 'doctor'),
+            (['--vault=/v', 'doctor'], 'doctor'),
+            (['--vault', '/v', '--state', '/s', 'triage'], 'triage'),
+            (['--vault=/v', '--state=/s', 'triage'], 'triage'),
+            (['--json', '--vault', '/v', 'note-read', 'notes/a.md'], 'note-read'),
+            (['--human', '--vault=/v', 'note-edit', '--file', '-'], 'note-edit'),
+            (['--vault', '/v', '--human', 'homepage-create', '--file', 'req.json'], 'homepage-create'),
+            (['--vault', '/v'], 'doctor'),
+            (['--vault=/v', '--state=/s'], 'doctor'),
+            (['--vault', 'note-read'], 'doctor'),
+            (['--vault', 'doctor', 'triage'], 'triage'),
+            (['--vault', '/v', '--', 'note-read', 'notes/a.md'], 'note-read'),
+            (['--', 'triage'], 'triage'),
+            (['--'], 'doctor'),
+            (['-h'], 'doctor'),
+            (['--help'], 'doctor'),
+            (['--version'], 'doctor'),
+            (['--vault'], 'doctor'),
+            (['--state'], 'doctor'),
+        )
+        for argv, expected in cases:
+            with self.subTest(argv=argv):
+                self.assertEqual(entry._extract_command(argv), expected)
+
+    def test_vault_before_doctor_matches_direct_human_output(self):
+        direct = self.run_entry('doctor', '--human')
+        self.assertEqual(direct.returncode, 0, direct.stderr)
+        expected = direct.stdout.decode('utf-8')
+        self.assertNotIn('Islem sonucu:', expected)
+        self.assertIn('Beyin 3.0.0', expected)
+
+        for args in (
+            ('--vault', str(self.vault), 'doctor', '--human'),
+            (f'--vault={self.vault}', 'doctor', '--human'),
+            ('--vault', str(self.vault), '--human', 'doctor'),
+            ('--human', '--vault', str(self.vault), 'doctor'),
+        ):
+            with self.subTest(args=args):
+                res = self.run_entry(*args)
+                self.assertEqual(res.returncode, 0, res.stderr)
+                text = res.stdout.decode('utf-8')
+                self.assertEqual(text, expected)
+                self.assertNotIn('Islem sonucu:', text)
+
+    def test_vault_and_state_before_triage_produces_full_human_report(self):
+        direct = self.run_entry('triage', '--human')
+        self.assertEqual(direct.returncode, 0, direct.stderr)
+        direct_text = direct.stdout.decode('utf-8')
+        self.assertIn('=== Ikinci Beyin Sindirim ve Durum Raporu (Triage) ===', direct_text)
+
+        for args in (
+            ('--vault', str(self.vault), '--state', str(self.state), 'triage', '--human'),
+            (f'--vault={self.vault}', f'--state={self.state}', 'triage', '--human'),
+        ):
+            with self.subTest(args=args):
+                res = self.run_entry(*args)
+                self.assertEqual(res.returncode, 0, res.stderr)
+                text = res.stdout.decode('utf-8')
+                self.assertIn('=== Ikinci Beyin Sindirim ve Durum Raporu (Triage) ===', text)
+                self.assertNotIn('Islem sonucu:', text)
+                self.assertEqual(text, direct_text)
+
+    def test_vault_before_note_commands_preserves_json_contract(self):
+        source = 'notes/LeadingOpt.md'
+        create_req = {'source': source, 'expected_sha256': None, 'content': '# Leading Option Test\n'}
+
+        edited = self.run_entry('--vault', str(self.vault), 'note-edit', '--human', '--file', '-', payload=create_req)
+        self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
+        edit_data = json.loads(edited.stdout.decode('utf-8'))
+        self.assertEqual(edit_data['status'], 'written')
+        self.assertEqual(edit_data['source'], source)
+
+        for args in (
+            ('--vault', str(self.vault), 'note-read', source, '--human'),
+            (f'--vault={self.vault}', '--human', 'note-read', source),
+            ('--vault', str(self.vault), '--', 'note-read', source, '--human'),
+        ):
+            with self.subTest(args=args):
+                read = self.run_entry(*args)
+                self.assertEqual(read.returncode, 0, read.stdout + read.stderr)
+                read_data = json.loads(read.stdout.decode('utf-8'))
+                self.assertTrue(read_data['exists'])
+                self.assertEqual(read_data['content'], create_req['content'])
+
+        # Usage error on note-read with leading --vault and --human stays JSON on stdout (exit 64).
+        usage = self.run_entry('--vault', str(self.vault), 'note-read', '--human')
+        self.assertEqual(usage.returncode, 64, usage.stdout + usage.stderr)
+        self.assertEqual(usage.stderr, b'')
+        self.assertEqual(json.loads(usage.stdout.decode('utf-8'))['status'], 'usage_error')
+
+        # homepage-create also keeps its JSON contract when --vault precedes it with --human.
+        missing_req = self.root / 'missing-homepage-req.json'
+        hp = self.run_entry('--vault', str(self.vault), 'homepage-create', '--file', str(missing_req), '--human')
+        self.assertEqual(hp.returncode, 1, hp.stdout + hp.stderr)
+        self.assertEqual(hp.stderr, b'')
+        self.assertEqual(json.loads(hp.stdout.decode('utf-8'))['status'], 'error')
+
+    def test_vault_before_note_read_preserves_json_when_stdout_is_tty(self):
+        note_path = self.vault / 'notes' / 'TtyRead.md'
+        note_path.parent.mkdir(parents=True, exist_ok=True)
+        note_path.write_bytes(b'# TTY Note\n')
+
+        entry = self.load_entry_module('v3_entry_tty_note_read')
+        out, err = io.StringIO(), io.StringIO()
+        original_path = sys.path[:]
+        try:
+            with patch.object(entry, '__file__', str(self.vault / 'beyin.py')), \
+                 patch.object(sys, 'stdout', out), patch.object(sys, 'stderr', err), \
+                 patch.object(out, 'isatty', return_value=True), \
+                 patch.dict(os.environ, self.env, clear=False):
+                code = entry.main(['--vault', str(self.vault), 'note-read', 'notes/TtyRead.md'])
+        finally:
+            sys.path[:] = original_path
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertEqual(err.getvalue(), '')
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload['exists'])
+        self.assertEqual(payload['content'], '# TTY Note\n')
+
+        # note-edit with leading --vault also stays JSON under TTY default human mode.
+        req_file = self.root / 'tty-edit.json'
+        req_file.write_text(json.dumps({
+            'source': 'notes/TtyRead.md',
+            'expected_sha256': payload['sha256'],
+            'edits': [{'old': '# TTY Note', 'new': '# TTY Note Updated'}],
+        }), encoding='utf-8')
+        out2, err2 = io.StringIO(), io.StringIO()
+        try:
+            with patch.object(entry, '__file__', str(self.vault / 'beyin.py')), \
+                 patch.object(sys, 'stdout', out2), patch.object(sys, 'stderr', err2), \
+                 patch.object(out2, 'isatty', return_value=True), \
+                 patch.dict(os.environ, self.env, clear=False):
+                code2 = entry.main(['--vault', str(self.vault), 'note-edit', '--file', str(req_file)])
+        finally:
+            sys.path[:] = original_path
+        self.assertEqual(code2, 0, err2.getvalue())
+        self.assertEqual(err2.getvalue(), '')
+        edit_payload = json.loads(out2.getvalue())
+        self.assertEqual(edit_payload['status'], 'written')
+        self.assertEqual(note_path.read_bytes(), b'# TTY Note Updated\n')
+
+    def test_no_subcommand_with_vault_defaults_to_doctor_and_preserves_help_and_errors(self):
+        direct_human = self.run_entry('doctor', '--human')
+        self.assertEqual(direct_human.returncode, 0, direct_human.stderr)
+        expected_human = direct_human.stdout.decode('utf-8')
+
+        for args in (
+            ('--vault', str(self.vault)),
+            (f'--vault={self.vault}',),
+            ('--vault', str(self.vault), '--state', str(self.state)),
+        ):
+            with self.subTest(mode='json', args=args):
+                res = self.run_entry(*args)
+                self.assertEqual(res.returncode, 0, res.stderr)
+                self.assertEqual(json.loads(res.stdout.decode('utf-8'))['status'], 'never_seen')
+
+        res_human = self.run_entry('--vault', str(self.vault), '--human')
+        self.assertEqual(res_human.returncode, 0, res_human.stderr)
+        self.assertEqual(res_human.stdout.decode('utf-8'), expected_human)
+
+        # --help with leading --vault must still show usage and exit 0.
+        helped = self.run_entry('--vault', str(self.vault), '--help')
+        self.assertEqual(helped.returncode, 0, helped.stderr)
+        self.assertIn('--vault VAULT', helped.stdout.decode('utf-8'))
+
+        # Dangling --vault with no path must still report expected one argument (never eat 'doctor').
+        dangling = self.run_entry('--vault')
+        self.assertEqual(dangling.returncode, 2)
+        self.assertIn('expected one argument', dangling.stderr.decode('utf-8'))
 
 
 if __name__ == '__main__':
