@@ -1526,10 +1526,10 @@ class MemoryStore:
             db.execute("INSERT OR IGNORE INTO receipts VALUES (?,?)", (event_id, payload))
         return dict(event, id=event_id, status="succeeded")
 
-    def retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, strict=False, today=None, explicit=False):
+    def retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, strict=False, today=None, explicit=False, share="top"):
         # explicit=True is the `beyin.py context` command: see the unscoped explicit rules below.
         return self._retrieve(query, project, audience, statuses, limit, budget_chars, strict=strict, today=today,
-                              explicit=explicit)
+                              explicit=explicit, share=share)
 
     def candidates(self, query, project=None, audience="internal", statuses=None, limit=32, strict=False, today=None):
         """Bounded eligible candidates before any final context packing.
@@ -1947,11 +1947,13 @@ class MemoryStore:
         """Ids retired by any trusted record, not only by the ones this reader may see (#201)."""
         return resolve_supersedes(self._records() if records is None else records)[0]
 
-    def _retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, snapshot=False, strict=False, candidate_only=False, today=None, explicit=False):
+    def _retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, snapshot=False, strict=False, candidate_only=False, today=None, explicit=False, share="top"):
         if audience not in ("public", "internal", "private"):
             raise ValueError("invalid audience")
         if not isinstance(query, str) or type(limit) is not int or limit < 0 or type(budget_chars) is not int or budget_chars < 0:
             raise ValueError("invalid query or budget")
+        if share not in CONTEXT_SHARE_MODES:
+            raise ValueError("share must be 'top' or 'balanced'")
         records = self._records()
         eligible, stale_count = self._eligible(audience, project, records=records)
         superseded = self._superseded_ids(records)
@@ -2076,7 +2078,8 @@ class MemoryStore:
         if candidate_only:
             return [record for _, record in ranked[:limit]]
         return pack_context([record for _, record in ranked], limit, budget_chars, stale_count,
-                            query=query, project=project)
+                            query=query, project=project, share=share,
+                            scores=[score for score, _ in ranked])
 
 
 # A rejected claim is proposed again when the new text restates most of it. Coverage is
@@ -2124,6 +2127,7 @@ def rejected_matches(store, text, project, audience="internal", limit=4):
             for coverage, record in matches[:limit]]
 
 CONTEXT_MARKER = " [truncated]"
+CONTEXT_SHARE_MODES = ("top", "balanced")
 MIN_CONTEXT_TEXT = 150     # smallest excerpt of a source that is worth a slot
 SHORT_CONTEXT_TEXT = 500   # a short source is reserved whole when it fits, else like a long one
 TOP_CONTEXT_TEXT = 1100    # the best source keeps at least this much: one passage window (#83)
@@ -2144,6 +2148,8 @@ class PackedContext(dict):
     evidence = {}
     query = None
     project = None
+    share = "top"
+    scores = None
 
 
 def _locate_matching_passage(text, query, project=None):
@@ -2214,49 +2220,117 @@ def _clipped_size(record, citation, chars):
                + len(_json(citation)))
 
 
-def pack_context(records, limit=5, budget_chars=8000, stale_count=0, query=None, project=None):
+def _dominant_top_score(s0, s1):
+    """True when rank 1 clearly dominates rank 2, so balanced sharing falls back to top."""
+    if (isinstance(s0, bool) or isinstance(s1, bool)
+            or not isinstance(s0, (int, float)) or not isinstance(s1, (int, float))):
+        return False
+    if not (math.isfinite(s0) and math.isfinite(s1)):
+        return False
+    return (s1 > 0 and s0 >= 2.0 * s1) or (s0 > 0 and s1 <= 0)
+
+
+def pack_context(records, limit=5, budget_chars=8000, stale_count=0, query=None, project=None,
+                 share="top", scores=None):
     """Pack successfully delivered sources, not a prefix of attempted candidates.
 
     An oversized metadata record cannot consume a source slot. Text may be clipped,
     never identity/citation fields. used_chars measures compact record+citation JSON;
     render_context additionally accounts for the complete hook envelope.
 
-    Budget is reserved before it is spent (#79). The best source first keeps the larger
-    of TOP_CONTEXT_TEXT characters and TOP_CONTEXT_SHARE of the budget, so a passage
-    (#83) reaches a small prompt whole and a long note keeps a real excerpt. Every
-    further source in rank order then reserves its floor (its first MIN_CONTEXT_TEXT
-    characters, or all of a short text when that fits); a source whose floor does not
-    fit is skipped without consuming a slot. What is left goes back in rank order.
+    Budget is reserved before it is spent (#79). In default `top` mode, the best source
+    first keeps the larger of TOP_CONTEXT_TEXT characters and TOP_CONTEXT_SHARE of the
+    budget, so a passage (#83) reaches a small prompt whole and a long note keeps a real
+    excerpt. Every further source in rank order then reserves its floor (its first
+    MIN_CONTEXT_TEXT characters, or all of a short text when that fits); a source whose
+    floor does not fit is skipped without consuming a slot. What is left goes back in
+    rank order.
+
+    In `balanced` mode (#975), unless rank 1 clearly dominates rank 2 (falling back to
+    `top`), each admitted source reserves its floor first and remaining text budget is
+    distributed evenly via iterative water-filling so short notes redistribute unused
+    characters to longer notes without ever exceeding budget_chars.
     Reservations are exact serialized sizes, JSON escaping included, so an admitted
     source is never dropped later and one long note can no longer starve the rest.
     """
     if type(limit) is not int or limit < 0 or type(budget_chars) is not int or budget_chars < 0:
         raise ValueError("invalid budget")
-    admitted, reserved, protected = [], 0, 0
-    for record in records:
-        if len(admitted) >= limit:
-            break
-        citation = {"id": record["id"], "source": record["source"]}
-        full = len(_json(record)) + len(_json(citation))
-        floor = _clipped_size(record, citation, MIN_CONTEXT_TEXT)
-        claim = full if len(record["text"]) <= SHORT_CONTEXT_TEXT else floor
-        if reserved + claim > budget_chars - protected:
-            claim = floor
-        if reserved + claim > budget_chars - protected:
-            continue
-        admitted.append([record, citation, full, claim])
-        reserved += claim
-        if len(admitted) == 1:
-            keep = max(_clipped_size(record, citation, TOP_CONTEXT_TEXT), int(budget_chars * TOP_CONTEXT_SHARE))
-            protected = max(0, min(full, keep, budget_chars) - claim)
-    spare = budget_chars - reserved
-    for item in admitted:
-        extra = min(spare, item[2] - item[3])
-        item[3] += extra
-        spare -= extra
-    selected, citations, sources = [], [], []
+    if share not in CONTEXT_SHARE_MODES:
+        raise ValueError("share must be 'top' or 'balanced'")
+    if scores is not None and len(scores) != len(records):
+        raise ValueError("scores must match records length")
+    if share == "balanced":
+        admitted, reserved = [], 0
+        for idx, record in enumerate(records):
+            if len(admitted) >= limit:
+                break
+            citation = {"id": record["id"], "source": record["source"]}
+            full = len(_json(record)) + len(_json(citation))
+            floor = _clipped_size(record, citation, MIN_CONTEXT_TEXT)
+            if reserved + floor > budget_chars:
+                continue
+            score = scores[idx] if scores is not None else None
+            admitted.append([record, citation, full, floor, score])
+            reserved += floor
+        if scores is not None and len(admitted) >= 2 and _dominant_top_score(admitted[0][4], admitted[1][4]):
+            return pack_context(records, limit, budget_chars, stale_count,
+                                query=query, project=project, share="top")
+        spare = budget_chars - reserved
+        # Iterative water-filling over remaining text room above each record's floor:
+        # short notes saturate cleanly and redistribute unused characters to longer notes.
+        active = [item for item in admitted if item[3] < item[2]]
+        while spare > 0 and active:
+            even = spare // len(active)
+            rem = spare % len(active)
+            if even == 0:
+                for item in active[:rem]:
+                    item[3] += 1
+                    spare -= 1
+                break
+            saturated = False
+            next_active = []
+            for item in active:
+                need = item[2] - item[3]
+                if need <= even:
+                    item[3] = item[2]
+                    spare -= need
+                    saturated = True
+                else:
+                    next_active.append(item)
+            if not saturated:
+                for pos, item in enumerate(active):
+                    give = even + (1 if pos < rem else 0)
+                    item[3] += give
+                    spare -= give
+                break
+            active = next_active
+    else:
+        admitted, reserved, protected = [], 0, 0
+        for idx, record in enumerate(records):
+            if len(admitted) >= limit:
+                break
+            citation = {"id": record["id"], "source": record["source"]}
+            full = len(_json(record)) + len(_json(citation))
+            floor = _clipped_size(record, citation, MIN_CONTEXT_TEXT)
+            claim = full if len(record["text"]) <= SHORT_CONTEXT_TEXT else floor
+            if reserved + claim > budget_chars - protected:
+                claim = floor
+            if reserved + claim > budget_chars - protected:
+                continue
+            score = scores[idx] if scores is not None else None
+            admitted.append([record, citation, full, claim, score])
+            reserved += claim
+            if len(admitted) == 1:
+                keep = max(_clipped_size(record, citation, TOP_CONTEXT_TEXT), int(budget_chars * TOP_CONTEXT_SHARE))
+                protected = max(0, min(full, keep, budget_chars) - claim)
+        spare = budget_chars - reserved
+        for item in admitted:
+            extra = min(spare, item[2] - item[3])
+            item[3] += extra
+            spare -= extra
+    selected, citations, sources, selected_scores = [], [], [], []
     used, carry, clipped_any = 0, 0, False
-    for record, citation, full, allocation in admitted:
+    for record, citation, full, allocation, score in admitted:
         room = allocation + carry
         source = record
         if full > room:
@@ -2269,6 +2343,7 @@ def pack_context(records, limit=5, budget_chars=8000, stale_count=0, query=None,
         selected.append(record)
         sources.append(source)
         citations.append(citation)
+        selected_scores.append(score)
         clipped_any = clipped_any or bool(record.get("text_truncated"))
         used += size
     omitted = len(records) - len(selected)
@@ -2278,11 +2353,13 @@ def pack_context(records, limit=5, budget_chars=8000, stale_count=0, query=None,
     packed.sources = tuple(sources)
     packed.query = query
     packed.project = project
+    packed.share = share
+    packed.scores = tuple(selected_scores) if scores is not None else None
     return packed
 
 
 def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0, *, extensions=None,
-                 query=None, project=None):
+                 query=None, project=None, share="top", scores=None):
     """pack_context, then each wholly delivered record may take its wider version (id -> record)
     from the room every record left over, in rank order.
 
@@ -2292,7 +2369,8 @@ def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0, *, e
     The result's sources stay the narrow originals and .wider is kept, so every later pack
     (the advisor's or the final envelope's) decides again at its own budget.
     """
-    packed = pack_context(records, limit, budget_chars, stale_count, query=query, project=project)
+    packed = pack_context(records, limit, budget_chars, stale_count, query=query, project=project,
+                          share=share, scores=scores)
     widened, spare, chosen = False, budget_chars - packed["used_chars"], list(records)
     whole = {r["id"] for r, s in zip(packed["records"], packed.sources) if r["text"] == s["text"]}
     for position, record in enumerate(records):
@@ -2306,7 +2384,8 @@ def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0, *, e
                 chosen[position], spare, widened = alternative, spare - extra, True
                 break
     if widened:
-        packed = pack_context(chosen, limit, budget_chars, stale_count, query=query, project=project)
+        packed = pack_context(chosen, limit, budget_chars, stale_count, query=query, project=project,
+                              share=share, scores=scores)
     # Optional source/section context spends only what the existing passage
     # policy left over. Reserve every source's original second passage first;
     # a rich first source must not displace a later source's answering passage.
@@ -2323,7 +2402,8 @@ def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0, *, e
                     break
         if extended:
             prior = packed
-            packed = pack_context(chosen, len(chosen), budget_chars, stale_count, query=query, project=project)
+            packed = pack_context(chosen, len(chosen), budget_chars, stale_count, query=query, project=project,
+                                  share=prior.share, scores=prior.scores)
             packed['omitted_count'] = prior['omitted_count']
             packed['truncated'] = packed['truncated'] or bool(prior['omitted_count'])
     by_id = {r["id"]: r for r in records}
@@ -2405,12 +2485,18 @@ def render_context(context, budget_chars, prefix="", suffix=""):
     extension_views = {key: [_delivery_view(r) for r in choices] for key, choices in extensions.items()}
     extra = {k: v for k, v in context.items() if k not in
              {"records", "citations", "used_chars", "budget_chars", "omitted_count", "truncated", "abstained", "stale_count"}}
+    ctx_share = getattr(context, "share", "top")
+    if ctx_share not in CONTEXT_SHARE_MODES:
+        ctx_share = "top"
+    ctx_scores = getattr(context, "scores", None)
+    if ctx_scores is not None and len(ctx_scores) != len(records):
+        ctx_scores = None
     available = max(0, budget_chars - len(prefix))
     payload_budget = available
     while True:
         packed = pack_widened(records, wider_views, len(records), payload_budget, context.get("stale_count", 0),
                               extensions=extension_views, query=getattr(context, "query", None),
-                              project=getattr(context, "project", None))
+                              project=getattr(context, "project", None), share=ctx_share, scores=ctx_scores)
         packed["omitted_count"] += context.get("omitted_count", 0)
         packed["truncated"] = packed["truncated"] or bool(context.get("truncated"))
         packed.update(extra)
@@ -2424,6 +2510,10 @@ def render_context(context, budget_chars, prefix="", suffix=""):
             delivered.sources = tuple(full[s["id"]] for s in packed.sources)  # a re-render keeps identities
             delivered.wider = dict(wider)
             delivered.extensions = dict(extensions)
+            delivered.query = getattr(context, "query", None)
+            delivered.project = getattr(context, "project", None)
+            delivered.share = packed.share
+            delivered.scores = packed.scores
             delivered.evidence = {r['id']: getattr(context, 'evidence', {})[r['id']]
                                   for r in delivered['records'] if r['id'] in getattr(context, 'evidence', {})}
             return prefix + text + tail, delivered
