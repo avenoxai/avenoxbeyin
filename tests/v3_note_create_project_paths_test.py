@@ -42,6 +42,7 @@ class NoteCreateProjectPathsTest(unittest.TestCase):
         return json.loads(row[0]) if row else None
 
     def test_note_create_projects_folder_kurallar_succeeds_and_indexes(self):
+        (self.vault / 'projects').mkdir()
         source = 'projects/kitchen/Kurallar.md'
         result = self.engine.note_create(source, '# Kitchen Rules\n- Keep counters clear.\n', {})
         self.assertEqual(result['status'], 'succeeded')
@@ -65,6 +66,7 @@ class NoteCreateProjectPathsTest(unittest.TestCase):
         (comp_dir / 'Last-Session.md').write_text('## 2026-11-28 09:00 · init · abcd1234\nInit.\n', encoding='utf-8')
         (comp_dir / 'Threads.md').write_text('## Active Threads\n', encoding='utf-8')
         (comp_dir / 'Journal.md').write_text('# Journal\n', encoding='utf-8')
+        (self.vault / 'projects').mkdir()
 
         created = self.engine.note_create(
             'projects/kitchen/Kurallar.md',
@@ -83,6 +85,8 @@ class NoteCreateProjectPathsTest(unittest.TestCase):
             '300-Projects/kitchen/Kurallar.md',
             'Projeler/kitchen/Kurallar.md',
         )
+        for name in ('🏰 300-Projects', '300-Projects', 'Projeler'):
+            (self.vault / name).mkdir()
         for index, source in enumerate(cases):
             with self.subTest(source=source):
                 res = self.engine.note_create(
@@ -316,6 +320,7 @@ class NoteCreateProjectPathsTest(unittest.TestCase):
                 self.assertFalse((self.vault / source).exists())
 
         # Corrupted workspace/scope files fail closed for custom folders without breaking notes/ or projects/.
+        (self.vault / 'projects').mkdir()
         (self.vault / workspaces.WORKSPACES_FILE).write_text('{broken json', encoding='utf-8')
         (self.vault / projects.PROJECT_SCOPES_FILE).write_text('{broken json', encoding='utf-8')
         with self.assertRaisesRegex(ValueError, 'note-edit'):
@@ -383,6 +388,7 @@ class NoteCreateProjectPathsTest(unittest.TestCase):
         self.assert_no_journal()
 
     def test_note_create_cli_project_kurallar_and_helpful_rejection(self):
+        (self.vault / 'projects').mkdir()
         env = inherited_env(BEYIN_UPDATES_OFF='1', PYTHONDONTWRITEBYTECODE='1', PYTHONIOENCODING='utf-8')
         cmd = [
             sys.executable,
@@ -429,6 +435,62 @@ class NoteCreateProjectPathsTest(unittest.TestCase):
         self.assertEqual(err['error'], 'ValueError')
         self.assertIn('note-edit', err['message'])
         self.assertIn('expected_sha256: null', err['message'])
+
+    def test_note_create_needs_an_existing_project_parent(self):
+        # One project, one folder: note-create opens no second project root (managed AGENTS block).
+        with self.assertRaises(ValueError) as caught:
+            self.engine.note_create('projects/kitchen/Kurallar.md', 'Fresh vault.\n', {})
+        self.assertIn("project parent folder 'projects' does not exist", str(caught.exception))
+        self.assertIn('note-edit (expected_sha256: null and content)', str(caught.exception))
+        self.assertEqual(list(self.vault.iterdir()), [])
+
+        (self.vault / '🏰 300-Projects').mkdir()
+        with self.assertRaises(ValueError) as caught:
+            self.engine.note_create('projects/kitchen/Kurallar.md', 'Second root.\n', {})
+        self.assertIn("use the existing project parent (🏰 300-Projects)", str(caught.exception))
+        self.assertFalse((self.vault / 'projects').exists())
+        self.assertEqual(
+            self.engine.note_create('🏰 300-Projects/kitchen/Kurallar.md', 'Rules.\n', {})['status'],
+            'succeeded')
+        self.assert_no_journal()
+
+    def test_note_create_refuses_another_spelling_of_an_existing_folder(self):
+        # Project and workspace rules match case-insensitively; the write must not. On macOS and
+        # Windows the alias used to land in the existing folder and then fail its readback.
+        (self.vault / 'Projects' / 'Kitchen').mkdir(parents=True)
+        (self.vault / 'Work').mkdir()
+        workspaces.create_workspace(self.vault, 'work', note_roots=['Work/Notes'],
+                                    rules_file='Work/Kurallar.md')
+        (self.vault / 'Work' / 'Kurallar.md').write_text('# Work rules\n', encoding='utf-8', newline='\n')
+        cases = (
+            ('projects/kitchen/Kurallar.md', "'Projects' already exists"),
+            ('Projects/kitchen/Kurallar.md', "'Projects/Kitchen' already exists"),
+            ('work/Notes/a.md', "'Work' already exists"),
+            ('Work/kurallar.md', "'Work/Kurallar.md' already exists"),
+        )
+        before = sorted(path.relative_to(self.vault).as_posix() for path in self.vault.rglob('*'))
+        for source, message in cases:
+            with self.subTest(source=source):
+                with self.assertRaisesRegex(ValueError, message + ' with another spelling'):
+                    self.engine.note_create(source, 'Alias body.\n', {})
+        self.assertEqual(sorted(path.relative_to(self.vault).as_posix() for path in self.vault.rglob('*')),
+                         before)
+        self.assert_no_journal()
+        self.assertEqual(
+            self.engine.note_create('Projects/Kitchen/Kurallar.md', 'Rules.\n', {})['status'], 'succeeded')
+        self.assertEqual(self.engine.note_create('Work/Notes/a.md', 'Note.\n', {})['status'], 'succeeded')
+
+    def test_note_create_refuses_symlinked_target_file(self):
+        (self.vault / 'projects' / 'kitchen').mkdir(parents=True)
+        outside = self.root / 'outside.md'
+        try:
+            (self.vault / 'projects/kitchen/Kurallar.md').symlink_to(outside)
+        except OSError as exc:
+            self.skipTest('symlink unavailable: ' + str(exc))
+        with self.assertRaisesRegex(ValueError, 'symlink'):
+            self.engine.note_create('projects/kitchen/Kurallar.md', 'Through a dangling link.\n', {})
+        self.assertFalse(outside.exists())
+        self.assert_no_journal()
 
     def test_existing_notes_and_knowledge_roots_remain_allowed(self):
         for source in ('notes/plain.md', 'notes/sub/item.md', 'knowledge/concept.md', 'knowledge/sub/item.md'):

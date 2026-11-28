@@ -310,6 +310,8 @@ def _receipt_harness(event):
 
 EXCLUDED_FILES = {'agents.md', 'claude.md', 'gemini.md', 'skill.md', 'hooks.md', 'config.md', 'settings.md', 'instructions.md', 'codex.md', 'setup.md', 'install.md'}
 EXCLUDED_DIRS = {'node_modules', 'receipts', '__pycache__'}
+# User-chosen directory names (<state>/index.json) are pruned on top of these; see beyin_v3_index.
+# Nothing else is skipped by name: "vendor" or "external" is also an ordinary notes folder.
 NOTE_CREATE_RESERVED_ROOTS = frozenset({'tasks', 'receipts', 'daily', 'raw'})
 WORKSPACE_CONFIG_MAX_BYTES = 1024 * 1024
 
@@ -323,8 +325,8 @@ def _is_regular_local_file(path, max_bytes=WORKSPACE_CONFIG_MAX_BYTES):
     return (stat.S_ISREG(info.st_mode) and
             not getattr(info, 'st_reparse_tag', 0) and
             info.st_size <= max_bytes)
-# User-chosen directory names (<state>/index.json) are pruned on top of these; see beyin_v3_index.
-# Nothing else is skipped by name: "vendor" or "external" is also an ordinary notes folder.
+
+
 COMPLETION_FIELDS = {'completion_contract', 'completion_criterion', 'evidence_refs'}
 TASK_STATUSES = ('inbox', 'active', 'waiting', 'blocked', 'done', 'cancelled')
 # Evidence newly linked to a strict done task must name the task within this many bytes.
@@ -1502,6 +1504,31 @@ class SyncEngine:
             cursor = cursor.parent
         return self._path(source)
 
+    def _refuse_note_create_alias(self, source):
+        """A project or workspace path must use the spelling already on disk (#958).
+
+        Those rules match folders regardless of letter case and Unicode form. On macOS and Windows
+        a differently cased name writes into the existing folder under a spelling the index
+        readback does not know (the note lands, then the command reports it missing); on Linux it
+        opens a second folder for the same project. Refuse before writing, naming the entry.
+        """
+        from beyin_v3_projects import _scope_key
+        cursor, parts = self.root, source.split('/')
+        for index, part in enumerate(parts):
+            try:
+                with os.scandir(cursor) as entries:
+                    names = [entry.name for entry in entries]
+            except OSError:
+                return  # nothing below exists yet
+            if part in names:
+                cursor = cursor / part
+                continue
+            existing = next((name for name in names if _scope_key(name) == _scope_key(part)), None)
+            if existing is not None:
+                raise ValueError('%r already exists with another spelling (letter case or Unicode form); '
+                                 'use the existing spelling' % '/'.join(parts[:index] + [existing]))
+            return
+
     def _workspace_allows_note_create(self, source, parts):
         """True when a registered workspace or valid project scope owns source's folder (#958).
 
@@ -1572,10 +1599,25 @@ class SyncEngine:
             if parts[0] in ('notes', 'knowledge'):
                 return
             from beyin_v3_projects import candidate_project_folders
-            if len(parts) >= 3 and parts[0] in candidate_project_folders(self.root):
-                return
-            if self._workspace_allows_note_create(source, parts):
-                return
+            candidates = candidate_project_folders(self.root)
+            in_project = len(parts) >= 3 and parts[0] in candidates
+            registered = self._workspace_allows_note_create(source, parts)
+            if in_project or registered:
+                self._refuse_note_create_alias(source)
+                try:
+                    present = set(os.listdir(self.root))
+                except OSError:
+                    present = set()
+                # A registered folder is opened as configured. A project parent must already be in
+                # the vault, spelled as on disk: one project, one folder (managed AGENTS block).
+                if registered or parts[0] in present:
+                    return
+                existing = [name for name in candidates if name in present]
+                raise ValueError(
+                    'project parent folder %r does not exist in this vault; ' % parts[0] +
+                    ('use the existing project parent (%s), or ' % ', '.join(existing) if existing else '') +
+                    'create this file with note-edit (expected_sha256: null and content)'
+                )
         raise ValueError(
             'new semantic notes belong under notes/, knowledge/, or a project folder (<projects>/<project>/...); '
             'for other Markdown files use note-edit with expected_sha256: null and content'
