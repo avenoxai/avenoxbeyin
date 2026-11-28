@@ -231,5 +231,134 @@ class CrossPlatformPinTest(unittest.TestCase):
                 self.assertIn(key, env)
 
 
+class DoctorEnvOverridesTest(unittest.TestCase):
+    """Issue #961: doctor reports allowlisted BEYIN_V3_* env toggles safely and concisely."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix='v3-env-overrides-')
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name).resolve()
+        self.vault, self.state = self.root / 'vault', self.root / 'state'
+        self.vault.mkdir()
+        install_env = isolated_env(self.root / 'home')
+        installed = install(self.vault, self.state, install_env)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        # isolated_env sets BEYIN_V3_NO_SPAWN=1; strip all BEYIN_V3_* so each test controls overrides explicitly.
+        self.clean_env = {k: v for k, v in install_env.items() if not k.upper().startswith('BEYIN_V3_')}
+        self.clean_env['BEYIN_UPDATES_OFF'] = '1'
+
+    def _load_module(self, name, path):
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_doctor_reports_active_env_overrides_in_json_and_human(self):
+        env = dict(self.clean_env,
+                   BEYIN_V3_RECEIPT_REMINDER='context',
+                   BEYIN_V3_ABSTAIN_COVERAGE='0.6')
+        machine = run_python(self.vault / 'beyin.py', ['doctor', '--json'], self.vault, env)
+        self.assertEqual(machine.returncode, 0, machine.stderr)
+        data = json.loads(machine.stdout.decode('utf-8'))
+        self.assertEqual(data['env_overrides'], {
+            'BEYIN_V3_RECEIPT_REMINDER': 'context',
+            'BEYIN_V3_ABSTAIN_COVERAGE': '0.6',
+        })
+        self.assertEqual(data['status'], 'never_seen')
+
+        human = run_python(self.vault / 'beyin.py', ['doctor', '--human'], self.vault, env)
+        self.assertEqual(human.returncode, 0, human.stderr)
+        text = human.stdout.decode('utf-8')
+        env_lines = [line for line in text.splitlines() if line.startswith('Ortam ayarlari')]
+        self.assertEqual(len(env_lines), 1, text)
+        self.assertIn('bu komut ortami', env_lines[0])
+        self.assertIn('hook ortami farkli olabilir', env_lines[0])
+        self.assertIn('RECEIPT_REMINDER=context', env_lines[0])
+        self.assertIn('ABSTAIN_COVERAGE=0.6', env_lines[0])
+
+    def test_doctor_omits_human_env_line_and_returns_empty_dict_when_unset(self):
+        env = dict(self.clean_env, BEYIN_V3_SKIP='')
+        machine = run_python(self.vault / 'beyin.py', ['doctor', '--json'], self.vault, env)
+        self.assertEqual(machine.returncode, 0, machine.stderr)
+        data = json.loads(machine.stdout.decode('utf-8'))
+        self.assertEqual(data['env_overrides'], {})
+
+        human = run_python(self.vault / 'beyin.py', ['doctor', '--human'], self.vault, env)
+        self.assertEqual(human.returncode, 0, human.stderr)
+        self.assertNotIn('Ortam ayarlari', human.stdout.decode('utf-8'))
+
+        entry = self._load_module('v3_entry_env_empty', ROOT / 'scripts/beyin_entry.py')
+        self.assertEqual(
+            entry.human_result({'status': 'never_seen', 'env_overrides': {}}, 'doctor'),
+            entry.human_result({'status': 'never_seen'}, 'doctor'),
+        )
+
+    def test_doctor_env_overrides_strict_allowlist_blocks_unknown_and_secret_vars(self):
+        env = dict(self.clean_env,
+                   BEYIN_V3_SKIP='1',
+                   BEYIN_V3_SECRET_TOKEN='xyz-secret-value',
+                   BEYIN_V3_SESSION_ID='synthetic-session-id-999',
+                   BEYIN_INGEST_TOKEN='synthetic-ingest-secret',
+                   TYPESAFE_API_KEY='synthetic-api-secret')
+        machine = run_python(self.vault / 'beyin.py', ['doctor', '--json'], self.vault, env)
+        self.assertEqual(machine.returncode, 0, machine.stderr)
+        stdout_json = machine.stdout.decode('utf-8')
+        data = json.loads(stdout_json)
+        self.assertEqual(data['env_overrides'], {'BEYIN_V3_SKIP': '1'})
+        for forbidden in ('BEYIN_V3_SECRET_TOKEN', 'xyz-secret-value',
+                          'BEYIN_V3_SESSION_ID', 'synthetic-session-id-999',
+                          'synthetic-ingest-secret', 'synthetic-api-secret'):
+            self.assertNotIn(forbidden, stdout_json)
+
+        human = run_python(self.vault / 'beyin.py', ['doctor', '--human'], self.vault, env)
+        self.assertEqual(human.returncode, 0, human.stderr)
+        human_text = human.stdout.decode('utf-8')
+        self.assertIn('SKIP=1', human_text)
+        for forbidden in ('SECRET_TOKEN', 'xyz-secret-value',
+                          'SESSION_ID', 'synthetic-session-id-999',
+                          'synthetic-ingest-secret', 'synthetic-api-secret'):
+            self.assertNotIn(forbidden, human_text)
+
+    def test_doctor_env_overrides_sanitizes_control_chars_newlines_bidi_and_bounds_length(self):
+        env = dict(self.clean_env,
+                   BEYIN_V3_RECEIPT_REMINDER='context\nINJECTED_LINE\r\n',
+                   BEYIN_V3_ABSTAIN_COVERAGE='\x1b[31m0.6\x07\u202e',
+                   BEYIN_V3_INTERNAL='x' * 120)
+        machine = run_python(self.vault / 'beyin.py', ['doctor', '--json'], self.vault, env)
+        self.assertEqual(machine.returncode, 0, machine.stderr)
+        overrides = json.loads(machine.stdout.decode('utf-8'))['env_overrides']
+        self.assertEqual(overrides['BEYIN_V3_RECEIPT_REMINDER'], 'context INJECTED_LINE')
+        self.assertEqual(overrides['BEYIN_V3_ABSTAIN_COVERAGE'], '[31m0.6')
+        self.assertEqual(len(overrides['BEYIN_V3_INTERNAL']), 64)
+        self.assertTrue(overrides['BEYIN_V3_INTERNAL'].endswith('...'))
+        for value in overrides.values():
+            self.assertLessEqual(len(value), 64)
+            for bad in ('\n', '\r', '\x1b', '\x07', '\u202e'):
+                self.assertNotIn(bad, value)
+
+        human = run_python(self.vault / 'beyin.py', ['doctor', '--human'], self.vault, env)
+        self.assertEqual(human.returncode, 0, human.stderr)
+        text = human.stdout.decode('utf-8')
+        env_lines = [line for line in text.splitlines() if line.startswith('Ortam ayarlari')]
+        self.assertEqual(len(env_lines), 1, text)
+        self.assertIn('INJECTED_LINE', env_lines[0])
+        self.assertNotIn('INJECTED_LINE', '\n'.join(line for line in text.splitlines() if not line.startswith('Ortam ayarlari')))
+        for bad in ('\x1b', '\x07', '\u202e'):
+            self.assertNotIn(bad, text)
+
+        # In-process checks for NUL/control-only values and defensive human_result sanitization.
+        cli = self._load_module('v3_cli_env_sanitize', ROOT / 'scripts/beyin_v3.py')
+        self.assertEqual(cli.read_env_overrides({'BEYIN_V3_INTERNAL': '\x00\x1b\n\r\t'}), {'BEYIN_V3_INTERNAL': '?'})
+        entry = self._load_module('v3_entry_env_sanitize', ROOT / 'scripts/beyin_entry.py')
+        rendered = entry.human_result(
+            {'status': 'never_seen', 'env_overrides': {'BEYIN_V3_SKIP': '1\nRAW_INJECT\r\n' + 'z' * 80}},
+            'doctor',
+        )
+        rendered_env_lines = [line for line in rendered.splitlines() if line.startswith('Ortam ayarlari')]
+        self.assertEqual(len(rendered_env_lines), 1, rendered)
+        self.assertNotIn('RAW_INJECT', '\n'.join(line for line in rendered.splitlines() if not line.startswith('Ortam ayarlari')))
+        self.assertIn('...', rendered_env_lines[0])
+
+
 if __name__ == '__main__':
     unittest.main()
