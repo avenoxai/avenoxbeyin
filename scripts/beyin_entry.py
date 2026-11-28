@@ -667,6 +667,134 @@ def _companion_hygiene_entries(hygiene):
     return entries
 
 
+def unreadable_note_reason(reason):
+    """Map sync warning reasons to plain, actionable Turkish for doctor --human (#964)."""
+    raw = str(reason or '').strip()
+    low = raw.lower()
+    if not raw:
+        return 'okunamadı veya ayrıştırılamadı'
+    if 'unterminated frontmatter' in low:
+        return "üst bilgi (frontmatter) '---' kapatılmamış; kapanış '---' satırı ekleyin"
+    if 'not valid utf-8' in low or ('utf-8' in low and any(tok in low for tok in ('codec', 'decode', 'invalid', 'surrogate'))):
+        return 'UTF-8 değil (başka kodlama, ör. UTF-16/Windows-1254); notu UTF-8 olarak yeniden kaydedin'
+    if 'unsupported yaml metadata' in low:
+        return 'desteklenmeyen veya bozuk YAML üst bilgisi; üst bilgiyi sade YAML veya JSON olarak düzeltin'
+    if 'frontmatter must be an object' in low:
+        return 'üst bilgi (frontmatter) geçerli bir nesne değil; alanları kontrol edin'
+    if 'unresolved git conflict markers' in low:
+        return 'çözülmemiş git çakışma işaretleri (<<<<<<< / ======= / >>>>>>>) var; birleştirmeyi tamamlayın'
+    if low.startswith('nested ') and 'top-level frontmatter' in low:
+        parts = raw.split()
+        field = plain_text(parts[1]) if len(parts) > 1 else 'alan'
+        return f"üst bilgide iç içe '{field}' alanı geçersiz; üst düzeye taşıyın"
+    if 'invalid visibility' in low:
+        return 'geçersiz visibility değeri; public, internal veya private kullanın'
+    if 'positive revision required' in low:
+        return 'geçersiz revision değeri; 1 veya daha büyük bir tam sayı olmalı'
+    if 'facts must be an object' in low:
+        return 'geçersiz facts alanı; anahtar-değer nesnesi olmalı'
+    if low.endswith(' must be a string'):
+        field = plain_text(raw[:-len(' must be a string')].strip())
+        return f"geçersiz '{field}' alanı; metin olmalı"
+    if 'inference validity must be current or rejected' in low:
+        return 'geçersiz validity değeri; current veya rejected olmalı'
+    if 'rejected_reason required for rejected validity' in low:
+        return 'validity: rejected için rejected_reason alanı eksik'
+    if 'rejected_at must be an iso date' in low:
+        return 'geçersiz rejected_at tarihi; YYYY-MM-DD biçimini kullanın'
+    if 'supersedes must contain record ids' in low or 'record cannot supersede itself' in low:
+        return 'geçersiz supersedes alanı; not kimliklerini kontrol edin'
+    if 'workspace_readers must be distinct' in low:
+        return 'geçersiz workspace_readers alanı'
+    if 'record id required' in low:
+        return 'geçersiz id alanı; boş olmayan bir metin olmalı'
+    if 'task has embedded frontmatter' in low:
+        return "görev gövdesinde ikinci bir '---' üst bilgisi var; düzeltin"
+    if low.startswith('file sync conflict copy'):
+        return 'eşitleme çakışma kopyası; asıl notla karşılaştırıp birini silin'
+    if low.startswith('file sync copy of a receipt'):
+        return 'oturum kaydının eşitleme çakışma kopyası; asıl kayıtla karşılaştırıp kopyayı silin'
+    if 'symlink source rejected' in low:
+        return 'sembolik bağlantı (symlink) indekse alınmaz; gerçek dosyayı kullanın'
+    if 'source outside vault' in low or 'source missing or outside vault' in low:
+        return 'dosya kasanın dışında ya da bulunamadı'
+    if 'source changed while scanning' in low:
+        return 'tarama sırasında değişti; beyin.py sync ile tekrar deneyin'
+    if 'invalid daily layout' in low:
+        return '.beyin-daily-layout.json geçersiz; dosyayı düzeltin'
+    if 'state regression detected' in low:
+        return 'durum zaman damgası ileride; beyin.py sync --full çalıştırın'
+    if any(tok in low for tok in ('expecting property name', 'expecting value', "expecting ','", "expecting ':'",
+                                  'unterminated string', 'extra data', 'invalid control character')):
+        return 'bozuk JSON üst bilgisi (frontmatter); söz dizimini düzeltin'
+    if 'permission denied' in low or 'errno 13' in low or 'access is denied' in low:
+        return 'dosya okunamadı (izin hatası)'
+    if 'unreadable or invalid source' in low:
+        return 'not okunamadı veya ayrıştırılamadı; ayrıntı için: beyin.py sync --json'
+    fallback = plain_text(raw)
+    return fallback[:117] + '...' if len(fallback) > 120 else fallback
+
+
+def unreadable_notes_lines(result):
+    """Doctor lines for unreadable/warning notes from sync health (#964)."""
+    sw = result.get('sync_warnings')
+    if isinstance(sw, dict) and ('warnings' in sw or 'count' in sw):
+        items = [w for w in (sw.get('warnings') or []) if isinstance(w, dict)]
+        raw_count = sw.get('count')
+        count = max(raw_count if isinstance(raw_count, int) and not isinstance(raw_count, bool) else 0, len(items))
+    else:
+        health = result.get('hook-health.json')
+        sync_data = health.get('sync') if isinstance(health, dict) else None
+        raw = sync_data.get('warnings') if isinstance(sync_data, dict) else None
+        items = [
+            w for w in (raw or [])
+            if isinstance(w, dict)
+            and not str(w.get('reason', '')).startswith('possible file sync copy')
+            and w.get('kind') not in ('missing_receipt_source', 'receipt_view', 'privacy_frontmatter')
+            and w.get('reason') not in ('manual receipt view edit preserved', 'untracked receipt view preserved')
+        ]
+        count = len(items)
+    if not count:
+        return []
+    limit = 5
+    lines = ['Okunamayan veya indekslenmeyen notlar (' + str(count) + '):']
+    for item in items[:limit]:
+        src = plain_text(item.get('source', '?'))
+        if len(src) > 160:
+            src = src[:157] + '...'
+        lines.append('  - ' + src + ': ' + unreadable_note_reason(item.get('reason')))
+    shown = min(limit, len(items))
+    if count > shown:
+        lines.append('  +' + str(count - shown) + ' not daha (ayrıntı için --json).')
+    lines.append('Bu notlar düzeltilene kadar indekste ve bağlamda yer almaz. Ayrıntı: --json.')
+    return lines
+
+
+def missing_companion_lines(report):
+    """Doctor lines for missing expected companion files (#964)."""
+    if not isinstance(report, dict):
+        return []
+    status = report.get('status')
+    if status == 'ambiguous_directory':
+        return ['Hafıza (companion) klasörü belirsiz: birden fazla companion klasörü var; kullanılacak klasörü netleştirin.']
+    if status == 'unavailable':
+        return ['Hafıza (companion) dosyaları denetlenemedi (' + plain_text(report.get('error', 'bilinmeyen hata')) + ').']
+    missing = [name for name in (report.get('missing') or []) if isinstance(name, str) and name.strip()]
+    if not missing:
+        return []
+    identity_missing = bool(report.get('identity_missing'))
+    shown = []
+    for name in missing:
+        if name == 'Core.md' and identity_missing and 'Soul.md' not in missing:
+            shown.append('Core.md (veya Soul.md)')
+        else:
+            shown.append(plain_text(name))
+    directory = report.get('directory')
+    where = ' (' + plain_text(directory) + ')' if directory else ''
+    return ['Eksik hafıza (companion) dosyaları' + where + ': ' + ', '.join(shown) +
+            '. Oturum başlangıcı bu dosyaları yükleyemez; yedekten geri yükleyin ya da yeniden oluşturun.']
+
+
 def human_result(result, command, installed_version=None):
     status = result.get('status', '')
     if command == 'scheduled-check' and 'status' in result:
@@ -967,6 +1095,8 @@ def human_result(result, command, installed_version=None):
                          'yazılmış (ör. private: true, tags: [private], Visibility: Private). Bu sürüm onları tanıyor; '
                          'eski bir sürüme dönülürse not açığa çıkabilir ya da indeksten düşebilir. Not adlarını ve '
                          'doğru yazımı görmek için: ' + py_cmd + ' beyin.py sync')
+        lines += unreadable_notes_lines(result)
+        lines += missing_companion_lines(result.get('companion_sources'))
         if result.get('hook-error.json'):
             lines.append('Son kanca (hook) çalışmasında hata kaydedildi; ayrıntıyı görmek için ajanınıza "beyin doktor" deyin.')
         tc = result.get('task_completion') if isinstance(result.get('task_completion'), dict) else {}

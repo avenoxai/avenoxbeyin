@@ -26,11 +26,11 @@ from beyin_v3 import (HARNESSES, MAX_RECEIPT_LINKS, RECEIPT_CLIENT_NAME, RECEIPT
                       _path_redirected, _plain_link, _rejected_inference, _status_word, agent_sync_warnings, normalize_privacy_metadata, rejected_dependents, resolve_supersedes)
 from beyin_v3_index import applied_keys, dir_key, exclusions as index_exclusions, prune as prune_excluded
 from beyin_v3_hygiene import sensitive_excluded, sensitive_source
-from beyin_v3_projections import (is_receipt_view_source, is_receipt_view_conflict, project_receipts,
-                                  quarantine_receipt_view_history, archived_receipt_view_aliases,
+from beyin_v3_projections import (is_receipt_view_source, is_receipt_view_conflict, is_actionable_sync_warning,
+                                  project_receipts, quarantine_receipt_view_history, archived_receipt_view_aliases,
                                   _receipt_view_contents, receipt_view_rows,
                                   _record_excluded_dirs, _record_unreadable_sources,
-                                  RECEIPT_VIEW_SOURCES_ROW)
+                                  LAST_SYNC_WARNINGS_ROW, RECEIPT_VIEW_SOURCES_ROW)
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
 from beyin_v3_notes import (NoteConflict, locked as note_locked, _unlinked,
@@ -1379,12 +1379,23 @@ class SyncEngine:
                 # A receipt hidden by a directory mtime that did not move surfaces as a view
                 # conflict; the next sync then rescans receipts/ in full.
                 db.execute("DELETE FROM metadata WHERE key='receipt_scan_signature'")
+            # Numbered copy, missing-receipt-source, and privacy-frontmatter normalization warnings are
+            # informational (the source is safely indexed as private); they don't degrade the sync status.
+            degraded_warnings = [w for w in warnings if not str(w.get('reason', '')).startswith('possible file sync copy') and w.get('kind') not in ('missing_receipt_source', 'privacy_frontmatter')]
+            sync_status = 'conflict' if conflicts else 'degraded' if degraded_warnings else 'succeeded'
+            actionable_warnings = [w for w in degraded_warnings if is_actionable_sync_warning(w)]
+            db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',
+                       (LAST_SYNC_WARNINGS_ROW, json.dumps({
+                           'at': time.time(),
+                           'status': sync_status,
+                           'count': len(actionable_warnings),
+                           'warnings': [{'source': w.get('source'), 'reason': w.get('reason')}
+                                        for w in actionable_warnings[:100]],
+                           'truncated': len(actionable_warnings) > 100,
+                       })))  # ASCII escapes: a name that is not UTF-8 (lone surrogates) stays storable
         for entry in completed:
             entry.unlink(missing_ok=True)
-        # Numbered copy, missing-receipt-source, and privacy-frontmatter normalization warnings are
-        # informational (the source is safely indexed as private); they don't degrade the sync status.
-        degraded_warnings = [w for w in warnings if not str(w.get('reason', '')).startswith('possible file sync copy') and w.get('kind') not in ('missing_receipt_source', 'privacy_frontmatter')]
-        result = {'status': 'conflict' if conflicts else 'degraded' if degraded_warnings else 'succeeded', 'indexed': len(records), 'deleted': deleted, 'warnings': warnings, 'conflicts': conflicts}
+        result = {'status': sync_status, 'indexed': len(records), 'deleted': deleted, 'warnings': warnings, 'conflicts': conflicts}
         if recover_views:
             result['recovered_views'] = recovered_views or []
         if dead_supersedes:

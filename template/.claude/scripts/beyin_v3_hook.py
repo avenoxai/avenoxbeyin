@@ -18,6 +18,42 @@ HOOK_BUDGET = 3.8  # seconds; installed POSIX hooks are killed at 5
 SYNC_WAIT = 1.5  # seconds the prompt hook waits for the source sync before reading the last index
 UNMATCHED_SHOWN = 8  # prompt words listed as unmatched (#909); each at most 64 characters
 COVERAGE_NOTICE_KEY = 'receipt_coverage_gap'  # once-per-session key (#960), independent of N
+HOOK_HEALTH_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _read_hook_health(path):
+    """Read hook-health.json with symlink/regular-file/size guards; returns (present, sync_dict_or_None)."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False, None
+    except OSError:
+        return True, None
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode) or st.st_size > HOOK_HEALTH_MAX_BYTES:
+        return True, None
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return True, None
+    sync = data.get('sync') if isinstance(data, dict) else None
+    return True, (sync if isinstance(sync, dict) else {})
+
+
+def _sync_attention_notice(sync):
+    """The SessionStart line for a degraded sync (#964): how many actionable warnings, never which files.
+
+    A source the sync could not read or parse has unknown visibility, so its path is withheld like a
+    private one (beyin_v3_projections._hidden_ref_sources). This line reaches every harness and every
+    project unasked, so it names no source at all; doctor, a local command, names them. The count is
+    doctor's: actionable warnings of the sync this hook recorded."""
+    from beyin_v3_projections import is_actionable_sync_warning
+    warnings = sync.get('warnings') if isinstance(sync.get('warnings'), list) else []
+    count = sum(1 for item in warnings if is_actionable_sync_warning(item))
+    if not count:
+        return "V3 sync needs attention; consult current sources and doctor.\n"
+    label = 'warning' if count == 1 else 'warnings'
+    return (f"V3 sync needs attention ({count} sync {label}, such as notes it could not read; "
+            "`beyin.py doctor --human` names them); consult current sources and doctor.\n")
 
 
 def abstain_coverage():
@@ -1344,13 +1380,22 @@ def main():
             else:
                 warning = ''
             coverage_notice = ''
-            health = state / "hook-health.json"
-            if health.exists():
-                sync = json.loads(health.read_text(encoding="utf-8")).get("sync", {})
+            health_present, sync = _read_hook_health(state / "hook-health.json")
+            if health_present and sync is None:
+                warning += "V3 sync needs attention; consult current sources and doctor.\n"
+            elif health_present and isinstance(sync, dict):
                 if sync.get("status") not in ("ok", "succeeded", "synced"):
-                    warning += "V3 sync needs attention; consult current sources and doctor.\n"
+                    # The count opens the session only (#964), never a file name: a turn keeps the
+                    # short line, so its records keep their room while a note stays unreadable.
+                    attention = "V3 sync needs attention; consult current sources and doctor.\n"
+                    if event == 'SessionStart':
+                        try:
+                            attention = _sync_attention_notice(sync)
+                        except Exception:
+                            pass  # the count is a hint; the short line still warns
+                    warning += attention
                 from beyin_v3_projections import is_receipt_view_conflict
-                if any(is_receipt_view_conflict(c) for c in sync.get('conflicts', []) + sync.get('warnings', [])):
+                if any(is_receipt_view_conflict(c) for c in (sync.get('conflicts') or []) + (sync.get('warnings') or [])):
                     warning += "V3 receipt view preserved; consult doctor or run beyin.py sync --recover-views to archive and regenerate.\n"
                 if sync.get('skill_conflicts'):
                     warning += 'Shared skills differ between harnesses; both versions are preserved. Run doctor before trusting skill text.\n'
