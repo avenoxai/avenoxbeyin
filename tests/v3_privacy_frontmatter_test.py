@@ -558,6 +558,57 @@ class PrivacyAliasBackgroundAndReplayTest(unittest.TestCase):
         self.assertEqual({m['path'] for m in found['matches']}, set(open_notes))
         self.assertNotIn('CANARY', json.dumps(found))
 
+    def test_yakala_agrees_with_sync_when_sync_cannot_read_the_header(self):
+        # Invariant: the background reader refuses a note exactly when sync indexes it private,
+        # and keeps that decision when something else in the note (a flow map, merge markers)
+        # makes sync refuse the whole header. Before, such a note was read whatever its flag.
+        import beyin_v3_yakala as yakala
+        conflict = '<<<<<<< HEAD\na\n=======\nb\n>>>>>>> other\n'
+        values = ('true', 'false', 'yes', 'no', 'evet', 'hayır', 'HAYIR', '1', '0', 'on', 'off', 'doğru',
+                  '"true"', "'no'", '', 'x', 'hayır # kapalı')
+        # (header, the spelling sync reads): sync refuses a quoted key and a zero-indent list item
+        # outright; the strict reader accepts both, so they are judged by their plain spelling.
+        headers = [(f'{key}: {value}'.rstrip(),) * 2
+                   for key in ('private', 'Private', 'PRIVATE', 'gizli', 'Gizli', 'GİZLİ', 'gızlı') for value in values]
+        headers += [(f'"private": {value}'.rstrip(), f'private: {value}'.rstrip()) for value in values]
+        headers += [(header,) * 2 for header in (
+            'tags: [private]', 'tags: [work, Private]', 'Tags: work, gizli', 'tags: private', 'tags: ["#private"]',
+            'tags:\n  - work\n  - private', 'tags: [private-notes, privacy]', 'tags:\n  - privacy\n  - notes/private',
+            'title: Toplanti', 'tag: gizli', 'private: false\ntags: [work]')]
+        headers += [('tags:\n- Gizli/saglik', 'tags:\n  - Gizli/saglik'), ('tags:\n- privacy', 'tags:\n  - privacy')]
+        count = 0
+        for index, (header, readable) in enumerate(headers):
+            variants = {'clean': f'---\n{header}\n---\nZirkon body\n',
+                        'flowmap': f'---\n{header}\nmeta: {{a: 1}}\n---\nZirkon body\n',
+                        'merge': f'---\n{header}\n---\nZirkon body\n{conflict}'}
+            expected = beyin_v3_sync.parse(f'---\n{readable}\n---\nx\n')[0].get('visibility') == 'private'
+            for name, text in variants.items():
+                with self.subTest(header=header, variant=name):
+                    path = self.write(f'notes/grid-{index}-{name}.md', text)
+                    if name != 'clean' or header != readable:
+                        with self.assertRaises(ValueError):
+                            beyin_v3_sync.parse(text)
+                    try:
+                        yakala._agent_read_note(path)
+                        refused = False
+                    except ValueError as exc:
+                        self.assertIn('private', str(exc))
+                        refused = True
+                    self.assertEqual(refused, expected)
+                    count += 1
+        for header in ('{"private": true}', '{"Gizli": "evet"}', '{"tags": ["#gizli"]}', '{"private": false}',
+                       '{"tags": ["work"]}'):
+            with self.subTest(header=header):
+                expected = beyin_v3_sync.parse(f'---\n{header}\n---\nx\n')[0].get('visibility') == 'private'
+                path = self.write('notes/grid-json.md', f'---\n{header}\n---\nZirkon body\n{conflict}')
+                if expected:
+                    with self.assertRaisesRegex(ValueError, 'private'):
+                        yakala._agent_read_note(path)
+                else:
+                    self.assertIn('Zirkon', yakala._agent_read_note(path))
+                count += 1
+        self.assertGreater(count, 400)
+
     def test_mutation_replay_recognizes_a_created_alias_note(self):
         import beyin_v3_mutation as mutation
         engine = beyin_v3_sync.SyncEngine(self.vault, self.state)
