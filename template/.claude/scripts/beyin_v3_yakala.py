@@ -4329,6 +4329,30 @@ def _source_shortcut(event):
     return {'ı': 'i', 'i̇': 'i', 'idotless': 'i', 'iabovedot': 'i'}.get(key, key)
 
 
+def _typed_char(char, keysym_num, windows=None):
+    """The character a Windows key press really typed when Tk delivered it as '?', else None (#994).
+
+    Windows Tk decodes typed text through the keyboard layout's ANSI code page, so a letter outside it
+    (ə and Ə on Azerbaijani Latin, cp1254) arrives as char '?' while keysym_num still holds its code point,
+    bare or with X11's 0x1000000 Unicode offset. Only a non-ASCII printable code point counts: the real ?
+    key (63), control characters, lone UTF-16 halves and bare numbers in Tk's own key-name block
+    (0xFE00-0xFFFF: dead keys, BackSpace, F1, Shift) stay as they are. macOS and Linux deliver the
+    character itself.
+    """
+    if not (os.name == 'nt' if windows is None else windows) or char != '?':
+        return None
+    if isinstance(keysym_num, bool) or not isinstance(keysym_num, int):
+        return None  # tkinter leaves a field it could not read as text ('??')
+    code = keysym_num
+    if code >= 0x1000000:
+        code -= 0x1000000
+    elif 0xFE00 <= code <= 0xFFFF:
+        return None
+    if not 0x80 <= code <= 0x10FFFF or 0xD800 <= code <= 0xDFFF or not chr(code).isprintable():
+        return None
+    return chr(code)
+
+
 def _source_row_layout(count, room):
     """(card height, gap): two-line cards while they fit `room`, else one-line cards (scrolled past that)."""
     if count * 66 - 8 <= room:
@@ -5792,6 +5816,12 @@ def popup(vault, context=None, state=None, root=None, session=None):
             if event.keysym in ('BackSpace', 'Delete'):
                 return 'break'
         if hint['on'] and event.keysym in ('Left', 'Right', 'Home', 'End'):
+            return 'break'
+        typed = _typed_char(event.char, getattr(event, 'keysym_num', None))
+        if typed:
+            # What Entry's own <Key> binding does with the character, instead of its '?'.
+            entry.tk.call('::tk::CancelRepeat')
+            entry.tk.call('::tk::EntryInsert', str(entry), typed)
             return 'break'
 
     def after_key(_event=None):
