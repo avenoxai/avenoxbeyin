@@ -1912,12 +1912,16 @@ def _clipper_section(body):
 _CLIPPER_POINTER = re.compile(r'Tam metin ham dosyaya tasindi: `([^`\n]+)`[ \t]*(?:\n|\Z)')
 _CLIPPER_LEGACY_NOTE = ('Onceki surumde ilk alt baslikta kesilen Web Clipper metni, ham dosyadaki '
                         'girisle birlestirilerek yeniden yazildi.')
+_CLIPPER_EXISTING_NOTE = 'Tam metin zaten ham dosyada; Web Clipper icerigi korundu.'
+_CLIPPER_PRESERVED = object()
 
 
 def _clipper_text(vault, card, clipped):
     """Return (page text, note) for the `## Icerik` section of a card that may already be processed.
 
-    After `isle`, the section holds only the pointer to the raw file; that is no clipped page. Before
+    After `isle`, the section holds only the pointer to the raw file; when that pointer still
+    matches this card's intact `web-clipper` raw file, re-running `isle <id>` preserves it
+    instead of falling through to network fetchers and overwriting the clipped text. Before
     3.18.0 (#908) `isle` cut the page at its first `##` heading: the intro went to the raw file and
     the rest stayed in the card under the pointer. Such a card is rebuilt from both halves, so a
     second `isle` repairs it instead of overwriting the raw intro with the leftover sections.
@@ -1926,11 +1930,9 @@ def _clipper_text(vault, card, clipped):
     if not pointer:
         return clipped, None
     rest = clipped[pointer.end():].strip()
-    if not rest:
-        return '', None
     raw = card['path'].parent / RAW / (card['id'] + '.md')
     try:
-        if pointer.group(1) != raw.relative_to(vault).as_posix() or not raw.is_file():
+        if pointer.group(1) != raw.relative_to(vault).as_posix() or raw.is_symlink() or not raw.is_file():
             return '', None
         stored = raw.read_text(encoding='utf-8').replace('\r\n', '\n')
     except (OSError, ValueError, UnicodeDecodeError):
@@ -1948,6 +1950,8 @@ def _clipper_text(vault, card, clipped):
     intro = intro.rsplit(closing, 1)[0].strip()
     if not intro:
         return '', None
+    if not rest:
+        return _CLIPPER_PRESERVED, _CLIPPER_EXISTING_NOTE
     if rest in intro:
         return intro, _CLIPPER_LEGACY_NOTE  # repaired by hand already
     return intro + '\n\n' + rest, _CLIPPER_LEGACY_NOTE
@@ -2054,6 +2058,10 @@ def extract(vault, card, found, allow_audio=True, info=None, state=None):
         if kind == 'youtube' and kind_of(url) != 'youtube':
             kind = kind_of(url)  # an edited field never hands another site to yt-dlp's generic extractor
     clipped, legacy = _clipper_text(vault, card, _clipper_section(body))
+    if clipped is _CLIPPER_PRESERVED:
+        if kind != 'youtube':
+            return None, 'web-clipper-mevcut', legacy
+        clipped, legacy = '', None  # a YouTube card is transcribed, as before #926; the marker has no length
     if clipped and len(clipped) > 200 and kind != 'youtube':
         return clipped, 'web-clipper', legacy
     if kind == 'youtube' and url:
@@ -2229,6 +2237,11 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
                 entry.update({key: info[key] for key in ('dil', 'altyazi') if info.get(key)})
                 if meta.get('uyari') and not note:
                     note = meta['uyari']  # an unavailable check does not silently hide an earlier warning
+            elif method == 'web-clipper-mevcut':
+                raw_rel = (card['path'].parent / RAW / (card['id'] + '.md')).relative_to(vault).as_posix()
+                meta.update(durum='cikarildi', yontem='web-clipper', ham=raw_rel)
+                meta.pop('hata', None)
+                entry.update(durum='cikarildi', yontem='web-clipper', ham=raw_rel)
             elif method == 'ajan-okusun':
                 meta.update(durum='cikarildi', yontem=method)
                 if meta.get('kaynak_turu') == 'dosya':

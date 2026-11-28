@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 _TEMPLATE_SCRIPTS = str(ROOT / 'template/.claude/scripts')
@@ -680,6 +681,522 @@ class MemoryAuditorTest(unittest.TestCase):
         path = self.vault / 'massive.md'
         candidate = audit_module._candidate(path, 'massive.md', meta, body)
         self.assertEqual(candidate['words_count'], 100000)
+
+    def _write_card(self, rel: str, text: str) -> Path:
+        path = self.vault / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding='utf-8')
+        return path
+
+    def _customer_card(
+        self,
+        title: str,
+        legal_name: str,
+        city: str,
+        sector: str,
+        *,
+        website: str = '',
+        tax_number: str = '',
+        contact: str = '',
+        phone: str = '',
+        email: str = '',
+        products: str = '',
+        payment: str = '',
+        notes: str = '',
+        frontmatter: str = '',
+    ) -> str:
+        head = f"---\n{frontmatter.strip()}\n---\n" if frontmatter.strip() else ''
+        h1 = f"# {title}\n\n" if title else ''
+        return (
+            f"{head}{h1}"
+            "## Company\n"
+            f"- Legal name: {legal_name}\n"
+            f"- City: {city}\n"
+            f"- Sector: {sector}\n"
+            f"- Website: {website}\n"
+            f"- Tax number: {tax_number}\n"
+            "- Delivery address:\n\n"
+            "## Contact\n"
+            f"- Contact person: {contact}\n"
+            f"- Phone: {phone}\n"
+            f"- E-mail: {email}\n\n"
+            "## Trade\n"
+            f"- Products bought: {products}\n"
+            f"- Payment terms: {payment}\n\n"
+            "## Notes\n"
+            f"{notes}\n"
+        )
+
+    def test_template_sibling_cards_with_distinct_values_are_not_flagged(self):
+        """Issue #953: sibling cards sharing template headings and field labels with distinct values are skipped."""
+        self._write_card(
+            'notes/customers/north-bakery.md',
+            self._customer_card(
+                'North Bakery Ltd',
+                'North Bakery Ltd',
+                'Leeds',
+                'food',
+                frontmatter='title: North Bakery Ltd\ncreated: 2026-10-01',
+            ),
+        )
+        self._write_card(
+            'notes/customers/harbour-paints.md',
+            self._customer_card(
+                'Harbour Paints GmbH',
+                'Harbour Paints GmbH',
+                'Hamburg',
+                'coatings',
+                frontmatter='title: Harbour Paints GmbH\ncreated: 2026-10-02',
+            ),
+        )
+
+        # Verify raw lexical overlap would otherwise cross near_duplicate (>= 0.80, jaccard >= 0.65).
+        first, second = audit_module.scan_audit_candidates(self.vault, self.state)
+        raw_shared = len(first['tokens'] & second['tokens'])
+        self.assertGreaterEqual(raw_shared / min(len(first['tokens']), len(second['tokens'])), 0.80)
+        self.assertGreaterEqual(raw_shared / len(first['tokens'] | second['tokens']), 0.65)
+
+        report = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+        self.assertEqual(report['findings'], [], report['findings'])
+        self.assertEqual(report['template_pairs_skipped'], 1)
+        self.assertIn('1 cift', audit_module.format_audit_human(report))
+
+        target = audit_module.audit_memory(
+            self.vault, state=self.state, target_file='notes/customers/north-bakery.md',
+            threshold=0.60, min_shared=5,
+        )
+        self.assertEqual((target['findings'], target['template_pairs_skipped']), ([], 1))
+
+    def test_template_cards_with_duplicate_values_are_still_flagged(self):
+        """Genuine duplicate customer cards sharing both template AND actual values still flag near_duplicate."""
+        for label, extra in (
+            ('filled', dict(
+                website='https://northbakery.example',
+                contact='Clara Bennett',
+                phone='+44 113 555 0101',
+                email='clara@northbakery.example',
+                products='Industrial ovens',
+                payment='Net 30',
+                notes='Prefers morning deliveries.',
+            )),
+            ('sparse', {}),
+        ):
+            with self.subTest(case=label):
+                self._write_card(
+                    'notes/customers/north-bakery.md',
+                    self._customer_card(
+                        'North Bakery Ltd', 'North Bakery Ltd', 'Leeds', 'food',
+                        frontmatter='title: North Bakery Ltd\ncreated: 2026-10-01',
+                        **extra,
+                    ),
+                )
+                self._write_card(
+                    'notes/customers/north-bakery-copy.md',
+                    self._customer_card(
+                        'North Bakery Ltd', 'North Bakery Ltd', 'Leeds', 'food',
+                        frontmatter='title: North Bakery Ltd\ncreated: 2026-10-05',
+                        **extra,
+                    ),
+                )
+                report = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+                self.assertEqual(len(report['findings']), 1, report)
+                self.assertEqual(report['findings'][0]['type'], 'near_duplicate')
+                self.assertEqual(report['template_pairs_skipped'], 0)
+
+    def test_empty_duplicate_template_copies_are_still_flagged(self):
+        """Two empty template copies with no substantive values must not be silenced as distinct cards."""
+        for label, h1 in (('no-heading', ''), ('shared-heading', 'Customer Card')):
+            with self.subTest(case=label):
+                self._write_card('notes/customers/draft-one.md', self._customer_card(h1, '', '', ''))
+                self._write_card('notes/customers/draft-two.md', self._customer_card(h1, '', '', ''))
+                report = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+                self.assertEqual(len(report['findings']), 1, report)
+                self.assertEqual(report['findings'][0]['type'], 'near_duplicate')
+                self.assertEqual(report['template_pairs_skipped'], 0)
+
+    def test_plain_prose_duplicates_in_same_folder_are_still_flagged(self):
+        """Plain prose duplicate notes in the same folder (with 1 shared H1 or none) still flag near_duplicate."""
+        prose = (
+            "Konteyner orkestrasyonu katmaninda servis kesfi, saglik yoklamasi, "
+            "gunluk dondurme politikasi ve olcekleme esikleri belgelendi."
+        )
+        for label, heading in (('single-h1', '# Mimari Notu\n\n'), ('no-heading', '')):
+            with self.subTest(case=label):
+                self._write_card('notes/prose/not-a.md', f"{heading}{prose}\n")
+                self._write_card('notes/prose/not-b.md', f"{heading}{prose}\n")
+                report = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+                self.assertEqual(len(report['findings']), 1, report)
+                self.assertEqual(report['findings'][0]['type'], 'near_duplicate')
+                self.assertEqual(report['template_pairs_skipped'], 0)
+
+    def test_turkish_bold_template_field_labels_are_discounted_cleanly(self):
+        """Turkish bold field labels (- **Adı:** / - **Şehir**:) separate sibling cards while keeping real dupes."""
+        def tr_card(name: str, city: str, sector: str) -> str:
+            return (
+                f"---\ntitle: {name}\n---\n"
+                f"# {name}\n\n"
+                "## Sirket Bilgileri\n"
+                f"- **Adı:** {name}\n"
+                f"- **Şehir**: {city}\n"
+                f"- **Sektör:** {sector}\n"
+                "- **Web Sitesi:**\n"
+                "- **Vergi Numarasi**:\n\n"
+                "## Iletisim Bilgileri\n"
+                "- **İletişim Kişisi:**\n"
+                "- **Telefon:**\n"
+                "- **E-posta:**\n\n"
+                "## Ticari Bilgiler\n"
+                "- **Alınan Ürünler:**\n"
+                "- **Ödeme Koşulları:**\n\n"
+                "## Notlar\n"
+            )
+
+        self._write_card('notes/firmalar/kuzey-firin.md', tr_card('Kuzey Firin', 'Izmir', 'Gida'))
+        self._write_card('notes/firmalar/liman-boya.md', tr_card('Liman Boya', 'Bursa', 'Kimya'))
+        distinct = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+        self.assertEqual(distinct['notes_scanned'], 2)
+        self.assertEqual(distinct['findings'], [], distinct['findings'])
+        self.assertEqual(distinct['template_pairs_skipped'], 1)
+
+        self._write_card('notes/firmalar/kuzey-firin-kopya.md', tr_card('Kuzey Firin', 'Izmir', 'Gida'))
+        with_dupe = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+        self.assertEqual(with_dupe['notes_scanned'], 3)
+        self.assertEqual(len(with_dupe['findings']), 1, with_dupe['findings'])
+        self.assertEqual(with_dupe['findings'][0]['type'], 'near_duplicate')
+        self.assertEqual(
+            {with_dupe['findings'][0]['older_note'], with_dupe['findings'][0]['newer_note']},
+            {'notes/firmalar/kuzey-firin.md', 'notes/firmalar/kuzey-firin-kopya.md'},
+        )
+        self.assertEqual(with_dupe['template_pairs_skipped'], 2)
+
+    def test_template_siblings_with_different_statuses_do_not_raise_false_contradiction(self):
+        """Distinct template cards with different statuses are skipped, while same-entity flips still report."""
+        self._write_card(
+            'notes/customers/north-bakery.md',
+            self._customer_card(
+                'North Bakery Ltd', 'North Bakery Ltd', 'Leeds', 'food',
+                frontmatter='title: North Bakery Ltd\nupdated_at: 2026-09-01\nstatus: active',
+            ),
+        )
+        self._write_card(
+            'notes/customers/harbour-paints.md',
+            self._customer_card(
+                'Harbour Paints GmbH', 'Harbour Paints GmbH', 'Hamburg', 'coatings',
+                frontmatter='title: Harbour Paints GmbH\nupdated_at: 2026-10-01\nstatus: inactive',
+            ),
+        )
+        distinct = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+        self.assertEqual(distinct['findings'], [], distinct['findings'])
+        self.assertEqual(distinct['template_pairs_skipped'], 1)
+
+        self._write_card(
+            'notes/customers/north-bakery-v2.md',
+            self._customer_card(
+                'North Bakery Ltd', 'North Bakery Ltd', 'Leeds', 'food',
+                frontmatter='title: North Bakery Ltd\nupdated_at: 2026-10-15\nstatus: inactive',
+            ),
+        )
+        same_entity = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+        self.assertEqual(len(same_entity['findings']), 1, same_entity['findings'])
+        self.assertEqual(same_entity['findings'][0]['type'], 'status_contradiction')
+        self.assertEqual(
+            {same_entity['findings'][0]['older_note'], same_entity['findings'][0]['newer_note']},
+            {'notes/customers/north-bakery.md', 'notes/customers/north-bakery-v2.md'},
+        )
+
+    def test_revised_same_record_card_still_reports_status_contradiction(self):
+        """A same-record card whose contact, trade and notes were revised is not a template sibling."""
+        old = dict(website='https://northbakery.example', contact='Clara Bennett', phone='+44 113 555 0101',
+                   email='clara@northbakery.example', products='Industrial ovens', payment='Net 30',
+                   notes='Prefers morning deliveries.')
+        new = dict(website='https://northbakery.example', contact='John Carter', phone='+44 113 555 0199',
+                   email='john@northbakery.example', products='Commercial dough mixers', payment='Prepaid',
+                   notes='Account closed after the October price increase.')
+        layouts = {
+            # The record name in the title (front matter and H1) and in the Legal name field.
+            'titled': (('north-bakery.md', 'North Bakery Ltd', 'title: North Bakery Ltd\n'),
+                       ('north-bakery-2026.md', 'North Bakery Ltd', 'title: North Bakery Ltd\n')),
+            # No title at all: Obsidian shows the file name, and a duplicated file gets " 2".
+            'file_name': (('North Bakery Ltd.md', '', ''), ('North Bakery Ltd 2.md', '', '')),
+        }
+        for layout, ((old_name, old_h1, old_fm), (new_name, new_h1, new_fm)) in layouts.items():
+            with self.subTest(layout=layout):
+                folder = self.vault / 'notes' / layout
+                self._write_card(f'notes/{layout}/{old_name}', self._customer_card(
+                    old_h1, 'North Bakery Ltd', 'Leeds', 'food',
+                    frontmatter=f'{old_fm}updated_at: 2026-09-01\nstatus: active', **old))
+                self._write_card(f'notes/{layout}/{new_name}', self._customer_card(
+                    new_h1, 'North Bakery Ltd', 'Leeds', 'food',
+                    frontmatter=f'{new_fm}updated_at: 2026-10-15\nstatus: inactive', **new))
+                report = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+                self.assertEqual(report['template_pairs_skipped'], 0, report)
+                self.assertEqual([f['type'] for f in report['findings']], ['status_contradiction'], report)
+                self.assertEqual(report['findings'][0]['conflict']['newer_term'], 'inactive')
+                shutil.rmtree(folder)
+
+    def test_fenced_code_key_values_are_not_discounted_as_template_fields(self):
+        """YAML/config lines inside fenced code blocks stay substantive content, never template scaffold."""
+        self._write_card(
+            'knowledge/cfg-a.md',
+            "---\ntitle: Config A\n---\n```yaml\nhost: app-one\nport: 8080\nmode: cluster\n"
+            "region: eu-west\nstorage: nvme\nworkers: four\n```\n",
+        )
+        self._write_card(
+            'knowledge/cfg-b.md',
+            "---\ntitle: Config B\n---\n```yaml\nhost: app-two\nport: 9090\nmode: cluster\n"
+            "region: eu-west\nstorage: nvme\nworkers: four\n```\n",
+        )
+        report = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
+        self.assertEqual(len(report['findings']), 1, report)
+        self.assertEqual(report['template_pairs_skipped'], 0)
+
+
+class TemplatePairInvariantTest(unittest.TestCase):
+    """#953 as a class: the template rule may only quiet pairs of different records.
+
+    Every case is audited twice, with the rule and with `_template_only_overlap` switched off.
+    Two kinds of pair must give the identical report: copies of one record, i.e. notes whose
+    titles (file names when untitled) name the same record, whatever share of the values was
+    revised and whether the status changed; and pairs whose values are a subset of the other
+    note's (same card saved twice, a copy filled in later or given extra notes). Notes with
+    fewer than three headings/field labels must too. Only sibling cards for different records
+    may disappear, and then they are counted in `template_pairs_skipped`.
+    """
+
+    LAYOUTS = {
+        'en': (('Company', ('Legal name', 'City', 'Sector', 'Website')),
+               ('Contact', ('Contact person', 'Phone', 'E-mail')),
+               ('Trade', ('Products bought', 'Payment terms'))),
+        'tr': (('Şirket Bilgileri', ('Ünvan', 'Şehir', 'Sektör', 'Web sitesi')),
+               ('İletişim', ('İletişim Kişisi', 'Telefon', 'E-posta')),
+               ('Ticari Bilgiler', ('Alınan Ürünler', 'Ödeme Koşulları'))),
+    }
+    RECORDS = {
+        'en': ({'Legal name': 'North Bakery Ltd', 'City': 'Leeds', 'Sector': 'food', 'Website': 'northbakery.example',
+                'Contact person': 'Clara Bennett', 'Phone': '+44 113 555 0101', 'E-mail': 'clara@northbakery.example',
+                'Products bought': 'Industrial ovens', 'Payment terms': 'Net 30'},
+               {'Legal name': 'Harbour Paints GmbH', 'City': 'Hamburg', 'Sector': 'coatings',
+                'Website': 'harbourpaints.example', 'Contact person': 'Jonas Weber', 'Phone': '+49 40 555 0199',
+                'E-mail': 'jonas@harbourpaints.example', 'Products bought': 'Marine primers', 'Payment terms': 'Net 60'}),
+        'tr': ({'Ünvan': 'Kuzey Fırın AŞ', 'Şehir': 'İzmir', 'Sektör': 'gıda', 'Web sitesi': 'kuzeyfirin.example',
+                'İletişim Kişisi': 'Ayşe Çelik', 'Telefon': '0232 555 0101', 'E-posta': 'ayse@kuzeyfirin.example',
+                'Alınan Ürünler': 'Endüstriyel fırın', 'Ödeme Koşulları': 'Otuz gün vadeli'},
+               {'Ünvan': 'Liman Boya Ltd', 'Şehir': 'Bursa', 'Sektör': 'kimya', 'Web sitesi': 'limanboya.example',
+                'İletişim Kişisi': 'Oğuz Güneş', 'Telefon': '0224 555 0199', 'E-posta': 'oguz@limanboya.example',
+                'Alınan Ürünler': 'Gemi astar boyası', 'Ödeme Koşulları': 'Peşin ödeme'}),
+    }
+    STYLES = {
+        'dash': ('##', '- {label}: {value}'),
+        'bold': ('##', '**{label}:** {value}'),
+        'dash_bold': ('###', '- **{label}**: {value}'),
+        'dataview': ('##', '{label}:: {value}'),
+    }
+    # A later revision of the first record: new values, applied in this order (last revised first).
+    REVISIONS = {
+        'en': (('Contact person', 'John Carter'), ('Phone', '+44 113 555 0199'),
+               ('E-mail', 'john@northbakery.example'), ('Products bought', 'Commercial dough mixers'),
+               ('Payment terms', 'Prepaid'), ('Website', 'northbakery-shop.example'), ('Sector', 'catering'),
+               ('City', 'York')),
+        'tr': (('İletişim Kişisi', 'Oğuz Güneş'), ('Telefon', '0232 555 0199'),
+               ('E-posta', 'oguz@kuzeyfirin.example'), ('Alınan Ürünler', 'Hamur yoğurma makinesi'),
+               ('Ödeme Koşulları', 'Peşin ödeme'), ('Web sitesi', 'kuzeyfirin-magaza.example'),
+               ('Sektör', 'hazır yemek'), ('Şehir', 'Manisa')),
+    }
+    # Where the record name sits besides the first field: front matter title + H1, H1 only, or
+    # nowhere but the file name (Obsidian shows it; a duplicated file gets " 2", a copy "-2026").
+    # 'h1_only' leaves the name field blank, so the name is in the H1 and nowhere else.
+    NAMINGS = ('title', 'h1', 'h1_only', 'file')
+    GENERIC_TITLES = {'en': ('Weekly sync', 'Customer card'), 'tr': ('Haftalık toplantı', 'Müşteri kartı')}
+    SPARSE = 3  # the first three fields (name, city, sector) are filled, the rest left blank
+    EXTRA = ('ziyaret bakim sozlesmesi yenileme sezon tahmini teslimat saati fatura itirazi satin alma '
+             'muduru teklif talebi dolap uretim hatti kapasite planlamasi numune onayi kalite raporu '
+             'nakliye sigortasi depo kirasi yillik indirim paketi ihracat belgesi gumruk beyannamesi '
+             'odeme hatirlatmasi')
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='v3-audit-template-')
+        self.addCleanup(self.tmp.cleanup)
+
+    def card(self, lang, style, record, filled, *, notes='', status='', created='2026-10-01', naming='title'):
+        heading, line = self.STYLES[style]
+        fields = [label for _head, labels in self.LAYOUTS[lang] for label in labels]
+        keep = set(fields[:filled])
+        name = record[fields[0]] if fields[0] in keep else ''
+        if naming == 'h1_only':
+            keep.discard(fields[0])
+        title = f"title: {name or 'Kart'}\n" if naming == 'title' else ''
+        head = f"---\n{title}created: {created}\n" + (f"status: {status}\n" if status else '') + "---\n"
+        body = f"# {name or 'Kart'}\n\n" if naming in ('title', 'h1', 'h1_only') else ''
+        for section, labels in self.LAYOUTS[lang]:
+            body += f"{heading} {section}\n"
+            body += ''.join(line.format(label=label, value=record[label] if label in keep else '').rstrip() + '\n'
+                            for label in labels) + '\n'
+        return head + body + f"{heading} Notes\n{notes}\n"
+
+    def audit_both(self, files):
+        root = Path(tempfile.mkdtemp(dir=self.tmp.name))
+        vault, state = root / 'vault', root / 'state'
+        state.mkdir(parents=True)
+        for rel, text in files.items():
+            path = vault / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding='utf-8', newline='\n')
+        report = audit_module.audit_memory(vault, state=state)
+        with mock.patch.object(audit_module, '_template_only_overlap', return_value=False):
+            baseline = audit_module.audit_memory(vault, state=state)
+        self.last_vault, self.last_state = vault, state
+        return report, baseline
+
+    def paths(self, lang, record, other=None):
+        """File names carrying the record name: the first card, then its copy (or `other`'s card)."""
+        def slug(rec):
+            return audit_module.fold(rec[self.LAYOUTS[lang][0][1][0]]).replace(' ', '-')
+        copy = f'{slug(other)}.md' if other else (f'{slug(record)}-2026.md' if lang == 'en' else f'{slug(record)} 2.md')
+        return f'notes/kart/{slug(record)}.md', f'notes/kart/{copy}'
+
+    def quieted_by_values_alone(self):
+        """Would the values test alone (titles ignored) have dropped the last audited pair?"""
+        a, b = audit_module.scan_audit_candidates(self.last_vault, self.last_state)
+        if not a['template'] or not b['template']:
+            return False
+        a = {**a, 'template': {**a['template'], 'record_words': frozenset({'a'})}}
+        b = {**b, 'template': {**b['template'], 'record_words': frozenset({'b'})}}
+        return audit_module._template_only_overlap(a, b, 0.60)
+
+    def assert_unchanged(self, report, baseline, expected_type=None):
+        self.assertEqual(report['template_pairs_skipped'], 0, report)
+        self.assertEqual(json.dumps(report, sort_keys=True), json.dumps(baseline, sort_keys=True))
+        self.assertEqual(len(report['findings']), 1, report)  # the case really is a reported pair
+        if expected_type:
+            self.assertEqual(report['findings'][0]['type'], expected_type)
+
+    def test_same_record_copies_always_report_as_without_the_rule(self):
+        """Copies whose values are a subset of the other's report unchanged, also when nothing in
+        the titles ties them together ('file': untitled a.md and b.md, so the values decide)."""
+        full = sum(len(labels) for _head, labels in self.LAYOUTS['en'])
+        cases = 0
+        for lang in self.LAYOUTS:
+            record = self.RECORDS[lang][0]
+            for style in self.STYLES:
+                for naming in ('title', 'file'):
+                    for filled in (self.SPARSE, full):
+                        def card(filled_, **kw):
+                            return self.card(lang, style, record, filled_, naming=naming, **kw)
+                        first = card(filled)
+                        variants = {
+                            'identical': card(filled, created='2026-10-05'),
+                            'filled_later': card(full, created='2026-10-05'),
+                            'notes_12': card(filled, created='2026-10-05', notes=' '.join(self.EXTRA.split()[:12])),
+                            'notes_30': card(filled, created='2026-10-05', notes=self.EXTRA),
+                            'filled_later_with_notes': card(full, created='2026-10-05', notes=self.EXTRA),
+                        }
+                        for variant, second in variants.items():
+                            with self.subTest(lang=lang, style=style, naming=naming, filled=filled, variant=variant):
+                                self.assert_unchanged(*self.audit_both({'notes/kart/a.md': first,
+                                                                        'notes/kart/b.md': second}))
+                                cases += 1
+                        with self.subTest(lang=lang, style=style, naming=naming, filled=filled, variant='status_flip'):
+                            report, baseline = self.audit_both({
+                                'notes/kart/a.md': card(filled, status='active'),
+                                'notes/kart/b.md': card(filled, status='inactive', created='2026-10-05'),
+                            })
+                            self.assert_unchanged(report, baseline, 'status_contradiction')
+                            cases += 1
+        self.assertEqual(cases, 2 * 4 * 2 * 2 * 6)
+
+    def test_revised_same_record_reports_as_without_the_rule(self):
+        """A later card for the same record, with 1..all values revised and with or without a
+        status flip, under any naming, reports exactly as without the template rule."""
+        full = sum(len(labels) for _head, labels in self.LAYOUTS['en'])
+        cases = rescued = 0
+        for lang in self.LAYOUTS:
+            record = self.RECORDS[lang][0]
+            first_path, copy_path = self.paths(lang, record)
+            for style in self.STYLES:
+                for naming in self.NAMINGS:
+                    for flip in (False, True):
+                        first = self.card(lang, style, record, full, naming=naming,
+                                          status='active' if flip else '')
+                        for revised in range(1, len(self.REVISIONS[lang]) + 1):
+                            later = {**record, **dict(self.REVISIONS[lang][:revised])}
+                            second = self.card(lang, style, later, full, naming=naming, created='2026-10-05',
+                                               status='inactive' if flip else '')
+                            with self.subTest(lang=lang, style=style, naming=naming, flip=flip, revised=revised):
+                                report, baseline = self.audit_both({first_path: first, copy_path: second})
+                                self.assertEqual(report['template_pairs_skipped'], 0, report)
+                                self.assertEqual(json.dumps(report, sort_keys=True),
+                                                 json.dumps(baseline, sort_keys=True))
+                                if revised == 1:
+                                    self.assertEqual(len(baseline['findings']), 1, baseline)
+                                if baseline['findings']:
+                                    self.assertIn(baseline['findings'][0]['type'],
+                                                  {'status_contradiction'} if flip
+                                                  else {'near_duplicate', 'substantial_overlap'})
+                                    rescued += self.quieted_by_values_alone()
+                            cases += 1
+        self.assertEqual(cases, 2 * 4 * 4 * 2 * 8)
+        # The grid really holds reported revisions that the values test alone would have dropped.
+        self.assertGreaterEqual(rescued, 2 * 4 * 4 * 2)
+
+    def test_sibling_cards_for_different_records_are_counted_not_reported(self):
+        for lang in self.LAYOUTS:
+            ours, theirs = self.RECORDS[lang]
+            for style in self.STYLES:
+                for naming in self.NAMINGS:
+                    ours_path, theirs_path = self.paths(lang, ours, theirs)
+                    for filled in (self.SPARSE, 9):
+                        with self.subTest(lang=lang, style=style, naming=naming, filled=filled):
+                            report, baseline = self.audit_both({
+                                ours_path: self.card(lang, style, ours, filled, status='active', naming=naming),
+                                theirs_path: self.card(lang, style, theirs, filled, status='inactive',
+                                                       created='2026-10-05', naming=naming),
+                            })
+                            self.assertEqual(report['findings'], [], report)
+                            self.assertEqual(report['template_pairs_skipped'], len(baseline['findings']))
+                            if filled == self.SPARSE:
+                                self.assertEqual(len(baseline['findings']), 1, baseline)  # 3.18.0 reported it
+
+    def test_same_generic_title_reports_as_without_the_rule(self):
+        """Different records under one generic title ("Weekly sync") report as without the rule.
+
+        The title gives no sign that they are different records, so the rule stays out, although
+        the values alone would have quieted every one of these pairs.
+        """
+        for lang, generics in self.GENERIC_TITLES.items():
+            ours, theirs = self.RECORDS[lang]
+            name = self.LAYOUTS[lang][0][1][0]
+            for generic in generics:
+                for style in self.STYLES:
+                    with self.subTest(lang=lang, generic=generic, style=style):
+                        # Front matter title and H1 carry the generic title; the name field keeps the record.
+                        first = self.card(lang, style, ours, self.SPARSE, status='active').replace(
+                            ours[name], generic, 2)
+                        second = self.card(lang, style, theirs, self.SPARSE, status='inactive',
+                                           created='2026-10-05').replace(theirs[name], generic, 2)
+                        report, baseline = self.audit_both({'notes/kart/a.md': first, 'notes/kart/b.md': second})
+                        self.assert_unchanged(report, baseline, 'status_contradiction')
+                        self.assertTrue(self.quieted_by_values_alone())
+
+    def test_notes_without_three_template_slots_report_as_without_the_rule(self):
+        prose = ('Konteyner orkestrasyonu katmaninda servis kesfi, saglik yoklamasi, gunluk dondurme politikasi '
+                 've olcekleme esikleri belgelendi. Yuk dengeleyici ayarlari ve sertifika yenileme takvimi eklendi.')
+        shapes = {
+            'plain': prose,
+            'h1': '# Mimari Notu\n\n' + prose,
+            'two_headings': '# Mimari Notu\n\n## Ozet\n\n' + prose,
+            'heading_and_field': '# Mimari Notu\n\nDurum: tamamlandı\n\n' + prose,
+            'two_fields': 'Sonuç: kabul edildi\nKaynak: toplanti\n\n' + prose,
+            'colons_in_prose': 'Saat 10:30 toplantisinda https://ornek.example adresi konusuldu.\n\n' + prose,
+        }
+        for shape, body in shapes.items():
+            with self.subTest(shape=shape):
+                files = {'notes/prose/a.md': f"---\ntitle: Mimari\ncreated: 2026-10-01\n---\n{body}\n",
+                         'notes/prose/b.md': f"---\ntitle: Mimari\ncreated: 2026-10-05\n---\n{body}\n"}
+                report, baseline = self.audit_both(files)
+                self.assert_unchanged(report, baseline, 'near_duplicate')
+                meta, text = audit_module.parse_frontmatter_and_body(files['notes/prose/a.md'])
+                self.assertIsNone(audit_module._extract_template_structure(text, 'Mimari', set()))
+
 
 if __name__ == '__main__':
     unittest.main()

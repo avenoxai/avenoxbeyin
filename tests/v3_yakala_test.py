@@ -614,9 +614,10 @@ class YakalaUnitTest(unittest.TestCase):
         card = path.read_text(encoding='utf-8')
         self.assertTrue(card.endswith('## Icerik\n\nTam metin ham dosyaya tasindi: `' + entry['ham'] + '`\n'))
         self.assertNotIn('Gövde metni.', card)
-        # A repaired card holds only the pointer: another run is no clipped page and leaves the raw file alone.
+        # A repaired card holds only the pointer: another run keeps the raw file untouched without refetching.
         before = (self.vault / entry['ham']).read_bytes()
-        self.assertEqual(isle(path)['durum'], 'hata')
+        again = isle(path)
+        self.assertEqual((again['durum'], again['yontem']), ('cikarildi', 'web-clipper'))
         self.assertEqual((self.vault / entry['ham']).read_bytes(), before)
         # Raw file of another card, of another method or missing: nothing is joined or overwritten.
         for name, options in (('baska', {'kart': INBOX + '/diger.md'}), ('defuddle', {'yontem': 'defuddle'}),
@@ -633,6 +634,71 @@ class YakalaUnitTest(unittest.TestCase):
                     self.assertEqual((self.vault / ham).read_bytes(), before)
                 self.assertIn(b'G\xc3\xb6vde metni.', path.read_bytes())
                 self.assertEqual(path.read_bytes().split(b'\n---\n', 1)[1].strip(), card.split(b'\n---\n', 1)[1].strip())
+
+    def test_web_clipper_rerun_preserves_existing_raw_without_network_overwrite(self):
+        # Running `yakala isle <id>` again on an already extracted Web Clipper card must not
+        # fall through to network fetchers (defuddle/http) or overwrite the clipped raw file.
+        env = patch.dict(os.environ, {'XDG_STATE_HOME': str(Path(self.tmp.name) / 'state')})
+        env.start()
+        self.addCleanup(env.stop)
+        none = {name: None for name in ('npx', 'yt_dlp', 'whisper', 'pdftotext', 'ffmpeg')}
+        url = 'https://ornek.com/paywalled-article'
+        article = ('Gercek tam makale icerigi burada duruyor. ' * 8 + '\n\n## Bolum 2\n\nPaywall arkasindaki ayrinti.')
+        path = self.vault / INBOX / 'clip-rerun.md'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '---\ntur: yakala\ndurum: bekliyor\nkaynak_turu: makale\nbaslik: "Paywall"\nurl: "' + url + '"\n'
+            'arac: web-clipper\nvisibility: internal\n---\n# Paywall\n\n## Kaynak\n\n' + url + '\n\n## Icerik\n\n'
+            + article + '\n',
+            encoding='utf-8', newline='\n'
+        )
+        with patch.object(yakala, 'tools', return_value=none), patch.object(socket, 'getaddrinfo', return_value=[
+                (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('8.8.8.8', 443))]):
+            first = yakala.process(self.vault, [path.stem])['kartlar'][0]
+        self.assertEqual((first['durum'], first['yontem']), ('cikarildi', 'web-clipper'))
+        raw_path = self.vault / first['ham']
+        before = raw_path.read_bytes()
+        with patch.object(yakala, 'tools', return_value=none), patch.object(socket, 'getaddrinfo', return_value=[
+                (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('8.8.8.8', 443))]), \
+                patch.object(yakala, 'via_defuddle', return_value='Please sign in to read this article.') as mock_defuddle, \
+                patch.object(yakala, 'via_stdlib', return_value='Login required') as mock_stdlib:
+            second = yakala.process(self.vault, [path.stem])['kartlar'][0]
+        mock_defuddle.assert_not_called()
+        mock_stdlib.assert_not_called()
+        self.assertEqual((second['durum'], second['yontem']), ('cikarildi', 'web-clipper'))
+        self.assertEqual(raw_path.read_bytes(), before)
+        self.assertIn('Paywall arkasindaki ayrinti.', raw_path.read_text(encoding='utf-8'))
+
+    def test_web_clipper_pointer_on_a_card_turned_youtube_still_reaches_the_transcript_path(self):
+        # #926 follow-up: the "already in the raw file" marker is not page text. A processed Web Clipper
+        # card whose kaynak_turu is later edited to youtube goes to yt-dlp as before, not to len(marker).
+        env = patch.dict(os.environ, {'XDG_STATE_HOME': str(Path(self.tmp.name) / 'state')})
+        env.start()
+        self.addCleanup(env.stop)
+        none = {name: None for name in ('npx', 'yt_dlp', 'whisper', 'pdftotext', 'ffmpeg')}
+        resolve = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('8.8.8.8', 443))]
+        url = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+        path = self.vault / INBOX / 'clip-video.md'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '---\ntur: yakala\ndurum: bekliyor\nkaynak_turu: makale\nbaslik: "Video"\nurl: "' + url + '"\n'
+            'arac: web-clipper\nvisibility: internal\n---\n# Video\n\n## Kaynak\n\n' + url + '\n\n## Icerik\n\n'
+            + 'Video sayfasinin Web Clipper ile yakalanan aciklama metni. ' * 6 + '\n',
+            encoding='utf-8', newline='\n'
+        )
+        with patch.object(yakala, 'tools', return_value=none), patch.object(socket, 'getaddrinfo', return_value=resolve):
+            first = yakala.process(self.vault, [path.stem])['kartlar'][0]
+        self.assertEqual((first['durum'], first['yontem']), ('cikarildi', 'web-clipper'))
+        raw_path = self.vault / first['ham']
+        before = raw_path.read_bytes()
+        text = re.sub(r'(?m)^kaynak_turu: .*$', 'kaynak_turu: youtube', path.read_text(encoding='utf-8'))
+        path.write_text(text, encoding='utf-8', newline='\n')
+        with patch.object(yakala, 'tools', return_value=none), patch.object(socket, 'getaddrinfo', return_value=resolve), \
+                patch.object(yakala, 'via_youtube', return_value=(None, None, 'yt-dlp yok')) as transcript:
+            second = yakala.process(self.vault, [path.stem])['kartlar'][0]
+        transcript.assert_called_once()
+        self.assertEqual((second['durum'], second['not']), ('hata', 'yt-dlp yok'))
+        self.assertEqual(raw_path.read_bytes(), before)
 
     def test_vtt_text(self):
         raw = ('WEBVTT\nKind: captions\n\n00:00:00.000 --> 00:00:02.000\nmerhaba <c>dunya</c>\n\n'
