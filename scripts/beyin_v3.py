@@ -14,6 +14,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import unicodedata
 
 
 def default_state(vault: Path) -> Path:
@@ -30,6 +31,56 @@ def default_state(vault: Path) -> Path:
 
 SOURCE_WRITE_COMMANDS = ("note-create", "note-edit", "homepage-create", "task-create", "task-update")
 NOTE_JSON_COMMANDS = ("note-read", "note-edit", "homepage-create")
+
+# Strict allowlist of non-secret BEYIN_V3_* runtime toggle env vars (#961).
+# Never iterate arbitrary os.environ keys or expose session/token variables here.
+ENV_OVERRIDE_VARS = (
+    ("BEYIN_V3_SKIP", "1 disables hooks and global bridge"),
+    ("BEYIN_V3_INTERNAL", "non-empty internal recursion guard; suppresses hooks"),
+    ("BEYIN_V3_NO_RECEIPT_REMINDER", "1 disables receipt reminders"),
+    ("BEYIN_V3_RECEIPT_REMINDER", "context moves Claude Code vault Stop reminder to next prompt"),
+    ("BEYIN_V3_ABSTAIN_COVERAGE", "(0, 1] lexical coverage threshold below which hook abstains (e.g. 0.6)"),
+    ("BEYIN_V3_CONTEXT_DEDUPE", "1 enables in-session context deduplication"),
+    ("BEYIN_V3_FILTER_HARNESS_TURNS", "0 disables synthetic harness turn filtering"),
+    ("BEYIN_V3_NO_SPAWN", "1 disables detached background worker/update spawns"),
+)
+_ENV_BIDI_CONTROLS = frozenset("\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+_ENV_VALUE_MAX_LEN = 64
+
+
+def _sanitize_env_value(raw: str, max_len: int = _ENV_VALUE_MAX_LEN) -> str:
+    """Strip control/bidi/line-break chars and bound length for safe JSON and terminal output."""
+    cleaned = "".join(
+        " " if ch in "\r\n\t\u2028\u2029\x85" else
+        "" if unicodedata.category(ch) == "Cc" or ch in _ENV_BIDI_CONTROLS else ch
+        for ch in str(raw)
+    )
+    cleaned = " ".join(cleaned.split())
+    if not cleaned:
+        return "?"
+    if len(cleaned) > max_len:
+        return cleaned[:max_len - 3] + "..."
+    return cleaned
+
+
+def read_env_overrides(environ=None) -> dict[str, str]:
+    """Read allowlisted BEYIN_V3_* runtime toggle overrides from the current process environment."""
+    source = os.environ if environ is None else environ
+    active: dict[str, str] = {}
+    for name, _ in ENV_OVERRIDE_VARS:
+        raw = source.get(name)
+        if isinstance(raw, str) and raw:
+            active[name] = _sanitize_env_value(raw)
+    return active
+
+
+def _preferences_env_epilog() -> str:
+    """Help epilog documenting process/hook environment toggles (#961)."""
+    lines = ["Environment toggles (set in process/hook environment, not saved in .beyin-preferences.json):"]
+    for name, summary in ENV_OVERRIDE_VARS:
+        lines.append(f"  {name:<30} {summary}")
+    lines.append("Run `beyin.py doctor` to inspect active overrides in the current process environment.")
+    return "\n".join(lines)
 
 
 class NoteUsageError(ValueError):
@@ -1219,7 +1270,12 @@ def parser(note_namespace=None, is_json=False):
     audit_parser.add_argument("--threshold", type=float, default=0.60, help="Lexical overlap threshold 0.0..1.0 (default: 0.60)")
     audit_parser.add_argument("--min-shared", type=int, default=5, help="Minimum shared topical terms (default: 5)")
     audit_parser.add_argument("--limit", type=int, default=20, help="Maximum findings to return (default: 20)")
-    settings = sub.add_parser("preferences", help="Control automatic local checks and injected context")
+    settings = sub.add_parser(
+        "preferences",
+        help="Control automatic local checks and injected context",
+        epilog=_preferences_env_epilog(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     settings.add_argument("--profile", choices=("normal", "economical", "manual"))
     settings.add_argument("--auto-sync", choices=("on", "off"))
     settings.add_argument("--interval-minutes", type=int)
@@ -1823,6 +1879,9 @@ def main(argv=None, return_result=False):
             except ImportError:
                 if args.hermes_attended_platform or args.hermes_unattended_platform or args.hermes_reset_platforms:
                     raise ValueError("Hermes platform settings module is unavailable; reinstall the vault")
+            env_overrides = read_env_overrides()
+            if env_overrides:
+                result['env_overrides'] = env_overrides
         elif args.command == "jev":
             laya = {key: value for key, value in (("base_url", args.base_url), ("model", args.model)) if value is not None}
             if args.mode == "status":
@@ -1905,6 +1964,7 @@ def main(argv=None, return_result=False):
             import beyin_v3_preferences as preferences
             prefs = preferences.read(vault)
             result['preferences'] = prefs
+            result['env_overrides'] = read_env_overrides()
             # First-use setup summary: context budget, secret filter, remote transmission (#691.3)
             result['setup_summary'] = {
                 'profile': next((name for name, values in preferences.PROFILES.items() if values == prefs), 'custom'),
