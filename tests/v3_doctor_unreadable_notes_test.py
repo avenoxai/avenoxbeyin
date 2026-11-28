@@ -104,13 +104,13 @@ class DoctorUnreadableAndCompanionTest(unittest.TestCase):
         notes = self.vault / 'notes'
         notes.mkdir()
         broken_fm = notes / 'broken.md'
-        broken_fm.write_text('---\ntitle: Acik kalmis\n\nUNREADABLE_SECRET_BODY_CANARY_1\n', encoding='utf-8')
+        broken_fm.write_text('---\ntitle: Acik kalmis\n\nUNREADABLE_SECRET_BODY_CANARY_1\n', encoding='utf-8', newline='\n')
         utf16_note = notes / 'other-editor-utf16.md'
         utf16_note.write_bytes('# Başlık\nUTF-16 içerik\n'.encode('utf-16'))
         win1254_note = notes / 'other-editor-win1254.md'
         win1254_note.write_bytes('# Türkçe not: ğüşiöç\n'.encode('cp1254'))
         bad_field = notes / 'bad-field.md'
-        bad_field.write_text('---\nvisibility: invalid_scope\n---\nBody.\n', encoding='utf-8')
+        bad_field.write_text('---\nvisibility: invalid_scope\n---\nBody.\n', encoding='utf-8', newline='\n')
 
         sync = self.beyin_json('sync')
         self.assertEqual(sync['status'], 'degraded')
@@ -144,7 +144,7 @@ class DoctorUnreadableAndCompanionTest(unittest.TestCase):
 
         # Fixing all 4 notes and running sync clears doctor warnings cleanly.
         for path in (broken_fm, utf16_note, win1254_note, bad_field):
-            path.write_text('# Temiz\nDuzeltildi.\n', encoding='utf-8')
+            path.write_text('# Temiz\nDuzeltildi.\n', encoding='utf-8', newline='\n')
         clean_sync = self.beyin_json('sync')
         self.assertEqual(clean_sync['status'], 'succeeded')
         clean_doc = self.beyin_json('doctor')
@@ -157,7 +157,7 @@ class DoctorUnreadableAndCompanionTest(unittest.TestCase):
         notes = self.vault / 'notes'
         notes.mkdir()
         for idx in range(1, 8):
-            (notes / f'broken-{idx}.md').write_text(f'---\ntitle: B{idx}\nBODY_CANARY_{idx}\n', encoding='utf-8')
+            (notes / f'broken-{idx}.md').write_text(f'---\ntitle: B{idx}\nBODY_CANARY_{idx}\n', encoding='utf-8', newline='\n')
 
         # Run hook drain so hook-health.json records the degraded sync with all 7 warnings.
         self.drain_hook()
@@ -250,7 +250,7 @@ class DoctorUnreadableAndCompanionTest(unittest.TestCase):
     def test_doctor_human_survives_cp1252_console_with_unicode_paths(self):
         notes = self.vault / 'notes'
         notes.mkdir()
-        (notes / 'Çığ-bozuk.md').write_text('---\ntitle: Unclosed\n', encoding='utf-8')
+        (notes / 'Çığ-bozuk.md').write_text('---\ntitle: Unclosed\n', encoding='utf-8', newline='\n')
         (self.vault / '🔮 850-Companion/Core.md').unlink()
         self.beyin_json('sync')
 
@@ -269,7 +269,7 @@ class DoctorUnreadableAndCompanionTest(unittest.TestCase):
 
     def test_corrupt_hook_health_fails_open_in_session_start(self):
         self.drain_hook()
-        (self.state / 'hook-health.json').write_text('{not valid json', encoding='utf-8')
+        (self.state / 'hook-health.json').write_text('{not valid json', encoding='utf-8', newline='\n')
         ctx = self.invoke_session_start()
         self.assertIn('V3 sync needs attention; consult current sources and doctor.', ctx)
 
@@ -279,7 +279,7 @@ class DoctorUnreadableAndCompanionTest(unittest.TestCase):
         notes = self.vault / 'notes'
         notes.mkdir()
         broken = notes / 'late-break.md'
-        broken.write_text('---\ntitle: Broken after hook\n', encoding='utf-8')
+        broken.write_text('---\ntitle: Broken after hook\n', encoding='utf-8', newline='\n')
         # 2. CLI sync catches the newly broken note -> doctor must surface it immediately.
         self.beyin_json('sync')
         doc1 = self.beyin_json('doctor')
@@ -289,7 +289,7 @@ class DoctorUnreadableAndCompanionTest(unittest.TestCase):
         # 3. Now hook runs while degraded -> hook-health.json becomes degraded.
         self.drain_hook()
         # 4. User fixes the note and runs CLI sync -> doctor must clear the stale hook warning.
-        broken.write_text('# Fixed\nNow valid.\n', encoding='utf-8')
+        broken.write_text('# Fixed\nNow valid.\n', encoding='utf-8', newline='\n')
         self.beyin_json('sync')
         doc2 = self.beyin_json('doctor')
         self.assertEqual(doc2['sync_warnings']['count'], 0)
@@ -495,7 +495,7 @@ class CompanionEdgeCasesTest(unittest.TestCase):
 
     def test_fresh_bare_vault_without_companion_folder_does_not_false_alarm(self):
         (self.vault / 'notes').mkdir()
-        (self.vault / 'notes/plain.md').write_text('# Plain\nHello.\n', encoding='utf-8')
+        (self.vault / 'notes/plain.md').write_text('# Plain\nHello.\n', encoding='utf-8', newline='\n')
         doc = self.run_doctor()
         self.assertEqual(doc['companion_sources']['status'], 'absent')
         self.assertEqual(doc['companion_sources']['missing'], [])
@@ -507,7 +507,7 @@ class CompanionEdgeCasesTest(unittest.TestCase):
         echo = self.vault / 'Echo'
         echo.mkdir()
         for name in ('Soul.md', 'Kurallar.md', 'Last-Session.md', 'Threads.md', 'Journal.md'):
-            (echo / name).write_text(f'# {name}\nBody.\n', encoding='utf-8')
+            (echo / name).write_text(f'# {name}\nBody.\n', encoding='utf-8', newline='\n')
         doc = self.run_doctor()
         self.assertEqual(doc['companion_sources']['status'], 'ok')
         self.assertEqual(doc['companion_sources']['missing'], [])
@@ -518,9 +518,9 @@ class CompanionEdgeCasesTest(unittest.TestCase):
         custom = self.vault / 'MyBuddy'
         custom.mkdir()
         for name in ('Kurallar.md', 'Last-Session.md', 'Threads.md', 'Journal.md'):
-            (custom / name).write_text(f'# {name}\nBody.\n', encoding='utf-8')
+            (custom / name).write_text(f'# {name}\nBody.\n', encoding='utf-8', newline='\n')
         (self.state / 'companion-bootstrap.json').write_text(
-            json.dumps({'schema': 1, 'directory': 'MyBuddy'}), encoding='utf-8'
+            json.dumps({'schema': 1, 'directory': 'MyBuddy'}), encoding='utf-8', newline='\n'
         )
         doc = self.run_doctor()
         self.assertEqual(doc['companion_sources']['status'], 'missing')
@@ -531,7 +531,7 @@ class CompanionEdgeCasesTest(unittest.TestCase):
         comp = self.vault / '🔮 850-Companion'
         comp.mkdir()
         for name in ('Kurallar.md', 'Last-Session.md', 'Threads.md', 'Journal.md'):
-            (comp / name).write_text(f'# {name}\nBody.\n', encoding='utf-8')
+            (comp / name).write_text(f'# {name}\nBody.\n', encoding='utf-8', newline='\n')
         (comp / 'Core.md').mkdir()
         doc = self.run_doctor()
         self.assertEqual(doc['companion_sources']['status'], 'missing')
@@ -541,9 +541,9 @@ class CompanionEdgeCasesTest(unittest.TestCase):
         comp = self.vault / '🔮 850-Companion'
         comp.mkdir()
         for name in ('Kurallar.md', 'Last-Session.md', 'Threads.md', 'Journal.md'):
-            (comp / name).write_text(f'# {name}\nBody.\n', encoding='utf-8')
+            (comp / name).write_text(f'# {name}\nBody.\n', encoding='utf-8', newline='\n')
         outside = self.root / 'outside.md'
-        outside.write_text('# Outside\n', encoding='utf-8')
+        outside.write_text('# Outside\n', encoding='utf-8', newline='\n')
         try:
             (comp / 'Core.md').symlink_to(outside)
         except OSError as error:
@@ -583,7 +583,7 @@ class CompanionEdgeCasesTest(unittest.TestCase):
         comp = self.vault / '🔮 850-Companion'
         comp.mkdir()
         for name in ('Core.md', 'Kurallar.md', 'Last-Session.md', 'Threads.md', 'Journal.md'):
-            (comp / name).write_text(f'# {name}\nBody.\n', encoding='utf-8')
+            (comp / name).write_text(f'# {name}\nBody.\n', encoding='utf-8', newline='\n')
         real_is_symlink = Path.is_symlink
 
         def fake_is_symlink(path_obj):
