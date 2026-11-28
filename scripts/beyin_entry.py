@@ -193,6 +193,25 @@ def index_exclusion_lines(report, pruned=False):
     return lines
 
 
+def env_override_lines(overrides):
+    """Single-line summary of active allowlisted BEYIN_V3_* env overrides (#961)."""
+    if not isinstance(overrides, dict) or not overrides:
+        return []
+    items = []
+    for name, value in overrides.items():
+        if not isinstance(name, str) or not name:
+            continue
+        short = name[len('BEYIN_V3_'):] if name.startswith('BEYIN_V3_') else name
+        clean_name = plain_text(short)[:64]
+        clean_value = plain_text(value)
+        if len(clean_value) > 64:
+            clean_value = clean_value[:61] + '...'
+        items.append(clean_name + '=' + clean_value)
+    if not items:
+        return []
+    return ['Ortam ayarlari (bu komut ortami; hook ortami farkli olabilir): ' + ', '.join(items)]
+
+
 def megabytes(value):
     return '%.1f' % ((value or 0) / 1048576)
 
@@ -379,6 +398,7 @@ def human_result(result, command, installed_version=None):
         lines += index_exclusion_lines(result.get('index_exclusions'))
         if result.get('index_exclusions_notice') and not (result.get('index_exclusions') or {}).get('error'):
             lines.append(result['index_exclusions_notice'])
+        lines += env_override_lines(result.get('env_overrides'))
         lines.append('Acikken gunde en fazla bir kez GitHub surum bilgisi okunur; notlar gonderilmez.')
         lines.append('Yerel kontroller model cagirmaz. Zamanlayici kurulmaz.')
         return '\n'.join(lines)
@@ -506,6 +526,7 @@ def human_result(result, command, installed_version=None):
             lines.append('Bağlam doluluk hatırlatması: kapali')
         elif ctx_fill.get('status') == 'invalid':
             lines.append('Bağlam doluluk hatırlatması: ayar gecersiz (' + str(ctx_fill.get('error', 'unknown')) + ')')
+        lines += env_override_lines(result.get('env_overrides'))
         if result.get('secrets_redacted'):
             lines.append('Sir suzgeci ' + str(result['secrets_redacted']) + ' eslesmeyi [REDACTED] olarak yazdi.')
         cov = result.get('receipt_coverage')

@@ -407,6 +407,64 @@ class PreferencesTest(unittest.TestCase):
         self.assertIn('hygiene_notice', damaged)
         self.assertNotIn('Soru sirasi', json.dumps(self.hook('SessionStart', 'claude')))
 
+    def test_preferences_help_lists_known_beyin_v3_env_toggles(self):
+        expected_vars = (
+            'BEYIN_V3_SKIP',
+            'BEYIN_V3_INTERNAL',
+            'BEYIN_V3_NO_RECEIPT_REMINDER',
+            'BEYIN_V3_RECEIPT_REMINDER',
+            'BEYIN_V3_ABSTAIN_COVERAGE',
+            'BEYIN_V3_CONTEXT_DEDUPE',
+            'BEYIN_V3_FILTER_HARNESS_TURNS',
+            'BEYIN_V3_NO_SPAWN',
+        )
+        installed = subprocess.run(
+            [sys.executable, str(ROOT / 'scripts/install_v3.py'), '--vault', str(self.vault), '--state', str(self.state)],
+            capture_output=True, text=True, encoding='utf-8', env=inherited_env(), timeout=30)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        for cmd in (
+            [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault), 'preferences', '--help'],
+            [sys.executable, str(self.vault / 'beyin.py'), 'preferences', '--help'],
+        ):
+            with self.subTest(cmd=cmd[1]):
+                res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8',
+                                     env=inherited_env(), timeout=20)
+                self.assertEqual(res.returncode, 0, res.stderr)
+                self.assertEqual(res.stderr, '')
+                for name in expected_vars:
+                    self.assertIn(name, res.stdout)
+                self.assertIn('doctor', res.stdout)
+                self.assertNotIn('BEYIN_V3_SESSION_ID', res.stdout)
+                self.assertNotIn('BEYIN_INGEST_TOKEN', res.stdout)
+
+    def test_preferences_reports_env_overrides_only_when_active(self):
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        import beyin_entry
+        clean_env = {k: v for k, v in inherited_env().items() if not k.upper().startswith('BEYIN_V3_')}
+        plain = subprocess.run(
+            [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
+             '--state', str(self.state), 'preferences'],
+            capture_output=True, text=True, encoding='utf-8', env=clean_env, timeout=20)
+        self.assertEqual(plain.returncode, 0, plain.stderr)
+        plain_data = json.loads(plain.stdout)
+        self.assertNotIn('env_overrides', plain_data)
+        self.assertNotIn('Ortam ayarlari', beyin_entry.human_result(plain_data, 'preferences'))
+
+        active_env = dict(clean_env,
+                          BEYIN_V3_ABSTAIN_COVERAGE='0.6',
+                          BEYIN_V3_SECRET_TOKEN='should-not-appear')
+        active = subprocess.run(
+            [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault),
+             '--state', str(self.state), 'preferences'],
+            capture_output=True, text=True, encoding='utf-8', env=active_env, timeout=20)
+        self.assertEqual(active.returncode, 0, active.stderr)
+        active_data = json.loads(active.stdout)
+        self.assertEqual(active_data['env_overrides'], {'BEYIN_V3_ABSTAIN_COVERAGE': '0.6'})
+        human = beyin_entry.human_result(active_data, 'preferences')
+        self.assertIn('Ortam ayarlari', human)
+        self.assertIn('ABSTAIN_COVERAGE=0.6', human)
+        self.assertNotIn('should-not-appear', human)
+
 
 if __name__ == '__main__':
     unittest.main()
