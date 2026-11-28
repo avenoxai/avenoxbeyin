@@ -834,11 +834,13 @@ def _antigravity_nonhuman_turn(payload, event):
         if step_type is None:
             step_type = head.get(initial - 1)
         return step_type == 'PLANNER_RESPONSE'
-    if 0 not in head and 0 not in tail:
-        return False  # step 0 exceeded the bounded head; fail open instead of guessing
-    if 'USER_INPUT' in head.values() or 'USER_INPUT' in tail.values():
+    # Stop asks about the whole conversation: one USER_INPUT anywhere makes it human. A bounded
+    # read of a long transcript decides only when its head and tail leave no unread step between
+    # them (step 0 included); otherwise it fails open, as every read over the limit did before.
+    if 0 not in head or (head is not tail and min(tail) > max(head) + 1):
         return False
-    return 'PLANNER_RESPONSE' in head.values() or 'PLANNER_RESPONSE' in tail.values()
+    kinds = set(head.values()) | set(tail.values())
+    return 'USER_INPUT' not in kinds and 'PLANNER_RESPONSE' in kinds
 
 
 # Antigravity file writes for the receipt edit window (#903). write_file and edit_file with their Path

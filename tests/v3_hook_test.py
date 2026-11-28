@@ -1171,16 +1171,18 @@ class HookInstallerTest(unittest.TestCase):
         stop = {'hook_event_name': 'Stop', 'conversationId': 'agy-large-subagent',
                 'fullyIdle': True, 'lastUserInput': '', 'initialNumSteps': count,
                 'transcriptPath': str(transcript)}
-        self.assertTrue(self.hook._antigravity_nonhuman_turn(stop, 'Stop'))
+        # Stop asks whether any step was user input; the unread middle of a long transcript could
+        # hold one, so a head and tail with a gap between them fail open, as 3.18.0 did (queued).
+        self.assertFalse(self.hook._antigravity_nonhuman_turn(stop, 'Stop'))
         self.assertEqual(self.invoke(stop, 'antigravity'), {'decision': 'stop'})
-        self.assertEqual(list(queue.glob('*.json')), [])
+        self.assertEqual(len(list(queue.glob('*.json'))), 1)
 
         # A >2 MB transcript with USER_INPUT at step 0 (only in the head chunk) is NOT a subagent.
         count_human = self._write_large_antigravity_transcript(transcript, 'USER_INPUT', 'PLANNER_RESPONSE')
         human_stop = dict(stop, conversationId='agy-large-human-stop', initialNumSteps=count_human)
         self.assertFalse(self.hook._antigravity_nonhuman_turn(human_stop, 'Stop'))
         self.assertEqual(self.invoke(human_stop, 'antigravity'), {'decision': 'stop'})
-        self.assertEqual(len(list(queue.glob('*.json'))), 1)
+        self.assertEqual(len(list(queue.glob('*.json'))), 2)
 
         # Overlapping head+tail (just over 2 MB) with CRLF endings still classifies accurately.
         count_overlap = self._write_large_antigravity_transcript(
@@ -1206,6 +1208,62 @@ class HookInstallerTest(unittest.TestCase):
         transcript.write_text(''.join(lines), encoding='utf-8', newline='\n')
         self.assertFalse(self.hook._antigravity_nonhuman_turn(dict(stop, initialNumSteps=step + 1), 'Stop'))
         self.assertTrue(self.hook._antigravity_nonhuman_turn(dict(stop, initialNumSteps=step + 1), 'PreInvocation'))
+
+    def test_antigravity_bounded_transcript_read_never_filters_more_than_a_full_read(self):
+        # Invariant (#940): over the limit, the head+tail read may decide less than a full read
+        # (fail open) but never more. PreInvocation reads step initialNumSteps-1 verbatim, so it
+        # matches the full read exactly; Stop decides only without an unread gap. The small limits
+        # sweep the tail cut over every byte of LF and CRLF lines with 2-, 3- and 4-byte UTF-8.
+        hook = self.hook
+        layouts = {
+            'human': ['USER_INPUT'] + ['GENERIC', 'PLANNER_RESPONSE'] * 30,
+            'subagent': ['SYSTEM_MESSAGE'] + ['GENERIC', 'PLANNER_RESPONSE'] * 30,
+            'human-input-mid-only': (['SYSTEM_MESSAGE'] + ['GENERIC', 'PLANNER_RESPONSE'] * 12 + ['USER_INPUT']
+                                     + ['GENERIC', 'PLANNER_RESPONSE'] * 17),
+            'ends-with-user-input': ['USER_INPUT'] + ['GENERIC', 'PLANNER_RESPONSE'] * 30 + ['USER_INPUT'],
+        }
+        transcript = (self.root / 'bounded-sweep.jsonl').resolve()
+        checked = decided = 0
+        with patch.object(hook, 'ANTIGRAVITY_TRANSCRIPT_LIMIT', 2048), patch.object(hook, 'ANTIGRAVITY_TRANSCRIPT_HEAD', 256):
+            for name, kinds in layouts.items():
+                for newline in ('\n', '\r\n'):
+                    for pad in range(48):
+                        rows = [json.dumps({'step_index': i, 'type': kind, 'content': 'ş€😀' * (3 + i % 4)},
+                                           ensure_ascii=False) for i, kind in enumerate(kinds)]
+                        rows[-1] = rows[-1][:-1] + ', "pad": "' + 'ğ' * pad + '"}'
+                        transcript.write_text(newline.join(rows) + newline, encoding='utf-8', newline='')
+                        raw = transcript.read_bytes()
+                        self.assertGreater(len(raw), 2048)
+                        full = hook._parse_antigravity_steps(raw, start_at_zero=True)
+                        types = [full[i] for i in range(len(full))]
+                        count = len(types)
+                        oracle = {'PreInvocation': types[count - 1] == 'PLANNER_RESPONSE',
+                                  'Stop': 'USER_INPUT' not in types and 'PLANNER_RESPONSE' in types}
+                        for event, last_input in (('PreInvocation', 'old prompt'), ('Stop', '')):
+                            with self.subTest(layout=name, newline=repr(newline), pad=pad, event=event):
+                                got = hook._antigravity_nonhuman_turn(
+                                    {'initialNumSteps': count, 'lastUserInput': last_input,
+                                     'transcriptPath': str(transcript)}, event)
+                                checked += 1
+                                decided += got
+                                if event == 'PreInvocation':
+                                    self.assertEqual(got, oracle[event])
+                                elif got:
+                                    self.assertTrue(oracle[event])
+        self.assertGreater(decided, 0)
+        self.assertEqual(checked, len(layouts) * 2 * 48 * 2)
+        # The unread middle is where the one user input of 'human-input-mid-only' sits: Stop must
+        # fail open there (3.19.0 review: the first bounded read called that conversation a subagent).
+        with patch.object(hook, 'ANTIGRAVITY_TRANSCRIPT_LIMIT', 2048), patch.object(hook, 'ANTIGRAVITY_TRANSCRIPT_HEAD', 256):
+            kinds = layouts['human-input-mid-only']
+            rows = [json.dumps({'step_index': i, 'type': kind, 'content': 'x' * 40}) for i, kind in enumerate(kinds)]
+            transcript.write_text('\n'.join(rows) + '\n', encoding='utf-8', newline='')
+            head, tail = hook._antigravity_transcript_steps(str(transcript))
+            middle = kinds.index('USER_INPUT')
+            self.assertNotIn(middle, head)
+            self.assertNotIn(middle, tail)
+            self.assertFalse(hook._antigravity_nonhuman_turn(
+                {'initialNumSteps': len(kinds), 'lastUserInput': '', 'transcriptPath': str(transcript)}, 'Stop'))
 
     def test_antigravity_large_transcript_security_rejects_symlinks_and_reparse_points(self):
         import stat
@@ -1303,11 +1361,12 @@ class HookInstallerTest(unittest.TestCase):
                 self.assertEqual(report['loaded'], [])
 
     def test_antigravity_fast_path_preserves_malformed_json_error_and_in_vault_state_refusal(self):
-        # Malformed JSON and non-dict JSON still fail open and write hook-error.json.
-        for event, raw_bytes, expected_error in (
-                ('PreInvocation', b'{invalid json', 'JSONDecodeError'),
-                ('Stop', b'{invalid json', 'JSONDecodeError'),
-                ('PreInvocation', b'[]', 'AttributeError')):
+        # Malformed JSON and non-dict JSON still fail open and write hook-error.json; Stop keeps
+        # its quiet decision on the error path (#928).
+        for event, raw_bytes, expected_error, expected_out in (
+                ('PreInvocation', b'{invalid json', 'JSONDecodeError', b'{}'),
+                ('Stop', b'{invalid json', 'JSONDecodeError', b'{"decision":"stop"}'),
+                ('PreInvocation', b'[]', 'AttributeError', b'{}')):
             with self.subTest(event=event, expected_error=expected_error):
                 error_path = self.state / 'hook-error.json'
                 if error_path.exists():
@@ -1317,7 +1376,7 @@ class HookInstallerTest(unittest.TestCase):
                      '--harness', 'antigravity', '--event', event],
                     input=raw_bytes, capture_output=True, cwd=self.vault, env=self.env, timeout=20)
                 self.assertEqual(result.returncode, 0, result.stderr.decode())
-                self.assertEqual(result.stdout.strip(), b'{}')
+                self.assertEqual(result.stdout.strip(), expected_out)
                 self.assertTrue(error_path.exists())
                 self.assertEqual(json.loads(error_path.read_text(encoding='utf-8'))['error'], expected_error)
 
