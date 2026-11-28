@@ -741,7 +741,7 @@ class HumanOutputTest(unittest.TestCase):
     def test_doctor_preferences_and_compaction_read_as_short_turkish_lines(self):
         doctor = self.entry.human_result({'status': 'observed_metadata', 'companion_hygiene': {
             'over_limit': ['Threads.md'], 'files': {'Threads.md': {'chars': 57012, 'limit': 8000}}}}, 'doctor', '3.3.0')
-        self.assertIn('Hafiza hijyeni: Threads.md 57012 karakter (sinir 8000).', doctor)
+        self.assertIn('Hafıza hijyeni: Threads.md 57012 karakter (sınır 8000).', doctor)
         self.assertIn('beyin.py companion-compact', doctor)
         prefs = self.entry.human_result({'preferences': {'auto_sync': True, 'interval_minutes': 0, 'context_mode': 'turn',
                                                          'context_chars': 5000, 'secret_filter': False},

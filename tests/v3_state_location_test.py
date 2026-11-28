@@ -311,7 +311,8 @@ beyin_v3_hook.main()
         self.assertEqual(doctor["state_location"]["status"], "unavailable")
         self.assertIn("lifecycle", doctor)
 
-    def test_human_doctor_names_each_warning_in_ascii(self):
+    def test_human_doctor_names_each_warning_with_ascii_fallback(self):
+        import io
         spec = importlib.util.spec_from_file_location("state_location_entry", ROOT / "scripts/beyin_entry.py")
         entry = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(entry)
@@ -320,17 +321,18 @@ beyin_v3_hook.main()
                                  "pinned_state_not_absolute: x"],
                     "sibling_state_roots": ["A", "B"], "pinned_resolves_here_to": "C"}
         text = entry.human_result({"status": "observed_metadata", "state_location": location}, "doctor", "3.4.0")
-        lines = [line for line in text.splitlines() if line.startswith("State konumu (bilgi): ")]
+        lines = [line for line in text.splitlines() if line.startswith("Çalışma dizini konumu (bilgi): ")]
         self.assertEqual(len(lines), 5)
         self.assertIn("(A, B)", lines[0])
         self.assertIn("https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/UPDATE.md", lines[0])
         self.assertIn("https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/UPDATE.md", lines[1])
         self.assertIn("(C)", lines[2])
         self.assertIn("https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/MULTI-MACHINE.md", lines[3])
-        self.assertTrue(all(line.isascii() for line in lines))
+        ascii_stream = io.TextIOWrapper(io.BytesIO(), encoding="ascii", errors="strict")
+        self.assertTrue(all(entry.safe_stream_text(line, ascii_stream).isascii() for line in lines))
         quiet = entry.human_result({"status": "observed_metadata",
                                     "state_location": {"status": "unavailable", "warnings": []}}, "doctor", "3.4.0")
-        self.assertNotIn("State konumu", quiet)
+        self.assertNotIn("Çalışma dizini konumu", quiet)
 
 
 # Runs the source CLI in a clean interpreter; BOOM_DRIVER makes the location report fail.

@@ -213,7 +213,7 @@ class ReceiptCoverageTest(unittest.TestCase):
 
         # Human rendering test
         human_text = beyin_entry.human_result(doc, 'doctor')
-        self.assertIn('Makbuz kapsami: %50 (1/2 oturum, son 7 gun: %50)', human_text)
+        self.assertIn('Oturum kaydı kapsamı: %50 (1/2 oturum, son 7 gün: %50)', human_text)
 
     def test_doctor_reports_hermes_terminal_observation_without_expanding_gaps(self):
         engine = SyncEngine(self.vault, self.state)
@@ -247,7 +247,7 @@ class ReceiptCoverageTest(unittest.TestCase):
         self.assertEqual(coverage, base_coverage)
         coverage['hermes_without_terminal'] = 2
         rendered = beyin_entry.human_result(doc, 'doctor')
-        self.assertIn('Hermes: 2 oturumda son tur icin kapanis sinyali gozlenmedi', rendered)
+        self.assertIn('Hermes: 2 oturumda son tur için kapanış sinyali gözlenmedi', rendered)
         self.assertNotIn('synthetic-never-final', rendered)
         self.assertNotIn('synthetic-later-turn', rendered)
         self.assertEqual(gaps_path.read_bytes(), before)
@@ -261,7 +261,7 @@ class ReceiptCoverageTest(unittest.TestCase):
         self.assertEqual(doc['receipt_coverage']['total'], 0)
         self.assertIsNone(doc['receipt_coverage']['ratio'])
         self.assertEqual(doc['receipt_coverage']['hermes_without_terminal'], 2)
-        self.assertIn('Hermes: 2 oturumda son tur icin kapanis sinyali gozlenmedi',
+        self.assertIn('Hermes: 2 oturumda son tur için kapanış sinyali gözlenmedi',
                       beyin_entry.human_result(doc, 'doctor'))
 
         gaps_path.unlink()

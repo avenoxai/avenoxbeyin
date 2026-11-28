@@ -78,7 +78,7 @@ class BackupAdvisoryTest(unittest.TestCase):
         command = [sys.executable, str(self.vault / 'beyin.py'), 'doctor']
         def doctor(*extra):
             result = subprocess.run(command + list(extra), env=self.env, cwd=self.vault,
-                                    capture_output=True, text=True, timeout=40)
+                                    capture_output=True, text=True, encoding='utf-8', timeout=40)
             self.assertEqual(result.returncode, 0, result.stderr)
             return result.stdout
         initial = json.loads(doctor())
@@ -90,7 +90,7 @@ class BackupAdvisoryTest(unittest.TestCase):
         later = json.loads(doctor())
         self.assertEqual(later['status'], initial['status'])
         self.assertFalse(later['backup']['backup_verified'])
-        self.assertIn('dogrulanmadi', doctor('--human'))
+        self.assertIn('doğrulanmadı', doctor('--human'))
         self.assertEqual(snapshot(self.vault), before)
 
 

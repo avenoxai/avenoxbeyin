@@ -101,7 +101,7 @@ class InstalledReferenceReadErrorsTest(unittest.TestCase):
                 self.assertIn('jev', result)
                 self.assertNotEqual(result['status'], 'needs_attention')
         human = self.doctor('--human')
-        warning = 'Talimat ve skill baglanti denetimi tamamlanamadi (bilgi): ' + expected_error + '.'
+        warning = 'Talimat ve beceri bağlantı denetimi tamamlanamadı (bilgi): ' + expected_error + '.'
         self.assertIn(warning, human)
         self.assertNotIn('private-content-canary', human)
         if before is not None:
@@ -137,7 +137,7 @@ class InstalledReferenceReadErrorsTest(unittest.TestCase):
         self.assertEqual(report['dead_count'], 1)
         self.assertEqual(report['dead'][0]['target'], 'Missing note')
         self.assertNotEqual(result['status'], 'needs_attention')
-        self.assertNotIn('denetimi tamamlanamadi', self.doctor('--human'))
+        self.assertNotIn('denetimi tamamlanamadı', self.doctor('--human'))
         self.assertEqual(snapshot(self.vault), before)
 
 
@@ -149,9 +149,9 @@ class ReferenceHumanOutputTest(unittest.TestCase):
         text = entry.human_result({'status': 'observed_metadata', 'instruction_references': {
             'status': 'unavailable', 'error': 'OSError',
             'message': 'private-path-and-content-canary'}}, 'doctor', '3.12.0')
-        self.assertIn('Talimat ve skill baglanti denetimi tamamlanamadi (bilgi): OSError.', text)
+        self.assertIn('Talimat ve beceri bağlantı denetimi tamamlanamadı (bilgi): OSError.', text)
         self.assertNotIn('private-path-and-content-canary', text)
-        self.assertNotIn('kirik baglanti (bilgi)', text)
+        self.assertNotIn('kırık bağlantı (bilgi)', text)
 
 
 if __name__ == '__main__':

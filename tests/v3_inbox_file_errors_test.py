@@ -137,7 +137,7 @@ class InstalledInboxFileErrorsTest(unittest.TestCase):
                         self.assertEqual(doctor['folders'][0]['notes'], 1)
                         self.assertEqual(doctor['folders'][0]['error'], 'PermissionError')
                         self.assertTrue(doctor['attention'])
-                        self.assertIn('inbox (okunamadi: PermissionError)', cli('doctor', '--human'))
+                        self.assertIn('inbox (okunamadı: PermissionError)', cli('doctor', '--human'))
                     finally:
                         blocked.chmod(0o600)
                     self.assertEqual(snapshot(vault), before_vault)
