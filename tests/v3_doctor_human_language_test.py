@@ -142,9 +142,17 @@ ATTENTION_GRID = (
     ('scheduled check found something', {'scheduled_check': {'status': 'needs_attention', 'age_hours': 3,
                                                              'issues': {'sync_conflict': 1}}}, 1),
     ('scheduled check failed', {'scheduled_check': {'status': 'error', 'age_hours': 3, 'error': 'RuntimeError'}}, 1),
-    # A live finding already covers what the earlier scheduled run saw: no second count.
-    ('scheduled check and live fault', {'scheduled_check': {'status': 'needs_attention', 'age_hours': 3, 'issues': {'hook': 1}},
-                                        'hook-error.json': {'at': 1.0, 'error': 'OSError'}}, 1),
+    ('scheduled check with no named kind', {'scheduled_check': {'status': 'needs_attention', 'age_hours': 3}}, 1),
+    # A kind the live report already counts is not counted twice; a CLI sync finding, which this
+    # report does not repeat, and a failed run are.
+    ('scheduled check and the same live fault', {'scheduled_check': {'status': 'needs_attention', 'age_hours': 3,
+                                                                     'issues': {'hook': 1}},
+                                                 'hook-error.json': {'at': 1.0, 'error': 'OSError'}}, 1),
+    ('scheduled sync finding and another live fault', {'scheduled_check': {'status': 'needs_attention', 'age_hours': 3,
+                                                                           'issues': {'sync_conflict': 1}},
+                                                       'skill_conflicts': ['beyin']}, 2),
+    ('scheduled check failed and a live fault', {'scheduled_check': {'status': 'error', 'age_hours': 3, 'error': 'RuntimeError'},
+                                                 'skill_conflicts': ['beyin']}, 2),
     ('devices invalid', {'devices': {'valid': False}}, 1),
     ('devices unavailable', {'devices': {'status': 'unavailable', 'error': 'OSError'}}, 0),
     ('index scope unavailable', {'index_exclusions': {'status': 'unavailable', 'error': 'OSError'}}, 1),
@@ -461,7 +469,9 @@ class DoctorHumanLanguageUnitTest(unittest.TestCase):
                     if status == 'needs_attention':
                         self.assertIn('2 saat önce, dikkat gerekiyor (eşitleme çakışması (1), eşitleme uyarısı (2)).', line)
                     if expected:
-                        self.assertTrue(line.endswith(' beyin.py sync'), line)
+                        self.assertIn('. Ayrıntı için: ', line)
+                        self.assertIn(' beyin.py sync; düzelttikten sonra kaydı yenilemek için: ', line)
+                        self.assertTrue(line.endswith(' beyin.py scheduled-check'), line)
                         self.assertNotIn('(bilgi)', line)
                     else:
                         self.assertEqual(line, 'Zamanlanmış denetim (bilgi): son kontrol 2 saat önce, sağlıklı.')

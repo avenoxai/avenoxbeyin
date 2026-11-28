@@ -390,12 +390,24 @@ def doctor_attention_count(result):
         count += 1
     if count == 0 and result.get('status') in ('needs_attention', 'pending'):
         count = 1
-    # The last scheduled run is a record of an earlier check: its sync findings come from a
-    # CLI sync this report does not repeat, and its notice sends the user here. It never lets
-    # the summary say "nothing to do", but a live finding already covers what it saw.
+    # The last scheduled run is a record of an earlier check, and its notice sends the user here.
+    # Its sync findings come from a CLI sync this report does not repeat; its other kinds are the
+    # same doctor fields read live. It counts unless every kind it names is already counted live.
     scheduled = result.get('scheduled_check') if isinstance(result.get('scheduled_check'), dict) else {}
-    if count == 0 and scheduled.get('status') in ('needs_attention', 'error'):
-        count = 1
+    if scheduled.get('status') == 'error':
+        count += 1
+    elif scheduled.get('status') == 'needs_attention':
+        found = scheduled.get('issues') if isinstance(scheduled.get('issues'), dict) else {}
+        live = {'sync_conflict': sync_info.get('status') in ('conflict', 'degraded', 'error'),
+                'sync_degraded': sync_info.get('status') in ('conflict', 'degraded', 'error'),
+                'hook': bool(result.get('hook-error.json')) or
+                        (isinstance(result.get('hook_paths'), dict) and result['hook_paths'].get('status') == 'stale'),
+                'skill_or_instruction': bool(result.get('skill_conflicts') or result.get('instruction_conflicts')),
+                'task': bool(tc.get('strict_issue_count') or tc.get('error')),
+                'validity': bool(val.get('ignored_rejection_count') or val.get('error'))}
+        kinds = [kind for kind in found if kind in live]
+        if any(not live[kind] for kind in kinds) or (not kinds and count == 0):
+            count += 1
     return count
 
 
@@ -934,13 +946,14 @@ def human_result(result, command, installed_version=None):
         if scheduled.get('status') == 'ok':
             lines.append('Zamanlanmış denetim (bilgi): son kontrol ' + str(scheduled.get('age_hours', '?')) + ' saat önce, sağlıklı.')
         elif scheduled.get('status') in ('needs_attention', 'error'):
-            # Its sync findings come from a sync this report does not run: name them and the way to see them now.
+            # Its sync findings come from a sync this report does not run: name them, how to see them and how to clear the record.
             found = scheduled.get('issues') if isinstance(scheduled.get('issues'), dict) else {}
             kinds = ', '.join(label + ' (' + str(found[kind]) + ')' for kind, label in _SCHEDULED_ISSUES if kind in found)
             lines.append('Zamanlanmış denetim: son kontrol ' + str(scheduled.get('age_hours', '?')) + ' saat önce, ' +
                          ('dikkat gerekiyor' + (' (' + kinds + ')' if kinds else '') if scheduled['status'] == 'needs_attention'
                           else 'denetim tamamlanamadı') +
-                         '. Güncel durumu görmek için: ' + py_cmd + ' beyin.py sync')
+                         '. Ayrıntı için: ' + py_cmd + ' beyin.py sync; düzelttikten sonra kaydı yenilemek için: ' +
+                         py_cmd + ' beyin.py scheduled-check')
         for conflict in result.get('instruction_conflicts', []):
             lines.append('Talimat çelişkisi: ' + plain_text(conflict['file']) + ' içinde V2 derleyici ifadesi var ("' +
                          plain_text(conflict.get('snippet', '')) + '"). Bu metin V3 ajan damıtmasıyla çelişiyor; eski derleyici talimatlarını kaldırın.')
