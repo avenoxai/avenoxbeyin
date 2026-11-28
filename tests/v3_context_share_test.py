@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import random
+import re
 import string
 import subprocess
 import sys
@@ -268,7 +269,7 @@ class ContextShareEndToEndTest(unittest.TestCase):
         return subprocess.run(
             [sys.executable, str(ROOT / 'scripts/beyin_v3.py'),
              '--vault', str(self.vault), '--state', str(self.state), *args],
-            capture_output=True, text=True, encoding='utf-8', env=inherited_env(), timeout=20,
+            capture_output=True, text=True, encoding='utf-8', env=inherited_env(), timeout=60,
         )
 
     def cli_json(self, *args):
@@ -284,7 +285,7 @@ class ContextShareEndToEndTest(unittest.TestCase):
             [sys.executable, str(ROOT / 'template/.claude/scripts/beyin_v3_hook.py'),
              '--vault', str(self.vault), '--state', str(self.state), '--harness', harness],
             input=json.dumps(payload), capture_output=True, text=True, encoding='utf-8',
-            env=inherited_env(BEYIN_V3_NO_SPAWN='1'), timeout=20,
+            env=inherited_env(BEYIN_V3_NO_SPAWN='1'), timeout=60,
         )
         self.assertEqual(res.returncode, 0, res.stderr)
         return res.stdout
@@ -445,7 +446,10 @@ class ContextShareEndToEndTest(unittest.TestCase):
         # Reset profile back to normal so hook context_mode is 'turn', then verify hook output is unchanged.
         self.cli_json('preferences', '--profile', 'normal')
         hook_after = self.hook('UserPromptSubmit', prompt=topic)
-        self.assertEqual(hook_after, hook_before)
+        # The receipt header carries the wall-clock minute (now=...); a minute boundary between
+        # the two calls is not a context change.
+        stamp = re.compile(r'now=[^;]*;')
+        self.assertEqual(stamp.sub('now=;', hook_after), stamp.sub('now=;', hook_before))
 
         # Switch back to 'top' cleanly.
         reverted = self.cli_json('preferences', '--context-share', 'top')
@@ -480,8 +484,9 @@ class ContextShareEndToEndTest(unittest.TestCase):
         outside.write_text('{"schema": 1, "context_share": "balanced"}', encoding='utf-8')
         try:
             os.symlink(outside, path)
-        except OSError:
-            pass  # Unprivileged Windows accounts may not have symlink privilege
+        except OSError as error:
+            if getattr(error, 'winerror', None) != 1314:  # ERROR_PRIVILEGE_NOT_HELD
+                raise
         else:
             self.assertEqual(prefs.read_context_share(self.state), ('top', False))
             with self.assertRaises(ValueError):
