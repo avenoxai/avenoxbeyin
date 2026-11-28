@@ -95,7 +95,11 @@ class EntryPresentationTest(unittest.TestCase):
         }
         text = entry.human_result(result, 'doctor')
         self.assertIn('projects/demo/Last-Session.md 3500 karakter (sınır 3000)', text)
-        self.assertIn('companion-compact', text)
+        line = next(line for line in text.splitlines() if 'projects/demo/Last-Session.md' in line)
+        # companion-compact only shortens the main companion folder; it must not be the advice here.
+        self.assertIn('bu proje dosyasını kapsamaz', line)
+        self.assertNotIn('çalıştırmasını söyleyin', line)
+        self.assertEqual(text.splitlines()[0], 'Bakmanız gereken 1 şey var.')
 
         # End-to-end CLI check: doctor --human on an installed vault with an over-limit project handoff file.
         with tempfile.TemporaryDirectory(prefix='v3-entry-proj-hygiene-') as t:
@@ -104,11 +108,38 @@ class EntryPresentationTest(unittest.TestCase):
             self.assertEqual(installed.returncode, 0, installed.stderr)
             proj = vault / 'projects' / 'demo'
             proj.mkdir(parents=True)
-            (proj / 'Last-Session.md').write_text('# Demo\n' + 'x' * 3500, encoding='utf-8')
+            (proj / 'Last-Session.md').write_text('# Demo\n' + 'x' * 3500, encoding='utf-8', newline='\n')
             human = run_python(vault / 'beyin.py', ['doctor', '--human'], vault, env)
             self.assertEqual(human.returncode, 0, human.stderr.decode('utf-8', errors='replace'))
             out = human.stdout.decode('utf-8')
             self.assertIn('projects/demo/Last-Session.md', out)
+            self.assertIn('bu proje dosyasını kapsamaz', out)
+            # The reason for that advice: the compactor leaves project folders alone. If it ever
+            # learns them, the doctor line above should name it again.
+            dry = run_python(vault / 'beyin.py', ['companion-compact', '--dry-run', '--json'], vault, env)
+            self.assertEqual(dry.returncode, 0, dry.stderr.decode('utf-8', errors='replace'))
+            self.assertNotIn('projects/demo', dry.stdout.decode('utf-8'))
+
+    def test_human_doctor_prints_one_line_per_over_limit_companion_file(self):
+        spec = importlib.util.spec_from_file_location('v3_entry_hygiene_lines', ROOT / 'scripts/beyin_entry.py')
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        hygiene = {
+            'status': 'over_limit',
+            'files': {'Threads.md': {'chars': 9000, 'limit': 8000, 'over_limit': True}},
+            # Root name, project name, a project name with no matching report, and a duplicate.
+            'over_limit': ['Threads.md', 'projects/a/Threads.md', 'projects/gone/Last-Session.md', 'Threads.md'],
+            'projects': [{'directory': 'projects/a', 'files': {'Threads.md': {'chars': 8100, 'limit': 8000}},
+                          'over_limit': ['Threads.md']}],
+        }
+        text = entry.human_result({'status': 'observed_metadata', 'companion_hygiene': hygiene}, 'doctor')
+        lines = [line for line in text.splitlines() if line.startswith('Hafıza hijyeni: ')]
+        self.assertEqual(len(lines), 3, text)
+        self.assertEqual(text.splitlines()[0], 'Bakmanız gereken 3 şey var.')
+        self.assertIn('Threads.md 9000 karakter (sınır 8000). Ajanınıza', lines[0])
+        self.assertIn('projects/a/Threads.md 8100 karakter (sınır 8000).', lines[1])
+        self.assertIn('bu proje dosyasını kapsamaz', lines[1])
+        self.assertIn('projects/gone/Last-Session.md sınırı aşıyor.', lines[2])
 
     def test_human_doctor_respects_parallel_sessions_for_last_session_hygiene(self):
         spec = importlib.util.spec_from_file_location('v3_entry_hygiene_parallel', ROOT / 'scripts/beyin_entry.py')

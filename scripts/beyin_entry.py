@@ -303,7 +303,7 @@ def doctor_attention_count(result):
     if result.get('exclusions_error'):
         count += 1
     hygiene = result.get('companion_hygiene') if isinstance(result.get('companion_hygiene'), dict) else {}
-    over_limit = hygiene.get('over_limit') or []
+    over_limit = _companion_hygiene_entries(hygiene)  # one printed line each
     if over_limit:
         count += len(over_limit)
     elif hygiene.get('status') == 'unavailable':
@@ -501,32 +501,25 @@ def lifecycle_lines(result):
 
 
 def _companion_hygiene_entries(hygiene):
-    """Collect (label, file_name, entry) for over-limit root and project companion files."""
+    """(label, file name, size entry, is_project) for every over-limit companion file (#922).
+
+    over_limit names root files bare and project files as '<directory>/<name>'. Each listed
+    name gives exactly one entry, in that order, so the summary count and the printed lines
+    agree; a name without a size reading gets an empty entry instead of being dropped.
+    """
     if not isinstance(hygiene, dict):
         return []
     files = hygiene.get('files') if isinstance(hygiene.get('files'), dict) else {}
-    entries = []
-    seen = set()
-    for name in hygiene.get('over_limit') or []:
-        if not isinstance(name, str) or '/' in name:
-            continue
-        entry = files.get(name)
-        if isinstance(entry, dict) and 'chars' in entry and 'limit' in entry:
-            entries.append((name, name, entry))
-            seen.add(name)
+    project_files = {}
     for proj in hygiene.get('projects') or []:
-        if not isinstance(proj, dict):
-            continue
-        directory = plain_text(proj.get('directory') or '')
-        pfiles = proj.get('files') if isinstance(proj.get('files'), dict) else {}
-        for name in proj.get('over_limit') or []:
-            if not isinstance(name, str):
-                continue
-            entry = pfiles.get(name)
-            label = f'{directory}/{name}' if directory else name
-            if isinstance(entry, dict) and 'chars' in entry and 'limit' in entry and label not in seen:
-                entries.append((label, name, entry))
-                seen.add(label)
+        if isinstance(proj, dict) and isinstance(proj.get('directory'), str) and isinstance(proj.get('files'), dict):
+            for name, entry in proj['files'].items():
+                project_files[proj['directory'] + '/' + str(name)] = entry
+    entries = []
+    for name in dict.fromkeys(name for name in hygiene.get('over_limit') or [] if isinstance(name, str)):
+        project = '/' in name
+        entry = project_files.get(name) if project else files.get(name)
+        entries.append((name, name.rsplit('/', 1)[-1], entry if isinstance(entry, dict) else {}, project))
     return entries
 
 
@@ -923,10 +916,12 @@ def _render_human_result(result, command, installed_version=None):
         if hygiene.get('status') == 'unavailable':
             lines.append('Hafıza hijyeni ölçülemedi (' + plain_text(hygiene.get('error', 'hata')) + '); daha sonra tekrar deneyin.')
         parallel_on = isinstance(result.get('parallel_sessions'), dict) and result['parallel_sessions'].get('enabled') is True
-        for label, file_name, entry in _companion_hygiene_entries(hygiene):
-            prefix = f'Hafıza hijyeni: {plain_text(label)} {entry["chars"]} karakter (sınır {entry["limit"]}). '
-            if parallel_on and file_name == 'Last-Session.md':
-                suggested = ((int(entry['chars']) + 999) // 1000) * 1000
+        for label, file_name, entry, project in _companion_hygiene_entries(hygiene):
+            sized = isinstance(entry.get('chars'), int) and isinstance(entry.get('limit'), int)
+            prefix = ('Hafıza hijyeni: ' + plain_text(label) +
+                      (f' {entry["chars"]} karakter (sınır {entry["limit"]}). ' if sized else ' sınırı aşıyor. '))
+            if parallel_on and file_name == 'Last-Session.md' and sized:
+                suggested = ((entry['chars'] + 999) // 1000) * 1000
                 if suggested <= 200000:  # beyin_v3_companion.LIMIT_RANGE upper bound
                     advice = (f'Bu kartlar hala gerekliyse: "{py_cmd} beyin.py preferences '
                               f'--last-session-chars {suggested}". ')
@@ -934,6 +929,11 @@ def _render_human_result(result, command, installed_version=None):
                     advice = 'Dosya desteklenen sınır tavanını aşıyor; arşivlemeden önce devir kartlarını gözden geçirin. '
                 lines.append(prefix + 'Paralel oturum bildirimi açık; diğer oturumların taze kartlarını yalnız bu uyarıyı '
                              'kaldırmak için sıkıştırmayın. ' + advice + 'Sıkıştırmayı diğer oturumlar bittikten sonra yapın.')
+            elif project:
+                # companion-compact only shortens the main companion folder; naming it here sends the
+                # user to a command that leaves this file untouched.
+                lines.append(prefix + 'companion-compact yalnız ana companion klasörünü kısaltır, bu proje dosyasını '
+                             'kapsamaz; ajanınızdan eski kayıtları silmeden ayrı bir arşiv notuna taşımasını isteyin.')
             else:
                 lines.append(prefix + 'Ajanınıza "' + py_cmd +
                              ' beyin.py companion-compact" çalıştırmasını söyleyin; eski kayıtlar arşive taşınır, metin silinmez.')
