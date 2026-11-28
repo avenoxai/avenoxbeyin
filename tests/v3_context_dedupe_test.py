@@ -462,6 +462,24 @@ class ContextDedupeHookTest(unittest.TestCase):
         self.assertNotIn(self.COVERAGE, second)
         self.assertFalse((self.state / 'hook-error.json').exists())
 
+    def test_coverage_notice_with_abstain_coverage_and_dedupe_on_keeps_the_turn(self):
+        # 3.18.0 rebound the notice's variable to the abstention float; with dedupe on the
+        # turn then failed with AttributeError and lost its context.
+        self.cli('preferences', '--context-dedupe', 'on')
+        self.set_missing_receipts(4)
+        extra = {'BEYIN_V3_ABSTAIN_COVERAGE': '0.5'}
+        first = self.context_of(self.invoke('UserPromptSubmit', session_id='abstain-on',
+                                            prompt='why is the GoPlus quota wasted', extra_env=extra))
+        self.assertIn(self.COVERAGE + ' (4 in the last 7 days)', first)
+        self.assertIn('knowledge/goplus-quota.md', first)
+        self.assertFalse((self.state / 'hook-error.json').exists())
+        self.set_missing_receipts(5)
+        second = self.context_of(self.invoke('UserPromptSubmit', session_id='abstain-on',
+                                             prompt='how does postgres performance indexing work', extra_env=extra))
+        self.assertNotIn(self.COVERAGE, second)
+        self.assertIn('knowledge/postgres-index.md', second)
+        self.assertFalse((self.state / 'hook-error.json').exists())
+
     def test_coverage_without_matches_and_companion_delivery_share_the_session(self):
         self.cli('preferences', '--context-dedupe', 'on')
         self.set_missing_receipts(3)
