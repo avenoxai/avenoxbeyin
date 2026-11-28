@@ -1354,7 +1354,7 @@ class SyncEngine:
                            'warnings': [{'source': w.get('source'), 'reason': w.get('reason')}
                                         for w in actionable_warnings[:100]],
                            'truncated': len(actionable_warnings) > 100,
-                       }, ensure_ascii=False)))
+                       })))  # ASCII escapes: a name that is not UTF-8 (lone surrogates) stays storable
         for entry in completed:
             entry.unlink(missing_ok=True)
         result = {'status': sync_status, 'indexed': len(records), 'deleted': deleted, 'warnings': warnings, 'conflicts': conflicts}

@@ -441,6 +441,42 @@ class DoctorUnreadableAndCompanionTest(unittest.TestCase):
         self.assertIn('Journal.md', human)
 
 
+class SyncWarningsRowTest(unittest.TestCase):
+    def test_a_warning_source_that_is_not_utf8_does_not_abort_the_sync(self):
+        # On Linux os.walk returns a file name that is not UTF-8 with lone surrogates. A file-sync
+        # clash copy is only warned about, never read, so 3.18.0 synced past it; the #964 row that
+        # stores the warnings must stay storable in SQLite instead of aborting every sync.
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        import beyin_v3_sync
+        import sqlite3
+        tmp = tempfile.TemporaryDirectory(prefix='v3-sync-warning-row-')
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name).resolve()
+        vault, state = root / 'vault', root / 'state'
+        (vault / 'notes').mkdir(parents=True)
+        (vault / 'notes/plain.md').write_text('# Plain\nHello.\n', encoding='utf-8', newline='\n')
+        clash = '\udcff (conflicted copy).md'
+        real_walk = os.walk
+
+        def walk(top, *args, **kwargs):
+            for directory, dirs, files in real_walk(top, *args, **kwargs):
+                yield directory, dirs, (files + [clash] if Path(directory) == vault / 'notes' else files)
+
+        with mock.patch.object(beyin_v3_sync.os, 'walk', walk):
+            result = beyin_v3_sync.SyncEngine(vault, state).sync()
+        self.assertEqual(result['status'], 'degraded')
+        self.assertIn('notes/' + clash, [w.get('source') for w in result['warnings']])
+        db = sqlite3.connect(str(state / 'memory.sqlite3'))
+        try:
+            row = db.execute("SELECT value FROM metadata WHERE key='last_sync_warnings'").fetchone()
+        finally:
+            db.close()
+        stored = json.loads(row[0])
+        self.assertEqual(stored['count'], 1)
+        self.assertEqual(stored['warnings'][0]['source'], 'notes/' + clash)
+
+
 class CompanionEdgeCasesTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix='v3-companion-edges-')
