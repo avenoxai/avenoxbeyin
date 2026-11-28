@@ -2002,6 +2002,12 @@ def main(argv=None, return_result=False):
                 raw_count = db_sync.get('count')
                 sync_warning_count = max(raw_count if isinstance(raw_count, int) and not isinstance(raw_count, bool) else 0, len(raw_sync_warnings))
                 effective_sync_status = db_sync.get('status')
+                # sync() refreshes workspace homepages after the row is committed; a refresh that
+                # degraded the hook's sync stays reported until the hook syncs again, as in 3.18.0.
+                homepages = hook_sync.get('workspace_homepages') if hook_sync is not None else None
+                if (isinstance(homepages, dict) and (homepages.get('conflicts') or homepages.get('warnings'))
+                        and effective_sync_status not in ('conflict', 'degraded')):
+                    effective_sync_status = 'degraded'
             elif hook_sync is not None:
                 raw_sync_warnings = [w for w in (hook_sync.get('warnings') or []) if is_actionable_sync_warning(w)]
                 sync_warning_count = len(raw_sync_warnings)

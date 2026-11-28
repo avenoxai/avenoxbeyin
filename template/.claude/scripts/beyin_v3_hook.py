@@ -1290,7 +1290,15 @@ def main():
                 warning += "V3 sync needs attention; consult current sources and doctor.\n"
             elif health_present and isinstance(sync, dict):
                 if sync.get("status") not in ("ok", "succeeded", "synced"):
-                    warning += _sync_attention_notice(sync)
+                    # Count and names open the session only (#964): a turn keeps the short line,
+                    # so its records keep their room for as long as a note stays unreadable.
+                    attention = "V3 sync needs attention; consult current sources and doctor.\n"
+                    if event == 'SessionStart':
+                        try:
+                            attention = _sync_attention_notice(sync)
+                        except Exception:
+                            pass  # the names are a hint; the short line still warns
+                    warning += attention
                 from beyin_v3_projections import is_receipt_view_conflict
                 if any(is_receipt_view_conflict(c) for c in (sync.get('conflicts') or []) + (sync.get('warnings') or [])):
                     warning += "V3 receipt view preserved; consult doctor or run beyin.py sync --recover-views to archive and regenerate.\n"

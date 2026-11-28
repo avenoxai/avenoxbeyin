@@ -285,6 +285,43 @@ class DoctorUnreadableAndCompanionTest(unittest.TestCase):
         self.assertNotEqual(doc2['status'], 'needs_attention')
         self.assertNotIn('Okunamayan', self.beyin('doctor', '--human'))
 
+    def test_prompt_turn_keeps_the_short_sync_line_without_filenames(self):
+        # Names open the session only; every turn while a note stays broken keeps 3.18.0's line.
+        notes = self.vault / 'notes'
+        notes.mkdir()
+        for idx in range(1, 4):
+            (notes / f'kirik-not-{idx}.md').write_text('---\ntitle: Kapanmadi\n', encoding='utf-8', newline='\n')
+        (notes / 'devekusu.md').write_text('# Devekusu besleme plani\n\nDevekusu geceleri dari tohumu yer.\n',
+                                           encoding='utf-8', newline='\n')
+        self.drain_hook()
+        payload = {'hook_event_name': 'UserPromptSubmit', 'session_id': 'synthetic-unreadable-964-turn',
+                   'event_id': 'evt-964-turn', 'prompt': 'devekusu besleme plani nedir?'}
+        done = run_python(self.vault / '.claude/scripts/beyin_v3_hook.py',
+                          ['--vault', self.vault, '--state', self.state, '--harness', 'claude'],
+                          self.vault, self.env, payload=payload)
+        self.assertEqual(done.returncode, 0, done.stderr.decode('utf-8', errors='replace'))
+        ctx = json.loads(done.stdout.decode('utf-8'))['hookSpecificOutput']['additionalContext']
+        self.assertIn('notes/devekusu.md', ctx)
+        self.assertTrue(ctx.startswith('V3 sync needs attention; consult current sources and doctor.\n'), ctx[:300])
+        self.assertNotIn('kirik-not-', ctx)
+        opening = self.invoke_session_start()
+        self.assertIn('V3 sync needs attention (3 warnings: notes/kirik-not-1.md', opening)
+
+    def test_newer_cli_sync_keeps_homepage_degradation_reported_by_the_hook(self):
+        # sync() refreshes homepages after its row is committed: a newer CLI row must not hide
+        # the degraded status the hook recorded for them (3.18.0 doctor reports it).
+        self.beyin_json('sync')
+        health_path = self.state / 'hook-health.json'
+        health_path.write_text(json.dumps({'at': 1.0, 'sync': {
+            'status': 'degraded', 'indexed': 1, 'deleted': 0, 'warnings': [], 'conflicts': [],
+            'workspace_homepages': {'updated': 0, 'conflicts': [], 'warnings': [{'reason': 'homepage refresh failed'}]},
+        }}), encoding='utf-8', newline='\n')
+        os.utime(health_path, (1.0, 1.0))
+        self.assertEqual(self.beyin_json('sync')['status'], 'succeeded')
+        doc = self.beyin_json('doctor')
+        self.assertEqual(doc['sync_warnings']['count'], 0)
+        self.assertEqual(doc['status'], 'needs_attention')
+
     def test_deleted_bootstrapped_companion_directory_reports_all_missing_sources(self):
         import shutil
         shutil.rmtree(self.vault / '🔮 850-Companion')
