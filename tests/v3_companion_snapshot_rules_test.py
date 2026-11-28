@@ -268,6 +268,28 @@ class SnapshotTest(unittest.TestCase):
                 self.assertEqual((omitted, total), (last - first + 1 - pinned, count))
                 self.assertNotIn('pinned_omitted', report)
 
+    def test_pin_marker_inside_inline_code_or_indented_fence_pins_nothing(self):
+        # Inline backticks and 4-space list-indented fences quote <!-- beyin:pin --> as an
+        # example; they must neither pin the rule nor turn into a real pin when reasons drop.
+        self.assertFalse(companion._is_pinned('- Kritik kurallara `<!-- beyin:pin -->` etiketi koy.\n'))
+        self.assertFalse(companion._is_pinned('- Ornek ``<!-- beyin:pin -->`` kullanimi.\n'))
+        self.assertFalse(companion._is_pinned('- Ornek ```<!-- beyin:pin -->``` tek satir.\n'))
+        self.assertFalse(companion._is_pinned('- Ornek:\n    ~~~\n    <!-- beyin:pin -->\n    ~~~\n'))
+        self.assertFalse(companion._is_pinned('- Ornek:\n    ```md\n    <!-- beyin:pin -->\n    ```\n'))
+        # A real pin outside inline code still pins even when the same rule also quotes the syntax.
+        self.assertTrue(companion._is_pinned('- `<!-- beyin:pin -->` kullanimi <!-- beyin:pin -->\n'))
+        self.assertTrue(companion._is_pinned('- `kod` metni <!-- beyin:pin -->\n'))
+        # Stripping **neden:** must never unquote an inline-code mention into a live pin marker.
+        with_quoted_reason = '- **kural:** Normal kural metni. **neden:** `<!-- beyin:pin -->` ornegini aciklar.\n'
+        stripped_quoted = companion.without_reasons(with_quoted_reason)
+        self.assertFalse(companion._is_pinned(stripped_quoted), stripped_quoted)
+        self.assertNotIn('<!-- beyin:pin -->', stripped_quoted)
+        # A real pin after a reason that also quotes the syntax is preserved.
+        with_both = '- **kural:** Kritik kural. **neden:** `<!-- beyin:pin -->` kurali anlatir. <!-- beyin:pin -->\n'
+        stripped_both = companion.without_reasons(with_both)
+        self.assertTrue(companion._is_pinned(stripped_both), stripped_both)
+        self.assertIn('Kritik kural. <!-- beyin:pin -->\n', stripped_both)
+
     def test_pinned_rule_alone_in_the_cut_names_no_empty_rule_range(self):
         # When the only rule in the cut is a pinned one, only the prose before the first rule
         # was left out; "rules 1-1 (0 of 5)" would misreport it. The plain marker stands where
@@ -283,6 +305,36 @@ class SnapshotTest(unittest.TestCase):
                 self.assertIsNone(MARKER.search(shown), shown)
                 self.assertTrue(shown.startswith(companion.CLIP_MARKER + '- X000 '), shown[:80])
                 self.assertEqual(report, {})
+
+    def test_starved_identity_and_journal_emit_omission_pointer_not_half_heading(self):
+        # #916: when the protected core forces Core.md/Journal.md down to <=50 chars, replace the
+        # 14-char broken half heading with a clear single-line omission pointer and report it.
+        core = '# Düşünme ortağı\n\n' + ('Kimlik tercihi ve çalışma bağlamı notu.\n' * 120)
+        rules = rules_file(3700, exact=True)[0]
+        last = '## 2026-11-27 10:00 · handoff · 12345678\n' + ('Son oturum ayrıntısı ve açık adım.\n' * 55)
+        threads = '## Active Threads\n' + ''.join(
+            f'### Topic {i:02d}\n- [ ] 2026-11-27: Durum özeti {i}. ' + 'x' * 550 + '\n' for i in range(11))
+        journal = '## 2026-11-27 · Gözlem\n' + ('Uzun gözlem ve öğrenim notu.\n' * 150)
+        for name, body in (('Core.md', core), ('Kurallar.md', rules), ('Last-Session.md', last),
+                           ('Threads.md', threads), ('Journal.md', journal)):
+            self.write(name, body)
+        report = {}
+        shown = companion.context(self.store, 8000, '0' * 24, 'claude', report=report)
+        self.assertLessEqual(len(shown), 8000)
+        core_part = section(shown, 'Core.md')
+        self.assertEqual(core_part.strip(), f'[omitted ({len(core)} chars); read source]')
+        self.assertNotIn('# Düşünme orta', core_part)
+        self.assertTrue(report['files']['Core.md']['omitted'])
+        self.assertEqual(report['files']['Core.md']['share'], 0)
+        self.assertTrue(report['files']['Journal.md']['omitted'])
+        _, opening = companion.opening_report(self.store, 8000)
+        self.assertEqual(opening['status'], 'warn')
+        self.assertEqual(opening['identity'], 'Core.md')
+        # Roomy budget delivers Core.md without warning or omission.
+        _, roomy = companion.opening_report(self.store, 20000)
+        self.assertNotEqual(roomy['status'], 'warn')
+        self.assertFalse(roomy['files']['Core.md']['omitted'])
+        self.assertGreater(roomy['files']['Core.md']['share'], companion.IDENTITY_WARN_SHARE)
 
     def test_doctor_reads_what_every_project_opening_shares_once(self):
         # #893: doctor measures each project's rules with SessionStart's own context(). The
@@ -333,11 +385,11 @@ class SnapshotTest(unittest.TestCase):
                 self.assertEqual(scanned, {'checked': checked, 'total': 3})
                 self.assertEqual(len(results), checked)
         entry = load('beyin_entry_issue893', 'scripts/beyin_entry.py')
-        line = 'Proje Kurallar.md olcumu ilk 50 dosyayla sinirli (bilgi): 57 dosyanin 7 tanesi olculmedi.'
+        line = 'Proje Kurallar.md ölçümü ilk 50 dosyayla sınırlı (bilgi): 57 dosyanın 7 tanesi ölçülmedi.'
         opening = {'status': 'ok', 'budget': 5000, 'project_rules_checked': 50, 'project_rules_total': 57}
         self.assertIn(line, entry.human_result({'status': 'ok', 'companion_rules_opening': opening}, 'doctor'))
         opening.update(project_rules_checked=57)
-        self.assertNotIn('Proje Kurallar.md olcumu', entry.human_result(
+        self.assertNotIn('Proje Kurallar.md ölçümü', entry.human_result(
             {'status': 'ok', 'companion_rules_opening': opening}, 'doctor'))
 
     def test_rules_notice_keeps_long_receipt_within_total_budget(self):
@@ -459,11 +511,11 @@ class InstalledOpeningTest(unittest.TestCase):
         self.assertEqual(self.tree(), before, 'doctor must not write')
         self.assertEqual(report['status'], 'clipped')
         self.assertEqual(report['pinned_omitted'], report['omitted_rules']['count'])
-        self.assertIn(f'Sabitlenmis (beyin:pin) {report["pinned_omitted"]} kural acilis payina sigmiyor (bilgi)', human)
+        self.assertIn(f'Sabitlenmiş (beyin:pin) {report["pinned_omitted"]} kural açılış payına sığmıyor (bilgi)', human)
         project = report['project_rules'][0]
         self.assertEqual((project['source'], project['status']), ('projects/alpha/Kurallar.md', 'clipped'))
         self.assertEqual(project['pinned_omitted'], project['omitted_rules']['count'])
-        self.assertIn(f'Sabitlenmis (beyin:pin) {project["pinned_omitted"]} kural acilis payina sigmiyor '
+        self.assertIn(f'Sabitlenmiş (beyin:pin) {project["pinned_omitted"]} kural açılış payına sığmıyor '
                       '(projects/alpha/Kurallar.md) (bilgi)', human)
 
     def test_latest_rule_order_preserves_complete_newest_items(self):
@@ -490,11 +542,11 @@ class InstalledOpeningTest(unittest.TestCase):
         first, last, omitted, total = map(int, MARKER.search(section(initial_context, 'Kurallar.md')).groups())
         self.assertEqual(report['omitted_rules'], {'first': first, 'last': last, 'count': omitted, 'total': total})
         self.assertEqual(report['measurement'], 'reference_opening')
-        self.assertIn('Oturuma ozel bildirimler gercek acilista bu payi azaltabilir.', human)
-        self.assertIn(f'Gosterilmeyen kural siralari {first}-{last} ({omitted}/{total}).', human)
+        self.assertIn('Oturuma özel bildirimler gerçek açılışta bu payı azaltabilir.', human)
+        self.assertIn(f'Gösterilmeyen kural sıraları {first}-{last} ({omitted}/{total}).', human)
 
-        self.assertIn(f'Kurallar.md acilista kirpiliyor (bilgi): kural metni {report["chars"]} karakter; '
-                      f'Claude Code acilisi bu ayarlarla (5000 karakter) en fazla {report["share"]} karakterini tam gosterir',
+        self.assertIn(f'Kurallar.md açılışta kırpılıyor: kural metni {report["chars"]} karakter; '
+                      f'Claude Code açılışı bu ayarlarla (5000 karakter) en fazla {report["share"]} karakterini tam gösterir',
                       human)
         self.assertIn(f'Memory hygiene: Kurallar.md opens clipped (fit ceiling {report["share"]} of {report["chars"]} chars).',
                       initial_context)
@@ -506,7 +558,7 @@ class InstalledOpeningTest(unittest.TestCase):
         self.assertNotIn('Memory hygiene: Kurallar.md opens clipped', whole_context)
         self.assertEqual(json.loads(self.run_cli(self.vault / 'beyin.py', 'doctor', '--json'))
                          ['companion_rules_opening']['status'], 'ok')
-        self.assertNotIn('Kurallar.md acilista kirpiliyor', self.run_cli(self.vault / 'beyin.py', 'doctor', '--human'))
+        self.assertNotIn('Kurallar.md açılışta kırpılıyor', self.run_cli(self.vault / 'beyin.py', 'doctor', '--human'))
 
     def test_doctor_reports_clipped_and_stale_project_rules_without_disclosing_private(self):
         self.rules('# Rules\n- Short global rule.\n')
@@ -536,10 +588,10 @@ class InstalledOpeningTest(unittest.TestCase):
         # The count names nothing, and the file under a sensitive folder is not counted;
         # under the cap no --human line reports a cut.
         self.assertEqual((report['project_rules_checked'], report['project_rules_total']), (1, 1))
-        self.assertNotIn('Proje Kurallar.md olcumu', human)
+        self.assertNotIn('Proje Kurallar.md ölçümü', human)
         self.assertNotIn('gizli', raw)
         self.assertIn('projects/alpha/Kurallar.md', human)
-        self.assertIn('Proje Kurallar.md acilista kirpiliyor', human)
+        self.assertIn('Proje Kurallar.md açılışta kırpılıyor', human)
 
         # Stale project rules must be marked stale without disclosing text.
         proj_rules.write_text('# Rules\n- STALE_PROJECT_CANARY.\n', encoding='utf-8', newline='\n')
@@ -583,6 +635,53 @@ class InstalledOpeningTest(unittest.TestCase):
             (self.vault / parent / name / 'Kurallar.md').write_text(
                 '# Rules\n- STALE_PROJECT_CANARY.\n', encoding='utf-8', newline='\n')
         self.assertEqual(project_rules(), [(source, 'stale') for source in expected])
+
+    def test_doctor_reports_companion_opening_and_warns_when_identity_starved(self):
+        # #916: when Kurallar + Last-Session + Threads fill the opening budget, Core.md and
+        # Journal.md drop to an omission pointer (not a half heading) and doctor reports it.
+        comp = self.vault / '🔮 850-Companion'
+        core = '# Düşünme ortağı\n\n' + ('Kimlik tercihi ve çalışma bağlamı notu.\n' * 120)
+        rules = rules_file(3700, exact=True)[0]
+        last = '## 2026-11-27 10:00 · handoff · 12345678\n' + ('Son oturum ayrıntısı ve açık adım.\n' * 55)
+        threads = '## Active Threads\n' + ''.join(
+            f'### Topic {i:02d}\n- [ ] 2026-11-27: Durum özeti {i} ve sonraki adım ayrıntısı. ' + 'x' * 550 + '\n'
+            for i in range(11))
+        journal = '## 2026-11-27 · Gözlem\n' + ('Uzun gözlem ve öğrenim notu.\n' * 200)
+        for name, body in (('Core.md', core), ('Kurallar.md', rules), ('Last-Session.md', last),
+                           ('Threads.md', threads), ('Journal.md', journal)):
+            (comp / name).write_text(body, encoding='utf-8', newline='\n')
+        self.run_cli(self.vault / 'beyin.py', '--vault', self.vault, '--state', self.state,
+                     'preferences', '--companion-context-chars', '8000')
+        self.run_cli(self.vault / 'beyin.py', '--vault', self.vault, '--state', self.state, 'sync')
+
+        before = self.tree()
+        raw = self.run_cli(self.vault / 'beyin.py', 'doctor', '--json')
+        human = self.run_cli(self.vault / 'beyin.py', 'doctor', '--human')
+        self.assertEqual(self.tree(), before, 'doctor must not write')
+        opening = json.loads(raw)['companion_opening']
+        self.assertEqual(opening['status'], 'warn')
+        self.assertEqual(opening['identity'], 'Core.md')
+        self.assertTrue(opening['files']['Core.md']['clipped'])
+        self.assertTrue(opening['files']['Core.md']['omitted'])
+        self.assertEqual(opening['files']['Core.md']['share'], 0)
+        self.assertTrue(opening['files']['Journal.md']['omitted'])
+        self.assertIn('Core.md açılışa sığmıyor (uyarı)', human)
+        self.assertIn('Journal.md açılışa sığmıyor (bilgi)', human)
+
+        # Actual SessionStart opening replaces the broken 14-char half heading with an explicit pointer.
+        payload = {'hook_event_name': 'SessionStart', 'session_id': 'issue-916', 'source': 'startup',
+                   'cwd': str(self.vault)}
+        ctx = json.loads(self.run_cli(
+            self.vault / '.claude/scripts/beyin_v3_hook.py', '--vault', self.vault, '--state', self.state,
+            '--harness', 'claude', payload=payload))['hookSpecificOutput']['additionalContext']
+        self.assertIn(f'[omitted ({len(core)} chars); read source]', ctx)
+        self.assertNotIn('# Düşünme orta\n[truncated', ctx)
+
+        # Negative control: context_mode off reports context_off without failing.
+        self.run_cli(self.vault / 'beyin.py', '--vault', self.vault, '--state', self.state,
+                     'preferences', '--context-mode', 'off')
+        off = json.loads(self.run_cli(self.vault / 'beyin.py', 'doctor', '--json'))['companion_opening']
+        self.assertEqual(off, {'status': 'context_off'})
 
 
 if __name__ == '__main__':

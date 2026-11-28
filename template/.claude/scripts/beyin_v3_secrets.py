@@ -36,46 +36,131 @@ _SECRET_NAME = (r"(?!(?:pad|eos|bos|unk|sep|cls|mask)_token(?a:(?![a-z0-9_])))"
 # the Turkish İ and ı, which hid the whole value of KİŞİSEL_API_KEY=... while
 # MÜŞTERI_API_KEY=... was masked.
 _NAME_START = r"(?a:(?<![a-z0-9_]))"
-# An unquoted value stops at a backtick, so `NAME=value` keeps its closing
-# inline-code backtick. A backtick-quoted value is masked whole or not at all:
-# a mask that reports success but leaves the tail of the value in the note is
-# the worst outcome. _backtick_value builds one branch per opening run.
+# A value is masked whole or not at all: a mask that reports success but leaves
+# the tail of the value in the note is the worst outcome. _backtick_value builds
+# one branch per opening run of backticks.
 # A span holding only an upper-case snake_case name documents a variable
 # ("API key: `OPENAI_API_KEY` okunur"), so it stays text; the check is
 # case-sensitive under the pattern's (?i).
 _LINE_END = r"(?=[ \t]*(?:\r?\n|\Z))"
+# What may follow a closing backtick run and stay outside the mask: up to three
+# punctuation marks before a space or the end ("`value`.", "`value`, sonra").
+# Typographic marks count too: macOS replaces quotes and dots as the user types
+# ("“`NAME=value`” dedi", "`NAME=value`… sonra").
+_AFTER_VALUE = (r"""[.,;:!?)\]}'"*_~|\u2019\u201d\u00bb\u203a\u2026\u2014\u2013]{0,3}"""
+                r"""(?:\s|\Z)""")
+# A Turkish suffix after inline code ("`NAME=value`'yi ayarla", "`...`’nin",
+# "`...`'lerindekilerden") also follows a closing run. It is lower case and
+# bounded, so it cannot take with it a long piece of a value that holds a quote
+# after a backtick, and the lookahead stays linear.
+_TURKISH_SUFFIX = r"['\u2019](?-i:[a-zçğıöşü]){1,20}(?=" + _AFTER_VALUE + ")"
+# A quoted value ends at its closing quote, as in 3.17.0.
+_QUOTED_VALUE = r"""\\{0,8}["\']\S{8,}\\{0,8}["\']"""
 
 
-def _backtick_value(opener, close, before_line_end):
+def _unquoted_value(start="", head_runs=False, suffix=True):
+    """A value that no quote or backtick opens, kept inside one non-space token.
+
+    A comma or a semicolon ends it, as in 3.17.0: "token=Xy7kL9am,mode=fast"
+    and "Password=Xy7kL9am;Database=foo" keep the next setting. A value that
+    holds one of them has to be quoted. A backtick run that a value character
+    follows belongs to the value ("Xy7#kL9a`mN2$pQ4!"); a run that a space, the
+    end, up to three punctuation marks before them or a Turkish suffix follow
+    closes the inline-code span around the assignment and stays outside
+    ("- `NAME=value`", "`NAME=value`'yi ayarla"). The run is one step that
+    needs a value character after it, so a long run cannot make the scan
+    quadratic.
+
+    An assignment value starts with eight characters that are not backticks,
+    as in 3.17.0, so a JSON-escaped fence after a label ("Token:\\n```js")
+    stays text. A setx value counted backticks among its first eight in 3.17.0
+    (head_runs) and keeps doing so.
+    Without suffix a Turkish suffix after a backtick run is part of the value,
+    as 3.17.0 read a setx value: a suffix may be up to 20 letters of the value.
+    """
+    character = r"[^\x60\s,;]"
+    inner_run = (r"\x60+(?=" + character + r")(?!" + _AFTER_VALUE
+                 + ("|" + _TURKISH_SUFFIX if suffix else "") + ")")
+    step = "(?:" + character + "|" + inner_run + ")"
+    head = step + "{7,}" if head_runs else character + "{7,}" + step + "*"
+    return start + r"[^\"'\x60\s,;]" + head
+
+
+def _backtick_value(opener, close, before_line_end, short_run=None):
     """A value opened by a run of backticks, kept inside one non-space token.
 
     Markdown writes a value that holds backticks with a longer opening run
-    (``Xy7`mN2``, ```Xy7``mN2```), so a backtick run that a non-space character
-    follows is part of the value. A run at least as long as the opener closes
-    it; when only backticks and up to three punctuation marks follow before a
-    space, they stay outside ("`value`."), otherwise the rest of the token goes
-    with the value ("`Xy7`mN2" or "`value`'yi"), so no tail is left visible.
+    (``Xy7`mN2``, ```Xy7``mN2```), so a run shorter than the opener is part of
+    the value (short_run; a single backtick opener holds none). A run at least
+    as long as the opener closes it; when only backticks and up to three
+    punctuation marks follow before a space, they stay outside ("`value`."),
+    otherwise the rest of the token goes with the value ("`Xy7kL9am`mN2" or
+    "`value`'yi"), so no tail is left visible. A span that closes before eight
+    characters is short inline code and stays text ("`kisa`mN2pQ4zR8"); the
+    scan does not read on through its closing run.
     One or two backticks may also end at the line end, as an inline span may be
     unclosed or wrap; three or more open a fenced block whose info string ends
     the line ("API key:\\n```javascript"), so that run needs a closing run or
     at least a backtick at the line end, which an info string cannot hold.
+    Jev scans the JSON form of a note too, where a line break is the two
+    characters \\n. The value never holds \\n, \\r or \\t, so a short span
+    before a line break ("token: `kisa`\\ndevam") or a fence opened on the
+    label line stays text there as it does in the note. A value written with a
+    literal \\n is left as written. An unclosed value does not end in a quote
+    or a closing bracket, so the end of the JSON string ('`hunter2"}') does not
+    lengthen a short span into a value.
     A span with a space inside stays prose (``value` rest``); nothing masks
     only its first word.
     """
-    ending = (close + r"""(?:(?=\x60*[.,;:!?)\]}'"*_~|]{0,3}(?:\s|\Z))|\S*)""")
-    ending += "|" + before_line_end + _LINE_END
-    return (opener + r"[^\x60\s](?:[^\x60\s]|\x60+(?=[^\x60\s])){7,}?(?:"
-            + ending + ")")
+    character = r"(?!\\[nrt])[^\x60\s]"
+    step = "(?:" + character + ("" if short_run is None
+                                else "|" + short_run + r"(?=[^\x60\s])") + ")"
+    ending = close + r"(?:(?=\x60*" + _AFTER_VALUE + r")|\S*)"
+    ending += "|" + r"""(?<!["\]}])""" + before_line_end + _LINE_END
+    return opener + character + step + "{7,}?(?:" + ending + ")"
 
 
 # The fence run is capped so a chain of ever shorter openers in one token
 # cannot make the scan quadratic; a longer run is left as written.
-_SECRET_VALUE = (r"""(?:\\{0,8}["\']\S{8,}\\{0,8}["\']"""
-                 r"""|(?!(?-i:\x60+[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\x60))(?:"""
-                 + _backtick_value(r"\x60", r"\x60", r"\x60*") + "|"
-                 + _backtick_value(r"\x60\x60", r"\x60\x60", r"\x60*") + "|"
-                 + _backtick_value(r"(?P<fence>\x60{3,16})", r"(?P=fence)", r"\x60+")
-                 + r""")|[^"\'\x60\s,;][^\x60\s,;]{7,})""")
+def _backtick_span():
+    return (r"""(?!(?-i:\x60+[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\x60))(?:"""
+            + _backtick_value(r"\x60", r"\x60", r"\x60*") + "|"
+            + _backtick_value(r"\x60\x60", r"\x60\x60", r"\x60*", r"\x60") + "|"
+            + _backtick_value(r"(?P<fence>\x60{3,16})", r"(?P=fence)", r"\x60+",
+                              r"(?!(?P=fence))\x60+") + ")")
+
+
+# The same name with = and no value, or an empty quoted value, documents the
+# variable too ("Token: `OPENAI_API_KEY=` gerekli"); 3.17.0 left it as written.
+# It stays text only when its closing run ends the token (a space, the end,
+# trailing marks, a Turkish suffix or a JSON escape follow), so a value glued
+# after the run ("`NAME=`Xy7kL9amN2pQ") is still masked with the span.
+# Jev scans the note as JSON, and a card statement is a JSON string inside
+# JSON, so a line break there is \n or \\n, a quote is \" or \\\", and the end
+# of the string adds a quote and closing brackets ("}, \",). The token end is
+# read the same way in every form, or Jev refuses every query that finds a
+# note redact() kept as written. Only marks, escaped quotes and brackets may
+# stand before the break, so a value glued to them is still masked.
+_EMPTY_END = (r"""(?:\\{0,8}["']|[.,;:!?)\]}*_~|\u2019\u201d\u00bb\u203a\u2026\u2014\u2013]){0,8}"""
+              r"""(?:\s|\Z|\\{1,8}[nrt])""")
+_EMPTY_ASSIGNMENT = (r"""(?!(?-i:\x60+[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+="""
+                     r"""(?:\\{0,8}"\\{0,8}"|\\{0,8}'\\{0,8}')?\x60+)(?="""
+                     + _EMPTY_END + r"|['\u2019](?-i:[a-zçğıöşü]){1,20}(?=" + _EMPTY_END + ")))")
+_SECRET_VALUE = ("(?:" + _QUOTED_VALUE + "|" + _EMPTY_ASSIGNMENT + _backtick_span()
+                 + "|" + _unquoted_value() + ")")
+
+# The setx value of 3.17.0 may start with a backtick and counts backticks among
+# its first eight characters. A setx value that the span and unquoted rules
+# above do not read (an unclosed span before more text, "setx DB_PASSWORD
+# `$Xy7kL9am2 /M"; a span that closes before eight characters,
+# "`kisa`mN2pQ4zR8"; a run longer than the fence cap; a value split inside its
+# first eight characters) was masked by 3.17.0, so it is masked here too, to
+# the end of the token: a comma or a semicolon in it leaves no tail, and only
+# up to three punctuation marks before the space stay outside, as after a
+# span. Text without a backtick never reaches this rule, since the unquoted
+# rule above reads such a value exactly as 3.17.0 did.
+_SETX_FALLBACK = (r"""(?=[^\s,;]*\d)[^"\'\s,;](?=[^\s,;]{7})\S*?(?="""
+                  + _AFTER_VALUE + ")")
 
 
 BUILTIN_PATTERNS = (
@@ -91,7 +176,9 @@ BUILTIN_PATTERNS = (
     re.compile(r"""(?i)(?a:(?<![a-z0-9_-]))(?:(?:setx(?:[ \t]+/m)?|set[ \t]+-[a-z]{0,3}x[a-z]{0,3})"""
                r"""[ \t]+["\']?""" + _SECRET_NAME + r"""["\']?[ \t]+|setenvironmentvariable\([ \t]*["\']"""
                + _SECRET_NAME + r"""["\'][ \t]*,[ \t]*)"""
-               r"""(?:\\{0,8}["\']\S{8,}\\{0,8}["\']|(?=[^\s,;]*\d)[^"\'\s,;][^\s,;]{7,})"""),
+               + "(?:" + _QUOTED_VALUE + r"|(?=\S*\d)" + _backtick_span() + "|"
+               + _unquoted_value(start=r"(?=[^\s,;]*\d)", head_runs=True, suffix=False)
+               + "|" + _SETX_FALLBACK + ")"),
     re.compile(r"(?<=://)[^/\s?#:]*:[^/\s?#]*(?=@[^/\s?#@]+)"),
     re.compile(r"\bgh(?:p|o|u|s|r)_[A-Za-z0-9]{20,255}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,255}\b"),

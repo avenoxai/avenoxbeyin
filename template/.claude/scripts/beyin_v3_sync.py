@@ -21,19 +21,19 @@ _MODULE_DIR = str(Path(__file__).resolve().parent)
 if _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
-from beyin_v3 import (HARNESSES, MAX_RECEIPT_LINKS, RECEIPT_CLIENT_NAME, RECEIPT_CLIENTS, REJECTED_AT, RETIRED_STATUSES, MemoryStore, ReceiptConflict, RevisionConflict, _json,
+from beyin_v3 import (HARNESSES, MAX_RECEIPT_LINKS, RECEIPT_CLIENT_NAME, RECEIPT_CLIENTS, REJECTED_AT, RETIRED_STATUSES, VALID_VISIBILITIES, MemoryStore, ReceiptConflict, RevisionConflict, _fold_privacy_token, _json,
                       _receipt_lf, _receipt_same_summary,
-                      _path_redirected, _plain_link, _rejected_inference, _status_word, rejected_dependents, resolve_supersedes)
+                      _path_redirected, _plain_link, _rejected_inference, _status_word, agent_sync_warnings, normalize_privacy_metadata, rejected_dependents, resolve_supersedes)
 from beyin_v3_index import applied_keys, dir_key, exclusions as index_exclusions, prune as prune_excluded
 from beyin_v3_hygiene import sensitive_excluded, sensitive_source
-from beyin_v3_projections import (is_receipt_view_source, is_receipt_view_conflict, project_receipts,
-                                  quarantine_receipt_view_history, archived_receipt_view_aliases,
+from beyin_v3_projections import (is_receipt_view_source, is_receipt_view_conflict, is_actionable_sync_warning,
+                                  project_receipts, quarantine_receipt_view_history, archived_receipt_view_aliases,
                                   _receipt_view_contents, receipt_view_rows,
                                   _record_excluded_dirs, _record_unreadable_sources,
-                                  RECEIPT_VIEW_SOURCES_ROW)
+                                  LAST_SYNC_WARNINGS_ROW, RECEIPT_VIEW_SOURCES_ROW)
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
-from beyin_v3_notes import (NoteConflict, locked as note_locked,
+from beyin_v3_notes import (NoteConflict, locked as note_locked, _unlinked,
                             validate_source_name, refuse_unicode_alias,
                             read as note_read_source, apply as note_apply_edits,
                             decode_utf8, require_utf8_text, require_utf8_values)
@@ -187,6 +187,9 @@ def _parse_yaml_value(value):
 # Keys that narrow what context may show. Nested under another key they would be
 # silently ignored (only top-level metadata reaches the gates), so such a source
 # stays excluded with a warning, as before nested mappings were read (#179).
+# Exact spelling only: the privacy aliases and case variants of #963 are read at the top
+# level. Nested under another key, `private: true` (a GitHub repo, an account) says nothing
+# about the note, so a nested mapping reads exactly as in 3.18.0.
 GATE_KEYS = ('visibility', 'trust', 'trusted', 'remote_allowed')
 COMMA_LIST_KEYS = ('tags', 'aliases')
 
@@ -201,23 +204,29 @@ def _mapping_value(sub_key, value):
     return parsed
 
 
-def parse(text):
-    """Parse source text, rejecting an unresolved Git merge before ingest."""
+def _parse_frontmatter(text):
+    """Parse source text and normalize privacy frontmatter, returning (metadata, body, warnings, conflict)."""
     if _has_conflict_markers(text):
         raise ValueError('unresolved git conflict markers; resolve the merge before sync')
     lines = text.splitlines(keepends=True)
     if not lines or lines[0].lstrip('\ufeff').strip() != '---':
-        return {}, text
+        return {}, text, [], False
     end = next((i for i in range(1, len(lines)) if lines[i].strip() == '---'), None)
     if end is None:
         raise ValueError('unterminated frontmatter')
     header = ''.join(lines[1:end]).strip()
     body = ''.join(lines[end + 1:])
     if header.startswith('{'):
-        metadata = json.loads(header)
+        top_pairs = None
+        def _capture_pairs(pairs):
+            nonlocal top_pairs
+            top_pairs = pairs
+            return dict(pairs)
+        metadata = json.loads(header, object_pairs_hook=_capture_pairs)
         if not isinstance(metadata, dict):
             raise ValueError('frontmatter must be an object')
-        return metadata, body
+        normalized, warnings, conflict = normalize_privacy_metadata(metadata, pairs=top_pairs)
+        return normalized, body, warnings, conflict
     metadata = {}
     header_lines = header.splitlines()
     index = 0
@@ -284,6 +293,13 @@ def parse(text):
             if len(items) > 1:
                 parsed = items
         metadata[key] = parsed
+    normalized, warnings, conflict = normalize_privacy_metadata(metadata)
+    return normalized, body, warnings, conflict
+
+
+def parse(text):
+    """Parse source text, rejecting an unresolved Git merge before ingest."""
+    metadata, body, _, _ = _parse_frontmatter(text)
     return metadata, body
 
 
@@ -312,6 +328,21 @@ EXCLUDED_FILES = {'agents.md', 'claude.md', 'gemini.md', 'skill.md', 'hooks.md',
 EXCLUDED_DIRS = {'node_modules', 'receipts', '__pycache__'}
 # User-chosen directory names (<state>/index.json) are pruned on top of these; see beyin_v3_index.
 # Nothing else is skipped by name: "vendor" or "external" is also an ordinary notes folder.
+NOTE_CREATE_RESERVED_ROOTS = frozenset({'tasks', 'receipts', 'daily', 'raw'})
+WORKSPACE_CONFIG_MAX_BYTES = 1024 * 1024
+
+
+def _is_regular_local_file(path, max_bytes=WORKSPACE_CONFIG_MAX_BYTES):
+    """True when path is an existing regular vault-local file (no symlink/junction) within size bound."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    return (stat.S_ISREG(info.st_mode) and
+            not getattr(info, 'st_reparse_tag', 0) and
+            info.st_size <= max_bytes)
+
+
 COMPLETION_FIELDS = {'completion_contract', 'completion_criterion', 'evidence_refs'}
 TASK_STATUSES = ('inbox', 'active', 'waiting', 'blocked', 'done', 'cancelled')
 # Evidence newly linked to a strict done task must name the task within this many bytes.
@@ -395,7 +426,7 @@ def numbered_copy_of(name, siblings):
 # the same signature RACY_WINDOW_NS after it was first seen. The second proof compares this
 # clock only with itself, so it also holds where another clock stamps the files (a file
 # server, a VM shared folder) and runs behind this one.
-SIGNATURE_SCHEMA = 'source-signatures/2'
+SIGNATURE_SCHEMA = 'source-signatures/3'
 RACY_WINDOW_NS = 2_000_000_000
 
 
@@ -614,20 +645,24 @@ class SyncEngine:
     @staticmethod
     def _write_diagnostics(output, result):
         if result.get('status') in ('degraded', 'conflict'):
-            warnings = result.get('warnings', [])
+            warnings, withheld = agent_sync_warnings(result.get('warnings', []))
             conflicts = result.get('conflicts', [])
             output['source_sync'] = {'status': result['status'], 'warnings': warnings[:20],
                                      'warning_count': len(warnings), 'truncated': len(warnings) > 20}
             if conflicts:
                 output['source_sync'].update(conflicts=conflicts[:20], conflict_count=len(conflicts),
                                              truncated=len(warnings) > 20 or len(conflicts) > 20)
+            if withheld:
+                output['source_sync']['privacy_frontmatter_count'] = withheld
         return output
 
     @staticmethod
     def _source_issues(result, source, record_id=None):
         return [item for key in ('warnings', 'conflicts') for item in result.get(key, [])
-                if isinstance(item, dict) and (item.get('source') == source or
-                                               (record_id is not None and item.get('id') == record_id))]
+                if isinstance(item, dict)
+                and not (key == 'warnings' and item.get('kind') == 'privacy_frontmatter')
+                and (item.get('source') == source or
+                     (record_id is not None and item.get('id') == record_id))]
 
     @staticmethod
     def _write_blockers(result, source=None, record_ids=()):
@@ -939,7 +974,7 @@ class SyncEngine:
                     text = decode_utf8(raw)  # Names CESU-8 and lone surrogates in the warning.
                     if _has_conflict_markers(text):
                         raise ValueError('unresolved git conflict markers; resolve the merge before sync')
-                    metadata, body = parse(text)
+                    metadata, body, privacy_warnings, _ = _parse_frontmatter(text)
                     if metadata.get('kind') == 'task' and body.lstrip().startswith('---'):
                         raise ValueError('task has embedded frontmatter; reconcile metadata and body explicitly')
                     if metadata.get('kind') == 'receipt' or metadata.get('generated') is True:
@@ -954,11 +989,13 @@ class SyncEngine:
                     record = self.store._validate(record, _resolved_source=resolved)
                     if record['source_sha256'] != _hash(raw):
                         raise ValueError('source changed while scanning')
+                    for reason in privacy_warnings:
+                        warnings.append({'source': relative, 'kind': 'privacy_frontmatter', 'reason': reason})
                     if record['id'] in records:
                         duplicate.add(record['id'])
                     source_ids[relative] = record['id']
                     records[record['id']] = record
-                    if cache is not None:
+                    if cache is not None and not privacy_warnings:
                         cache.read(relative, st, record['id'])
                 except (ValueError, OSError, UnicodeError) as exc:
                     warnings.append({'source': relative, 'reason': str(exc)})
@@ -1342,11 +1379,23 @@ class SyncEngine:
                 # A receipt hidden by a directory mtime that did not move surfaces as a view
                 # conflict; the next sync then rescans receipts/ in full.
                 db.execute("DELETE FROM metadata WHERE key='receipt_scan_signature'")
+            # Numbered copy, missing-receipt-source, and privacy-frontmatter normalization warnings are
+            # informational (the source is safely indexed as private); they don't degrade the sync status.
+            degraded_warnings = [w for w in warnings if not str(w.get('reason', '')).startswith('possible file sync copy') and w.get('kind') not in ('missing_receipt_source', 'privacy_frontmatter')]
+            sync_status = 'conflict' if conflicts else 'degraded' if degraded_warnings else 'succeeded'
+            actionable_warnings = [w for w in degraded_warnings if is_actionable_sync_warning(w)]
+            db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)',
+                       (LAST_SYNC_WARNINGS_ROW, json.dumps({
+                           'at': time.time(),
+                           'status': sync_status,
+                           'count': len(actionable_warnings),
+                           'warnings': [{'source': w.get('source'), 'reason': w.get('reason')}
+                                        for w in actionable_warnings[:100]],
+                           'truncated': len(actionable_warnings) > 100,
+                       })))  # ASCII escapes: a name that is not UTF-8 (lone surrogates) stays storable
         for entry in completed:
             entry.unlink(missing_ok=True)
-        # Numbered copy and missing-receipt-source warnings are informational; they don't degrade the sync status.
-        degraded_warnings = [w for w in warnings if not str(w.get('reason', '')).startswith('possible file sync copy') and w.get('kind') != 'missing_receipt_source']
-        result = {'status': 'conflict' if conflicts else 'degraded' if degraded_warnings else 'succeeded', 'indexed': len(records), 'deleted': deleted, 'warnings': warnings, 'conflicts': conflicts}
+        result = {'status': sync_status, 'indexed': len(records), 'deleted': deleted, 'warnings': warnings, 'conflicts': conflicts}
         if recover_views:
             result['recovered_views'] = recovered_views or []
         if dead_supersedes:
@@ -1392,6 +1441,10 @@ class SyncEngine:
             raise ValueError('unsupported task metadata changes')
         if 'status' in changes and changes['status'] not in TASK_STATUSES:
             raise ValueError('valid explicit task status required')
+        if 'visibility' in changes and isinstance(changes['visibility'], str):
+            folded = _fold_privacy_token(changes['visibility'])
+            if folded in VALID_VISIBILITIES:
+                changes = dict(changes, visibility=folded)
         _check_task_dates(changes)
         changes, redacted = self._protect_metadata(changes)
         with self.store._connect() as db:
@@ -1479,6 +1532,137 @@ class SyncEngine:
             self._homepage_busy = previous
         return result
 
+    def _check_note_create_path(self, source):
+        """Reject any symlink or Windows junction along the unresolved source, then resolve within vault."""
+        if not isinstance(source, str) or Path(source).is_absolute() or '..' in Path(source).parts:
+            raise ValueError('relative source required')
+        cursor = self.root / source
+        while cursor != self.root and cursor != cursor.parent:
+            _unlinked(cursor)
+            cursor = cursor.parent
+        return self._path(source)
+
+    def _refuse_note_create_alias(self, source):
+        """A project or workspace path must use the spelling already on disk (#958).
+
+        Those rules match folders regardless of letter case and Unicode form. On macOS and Windows
+        a differently cased name writes into the existing folder under a spelling the index
+        readback does not know (the note lands, then the command reports it missing); on Linux it
+        opens a second folder for the same project. Refuse before writing, naming the entry.
+        """
+        from beyin_v3_projects import _scope_key
+        # Links first: the listing below must never read a folder outside the vault.
+        self._check_note_create_path(source)
+        cursor, parts = self.root, source.split('/')
+        for index, part in enumerate(parts):
+            try:
+                with os.scandir(cursor) as entries:
+                    names = [entry.name for entry in entries]
+            except OSError:
+                return  # nothing below exists yet
+            if part in names:
+                cursor = cursor / part
+                continue
+            existing = next((name for name in names if _scope_key(name) == _scope_key(part)), None)
+            if existing is not None:
+                raise ValueError('%r already exists with another spelling (letter case or Unicode form); '
+                                 'use the existing spelling' % '/'.join(parts[:index] + [existing]))
+            return
+
+    def _workspace_allows_note_create(self, source, parts):
+        """True when a registered workspace or valid project scope owns source's folder (#958).
+
+        Fails closed on symlinks, junctions, oversized files, or malformed/invalid config.
+        """
+        from beyin_v3_projects import PROJECT_SCOPES_FILE, _scope_key, _scope_path, check_project_scopes
+        from beyin_v3_workspaces import WORKSPACES_FILE, _read_registry
+
+        parent_key = _scope_key('/'.join(parts[:-1]))
+        source_key = _scope_key(source)
+
+        ws_path = self.root / WORKSPACES_FILE
+        if _is_regular_local_file(ws_path):
+            try:
+                registry, present = _read_registry(self.root)
+            except (ValueError, OSError):
+                registry, present = None, False
+            if present and isinstance(registry, dict):
+                for entry in registry.get('workspaces', {}).values():
+                    if not isinstance(entry, dict):
+                        continue
+                    rules_file = entry.get('rules_file')
+                    if isinstance(rules_file, str) and rules_file.strip():
+                        try:
+                            if source_key == _scope_key(_scope_path(rules_file)):
+                                return True
+                        except ValueError:
+                            pass
+                    for root_dir in entry.get('note_roots', ()):
+                        try:
+                            folder_key = _scope_key(_scope_path(root_dir))
+                        except ValueError:
+                            continue
+                        if parent_key == folder_key or parent_key.startswith(folder_key + '/'):
+                            return True
+
+        scopes_path = self.root / PROJECT_SCOPES_FILE
+        if _is_regular_local_file(scopes_path):
+            try:
+                report = check_project_scopes(self.root)
+            except (ValueError, OSError):
+                report = None
+            if isinstance(report, dict):
+                for folder in report.get('folders', ()):
+                    try:
+                        folder_key = _scope_key(_scope_path(folder))
+                    except ValueError:
+                        continue
+                    if parent_key == folder_key or parent_key.startswith(folder_key + '/'):
+                        return True
+        return False
+
+    def _check_note_create_source(self, source):
+        """Allow notes/, knowledge/, <project_parent>/<project>/..., or registered workspace folders (#958)."""
+        parts = source.split('/')
+        folded = [part.casefold() for part in parts]
+        if not source.endswith('.md'):
+            raise ValueError('new semantic notes belong under notes/, knowledge/, or a project folder and must end with .md')
+        if folded[0] in ('tasks', 'receipts') or folded[:2] in (['daily', 'v3'], ['knowledge', 'v3']):
+            raise ValueError(
+                'new semantic notes belong under notes/, knowledge/, or a project folder; '
+                'managed paths under tasks/, receipts/, daily/v3/, and knowledge/v3/ require their dedicated V3 command'
+            )
+        if (folded[-1] in EXCLUDED_FILES or folded[-1].startswith('setup-') or
+                any(part in EXCLUDED_DIRS for part in folded[:-1])):
+            raise ValueError('configuration or excluded source rejected')
+        if len(parts) >= 2 and folded[0] not in NOTE_CREATE_RESERVED_ROOTS:
+            if parts[0] in ('notes', 'knowledge'):
+                return
+            from beyin_v3_projects import candidate_project_folders
+            candidates = candidate_project_folders(self.root)
+            in_project = len(parts) >= 3 and parts[0] in candidates
+            registered = self._workspace_allows_note_create(source, parts)
+            if in_project or registered:
+                self._refuse_note_create_alias(source)
+                try:
+                    present = set(os.listdir(self.root))
+                except OSError:
+                    present = set()
+                # A registered folder is opened as configured. A project parent must already be in
+                # the vault, spelled as on disk: one project, one folder (managed AGENTS block).
+                if registered or parts[0] in present:
+                    return
+                existing = [name for name in candidates if name in present]
+                raise ValueError(
+                    'project parent folder %r does not exist in this vault; ' % parts[0] +
+                    ('use the existing project parent (%s), or ' % ', '.join(existing) if existing else '') +
+                    'create this file with note-edit (expected_sha256: null and content)'
+                )
+        raise ValueError(
+            'new semantic notes belong under notes/, knowledge/, or a project folder (<projects>/<project>/...); '
+            'for other Markdown files use note-edit with expected_sha256: null and content'
+        )
+
     def note_create(self, source, text, metadata=None, idempotency_key=None, evidence_refs=None):
         if _MODULE_DIR not in sys.path:
             sys.path.insert(0, _MODULE_DIR)
@@ -1492,9 +1676,9 @@ class SyncEngine:
         if text.lstrip().startswith('---'):
             raise ValueError('text must be body only; put frontmatter fields in metadata')
         validate_source_name(source)
-        if not source.startswith(('notes/', 'knowledge/')) or not source.endswith('.md'):
-            raise ValueError('new semantic notes belong under notes/ or knowledge/')
         self._refuse_excluded(source)
+        self._check_note_create_source(source)
+        self._check_note_create_path(source)
         metadata = dict(metadata or {})
         from beyin_v3_notes import check_idempotency_key, evidence_refs as note_evidence_refs
         # The key and refs may also arrive in metadata; the key never reaches frontmatter.
@@ -1516,7 +1700,8 @@ class SyncEngine:
             raise ValueError('facts must be an object')
         if 'revision' in metadata and (type(metadata['revision']) is not int or metadata['revision'] < 1):
             raise ValueError('positive revision required')
-        if metadata.get('visibility', 'internal') not in ('public', 'internal', 'private'):
+        metadata, _, privacy_conflict = normalize_privacy_metadata(metadata)
+        if privacy_conflict or metadata.get('visibility', 'internal') not in VALID_VISIBILITIES:
             raise ValueError('invalid visibility')
         supersedes = metadata.get('supersedes', [])
         if isinstance(supersedes, str):
@@ -1541,8 +1726,9 @@ class SyncEngine:
         # clients use different state roots. Acquire it before the DB transaction.
         with note_locked(self) as folder:
             self._refuse_excluded(source)
+            self._check_note_create_source(source)
             refuse_unicode_alias(self.root, source)
-            path = self._path(source)
+            path = self._check_note_create_path(source)
             idempotency_file = None
             journal = {'status': 'succeeded', 'source': source, 'sha256': _hash(intended)}
             if idempotency_key is not None:
@@ -1570,11 +1756,14 @@ class SyncEngine:
             if record.get('source') != source or record.get('source_sha256') != _hash(intended) or path.read_bytes() != intended.encode('utf-8'):
                 raise RevisionConflict('created note source readback mismatch')
             self._record_redactions(redacted)
+            warnings, withheld = agent_sync_warnings(result['warnings'])
             created_details = {'status': 'succeeded', 'source': source, 'sha256': _hash(intended),
                                'redacted': redacted, 'secrets_redacted': redacted,
-                               'warnings': result['warnings'], 'conflicts': result['conflicts'],
-                               'source_sync': {'status': result['status'], 'warnings': result['warnings'],
+                               'warnings': warnings, 'conflicts': result['conflicts'],
+                               'source_sync': {'status': result['status'], 'warnings': warnings,
                                                'conflicts': result['conflicts']}}
+            if withheld:
+                created_details['source_sync']['privacy_frontmatter_count'] = withheld
             if idempotency_file:
                 _seal_idempotency(idempotency_file, journal, fingerprint, created_details)
             if refs:
@@ -1611,7 +1800,11 @@ class SyncEngine:
             raise ValueError('new task revision must be 1')
         if metadata.get('kind', 'task') != 'task':
             raise ValueError('task kind required')
-        if not isinstance(metadata.get('facts', {}), dict) or metadata.get('visibility', 'internal') not in ('internal', 'public', 'private'):
+        if 'visibility' in metadata and isinstance(metadata['visibility'], str):
+            folded = _fold_privacy_token(metadata['visibility'])
+            if folded in VALID_VISIBILITIES:
+                metadata['visibility'] = folded
+        if not isinstance(metadata.get('facts', {}), dict) or metadata.get('visibility', 'internal') not in VALID_VISIBILITIES:
             raise ValueError('invalid task facts or visibility')
         for field in ('title', 'project', 'next_action', 'updated_at', 'created_at'):
             if field in metadata and not isinstance(metadata[field], str):
@@ -1642,10 +1835,12 @@ class SyncEngine:
         if any(record.get(key) != value for key, value in metadata.items()) or record['source_sha256'] != _hash(intended) or path.read_bytes() != intended.encode('utf-8'):
             raise RevisionConflict('created task metadata or source readback mismatch')
         self._record_redactions(redacted)
+        warnings, withheld = agent_sync_warnings(result['warnings'])
+        source_sync = {'status': result['status'], 'warnings': warnings, 'conflicts': result['conflicts']}
+        if withheld:
+            source_sync['privacy_frontmatter_count'] = withheld
         return dict(record, redacted=redacted, secrets_redacted=redacted,
-                    warnings=result['warnings'], conflicts=result['conflicts'],
-                    source_sync={'status': result['status'], 'warnings': result['warnings'],
-                                 'conflicts': result['conflicts']})
+                    warnings=warnings, conflicts=result['conflicts'], source_sync=source_sync)
 
     def _links(self, links):
         """External results (a pull request, a published page) as plain http(s) URLs.

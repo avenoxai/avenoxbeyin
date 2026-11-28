@@ -945,6 +945,172 @@ class HookInstallerTest(unittest.TestCase):
         self.assertTrue(continued({'executionNum': 2}))
         self.assertTrue(continued({'executionNum': 0, 'continuationActive': True}))
 
+    def test_antigravity_abnormal_stop_respects_termination_reason_and_error(self):
+        # Antigravity Stop payloads carry terminationReason and error; abnormal/terminal stops
+        # must return {"decision":"stop"} without spawning a worker or clearing .edited.
+        abnormal_reasons = (
+            'USER_CANCELED',
+            'ERROR',
+            'MAX_INVOCATIONS',
+            'MAX_FORCED_INVOCATIONS',
+            'MAX_TOKEN_BUDGET_EXCEEDED',
+            'TERMINAL_STEP_TYPE',
+            'TERMINAL_CUSTOM_HOOK',
+            'INJECTED_RESPONSE',
+        )
+        self.seed()
+        session = 'agy-abnormal-stop'
+        reminders = self.state / 'receipt-reminders'
+        digest = hashlib.sha256(session.encode()).hexdigest()
+        edited = reminders / (digest + '.edited')
+        done = reminders / (digest + '.done')
+        note = str((self.vault / 'notes/task.md').resolve())
+        self.assertEqual(self.agy_tool(session, 'write_file', {'Path': note, 'Content': 'x'}), {})
+        self.assertTrue(edited.exists())
+        queued_before = len(list((self.state / 'hook-queue').glob('*.json')))
+        base_stop = {'hookEventName': 'Stop', 'conversationId': session, 'fullyIdle': True,
+                     'continuationActive': False, 'executionNum': 0, 'lastUserInput': 'edit the note'}
+
+        for reason in abnormal_reasons:
+            with self.subTest(terminationReason=reason):
+                res = self.invoke(dict(base_stop, terminationReason=reason, error=''),
+                                  'antigravity', extra=['--event', 'Stop'])
+                self.assertEqual(res, {'decision': 'stop'})
+                self.assertTrue(edited.exists())
+                self.assertFalse(done.exists())
+                self.assertEqual(len(list((self.state / 'hook-queue').glob('*.json'))), queued_before)
+
+        for fields in ({'terminationReason': 'NO_TOOL_CALL', 'error': 'model error'}, {'error': 'tool error'}):
+            with self.subTest(error_case=fields):
+                res = self.invoke(dict(base_stop, **fields), 'antigravity', extra=['--event', 'Stop'])
+                self.assertEqual(res, {'decision': 'stop'})
+                self.assertTrue(edited.exists())
+                self.assertFalse(done.exists())
+                self.assertEqual(len(list((self.state / 'hook-queue').glob('*.json'))), queued_before)
+
+        # Verify no background sync worker is spawned on an abnormal Stop even when spawning is enabled.
+        spawn_flag = self.root / 'spawned.flag'
+        guard = self.root / 'guard_no_spawn_hook.py'
+        guard.write_text(
+            f'import pathlib, runpy, subprocess, sys\n'
+            f'sys.path.insert(0, {str(SCRIPTS)!r})\n'
+            f'def record_spawn(*args, **kwargs):\n'
+            f'    pathlib.Path({str(spawn_flag)!r}).write_text("spawned", encoding="utf-8")\n'
+            f'    raise RuntimeError("unexpected worker spawn")\n'
+            f'subprocess.Popen = record_spawn\n'
+            f'sys.argv[0] = {str(HOOK)!r}\n'
+            f'runpy.run_path({str(HOOK)!r}, run_name="__main__")\n',
+            encoding='utf-8',
+        )
+        saved_no_spawn = self.env.pop('BEYIN_V3_NO_SPAWN', None)
+        try:
+            res = self.invoke(dict(base_stop, terminationReason='USER_CANCELED', error=''),
+                              'antigravity', script=guard, extra=['--event', 'Stop'])
+            self.assertEqual(res, {'decision': 'stop'})
+            self.assertFalse(spawn_flag.exists())
+        finally:
+            if saved_no_spawn is not None:
+                self.env['BEYIN_V3_NO_SPAWN'] = saved_no_spawn
+
+        # Next normal NO_TOOL_CALL turn still sees preserved .edited and asks for a receipt.
+        normal = self.invoke(dict(base_stop, terminationReason='NO_TOOL_CALL', error=''),
+                             'antigravity', extra=['--event', 'Stop'])
+        self.assertEqual(normal.get('decision'), 'continue')
+        self.assertIn('Receipt session=', normal.get('reason', ''))
+
+        # Legacy clients that omit terminationReason and error keep normal reminder behaviour.
+        legacy_session = 'agy-legacy-stop'
+        legacy_edited = reminders / (hashlib.sha256(legacy_session.encode()).hexdigest() + '.edited')
+        self.assertEqual(self.agy_tool(legacy_session, 'write_file', {'Path': note, 'Content': 'y'}), {})
+        self.assertTrue(legacy_edited.exists())
+        legacy_stop = {'hookEventName': 'Stop', 'conversationId': legacy_session, 'fullyIdle': True,
+                       'continuationActive': False, 'lastUserInput': 'edit the note'}
+        legacy_res = self.invoke(legacy_stop, 'antigravity', extra=['--event', 'Stop'])
+        self.assertEqual(legacy_res.get('decision'), 'continue')
+        self.assertIn('Receipt session=', legacy_res.get('reason', ''))
+
+        # Direct helper coverage across reasons, errors, legacy omissions and non-string values.
+        abnormal = self.hook.antigravity_abnormal_stop
+        for reason in abnormal_reasons + ('UNKNOWN_TERMINAL_REASON',):
+            with self.subTest(helper_reason=reason):
+                self.assertTrue(abnormal({'terminationReason': reason, 'error': ''}))
+        for payload in (
+            {'terminationReason': 'NO_TOOL_CALL', 'error': 'rate limit exceeded'},
+            {'error': 'upstream failure'},
+            {'terminationReason': None, 'error': 'timeout'},
+            {'terminationReason': '', 'error': 'cancelled'},
+        ):
+            with self.subTest(helper_error=payload):
+                self.assertTrue(abnormal(payload))
+        for payload in (
+            {'terminationReason': 'NO_TOOL_CALL', 'error': ''},
+            {'terminationReason': ' NO_TOOL_CALL ', 'error': '   '},
+            {'terminationReason': 'NO_TOOL_CALL', 'error': None},
+            {'terminationReason': 'NO_TOOL_CALL'},
+            {},
+            {'terminationReason': None, 'error': None},
+            {'terminationReason': '', 'error': ''},
+            {'terminationReason': '   ', 'error': '   '},
+            {'terminationReason': 123, 'error': True},
+            {'terminationReason': False, 'error': ['err']},
+            # The enum's zero value records no reason; like an absent field it keeps normal Stop.
+            {'terminationReason': 'UNSPECIFIED', 'error': ''},
+        ):
+            with self.subTest(helper_normal=payload):
+                self.assertFalse(abnormal(payload))
+        # Names the 1.5.18 binary defines but its hook document does not list are not a normal end.
+        for reason in ('CHAINED', 'EARLY_CONTINUE', 'HALTED_STEP'):
+            with self.subTest(undocumented=reason):
+                self.assertTrue(abnormal({'terminationReason': reason, 'error': ''}))
+        self.assertTrue(abnormal({'terminationReason': 'UNSPECIFIED', 'error': 'model failure'}))
+
+    def test_antigravity_stop_contract_docs_name_every_input_the_stop_decision_reads(self):
+        # docs/v3/PLATFORM-TESTS.md and GLOBAL-BRIDGE.md are the Antigravity Stop contract. #937 made
+        # Stop read terminationReason and error without a word in them, so the docs said "continue"
+        # where the code said stop. Invariant: every payload field the Stop decision reads (recorded
+        # from the helpers it calls, so a new field cannot slip past), every terminationReason value
+        # it treats as a normal end and the bounded transcript read's sizes are named in the
+        # paragraph that holds the Stop contract.
+        class Recorder(dict):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.read = set()
+
+            def get(self, key, default=None):
+                self.read.add(key)
+                return super().get(key, default)
+
+            def __getitem__(self, key):
+                self.read.add(key)
+                return super().__getitem__(key)
+
+            def __contains__(self, key):
+                self.read.add(key)
+                return super().__contains__(key)
+
+        # A fully idle Stop without user input reaches every check, the transcript read included.
+        payload = Recorder(fullyIdle=True, lastUserInput='', initialNumSteps=1,
+                           transcriptPath=str(self.root / 'missing.jsonl'))
+        self.hook.antigravity_abnormal_stop(payload)
+        self.hook.antigravity_continued_stop(payload)
+        self.hook._antigravity_nonhuman_turn(payload, 'Stop')
+        fields = payload.read | {'fullyIdle'}  # main() reads fullyIdle inline
+        self.assertLessEqual({'error', 'terminationReason', 'executionNum', 'continuationActive',
+                              'initialNumSteps', 'lastUserInput', 'transcriptPath'}, fields)
+        # A field may be written `name` or `name: value`.
+        names = [r'`%s[`:]' % re.escape(field) for field in sorted(fields)]
+        names += [r'`%s`' % re.escape(value) for value in self.hook.ANTIGRAVITY_NORMAL_TERMINATIONS]
+        names += [r'\b%d MB\b' % (self.hook.ANTIGRAVITY_TRANSCRIPT_LIMIT // (1024 * 1024)),
+                  r'\b%d KB\b' % (self.hook.ANTIGRAVITY_TRANSCRIPT_HEAD // 1024),
+                  re.escape('{"decision":"continue"}'), re.escape('{"decision":"stop"}')]
+        for doc in ('PLATFORM-TESTS.md', 'GLOBAL-BRIDGE.md'):
+            text = (ROOT / 'docs' / 'v3' / doc).read_text(encoding='utf-8')
+            blocks = [block for block in re.split(r'\n\s*\n|\n(?=- )', text) if '`fullyIdle' in block]
+            self.assertEqual(len(blocks), 1, doc)
+            for name in names:
+                with self.subTest(doc=doc, name=name):
+                    self.assertRegex(blocks[0], name)
+
     def test_antigravity_tool_input_maps_only_successful_file_writes(self):
         for call, error, expected in (
                 ({'name': 'write_file', 'args': {'Path': '/v/a.md', 'Content': 'x'}}, '', {'file_path': '/v/a.md'}),
@@ -1005,6 +1171,334 @@ class HookInstallerTest(unittest.TestCase):
         self.env['BEYIN_V3_FILTER_HARNESS_TURNS'] = '0'
         # A new conversation: the first one already had its opening (#903).
         self.assertIn('injectSteps', self.invoke(dict(payload, conversationId='antigravity-unknown-2'), 'antigravity'))
+
+    def _write_large_antigravity_transcript(self, path, first_type, last_type, *, extra_bytes=256 * 1024, gap_at_end=False):
+        target = self.hook.ANTIGRAVITY_TRANSCRIPT_LIMIT + extra_bytes
+        pad = 'x' * 8192
+        lines = [json.dumps({'step_index': 0, 'type': first_type, 'detail': 'synthetic-start'}) + '\n']
+        size = len(lines[0].encode('utf-8'))
+        step = 1
+        while size < target:
+            line = json.dumps({'step_index': step, 'type': 'TOOL_OUTPUT', 'detail': pad}) + '\n'
+            lines.append(line)
+            size += len(line.encode('utf-8'))
+            step += 1
+        final_index = step + 2 if gap_at_end else step
+        lines.append(json.dumps({'step_index': final_index, 'type': last_type, 'detail': 'synthetic-end'}) + '\n')
+        path.write_text(''.join(lines), encoding='utf-8', newline='\n')
+        self.assertGreater(path.stat().st_size, self.hook.ANTIGRAVITY_TRANSCRIPT_LIMIT)
+        return final_index + 1
+
+    def test_antigravity_large_transcript_preinvocation_tail_filters_nonhuman_and_preserves_human(self):
+        self.seed()
+        transcript = (self.vault / 'antigravity-large.jsonl').resolve()
+        queue = self.state / 'hook-queue'
+        count = self._write_large_antigravity_transcript(transcript, 'USER_INPUT', 'PLANNER_RESPONSE')
+        nonhuman = {'hook_event_name': 'PreInvocation', 'conversationId': 'agy-large-nonhuman',
+                    'invocationNum': 0, 'lastUserInput': 'old prompt', 'initialNumSteps': count,
+                    'transcriptPath': str(transcript)}
+        self.assertTrue(self.hook._antigravity_nonhuman_turn(nonhuman, 'PreInvocation'))
+        self.assertEqual(self.invoke(nonhuman, 'antigravity'), {})
+        self.assertEqual(list(queue.glob('*.json')), [])
+        # Out-of-bounds or unread middle-gap step indices fail open (preserve the turn).
+        self.assertFalse(self.hook._antigravity_nonhuman_turn(dict(nonhuman, initialNumSteps=count + 1), 'PreInvocation'))
+        self.assertFalse(self.hook._antigravity_nonhuman_turn(dict(nonhuman, initialNumSteps=15), 'PreInvocation'))
+
+        # When initial - 1 is USER_INPUT in a >2 MB transcript, the human turn proceeds normally.
+        count_human = self._write_large_antigravity_transcript(transcript, 'USER_INPUT', 'USER_INPUT')
+        human = dict(nonhuman, conversationId='agy-large-human', lastUserInput='new prompt',
+                     initialNumSteps=count_human)
+        self.assertFalse(self.hook._antigravity_nonhuman_turn(human, 'PreInvocation'))
+        self.assertIn('injectSteps', self.invoke(human, 'antigravity'))
+
+        # A non-contiguous step_index in the tail fails open.
+        count_corrupt = self._write_large_antigravity_transcript(
+            transcript, 'USER_INPUT', 'PLANNER_RESPONSE', gap_at_end=True)
+        self.assertFalse(self.hook._antigravity_nonhuman_turn(
+            dict(nonhuman, initialNumSteps=count_corrupt), 'PreInvocation'))
+
+    def test_antigravity_large_transcript_stop_filters_subagent_and_preserves_human(self):
+        self.seed()
+        transcript = (self.vault / 'antigravity-large-stop.jsonl').resolve()
+        queue = self.state / 'hook-queue'
+        count = self._write_large_antigravity_transcript(transcript, 'PLANNER_RESPONSE', 'PLANNER_RESPONSE')
+        stop = {'hook_event_name': 'Stop', 'conversationId': 'agy-large-subagent',
+                'fullyIdle': True, 'lastUserInput': '', 'initialNumSteps': count,
+                'transcriptPath': str(transcript)}
+        # Stop asks whether any step was user input; the unread middle of a long transcript could
+        # hold one, so a head and tail with a gap between them fail open, as 3.18.0 did (queued).
+        self.assertFalse(self.hook._antigravity_nonhuman_turn(stop, 'Stop'))
+        self.assertEqual(self.invoke(stop, 'antigravity'), {'decision': 'stop'})
+        self.assertEqual(len(list(queue.glob('*.json'))), 1)
+
+        # A >2 MB transcript with USER_INPUT at step 0 (only in the head chunk) is NOT a subagent.
+        count_human = self._write_large_antigravity_transcript(transcript, 'USER_INPUT', 'PLANNER_RESPONSE')
+        human_stop = dict(stop, conversationId='agy-large-human-stop', initialNumSteps=count_human)
+        self.assertFalse(self.hook._antigravity_nonhuman_turn(human_stop, 'Stop'))
+        self.assertEqual(self.invoke(human_stop, 'antigravity'), {'decision': 'stop'})
+        self.assertEqual(len(list(queue.glob('*.json'))), 2)
+
+        # Overlapping head+tail (just over 2 MB) with CRLF endings still classifies accurately.
+        count_overlap = self._write_large_antigravity_transcript(
+            transcript, 'PLANNER_RESPONSE', 'PLANNER_RESPONSE', extra_bytes=1024)
+        transcript.write_bytes(transcript.read_bytes().replace(b'\n', b'\r\n'))
+        self.assertTrue(self.hook._antigravity_nonhuman_turn(
+            dict(stop, initialNumSteps=count_overlap), 'Stop'))
+        self.assertTrue(self.hook._antigravity_nonhuman_turn(
+            dict(stop, initialNumSteps=count_overlap), 'PreInvocation'))
+
+        # If step 0 itself exceeds the 64 KB head chunk, Stop fails open while PreInvocation still reads tail.
+        giant_step0 = json.dumps({'step_index': 0, 'type': 'USER_INPUT', 'detail': 'u' * (70 * 1024)}) + '\n'
+        pad = 'x' * 8192
+        lines = [giant_step0]
+        size = len(giant_step0.encode('utf-8'))
+        step = 1
+        while size < self.hook.ANTIGRAVITY_TRANSCRIPT_LIMIT + 128 * 1024:
+            line = json.dumps({'step_index': step, 'type': 'TOOL_OUTPUT', 'detail': pad}) + '\n'
+            lines.append(line)
+            size += len(line.encode('utf-8'))
+            step += 1
+        lines.append(json.dumps({'step_index': step, 'type': 'PLANNER_RESPONSE'}) + '\n')
+        transcript.write_text(''.join(lines), encoding='utf-8', newline='\n')
+        self.assertFalse(self.hook._antigravity_nonhuman_turn(dict(stop, initialNumSteps=step + 1), 'Stop'))
+        self.assertTrue(self.hook._antigravity_nonhuman_turn(dict(stop, initialNumSteps=step + 1), 'PreInvocation'))
+
+    def test_antigravity_bounded_transcript_read_never_filters_more_than_a_full_read(self):
+        # Invariant (#940): over the limit, the head+tail read may decide less than a full read
+        # (fail open) but never more. PreInvocation reads step initialNumSteps-1 verbatim, so it
+        # matches the full read exactly; Stop decides only without an unread gap. The small limits
+        # sweep the tail cut over every byte of LF and CRLF lines with 2-, 3- and 4-byte UTF-8.
+        hook = self.hook
+        layouts = {
+            'human': ['USER_INPUT'] + ['GENERIC', 'PLANNER_RESPONSE'] * 30,
+            'subagent': ['SYSTEM_MESSAGE'] + ['GENERIC', 'PLANNER_RESPONSE'] * 30,
+            'human-input-mid-only': (['SYSTEM_MESSAGE'] + ['GENERIC', 'PLANNER_RESPONSE'] * 12 + ['USER_INPUT']
+                                     + ['GENERIC', 'PLANNER_RESPONSE'] * 17),
+            'ends-with-user-input': ['USER_INPUT'] + ['GENERIC', 'PLANNER_RESPONSE'] * 30 + ['USER_INPUT'],
+        }
+        transcript = (self.root / 'bounded-sweep.jsonl').resolve()
+        checked = decided = 0
+        with patch.object(hook, 'ANTIGRAVITY_TRANSCRIPT_LIMIT', 2048), patch.object(hook, 'ANTIGRAVITY_TRANSCRIPT_HEAD', 256):
+            for name, kinds in layouts.items():
+                for newline in ('\n', '\r\n'):
+                    for pad in range(48):
+                        rows = [json.dumps({'step_index': i, 'type': kind, 'content': 'ş€😀' * (3 + i % 4)},
+                                           ensure_ascii=False) for i, kind in enumerate(kinds)]
+                        rows[-1] = rows[-1][:-1] + ', "pad": "' + 'ğ' * pad + '"}'
+                        transcript.write_text(newline.join(rows) + newline, encoding='utf-8', newline='')
+                        raw = transcript.read_bytes()
+                        self.assertGreater(len(raw), 2048)
+                        full = hook._parse_antigravity_steps(raw, start_at_zero=True)
+                        types = [full[i] for i in range(len(full))]
+                        count = len(types)
+                        oracle = {'PreInvocation': types[count - 1] == 'PLANNER_RESPONSE',
+                                  'Stop': 'USER_INPUT' not in types and 'PLANNER_RESPONSE' in types}
+                        for event, last_input in (('PreInvocation', 'old prompt'), ('Stop', '')):
+                            with self.subTest(layout=name, newline=repr(newline), pad=pad, event=event):
+                                got = hook._antigravity_nonhuman_turn(
+                                    {'initialNumSteps': count, 'lastUserInput': last_input,
+                                     'transcriptPath': str(transcript)}, event)
+                                checked += 1
+                                decided += got
+                                if event == 'PreInvocation':
+                                    self.assertEqual(got, oracle[event])
+                                elif got:
+                                    self.assertTrue(oracle[event])
+        self.assertGreater(decided, 0)
+        self.assertEqual(checked, len(layouts) * 2 * 48 * 2)
+        # The unread middle is where the one user input of 'human-input-mid-only' sits: Stop must
+        # fail open there (3.19.0 review: the first bounded read called that conversation a subagent).
+        with patch.object(hook, 'ANTIGRAVITY_TRANSCRIPT_LIMIT', 2048), patch.object(hook, 'ANTIGRAVITY_TRANSCRIPT_HEAD', 256):
+            kinds = layouts['human-input-mid-only']
+            rows = [json.dumps({'step_index': i, 'type': kind, 'content': 'x' * 40}) for i, kind in enumerate(kinds)]
+            transcript.write_text('\n'.join(rows) + '\n', encoding='utf-8', newline='')
+            head, tail = hook._antigravity_transcript_steps(str(transcript))
+            middle = kinds.index('USER_INPUT')
+            self.assertNotIn(middle, head)
+            self.assertNotIn(middle, tail)
+            self.assertFalse(hook._antigravity_nonhuman_turn(
+                {'initialNumSteps': len(kinds), 'lastUserInput': '', 'transcriptPath': str(transcript)}, 'Stop'))
+
+    def test_antigravity_large_transcript_security_rejects_symlinks_and_reparse_points(self):
+        import stat
+        real_dir = (self.root / 'real-transcripts').resolve()
+        real_dir.mkdir()
+        transcript = real_dir / 'subagent.jsonl'
+        count = self._write_large_antigravity_transcript(transcript, 'PLANNER_RESPONSE', 'PLANNER_RESPONSE')
+        payload = {'lastUserInput': '', 'initialNumSteps': count, 'transcriptPath': str(transcript)}
+        # Control: the direct regular >2 MB transcript is accepted.
+        self.assertTrue(self.hook._antigravity_nonhuman_turn(payload, 'PreInvocation'))
+
+        # Direct file symlink to >2 MB transcript must fail open when OS allows symlinks.
+        link = self.root / 'linked-large.jsonl'
+        try:
+            link.symlink_to(transcript)
+        except OSError:
+            pass
+        else:
+            self.assertFalse(self.hook._antigravity_nonhuman_turn(
+                dict(payload, transcriptPath=str(link)), 'PreInvocation'))
+            self.assertIsNone(self.hook._antigravity_transcript_steps(str(link)))
+
+        # On Windows, directory junctions work without admin and must also be rejected.
+        if os.name == 'nt':
+            junction = self.root / 'junction-transcripts'
+            created = subprocess.run(['cmd', '/c', 'mklink', '/J', str(junction), str(real_dir)],
+                                     capture_output=True, text=True, timeout=15)
+            if created.returncode == 0:
+                self.addCleanup(lambda: os.rmdir(junction) if junction.exists() else None)
+                via_junction = str(junction / transcript.name)
+                self.assertFalse(self.hook._antigravity_nonhuman_turn(
+                    dict(payload, transcriptPath=via_junction), 'PreInvocation'))
+                self.assertIsNone(self.hook._antigravity_transcript_steps(via_junction))
+
+        # Simulated Windows reparse point attribute on >2 MB regular file must be rejected before open.
+        real_lstat = Path.lstat
+        class FakeStat:
+            def __init__(self, inner):
+                self._inner = inner
+                self.st_mode = inner.st_mode
+                self.st_size = inner.st_size
+                self.st_file_attributes = getattr(inner, 'st_file_attributes', 0) | stat.FILE_ATTRIBUTE_REPARSE_POINT
+        with patch.object(Path, 'lstat', autospec=True,
+                          side_effect=lambda p: FakeStat(real_lstat(p)) if p == transcript else real_lstat(p)), \
+                patch.object(os, 'open', side_effect=AssertionError('reparse point must not be opened')):
+            self.assertFalse(self.hook._antigravity_nonhuman_turn(payload, 'PreInvocation'))
+
+        # Non-regular directory, relative path, and NUL byte fail open.
+        folder = (self.root / 'folder.jsonl').resolve()
+        folder.mkdir()
+        for bad in (str(folder), 'relative.jsonl', str(transcript) + '\0.jsonl'):
+            with self.subTest(bad=bad):
+                self.assertFalse(self.hook._antigravity_nonhuman_turn(
+                    dict(payload, transcriptPath=bad), 'PreInvocation'))
+
+    def test_antigravity_fast_path_skips_heavy_imports_on_later_preinvocation_and_non_idle_stop(self):
+        probe = (
+            'import contextlib, io, json, sys\n'
+            'sys.path.insert(0, sys.argv[1])\n'
+            'import beyin_v3_hook\n'
+            'raw_input = sys.stdin.read()\n'
+            'sys.argv = ["beyin_v3_hook.py"] + sys.argv[2:]\n'
+            'sys.stdin = io.StringIO(raw_input)\n'
+            'out = io.StringIO()\n'
+            'with contextlib.redirect_stdout(out):\n'
+            '    beyin_v3_hook.main()\n'
+            'loaded = sorted(m for m in ("beyin_v3", "beyin_v3_preferences", "beyin_v3_sync") if m in sys.modules)\n'
+            'print(json.dumps({"output": out.getvalue().strip(), "loaded": loaded}))\n'
+        )
+        cases = [
+            (['--event', 'PreInvocation'],
+             {'hookEventName': 'PreInvocation', 'conversationId': 'fast-1', 'invocationNum': 3}, '{}'),
+            ([],
+             {'hook_event_name': 'PreInvocation', 'conversationId': 'fast-2', 'invocationNum': 2}, '{}'),
+            (['--event', 'Stop'],
+             {'hookEventName': 'Stop', 'conversationId': 'fast-3', 'fullyIdle': False}, '{"decision":"stop"}'),
+            ([],
+             {'hook_event_name': 'Stop', 'conversationId': 'fast-4', 'fullyIdle': None}, '{"decision":"stop"}'),
+            (['--event', 'PreInvocation'],
+             '\ufeff' + json.dumps({'hookEventName': 'PreInvocation', 'conversationId': 'fast-bom', 'invocationNum': 1}),
+             '{}'),
+        ]
+        def run(extra, payload):
+            raw = payload if isinstance(payload, str) else json.dumps(payload)
+            result = subprocess.run(
+                [sys.executable, '-c', probe, str(SCRIPTS),
+                 '--vault', str(self.vault), '--state', str(self.state),
+                 '--harness', 'antigravity', *extra],
+                input=raw, text=True, encoding='utf-8', capture_output=True,
+                cwd=self.vault, env=self.env, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+
+        for extra, payload, expected in cases:
+            with self.subTest(extra=extra, expected=expected):
+                report = run(extra, payload)
+                self.assertEqual(report['output'], expected)
+                self.assertEqual(report['loaded'], [])
+        # 3.19.0 merges #941 with #945: a post-edit notice waits for the next model call of the turn.
+        # One waiting for another conversation keeps this exit fast; one for this conversation
+        # sends the call down the full path that delivers it.
+        notices = self.state / 'antigravity-notices'
+        notices.mkdir(parents=True, exist_ok=True)
+        later = (['--event', 'PreInvocation'], cases[0][1])
+        (notices / (hashlib.sha256(b'other-conversation').hexdigest() + '.json')).write_text(
+            '{}', encoding='utf-8', newline='\n')
+        self.assertEqual(run(*later), {'output': '{}', 'loaded': []})
+        (notices / (hashlib.sha256(b'fast-1').hexdigest() + '.json')).write_text(
+            '{}', encoding='utf-8', newline='\n')
+        self.assertNotEqual(run(*later)['loaded'], [])
+
+    def test_antigravity_abnormal_stop_is_answered_before_any_transcript_read(self):
+        # A fully idle Stop without user input runs the nested-agent check, which can read 2 MB + 64 KB
+        # of transcript. The cheap abnormal-end check comes first, so a cancelled or failed turn never
+        # pays that read. The normal control proves the probe is live.
+        probe = (
+            'import contextlib, io, json, sys\n'
+            'sys.path.insert(0, sys.argv[1])\n'
+            'import beyin_v3_hook\n'
+            'reads = []\n'
+            'beyin_v3_hook._antigravity_transcript_steps = lambda value: reads.append(value)\n'
+            'raw_input = sys.stdin.read()\n'
+            'sys.argv = ["beyin_v3_hook.py"] + sys.argv[2:]\n'
+            'sys.stdin = io.StringIO(raw_input)\n'
+            'out = io.StringIO()\n'
+            'with contextlib.redirect_stdout(out):\n'
+            '    beyin_v3_hook.main()\n'
+            'print(json.dumps({"output": out.getvalue().strip(), "reads": len(reads)}))\n'
+        )
+        base = {'hookEventName': 'Stop', 'fullyIdle': True, 'continuationActive': False, 'executionNum': 0,
+                'lastUserInput': '', 'initialNumSteps': 2,
+                'transcriptPath': str(self.root / 'agy-transcript.jsonl')}
+        for fields, reads in (({'conversationId': 'agy-order-1', 'terminationReason': 'USER_CANCELED', 'error': ''}, 0),
+                              ({'conversationId': 'agy-order-2', 'terminationReason': 'NO_TOOL_CALL', 'error': 'boom'}, 0),
+                              ({'conversationId': 'agy-order-3', 'terminationReason': 'NO_TOOL_CALL', 'error': ''}, 1)):
+            with self.subTest(fields=fields):
+                result = subprocess.run(
+                    [sys.executable, '-c', probe, str(SCRIPTS), '--vault', str(self.vault),
+                     '--state', str(self.state), '--harness', 'antigravity', '--event', 'Stop'],
+                    input=json.dumps(dict(base, **fields)), text=True, encoding='utf-8', capture_output=True,
+                    cwd=self.vault, env=self.env, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                report = json.loads(result.stdout.strip().splitlines()[-1])
+                self.assertEqual(report['reads'], reads)
+                if not reads:
+                    self.assertEqual(report['output'], '{"decision":"stop"}')
+
+    def test_antigravity_fast_path_preserves_malformed_json_error_and_in_vault_state_refusal(self):
+        # Malformed JSON and non-dict JSON still fail open and write hook-error.json; Stop keeps
+        # its quiet decision on the error path (#928).
+        for event, raw_bytes, expected_error, expected_out in (
+                ('PreInvocation', b'{invalid json', 'JSONDecodeError', b'{}'),
+                ('Stop', b'{invalid json', 'JSONDecodeError', b'{"decision":"stop"}'),
+                ('PreInvocation', b'[]', 'AttributeError', b'{}')):
+            with self.subTest(event=event, expected_error=expected_error):
+                error_path = self.state / 'hook-error.json'
+                if error_path.exists():
+                    error_path.unlink()
+                result = subprocess.run(
+                    [sys.executable, str(HOOK), '--vault', str(self.vault), '--state', str(self.state),
+                     '--harness', 'antigravity', '--event', event],
+                    input=raw_bytes, capture_output=True, cwd=self.vault, env=self.env, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr.decode())
+                self.assertEqual(result.stdout.strip(), expected_out)
+                self.assertTrue(error_path.exists())
+                self.assertEqual(json.loads(error_path.read_text(encoding='utf-8'))['error'], expected_error)
+
+        # In-vault --state still raises ValueError even on fast-path payloads without writing inside vault.
+        inside = self.vault / '.state'
+        for event, payload in (
+                ('PreInvocation', {'hookEventName': 'PreInvocation', 'invocationNum': 3}),
+                ('Stop', {'hookEventName': 'Stop', 'fullyIdle': False})):
+            with self.subTest(in_vault_event=event):
+                result = subprocess.run(
+                    [sys.executable, str(HOOK), '--vault', str(self.vault), '--state', str(inside),
+                     '--harness', 'antigravity', '--event', event],
+                    input=json.dumps(payload).encode('utf-8'), capture_output=True,
+                    cwd=self.vault, env=self.env, timeout=20)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Runtime state must be outside vault', result.stderr.decode())
+                self.assertFalse(inside.exists())
 
     def test_antigravity_opening_once_per_conversation_then_per_message_retrieval(self):
         # Antigravity CLI 1.5.18: SessionStart runs once per conversation (not on resume), and
@@ -1093,6 +1587,25 @@ class HookInstallerTest(unittest.TestCase):
         self.assertIn('injectSteps', self.invoke(start, 'antigravity', extra=['--event', 'SessionStart']))
         self.assertEqual(len(list(markers.glob('[0-9a-f]*.json'))), 1)
 
+    def test_antigravity_stop_keeps_stop_decision_on_skip_no_memory_and_errors(self):
+        # Antigravity's Stop contract expects {"decision":"stop"} on every quiet exit,
+        # matching quiet() and the global bridge (#903).
+        self.seed()
+        stop = {'hookEventName': 'Stop', 'conversationId': 'agy-stop-quiet', 'fullyIdle': True}
+        for variable in ('BEYIN_V3_SKIP', 'BEYIN_V3_INTERNAL'):
+            with self.subTest(variable=variable):
+                self.env[variable] = '1'
+                self.assertEqual(self.invoke(stop, 'antigravity', extra=['--event', 'Stop']), {'decision': 'stop'})
+                del self.env[variable]
+        self.assertEqual(self.invoke(dict(stop, no_memory=True), 'antigravity', extra=['--event', 'Stop']),
+                         {'decision': 'stop'})
+        # Invalid JSON on stdin (unexpected error path) still returns {"decision":"stop"} for Stop.
+        bad = subprocess.run([sys.executable, str(HOOK), '--vault', str(self.vault), '--state', str(self.state),
+                              '--harness', 'antigravity', '--event', 'Stop'],
+                             input=b'{invalid json', capture_output=True, env=self.env, timeout=60)
+        self.assertEqual(bad.returncode, 0, bad.stderr.decode(errors='replace'))
+        self.assertEqual(json.loads(bad.stdout), {'decision': 'stop'})
+
     def test_antigravity_marker_keeps_a_keyed_digest_never_the_plain_prompt_hash(self):
         self.seed()
         prompt = 'evet'
@@ -1130,6 +1643,451 @@ class HookInstallerTest(unittest.TestCase):
         result = self.invoke(turn, 'antigravity', extra=['--event', 'PreInvocation'])
         self.assertIn('"records"', result['injectSteps'][0]['ephemeralMessage'])
         self.assertEqual((markers / 'key.json').read_text(encoding='utf-8'), 'not json')
+
+    def test_antigravity_latest_checkpoint_reads_bounded_tail_and_rejects_unsafe_paths(self):
+        transcript = (self.root / 'agy-cp.jsonl').resolve()
+        rows = [
+            {'step_index': 0, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'start'},
+            {'step_index': 12, 'source': 'SYSTEM', 'type': 'CHECKPOINT', 'status': 'DONE'},
+            {'step_index': 20, 'source': 'USER_EXPLICIT', 'type': 'CHECKPOINT'},  # wrong source ignored
+            {'step_index': 25, 'type': 'CHECKPOINT'},  # minimal fixture (source None) accepted
+            {'step_index': True, 'source': 'SYSTEM', 'type': 'CHECKPOINT'},  # bool rejected
+            {'step_index': -3, 'source': 'SYSTEM', 'type': 'CHECKPOINT'},  # negative rejected
+        ]
+        transcript.write_text(''.join(json.dumps(r) + '\n' for r in rows) + '{truncated\n',
+                              encoding='utf-8', newline='\n')
+        self.assertEqual(self.hook.antigravity_latest_checkpoint(str(transcript)), 25)
+
+        # File larger than ANTIGRAVITY_TRANSCRIPT_LIMIT still reads CHECKPOINT from bounded tail.
+        big = (self.root / 'agy-cp-big.jsonl').resolve()
+        big_rows = [
+            {'step_index': 0, 'source': 'SYSTEM', 'type': 'CHECKPOINT', 'padding': 'x' * 1000},
+            {'step_index': 99, 'source': 'SYSTEM', 'type': 'CHECKPOINT'},
+        ]
+        big.write_text(''.join(json.dumps(r) + '\n' for r in big_rows), encoding='utf-8', newline='\n')
+        with patch.object(self.hook, 'ANTIGRAVITY_TRANSCRIPT_LIMIT', 256):
+            self.assertEqual(self.hook.antigravity_latest_checkpoint(str(big)), 99)
+
+        # Unsafe paths fail open (None).
+        wrong_ext = (self.root / 'agy-cp.txt').resolve()
+        wrong_ext.write_text(transcript.read_text(encoding='utf-8'), encoding='utf-8')
+        folder = (self.root / 'agy-dir.jsonl').resolve()
+        folder.mkdir()
+        for bad in (None, '', 'relative.jsonl', str(wrong_ext), str(folder),
+                    str(transcript) + '\0.jsonl', '//server/share/t.jsonl', r'\\server\share\t.jsonl'):
+            with self.subTest(bad=bad):
+                self.assertIsNone(self.hook.antigravity_latest_checkpoint(bad))
+        link = self.root.resolve() / 'agy-cp-link.jsonl'
+        try:
+            link.symlink_to(transcript)
+        except OSError:
+            pass
+        else:
+            self.assertIsNone(self.hook.antigravity_latest_checkpoint(str(link)))
+
+    def test_antigravity_checkpoint_resets_dedupe_context_fill_and_injects_own_card_once(self):
+        conversation = 'agy-compact-e2e'
+        short = hashlib.sha256(conversation.encode()).hexdigest()[:8]
+        own_marker = 'Next: finish phase two verification (marker agy-own-card).'
+        companion = self.vault / '🔮 850-Companion'
+        companion.mkdir(parents=True, exist_ok=True)
+        other_card = ('## 2026-11-27 01:30 · other · Parallel session card · aaaaaaaa\n'
+                      '- What: parallel work. ' + 'Filler sentence for the newest card. ' * 120 + '\n')
+        own_card = (f'## 2026-11-27 01:05 · agy · Active antigravity session · {short}\n'
+                    f'- {own_marker}\n')
+        (companion / 'Last-Session.md').write_text(
+            '# Last session\n\n' + other_card + '\n' + own_card + '\n## Previous sessions\n- older\n',
+            encoding='utf-8', newline='\n')
+        self.seed()
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / 'context-dedupe.json').write_text(
+            json.dumps({'schema': 1, 'enabled': True}), encoding='utf-8')
+        (self.state / 'context-fill.json').write_text(
+            json.dumps({'enabled': True, 'first_threshold': 150000, 'repeat_threshold': 75000}),
+            encoding='utf-8')
+
+        transcript = (self.root / 'agy-e2e.jsonl').resolve()
+        rows = [
+            {'step_index': 0, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'hello'},
+            {'step_index': 1, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE',
+             'input_tokens': 10000, 'cache_read_tokens': 190000},
+        ]
+        def write_rows():
+            transcript.write_text(''.join(json.dumps(r) + '\n' for r in rows), encoding='utf-8', newline='\n')
+        write_rows()
+
+        base = {'conversationId': conversation, 'cwd': str(self.vault),
+                'workspacePaths': [str(self.vault)], 'transcriptPath': str(transcript)}
+        # 1. SessionStart opens the conversation without checkpoint_step.
+        start = self.invoke(dict(base, hookEventName='SessionStart', lastUserInput='hello'),
+                            'antigravity', extra=['--event', 'SessionStart'])
+        self.assertIn('injectSteps', start)
+        marker_path = self.hook.antigravity_session_marker(self.state, conversation)
+        self.assertNotIn('checkpoint_step', json.loads(marker_path.read_text(encoding='utf-8')))
+
+        # 2. First retrieval turn delivers notes/task.md; second identical turn is deduplicated.
+        rows.append({'step_index': 2, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT',
+                     'content': 'Who owns Nebula calibration?'})
+        write_rows()
+        turn1 = self.invoke(dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                 initialNumSteps=len(rows), lastUserInput='Who owns Nebula calibration?'),
+                            'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertIn('Synthetic Reviewer', turn1['injectSteps'][0]['ephemeralMessage'])
+        self.assertNotIn("This session's own handoff card", turn1['injectSteps'][0]['ephemeralMessage'])
+
+        rows.append({'step_index': 3, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT',
+                     'content': 'Who owns Nebula calibration?'})
+        write_rows()
+        turn2 = self.invoke(dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                 initialNumSteps=len(rows), lastUserInput='Who owns Nebula calibration?'),
+                            'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertNotIn('Synthetic Reviewer', json.dumps(turn2))
+
+        # 3. Stop fires context-fill reminder with decision "continue" and saves state.
+        rows.append({'step_index': 4, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE',
+                     'input_tokens': 10000, 'cache_read_tokens': 190000})
+        write_rows()
+        idle = dict(base, hookEventName='Stop', fullyIdle=True, executionNum=0,
+                    continuationActive=False, lastUserInput='Who owns Nebula calibration?')
+        # A cancelled, failed or budget-ended turn gets no context-fill reminder either (#937 with
+        # #943 in 3.19.0), and it does not use up the reminder of the next normal Stop.
+        for abnormal in ({'terminationReason': 'USER_CANCELED'}, {'terminationReason': 'MAX_INVOCATIONS'},
+                         {'error': 'model failed'}):
+            with self.subTest(abnormal=abnormal):
+                self.assertEqual(self.invoke(dict(idle, **abnormal), 'antigravity', extra=['--event', 'Stop']),
+                                 {'decision': 'stop'})
+        stop1 = self.invoke(idle, 'antigravity', extra=['--event', 'Stop'])
+        self.assertEqual(stop1.get('decision'), 'continue')
+        self.assertIn('200.000', stop1.get('reason', ''))
+        fill_digest = hashlib.sha256(conversation.encode('utf-8')).hexdigest()[:24]
+        fill_file = self.state / 'context-fill' / f'{fill_digest}.json'
+        self.assertTrue(fill_file.is_file())
+        # Continued Stop does not remind a second time.
+        self.assertEqual(self.invoke(dict(base, hookEventName='Stop', fullyIdle=True, executionNum=1,
+                                          continuationActive=False, lastUserInput='Who owns Nebula calibration?'),
+                                     'antigravity', extra=['--event', 'Stop']), {'decision': 'stop'})
+
+        # 4. CHECKPOINT arrives -> next PreInvocation resets dedupe + context-fill AND injects own card!
+        rows.extend([
+            {'step_index': 5, 'source': 'SYSTEM', 'type': 'CHECKPOINT', 'status': 'DONE'},
+            {'step_index': 6, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT',
+             'content': 'Who owns Nebula calibration?'},
+        ])
+        write_rows()
+        after_cp = self.invoke(dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                    initialNumSteps=len(rows), lastUserInput='Who owns Nebula calibration?'),
+                               'antigravity', extra=['--event', 'PreInvocation'])
+        msg = after_cp['injectSteps'][0]['ephemeralMessage']
+        self.assertIn("This session's own handoff card", msg)
+        self.assertIn(own_marker, msg)
+        self.assertIn('Synthetic Reviewer', msg)  # dedupe was reset!
+        self.assertFalse(fill_file.exists())  # context-fill state was reset!
+        self.assertEqual(json.loads(marker_path.read_text(encoding='utf-8')).get('checkpoint_step'), 5)
+
+        # 5. Next turn with NO newer checkpoint must NOT re-inject own card or reset dedupe!
+        rows.append({'step_index': 7, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT',
+                     'content': 'Who owns Nebula calibration?'})
+        write_rows()
+        no_new_cp = self.invoke(dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                     initialNumSteps=len(rows), lastUserInput='Who owns Nebula calibration?'),
+                                'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertNotIn("This session's own handoff card", json.dumps(no_new_cp))
+        self.assertNotIn('Synthetic Reviewer', json.dumps(no_new_cp))
+
+        # 6. A second CHECKPOINT on an unmatched, non-continuity prompt still delivers own_notice!
+        rows.extend([
+            {'step_index': 12, 'source': 'SYSTEM', 'type': 'CHECKPOINT', 'status': 'DONE'},
+            {'step_index': 13, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'devam edelim'},
+        ])
+        write_rows()
+        unmatched = self.invoke(dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                     initialNumSteps=len(rows), lastUserInput='devam edelim'),
+                                'antigravity', extra=['--event', 'PreInvocation'])
+        unmatched_msg = unmatched['injectSteps'][0]['ephemeralMessage']
+        self.assertIn("This session's own handoff card", unmatched_msg)
+        self.assertIn(own_marker, unmatched_msg)
+        self.assertEqual(json.loads(marker_path.read_text(encoding='utf-8')).get('checkpoint_step'), 12)
+        # Subsequent turn with same unmatched prompt stays silent.
+        rows.append({'step_index': 14, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'devam edelim'})
+        write_rows()
+        self.assertEqual(self.invoke(dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                          initialNumSteps=len(rows), lastUserInput='devam edelim'),
+                                     'antigravity', extra=['--event', 'PreInvocation']), {})
+
+        # 7. Continuity prompt (relevant(query)=True) when opening already shows own card deduplicates own_notice.
+        short_other = '## 2026-11-27 01:30 · other · Short card · aaaaaaaa\n- What: short.\n'
+        (companion / 'Last-Session.md').write_text(
+            '# Last session\n\n' + short_other + '\n' + own_card + '\n## Previous sessions\n- older\n',
+            encoding='utf-8', newline='\n')
+        from beyin_v3_sync import SyncEngine
+        SyncEngine(self.vault, self.state).sync()
+        rows.extend([
+            {'step_index': 20, 'source': 'SYSTEM', 'type': 'CHECKPOINT', 'status': 'DONE'},
+            {'step_index': 21, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'nerede kalmistik?'},
+        ])
+        write_rows()
+        continuity = self.invoke(dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                      initialNumSteps=len(rows), lastUserInput='nerede kalmistik?'),
+                                 'antigravity', extra=['--event', 'PreInvocation'])
+        cont_msg = continuity['injectSteps'][0]['ephemeralMessage']
+        self.assertEqual(cont_msg.count(own_marker), 1)
+        self.assertNotIn("This session's own handoff card", cont_msg)
+
+    def test_antigravity_session_start_records_existing_checkpoint_without_false_trigger(self):
+        conversation = 'agy-existing-cp'
+        short = hashlib.sha256(conversation.encode()).hexdigest()[:8]
+        companion = self.vault / '🔮 850-Companion'
+        companion.mkdir(parents=True, exist_ok=True)
+        other_card = ('## 2026-11-27 01:30 · other · Parallel · aaaaaaaa\n'
+                      '- ' + 'Filler sentence. ' * 120 + '\n')
+        own_card = f'## 2026-11-27 01:05 · agy · Own · {short}\n- EXISTING_CP_OWN_MARKER\n'
+        (companion / 'Last-Session.md').write_text(
+            '# Last session\n\n' + other_card + '\n' + own_card, encoding='utf-8', newline='\n')
+        self.seed()
+        transcript = (self.root / 'agy-existing.jsonl').resolve()
+        rows = [
+            {'step_index': 5, 'source': 'SYSTEM', 'type': 'CHECKPOINT'},
+            {'step_index': 6, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'hi'},
+        ]
+        transcript.write_text(''.join(json.dumps(r) + '\n' for r in rows), encoding='utf-8', newline='\n')
+        base = {'conversationId': conversation, 'cwd': str(self.vault),
+                'workspacePaths': [str(self.vault)], 'transcriptPath': str(transcript)}
+        self.invoke(dict(base, hookEventName='SessionStart', lastUserInput='hi'),
+                    'antigravity', extra=['--event', 'SessionStart'])
+        marker_path = self.hook.antigravity_session_marker(self.state, conversation)
+        self.assertEqual(json.loads(marker_path.read_text(encoding='utf-8')).get('checkpoint_step'), 5)
+        # First PreInvocation clears pending while preserving checkpoint_step.
+        self.assertEqual(self.invoke(dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                          initialNumSteps=2, lastUserInput='hi'),
+                                     'antigravity', extra=['--event', 'PreInvocation']), {})
+        self.assertEqual(json.loads(marker_path.read_text(encoding='utf-8')).get('checkpoint_step'), 5)
+        # Next turn without a newer checkpoint must not falsely trigger compaction.
+        rows.append({'step_index': 7, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'zzqx'})
+        transcript.write_text(''.join(json.dumps(r) + '\n' for r in rows), encoding='utf-8', newline='\n')
+        self.assertEqual(self.invoke(dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                          initialNumSteps=3, lastUserInput='zzqx'),
+                                     'antigravity', extra=['--event', 'PreInvocation']), {})
+
+    def test_antigravity_post_edit_companion_limit_notice_delivers_on_next_pre_invocation(self):
+        self.seed()
+        companion = self.vault / '🔮 850-Companion'
+        companion.mkdir()
+        last = companion / 'Last-Session.md'
+        last.write_text('# Son oturum\n' + 'x' * 3100, encoding='utf-8')
+        conversation = 'agy-companion-limit'
+        base = {'conversationId': conversation, 'cwd': str(self.vault), 'workspacePaths': [str(self.vault)]}
+        self.invoke(dict(base, hookEventName='SessionStart', lastUserInput='devam'), 'antigravity',
+                    extra=['--event', 'SessionStart'])
+        # PostToolUse must strictly answer {} and queue the over-limit notice.
+        self.assertEqual(self.agy_tool(conversation, 'write_file', {'Path': str(last.resolve())}), {})
+        # A second write of the same over-limit file deduplicates the notice line.
+        self.assertEqual(self.agy_tool(conversation, 'edit_file', {'Path': str(last.resolve())}), {})
+        notice_file = self.state / 'antigravity-notices' / (hashlib.sha256(conversation.encode()).hexdigest() + '.json')
+        self.assertTrue(notice_file.is_file())
+        # Next mid-turn PreInvocation delivers the notice once and removes the file.
+        mid = dict(base, hookEventName='PreInvocation', invocationNum=1, initialNumSteps=3, lastUserInput='devam')
+        delivered = self.invoke(mid, 'antigravity', extra=['--event', 'PreInvocation'])
+        text = delivered['injectSteps'][0]['ephemeralMessage']
+        self.assertIn('Memory hygiene: Last-Session.md', text)
+        self.assertEqual(text.count('Memory hygiene: Last-Session.md'), 1)
+        self.assertFalse(notice_file.exists())
+        # Subsequent PreInvocation in the same turn is silent again.
+        self.assertEqual(self.invoke(dict(mid, invocationNum=2, initialNumSteps=5), 'antigravity',
+                                     extra=['--event', 'PreInvocation']), {})
+
+    def test_antigravity_post_edit_word_cap_warning_delivers_on_next_pre_invocation(self):
+        self.seed()
+        big = self.vault / 'notes/uzun.md'
+        big.write_text('kelime ' * 600, encoding='utf-8')
+        self.enable(word_cap_warning=True)
+        conversation = 'agy-word-cap'
+        base = {'conversationId': conversation, 'cwd': str(self.vault), 'workspacePaths': [str(self.vault)]}
+        self.assertEqual(self.agy_tool(conversation, 'write_file', {'Path': str(big.resolve())}), {})
+        mid = dict(base, hookEventName='PreInvocation', invocationNum=1, initialNumSteps=3, lastUserInput='not yaz')
+        delivered = self.invoke(mid, 'antigravity', extra=['--event', 'PreInvocation'])
+        text = delivered['injectSteps'][0]['ephemeralMessage']
+        self.assertIn('Bolum SINYALI', text)
+        self.assertIn('notes/uzun.md', text)
+        self.assertEqual(self.invoke(dict(mid, invocationNum=2, initialNumSteps=5), 'antigravity',
+                                     extra=['--event', 'PreInvocation']), {})
+
+    def test_antigravity_pending_notice_delivers_on_next_turn_invocation_zero(self):
+        self.seed()
+        big = self.vault / 'notes/uzun.md'
+        big.write_text('kelime ' * 600, encoding='utf-8')
+        self.enable(word_cap_warning=True)
+        conversation = 'agy-next-turn'
+        base = {'conversationId': conversation, 'cwd': str(self.vault), 'workspacePaths': [str(self.vault)]}
+        self.invoke(dict(base, hookEventName='SessionStart', lastUserInput='basla'), 'antigravity',
+                    extra=['--event', 'SessionStart'])
+        # Edit as the last tool call of the turn; no mid-turn invocationNum > 0 follows.
+        self.assertEqual(self.agy_tool(conversation, 'write_file', {'Path': str(big.resolve())}), {})
+        # Next user message with no matching records still delivers the pending notice once.
+        turn = dict(base, hookEventName='PreInvocation', invocationNum=0, initialNumSteps=5, lastUserInput='zzqx')
+        delivered = self.invoke(turn, 'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertIn('Bolum SINYALI', delivered['injectSteps'][0]['ephemeralMessage'])
+        self.assertEqual(self.invoke(dict(turn, initialNumSteps=8), 'antigravity',
+                                     extra=['--event', 'PreInvocation']), {})
+        # When the next turn DOES match records, both the notice and retrieval context arrive together.
+        self.assertEqual(self.agy_tool(conversation, 'write_file', {'Path': str(big.resolve())}), {})
+        matched = self.invoke(dict(turn, initialNumSteps=11, lastUserInput='Who owns Nebula calibration?'),
+                              'antigravity', extra=['--event', 'PreInvocation'])
+        combined = matched['injectSteps'][0]['ephemeralMessage']
+        self.assertIn('Bolum SINYALI', combined)
+        self.assertIn('"records"', combined)
+        self.assertIn('Synthetic Reviewer', combined)
+
+    def test_antigravity_post_edit_auto_sync_false_stays_empty_and_respects_opt_outs(self):
+        self.seed()
+        big = self.vault / 'notes/uzun.md'
+        big.write_text('kelime ' * 600, encoding='utf-8')
+        self.enable(word_cap_warning=True)
+        (self.vault / '.beyin-preferences.json').write_text(
+            json.dumps({'auto_sync': False, 'context_mode': 'off'}), encoding='utf-8')
+        conversation = 'agy-manual'
+        base = {'conversationId': conversation, 'cwd': str(self.vault), 'workspacePaths': [str(self.vault)]}
+        self.assertEqual(self.agy_tool(conversation, 'write_file', {'Path': str(big.resolve())}), {})
+        notice_file = self.state / 'antigravity-notices' / (hashlib.sha256(conversation.encode()).hexdigest() + '.json')
+        self.assertTrue(notice_file.is_file())
+        mid = dict(base, hookEventName='PreInvocation', invocationNum=1, initialNumSteps=3, lastUserInput='yaz')
+        # no_memory and BEYIN_V3_SKIP must not consume or inject the notice.
+        self.assertEqual(self.invoke(dict(mid, no_memory=True), 'antigravity', extra=['--event', 'PreInvocation']), {})
+        self.assertTrue(notice_file.is_file())
+        self.env['BEYIN_V3_SKIP'] = '1'
+        self.assertEqual(self.invoke(mid, 'antigravity', extra=['--event', 'PreInvocation']), {})
+        del self.env['BEYIN_V3_SKIP']
+        self.assertTrue(notice_file.is_file())
+        # Normal next PreInvocation delivers it once even when auto_sync is off.
+        delivered = self.invoke(mid, 'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertIn('Bolum SINYALI', delivered['injectSteps'][0]['ephemeralMessage'])
+        self.assertFalse(notice_file.exists())
+        # Same when delivered via invocationNum == 0 with auto_sync=False and context_mode=off.
+        self.assertEqual(self.agy_tool(conversation, 'write_file', {'Path': str(big.resolve())}), {})
+        turn0 = dict(base, hookEventName='PreInvocation', invocationNum=0, initialNumSteps=6, lastUserInput='devam')
+        delivered0 = self.invoke(turn0, 'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertIn('Bolum SINYALI', delivered0['injectSteps'][0]['ephemeralMessage'])
+        self.assertEqual(self.invoke(dict(turn0, initialNumSteps=9), 'antigravity',
+                                     extra=['--event', 'PreInvocation']), {})
+
+    def test_antigravity_notice_stale_oversized_and_symlink_fail_open(self):
+        self.seed()
+        conversation = 'agy-safety'
+        notice_dir = self.state / 'antigravity-notices'
+        notice_dir.mkdir(parents=True, exist_ok=True)
+        notice_file = notice_dir / (hashlib.sha256(conversation.encode()).hexdigest() + '.json')
+        mid = {'hookEventName': 'PreInvocation', 'conversationId': conversation,
+               'invocationNum': 1, 'initialNumSteps': 3, 'lastUserInput': 'devam'}
+        # Stale (> 1h) notice is ignored safely.
+        notice_file.write_text(json.dumps({'at': time.time() - 4000, 'text': 'old warning\n'}), encoding='utf-8')
+        self.assertEqual(self.invoke(mid, 'antigravity', extra=['--event', 'PreInvocation']), {})
+        # Oversized (> 8192 bytes) notice file is refused without crashing.
+        notice_file.write_text(json.dumps({'at': time.time(), 'text': 'x' * 9000}), encoding='utf-8')
+        self.assertEqual(self.invoke(mid, 'antigravity', extra=['--event', 'PreInvocation']), {})
+        notice_file.unlink()
+        # Invalid schema / boolean timestamp fails open.
+        notice_file.write_text(json.dumps({'at': True, 'text': 'bad ts\n'}), encoding='utf-8')
+        self.assertEqual(self.hook._consume_antigravity_notice(self.state, conversation), '')
+        # Symlink / reparse point check (real symlinks on POSIX; simulated reparse point on Windows).
+        if os.name != 'nt':
+            outside = self.root / 'outside-notice.json'
+            outside.write_text(json.dumps({'at': time.time(), 'text': 'secret\n'}), encoding='utf-8')
+            notice_file.symlink_to(outside)
+            self.assertEqual(self.hook._consume_antigravity_notice(self.state, conversation), '')
+            self.assertTrue(notice_file.is_symlink(), 'symlink target must not be unlinked')
+            self.hook._queue_antigravity_notice(self.state, conversation, 'new warning\n')
+            self.assertTrue(notice_file.is_symlink())
+            self.assertEqual(json.loads(outside.read_text(encoding='utf-8'))['text'], 'secret\n')
+            notice_file.unlink()
+            outside_dir = self.root / 'outside-notices-dir'
+            outside_dir.mkdir()
+            shutil.rmtree(notice_dir)
+            notice_dir.symlink_to(outside_dir, target_is_directory=True)
+            self.hook._queue_antigravity_notice(self.state, conversation, 'new warning\n')
+            self.assertEqual(list(outside_dir.iterdir()), [])
+            self.assertEqual(self.hook._consume_antigravity_notice(self.state, conversation), '')
+        else:
+            import stat as stat_mod
+            real_lstat = Path.lstat
+            class FakeReparse:
+                st_mode = stat_mod.S_IFREG | 0o600
+                st_size = 64
+                st_file_attributes = getattr(stat_mod, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
+            notice_file.write_text(json.dumps({'at': time.time(), 'text': 'reparse\n'}), encoding='utf-8')
+            def fake_lstat(p):
+                if p == notice_file:
+                    return FakeReparse()
+                return real_lstat(p)
+            with patch.object(Path, 'lstat', fake_lstat):
+                self.assertEqual(self.hook._consume_antigravity_notice(self.state, conversation), '')
+                self.assertTrue(notice_file.exists(), 'reparse file must not be unlinked')
+                self.hook._queue_antigravity_notice(self.state, conversation, 'overwrite attempt\n')
+            self.assertEqual(json.loads(notice_file.read_text(encoding='utf-8'))['text'], 'reparse\n')
+            class FakeDirReparse:
+                st_mode = stat_mod.S_IFDIR | 0o700
+                st_size = 0
+                st_file_attributes = getattr(stat_mod, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
+            def fake_dir_lstat(p):
+                if p == notice_dir:
+                    return FakeDirReparse()
+                return real_lstat(p)
+            with patch.object(Path, 'lstat', fake_dir_lstat):
+                self.assertEqual(self.hook._consume_antigravity_notice(self.state, conversation), '')
+                self.hook._queue_antigravity_notice(self.state, conversation, 'dir reparse attempt\n')
+            self.assertEqual(json.loads(notice_file.read_text(encoding='utf-8'))['text'], 'reparse\n')
+
+    def test_antigravity_hook_lifecycle_receipt_coverage_parity(self):
+        # End-to-end Antigravity lifecycle (#903): SessionStart + PreInvocation + PostToolUse + Stop
+        # feeds receipt coverage with per-turn scope and edit observation matching Claude/Codex.
+        engine = self.seed()
+        note = str((self.vault / 'notes/task.md').resolve())
+
+        edited = 'agy-cov-edited'
+        edited_base = {'conversationId': edited, 'cwd': str(self.vault), 'workspacePaths': [str(self.vault)]}
+        self.assertIn('injectSteps', self.invoke(
+            dict(edited_base, hookEventName='SessionStart', lastUserInput='Update notes/task.md'),
+            'antigravity', extra=['--event', 'SessionStart']))
+        self.assertEqual(self.invoke(
+            dict(edited_base, hookEventName='PreInvocation', invocationNum=0, initialNumSteps=1,
+                 lastUserInput='Update notes/task.md'),
+            'antigravity', extra=['--event', 'PreInvocation']), {})
+        self.assertEqual(self.agy_tool(edited, 'write_file', {'Path': note, 'Content': 'x'}), {})
+        time.sleep(0.02)
+        edited_hash = hashlib.sha256(edited.encode()).hexdigest()[:24]
+        engine.receipt('agy-cov-receipt', 'Updated task note.', ['notes/task.md'], 'antigravity', session=edited_hash)
+        stop_edited = dict(edited_base, hookEventName='Stop', fullyIdle=True, continuationActive=False, executionNum=0)
+        self.assertEqual(self.invoke(stop_edited, 'antigravity', extra=['--event', 'Stop']), {'decision': 'stop'})
+        time.sleep(0.02)
+        # Follow-up question-only turn must not reopen the covered Antigravity session.
+        self.invoke(dict(edited_base, hookEventName='PreInvocation', invocationNum=0, initialNumSteps=6,
+                         lastUserInput='Thanks, what is the status?'),
+                    'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertEqual(self.invoke(stop_edited, 'antigravity', extra=['--event', 'Stop']), {'decision': 'stop'})
+
+        readonly = 'agy-cov-readonly'
+        ro_base = {'conversationId': readonly, 'cwd': str(self.vault), 'workspacePaths': [str(self.vault)]}
+        self.assertIn('injectSteps', self.invoke(
+            dict(ro_base, hookEventName='SessionStart', lastUserInput='Just checking status'),
+            'antigravity', extra=['--event', 'SessionStart']))
+        self.assertEqual(self.invoke(
+            dict(ro_base, hookEventName='PreInvocation', invocationNum=0, initialNumSteps=1,
+                 lastUserInput='Just checking status'),
+            'antigravity', extra=['--event', 'PreInvocation']), {})
+        self.assertEqual(self.invoke(
+            dict(ro_base, hookEventName='Stop', fullyIdle=True, continuationActive=False, executionNum=0),
+            'antigravity', extra=['--event', 'Stop']), {'decision': 'stop'})
+
+        self.assertEqual(self.hook.drain_queue(self.vault, self.state)['failed'], 0)
+        gaps = json.loads((self.state / 'receipt-gaps.json').read_text(encoding='utf-8'))
+        ro_hash = hashlib.sha256(readonly.encode()).hexdigest()[:24]
+        self.assertEqual([item['session'] for item in gaps['checkpoints']], [ro_hash])
+        self.assertEqual(gaps['checkpoints'][0]['harness'], 'antigravity')
+        self.assertEqual(gaps['checkpoints'][0]['scope'], 'turn')
+        self.assertIs(gaps['checkpoints'][0].get('no_observed_edit'), True)
+        self.assertEqual((gaps['potential_missing_receipts'], gaps['no_observed_edit']), (1, 1))
+        self.assertNotIn('antigravity', gaps['scope_limits'])
+        cov = gaps['receipt_coverage']
+        self.assertEqual((cov['total'], cov['covered'], cov['missing'], cov['no_observed_edit'], cov['missing_no_observed_edit']),
+                         (2, 1, 1, 1, 1))
 
     def test_internal_recursion_guard_skips_queue(self):
         self.env['BEYIN_V3_INTERNAL'] = '1'

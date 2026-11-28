@@ -1912,12 +1912,16 @@ def _clipper_section(body):
 _CLIPPER_POINTER = re.compile(r'Tam metin ham dosyaya tasindi: `([^`\n]+)`[ \t]*(?:\n|\Z)')
 _CLIPPER_LEGACY_NOTE = ('Onceki surumde ilk alt baslikta kesilen Web Clipper metni, ham dosyadaki '
                         'girisle birlestirilerek yeniden yazildi.')
+_CLIPPER_EXISTING_NOTE = 'Tam metin zaten ham dosyada; Web Clipper icerigi korundu.'
+_CLIPPER_PRESERVED = object()
 
 
 def _clipper_text(vault, card, clipped):
     """Return (page text, note) for the `## Icerik` section of a card that may already be processed.
 
-    After `isle`, the section holds only the pointer to the raw file; that is no clipped page. Before
+    After `isle`, the section holds only the pointer to the raw file; when that pointer still
+    matches this card's intact `web-clipper` raw file, re-running `isle <id>` preserves it
+    instead of falling through to network fetchers and overwriting the clipped text. Before
     3.18.0 (#908) `isle` cut the page at its first `##` heading: the intro went to the raw file and
     the rest stayed in the card under the pointer. Such a card is rebuilt from both halves, so a
     second `isle` repairs it instead of overwriting the raw intro with the leftover sections.
@@ -1926,11 +1930,9 @@ def _clipper_text(vault, card, clipped):
     if not pointer:
         return clipped, None
     rest = clipped[pointer.end():].strip()
-    if not rest:
-        return '', None
     raw = card['path'].parent / RAW / (card['id'] + '.md')
     try:
-        if pointer.group(1) != raw.relative_to(vault).as_posix() or not raw.is_file():
+        if pointer.group(1) != raw.relative_to(vault).as_posix() or raw.is_symlink() or not raw.is_file():
             return '', None
         stored = raw.read_text(encoding='utf-8').replace('\r\n', '\n')
     except (OSError, ValueError, UnicodeDecodeError):
@@ -1948,6 +1950,8 @@ def _clipper_text(vault, card, clipped):
     intro = intro.rsplit(closing, 1)[0].strip()
     if not intro:
         return '', None
+    if not rest:
+        return _CLIPPER_PRESERVED, _CLIPPER_EXISTING_NOTE
     if rest in intro:
         return intro, _CLIPPER_LEGACY_NOTE  # repaired by hand already
     return intro + '\n\n' + rest, _CLIPPER_LEGACY_NOTE
@@ -2054,6 +2058,10 @@ def extract(vault, card, found, allow_audio=True, info=None, state=None):
         if kind == 'youtube' and kind_of(url) != 'youtube':
             kind = kind_of(url)  # an edited field never hands another site to yt-dlp's generic extractor
     clipped, legacy = _clipper_text(vault, card, _clipper_section(body))
+    if clipped is _CLIPPER_PRESERVED:
+        if kind != 'youtube':
+            return None, 'web-clipper-mevcut', legacy
+        clipped, legacy = '', None  # a YouTube card is transcribed, as before #926; the marker has no length
     if clipped and len(clipped) > 200 and kind != 'youtube':
         return clipped, 'web-clipper', legacy
     if kind == 'youtube' and url:
@@ -2229,6 +2237,11 @@ def process(vault, card_ids=None, allow_audio=True, retry=False, state=None):
                 entry.update({key: info[key] for key in ('dil', 'altyazi') if info.get(key)})
                 if meta.get('uyari') and not note:
                     note = meta['uyari']  # an unavailable check does not silently hide an earlier warning
+            elif method == 'web-clipper-mevcut':
+                raw_rel = (card['path'].parent / RAW / (card['id'] + '.md')).relative_to(vault).as_posix()
+                meta.update(durum='cikarildi', yontem='web-clipper', ham=raw_rel)
+                meta.pop('hata', None)
+                entry.update(durum='cikarildi', yontem='web-clipper', ham=raw_rel)
             elif method == 'ajan-okusun':
                 meta.update(durum='cikarildi', yontem=method)
                 if meta.get('kaynak_turu') == 'dosya':
@@ -4329,6 +4342,30 @@ def _source_shortcut(event):
     return {'ı': 'i', 'i̇': 'i', 'idotless': 'i', 'iabovedot': 'i'}.get(key, key)
 
 
+def _typed_char(char, keysym_num, windows=None):
+    """The character a Windows key press really typed when Tk delivered it as '?', else None (#994).
+
+    Windows Tk decodes typed text through the keyboard layout's ANSI code page, so a letter outside it
+    (ə and Ə on Azerbaijani Latin, cp1254) arrives as char '?' while keysym_num still holds its code point,
+    bare or with X11's 0x1000000 Unicode offset. Only a non-ASCII printable code point counts: the real ?
+    key (63), control characters, lone UTF-16 halves and bare numbers in Tk's own key-name block
+    (0xFE00-0xFFFF: dead keys, BackSpace, F1, Shift) stay as they are. macOS and Linux deliver the
+    character itself.
+    """
+    if not (os.name == 'nt' if windows is None else windows) or char != '?':
+        return None
+    if isinstance(keysym_num, bool) or not isinstance(keysym_num, int):
+        return None  # tkinter leaves a field it could not read as text ('??')
+    code = keysym_num
+    if code >= 0x1000000:
+        code -= 0x1000000
+    elif 0xFE00 <= code <= 0xFFFF:
+        return None
+    if not 0x80 <= code <= 0x10FFFF or 0xD800 <= code <= 0xDFFF or not chr(code).isprintable():
+        return None
+    return chr(code)
+
+
 def _source_row_layout(count, room):
     """(card height, gap): two-line cards while they fit `room`, else one-line cards (scrolled past that)."""
     if count * 66 - 8 <= room:
@@ -5792,6 +5829,12 @@ def popup(vault, context=None, state=None, root=None, session=None):
             if event.keysym in ('BackSpace', 'Delete'):
                 return 'break'
         if hint['on'] and event.keysym in ('Left', 'Right', 'Home', 'End'):
+            return 'break'
+        typed = _typed_char(event.char, getattr(event, 'keysym_num', None))
+        if typed:
+            # What Entry's own <Key> binding does with the character, instead of its '?'.
+            entry.tk.call('::tk::CancelRepeat')
+            entry.tk.call('::tk::EntryInsert', str(entry), typed)
             return 'break'
 
     def after_key(_event=None):
@@ -10985,9 +11028,63 @@ def _agent_read_note(path, own=False):
                 metadata.get('sensitivity') in ('sensitive', 'secret', 'restricted', 'confidential', 'hassas', 'gizli') or
                 metadata.get('kaynak_guveni') in ('blocked', 'engellendi', 'yasak')):
             raise ValueError('This note\'s frontmatter forbids remote/background reading.')
-        if metadata.get('visibility') == 'private' and not own:
+        if not own and (metadata.get('visibility') == 'private' or _agent_index_private(text)):
             raise ValueError('visibility: private notes stay out of background jobs, as they stay out of hook context.')
     return text
+
+
+def _agent_index_private(text):
+    """True when sync indexes the note as private: `private: true`, `gizli: evet`, a private tag
+    or a case variant of `visibility` keep it out of hook context (#963), so out of this job too."""
+    from beyin_v3_sync import parse
+    try:
+        metadata, _ = parse(text)
+    except (TypeError, ValueError, RecursionError):
+        return _agent_alias_private(text)
+    return metadata.get('visibility') == 'private'
+
+
+def _agent_alias_private(text):
+    """Fail closed where sync cannot read the header (a flow map, merge markers): the strict
+    reader has accepted it, so a top-level `private`/`gizli` flag or a private tag decides.
+    Called only after the strict reader, which already refused duplicates and odd lines."""
+    from beyin_v3 import _privacy_alias_match, _privacy_tag_match
+    closing = re.search(r'(?m)^---[ \t]*\r?$', text[3:])
+    front = text[3:3 + closing.start()] if closing else ''
+    if front.strip().startswith(('{', '[')):
+        try:
+            data = json.loads(front)
+        except ValueError:
+            return False  # the strict reader parsed it already; unreachable in practice
+        entries = list(data.items()) if isinstance(data, dict) else []
+    else:
+        def scalar(raw):
+            raw = re.split(r'\s+#', raw.strip(), maxsplit=1)[0].strip()
+            if len(raw) > 1 and raw[0] == raw[-1] and raw[0] in '"\'':
+                return raw[1:-1]
+            return raw
+        entries, items = [], None
+        for line in front.splitlines():
+            if not line.strip() or line.lstrip().startswith('#'):
+                continue
+            item = re.match(r'^\s*-\s+(.*)$', line)
+            if item and items is not None:
+                items.append(scalar(item.group(1)))  # Obsidian's `tags:` block list
+                continue
+            items = None
+            match = re.match(r'''^("(?:\\.|[^"\\])*"|'(?:''|[^'])*'|[\w-]+):\s?(.*)$''', line)
+            if not match:
+                continue
+            key, raw = scalar(match.group(1)), scalar(match.group(2))
+            if not raw:
+                items = []
+                entries.append((key, items))
+            elif raw.startswith('[') and raw.endswith(']'):
+                entries.append((key, [scalar(part) for part in raw[1:-1].split(',')]))
+            else:
+                entries.append((key, raw))
+        entries = [(key, None if value == [] else value) for key, value in entries]
+    return _privacy_alias_match(entries) is not None or _privacy_tag_match(entries) is not None
 
 
 _AGENT_SEARCH_FOLD = {0x130: 'i', 0x131: 'i'}  # İ and ı meet I/i; the user may type either

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timezone
+import functools
 import os
 from pathlib import Path
 import re
@@ -179,19 +180,167 @@ def _notes_linked(a: dict, b: dict) -> bool:
     return b['path'] in a.get('linked', ()) or a['path'] in b.get('linked', ())
 
 
-# _evaluate_pair's answer for an overlap it would report but the two notes already link each other.
+# _evaluate_pair's answers for overlaps it would report but silences with an explicit report count.
 _LINKED_PAIR = object()
+_TEMPLATE_PAIR = object()
+
+_MIN_SHARED_TEMPLATE_SLOTS = 3
+_FENCE_OPEN_RE = re.compile(r'^[ \t]{0,3}(`{3,}|~{3,})([^\r\n]*)$')
+_HEADING_RE = re.compile(r'^[ \t]{0,3}#{1,6}[ \t]+(.+)$')
+_FIELD_RE = re.compile(
+    r'^[ \t]*(?:[-*+][ \t]+)?'
+    r'(?:\*{1,2}|_{1,2})?'
+    r'([^:\[\]{}`*<>#\r\n]{1,60}?)'
+    r'(?:(?:\*{1,2}|_{1,2})?[ \t]*:{1,2}|:{1,2}(?:\*{1,2}|_{1,2})?)'
+    r'(?:[ \t]+(.*)|[ \t]*)$'
+)
+
+
+def _norm_slot(text: str) -> str:
+    """Fold a heading or field label so case, emphasis, accents and extra spaces match."""
+    cleaned = re.sub(r'[*`]+', '', text).strip('_ \t')
+    return ' '.join(fold(cleaned).split())
+
+
+def _extract_template_structure(body: str, explicit_title: str, title_tokens: set[str]) -> dict | None:
+    """Split a structured card into template slots (headings + field labels) and value tokens.
+
+    Fenced code blocks stay inside value tokens so YAML/config snippets are never stripped as
+    template scaffold. Returns None when the note has fewer than _MIN_SHARED_TEMPLATE_SLOTS
+    structural slots, keeping plain prose notes at zero extra tokenization cost.
+    """
+    headings: set[str] = set()
+    fields: set[str] = set()
+    value_parts: list[str] = []
+    fence_char = ''
+    fence_len = 0
+
+    for line in body.splitlines():
+        if fence_char:
+            value_parts.append(line)
+            stripped = line.lstrip(' \t')
+            if len(line) - len(stripped) <= 3:
+                run = len(stripped) - len(stripped.lstrip(fence_char))
+                if run >= fence_len and not stripped[run:].strip(' \t'):
+                    fence_char = ''
+                    fence_len = 0
+            continue
+
+        fence_match = _FENCE_OPEN_RE.match(line)
+        if fence_match:
+            marker, info = fence_match.group(1), fence_match.group(2)
+            if marker[0] == '~' or '`' not in info:
+                fence_char = marker[0]
+                fence_len = len(marker)
+                value_parts.append(line)
+                continue
+
+        heading_match = _HEADING_RE.match(line)
+        if heading_match:
+            raw_h = re.sub(r'[ \t]+#+$', '', heading_match.group(1).rstrip()).strip()
+            key = _norm_slot(raw_h)
+            if key and len(key) <= 80 and len(key.split()) <= 8 and any(ch.isalpha() for ch in key):
+                headings.add(key)
+                continue
+            value_parts.append(line)
+            continue
+
+        if ':' in line[:96]:
+            field_match = _FIELD_RE.match(line)
+            if field_match:
+                raw_label = field_match.group(1)
+                if '__' not in raw_label:
+                    key = _norm_slot(raw_label)
+                    if key and len(key) <= 60 and len(key.split()) <= 6 and any(ch.isalpha() for ch in key):
+                        fields.add(key)
+                        raw_val = (field_match.group(2) or '').strip()
+                        if raw_val:
+                            value_parts.append(raw_val)
+                        continue
+
+        value_parts.append(line)
+
+    if len(headings) + len(fields) < _MIN_SHARED_TEMPLATE_SLOTS:
+        return None
+
+    value_tokens = _strict_terms(_tokens('\n'.join(value_parts)) - STOPWORDS) if value_parts else set()
+    return {
+        'headings': frozenset(headings),
+        'fields': frozenset(fields),
+        'value_tokens': frozenset(value_tokens),
+        'norm_title': _norm_slot(explicit_title) if explicit_title else '',
+        'title_tokens': frozenset(title_tokens) if explicit_title else frozenset(),
+    }
+
+
+@functools.lru_cache(maxsize=4096)
+def _slot_terms(slot: str) -> frozenset[str]:
+    """Terms of one folded heading or field label; labels repeat across every card of a template."""
+    return frozenset(_strict_terms(_tokens(slot) - STOPWORDS))
+
+
+def _non_scaffold_tokens(cand: dict, shared_headings: frozenset[str], shared_fields: frozenset[str]) -> set[str]:
+    """Substantive tokens of a structured note after discounting shared template slots."""
+    tpl = cand['template']
+    tokens = set(tpl['value_tokens'])
+    if tpl['norm_title'] and tpl['norm_title'] not in shared_headings:
+        tokens |= tpl['title_tokens']
+    for slot in (tpl['headings'] - shared_headings) | (tpl['fields'] - shared_fields):
+        tokens |= _slot_terms(slot)
+    return tokens
+
+
+def _record_words(title: str) -> frozenset[str]:
+    """Folded words of the record name a card carries: its title, or its file name without one."""
+    return frozenset(re.findall(r'[^\W_]+', fold(title)))
+
+
+def _template_only_overlap(a: dict, b: dict, threshold: float) -> bool:
+    """True when two structured notes only crossed the overlap gate via shared template scaffold.
+
+    Only cards whose titles name different records can go quiet (#953). When every word of
+    one note's title (its file name if it has none) is in the other's, as with "North Bakery
+    Ltd" and "North Bakery Ltd 2", the notes are copies or revisions of one record: the rule
+    stays out and the pair reports exactly as without it, whatever share of the values was
+    revised and whether the status changed. Different records under one generic title
+    ("Weekly sync") therefore report as before too.
+
+    For the rest the test is the overlap gate itself, applied to what is left once the shared
+    headings and field labels are discounted: the smaller value set's containment (shared /
+    smaller) stays below `threshold`. So a note whose values are a subset of the other's
+    always reports, and two empty templates (no substantive values) report as well.
+    """
+    tpl_a = a.get('template')
+    tpl_b = b.get('template')
+    if not tpl_a or not tpl_b:
+        return False
+
+    words_a = tpl_a.get('record_words', frozenset())
+    words_b = tpl_b.get('record_words', frozenset())
+    if words_a <= words_b or words_b <= words_a:
+        return False
+
+    shared_headings = tpl_a['headings'] & tpl_b['headings']
+    shared_fields = tpl_a['fields'] & tpl_b['fields']
+    if len(shared_headings) + len(shared_fields) < _MIN_SHARED_TEMPLATE_SLOTS:
+        return False
+
+    val_a = _non_scaffold_tokens(a, shared_headings, shared_fields)
+    val_b = _non_scaffold_tokens(b, shared_headings, shared_fields)
+    if not val_a or not val_b:
+        return False
+
+    return len(val_a & val_b) / min(len(val_a), len(val_b)) < threshold
 
 
 def _candidate(path: Path, rel_path: str, meta: dict, body: str) -> dict:
-    title = str(meta.get('title') or '').strip()
-    if not title:
+    explicit_title = str(meta.get('title') or '').strip()
+    if not explicit_title:
         for line in body.splitlines():
             if line.startswith('# '):
-                title = line[2:].strip()
+                explicit_title = line[2:].strip()
                 break
-    if not title:
-        title = path.stem
+    title = explicit_title or path.stem
     created_val = meta.get('created') or meta.get('created_at') or meta.get('date')
     created_ts = parse_date_to_timestamp(created_val)
     modified_val = meta.get('modified') or meta.get('updated_at') or meta.get('modified_at')
@@ -209,6 +358,9 @@ def _candidate(path: Path, rel_path: str, meta: dict, body: str) -> dict:
     elif not isinstance(supersedes, list):
         supersedes = []
     note_id = meta.get('id')
+    template = _extract_template_structure(body, explicit_title, title_tokens)
+    if template is not None:
+        template['record_words'] = _record_words(title)
     return {
         # The id sync gives the record, so `supersedes: [<id>]` from note-create resolves here too.
         'id': note_id if isinstance(note_id, str) and note_id else 'md-' + _hash(rel_path)[:24],
@@ -216,6 +368,7 @@ def _candidate(path: Path, rel_path: str, meta: dict, body: str) -> dict:
         'full_path': path,
         'title': title,
         'tokens': body_tokens | title_tokens,
+        'template': template,
         'status': str(meta.get('status', '')).lower().strip(),
         'created_ts': created_ts,
         'updated_ts': updated_ts,
@@ -425,6 +578,10 @@ def _evaluate_pair(a: dict, b: dict, threshold: float, min_shared: int) -> dict 
         )
     else:
         return None
+    if _template_only_overlap(a, b, threshold):
+        # Sibling cards that only crossed the gate via shared headings and field labels describe
+        # different records; skip both overlap noise and false cross-entity status flips (#953).
+        return _TEMPLATE_PAIR
     if not conflict and _notes_linked(a, b):
         # Explicitly linked notes (e.g. summary <-> detail pairs) still surface status
         # contradictions, without repeating near_duplicate/overlap "link them" noise; the
@@ -516,6 +673,7 @@ def audit_memory(
     findings = []
     pairs_compared = 0
     linked_pairs_skipped = 0
+    template_pairs_skipped = 0
 
     if target_candidate:
         for c in candidates:
@@ -525,6 +683,8 @@ def audit_memory(
             f = _evaluate_pair(target_candidate, c, threshold=threshold, min_shared=min_shared)
             if f is _LINKED_PAIR:
                 linked_pairs_skipped += 1
+            elif f is _TEMPLATE_PAIR:
+                template_pairs_skipped += 1
             elif f:
                 findings.append(f)
     else:
@@ -550,6 +710,8 @@ def audit_memory(
                         f = _evaluate_pair(candidates[i], candidates[j], threshold=threshold, min_shared=min_shared)
                         if f is _LINKED_PAIR:
                             linked_pairs_skipped += 1
+                        elif f is _TEMPLATE_PAIR:
+                            template_pairs_skipped += 1
                         elif f:
                             findings.append(f)
 
@@ -566,6 +728,8 @@ def audit_memory(
         'pairs_compared': pairs_compared,
         # Overlaps not reported because one note already links the other (summary <-> detail).
         'linked_pairs_skipped': linked_pairs_skipped,
+        # Overlaps not reported because the notes only share template headings/field labels (#953).
+        'template_pairs_skipped': template_pairs_skipped,
         'threshold': threshold,
         'min_shared': min_shared,
         'findings': findings,
@@ -580,6 +744,7 @@ def format_audit_human(report: dict) -> str:
     pairs_compared = report.get('pairs_compared', 0)
     findings = report.get('findings', [])
     linked_skipped = report.get('linked_pairs_skipped', 0)
+    template_skipped = report.get('template_pairs_skipped', 0)
 
     if target:
         lines.append(f"Hedef Not: {target}")
@@ -589,6 +754,8 @@ def format_audit_human(report: dict) -> str:
 
     if linked_skipped:
         lines.append(f"Birbirine bagli oldugu icin raporlanmayan ortusme: {linked_skipped} cift\n")
+    if template_skipped:
+        lines.append(f"Ortak sablon yapisi disinda icerigi ayri oldugu icin raporlanmayan ortusme: {template_skipped} cift\n")
 
     if not findings:
         lines.append("Belirgin bir tekrar, celiski veya guncellik sorunu tespit edilmedi; hafiza durumu dengeli.")

@@ -4,6 +4,7 @@ import argparse
 import errno
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -17,6 +18,43 @@ EVENTS = {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "PreCompact
 HOOK_BUDGET = 3.8  # seconds; installed POSIX hooks are killed at 5
 SYNC_WAIT = 1.5  # seconds the prompt hook waits for the source sync before reading the last index
 UNMATCHED_SHOWN = 8  # prompt words listed as unmatched (#909); each at most 64 characters
+COVERAGE_NOTICE_KEY = 'receipt_coverage_gap'  # once-per-session key (#960), independent of N
+HOOK_HEALTH_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _read_hook_health(path):
+    """Read hook-health.json with symlink/regular-file/size guards; returns (present, sync_dict_or_None)."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False, None
+    except OSError:
+        return True, None
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode) or st.st_size > HOOK_HEALTH_MAX_BYTES:
+        return True, None
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return True, None
+    sync = data.get('sync') if isinstance(data, dict) else None
+    return True, (sync if isinstance(sync, dict) else {})
+
+
+def _sync_attention_notice(sync):
+    """The SessionStart line for a degraded sync (#964): how many actionable warnings, never which files.
+
+    A source the sync could not read or parse has unknown visibility, so its path is withheld like a
+    private one (beyin_v3_projections._hidden_ref_sources). This line reaches every harness and every
+    project unasked, so it names no source at all; doctor, a local command, names them. The count is
+    doctor's: actionable warnings of the sync this hook recorded."""
+    from beyin_v3_projections import is_actionable_sync_warning
+    warnings = sync.get('warnings') if isinstance(sync.get('warnings'), list) else []
+    count = sum(1 for item in warnings if is_actionable_sync_warning(item))
+    if not count:
+        return "V3 sync needs attention; consult current sources and doctor.\n"
+    label = 'warning' if count == 1 else 'warnings'
+    return (f"V3 sync needs attention ({count} sync {label}, such as notes it could not read; "
+            "`beyin.py doctor --human` names them); consult current sources and doctor.\n")
 
 
 def abstain_coverage():
@@ -436,15 +474,15 @@ def _bridge_cli(command):
 
 
 def _shell_edit(payload, vault, state, harness):
-    """A Bash edit of this turn as {'at', 'knowledge'}, or None; Claude Code transcripts only.
+    """A shell edit of this turn as {'at', 'knowledge'}, or None; Claude Code and Antigravity transcripts.
 
     Codex PostToolUse and Stop inputs carry no comparable verified record of shell calls, so
     Codex keeps the editor-only window.
     """
-    if harness != "claude" or vault is None:
+    if harness not in ("claude", "antigravity") or vault is None:
         return None
     from beyin_v3_shell_edits import shell_edit
-    return shell_edit(payload, vault, state)
+    return shell_edit(payload, vault, state, harness=harness)
 
 
 def _queue_observed_edit(vault, state, payload, harness, observed, at=None):
@@ -459,10 +497,10 @@ def _queue_observed_edit(vault, state, payload, harness, observed, at=None):
         pass  # coverage bookkeeping never costs the reminder
 
 
-def _queue_cli_edit(flag, vault, state, payload):
-    """Consume the flag `beyin.py` left for a note or task written through the Claude Bash tool
-    (mark_session_edit): Bash queues no PostToolUse, so this Stop queues one at the write's time.
-    Runs before the one-shot reminder checks, as an editor PostToolUse is queued regardless of them."""
+def _queue_cli_edit(flag, vault, state, payload, harness="claude"):
+    """Consume the flag `beyin.py` left for a note or task written through a client shell tool
+    (mark_session_edit): shell commands queue no PostToolUse, so this Stop queues one at the write's
+    time. Runs before the one-shot reminder checks, as an editor PostToolUse is queued regardless of them."""
     try:
         try:
             at = json.loads(flag.read_text(encoding="utf-8")).get("at")
@@ -472,7 +510,7 @@ def _queue_cli_edit(flag, vault, state, payload):
             at = None
         flag.unlink(missing_ok=True)
         valid = isinstance(at, (int, float)) and not isinstance(at, bool) and 0 < at <= time.time()
-        _queue_observed_edit(vault, state, payload, "claude", "cli", at=float(at) if valid else None)
+        _queue_observed_edit(vault, state, payload, harness, "cli", at=float(at) if valid else None)
     except Exception:
         pass  # coverage bookkeeping never costs the reminder
 
@@ -498,7 +536,7 @@ def receipt_reminder(payload, state, harness, event, vault=None, bridge_cli=None
     Installed PostToolUse hooks match Edit|Write|apply_patch|MultiEdit|NotebookEdit for Claude and
     Codex. Known vault-external edits do not mark the session; unknown/pathless
     events retain the legacy reminder behavior without reading transcripts.
-    Without such an edit, a Claude Stop reads the bounded tail of its own transcript once:
+    Without such an edit, a Claude or Antigravity Stop reads the bounded tail of its own transcript once:
     a vault Markdown file named by a shell command of this turn and modified while that
     command ran opens the same window (#212, beyin_v3_shell_edits). A note or task written
     with beyin.py through the Bash tool opens the window itself; its flag reaches coverage here.
@@ -528,8 +566,8 @@ def receipt_reminder(payload, state, harness, event, vault=None, bridge_cli=None
         pending_receipt = folder / (digest + ".pending-receipt")
         pending_knowledge = folder / (digest + ".pending-knowledge")
         next_prompt = event == "UserPromptSubmit"
-        if event == "Stop" and harness == "claude":
-            _queue_cli_edit(folder / (digest + ".cli"), vault, state, payload)
+        if event == "Stop" and harness in ("claude", "antigravity"):
+            _queue_cli_edit(folder / (digest + ".cli"), vault, state, payload, harness=harness)
         if next_prompt:
             # Quoted worker output is data, not the user's instruction to opt out.
             if is_synthetic_prompt(payload):
@@ -720,10 +758,37 @@ def drain_queue(vault, state, maintenance=False):
 
 
 ANTIGRAVITY_TRANSCRIPT_LIMIT = 2 * 1024 * 1024
+ANTIGRAVITY_TRANSCRIPT_HEAD = 64 * 1024
 
 
-def _antigravity_step_types(value):
-    """Read only metadata from a complete, bounded Antigravity transcript."""
+def _parse_antigravity_steps(raw, *, start_at_zero=False):
+    """Parse JSONL bytes into a contiguous {step_index: type} mapping, or None."""
+    steps = {}
+    expected = 0 if start_at_zero else None
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if not isinstance(row, dict):
+            return None
+        index, kind = row.get('step_index'), row.get('type')
+        if type(index) is not int or index < 0 or not isinstance(kind, str):
+            return None
+        if expected is not None and index != expected:
+            return None
+        steps[index] = kind
+        expected = index + 1
+    return steps
+
+
+def _antigravity_transcript_steps(value):
+    """Read only step metadata from a bounded Antigravity transcript.
+
+    Files up to ANTIGRAVITY_TRANSCRIPT_LIMIT are parsed in full into one mapping
+    (returned as (steps, steps)). Larger files read a bounded head and tail from
+    the same already-opened descriptor so long sessions still filter subagent and
+    wakeup turns without unbounded memory or I/O.
+    """
     if not isinstance(value, str) or '\0' in value:
         return None
     path = Path(value)
@@ -733,7 +798,7 @@ def _antigravity_step_types(value):
         info = path.lstat()
         reparse = stat.FILE_ATTRIBUTE_REPARSE_POINT
         if (not stat.S_ISREG(info.st_mode) or getattr(info, 'st_file_attributes', 0) & reparse
-                or info.st_size > ANTIGRAVITY_TRANSCRIPT_LIMIT or path.resolve(strict=True) != path):
+                or path.resolve(strict=True) != path):
             return None
         flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0)
         flags |= getattr(os, 'O_NONBLOCK', 0)
@@ -741,21 +806,88 @@ def _antigravity_step_types(value):
             opened = os.fstat(handle.fileno())
             if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(info, opened):
                 return None
-            raw = handle.read(ANTIGRAVITY_TRANSCRIPT_LIMIT + 1)
-        if len(raw) > ANTIGRAVITY_TRANSCRIPT_LIMIT:
+            if opened.st_size <= ANTIGRAVITY_TRANSCRIPT_LIMIT:
+                raw = handle.read(ANTIGRAVITY_TRANSCRIPT_LIMIT + 1)
+                if len(raw) > ANTIGRAVITY_TRANSCRIPT_LIMIT:
+                    return None
+                steps = _parse_antigravity_steps(raw, start_at_zero=True)
+                return (steps, steps) if steps is not None else None
+            head_raw = handle.read(ANTIGRAVITY_TRANSCRIPT_HEAD)
+            tail_offset = opened.st_size - ANTIGRAVITY_TRANSCRIPT_LIMIT
+            handle.seek(tail_offset - 1)
+            prev = handle.read(1)
+            tail_raw = handle.read(ANTIGRAVITY_TRANSCRIPT_LIMIT + 1)
+        if len(tail_raw) > ANTIGRAVITY_TRANSCRIPT_LIMIT:
             return None
-        steps = []
-        for line in raw.splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            if (not isinstance(row, dict) or type(row.get('step_index')) is not int
-                    or row['step_index'] != len(steps) or not isinstance(row.get('type'), str)):
+        nl = head_raw.rfind(b'\n')
+        head_raw = head_raw[:nl + 1] if nl >= 0 else b''
+        if prev != b'\n':
+            nl = tail_raw.find(b'\n')
+            tail_raw = tail_raw[nl + 1:] if nl >= 0 else b''
+        head = _parse_antigravity_steps(head_raw, start_at_zero=True)
+        tail = _parse_antigravity_steps(tail_raw, start_at_zero=False)
+        if head is None or tail is None:
+            return None
+        if head and tail:
+            if max(head) > max(tail):
                 return None
-            steps.append(row['type'])
-        return steps
+            for index, kind in head.items():
+                if index in tail and tail[index] != kind:
+                    return None
+        return head, tail
     except (OSError, RuntimeError, ValueError):
         return None
+
+
+def _antigravity_tail(value):
+    """Complete lines in the bounded tail of a regular, non-link Antigravity .jsonl transcript."""
+    if not isinstance(value, str) or not value.strip() or '\0' in value or value.startswith(('\\', '//')):
+        return None
+    path = Path(value)
+    if not path.is_absolute() or path.suffix.lower() != '.jsonl' or path.drive.startswith(('\\', '//')):
+        return None
+    try:
+        info = path.lstat()
+        reparse = getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)
+        if (not stat.S_ISREG(info.st_mode) or getattr(info, 'st_file_attributes', 0) & reparse
+                or path.resolve(strict=True) != path):
+            return None
+        flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0)
+        flags |= getattr(os, 'O_NONBLOCK', 0)
+        with os.fdopen(os.open(path, flags), 'rb') as handle:
+            opened = os.fstat(handle.fileno())
+            if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(info, opened):
+                return None
+            start = max(0, opened.st_size - ANTIGRAVITY_TRANSCRIPT_LIMIT)
+            if start:
+                handle.seek(start)
+            raw = handle.read(ANTIGRAVITY_TRANSCRIPT_LIMIT)
+        lines = raw.split(b'\n')
+        return lines[1:] if start else lines
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def antigravity_latest_checkpoint(transcript_path):
+    """Highest integer step_index of a CHECKPOINT step in the bounded transcript tail, or None."""
+    lines = _antigravity_tail(transcript_path)
+    if not lines:
+        return None
+    latest = None
+    for raw in reversed(lines):
+        if b'CHECKPOINT' not in raw or not raw.strip():
+            continue
+        try:
+            row = json.loads(raw)
+        except (ValueError, UnicodeError):
+            continue
+        if (not isinstance(row, dict) or row.get('type') != 'CHECKPOINT'
+                or row.get('source') not in (None, 'SYSTEM')):
+            continue
+        step = row.get('step_index')
+        if type(step) is int and step >= 0 and (latest is None or step > latest):
+            latest = step
+    return latest
 
 
 def _antigravity_nonhuman_turn(payload, event):
@@ -769,12 +901,24 @@ def _antigravity_nonhuman_turn(payload, event):
         return last_input == ''
     if event == 'Stop' and last_input != '':
         return False  # the parent can stop after planner steps
-    steps = _antigravity_step_types(payload.get('transcriptPath'))
-    if not steps or initial > len(steps):
+    parsed = _antigravity_transcript_steps(payload.get('transcriptPath'))
+    if not parsed:
+        return False
+    head, tail = parsed
+    if not tail or initial > max(tail) + 1:
         return False
     if event == 'PreInvocation':
-        return steps[initial - 1] == 'PLANNER_RESPONSE'
-    return 'USER_INPUT' not in steps and 'PLANNER_RESPONSE' in steps
+        step_type = tail.get(initial - 1)
+        if step_type is None:
+            step_type = head.get(initial - 1)
+        return step_type == 'PLANNER_RESPONSE'
+    # Stop asks about the whole conversation: one USER_INPUT anywhere makes it human. A bounded
+    # read of a long transcript decides only when its head and tail leave no unread step between
+    # them (step 0 included); otherwise it fails open, as every read over the limit did before.
+    if 0 not in head or (head is not tail and min(tail) > max(head) + 1):
+        return False
+    kinds = set(head.values()) | set(tail.values())
+    return 'USER_INPUT' not in kinds and 'PLANNER_RESPONSE' in kinds
 
 
 # Antigravity file writes for the receipt edit window (#903). write_file and edit_file with their Path
@@ -813,6 +957,134 @@ def antigravity_tool_input(payload):
 def antigravity_session_marker(state, conversation):
     digest = hashlib.sha256(conversation.encode('utf-8', 'replace')).hexdigest()
     return Path(state) / 'antigravity-sessions' / (digest + '.json')
+
+
+ANTIGRAVITY_NOTICE_LIMIT = 2000
+ANTIGRAVITY_NOTICE_FILE_LIMIT = 8192
+ANTIGRAVITY_NOTICE_MAX_AGE = 3600
+
+
+def _is_link_or_reparse(info):
+    reparse = getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, 'st_file_attributes', 0) & reparse)
+
+
+def _antigravity_notice_path(state, conversation):
+    digest = hashlib.sha256(conversation.encode('utf-8', 'replace')).hexdigest()
+    return Path(state) / 'antigravity-notices' / (digest + '.json')
+
+
+def _antigravity_notice_waiting(state, conversation):
+    """True when a post-edit notice file exists for this conversation (stdlib only: the fast exit uses it)."""
+    if not isinstance(conversation, str) or not conversation:
+        return False
+    try:
+        _antigravity_notice_path(state, conversation).lstat()
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _read_antigravity_notice(path, info, max_age=ANTIGRAVITY_NOTICE_MAX_AGE):
+    """Read a verified regular notice file. Returns None on security/size mismatch, '' when stale/invalid."""
+    if (not stat.S_ISREG(info.st_mode) or _is_link_or_reparse(info)
+            or info.st_size > ANTIGRAVITY_NOTICE_FILE_LIMIT):
+        return None
+    flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+    with os.fdopen(os.open(path, flags), 'rb') as handle:
+        opened = os.fstat(handle.fileno())
+        if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(info, opened):
+            return None
+        raw = handle.read(ANTIGRAVITY_NOTICE_FILE_LIMIT + 1)
+    if len(raw) > ANTIGRAVITY_NOTICE_FILE_LIMIT:
+        return None
+    try:
+        data = json.loads(raw.decode('utf-8'))
+    except (UnicodeDecodeError, ValueError):
+        return ''
+    if not isinstance(data, dict):
+        return ''
+    text = data.get('text')
+    at = data.get('at')
+    if (not isinstance(text, str) or not text.strip()
+            or not isinstance(at, (int, float)) or isinstance(at, bool) or not math.isfinite(at)):
+        return ''
+    now = time.time()
+    if now - at > max_age or at > now + 300:
+        return ''
+    if len(text) > ANTIGRAVITY_NOTICE_LIMIT:
+        text = text[:ANTIGRAVITY_NOTICE_LIMIT - 1].rstrip() + '\n'
+    elif not text.endswith('\n'):
+        text += '\n'
+    return text
+
+
+def _queue_antigravity_notice(state, conversation, text):
+    """Store a bounded, deduplicated post-edit notice for the conversation's next PreInvocation."""
+    if not isinstance(conversation, str) or not conversation or not isinstance(text, str) or not text.strip():
+        return
+    path = _antigravity_notice_path(state, conversation)
+    folder = path.parent
+    try:
+        try:
+            folder_info = folder.lstat()
+        except FileNotFoundError:
+            folder.mkdir(parents=True, exist_ok=True)
+            folder_info = folder.lstat()
+        if _is_link_or_reparse(folder_info) or not stat.S_ISDIR(folder_info.st_mode):
+            return
+        existing = ''
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            info = None
+        if info is not None:
+            if not stat.S_ISREG(info.st_mode) or _is_link_or_reparse(info):
+                return
+            if info.st_size <= ANTIGRAVITY_NOTICE_FILE_LIMIT:
+                prior = _read_antigravity_notice(path, info, max_age=ANTIGRAVITY_NOTICE_MAX_AGE)
+                if prior is None:
+                    return
+                existing = prior
+        lines = []
+        seen = set()
+        for chunk in (existing, text):
+            for line in chunk.splitlines():
+                cleaned = line.strip()
+                if cleaned and cleaned not in seen:
+                    seen.add(cleaned)
+                    lines.append(cleaned)
+        if not lines:
+            return
+        combined = '\n'.join(lines) + '\n'
+        if len(combined) > ANTIGRAVITY_NOTICE_LIMIT:
+            combined = combined[:ANTIGRAVITY_NOTICE_LIMIT - 1].rstrip() + '\n'
+        atomic(path, {'at': time.time(), 'text': combined})
+    except (OSError, ValueError, RuntimeError):
+        return
+
+
+def _consume_antigravity_notice(state, conversation, max_age=ANTIGRAVITY_NOTICE_MAX_AGE):
+    """Consume and return a pending Antigravity post-edit notice at most once; fail open."""
+    if not isinstance(conversation, str) or not conversation:
+        return ''
+    path = _antigravity_notice_path(state, conversation)
+    folder = path.parent
+    try:
+        folder_info = folder.lstat()
+        if _is_link_or_reparse(folder_info) or not stat.S_ISDIR(folder_info.st_mode):
+            return ''
+        info = path.lstat()
+        text = _read_antigravity_notice(path, info, max_age=max_age)
+        if text is None:
+            return ''
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return text
+    except (OSError, ValueError, RuntimeError):
+        return ''
 
 
 def _antigravity_marker_key(folder):
@@ -864,41 +1136,90 @@ def antigravity_continued_stop(payload):
     return payload.get('continuationActive') is True or (type(count) is int and count > 0)
 
 
+# The terminationReason values of a normal Antigravity turn end; docs/v3/PLATFORM-TESTS.md and
+# GLOBAL-BRIDGE.md name each of them (tests check it).
+ANTIGRAVITY_NORMAL_TERMINATIONS = ('NO_TOOL_CALL', 'UNSPECIFIED')
+
+
+def antigravity_abnormal_stop(payload):
+    """True when an Antigravity Stop ended with an error or non-normal terminationReason.
+
+    Antigravity sends terminationReason='NO_TOOL_CALL' with an empty error on a normal turn;
+    USER_CANCELED, ERROR, MAX_INVOCATIONS, MAX_FORCED_INVOCATIONS, MAX_TOKEN_BUDGET_EXCEEDED,
+    TERMINAL_STEP_TYPE, TERMINAL_CUSTOM_HOOK and INJECTED_RESPONSE must not be asked to
+    continue. Absent or empty fields stay False so older clients keep normal Stop behaviour;
+    UNSPECIFIED, the enum's zero value (no reason recorded), counts as absent. Other names the
+    1.5.18 binary defines but its hook document does not list (CHAINED, EARLY_CONTINUE,
+    HALTED_STEP) are not a normal end: the reminder waits for the next NO_TOOL_CALL Stop."""
+    if not isinstance(payload, dict):
+        return False
+    err = payload.get('error')
+    if isinstance(err, str) and err.strip():
+        return True
+    reason = payload.get('terminationReason')
+    if isinstance(reason, str):
+        reason = reason.strip()
+        if reason and reason not in ANTIGRAVITY_NORMAL_TERMINATIONS:
+            return True
+    return False
+
+
 def _antigravity_nonhuman_start(payload):
     """A native SessionStart without user input is a nested agent's conversation (#885)."""
     return (os.environ.get('BEYIN_V3_FILTER_HARNESS_TURNS') != '0'
             and payload.get('lastUserInput') == '')
 
 
-def _antigravity_turn_event(marker, last_input):
-    """The event the first PreInvocation of a human turn stands for (#903).
+def _antigravity_turn_event(marker, last_input, latest_checkpoint=None):
+    """The (event, compacted) for the first PreInvocation of a human turn (#903).
 
     Antigravity counts invocationNum per turn, so it is 0 again for every user message, while
     its SessionStart hook runs once per conversation. A conversation without a start marker
     (a client without SessionStart, or one begun before this hook) gets the opening here once;
     every later message gets per-message retrieval, as UserPromptSubmit does elsewhere. The
     prompt the native SessionStart already answered is not searched a second time. None means
-    the turn needs nothing. A marker that cannot be written keeps the opening (fail open)."""
+    the turn needs nothing. A newer CHECKPOINT step in the transcript marks compacted once per
+    checkpoint and persists checkpoint_step in the marker. A marker that cannot be written
+    keeps the opening (fail open)."""
+    cp = latest_checkpoint if type(latest_checkpoint) is int and latest_checkpoint >= 0 else None
     try:
         data = json.loads(marker.read_text(encoding='utf-8'))
     except FileNotFoundError:
+        record = {'at': time.time()}
+        if cp is not None:
+            record['checkpoint_step'] = cp
         try:
-            atomic(marker, {'at': time.time()})
+            atomic(marker, record)
         except OSError:
             pass
-        return 'SessionStart'
+        return 'SessionStart', cp is not None
     except (OSError, ValueError):
-        return 'UserPromptSubmit'
-    pending = data.get('pending') if isinstance(data, dict) else None
+        return 'UserPromptSubmit', False
+    if not isinstance(data, dict):
+        return 'UserPromptSubmit', False
+    raw_saved = data.get('checkpoint_step')
+    saved_cp = raw_saved if type(raw_saved) is int and raw_saved >= 0 else None
+    compacted = cp is not None and (saved_cp is None or cp > saved_cp)
+    if compacted:
+        record = {'at': data.get('at', time.time()), 'checkpoint_step': cp}
+        try:
+            atomic(marker, record)
+        except OSError:
+            pass
+        return 'UserPromptSubmit', True
+    pending = data.get('pending')
     digest = _antigravity_prompt_digest(marker.parent, last_input) if isinstance(pending, str) else None
     import hmac
     if digest is not None and hmac.compare_digest(pending.encode('utf-8', 'replace'), digest.encode('ascii')):
+        record = {'at': data.get('at', time.time())}
+        if saved_cp is not None:
+            record['checkpoint_step'] = saved_cp
         try:
-            atomic(marker, {'at': data.get('at', time.time())})
+            atomic(marker, record)
         except OSError:
             pass
-        return None
-    return 'UserPromptSubmit'
+        return None, False
+    return 'UserPromptSubmit', False
 
 
 def main():
@@ -916,6 +1237,52 @@ def main():
     parser.add_argument("--metadata-only", action="store_true", help="Queue lifecycle metadata without injecting vault context")
     args = parser.parse_args()
     vault = args.vault.resolve()
+    raw_stdin = None
+    early_payload = None
+    has_early_payload = False
+    if not args.worker and not args.drain_queue and not args.metadata_only and args.harness == "antigravity":
+        # Antigravity invokes PreInvocation before every model call in a turn (invocationNum=1, 2, ...)
+        # and Stop on non-idle pauses. Exit before importing beyin_v3/preferences for those no-ops,
+        # while preserving in-vault state refusal and malformed-JSON error diagnostics.
+        raw_state = str(args.state)
+        state_safe = False
+        if raw_state.strip() and "\0" not in raw_state:
+            expanded_state = args.state.expanduser()
+            foreign_os = (not expanded_state.is_absolute() and (
+                bool(re.match(r"^[A-Za-z]:[/\\]", raw_state))
+                or (sys.platform == "win32" and raw_state.startswith(("/", "\\")))
+            ))
+            if not foreign_os:
+                try:
+                    candidate_state = expanded_state.resolve()
+                except (OSError, ValueError, RuntimeError):
+                    candidate_state = None
+                if candidate_state is not None:
+                    if candidate_state == vault or vault in candidate_state.parents:
+                        raise ValueError("Runtime state must be outside vault")
+                    state_safe = True
+        if state_safe:
+            try:
+                raw_stdin = sys.stdin.read(1_000_000)
+            except OSError:
+                raw_stdin = None
+            if raw_stdin is not None:
+                try:
+                    early_payload = json.loads(raw_stdin.lstrip("\ufeff").strip() or "{}")
+                    has_early_payload = True
+                except ValueError:
+                    pass
+                if isinstance(early_payload, dict):
+                    early_event = early_payload.get("hook_event_name", args.event)
+                    if (early_event == "PreInvocation" and early_payload.get("invocationNum") != 0
+                            and not _antigravity_notice_waiting(candidate_state, early_payload.get("conversationId"))):
+                        # A post-edit notice (#945) is the only thing a later model call of a turn can
+                        # deliver; one lstat for it, no vault module (#941).
+                        print("{}")
+                        return
+                    if early_event == "Stop" and early_payload.get("fullyIdle") is not True:
+                        print('{"decision":"stop"}')
+                        return
     from beyin_v3 import resolve_state
     state = resolve_state(vault, args.state)
     try:
@@ -942,13 +1309,17 @@ def main():
     try:
         # A payload cut at the read limit is not JSON: the handler below answers "{}" and
         # records the error for doctor instead of silently dropping the turn.
-        payload = json.loads(sys.stdin.read(1_000_000).lstrip("\ufeff").strip() or "{}")
+        if has_early_payload:
+            payload = early_payload
+        else:
+            payload = json.loads((sys.stdin.read(1_000_000) if raw_stdin is None else raw_stdin).lstrip("\ufeff").strip() or "{}")
         event = payload.get("hook_event_name", args.event)
         if args.harness == "hermes":
             # Hermes plugin hooks: pre_llm_call (first turn -> SessionStart, later ->
             # UserPromptSubmit), on_session_finalize -> SessionEnd. The plugin sends
             # the Claude-shaped payload, so only the session field needs mapping.
             payload["session_id"] = payload.get("session_id") or payload.get("conversationId", "unknown")
+        antigravity_compacted = False
         if args.harness == "antigravity":
             conversation = payload.get("conversationId")
             # The per-conversation marker is kept only for a conversation this hook serves: never
@@ -968,23 +1339,49 @@ def main():
                         digest = _antigravity_prompt_digest(marker.parent, payload.get("lastUserInput"))
                         if digest is not None:
                             record["pending"] = digest
+                        cp = antigravity_latest_checkpoint(payload.get("transcriptPath"))
+                        if cp is not None:
+                            record["checkpoint_step"] = cp
                         atomic(marker, record)
                     except OSError:
                         pass  # the first PreInvocation then repeats the opening, as before #903
             elif event == "PreInvocation":
-                if payload.get("invocationNum") != 0 or _antigravity_nonhuman_turn(payload, event):
+                if payload.get("invocationNum") != 0:
+                    if serves and isinstance(conversation, str) and conversation:
+                        notice_path = _antigravity_notice_path(state, conversation)
+                        try:
+                            notice_path.lstat()
+                            has_notice = True
+                        except OSError:
+                            has_notice = False
+                        if has_notice and not _antigravity_nonhuman_turn(payload, event):
+                            pending_notice = _consume_antigravity_notice(state, conversation)
+                            if pending_notice:
+                                print(json.dumps(output_context("antigravity", "PreInvocation", pending_notice)))
+                                return
                     print("{}")
                     return
-                event = (_antigravity_turn_event(marker, payload.get("lastUserInput"))
-                         if marker is not None else "SessionStart")
+                if _antigravity_nonhuman_turn(payload, event):
+                    print("{}")
+                    return
+                pending_notice = (_consume_antigravity_notice(state, conversation)
+                                  if serves and isinstance(conversation, str) and conversation else "")
+                if marker is not None:
+                    latest_cp = antigravity_latest_checkpoint(payload.get("transcriptPath"))
+                    event, antigravity_compacted = _antigravity_turn_event(
+                        marker, payload.get("lastUserInput"), latest_checkpoint=latest_cp)
+                else:
+                    event = "SessionStart"
                 if event is None:
                     # The opening already answered this prompt; only its [kaydetme] opt-out still applies.
                     # (A marker exists only when the hook serves, so skipped runs never get here.)
                     receipt_reminder(dict(payload, session_id=conversation, hook_event_name="UserPromptSubmit",
                                           prompt=payload.get("lastUserInput") or ""),
                                      state, args.harness, "UserPromptSubmit", vault=vault)
-                    print("{}")
+                    print(json.dumps(output_context("antigravity", "PreInvocation", pending_notice)) if pending_notice else "{}")
                     return
+                if pending_notice:
+                    notice = pending_notice + notice
             elif event == "PostToolUse":
                 tool_input = antigravity_tool_input(payload)
                 if tool_input is None:
@@ -992,6 +1389,7 @@ def main():
                     return
                 payload["tool_input"] = tool_input
             elif event == "Stop" and (payload.get("fullyIdle") is not True
+                                      or antigravity_abnormal_stop(payload)  # before any transcript read
                                       or _antigravity_nonhuman_turn(payload, event)):
                 print('{"decision":"stop"}')
                 return
@@ -1004,11 +1402,11 @@ def main():
             payload["session_id"] = payload.get("conversationId", "unknown")
         payload["hook_event_name"] = event
         if event not in EVENTS or os.environ.get("BEYIN_V3_INTERNAL") or os.environ.get("BEYIN_V3_SKIP") == "1" or payload.get('no_memory') is True:
-            print("{}")
+            print(quiet(args.harness, event))
             return
         if event == 'SessionStart' and not args.metadata_only:
             from beyin_v3_releases import session_start
-            notice = session_start(vault, state)
+            notice += session_start(vault, state)
         settings = read(vault)
         if event == 'SessionStart' and not args.metadata_only and (state / 'yakala.json').is_file():
             # Opt-in capture queue (beyin.py yakala kur): one directory listing, never a model call.
@@ -1052,6 +1450,11 @@ def main():
                                                    harness=args.harness, state=state)
             except Exception:
                 pass
+        if args.harness == 'antigravity' and event == 'PostToolUse' and notice:
+            # Antigravity's PostToolUse contract expects {}; deliver post-edit notices on the next PreInvocation.
+            if serves and isinstance(conversation, str) and conversation:
+                _queue_antigravity_notice(state, conversation, notice)
+            notice = ''
         if not args.metadata_only:
             # Opt-in parallel-session notice (#170), machine-local in state/parallel-sessions.json.
             # Without that file a prompt costs one stat; SessionEnd still removes its own marker.
@@ -1068,11 +1471,13 @@ def main():
             except Exception:
                 pass  # a marker can never cost the turn
             try:
-                if event in ('SessionEnd', 'PreCompact') or (event == 'SessionStart' and payload.get('source') == 'compact'):
+                if (event in ('SessionEnd', 'PreCompact')
+                        or (event == 'SessionStart' and payload.get('source') == 'compact')
+                        or antigravity_compacted):
                     if (state / 'context-dedupe.json').is_file() or (state / 'session-delivery').is_dir() or os.environ.get('BEYIN_V3_CONTEXT_DEDUPE') == '1':
                         from beyin_v3_dedupe import reset_session
                         reset_session(state, args.harness, payload.get('session_id'))
-                    if args.harness == 'claude' and (state / 'context-fill').is_dir():
+                    if args.harness in ('claude', 'antigravity') and (state / 'context-fill').is_dir():
                         from beyin_v3_context_fill import reset_session_state
                         if isinstance(payload.get('session_id'), str):
                             reset_session_state(state, payload['session_id'])
@@ -1126,7 +1531,7 @@ def main():
         if event == "UserPromptSubmit" and reminder:
             notice = (notice + "\n" if notice else "") + reminder["context"] + "\n"
             reminder = None
-        if not args.metadata_only and not sync_note and not reminder and event == 'Stop' and args.harness == 'claude' and (state / 'context-fill.json').is_file():
+        if not args.metadata_only and not sync_note and not reminder and event == 'Stop' and args.harness in ('claude', 'antigravity') and (state / 'context-fill.json').is_file():
             from beyin_v3_context_fill import context_fill_reminder
             reminder = context_fill_reminder(payload, state, args.harness, event)
         if not args.metadata_only and event == 'UserPromptSubmit' and (state / 'chat-trace.json').is_file():
@@ -1147,7 +1552,7 @@ def main():
                     notice = (notice + "\n" + fb_hint) if notice else fb_hint
             except Exception:
                 pass
-        inject = settings['context_mode'] == 'turn' or (settings['context_mode'] == 'session' and event == 'SessionStart')
+        inject = settings['context_mode'] == 'turn' or (settings['context_mode'] == 'session' and (event == 'SessionStart' or antigravity_compacted))
         if not inject or args.metadata_only or (event == 'UserPromptSubmit' and is_synthetic_prompt(payload)):
             print(json.dumps(reminder) if reminder else (json.dumps(output_context(args.harness, event, notice)) if notice else quiet(args.harness, event)))
             return
@@ -1212,14 +1617,23 @@ def main():
                            'Read current sources or use beyin.py context for fresh information.' + skip_hint + '\n')
             else:
                 warning = ''
-            coverage = ''
-            health = state / "hook-health.json"
-            if health.exists():
-                sync = json.loads(health.read_text(encoding="utf-8")).get("sync", {})
+            coverage_notice = ''
+            health_present, sync = _read_hook_health(state / "hook-health.json")
+            if health_present and sync is None:
+                warning += "V3 sync needs attention; consult current sources and doctor.\n"
+            elif health_present and isinstance(sync, dict):
                 if sync.get("status") not in ("ok", "succeeded", "synced"):
-                    warning += "V3 sync needs attention; consult current sources and doctor.\n"
+                    # The count opens the session only (#964), never a file name: a turn keeps the
+                    # short line, so its records keep their room while a note stays unreadable.
+                    attention = "V3 sync needs attention; consult current sources and doctor.\n"
+                    if event == 'SessionStart':
+                        try:
+                            attention = _sync_attention_notice(sync)
+                        except Exception:
+                            pass  # the count is a hint; the short line still warns
+                    warning += attention
                 from beyin_v3_projections import is_receipt_view_conflict
-                if any(is_receipt_view_conflict(c) for c in sync.get('conflicts', []) + sync.get('warnings', [])):
+                if any(is_receipt_view_conflict(c) for c in (sync.get('conflicts') or []) + (sync.get('warnings') or [])):
                     warning += "V3 receipt view preserved; consult doctor or run beyin.py sync --recover-views to archive and regenerate.\n"
                 if sync.get('skill_conflicts'):
                     warning += 'Shared skills differ between harnesses; both versions are preserved. Run doctor before trusting skill text.\n'
@@ -1227,31 +1641,33 @@ def main():
                 # Checkpoints without observed edits are reported separately (#462).
                 recent = sync.get('recent_missing_receipts')
                 no_edits = sync.get('recent_no_observed_edit', 0)
-                if isinstance(recent, int) and recent > 0:
-                    if isinstance(no_edits, int) and no_edits > 0:
+                if isinstance(recent, int) and not isinstance(recent, bool) and recent > 0:
+                    if isinstance(no_edits, int) and not isinstance(no_edits, bool) and no_edits > 0:
                         detail = f'{recent} in the last 7 days ({no_edits} without observed edits)'
                     else:
                         detail = f'{recent} in the last 7 days'
-                    coverage = (f'Prior checkpoints may lack structured receipts ({detail}); '
-                                'check Last-Session/Threads and current sources for unfinished work.\n')
+                    coverage_notice = (f'Prior checkpoints may lack structured receipts ({detail}); '
+                                       'check Last-Session/Threads and current sources for unfinished work.\n')
             topic_session = payload.get('session_id', 'unknown')
             dedupe_enabled = (state / 'context-dedupe.json').is_file() or os.environ.get('BEYIN_V3_CONTEXT_DEDUPE') == '1'
-            # The coverage notice is a session fact like the receipt: said once, again when its count changes.
-            if coverage and dedupe_enabled:
+            # The coverage notice is once per session regardless of context-dedupe (#960):
+            # keyed by category so parallel-session churn in N does not repeat it every turn,
+            # and cleared on compaction or session end with the session ledger.
+            if coverage_notice:
                 try:
                     from beyin_v3_dedupe import notice_delivered
-                    if notice_delivered(state, args.harness, topic_session, coverage):
-                        coverage = ''
+                    if notice_delivered(state, args.harness, topic_session, COVERAGE_NOTICE_KEY):
+                        coverage_notice = ''
                 except Exception:
                     pass
-            warning += coverage
+            warning += coverage_notice
             warning += review_notice
 
             def remember_notice(shown):
-                if coverage and dedupe_enabled and coverage.strip() in shown:
+                if coverage_notice and coverage_notice.strip() in shown:
                     try:
                         from beyin_v3_dedupe import record_delivered
-                        record_delivered(state, args.harness, topic_session, [], notice=coverage)
+                        record_delivered(state, args.harness, topic_session, [], notice=COVERAGE_NOTICE_KEY)
                     except Exception:
                         pass
             from beyin_v3_companion import (context as companion_context, relevant, opening_budget, client_budget,
@@ -1271,6 +1687,16 @@ def main():
                         pass  # Optional counters cannot break context delivery.
 
             own_notice, own_card = '', ''
+            if (event == 'SessionStart' and payload.get('source') == 'compact') or antigravity_compacted:
+                # The summary can drop the open step; this session's own card holds it (the
+                # opening shows only the top card, often a parallel session's). It is read
+                # through the opening's own gated snapshot and never costs the opening.
+                try:
+                    from beyin_v3_companion import compact_card_notice
+                    own_notice, own_card = compact_card_notice(store, payload.get('session_id'))
+                    notice += own_notice
+                except Exception:
+                    own_notice, own_card = '', ''
             if event == 'SessionStart' or relevant(query):
                 # Claude Code and Antigravity send a working directory, not a project (#288, #403).
                 # A project found from it selects the project rules only: as a retrieval scope it
@@ -1288,16 +1714,6 @@ def main():
                             rules_project = resolve_project_from_query(vault, query)
                         except Exception:
                             rules_project = None
-                if event == 'SessionStart' and payload.get('source') == 'compact':
-                    # The summary can drop the open step; this session's own card holds it (the
-                    # opening shows only the top card, often a parallel session's). It is read
-                    # through the opening's own gated snapshot and never costs the opening.
-                    try:
-                        from beyin_v3_companion import compact_card_notice
-                        own_notice, own_card = compact_card_notice(store, payload.get('session_id'))
-                        notice += own_notice
-                    except Exception:
-                        own_notice, own_card = '', ''
                 # Local import syntax cannot prove client delivery. Keep the normal
                 # companion text, including after resume/compact and continuity questions.
                 # The opening may carry its own machine-local budget (#140); never a vault preference.
@@ -1481,7 +1897,7 @@ def main():
         if not args.metadata_only and locals().get("event") in ("SessionStart", "UserPromptSubmit"):
             print(json.dumps(output_context(args.harness, event, notice + "V3 source sync failed or conflicted. Run the local CLI doctor and verify current Markdown sources.")))
         else:
-            print("{}")
+            print(quiet(args.harness, locals().get("event") or args.event))
 
 
 if __name__ == "__main__":

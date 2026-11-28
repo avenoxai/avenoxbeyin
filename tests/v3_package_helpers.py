@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import zipfile
 from unittest.mock import patch
 
@@ -28,11 +29,12 @@ def windows_runtime_env():
 # from a configured shell or an agent session must not inherit them. Only the values the suite
 # itself inherited are dropped: one a test sets in os.environ (BEYIN_PYTHON for a missing
 # interpreter) still reaches its child, as does one passed explicitly.
-# CLAUDE_CODE_SESSION_ID / PI_SESSION_ID name the agent running the suite; a CLI write in a
-# fixture must not open that session's receipt-reminder window (#212).
+# CLAUDE_CODE_SESSION_ID / ANTIGRAVITY_CONVERSATION_ID / PI_SESSION_ID name the agent running
+# the suite; a CLI write in a fixture must not open that session's receipt-reminder window (#212).
 USER_ENV_PREFIX = 'BEYIN_'
 _INHERITED = {key: value for key, value in os.environ.items()
-              if key.upper().startswith(USER_ENV_PREFIX) or key.upper() in ('CLAUDE_CODE_SESSION_ID', 'PI_SESSION_ID')}
+              if key.upper().startswith(USER_ENV_PREFIX)
+              or key.upper() in ('CLAUDE_CODE_SESSION_ID', 'ANTIGRAVITY_CONVERSATION_ID', 'PI_SESSION_ID')}
 
 
 def inherited_env(**extra):
@@ -67,6 +69,62 @@ def isolated_env(home):
            'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONIOENCODING': 'utf-8', 'BEYIN_V3_NO_SPAWN': '1'}
     env.update(windows_runtime_env())
     return env
+
+
+def _user_state_roots(original):
+    """Every machine-local Beyin state root default_state can name for this user (any OS branch)."""
+    home, roots = Path.home(), []
+    for base in (home / 'Library/Application Support', home / 'AppData/Local', home / '.local/state',
+                 os.environ.get('LOCALAPPDATA'), os.environ.get('XDG_STATE_HOME')):
+        if base:
+            roots.append(Path(base) / 'beyin-v3')
+    roots.append(Path(original(Path('probe-vault'))).parent)
+    spelled = []
+    for root in roots:
+        for form in (root, root.resolve()):
+            text = os.path.normcase(os.path.abspath(form))
+            if text not in spelled:
+                spelled.append(text)
+    return spelled
+
+
+_TEST_STATE_HOME = None
+
+
+def isolate_user_state(module):
+    """Point module.default_state's user state root at one temporary root for this process.
+
+    Yakala card locks live beside the per-vault state folders, in the parent of default_state,
+    even when a caller passes another --state (aliases of one vault must share one lock). Every
+    temporary test vault has a new inode, so without this each run left zero-byte
+    yakala-card-locks/vault-<dev>-<ino>.lock files in the user's real state root. Only paths under
+    the roots captured at install time move; a test that sets HOME, LOCALAPPDATA or XDG_STATE_HOME
+    to its own folder still gets that folder. The per-vault basename is kept, so different
+    spellings of one vault still share a lock. Idempotent; patch.object over it still works.
+    """
+    global _TEST_STATE_HOME
+    current = module.default_state
+    if getattr(current, '_beyin_test_isolated', False):
+        return current
+    if _TEST_STATE_HOME is None:
+        _TEST_STATE_HOME = tempfile.TemporaryDirectory(prefix='beyin-v3-test-state-')
+    target = Path(_TEST_STATE_HOME.name).resolve() / 'beyin-v3'
+    roots = _user_state_roots(current)
+
+    def default_state(vault):
+        path = Path(current(vault))
+        for form in (path, path.resolve()):
+            text = os.path.normcase(os.path.abspath(form))
+            for root in roots:
+                if text == root or text.startswith(root.rstrip(os.sep) + os.sep):
+                    return target / os.path.relpath(text, root)
+        return path
+
+    default_state.__wrapped__ = current
+    default_state._beyin_test_isolated = True
+    default_state._beyin_test_root = target
+    module.default_state = default_state
+    return default_state
 
 
 def run_python(script, args, cwd, env, payload=None):

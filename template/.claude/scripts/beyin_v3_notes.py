@@ -145,6 +145,7 @@ def require_utf8_values(value, what):
 
 def _require_request_text(request):
     require_utf8_text(request.get('content'), 'content')
+    require_utf8_text(request.get('text'), 'text')
     # Evidence paths are hashed into the retry identity and checked as vault paths (#443).
     require_utf8_values(request.get('evidence_refs'), 'evidence_refs')
     edits = request.get('edits')
@@ -700,6 +701,34 @@ def _replay_idempotency(engine, path, source, fingerprint, source_path, refs=(),
     return answer
 
 
+# A line break in an edit anchor: a whole CRLF pair or a bare LF, never the LF half of a pair.
+_ANCHOR_LINE_BREAK = r'(?:\r\n|(?<!\r)\n)'
+
+
+def _anchor_matches(text, old, crlf):
+    """(start, end) of every occurrence of old in text, overlapping ones included.
+
+    crlf says whether the note had CRLF endings before the request, decided once per request,
+    so an edit that brings a CRLF into an LF note cannot change how later edits match. A note
+    without CRLF keeps the exact byte search of 3.18.0. In a note with CRLF endings a line break
+    in old matches either ending, so an agent's LF anchor finds CRLF and mixed lines, and every
+    spelling counts towards 'exactly once' instead of the first one found winning (#951).
+    """
+    if old == text:
+        # The whole note, the shape internal writers send, occurs once at 0 in either mode;
+        # the lookahead scan below would grow with the square of a long repetitive note.
+        return [(0, len(text))]
+    if not crlf or '\n' not in old:
+        found, start = [], text.find(old)
+        while start >= 0:
+            found.append((start, start + len(old)))
+            start = text.find(old, start + 1)
+        return found
+    pattern = _ANCHOR_LINE_BREAK.join(re.escape(piece) for piece in re.split(r'\r?\n', old))
+    return [(match.start(), match.start() + len(match.group(1)))
+            for match in re.finditer('(?=(%s))' % pattern, text)]
+
+
 def _apply(engine, request, committed, finalize=None):
     from beyin_v3_sync import _hash, _safe_replace
     if not isinstance(request, dict):
@@ -717,6 +746,15 @@ def _apply(engine, request, committed, finalize=None):
                                  not re.fullmatch('[0-9a-f]{64}', expected)):
         raise ValueError('expected_sha256 must be a SHA-256 hex digest or null')
     _require_request_text(request)  # Before the lock: invalid text writes nothing at all.
+    # 'text' is an alias for 'content' on new-file creation; both may be sent only if equal.
+    # A null 'text' counts as absent, so a request without the alias behaves as before it.
+    has_content = 'content' in request
+    has_text = request.get('text') is not None
+    if has_content and has_text:
+        if type(request['content']) is not type(request['text']) or request['content'] != request['text']:
+            raise ValueError("provide either 'content' or 'text', not both with different values")
+    has_body = has_content or has_text
+    body_value = request['content'] if has_content else request.get('text')
     idempotency_key = check_idempotency_key(request.get('idempotency_key'))
     refs = evidence_refs(engine, request.get('evidence_refs'), existing=False)
     with locked(engine) as folder:
@@ -724,9 +762,13 @@ def _apply(engine, request, committed, finalize=None):
         source = path.relative_to(engine.root).as_posix()
         _refuse_tracked_view(engine, source)
         idempotency_file = None
-        # Bind the key to the canonical request, so the alias spelling cannot split a retry.
-        fingerprint = _request_digest(dict({field: request[field] for field in ('content', 'edits')
-                                            if field in request},
+        # Bind the key to the canonical request, so alias spellings cannot split a retry.
+        canonical_fields = {}
+        if has_body:
+            canonical_fields['content'] = body_value
+        if 'edits' in request:
+            canonical_fields['edits'] = request['edits']
+        fingerprint = _request_digest(dict(canonical_fields,
                                            operation='note-edit', source=source,
                                            expected_sha256=expected, evidence_refs=refs))
         if idempotency_key is not None:
@@ -743,14 +785,25 @@ def _apply(engine, request, committed, finalize=None):
             # A missing note is a create. Same name gates as note-create, before any write.
             validate_source_name(source)
             refuse_unicode_alias(engine.root, source)
-            if 'edits' in request or not isinstance(request.get('content'), str):
-                raise ValueError('new source requires content and expected_sha256:null')
-            text = request['content']
+            if 'edits' in request or not has_body or not isinstance(body_value, str):
+                raise ValueError('new source requires content (or text) and expected_sha256:null')
+            text = body_value
         else:
-            if 'content' in request or not isinstance(request.get('edits'), list) or not request['edits']:
-                raise ValueError('existing source requires nonempty targeted edits, not content')
+            if has_body:
+                raise ValueError('existing source requires nonempty targeted edits, not '
+                                 + ('content' if has_content else 'text'))
+            if 'edits' in request and not isinstance(request['edits'], list):
+                raise ValueError('edits must be a list of {old, new} objects')
+            if not request.get('edits'):
+                raise ValueError('existing source requires nonempty targeted edits')
             text = decode_utf8(raw)
             _human(text)
+            # Like checkpoint: any CRLF makes new edit text CRLF, so a note mixed by an older
+            # LF edit heals instead of mixing further. A note without CRLF keeps exact bytes.
+            # The line endings are read once, from the note as it stood before this request:
+            # both how anchors match and how new text is written follow that one reading.
+            crlf = '\r\n' in text
+            newline = '\r\n' if crlf else '\n'
             for edit in request['edits']:
                 if not isinstance(edit, dict):
                     raise ValueError('each edit must be an object')
@@ -760,10 +813,19 @@ def _apply(engine, request, committed, finalize=None):
                 empty_source_edit = raw == b'' and len(request['edits']) == 1 and old == ''
                 if not isinstance(old, str) or (not old and not empty_source_edit) or not isinstance(new, str):
                     raise ValueError('each edit requires nonempty old and string new')
-                position = text.find(old)
-                if position < 0 or text.find(old, position + 1) >= 0:
-                    raise NoteConflict('edit anchor must occur exactly once')
-                text = text.replace(old, new, 1)
+                matches = _anchor_matches(text, old, crlf)
+                if not matches:
+                    raise NoteConflict('edit anchor not found; must occur exactly once')
+                if len(matches) > 1:
+                    raise NoteConflict(f'edit anchor occurs {len(matches)} times; must occur exactly once')
+                if new != old:  # An exact no-op leaves the matched bytes, line endings included.
+                    start, end = matches[0]
+                    # A whole-note replacement states its exact bytes: the mutation queue,
+                    # checkpoint, chat trace and homepages verify or replay them as sent.
+                    # Only a partial edit takes the note's line endings.
+                    if newline == '\r\n' and (start, end) != (0, len(text)):
+                        new = new.replace('\r\n', '\n').replace('\n', '\r\n')
+                    text = text[:start] + new + text[end:]
         _human(text)  # Do not create a managed source or convert a human note into one.
         updated = text.encode('utf-8')  # Keeps BOM and untouched CRLF bytes exactly.
         if updated == raw:

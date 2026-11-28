@@ -213,7 +213,9 @@ Düzeltme dört parçadır:
   gösterir (en fazla 200.000); bu otomatik ayar değişikliği, oturum sayısı hesabı veya
   gelecekteki büyümeye garanti değildir. Daha büyük dosyada koordineli inceleme önerilir.
   Claude, Codex ve Pi'de aynı satır, sınırı aşan dosya yazıldığı anda (PostToolUse) da
-  gelir; böylece kartı yazan ajan bunu bir sonraki oturumu beklemeden görür. Yalnız
+  gelir; böylece kartı yazan ajan bunu bir sonraki oturumu beklemeden görür. Antigravity'nin
+  PostToolUse yanıtı `{}` olduğundan orada satır aynı konuşmanın bir sonraki `PreInvocation`
+  adımında bir kez gelir. Yalnız
   düzenlenen companion devir dosyası ölçülür, başka yazımlar dosya okumaz (#707).
   `doctor` bütün companion dosyalarının boyutunu `companion_hygiene` altında
   raporlar; `--human` çıktısında sınırı aşan her dosya için bir satır görünür. Bu bir
@@ -228,7 +230,18 @@ Düzeltme dört parçadır:
   kırpılıyorsa `--human` çıktısında tek satır görünür. Bilgi amaçlıdır, `doctor` durumunu
   değiştirmez ve hiçbir dosya yazmaz (#374). Ayrıca açılışta `Kurallar.md` kırpılıyorsa oturum
   başı bağlamının tepesinde `Memory hygiene: Kurallar.md opens clipped (share X of Y chars)...`
-  uyarısı yer alır (#461).
+  uyarısı yer alır (#461). Kimlik (`Core.md`/`Soul.md`), `Journal.md` gibi korunan çekirdek
+  dışındaki bir kaynağın açılış payı kullanılabilir bir parçaya yetmiyorsa (50 karakter ve altı)
+  yarım başlık yerine tek satırlık `[omitted (<N> chars); read source]` işareti gelir (#916).
+  `doctor` her companion dosyasının açılış payını `companion_opening.files` altında (`chars`,
+  `share`, `clipped`, `omitted`) aynı referans açılışla verir. `chars` dosyanın değil açılışa
+  giren bölümün boyudur (örneğin `Journal.md`'de son kayıt, `Threads.md`'de açık konular bölümü);
+  `clipped` bu bölümün tamamının gelmediğini söyler (`share` < `chars`; gerekçeleri atılan
+  kurallar ve yalnız özetiyle gelen konular dahil). Etkin kimlik dosyası yalnız bu işaretle geliyorsa ya da 400 karakterin altına
+  kırpılıyorsa `companion_opening.status` `warn` olur ve `--human` çıktısında tek satır görünür.
+  Bu durumda kimliğin kendi boyutu belirleyici değildir: açılış payını önce `Kurallar.md`, en
+  yeni devir kartı ve konu özeti alır (#528). Bu ölçüm de bilgi amaçlıdır, `doctor` durumunu
+  değiştirmez ve hiçbir dosya yazmaz.
 - **Kayıpsız arşivleme.** `python3 beyin.py companion-compact` açık bir komuttur; hook,
   worker veya zamanlayıcı onu kendiliğinden çalıştırmaz. Yalnız sınırı aşan dosyada önce
   `## Previous`/`## Önceki` (Last-Session) veya `## Closed`/`## Kapanan`/`## Kapalı`
@@ -325,7 +338,10 @@ kural metnine kalan payı ve atlanan aralığı değiştirebilir.
 Kırpılmaması gereken birkaç kural maddesine `<!-- beyin:pin -->` işareti
 koyabilirsiniz (maddenin herhangi bir satırına, `**neden:**` gerekçesinden sonra da;
 gerekçeler açılışa sığmadığı için atıldığında işaret maddede kalır; Obsidian'ın okuma görünümünde
-görünmez). Kırpma gerektiğinde işaretli maddeler önce yer alır: atlanan aralıktan gelenler kırpma
+görünmez). Kod bloğu (liste içinde girintili olanlar dahil) ya da satır içi kod içinde örnek
+olarak yazılan işaret maddeyi sabitlemez. Gerekçeler atılırken kod olduğu gibi kalır: kod içinde
+yazılan `**neden:**` gerekçe sayılmaz ve bir gerekçe kod bloğunu ortadan bölmez; böylece örnek
+işaret canlıya dönüşmez, canlı işaret de maddesinde kalır. Kırpma gerektiğinde işaretli maddeler önce yer alır: atlanan aralıktan gelenler kırpma
 işaretinin hemen önünde, tam madde olarak gösterilir ve işaretteki sayı yalnız
 gerçekten gösterilmeyen maddeleri sayar. Kesilen yalnız ilk maddeden önceki metinse
 işaret o metnin yerinde, sabitlenen maddelerin önünde durur. Bu iki düzende de (baştan ve sondan ya da

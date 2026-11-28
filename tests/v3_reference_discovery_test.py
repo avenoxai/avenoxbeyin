@@ -296,8 +296,8 @@ class InstalledReferenceDiscoveryTest(unittest.TestCase):
                     for key in ('state_location', 'preferences', 'jev'):
                         self.assertIn(key, report)
             human = self.doctor('--human')
-            self.assertIn('Talimat ve skill baglanti denetimi tamamlanamadi (bilgi): PermissionError.', human)
-            self.assertNotIn('kirik baglanti (bilgi)', human)
+            self.assertIn('Talimat ve beceri bağlantı denetimi tamamlanamadı (bilgi): PermissionError.', human)
+            self.assertNotIn('kırık bağlantı (bilgi)', human)
             self.assertNotIn('discovery-canary', human)
         finally:
             folder.chmod(mode)
@@ -337,7 +337,7 @@ class InstalledReferenceDiscoveryTest(unittest.TestCase):
             else:
                 self.skipTest('current user bypasses directory permissions')
             self.assertEqual(json.loads(self.doctor())['instruction_references'], healthy)
-            self.assertNotIn('denetimi tamamlanamadi', self.doctor('--human'))
+            self.assertNotIn('denetimi tamamlanamadı', self.doctor('--human'))
         finally:
             folder.chmod(mode)
         self.assertEqual(snapshot(self.vault), before)

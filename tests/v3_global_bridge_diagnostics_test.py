@@ -84,7 +84,7 @@ class GlobalBridgeDiagnosticsTest(unittest.TestCase):
         recovered = json.loads(self.cli(self.vault, 'doctor'))
         self.assertEqual(recovered['global_bridge_paths']['status'], 'ok')
         self.assertEqual(recovered['status'], report['status'])
-        self.assertNotIn('Genel kopru yollari', self.cli(self.vault, 'doctor', '--human'))
+        self.assertNotIn('Genel köprü yolları', self.cli(self.vault, 'doctor', '--human'))
 
     def test_custom_client_configuration_directories(self):
         for harness, key in (('claude', 'CLAUDE_CONFIG_DIR'), ('codex', 'CODEX_HOME')):

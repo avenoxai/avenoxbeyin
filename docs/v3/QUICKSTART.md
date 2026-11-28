@@ -237,6 +237,12 @@ sonra aynı oturum kimliği ve aynı istekle tekrar çalıştır. Receipt için 
 `event_id` değerini koru. Kart ve Threads içindeki görünmez Markdown işaretleri
 tekrar denemede tamamlanan yazıların tanınmasını sağlar.
 
+Sıkıştırma adımı kart ve Threads yazımından sonra çalışır; yeni kart dosyayı
+sınırın üstüne çıkarırsa aynı çağrı bunu görür. Bu çağrının kartı, üstüne yeni
+bir kart yazılmadığı sürece tekrar denemede de arşive taşınmaz. Taşınacak eski
+kayıt kalmazsa `steps.compact` değeri `needs_rewrite`, sonuç `partial` olur;
+önizleme de aynı sonucu gösterir.
+
 Checkpoint makbuzu, bağımsız `receipt` komutuyla aynı yerel not atfı sayacını kullanır.
 Uygun notlara yapılan atıflar bir `event_id` için yalnız bir kez sayılır. Sayaç yazılamazsa
 makbuz geçerli kalır; aynı makbuz tekrar gönderildiğinde eksik sayaç tamamlanabilir.
@@ -352,8 +358,8 @@ interactive operation.
 
 Set `BEYIN_V3_SKIP=1` in a delegated or headless agent process to keep the V3
 memory hooks out of that run; the hook and bridge return `{}` without queuing an
-event, injecting context or starting a worker (a non-idle Antigravity `Stop`
-still answers `decision: stop`). Only the exact value `1` skips; any other value,
+event, injecting context or starting a worker (an Antigravity `Stop` answers
+`{"decision":"stop"}` instead, its form of the same no-op). Only the exact value `1` skips; any other value,
 including `0`, `false` or an empty value, leaves the hooks on. Child processes
 inherit the variable, so set it on the delegated process only, not in a shell
 profile or shared environment file where it would also silence the main session.

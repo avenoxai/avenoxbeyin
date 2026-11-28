@@ -214,8 +214,15 @@ A new semantic knowledge note can be created from UTF-8 JSON:
 }
 ```
 
-`note-create` only creates new `notes/` or `knowledge/` Markdown files and refuses
-an existing destination. It does not invent facts or overwrite existing prose.
+`note-create` only creates new Markdown files under `notes/`, `knowledge/`, a project
+folder inside a project parent that already exists in the vault (`<project parent>/<project>/...`,
+for example `🏰 300-Projects/<project>/Kurallar.md` or `projects/<project>/Kurallar.md`), or a
+folder registered in `.beyin-workspaces.json` (`rules_file`, `note_roots`) or
+`.beyin-projects.json`, and refuses an existing destination. A project or workspace
+path must use the spelling already on disk (letter case and Unicode form); a missing
+project parent is not created. `knowledge/v3/`, the generated knowledge view, is now refused
+like `tasks/`, `receipts/` and `daily/v3/` (3.18.0 created a note there); those paths need
+their dedicated command. It does not invent facts or overwrite existing prose.
 `note-create`, `task-create` and a creating `note-edit` also refuse, before writing
 anything, a name that would not move between Windows, macOS and Linux: Windows
 device names (`CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9`, also with an
@@ -245,17 +252,19 @@ variable, a script that computes its paths, a background write, a rename or a
 deletion is still not observed, and Codex shell commands are not read. Neither
 are commands of a Task subagent (its transcript is a separate file) or commands
 before an interrupt, compaction or slash-command record in the same turn.
+An Antigravity Stop applies the same rule to the turn's `run_command` steps
+(#949): it reads only step metadata and the command line and working directory
+(`Cwd`) of each call, never the tool output, and a relative name resolves from
+that `Cwd` first, as from a Claude record's `cwd`.
 A `note-create`, `note-edit`, `task-create` or `task-update` run through the
-Claude Code Bash tool names its session through `CLAUDE_CODE_SESSION_ID`: it
+Claude Code Bash tool or an Antigravity `run_command` step names its session
+through `CLAUDE_CODE_SESSION_ID` or `ANTIGRAVITY_CONVERSATION_ID` (#938): it
 opens the reminder window itself and leaves a small flag that the next Stop of
 that session queues as `PostToolUse` metadata marked `observed: cli`, stamped
 with the write's time, so such a turn is also an edited turn for coverage.
-Antigravity only
-provides the initial invocation boundary in this adapter, so its result is
-explicitly session-limited rather than proof of per-turn completeness. Missing
-prompt events are reported as a terminal-only limitation. Explicit `no_memory`
-hook metadata suppresses the
-checkpoint signal. Respect a user's no-memory request regardless of that signal.
+Missing prompt events are reported as a terminal-only limitation. Explicit
+`no_memory` hook metadata suppresses the checkpoint signal. Respect a user's
+no-memory request regardless of that signal.
 A turn no person typed (a `<task-notification>`, a message from another agent
 session, or the prompt Codex Desktop sends to a fork to draft a suggested next
 user message) keeps its lifecycle event, marked `synthetic`, but opens no
@@ -267,14 +276,18 @@ The per-turn context names receipt gaps only for sessions that finished in the
 last 7 days, with their count as measured by the latest sync. Checkpoints from
 edit-observing harnesses that saw no file edits are reported separately in the
 warning (`(N without observed edits)`) and tagged in `receipt-gaps.json`,
-matching `doctor`'s `no_observed_edit` counter (#462). The all-time count stays
+matching `doctor`'s `no_observed_edit` counter (#462). Antigravity counts as
+edit-observing since its file writes reach `PostToolUse` (3.18.0); its checkpoints
+recorded before that release saw no edits by construction, so they can appear
+among those without observed edits. The all-time count stays
 in `doctor` as `potential_missing_receipts`.
 
 `doctor` also reports `receipt_coverage`: the share of finished sessions with a
 matching receipt, for all time and for the last 7 and 30 days, measured when
 `doctor` runs. Only sessions with an observed user prompt count, either a
 UserPromptSubmit or a SessionStart that carries the first prompt (Hermes,
-OpenCode); the queue keeps only that fact, never the prompt text. Its `missing`
+OpenCode, Antigravity); the queue keeps only that fact, never the prompt text.
+Its `missing`
 count can therefore be smaller than `potential_missing_receipts`, which counts
 every finished checkpoint. Checkpoints recorded before this field existed have
 no prompt marker, so the ratio starts with sessions after the upgrade and stays

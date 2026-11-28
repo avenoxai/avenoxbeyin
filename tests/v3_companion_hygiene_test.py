@@ -259,9 +259,9 @@ class HygieneCliTest(unittest.TestCase):
         path = self.write('Last-Session.md', '# Son oturum\n' + 'x' * 3100)
         payload = {'hook_event_name': 'PostToolUse', 'tool_input': {'file_path': str(path)}}
         self.state.mkdir(parents=True, exist_ok=True)
-        for harness in ('claude', 'codex', 'pi'):
+        for harness in ('claude', 'codex', 'pi', 'antigravity'):
             self.assertIn('Memory hygiene', companion_module.hook_limit_notice(self.vault, self.state, payload, harness))
-        for harness in ('antigravity', 'opencode', 'omp', 'hermes'):
+        for harness in ('opencode', 'omp', 'hermes'):
             self.assertEqual(companion_module.hook_limit_notice(self.vault, self.state, payload, harness), '')
         self.assertEqual(companion_module.hook_limit_notice(
             self.vault, self.state, dict(payload, hook_event_name='Stop'), 'claude'), '')
@@ -741,7 +741,7 @@ class HumanOutputTest(unittest.TestCase):
     def test_doctor_preferences_and_compaction_read_as_short_turkish_lines(self):
         doctor = self.entry.human_result({'status': 'observed_metadata', 'companion_hygiene': {
             'over_limit': ['Threads.md'], 'files': {'Threads.md': {'chars': 57012, 'limit': 8000}}}}, 'doctor', '3.3.0')
-        self.assertIn('Hafiza hijyeni: Threads.md 57012 karakter (sinir 8000).', doctor)
+        self.assertIn('Hafıza hijyeni: Threads.md 57012 karakter (sınır 8000).', doctor)
         self.assertIn('beyin.py companion-compact', doctor)
         prefs = self.entry.human_result({'preferences': {'auto_sync': True, 'interval_minutes': 0, 'context_mode': 'turn',
                                                          'context_chars': 5000, 'secret_filter': False},

@@ -14,6 +14,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import unicodedata
 
 
 def default_state(vault: Path) -> Path:
@@ -31,24 +32,77 @@ def default_state(vault: Path) -> Path:
 SOURCE_WRITE_COMMANDS = ("note-create", "note-edit", "homepage-create", "task-create", "task-update")
 NOTE_JSON_COMMANDS = ("note-read", "note-edit", "homepage-create")
 
+# Strict allowlist of non-secret BEYIN_V3_* runtime toggle env vars (#961).
+# Never iterate arbitrary os.environ keys or expose session/token variables here.
+ENV_OVERRIDE_VARS = (
+    ("BEYIN_V3_SKIP", "1 disables hooks and global bridge"),
+    ("BEYIN_V3_INTERNAL", "non-empty internal recursion guard; suppresses hooks"),
+    ("BEYIN_V3_NO_RECEIPT_REMINDER", "1 disables receipt reminders"),
+    ("BEYIN_V3_RECEIPT_REMINDER", "context moves Claude Code vault Stop reminder to next prompt"),
+    ("BEYIN_V3_ABSTAIN_COVERAGE", "(0, 1] lexical coverage threshold below which hook abstains (e.g. 0.6)"),
+    ("BEYIN_V3_CONTEXT_DEDUPE", "1 enables in-session context deduplication"),
+    ("BEYIN_V3_FILTER_HARNESS_TURNS", "0 disables synthetic harness turn filtering"),
+    ("BEYIN_V3_NO_SPAWN", "1 disables detached background worker/update spawns"),
+)
+_ENV_BIDI_CONTROLS = frozenset("\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+_ENV_VALUE_MAX_LEN = 64
+
+
+def _sanitize_env_value(raw: str, max_len: int = _ENV_VALUE_MAX_LEN) -> str:
+    """Strip control/bidi/line-break chars and bound length for safe JSON and terminal output."""
+    cleaned = "".join(
+        " " if ch in "\r\n\t\u2028\u2029\x85" else
+        "" if unicodedata.category(ch) == "Cc" or ch in _ENV_BIDI_CONTROLS else ch
+        for ch in str(raw)
+    )
+    cleaned = " ".join(cleaned.split())
+    if not cleaned:
+        return "?"
+    if len(cleaned) > max_len:
+        return cleaned[:max_len - 3] + "..."
+    return cleaned
+
+
+def read_env_overrides(environ=None) -> dict[str, str]:
+    """Read allowlisted BEYIN_V3_* runtime toggle overrides from the current process environment."""
+    source = os.environ if environ is None else environ
+    active: dict[str, str] = {}
+    for name, _ in ENV_OVERRIDE_VARS:
+        raw = source.get(name)
+        if isinstance(raw, str) and raw:
+            active[name] = _sanitize_env_value(raw)
+    return active
+
+
+def _preferences_env_epilog() -> str:
+    """Help epilog documenting process/hook environment toggles (#961)."""
+    lines = ["Environment toggles (set in process/hook environment, not saved in .beyin-preferences.json):"]
+    for name, summary in ENV_OVERRIDE_VARS:
+        lines.append(f"  {name:<30} {summary}")
+    lines.append("Run `beyin.py doctor` to inspect active overrides in the current process environment.")
+    return "\n".join(lines)
+
 
 class NoteUsageError(ValueError):
     pass
 
 
 def mark_session_edit(state: Path, vault: Path | None = None, source: str | None = None) -> None:
-    """Open the Stop edit window for a CLI write from Claude or Pi's shell tool (#212).
+    """Open the Stop edit window for a CLI write from Claude, Antigravity, or Pi's shell tool (#212).
 
-    Shell writes have no editor PostToolUse event. Both clients expose the real session ID to
-    shell subprocesses (CLAUDE_CODE_SESSION_ID, PI_SESSION_ID), as their hooks receive it; never
-    guess an ID in a plain shell. External project writes use the same cwd/session namespace as
-    the global bridge; successful distilled-note writes retain knowledge evidence even though the
-    note mtime precedes this marker. Bookkeeping cannot cost the write itself.
-    A Claude write also leaves its time in a `.cli` flag: no PostToolUse event exists for it, so the
-    next Claude Stop of that session queues it for receipt coverage as an observed edit.
+    Shell writes have no editor PostToolUse event. These clients expose the real session ID to
+    shell subprocesses (CLAUDE_CODE_SESSION_ID, ANTIGRAVITY_CONVERSATION_ID, PI_SESSION_ID), as
+    their hooks receive it; never guess an ID in a plain shell. External project writes use the
+    same cwd/session namespace as the global bridge; successful distilled-note writes retain
+    knowledge evidence even though the note mtime precedes this marker. Bookkeeping cannot cost
+    the write itself.
+    A Claude or Antigravity write also leaves its time in a `.cli` flag: no PostToolUse event
+    exists for it, so the next Stop of that session queues it for receipt coverage as an observed edit.
     """
     claude = os.environ.get("CLAUDE_CODE_SESSION_ID")
-    session = claude or os.environ.get("PI_SESSION_ID")
+    antigravity = os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
+    pi = os.environ.get("PI_SESSION_ID")
+    session = claude or antigravity or pi
     if not session or os.environ.get("BEYIN_V3_NO_RECEIPT_REMINDER") == "1":
         return
     try:
@@ -66,8 +120,8 @@ def mark_session_edit(state: Path, vault: Path | None = None, source: str | None
             temporary.write_text(json.dumps(value), encoding="utf-8")
             os.replace(temporary, path)
 
-        if claude:
-            # First: an unreadable window marker cannot drop it. Only a Claude Stop consumes it.
+        if claude or antigravity:
+            # First: an unreadable window marker cannot drop it. Claude and Antigravity Stops consume it.
             put(folder / (name + ".cli"), {"at": now})
         edited = folder / (name + ".edited")
         previous = json.loads(edited.read_text(encoding="utf-8")) if edited.exists() else None
@@ -92,12 +146,14 @@ def mark_session_edit(state: Path, vault: Path | None = None, source: str | None
 def env_session(harness=None):
     """Hashed session of the agent whose shell runs this command, as its hooks key it (#212).
 
-    Claude Code and Pi export their real session ID to shell subprocesses. A receipt names its
-    client, so `--harness pi` reads Pi's ID even when Pi itself runs inside a Claude Code shell
-    and inherits the outer CLAUDE_CODE_SESSION_ID. Nothing is guessed in a plain shell.
+    Claude Code, Antigravity, and Pi export their real session ID to shell subprocesses. A receipt
+    names its client, so `--harness pi` or `--harness antigravity` reads that client's ID even when
+    it runs inside a Claude Code shell and inherits the outer CLAUDE_CODE_SESSION_ID. Nothing is
+    guessed in a plain shell.
     """
     names = (("PI_SESSION_ID", "BEYIN_V3_SESSION_ID") if harness == "pi"
-             else ("CLAUDE_CODE_SESSION_ID", "BEYIN_V3_SESSION_ID", "PI_SESSION_ID") if harness is None
+             else ("ANTIGRAVITY_CONVERSATION_ID", "BEYIN_V3_SESSION_ID") if harness == "antigravity"
+             else ("CLAUDE_CODE_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID", "BEYIN_V3_SESSION_ID", "PI_SESSION_ID") if harness is None
              else ("CLAUDE_CODE_SESSION_ID", "BEYIN_V3_SESSION_ID"))
     raw = next((os.environ[name] for name in names if os.environ.get(name)), None)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24] if raw else None
@@ -1096,6 +1152,29 @@ def note_request(filename, args):
     return payload
 
 
+def _body_text(payload, command):
+    """Accept 'text' or 'content' as the body field; refuse conflicting duplicates.
+
+    A null field counts as absent, so a request that names only 'text' (plus a null
+    'content') behaves exactly as before the alias existed.
+    """
+    has_text = payload.get("text") is not None
+    has_content = payload.get("content") is not None
+    if has_text and has_content:
+        if type(payload["text"]) is not type(payload["content"]) or payload["text"] != payload["content"]:
+            raise ValueError("provide either 'text' or 'content', not both with different values")
+        body = payload["text"]
+    elif has_text:
+        body = payload["text"]
+    elif has_content:
+        body = payload["content"]
+    else:
+        raise ValueError(f"{command} requires 'text' (or 'content') string")
+    if not isinstance(body, str) or not body.strip():
+        raise ValueError(f"{command} requires 'text' (or 'content') string")
+    return body
+
+
 def load_skills():
     _ensure_scripts_path()
     import beyin_v3_skills
@@ -1196,7 +1275,12 @@ def parser(note_namespace=None, is_json=False):
     audit_parser.add_argument("--threshold", type=float, default=0.60, help="Lexical overlap threshold 0.0..1.0 (default: 0.60)")
     audit_parser.add_argument("--min-shared", type=int, default=5, help="Minimum shared topical terms (default: 5)")
     audit_parser.add_argument("--limit", type=int, default=20, help="Maximum findings to return (default: 20)")
-    settings = sub.add_parser("preferences", help="Control automatic local checks and injected context")
+    settings = sub.add_parser(
+        "preferences",
+        help="Control automatic local checks and injected context",
+        epilog=_preferences_env_epilog(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     settings.add_argument("--profile", choices=("normal", "economical", "manual"))
     settings.add_argument("--auto-sync", choices=("on", "off"))
     settings.add_argument("--interval-minutes", type=int)
@@ -1245,6 +1329,8 @@ def parser(note_namespace=None, is_json=False):
                           help="Opt-in one-line notice when another session is open on this vault")
     settings.add_argument("--context-dedupe", choices=("on", "off"),
                           help="Prevent re-injecting already delivered records within the same session (#363)")
+    settings.add_argument("--context-share", choices=("top", "balanced"),
+                          help="Default budget sharing for local context searches: top (default) or balanced (#975)")
     settings.add_argument("--hermes-attended-platform", action="append", default=[], metavar="PLATFORM",
                           help="Treat platform as attended/interactive in Hermes (e.g. slack); repeatable")
     settings.add_argument("--hermes-unattended-platform", action="append", default=[], metavar="PLATFORM",
@@ -1258,7 +1344,7 @@ def parser(note_namespace=None, is_json=False):
     state_compact.add_argument("--dry-run", action="store_true", help="Report what would be removed without writing")
     trace = sub.add_parser("chat-trace", help="Opt-in short conversation checkpoints; never saves transcripts")
     trace.add_argument("action", choices=("status", "on", "off", "write", "backfill"))
-    trace.add_argument("--harness", choices=("claude", "codex"))
+    trace.add_argument("--harness", choices=("claude", "codex", "antigravity"))
     trace.add_argument("--session", help="The 24-character Receipt session value shown by the hook")
     trace_text = trace.add_mutually_exclusive_group()
     trace_text.add_argument("--text", help="Explicit short summary; dated paragraph must fit 450 characters")
@@ -1330,10 +1416,13 @@ def parser(note_namespace=None, is_json=False):
     context.add_argument("--project")
     context.add_argument("--audience", choices=("internal", "public"), default="internal")
     context.add_argument("--status", action="append", dest="statuses")
-    context.add_argument("--limit", type=int, default=5)
+    context.add_argument("--limit", type=int, default=None)
     context.add_argument("--budget-chars", type=int, default=8000)
     context.add_argument("--no-sync", action="store_true", help="Read an existing index without writing to the vault or runtime")
     context.add_argument("--strip-fillers", action="store_true", help="Drop Turkish question wrappers in local context searches")
+    context.add_argument("--share", choices=("top", "balanced"), default=None,
+                         help="Budget sharing across matched records in local context: top (default) or balanced")
+    context.add_argument("--list", action="store_true", dest="list_mode", help="Return a compact candidate list with short matching snippets instead of full note bodies")
     context.add_argument("--jev", action="store_true", help="Explicit optional remote advisor; requires state/jev.json and --project")
     review = sub.add_parser("jev-review", help="Advisory source review; never saves or approves a candidate")
     review.add_argument("--file", required=True, help="JSON proposal (maximum 24,000 characters)")
@@ -1540,6 +1629,8 @@ def main(argv=None, return_result=False):
             sys.dont_write_bytecode = True
         if read_only_context and args.jev:
             raise ValueError("context --no-sync cannot be combined with --jev")
+        if args.command == "context" and args.list_mode and args.jev:
+            raise ValueError("--list is only available for local context")
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
         engine = load_engine() if not context_selftest and args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "devices", "workspace", "lint", "moc", "triage", "feedback", "checkpoint") else None
         database = state / "memory.sqlite3"
@@ -1638,6 +1729,10 @@ def main(argv=None, return_result=False):
                 if not limits_valid:
                     raise ValueError('companion-limits.json in the runtime state is invalid; fix or remove it first')
                 companion.check_limits(dict(current_limits, **limits))
+            if args.context_share is not None:  # validated before anything is saved
+                _, share_valid = preferences.read_context_share(state)
+                if not share_valid:
+                    raise ValueError(preferences.CONTEXT_SHARE_FILE + ' in the runtime state is invalid; fix or remove it first')
             # Context-fill config (issue #685): machine-local in state/context-fill.json
             import beyin_v3_context_fill as context_fill
             fill_changes = {}
@@ -1760,6 +1855,15 @@ def main(argv=None, return_result=False):
             result['context_dedupe'] = 'on' if dedupe_on else 'off'
             if not dedupe_valid:
                 result['context_dedupe_notice'] = 'context-dedupe.json gecersiz; oturum ici tekrar onleme kapali sayiliyor.'
+            # Machine-local context budget sharing (#975); never a .beyin-preferences.json key.
+            if args.context_share is not None:
+                result['context_share'] = preferences.save_context_share(state, args.context_share)
+                result['status'] = 'saved'
+            else:
+                share_mode, share_valid = preferences.read_context_share(state)
+                result['context_share'] = share_mode
+                if not share_valid:
+                    result['context_share_notice'] = 'context-share.json gecersiz; baglam paylasimi varsayilan (top) olarak kullaniliyor.'
             # Machine-local Hermes platform settings (state/hermes-platforms.json, #350)
             try:
                 import beyin_v3_hermes as hermes_settings
@@ -1780,6 +1884,9 @@ def main(argv=None, return_result=False):
             except ImportError:
                 if args.hermes_attended_platform or args.hermes_unattended_platform or args.hermes_reset_platforms:
                     raise ValueError("Hermes platform settings module is unavailable; reinstall the vault")
+            env_overrides = read_env_overrides()
+            if env_overrides:
+                result['env_overrides'] = env_overrides
         elif args.command == "jev":
             laya = {key: value for key, value in (("base_url", args.base_url), ("model", args.model)) if value is not None}
             if args.mode == "status":
@@ -1813,6 +1920,14 @@ def main(argv=None, return_result=False):
             for filename in ("hook-health.json", "hook-error.json", "receipt-gaps.json"):
                 path = state / filename
                 result[filename] = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+            # A note kept private through a non-standard spelling (#963) is named by `sync`, where the
+            # user fixes it; doctor output reaches agents, so it carries only the count, not the path.
+            last_sync = (result["hook-health.json"] or {}).get("sync") if isinstance(result["hook-health.json"], dict) else None
+            if isinstance(last_sync, dict) and isinstance(last_sync.get("warnings"), list):
+                kept, withheld = engine.agent_sync_warnings(last_sync["warnings"])
+                if withheld:
+                    last_sync["warnings"] = kept
+                    last_sync["privacy_frontmatter_count"] = withheld
             result['legacy_external_schedules'] = 'not_inspected; review custom OS/compiler schedules before migration'
             try:  # information only: the last scheduled-check run, if the user set one up (#267)
                 _ensure_scripts_path()
@@ -1854,6 +1969,7 @@ def main(argv=None, return_result=False):
             import beyin_v3_preferences as preferences
             prefs = preferences.read(vault)
             result['preferences'] = prefs
+            result['env_overrides'] = read_env_overrides()
             # First-use setup summary: context budget, secret filter, remote transmission (#691.3)
             result['setup_summary'] = {
                 'profile': next((name for name, values in preferences.PROFILES.items() if values == prefs), 'custom'),
@@ -1881,6 +1997,11 @@ def main(argv=None, return_result=False):
                 result['companion_hygiene'] = companion.hygiene(vault, state, include_projects=True)
             except Exception as exc:  # a size report must never hide the rest of doctor
                 result['companion_hygiene'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            try:  # information only (#964): missing expected companion files (Core.md/Soul.md etc.)
+                import beyin_v3_companion as companion
+                result['companion_sources'] = companion.sources_health(vault, state)
+            except Exception as exc:  # never hides the rest of doctor
+                result['companion_sources'] = {'status': 'unavailable', 'error': type(exc).__name__, 'missing': []}
             # Information only (#374): how much of Kurallar.md the Claude Code opening shows whole.
             # The hook's own render on a read-only store; never raises the doctor status.
             try:
@@ -1888,18 +2009,20 @@ def main(argv=None, return_result=False):
                 prefs = result['preferences']
                 if prefs['context_mode'] == 'off':
                     result['companion_rules_opening'] = {'status': 'context_off'}
+                    result['companion_opening'] = {'status': 'context_off'}
                 else:
                     from beyin_v3_hook import receipt_context
                     budget = companion.client_budget('claude', companion.opening_budget(state, prefs['context_chars']))
                     ro_store = engine.MemoryStore(state, vault, read_only=True)
                     opening_receipt = receipt_context(vault, state)
-                    rules = companion.rules_opening(ro_store, budget, opening_receipt)
+                    rules, opening = companion.opening_report(ro_store, budget, opening_receipt)
                     result['companion_rules_opening'] = dict(
                         rules or {}, status='stale' if rules and rules.get('stale') else
                         'clipped' if rules and rules['clipped'] else 'ok' if rules else 'no_rules',
                         budget=budget, harness='claude')
                     if rules and not rules.get('stale'):
                         result['companion_rules_opening']['measurement'] = 'reference_opening'
+                    result['companion_opening'] = opening
                     scanned = {}
                     project_rules = companion.project_rules_opening(ro_store, budget, opening_receipt, report=scanned)
                     if project_rules:
@@ -1910,6 +2033,7 @@ def main(argv=None, return_result=False):
                                                                  project_rules_total=scanned['total'])
             except Exception as exc:  # never hides the rest of doctor
                 result['companion_rules_opening'] = {'status': 'unavailable', 'error': type(exc).__name__}
+                result['companion_opening'] = {'status': 'unavailable', 'error': type(exc).__name__}
             try:
                 import beyin_v3_references as references
                 result['instruction_references'] = references.check(vault)
@@ -1946,10 +2070,80 @@ def main(argv=None, return_result=False):
             result['skill_conflicts'] = health.get('sync', {}).get('skill_conflicts', [])
             # Entries beside the skills that this vault never owned. Information only.
             result['skill_unmanaged'] = health.get('sync', {}).get('skill_unmanaged', [])
-            from beyin_v3_projections import is_receipt_view_conflict
+            from beyin_v3_projections import is_receipt_view_conflict, is_actionable_sync_warning, LAST_SYNC_WARNINGS_ROW, UNREADABLE_SOURCES_ROW
             view_sync = health.get('sync', {})
             result['receipt_view_conflicts'] = [c for c in view_sync.get('conflicts', []) + view_sync.get('warnings', [])
                                                 if is_receipt_view_conflict(c)]
+            hook_sync = health.get('sync') if isinstance(health, dict) and isinstance(health.get('sync'), dict) else None
+            hook_at = 0.0
+            if hook_sync is not None:
+                try:
+                    hook_at = float(health.get('at') or 0.0)
+                except (TypeError, ValueError):
+                    hook_at = 0.0
+                try:
+                    hook_health_path = state / 'hook-health.json'
+                    if hook_health_path.is_file() and not hook_health_path.is_symlink():
+                        hook_at = max(hook_at, hook_health_path.stat().st_mtime)
+                except OSError:
+                    pass
+            db_sync = None
+            db_unreadable_fallback = []
+            if store is not None:
+                try:
+                    with store._connect() as db:
+                        if db.execute("SELECT 1 FROM sqlite_master WHERE name = 'metadata' COLLATE NOCASE").fetchone():
+                            row = db.execute('SELECT value FROM metadata WHERE key = ?', (LAST_SYNC_WARNINGS_ROW,)).fetchone()
+                            if row and row[0]:
+                                parsed = json.loads(row[0])
+                                if isinstance(parsed, dict):
+                                    db_sync = parsed
+                            else:
+                                row2 = db.execute('SELECT value FROM metadata WHERE key = ?', (UNREADABLE_SOURCES_ROW,)).fetchone()
+                                if row2 and row2[0]:
+                                    names = json.loads(row2[0])
+                                    if isinstance(names, list):
+                                        db_unreadable_fallback = [
+                                            {'source': name, 'reason': 'unreadable or invalid source'}
+                                            for name in names if isinstance(name, str)
+                                        ]
+                except Exception:
+                    pass
+            db_at = 0.0
+            if isinstance(db_sync, dict):
+                try:
+                    db_at = float(db_sync.get('at') or 0.0)
+                except (TypeError, ValueError):
+                    db_at = 0.0
+            use_db_sync = isinstance(db_sync, dict) and (hook_sync is None or db_at > hook_at)
+            if use_db_sync:
+                raw_sync_warnings = [w for w in (db_sync.get('warnings') or []) if is_actionable_sync_warning(w)]
+                raw_count = db_sync.get('count')
+                sync_warning_count = max(raw_count if isinstance(raw_count, int) and not isinstance(raw_count, bool) else 0, len(raw_sync_warnings))
+                effective_sync_status = db_sync.get('status')
+                # sync() refreshes workspace homepages after the row is committed; a refresh that
+                # degraded the hook's sync stays reported until the hook syncs again, as in 3.18.0.
+                homepages = hook_sync.get('workspace_homepages') if hook_sync is not None else None
+                if (isinstance(homepages, dict) and (homepages.get('conflicts') or homepages.get('warnings'))
+                        and effective_sync_status not in ('conflict', 'degraded')):
+                    effective_sync_status = 'degraded'
+            elif hook_sync is not None:
+                raw_sync_warnings = [w for w in (hook_sync.get('warnings') or []) if is_actionable_sync_warning(w)]
+                sync_warning_count = len(raw_sync_warnings)
+                effective_sync_status = hook_sync.get('status')
+            elif db_unreadable_fallback:
+                raw_sync_warnings = db_unreadable_fallback
+                sync_warning_count = len(raw_sync_warnings)
+                effective_sync_status = 'degraded'
+            else:
+                raw_sync_warnings = []
+                sync_warning_count = 0
+                effective_sync_status = None
+            result['sync_warnings'] = {
+                'count': sync_warning_count,
+                'warnings': [{'source': w.get('source'), 'reason': w.get('reason')} for w in raw_sync_warnings[:20]],
+                'truncated': sync_warning_count > 20,
+            }
             if store is None:
                 result['task_completion'] = {'strict_issue_count': 0, 'strict_issues': [], 'legacy_done_count': 0,
                                              'legacy_done': [], 'truncated': False}
@@ -2072,7 +2266,7 @@ def main(argv=None, return_result=False):
                 result['devices'] = devices_mod.doctor(state)
             except Exception as exc:
                 result['devices'] = {'status': 'unavailable', 'error': type(exc).__name__}
-            result['status'] = ('needs_attention' if health.get('sync', {}).get('status') in ('conflict', 'degraded') or result['hook_paths'].get('status') == 'stale' or result['skill_conflicts'] or result.get('instruction_conflicts') or result['hook-error.json'] or result['task_completion']['strict_issue_count'] or result['task_completion'].get('error') or result['validity']['ignored_rejection_count'] or result['validity'].get('error') or result.get('project_scopes', {}).get('status') in ('error', 'warning') else 'pending' if result['pending_events'] else 'observed_metadata' if result['acknowledged_events'] else 'never_seen')
+            result['status'] = ('needs_attention' if effective_sync_status in ('conflict', 'degraded') or sync_warning_count > 0 or result['hook_paths'].get('status') == 'stale' or result['skill_conflicts'] or result.get('instruction_conflicts') or result['hook-error.json'] or result['task_completion']['strict_issue_count'] or result['task_completion'].get('error') or result['validity']['ignored_rejection_count'] or result['validity'].get('error') or result.get('project_scopes', {}).get('status') in ('error', 'warning') else 'pending' if result['pending_events'] else 'observed_metadata' if result['acknowledged_events'] else 'never_seen')
             if result['updates'].get('status') == 'recovery_required':
                 result['status'] = 'needs_attention'
             # Information only: a leftover global OMP hook copy predates the vault-owned plan
@@ -2208,10 +2402,12 @@ def main(argv=None, return_result=False):
             if view_conflicts:
                 result['view_conflicts'] = view_conflicts
             if refreshed.get('status') == 'degraded':
-                warnings = refreshed.get('warnings', [])
+                warnings, withheld = engine.agent_sync_warnings(refreshed.get('warnings', []))
                 result['partial'] = True
                 result['source_sync'] = {'status': 'degraded', 'warnings': warnings[:20],
                                          'warning_count': len(warnings), 'truncated': len(warnings) > 20}
+                if withheld:
+                    result['source_sync']['privacy_frontmatter_count'] = withheld
         elif args.command == "triage":
             _ensure_scripts_path()
             import beyin_v3_triage as triage_module
@@ -2296,16 +2492,32 @@ def main(argv=None, return_result=False):
             result = sync.note_edit(note_request(args.file, args))
         elif args.command == "note-create":
             payload = note_request(args.file, args)
-            result = sync.note_create(payload['source'], payload['text'], payload.get('metadata'),
-                                      idempotency_key=payload.get('idempotency_key'),
-                                      evidence_refs=payload.get('evidence_refs'))
+            source = payload.get("source")
+            if not isinstance(source, str) or not source.strip():
+                raise ValueError("note-create requires 'source' (string path)")
+            body = _body_text(payload, "note-create")
+            metadata = payload.get("metadata")
+            if metadata is not None and not isinstance(metadata, dict):
+                raise ValueError("note-create 'metadata' must be a JSON object")
+            result = sync.note_create(source, body, metadata,
+                                      idempotency_key=payload.get("idempotency_key"),
+                                      evidence_refs=payload.get("evidence_refs"))
         elif args.command == "homepage-create":
             _ensure_scripts_path()
             from beyin_v3_homepages import create
             result = create(sync, read_json(args.file))
         elif args.command == "task-create":
             payload = read_json(args.file)
-            result = sync.task_create(payload['source'], payload['text'], payload['metadata'])
+            if not isinstance(payload, dict):
+                raise ValueError("task-create payload must be a JSON object")
+            source = payload.get("source")
+            if not isinstance(source, str) or not source.strip():
+                raise ValueError("task-create requires 'source' (string path)")
+            body = _body_text(payload, "task-create")
+            metadata = payload.get("metadata")
+            if not isinstance(metadata, dict):
+                raise ValueError("task-create requires 'metadata' object")
+            result = sync.task_create(source, body, metadata)
         elif args.command == "feedback":
             _ensure_scripts_path()
             import beyin_v3_usage as usage
@@ -2313,7 +2525,7 @@ def main(argv=None, return_result=False):
                 session = args.session if re.fullmatch(r"[0-9a-f]{24}", args.session) else usage.session_key(args.session)
             else:
                 identities = {os.environ[name] for name in (
-                    "BEYIN_V3_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "PI_SESSION_ID", "CODEX_THREAD_ID"
+                    "BEYIN_V3_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID", "PI_SESSION_ID", "CODEX_THREAD_ID"
                 ) if os.environ.get(name)}
                 session = usage.session_key(identities.pop()) if len(identities) == 1 else None
             result = usage.record_feedback(state, args.target, args.verdict, session=session)
@@ -2367,26 +2579,62 @@ def main(argv=None, return_result=False):
             else:
                 result = devices_mod.status(vault, state)
         elif args.command == "context":
+            default_limit = 20 if args.list_mode else 5
             params = {"query": args.query, "project": args.project, "audience": args.audience,
-                      "statuses": args.statuses, "limit": args.limit, "budget_chars": args.budget_chars}
+                      "statuses": args.statuses,
+                      "limit": default_limit if args.limit is None else args.limit,
+                      "budget_chars": args.budget_chars}
+            explicit_share = args.share
             if args.file:
                 supplied = read_json(args.file)
-                if not isinstance(supplied, dict) or set(supplied) - set(params):
+                if not isinstance(supplied, dict) or set(supplied) - (set(params) | {"share"}):
                     raise ValueError("Context JSON contains unsupported fields")
+                if "share" in supplied:
+                    file_share = supplied.pop("share")
+                    if explicit_share is None:
+                        explicit_share = file_share
                 params.update(supplied)
             if args.project is not None:
                 params["project"] = args.project
             if not isinstance(params["query"], str) or not params["query"].strip():
                 raise ValueError("context requires a nonempty query")
+            named_workspaces = []
             if params["project"] is None:
-                params["project"] = engine.context_project(vault, params["query"])
+                params["project"], named_workspaces = engine.context_workspaces(vault, params["query"])
             if args.strip_fillers:
                 if args.jev:
                     raise ValueError("--strip-fillers is only available for local context")
                 params["query"] = engine.strip_query_fillers(params["query"])
+            if args.list_mode:
+                if args.jev:
+                    raise ValueError("--list is only available for local context")
+                if explicit_share is not None:
+                    raise ValueError("--share cannot be combined with --list")
+                params["list_mode"] = True
+            if explicit_share is not None:
+                if args.jev:
+                    raise ValueError("--share is only available for local context")
+                if explicit_share not in ("top", "balanced"):
+                    raise ValueError("share must be 'top' or 'balanced'")
+                share = explicit_share
+            elif args.list_mode:
+                share = "top"  # a candidate list carries no note bodies to share a budget across
+            elif not args.jev:
+                share_pref = state / "context-share.json"
+                if share_pref.exists() or share_pref.is_symlink():
+                    try:
+                        _ensure_scripts_path()
+                        import beyin_v3_preferences as preferences
+                        share = preferences.read_context_share(state)[0]
+                    except ImportError:
+                        share = "top"
+                else:
+                    share = "top"
+            else:
+                share = None
 
             if read_only_context:
-                result = store.context_for(args.harness, explicit=True, **params)
+                result = store.context_for(args.harness, explicit=True, share=share, **params)
                 result['source_sync'] = {'status': 'skipped', 'reason': 'explicit_no_sync'}
             else:
                 refreshed = sync.sync()
@@ -2399,12 +2647,12 @@ def main(argv=None, return_result=False):
                     from beyin_v3_jev import advise_context
                     result = advise_context(sync.store, **params)
                 else:
-                    result = sync.store.context_for(args.harness, explicit=True, **params)
+                    result = sync.store.context_for(args.harness, explicit=True, share=share, **params)
                 view_conflicts = [c for c in refreshed.get('conflicts', []) if is_receipt_view_conflict(c)]
                 if view_conflicts:
                     result['view_conflicts'] = view_conflicts
                 if refreshed.get('status') == 'degraded':
-                    warnings = refreshed.get('warnings', [])
+                    warnings, withheld = engine.agent_sync_warnings(refreshed.get('warnings', []))
                     result['partial'] = True
                     result['source_sync'] = {
                         'status': 'degraded',
@@ -2412,6 +2660,8 @@ def main(argv=None, return_result=False):
                         'warnings': warnings[:20],
                         'truncated': len(warnings) > 20,
                     }
+                    if withheld:
+                        result['source_sync']['privacy_frontmatter_count'] = withheld
             # Diagnose only the final delivered payload, never hidden/stale/unselected
             # records. This is lexical coverage, not evidence that a topic is absent.
             def delivered_text(value):
@@ -2430,6 +2680,9 @@ def main(argv=None, return_result=False):
                     for key in ('text', 'title', 'facts', 'aliases'))))
             result['unmatched_terms'] = sorted({word for word in re.findall(r'[a-z0-9]+', engine._fold(params['query']))
                                                  if engine._stem(word) not in engine.STOPWORDS | covered})
+            result['project'] = params['project']
+            if len(named_workspaces) > 1:
+                result['named_workspaces'] = list(named_workspaces)
         elif args.command in ("jev-review", "jev-answer", "jev-memory"):
             from beyin_v3_jev import review_candidate, verify_answer
             max_chars = 32000 if args.command == "jev-answer" else 24000
@@ -2481,10 +2734,12 @@ def main(argv=None, return_result=False):
             if refreshed.get('status') == 'degraded':
                 # The public stdout contract remains a JSON list. Warning sources are vault
                 # paths a person reads, so they keep their real characters (#587).
-                warnings = refreshed.get('warnings', [])
-                print_error({'source_sync': {'status': 'degraded', 'warnings': warnings[:20],
-                                             'warning_count': len(warnings), 'truncated': len(warnings) > 20}},
-                            sys.stderr, embedded=return_result)
+                warnings, withheld = engine.agent_sync_warnings(refreshed.get('warnings', []))
+                report = {'status': 'degraded', 'warnings': warnings[:20],
+                          'warning_count': len(warnings), 'truncated': len(warnings) > 20}
+                if withheld:
+                    report['privacy_frontmatter_count'] = withheld
+                print_error({'source_sync': report}, sys.stderr, embedded=return_result)
         elif args.command == "learn":
             _ensure_scripts_path()
             from beyin_v3_learning import stage_candidate, list_candidates, resolve_candidates
@@ -2530,15 +2785,29 @@ def main(argv=None, return_result=False):
             result = linter.manage(vault, "moc", folder=args.folder, moc_file=args.file)
         else:
             payload = read_json(args.file)
-            result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])
+            if not isinstance(payload, dict):
+                raise ValueError("task-update payload must be a JSON object")
+            task_id = payload.get("id")
+            if not isinstance(task_id, str) or not task_id.strip():
+                raise ValueError("task-update requires 'id' (string task id)")
+            if "expected_revision" not in payload or type(payload["expected_revision"]) is not int:
+                raise ValueError("task-update requires 'expected_revision' (integer)")
+            changes = payload.get("changes")
+            if not isinstance(changes, dict):
+                raise ValueError("task-update requires 'changes' object")
+            result = sync.update_task(task_id, payload["expected_revision"], changes)
         if ((args.command in SOURCE_WRITE_COMMANDS or
              (args.command == "mutation-queue" and args.replay and result.get("applied", 0) > 0))
                 and (args.command not in ("note-edit", "homepage-create") or result.get('status') == 'written')
-                and (os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID"))):
+                and (os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
+                     or os.environ.get("PI_SESSION_ID"))):
             mark_session_edit(state, vault, result.get("source"))
         if return_result:
             return result, 0
-        print(json.dumps(result, ensure_ascii=True, indent=2))
+        if args.command == "context" and args.list_mode:
+            print(json.dumps(result, ensure_ascii=True, separators=(",", ":")))
+        else:
+            print(json.dumps(result, ensure_ascii=True, indent=2))
         return 0
     except Exception as exc:
         # No traceback or raw input dump: callers retain their local source files.

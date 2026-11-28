@@ -42,6 +42,216 @@ if _MODULE_DIR not in sys.path:
 # Frontmatter keys other tools write instead of updated_at, in precedence order.
 RECENCY_ALIASES = ("updated", "modified", "last_modified", "date_modified")
 
+VALID_VISIBILITIES = ("public", "internal", "private")
+PRIVACY_ALIAS_KEYS = ("private", "gizli")
+# A `private`/`gizli` flag is honored unless its value is an explicit no (fail closed):
+# `private: 1`, `on`, `y` or `doğru` must not leave the note open. An empty property says nothing.
+# Folded spellings: `hayır`/`HAYIR` fold to "hayir", `yanlış`/`YANLIŞ` to "yanliş".
+PRIVACY_FALSY_VALUES = ("", "false", "no", "n", "off", "0", "hayir", "yok", "yanlis", "yanli\u015f")
+PRIVACY_TAG_KEYS = ("tags", "tag")
+
+
+def _fold_privacy_token(value):
+    """Fold ASCII and Turkish dotted/dotless i for case-insensitive privacy keys/values."""
+    if not isinstance(value, str):
+        return ""
+    stripped = value.strip()
+    if stripped.isascii():
+        return stripped.casefold()
+    text = unicodedata.normalize("NFC", stripped).replace("\u0130", "i").replace("\u0131", "i")
+    return unicodedata.normalize("NFC", text.casefold().replace("i\u0307", "i"))
+
+
+def _is_privacy_truthy(value):
+    """True unless the flag is missing or an explicit no; unknown values fail closed (#963)."""
+    if value is None or value is False:
+        return False
+    if value is True:
+        return True
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return _fold_privacy_token(value) not in PRIVACY_FALSY_VALUES
+    return True
+
+
+def _privacy_tag_match(entries):
+    items_iter = entries.items() if isinstance(entries, dict) else entries
+    for key, value in items_iter:
+        if _fold_privacy_token(key) not in PRIVACY_TAG_KEYS:
+            continue
+        if isinstance(value, str):
+            items = [part.strip() for part in value.split(",")] if "," in value else [value.strip()]
+        elif isinstance(value, list):
+            items = [item.strip() for item in value if isinstance(item, str)]
+        else:
+            continue
+        for item in items:
+            token = _fold_privacy_token(item.lstrip("#"))
+            if token in PRIVACY_ALIAS_KEYS or token.startswith(("private/", "gizli/")):
+                return key, item
+    return None
+
+
+def _privacy_alias_match(entries):
+    items_iter = entries.items() if isinstance(entries, dict) else entries
+    for key, value in items_iter:
+        if _fold_privacy_token(key) in PRIVACY_ALIAS_KEYS and _is_privacy_truthy(value):
+            return key
+    return None
+
+
+def normalize_privacy_metadata(metadata, *, pairs=None):
+    """Normalize case-variant visibility keys/values and fail-safe privacy aliases (#963).
+
+    Returns (normalized_dict, warnings, conflict). Unrelated metadata is left untouched;
+    no 'visibility' key is added unless a visibility key or privacy-intent alias is present.
+    Metadata without such a key or alias, or with one canonical lowercase `visibility`
+    and no alias, is returned as the same object: key order and rendered bytes stay as
+    released. Every other reinterpretation carries a warning, so sync never changes the
+    meaning of a note silently.
+    """
+    if not isinstance(metadata, dict):
+        return metadata, [], False
+    entries = list(pairs) if pairs is not None else list(metadata.items())
+    vis_entries = [(k, v) for k, v in entries if _fold_privacy_token(k) == "visibility"]
+    alias_key = _privacy_alias_match(entries)
+    tag_match = _privacy_tag_match(entries)
+    if not vis_entries and alias_key is None and tag_match is None:
+        return metadata, [], False
+    if (alias_key is None and tag_match is None and len(vis_entries) == 1
+            and vis_entries[0][0] == "visibility" and isinstance(vis_entries[0][1], str)
+            and vis_entries[0][1] in VALID_VISIBILITIES):
+        return metadata, [], False
+
+    warnings = []
+    conflict = False
+    valid_visibility = None
+    has_invalid_visibility = False
+
+    # `final` may legitimately be None (`visibility:` left empty stays invalid), so track presence.
+    final, has_final = None, False
+    if vis_entries:
+        normalized_values = []
+        for _, v in vis_entries:
+            if isinstance(v, str):
+                folded = _fold_privacy_token(v)
+                if folded in VALID_VISIBILITIES:
+                    normalized_values.append(folded)
+                    continue
+            has_invalid_visibility = True
+            normalized_values.append(v)
+
+        if len(vis_entries) > 1:
+            unique_valid = {v for v in normalized_values if isinstance(v, str) and v in VALID_VISIBILITIES}
+            key_names = ", ".join(str(k) for k, _ in vis_entries)
+            if has_invalid_visibility or len(unique_valid) > 1:
+                conflict = True
+                valid_visibility = "private"
+                has_invalid_visibility = False
+                final, has_final = "private", True
+                warnings.append(
+                    f"conflicting visibility keys ({key_names}); treating note as private "
+                    "- keep a single lowercase 'visibility: private' key"
+                )
+            else:
+                valid_visibility = next(iter(unique_valid))
+                final, has_final = valid_visibility, True
+                warnings.append(
+                    f"duplicate visibility keys ({key_names}); using 'visibility: {valid_visibility}' "
+                    "- keep a single lowercase 'visibility' key"
+                )
+        else:
+            raw_key, raw_value = vis_entries[0]
+            if not has_invalid_visibility:
+                valid_visibility = normalized_values[0]
+                final, has_final = valid_visibility, True
+                if raw_key != "visibility" or raw_value != valid_visibility:
+                    # Older releases ignore `Visibility:` and refuse `visibility: Private`;
+                    # a rollback would open or drop the note, so name the canonical form.
+                    warnings.append(
+                        f"non-standard visibility spelling '{raw_key}: {raw_value}'; reading it as "
+                        f"'visibility: {valid_visibility}' - write the lowercase 'visibility: {valid_visibility}'"
+                    )
+            else:
+                final, has_final = raw_value, True
+
+    if not has_invalid_visibility and valid_visibility != "private":
+        if alias_key is not None:
+            final, has_final = "private", True
+            warnings.append(
+                f"privacy frontmatter alias '{alias_key}' is non-standard; treating note as private "
+                "- use 'visibility: private' instead"
+            )
+        elif tag_match is not None:
+            tag_key, tag_val = tag_match
+            final, has_final = "private", True
+            # Only the root of a nested tag: `private/terapi` would say what the hidden note is
+            # about in sync output and hook-health.json, which agents read.
+            root, nested, _ = tag_val.partition("/")
+            warnings.append(
+                f"privacy tag '{root}{'/...' if nested else ''}' in '{tag_key}' is not a visibility gate by itself; "
+                "treating note as private - add 'visibility: private'"
+            )
+
+    # One lowercase `visibility` takes the place of the first visibility key, so a rewrite
+    # (task-update, homepages) keeps the frontmatter order; an alias appends it at the end.
+    result = {}
+    placed = False
+    for key, value in metadata.items():
+        if _fold_privacy_token(key) == "visibility":
+            if not placed and has_final:
+                result["visibility"] = final
+                placed = True
+            continue
+        result[key] = value
+    if not placed and has_final:
+        result["visibility"] = final
+    return result, warnings, conflict
+
+
+def effective_visibility(record):
+    """Visibility gate value for an indexed record; narrows stale pre-fix rows fail-closed.
+
+    Never widens an invalid or non-canonical `visibility` value; only narrows a looser
+    stored `visibility` to `'private'` if a case-variant visibility key or privacy-intent
+    alias is also present on the record.
+    """
+    if not isinstance(record, dict):
+        return None
+    vis = record.get("visibility", "internal")
+    if vis not in VALID_VISIBILITIES:
+        return vis
+    if vis == "private":
+        return "private"
+    for key, value in record.items():
+        if key == "visibility":
+            continue
+        folded = _fold_privacy_token(key)
+        if folded == "visibility":
+            if not isinstance(value, str) or _fold_privacy_token(value) != vis:
+                return "private"
+        elif folded in PRIVACY_ALIAS_KEYS and _is_privacy_truthy(value):
+            return "private"
+    if _privacy_tag_match(record) is not None:
+        return "private"
+    return vis
+
+
+def agent_sync_warnings(warnings):
+    """Sync warnings an agent may read, and how many privacy_frontmatter warnings were held back.
+
+    A privacy_frontmatter warning names a note that only a non-standard spelling keeps private
+    (`private: true`, `tags: [private]`), and in Obsidian its path is the note's title. Only
+    `sync`, where the user fixes the spelling, names it (#963). Every other output that embeds
+    sync warnings (context, recap, history, note/task writes, receipts, doctor) reaches agents
+    and carries the count instead, as it never names a `visibility: private` note. Without such
+    a warning the list is returned as it was, so those outputs stay as released.
+    """
+    warnings = list(warnings or [])
+    kept = [w for w in warnings if not (isinstance(w, dict) and w.get("kind") == "privacy_frontmatter")]
+    return kept, len(warnings) - len(kept)
+
 
 def _in_package_container(pinned: str) -> bool:
     """True when a pinned path runs through an MSIX package container."""
@@ -660,7 +870,7 @@ def workspace_read_grant(record, project, scopes):
     The source folder must also survive the current scope file's blocked boundaries.
     """
     readers = record.get("workspace_readers")
-    if (record.get("visibility") == "private" or not isinstance(project, str)
+    if (effective_visibility(record) == "private" or not isinstance(project, str)
             or not project.strip() or not isinstance(readers, list)
             or any(not isinstance(value, str) or not value.strip() for value in readers)
             or len(readers) != len(set(readers))
@@ -1035,7 +1245,9 @@ def query_term_coverage(query, records):
 
     The explicit context command's unmatched_terms rule (#768) for automatic context (#909):
     a word matches by its stem in the records' text, title, fact values and aliases as given
-    (a clipped text counts only as far as it was clipped). Question wrappers, stopwords,
+    (a clipped text counts only as far as it was clipped). The record's own project and its
+    source's file name also count, without folders or extension (#930): retrieval matches the
+    file name too, and both stand in the delivered record. Question wrappers, stopwords,
     pronouns and auxiliaries, single letters, short numbers and words over 64 characters (a
     pasted hex or base64 blob) are not terms, and one stem counts once. A hyphenated name (claude-mem, e-posta) is one term, as retrieval reads it
     (#430): a record holds it by its joined spelling or by every part that is a term itself.
@@ -1046,8 +1258,15 @@ def query_term_coverage(query, records):
     """
     covered = set()
     for record in records:
-        covered.update(_tokens(' '.join(_delivered_text(record.get(key, ''))
-                                        for key in ('text', 'title', 'facts', 'aliases'))))
+        pieces = [_delivered_text(record.get(key, ''))
+                  for key in ('text', 'title', 'facts', 'aliases', 'project')]
+        source = record.get('source')
+        if isinstance(source, str) and source.strip():
+            # Match retrieval's filename-stem salience without counting generic folders or .md.
+            stem = Path(source).stem.strip()
+            if stem:
+                pieces.append(stem)
+        covered.update(_tokens(' '.join(pieces)))
 
     def is_term(stem):
         return stem not in STOPWORDS and stem not in _COVERAGE_FILLERS and _strict_terms({stem})
@@ -1298,7 +1517,7 @@ class MemoryStore:
         """Connections are scoped to each operation; provided for callers."""
 
     def context_for(self, harness, query, **kwargs):
-        if kwargs.get("strict") is True and self.STRICT_PASSAGES:
+        if kwargs.get("strict") is True and self.STRICT_PASSAGES and not kwargs.get("list_mode"):
             try:
                 if _MODULE_DIR not in sys.path:
                     sys.path.insert(0, _MODULE_DIR)
@@ -1396,9 +1615,10 @@ class MemoryStore:
         record.setdefault("revision", 1)
         if type(record["revision"]) is not int or record["revision"] < 1:
             raise ValueError("positive revision required")
+        record, _, _ = normalize_privacy_metadata(record)
         record.setdefault("visibility", "internal")
-        if record["visibility"] not in ("public", "internal", "private"):
-            raise ValueError("invalid visibility")
+        if record["visibility"] not in VALID_VISIBILITIES:
+            raise ValueError("invalid visibility (expected public, internal, or private)")
         if "workspace_readers" in record:
             readers = record["workspace_readers"]
             if (not isinstance(readers, list) or any(not isinstance(value, str) or not value.strip()
@@ -1477,7 +1697,7 @@ class MemoryStore:
         # trail. Later clean notes at a retired path have sequences past the cutoff.
         if rows[-1][0] <= quarantined.get(boundary.get("source"), 0):
             return []
-        if (boundary.get("visibility") not in allowed or boundary.get("trust") == "untrusted" or
+        if (effective_visibility(boundary) not in allowed or boundary.get("trust") == "untrusted" or
                 boundary.get("trusted") is False or boundary.get("status") == "untrusted" or
                 boundary.get("kind") == "untrusted"):
             return []
@@ -1491,7 +1711,7 @@ class MemoryStore:
                 return []
         return [{"sequence": row[0], "event_type": row[1], "record_id": row[2], "revision": row[3],
                  "record": dict(record, remote_allowed=False) if boundary.get('remote_allowed') is False else record}
-                for row in rows if (record := json.loads(row[4])).get("visibility") in allowed and
+                for row in rows if effective_visibility(record := json.loads(row[4])) in allowed and
                 row[0] > quarantined.get(record.get("source"), 0) and
                 record.get("trust") != "untrusted" and record.get("trusted") is not False and
                 record.get("status") != "untrusted" and record.get("kind") != "untrusted"]
@@ -1526,10 +1746,10 @@ class MemoryStore:
             db.execute("INSERT OR IGNORE INTO receipts VALUES (?,?)", (event_id, payload))
         return dict(event, id=event_id, status="succeeded")
 
-    def retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, strict=False, today=None, explicit=False):
+    def retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, strict=False, today=None, explicit=False, share="top", list_mode=False):
         # explicit=True is the `beyin.py context` command: see the unscoped explicit rules below.
         return self._retrieve(query, project, audience, statuses, limit, budget_chars, strict=strict, today=today,
-                              explicit=explicit)
+                              explicit=explicit, share=share, list_mode=list_mode)
 
     def candidates(self, query, project=None, audience="internal", statuses=None, limit=32, strict=False, today=None):
         """Bounded eligible candidates before any final context packing.
@@ -1605,7 +1825,7 @@ class MemoryStore:
         for record in records:
             if sensitive_source(record.get("source")):
                 continue
-            if (record.get("visibility") not in allowed or record.get("trust") == "untrusted" or
+            if (effective_visibility(record) not in allowed or record.get("trust") == "untrusted" or
                     record.get("trusted") is False or record.get("status") == "untrusted" or
                     record.get("kind") == "untrusted" or _rejected_inference(record)):
                 continue
@@ -1920,7 +2140,7 @@ class MemoryStore:
             # Old indexes can still hold these notes until the next sync. Never deliver them.
             if sensitive_source(record.get("source")):
                 continue
-            if record["visibility"] not in allowed or record.get("trust") == "untrusted" or record.get("trusted") is False or record.get("status") == "untrusted" or record.get("kind") == "untrusted" or _rejected_inference(record) != rejected_only:
+            if effective_visibility(record) not in allowed or record.get("trust") == "untrusted" or record.get("trusted") is False or record.get("status") == "untrusted" or record.get("kind") == "untrusted" or _rejected_inference(record) != rejected_only:
                 continue
             if project is not None:
                 if scopes is None:
@@ -1947,11 +2167,14 @@ class MemoryStore:
         """Ids retired by any trusted record, not only by the ones this reader may see (#201)."""
         return resolve_supersedes(self._records() if records is None else records)[0]
 
-    def _retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, snapshot=False, strict=False, candidate_only=False, today=None, explicit=False):
+    def _retrieve(self, query, project=None, audience="internal", statuses=None, limit=5, budget_chars=8000, snapshot=False, strict=False, candidate_only=False, today=None, explicit=False, share="top", list_mode=False):
         if audience not in ("public", "internal", "private"):
             raise ValueError("invalid audience")
-        if not isinstance(query, str) or type(limit) is not int or limit < 0 or type(budget_chars) is not int or budget_chars < 0:
+        if (not isinstance(query, str) or type(limit) is not int or limit < 0
+                or type(budget_chars) is not int or budget_chars < 0 or type(list_mode) is not bool):
             raise ValueError("invalid query or budget")
+        if share not in CONTEXT_SHARE_MODES:
+            raise ValueError("share must be 'top' or 'balanced'")
         records = self._records()
         eligible, stale_count = self._eligible(audience, project, records=records)
         superseded = self._superseded_ids(records)
@@ -1963,7 +2186,7 @@ class MemoryStore:
                 from beyin_v3_passage import _matches_keep, _path_key, settings
             except ImportError:
                 # Without the exclusion policy, strict fallback must not deliver sources.
-                return [] if candidate_only else pack_context([], limit, budget_chars, stale_count)
+                return [] if candidate_only else pack_context([], limit, budget_chars, stale_count, list_mode=list_mode)
             _settings = settings(self.state_dir)
             prefixes = tuple(_path_key(prefix) for prefix in _settings["exclude"])
             strict_keep_prefixes = _settings.get("strict_keep", ())
@@ -1980,7 +2203,7 @@ class MemoryStore:
             if not terms and not scoped_listing and not snapshot:
                 if candidate_only:
                     return []
-                return pack_context([], limit, budget_chars, stale_count)
+                return pack_context([], limit, budget_chars, stale_count, list_mode=list_mode)
         else:
             terms, compounds = _query_compounds(query, terms)
         ranked = []
@@ -2075,8 +2298,13 @@ class MemoryStore:
                                          today=today, allowed_statuses=allowed_statuses, factors=factors)
         if candidate_only:
             return [record for _, record in ranked[:limit]]
+        if list_mode:
+            scored = [dict(record, score=round(float(weight), 3)) for weight, record in ranked]
+            return pack_list_context(scored, limit=limit, budget_chars=budget_chars, stale_count=stale_count,
+                                     query=query, project=project, terms=terms)
         return pack_context([record for _, record in ranked], limit, budget_chars, stale_count,
-                            query=query, project=project)
+                            query=query, project=project, share=share,
+                            scores=[score for score, _ in ranked])
 
 
 # A rejected claim is proposed again when the new text restates most of it. Coverage is
@@ -2124,10 +2352,14 @@ def rejected_matches(store, text, project, audience="internal", limit=4):
             for coverage, record in matches[:limit]]
 
 CONTEXT_MARKER = " [truncated]"
+CONTEXT_SHARE_MODES = ("top", "balanced")
 MIN_CONTEXT_TEXT = 150     # smallest excerpt of a source that is worth a slot
+LIST_SNIPPET_CHARS = 150   # compact candidate snippet cap for `context --list` (#974)
 SHORT_CONTEXT_TEXT = 500   # a short source is reserved whole when it fits, else like a long one
 TOP_CONTEXT_TEXT = 1100    # the best source keeps at least this much: one passage window (#83)
 TOP_CONTEXT_SHARE = 0.4    # ... or this share of the budget, whichever is larger
+BALANCED_MIN_TEXT = 1000   # balanced sharing (#975) only while every clipped source keeps this much
+_SNIPPET_TOKEN = re.compile(r"[^\W_]+(?:[-\u2010][^\W_]+)*", re.UNICODE)
 
 
 class PackedContext(dict):
@@ -2144,6 +2376,8 @@ class PackedContext(dict):
     evidence = {}
     query = None
     project = None
+    share = "top"
+    scores = None
 
 
 def _locate_matching_passage(text, query, project=None):
@@ -2214,49 +2448,300 @@ def _clipped_size(record, citation, chars):
                + len(_json(citation)))
 
 
-def pack_context(records, limit=5, budget_chars=8000, stale_count=0, query=None, project=None):
+def _dominant_top_score(s0, s1):
+    """True when rank 1 clearly dominates rank 2, so balanced sharing falls back to top."""
+    if (isinstance(s0, bool) or isinstance(s1, bool)
+            or not isinstance(s0, (int, float)) or not isinstance(s1, (int, float))):
+        return False
+    if not (math.isfinite(s0) and math.isfinite(s1)):
+        return False
+    return (s1 > 0 and s0 >= 2.0 * s1) or (s0 > 0 and s1 <= 0)
+
+
+def _list_title(record):
+    """Readable candidate title: explicit frontmatter title, first H1 heading, or filename stem."""
+    title = record.get("title")
+    if isinstance(title, str) and title.strip():
+        return title.strip()
+    text = record.get("text")
+    if isinstance(text, str):
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("# "):
+                heading = stripped[2:].strip().rstrip("#").strip()
+                if heading:
+                    return heading[:160]
+            break
+    source = record.get("source")
+    if isinstance(source, str) and source:
+        return Path(source).stem
+    return ""
+
+
+def _list_snippet(text, query=None, max_chars=LIST_SNIPPET_CHARS, project=None, terms=None):
+    """Return (snippet, truncated) centered on the densest matched query span, bounded to max_chars."""
+    if not isinstance(text, str):
+        text = "" if text is None else str(text)
+    if len(text) <= max_chars:
+        return text, False
+    ignored = STOPWORDS | _tokens(project or "")
+    if terms is None:
+        match_terms = _tokens(query) - ignored if isinstance(query, str) and query else set()
+    else:
+        match_terms = set(terms) - ignored
+    best_span = None
+    inner = max(1, max_chars - 6)
+    if match_terms:
+        vocab = _tokens(text)
+        roots = _query_roots(match_terms, lambda token: int(token in vocab), ignored)
+        match_stems = match_terms | set(roots.values())
+        hits = []
+        for match in _SNIPPET_TOKEN.finditer(text):
+            folded = _fold(match.group())
+            parts = re.findall(r"[a-z0-9]+", folded)
+            matched_any = False
+            for part in parts:
+                stem = _stem(part)
+                if stem in match_stems:
+                    hits.append((match.start(), match.end(), stem))
+                    matched_any = True
+            if not matched_any and len(parts) > 1:
+                joined = "".join(parts)
+                if len(joined) <= 64 and not joined.isdigit():
+                    stem = _stem(joined)
+                    if stem in match_stems:
+                        hits.append((match.start(), match.end(), stem))
+        if hits:
+            counts = Counter()
+            left = 0
+            best_score = (0, 0)
+            for right, (_rstart, rend, rstem) in enumerate(hits):
+                counts[rstem] += 1
+                while left < right and rend - hits[left][0] > inner:
+                    lstem = hits[left][2]
+                    counts[lstem] -= 1
+                    if counts[lstem] == 0:
+                        del counts[lstem]
+                    left += 1
+                score = (len(counts), right - left + 1)
+                if score > best_score:
+                    best_score = score
+                    best_span = (hits[left][0], rend)
+    if best_span is None:
+        win_start = 0
+        win_end = min(len(text), max(1, max_chars - 3))
+        if win_end < len(text) and not text[win_end].isspace():
+            space = max(text.rfind(" ", win_start, win_end), text.rfind("\n", win_start, win_end),
+                        text.rfind("\t", win_start, win_end))
+            if space > win_start + (win_end - win_start) // 2:
+                win_end = space
+    else:
+        span_start, span_end = best_span
+        center = (span_start + span_end) // 2
+        win_start = max(0, min(center - inner // 2, len(text) - inner))
+        win_end = min(len(text), win_start + inner)
+        if win_start == 0:
+            win_end = min(len(text), max(1, max_chars - 3))
+        elif win_end == len(text):
+            win_start = max(0, len(text) - max(1, max_chars - 3))
+        if win_start > 0 and not text[win_start - 1].isspace() and not text[win_start].isspace():
+            space = win_start
+            while space < span_start and not text[space].isspace():
+                space += 1
+            if space < span_start:
+                while space < span_start and text[space].isspace():
+                    space += 1
+                win_start = space
+        if win_end < len(text) and not text[win_end - 1].isspace() and not text[win_end].isspace():
+            space = max(text.rfind(" ", span_end, win_end), text.rfind("\n", span_end, win_end),
+                        text.rfind("\t", span_end, win_end))
+            if space >= span_end:
+                win_end = space
+    body = " ".join(text[win_start:win_end].split())
+    if not body:
+        body = " ".join(text.split())
+        win_start = 0
+        win_end = len(text) - 1
+    prefix = "..." if text[:win_start].strip() else ""
+    suffix = "..." if text[win_end:].strip() else ""
+    room = max(0, max_chars - len(prefix) - len(suffix))
+    if len(body) > room:
+        body = body[:room].rstrip()
+    return prefix + body + suffix, True
+
+
+def pack_list_context(records, limit=20, budget_chars=8000, stale_count=0, query=None, project=None,
+                      *, snippet_chars=LIST_SNIPPET_CHARS, terms=None):
+    """Pack compact candidate records up to `limit` independently of full-text `budget_chars` (#974).
+
+    Heavy index bookkeeping and redundant top-level citations are omitted because every record
+    already carries its own `id`, `source`, `title`, `score`, short centered `text` snippet,
+    and `text_truncated` flag.
+    """
+    if type(limit) is not int or limit < 0 or type(budget_chars) is not int or budget_chars < 0:
+        raise ValueError("invalid budget")
+    if type(snippet_chars) is not int or snippet_chars <= 0:
+        raise ValueError("invalid snippet budget")
+    selected, sources = [], []
+    used, clipped_any = 0, False
+    for record in records[:limit]:
+        raw_text = record.get("text", "")
+        snippet, snippet_clipped = _list_snippet(raw_text, query=query, max_chars=snippet_chars,
+                                                 project=project, terms=terms)
+        is_truncated = bool(snippet_clipped or record.get("text_truncated"))
+        score_raw = record.get("score")
+        score = round(float(score_raw), 3) if isinstance(score_raw, (int, float)) and type(score_raw) is not bool else 0.0
+        item = {
+            "id": record["id"],
+            "source": record["source"],
+            "title": _list_title(record),
+            "score": score,
+            "text": snippet,
+            "text_truncated": is_truncated,
+        }
+        kind = record.get("kind")
+        if kind and kind != "note":
+            item["kind"] = kind
+        if record.get("status"):
+            item["status"] = record["status"]
+        if record.get("project"):
+            item["project"] = record["project"]
+        selected.append(item)
+        sources.append(record)
+        clipped_any = clipped_any or is_truncated
+        used += len(_json(item))
+    omitted = len(records) - len(selected)
+    packed = PackedContext({
+        "records": selected,
+        "abstained": not selected,
+        "truncated": bool(omitted) or clipped_any,
+        "omitted_count": omitted,
+        "used_chars": used,
+        "budget_chars": budget_chars,
+        "stale_count": stale_count,
+        "list_mode": True,
+    })
+    packed.sources = tuple(sources)
+    packed.query = query
+    packed.project = project
+    return packed
+
+
+def pack_context(records, limit=5, budget_chars=8000, stale_count=0, query=None, project=None,
+                 share="top", scores=None, list_mode=False):
     """Pack successfully delivered sources, not a prefix of attempted candidates.
 
     An oversized metadata record cannot consume a source slot. Text may be clipped,
     never identity/citation fields. used_chars measures compact record+citation JSON;
     render_context additionally accounts for the complete hook envelope.
 
-    Budget is reserved before it is spent (#79). The best source first keeps the larger
-    of TOP_CONTEXT_TEXT characters and TOP_CONTEXT_SHARE of the budget, so a passage
-    (#83) reaches a small prompt whole and a long note keeps a real excerpt. Every
-    further source in rank order then reserves its floor (its first MIN_CONTEXT_TEXT
-    characters, or all of a short text when that fits); a source whose floor does not
-    fit is skipped without consuming a slot. What is left goes back in rank order.
+    Budget is reserved before it is spent (#79). In default `top` mode, the best source
+    first keeps the larger of TOP_CONTEXT_TEXT characters and TOP_CONTEXT_SHARE of the
+    budget, so a passage (#83) reaches a small prompt whole and a long note keeps a real
+    excerpt. Every further source in rank order then reserves its floor (its first
+    MIN_CONTEXT_TEXT characters, or all of a short text when that fits); a source whose
+    floor does not fit is skipped without consuming a slot. What is left goes back in
+    rank order.
+
+    In `balanced` mode (#975), unless rank 1 clearly dominates rank 2 (falling back to
+    `top`), each admitted source reserves its floor first and remaining text budget is
+    distributed evenly via iterative water-filling so short notes redistribute unused
+    characters to longer notes without ever exceeding budget_chars. When an even share
+    would leave a clipped source fewer than BALANCED_MIN_TEXT characters, it falls back
+    to `top` as well.
     Reservations are exact serialized sizes, JSON escaping included, so an admitted
     source is never dropped later and one long note can no longer starve the rest.
     """
-    if type(limit) is not int or limit < 0 or type(budget_chars) is not int or budget_chars < 0:
+    if type(limit) is not int or limit < 0 or type(budget_chars) is not int or budget_chars < 0 or type(list_mode) is not bool:
         raise ValueError("invalid budget")
-    admitted, reserved, protected = [], 0, 0
-    for record in records:
-        if len(admitted) >= limit:
-            break
-        citation = {"id": record["id"], "source": record["source"]}
-        full = len(_json(record)) + len(_json(citation))
-        floor = _clipped_size(record, citation, MIN_CONTEXT_TEXT)
-        claim = full if len(record["text"]) <= SHORT_CONTEXT_TEXT else floor
-        if reserved + claim > budget_chars - protected:
-            claim = floor
-        if reserved + claim > budget_chars - protected:
-            continue
-        admitted.append([record, citation, full, claim])
-        reserved += claim
-        if len(admitted) == 1:
-            keep = max(_clipped_size(record, citation, TOP_CONTEXT_TEXT), int(budget_chars * TOP_CONTEXT_SHARE))
-            protected = max(0, min(full, keep, budget_chars) - claim)
-    spare = budget_chars - reserved
-    for item in admitted:
-        extra = min(spare, item[2] - item[3])
-        item[3] += extra
-        spare -= extra
-    selected, citations, sources = [], [], []
+    if list_mode:
+        return pack_list_context(records, limit=limit, budget_chars=budget_chars, stale_count=stale_count,
+                                 query=query, project=project)
+    if share not in CONTEXT_SHARE_MODES:
+        raise ValueError("share must be 'top' or 'balanced'")
+    if scores is not None and len(scores) != len(records):
+        raise ValueError("scores must match records length")
+    if share == "balanced":
+        admitted, reserved = [], 0
+        for idx, record in enumerate(records):
+            if len(admitted) >= limit:
+                break
+            citation = {"id": record["id"], "source": record["source"]}
+            full = len(_json(record)) + len(_json(citation))
+            floor = _clipped_size(record, citation, MIN_CONTEXT_TEXT)
+            if reserved + floor > budget_chars:
+                continue
+            score = scores[idx] if scores is not None else None
+            admitted.append([record, citation, full, floor, score])
+            reserved += floor
+        if scores is not None and len(admitted) >= 2 and _dominant_top_score(admitted[0][4], admitted[1][4]):
+            return pack_context(records, limit, budget_chars, stale_count,
+                                query=query, project=project, share="top")
+        spare = budget_chars - reserved
+        # Iterative water-filling over remaining text room above each record's floor:
+        # short notes saturate cleanly and redistribute unused characters to longer notes.
+        active = [item for item in admitted if item[3] < item[2]]
+        while spare > 0 and active:
+            even = spare // len(active)
+            rem = spare % len(active)
+            if even == 0:
+                for item in active[:rem]:
+                    item[3] += 1
+                    spare -= 1
+                break
+            saturated = False
+            next_active = []
+            for item in active:
+                need = item[2] - item[3]
+                if need <= even:
+                    item[3] = item[2]
+                    spare -= need
+                    saturated = True
+                else:
+                    next_active.append(item)
+            if not saturated:
+                for pos, item in enumerate(active):
+                    give = even + (1 if pos < rem else 0)
+                    item[3] += give
+                    spare -= give
+                break
+            active = next_active
+        # An even share is only worth it while every clipped source still keeps a real excerpt.
+        # Below that, a narrow budget or a wide --limit cuts every source to a stub and the best
+        # one loses the window top mode keeps for it, so balanced behaves as top instead.
+        if any(item[3] < item[2] and item[3] < _clipped_size(item[0], item[1], BALANCED_MIN_TEXT)
+               for item in admitted):
+            return pack_context(records, limit, budget_chars, stale_count,
+                                query=query, project=project, share="top")
+    else:
+        admitted, reserved, protected = [], 0, 0
+        for idx, record in enumerate(records):
+            if len(admitted) >= limit:
+                break
+            citation = {"id": record["id"], "source": record["source"]}
+            full = len(_json(record)) + len(_json(citation))
+            floor = _clipped_size(record, citation, MIN_CONTEXT_TEXT)
+            claim = full if len(record["text"]) <= SHORT_CONTEXT_TEXT else floor
+            if reserved + claim > budget_chars - protected:
+                claim = floor
+            if reserved + claim > budget_chars - protected:
+                continue
+            score = scores[idx] if scores is not None else None
+            admitted.append([record, citation, full, claim, score])
+            reserved += claim
+            if len(admitted) == 1:
+                keep = max(_clipped_size(record, citation, TOP_CONTEXT_TEXT), int(budget_chars * TOP_CONTEXT_SHARE))
+                protected = max(0, min(full, keep, budget_chars) - claim)
+        spare = budget_chars - reserved
+        for item in admitted:
+            extra = min(spare, item[2] - item[3])
+            item[3] += extra
+            spare -= extra
+    selected, citations, sources, selected_scores = [], [], [], []
     used, carry, clipped_any = 0, 0, False
-    for record, citation, full, allocation in admitted:
+    for record, citation, full, allocation, score in admitted:
         room = allocation + carry
         source = record
         if full > room:
@@ -2269,6 +2754,7 @@ def pack_context(records, limit=5, budget_chars=8000, stale_count=0, query=None,
         selected.append(record)
         sources.append(source)
         citations.append(citation)
+        selected_scores.append(score)
         clipped_any = clipped_any or bool(record.get("text_truncated"))
         used += size
     omitted = len(records) - len(selected)
@@ -2278,11 +2764,13 @@ def pack_context(records, limit=5, budget_chars=8000, stale_count=0, query=None,
     packed.sources = tuple(sources)
     packed.query = query
     packed.project = project
+    packed.share = share
+    packed.scores = tuple(selected_scores) if scores is not None else None
     return packed
 
 
 def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0, *, extensions=None,
-                 query=None, project=None):
+                 query=None, project=None, share="top", scores=None, list_mode=False):
     """pack_context, then each wholly delivered record may take its wider version (id -> record)
     from the room every record left over, in rank order.
 
@@ -2292,7 +2780,13 @@ def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0, *, e
     The result's sources stay the narrow originals and .wider is kept, so every later pack
     (the advisor's or the final envelope's) decides again at its own budget.
     """
-    packed = pack_context(records, limit, budget_chars, stale_count, query=query, project=project)
+    if type(list_mode) is not bool:
+        raise ValueError("invalid budget")
+    if list_mode:
+        return pack_list_context(records, limit=limit, budget_chars=budget_chars, stale_count=stale_count,
+                                 query=query, project=project)
+    packed = pack_context(records, limit, budget_chars, stale_count, query=query, project=project,
+                          share=share, scores=scores)
     widened, spare, chosen = False, budget_chars - packed["used_chars"], list(records)
     whole = {r["id"] for r, s in zip(packed["records"], packed.sources) if r["text"] == s["text"]}
     for position, record in enumerate(records):
@@ -2306,7 +2800,8 @@ def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0, *, e
                 chosen[position], spare, widened = alternative, spare - extra, True
                 break
     if widened:
-        packed = pack_context(chosen, limit, budget_chars, stale_count, query=query, project=project)
+        packed = pack_context(chosen, limit, budget_chars, stale_count, query=query, project=project,
+                              share=share, scores=scores)
     # Optional source/section context spends only what the existing passage
     # policy left over. Reserve every source's original second passage first;
     # a rich first source must not displace a later source's answering passage.
@@ -2323,7 +2818,8 @@ def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0, *, e
                     break
         if extended:
             prior = packed
-            packed = pack_context(chosen, len(chosen), budget_chars, stale_count, query=query, project=project)
+            packed = pack_context(chosen, len(chosen), budget_chars, stale_count, query=query, project=project,
+                                  share=prior.share, scores=prior.scores)
             packed['omitted_count'] = prior['omitted_count']
             packed['truncated'] = packed['truncated'] or bool(prior['omitted_count'])
     by_id = {r["id"]: r for r in records}
@@ -2333,15 +2829,26 @@ def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0, *, e
     return packed
 
 
-def context_project(vault, query):
+def context_workspaces(vault, query):
+    """Resolve implicit Workspace scoping for a natural-language context query.
+
+    Returns (project, named_workspaces): one active Workspace scopes to it;
+    multiple active Workspaces stay unscoped (project=None) and return every
+    matched ID so callers can report them without failing the query (#956).
+    """
+    vault = Path(vault)
     files = (vault / ".beyin-workspaces.json", vault / ".beyin-projects.json")
     if not any(path.exists() or path.is_symlink() for path in files):
-        return None
+        return None, []
     from beyin_v3_workspaces import matching_workspace_ids
     named = matching_workspace_ids(vault, query)
-    if len(named) > 1:
-        raise ValueError("context query names multiple Workspaces; specify --project")
-    return named[0] if named else None
+    if len(named) == 1:
+        return named[0], named
+    return None, named
+
+
+def context_project(vault, query):
+    return context_workspaces(vault, query)[0]
 
 
 def shared_context(store, harness, query, **kwargs):
@@ -2405,12 +2912,18 @@ def render_context(context, budget_chars, prefix="", suffix=""):
     extension_views = {key: [_delivery_view(r) for r in choices] for key, choices in extensions.items()}
     extra = {k: v for k, v in context.items() if k not in
              {"records", "citations", "used_chars", "budget_chars", "omitted_count", "truncated", "abstained", "stale_count"}}
+    ctx_share = getattr(context, "share", "top")
+    if ctx_share not in CONTEXT_SHARE_MODES:
+        ctx_share = "top"
+    ctx_scores = getattr(context, "scores", None)
+    if ctx_scores is not None and len(ctx_scores) != len(records):
+        ctx_scores = None
     available = max(0, budget_chars - len(prefix))
     payload_budget = available
     while True:
         packed = pack_widened(records, wider_views, len(records), payload_budget, context.get("stale_count", 0),
                               extensions=extension_views, query=getattr(context, "query", None),
-                              project=getattr(context, "project", None))
+                              project=getattr(context, "project", None), share=ctx_share, scores=ctx_scores)
         packed["omitted_count"] += context.get("omitted_count", 0)
         packed["truncated"] = packed["truncated"] or bool(context.get("truncated"))
         packed.update(extra)
@@ -2424,6 +2937,10 @@ def render_context(context, budget_chars, prefix="", suffix=""):
             delivered.sources = tuple(full[s["id"]] for s in packed.sources)  # a re-render keeps identities
             delivered.wider = dict(wider)
             delivered.extensions = dict(extensions)
+            delivered.query = getattr(context, "query", None)
+            delivered.project = getattr(context, "project", None)
+            delivered.share = packed.share
+            delivered.scores = packed.scores
             delivered.evidence = {r['id']: getattr(context, 'evidence', {})[r['id']]
                                   for r in delivered['records'] if r['id'] in getattr(context, 'evidence', {})}
             return prefix + text + tail, delivered

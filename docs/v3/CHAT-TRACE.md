@@ -49,6 +49,11 @@ sıfırlanmaz. Event/turn kimliği varsa anlık tekrar teslim sayılmaz.
 | --- | --- | --- |
 | Claude | `CLAUDE_CODE_ENTRYPOINT=claude-desktop` veya attended=`1/true` | `sdk-cli`, `cli`, attended=`0/false`, bilinen sentetik istemler ve belirsiz köken |
 | Codex | Hook'un verdiği dosyanın ilk `session_meta` satırında eşleşen `id`, `originator=codex_cli_rs`, `source=cli` | `codex_exec`, alt ajan, diğer/belirsiz köken, yok/bozuk/aşırı büyük metadata |
+| Antigravity | `transcriptPath` dosyasının ilk ya da son 64 KiB'ında `type=USER_INPUT`, `source=USER_EXPLICIT` satırı | iç içe ajan ve uyanma turu, bağlantılı/kanonik olmayan yol, yok/bozuk metadata |
+
+Antigravity'de turu açan `PreInvocation` `UserPromptSubmit` sayılır; olay kimliği
+taşımadığı için aynı turun tekrarı `initialNumSteps` ile ayıklanır. Transcript
+satırlarının yalnız `type` ve `source` alanlarına bakılır; mesaj metni saklanmaz.
 
 Codex 0.163.0 hook JSON'u doğrudan `originator` taşımaz. Yalnız ilk metadata satırı
 en fazla 65.536 bayt okunur; sohbet satırları okunmaz veya saklanmaz. Bu kural bir
@@ -119,6 +124,42 @@ python beyin.py chat-trace backfill --session OTURUM --skip           # kaydedil
   bırakılamaz.
 - Yalnız Claude Code kayıtları desteklenir; Codex ve diğer istemcilerin biçimi farklıdır.
   Claude Code kayıt biçimi belgelenmemiştir; tanınmayan kayıtlar tahmin edilmez, atlanıp sayılır.
+
+### Codex oturumları için salt okunur prototip
+
+[#875](https://github.com/avenoxai/avenoxbeyin/issues/875) için bağımsız okuyucu,
+`CODEX_HOME/sessions/**/rollout-*.jsonl` ve `state_5.sqlite` / `thread_history_1.sqlite`
+dosyalarından seçili vault'un oturumlarını tarar. Deneme yalnız hash, tarih, boyut ve
+sayıları döndürür. Hash ile seçilen tek oturumun filtrelenmiş dökümü bellekte hazırlanabilir.
+Okuyucu komut satırına, kancalara ve özet yazımına bağlı değildir. Vault'a yazmaz,
+özet saklamaz ve model çağırmaz.
+
+SQLite şeması belgelenmemiştir. Prototip yalnız tanıdığı şemayı okur. Yan dosya
+yoksa `mode=ro&immutable=1` kullanır ve dosyanın okuma sırasında değişmediğini
+kontrol eder. `-wal` ve `-shm` birlikte varsa `mode=ro&readonly_shm=1` ve
+`PRAGMA query_only=ON` kullanır. Her veritabanı bir okuma işlemi içinde kendi
+tutarlı anlık görüntüsünü sağlar. İki veritabanının anlık görüntüleri farklı
+zamanlara ait olabilir.
+
+`readonly_shm=1` ile SQLite mevcut `-shm` dosyasını salt okunur eşler ve yalnız
+paylaşımlı kilit alır: veritabanı sayfalarına, `-wal` içeriğine ve `-shm` içindeki
+okuma işaretlerine yazmaz. Bu, ayrı bir süreçte açık duran sentetik bir yazıcıyla
+bayt bayt sınanır. Okuma işlemi açıkken Codex yazmaya devam eder; yalnız
+`TRUNCATE`/`RESTART` checkpoint'i okuma bitene kadar bekler. Okuma sonrasında iki
+veritabanının bulunduğu dizinin üst düzeyinde yeni bir normal dosya görülürse
+SQLite sonuçları atılır (`new_home_files`). Bu kontrol alt dizinlere inmez ve
+bağlantıları izlemez. Yazıcı açılış sırasında yan dosyaları kaldırırsa SQLite boş
+bir `-wal` bırakabilir, `-shm` oluşturmaz. Yalnız bir WAL yan dosyası
+(`partial_sidecars`) veya `-journal` (`rollback_journal`) açılıştan önce görülürse
+okuyucu yalnız JSONL kullanır.
+
+Köken kuralı canlı kancayla aynıdır: rollout'ta `originator=codex_cli_rs` ve
+`source=cli`, SQLite'ta `threads.originator=codex_cli_rs` ve `threads.source=cli`.
+`originator` sütunu boş olan eski satırlar belirsiz köken sayılır ve listelenmez;
+sütun yoksa SQLite okunmaz (`missing_column`). `[kaydetme]` kapanmamış bir bağlam
+etiketinden sonra yazılmışsa da oturum listelenmez. Döküm, vault dışındaki runtime
+klasörünü (`secret-patterns.txt`) açıkça ister. `threads` tablosunda toplam 2.000'den
+fazla oturum olan kurulumda SQLite okunmaz (`thread_limit`).
 
 ## Ayar ve rollback
 

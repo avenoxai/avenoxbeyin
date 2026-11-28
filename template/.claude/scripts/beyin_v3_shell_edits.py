@@ -1,4 +1,4 @@
-"""Vault Markdown edits made through the Claude Code shell tool, seen at Stop (#212).
+"""Vault Markdown edits made through the Claude Code or Antigravity shell tool, seen at Stop (#212).
 
 PostToolUse hooks match only file-editing tools, so `sed -i`, a heredoc or an inline Python
 write left the receipt reminder silent. Matching Bash itself would start a hook process for
@@ -47,11 +47,27 @@ _CHANGE_DIR = re.compile(r'(?:^|[;&|(\n])\s*(?:cd|pushd|Set-Location|sl)\s+("[^"
 MAX_DIRS = 4
 # Git Bash and Cygwin name C:\x as /c/x or /cygdrive/c/x; Python's Windows paths do not.
 _MSYS_DRIVE = re.compile(r'^/(?:cygdrive/)?([A-Za-z])(?:/|$)')
+# Antigravity cuts a long run_command argument to its quoted prefix followed by this marker.
+_TRUNCATED = re.compile(r'<truncated [0-9]+ bytes>\Z')
+_LAST_WORD = re.compile(r'\S*\Z')
 
 
 def msys_drive(text):
     """A Git Bash or Cygwin drive path as a Windows drive path; anything else unchanged."""
     return _MSYS_DRIVE.sub(lambda match: match.group(1).upper() + ':/', text, count=1)
+
+
+def other_share(path, root):
+    """True for a network or device path (\\\\server\\share, \\\\?\\, \\\\.\\) off the vault's own share.
+
+    A command, run or refused, names it in the transcript; looking it up can open a connection to
+    that host. A vault file lives only on the vault's own share, so nothing else is ever touched,
+    while a vault on a share keeps its own folders (a session working in one of them) as before.
+    """
+    drive = path.drive
+    if not drive.startswith(('\\', '//')):
+        return False
+    return drive.replace('/', '\\').casefold() != root.drive.replace('/', '\\').casefold()
 
 
 def _stamp(value):
@@ -67,18 +83,32 @@ def _stamp(value):
 
 def _tail(raw):
     """The complete lines in the last TAIL_BYTES of a regular, non-link .jsonl file."""
-    if not isinstance(raw, str) or not raw.strip() or '\0' in raw:
+    if not isinstance(raw, str) or not raw.strip() or '\0' in raw or raw.startswith(('\\\\', '//')):
         return None
     path = Path(raw)
-    if not path.is_absolute() or path.suffix.lower() != '.jsonl' or path.is_symlink():
+    if not path.is_absolute() or path.suffix.lower() != '.jsonl' or path.drive.startswith(('\\', '//')):
         return None
-    with path.open('rb') as handle:
-        info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode):
+    try:
+        info = path.lstat()
+        reparse = getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)
+        if not stat.S_ISREG(info.st_mode) or (getattr(info, 'st_file_attributes', 0) & reparse):
             return None
-        start = max(0, info.st_size - TAIL_BYTES)
-        handle.seek(start)
-        data = handle.read(TAIL_BYTES)
+        flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+        fd = os.open(path, flags)
+        try:
+            handle = os.fdopen(fd, 'rb')
+        except BaseException:
+            os.close(fd)
+            raise
+        with handle:
+            opened = os.fstat(handle.fileno())
+            if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(info, opened):
+                return None
+            start = max(0, opened.st_size - TAIL_BYTES)
+            handle.seek(start)
+            data = handle.read(TAIL_BYTES)
+    except (OSError, ValueError):
+        return None
     lines = data.split(b'\n')
     return lines[1:] if start else lines  # the first line of a cut tail is partial
 
@@ -169,6 +199,100 @@ def turn_commands(lines):
     return found
 
 
+def antigravity_arg(value, *, prefix=False):
+    """A run_command string argument as the command received it, or None.
+
+    Antigravity writes every string argument JSON-quoted (`"\\"echo x >> a.md\\""`) and cuts a
+    long one to its quoted prefix followed by `<truncated N bytes>`. With `prefix`, such a cut
+    value keeps the whole words of that prefix (its last word may be cut). A value that does not
+    start with a quote is taken as written; any other quoted value is unreadable.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text.startswith('"'):
+        return text or None
+    decoded = None
+    if len(text) >= 2 and text.endswith('"'):
+        try:
+            decoded = json.loads(text)
+        except ValueError:
+            return None
+    elif prefix and _TRUNCATED.search(text):
+        head = text[:_TRUNCATED.search(text).start()]
+        for drop in range(7):  # the cut may split a backslash escape (at most six characters)
+            try:
+                decoded = json.loads(head[:len(head) - drop] + '"')
+            except ValueError:
+                continue
+            if isinstance(decoded, str):
+                decoded = _LAST_WORD.sub('', decoded)
+            break
+    if not isinstance(decoded, str) or not decoded.strip():
+        return None
+    return decoded
+
+
+def antigravity_turn_commands(lines, *, powershell=None):
+    """[(issued, finished, command, cwd, powershell)] of the current Antigravity turn, oldest first.
+
+    Read backward from the end to the current turn's USER_INPUT or CHECKPOINT compaction boundary.
+    Reads only step-level metadata (type, created_at, tool_calls[].name and the CommandLine and
+    Cwd arguments of run_command), never untrusted GENERIC content. `cwd` is the command's own
+    working directory, the counterpart of a Claude record's cwd, or None. A run_command without a
+    valid subsequent timestamp (finished >= issued) in the tail is omitted.
+    """
+    is_powershell = (os.name == 'nt') if powershell is None else bool(powershell)
+    calls = []
+    next_planner = None
+    latest_after = None
+    for index in range(len(lines) - 1, -1, -1):
+        line = lines[index]
+        if not line or not line.strip():
+            continue
+        if next_planner is not None:
+            if isinstance(line, bytes):
+                if b'PLANNER_RESPONSE' not in line and b'USER_INPUT' not in line and b'CHECKPOINT' not in line:
+                    continue
+            elif isinstance(line, str):
+                if 'PLANNER_RESPONSE' not in line and 'USER_INPUT' not in line and 'CHECKPOINT' not in line:
+                    continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        step_type = row.get('type')
+        if step_type in ('USER_INPUT', 'CHECKPOINT'):
+            break
+        moment = _stamp(row.get('created_at'))
+        if step_type == 'PLANNER_RESPONSE':
+            finished = next_planner if next_planner is not None else latest_after
+            tool_calls = row.get('tool_calls')
+            if moment is not None and finished is not None and finished >= moment and isinstance(tool_calls, list):
+                for call in reversed(tool_calls):
+                    if not isinstance(call, dict) or call.get('name') != 'run_command':
+                        continue
+                    args = call.get('args')
+                    if not isinstance(args, dict):
+                        continue
+                    command = antigravity_arg(args.get('CommandLine'), prefix=True)
+                    if command is not None:
+                        cwd = antigravity_arg(args.get('Cwd'))
+                        calls.append((moment, finished, command[:MAX_COMMAND_CHARS], cwd, is_powershell))
+                        if len(calls) >= MAX_COMMANDS:
+                            break
+            if moment is not None:
+                next_planner = moment
+            if len(calls) >= MAX_COMMANDS:
+                break
+        if moment is not None and (latest_after is None or moment > latest_after):
+            latest_after = moment
+    calls.reverse()
+    return calls
+
+
 def markdown_tokens(command, powershell=False):
     """Path-like `.md` words of a command: quoted strings first, then the unquoted words.
 
@@ -211,6 +335,8 @@ class _Probe:
     def relative(self, path):
         """The vault-relative Markdown source this path names, or None (outside, link, dot folder)."""
         try:
+            if other_share(path, self.root):
+                return None
             if path.is_symlink():
                 return None
             resolved = path.resolve()
@@ -295,6 +421,8 @@ class _Probe:
 
     def relative_dir(self, path):
         try:
+            if other_share(path, self.root):
+                return None
             if path.is_symlink():
                 return None
             key = self._key(path.resolve())
@@ -320,24 +448,34 @@ def _paths(token, bases, powershell=False):
                 yield base / path
 
 
-def shell_edit(payload, vault, state=None):
+def shell_edit(payload, vault, state=None, *, harness='claude'):
     """{'at': stamp, 'knowledge': bool} for the first shell command of this turn that changed a
     vault Markdown file it names, or None. `at` is the command's own call stamp."""
     try:
-        lines = _tail(payload.get('transcript_path'))
-        if not lines:
+        if harness == 'claude':
+            lines = _tail(payload.get('transcript_path'))
+            commands = turn_commands(lines) if lines else []
+        elif harness == 'antigravity':
+            lines = _tail(payload.get('transcriptPath'))
+            commands = antigravity_turn_commands(lines) if lines else []
+        else:
             return None
-        commands = turn_commands(lines)
         if not commands:
             return None
         probe = _Probe(vault, state)
         cwd = payload.get('cwd')
+        workspaces = payload.get('workspacePaths') if harness == 'antigravity' else None
+        workspace_bases = list(workspaces[:16]) if isinstance(workspaces, (list, tuple)) else []
         first, knowledge = None, False
         for moment, done, command, record_cwd, powershell in commands:
             bases = []
-            for base in (record_cwd, cwd, str(probe.root)):
-                if isinstance(base, str) and base.strip() and Path(base).is_absolute() and Path(base) not in bases:
-                    bases.append(Path(base))
+            for base in (record_cwd, cwd, *workspace_bases, str(probe.root)):
+                if not isinstance(base, str) or not base.strip() or '\0' in base:
+                    continue
+                candidate = Path(base)
+                # The same share rule as every lookup: a folder on the vault's own share stays a base.
+                if candidate.is_absolute() and not other_share(candidate, probe.root) and candidate not in bases:
+                    bases.append(candidate)
             limit = len(bases) + MAX_DIRS
             for match in _CHANGE_DIR.finditer(command):
                 folder = match.group(1).strip('\'"')

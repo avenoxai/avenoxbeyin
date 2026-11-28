@@ -11,13 +11,15 @@ import time
 import tempfile
 import math
 
-from beyin_v3 import _receipt_lf
+from beyin_v3 import _receipt_lf, effective_visibility
 
 
 # metadata row: the folded directory names the last sync kept out of the index, as a JSON list.
 EXCLUDED_DIRS_ROW = 'index_excluded_dirs'
 # metadata row: the sources the last sync could not read or parse, as a JSON list.
 UNREADABLE_SOURCES_ROW = 'index_unreadable_sources'
+# metadata row: bounded summary of degraded sync warnings (with reasons) from the last sync (#964).
+LAST_SYNC_WARNINGS_ROW = 'last_sync_warnings'
 RECEIPT_VIEW_SOURCES_ROW = 'receipt_view_sources'
 # Shown in place of a summary whose receipt refers to a private or untrusted source: removing the
 # ref alone does not anonymize the summary, which usually describes that source.
@@ -130,7 +132,7 @@ def _hidden_ref_sources(db, refs):
                 rows.extend((ref, payload) for source, payload in folded for ref in aliases[ref_key(source)])
         for source, payload in rows:
             record = json.loads(payload)
-            if (record.get('visibility', 'internal') not in ('public', 'internal') or record.get('trust') == 'untrusted' or
+            if (effective_visibility(record) not in ('public', 'internal') or record.get('trust') == 'untrusted' or
                     record.get('trusted') is False or record.get('status') == 'untrusted' or record.get('kind') == 'untrusted'):
                 hidden.add(source)
     return hidden
@@ -446,7 +448,7 @@ def _latest_receipts(db):
     return latest
 
 
-EDIT_OBSERVING_HARNESSES = frozenset({'claude', 'codex', 'kiro', 'opencode', 'omp', 'pi'})
+EDIT_OBSERVING_HARNESSES = frozenset({'antigravity', 'claude', 'codex', 'kiro', 'opencode', 'omp', 'pi'})
 
 
 def _coverage_threshold(at, turn_at, edit_at):
@@ -573,7 +575,7 @@ def refresh_gaps(engine, db):
                 'session': row[1],
                 'checkpoint_at': row[2],
                 'turn_at': row[3],
-                'scope': 'session_only' if row[0] == 'antigravity' else 'turn' if row[3] else 'terminal_only'
+                'scope': 'turn' if row[3] else 'terminal_only'
             }
             if row[0] in EDIT_OBSERVING_HARNESSES and not row[6]:
                 gap_item['no_observed_edit'] = True
@@ -586,7 +588,7 @@ def refresh_gaps(engine, db):
         'no_observed_edit': sum(1 for item in gaps if item.get('no_observed_edit')),
         'receipt_coverage': coverage,
         'checkpoints': gaps,
-        'scope_limits': {'antigravity': 'session_only; later per-turn boundaries unsupported', 'missing_prompt_event': 'terminal_only; receipt attribution may be incomplete'},
+        'scope_limits': {'missing_prompt_event': 'terminal_only; receipt attribution may be incomplete'},
         'meaning': 'Checkpoint without a matching structured receipt; may be trivial or deliberately omitted. No summary inferred.'
     }))
 
@@ -660,6 +662,23 @@ def is_receipt_view_conflict(item):
     # become writable merely because its name falls under a generated directory.
     return (isinstance(item, dict) and is_receipt_view_source(item.get('source'), proven=True) and
             item.get('reason') in RECEIPT_VIEW_REASONS)
+
+
+def is_actionable_sync_warning(item):
+    """True for sync warnings that excluded or flagged a note/source, excluding info-only and receipt views.
+
+    A privacy_frontmatter warning (#963) is not one: its note is indexed as private and the sync
+    stays succeeded, and its path must not reach doctor's sync_warnings or the SessionStart count
+    (agent_sync_warnings withholds it everywhere but `sync`)."""
+    if not isinstance(item, dict):
+        return False
+    reason = str(item.get('reason', ''))
+    if (reason.startswith('possible file sync copy') or
+            item.get('kind') in ('missing_receipt_source', 'privacy_frontmatter')):
+        return False
+    if item.get('kind') == 'receipt_view' or is_receipt_view_conflict(item):
+        return False
+    return True
 
 
 def _archive_receipt_view(engine, path, expected_hash, _hash):

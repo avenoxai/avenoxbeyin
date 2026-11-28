@@ -14,6 +14,10 @@ import unicodedata
 NAMES = ('Core.md', 'Soul.md', 'Kurallar.md', 'Last-Session.md', 'Threads.md', 'Journal.md')
 IDENTITY = {'Core.md', 'Soul.md'}
 FLOORS = {'Kurallar.md': .4, 'Last-Session.md': .15, 'Threads.md': .12, 'Core.md': .08}
+# Below this share, CLIP_MARKER leaves <=24 chars (a broken half-heading, #916); emit an explicit omission pointer instead.
+MIN_USABLE_EXCERPT = 50
+# Doctor warns when the active identity file is clipped below this share (#916).
+IDENTITY_WARN_SHARE = 400
 # Hygiene limits in characters for the two handoff files that are meant to be rewritten,
 # not appended to (#96). Rules, identity and the Journal accumulate by design and are only
 # measured. 0 turns a limit off; beyin.py preferences changes them.
@@ -783,14 +787,116 @@ def hygiene(vault, state=None, names=NAMES, target=None, include_projects=False)
     return combined
 
 
+EXPECTED_SOURCES = ('Kurallar.md', 'Last-Session.md', 'Threads.md', 'Journal.md')
+
+
+def _is_vault_regular_file(path, vault_resolved):
+    """True only for an existing regular non-symlink file resolving inside vault_resolved."""
+    try:
+        if path.is_symlink():
+            return False
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode):
+            return False
+        resolved = path.resolve()
+        return resolved.is_relative_to(vault_resolved) and resolved.is_file()
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+def _is_vault_directory(path, vault_resolved):
+    """True only for an existing non-symlink directory resolving inside vault_resolved."""
+    try:
+        if path.is_symlink():
+            return False
+        st = os.lstat(path)
+        if not stat.S_ISDIR(st.st_mode):
+            return False
+        return path.resolve().is_relative_to(vault_resolved)
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+def _bootstrapped_directory(vault_resolved, state):
+    """Read companion-bootstrap.json safely (regular file, <= 64 KiB, vault-relative dir)."""
+    if state is None:
+        return None
+    marker = Path(state) / 'companion-bootstrap.json'
+    try:
+        if marker.is_symlink():
+            return None
+        st = os.lstat(marker)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > 65536:
+            return None
+        data = json.loads(marker.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    rel = data.get('directory') if isinstance(data, dict) else None
+    if not isinstance(rel, str) or not rel.strip():
+        return None
+    rel_path = Path(rel)
+    if rel_path.is_absolute() or '..' in rel_path.parts:
+        return None
+    candidate = vault_resolved / rel_path
+    try:
+        if any(part.is_symlink() for part in (candidate, *candidate.parents)
+               if part != vault_resolved and part.is_relative_to(vault_resolved)):
+            return None
+        if not candidate.resolve().is_relative_to(vault_resolved):
+            return None
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return candidate
+
+
+def sources_health(vault, state=None):
+    """Read-only check for missing expected companion files (#964).
+
+    A bare vault with no companion directory and no bootstrap marker reports
+    status='absent' with no missing files so fresh vaults never false-alarm.
+    Once a companion directory exists (or was bootstrapped), Core.md/Soul.md
+    are treated as alternative identity files, matching context() semantics.
+    """
+    vault_resolved = Path(vault).resolve()
+    target = directory(vault_resolved, strict=True)
+    if target is None:
+        return {'status': 'ambiguous_directory', 'directory': None, 'missing': []}
+    if not _is_vault_directory(target, vault_resolved):
+        boot = _bootstrapped_directory(vault_resolved, state)
+        if boot is None:
+            return {'status': 'absent', 'directory': None, 'missing': []}
+        if not _is_vault_directory(boot, vault_resolved):
+            rel = boot.relative_to(vault_resolved).as_posix()
+            return {
+                'status': 'missing',
+                'directory': rel,
+                'directory_missing': True,
+                'identity_missing': True,
+                'missing': ['Core.md', *EXPECTED_SOURCES],
+            }
+        target = boot
+    rel = target.relative_to(vault_resolved).as_posix()
+    has_identity = any(_is_vault_regular_file(target / name, vault_resolved) for name in ('Core.md', 'Soul.md'))
+    identity_missing = not has_identity
+    missing = (['Core.md'] if identity_missing else []) + [
+        name for name in EXPECTED_SOURCES if not _is_vault_regular_file(target / name, vault_resolved)
+    ]
+    return {
+        'status': 'missing' if missing else 'ok',
+        'directory': rel,
+        'identity_missing': identity_missing,
+        'missing': missing,
+    }
+
+
 def hook_limit_notice(vault, state, payload, harness=None):
     """PostToolUse notice when this write left a companion handoff file over its limit (#707).
 
     SessionStart already reports it; without this the agent that wrote the card learns it only
     in the next session. Only edited companion handoff files are measured, so any other write
-    costs no read. Same harness gate as the word-cap signal (claude, codex, pi).
+    costs no read. Same harness gate as the word-cap signal (claude, codex, pi, antigravity).
     """
-    if harness is not None and harness not in ('claude', 'codex', 'pi'):
+    if harness is not None and harness not in ('claude', 'codex', 'pi', 'antigravity'):
         return ''
     if payload.get('hook_event_name') != 'PostToolUse':
         return ''
@@ -1006,17 +1112,28 @@ REASON = re.compile(r'(?:\n[ \t]*|[ \t]*)\*\*(?:neden|gerekçe|gerekce|why|reaso
                     r'.*?(?=\n[ \t]*(?:[-*+][ \t]|\d+[.)][ \t]|#)|\n[ \t]*\n|\n?\Z)', re.S | re.I)
 
 
-def _drop_reason(match):
-    # A pin written after the reason (`... **neden:** ... <!-- beyin:pin -->`) stays with its
-    # rule when the reason goes (#890).
-    return ' ' + PINNED_RULE.search(match[0])[0] if _is_pinned(match[0]) else ''
-
-
 def without_reasons(text):
-    stripped, count = REASON.subn(_drop_reason, text)
+    # REASON reads code as opaque (#924): a `**neden:**` quoted in inline code or in a fence is
+    # no reason, and a reason runs past a fence instead of stopping inside it. So the drop never
+    # cuts a code span or a fence in two, and text that cannot hold code drops as in 3.18.0.
+    masked = _masked_code(text)
+    out, last, count = [], 0, 0
+    for match in REASON.finditer(masked):
+        start, end = match.span()
+        out.append(text[last:start])
+        # A pin written after the reason (`... **neden:** ... <!-- beyin:pin -->`) stays with
+        # its rule when the reason goes (#890); a marker the reason quotes as code does not.
+        found = _pin_match(text[start:end])
+        if found:
+            # Right after a fence's closing line the marker takes a line of its own: on that
+            # line it would keep the fence from closing.
+            after_fence = start > 0 and masked[start] == '\n' and masked[start - 1] == FENCED != text[start - 1]
+            out.append(re.match(r'\n[ \t]*', text[start:end])[0] + found[0] if after_fence else ' ' + found[0])
+        last, count = end, count + 1
     if not count:
         return text
-    return stripped.rstrip('\n') + f'\n[{count} rule reasons (**neden:**) omitted to fit the opening; read source]\n'
+    out.append(text[last:])
+    return ''.join(out).rstrip('\n') + f'\n[{count} rule reasons (**neden:**) omitted to fit the opening; read source]\n'
 
 
 RULE = re.compile(r'^(?:[-*+]|\d+[.)])[ \t]')
@@ -1103,24 +1220,114 @@ def rule_starts(text):
 
 LATEST_RULES = '<!-- beyin:rules-order=latest -->'
 PINNED_RULE = re.compile(r'<!--\s*beyin:pin\s*-->', re.I)
+ITEM_FENCE = re.compile(r'^[ \t]*(`{3,}|~{3,})(.*)$')
+
+
+def _inline_spans(line):
+    """(start, end) of each Markdown inline code span (`...`, ``...``) on one line. A backtick
+    run with no run of the same length after it is a literal."""
+    spans, i, n = [], 0, len(line)
+    while i < n:
+        if line[i] != '`':
+            i += 1
+            continue
+        end = i
+        while end < n and line[end] == '`':
+            end += 1
+        j, close = end, None
+        while j < n:
+            if line[j] != '`':
+                j += 1
+                continue
+            k = j
+            while k < n and line[k] == '`':
+                k += 1
+            if k - j == end - i:
+                close = k
+                break
+            j = k
+        if close is None:
+            i = end
+        else:
+            spans.append((i, close))
+            i = close
+    return spans
+
+
+def _strip_inline_code(line):
+    """Remove Markdown inline code spans (`...`, ``...``) on one line."""
+    if '`' not in line:
+        return line
+    out, last = [], 0
+    for start, end in _inline_spans(line):
+        out.append(line[last:start])
+        last = end
+    out.append(line[last:])
+    return ''.join(out)
+
+
+def _item_lines(item):
+    """(line, fenced) for each line of one list item; fenced covers a fence's opening line,
+    body and closing line, at any indent a list item can use."""
+    fence = None
+    for raw_line in item.split('\n'):
+        line = raw_line.rstrip('\r')
+        if fence:
+            closing = re.match(r'^[ \t]*(' + re.escape(fence[0]) + r'{3,})[ \t]*$', line)
+            if closing and len(closing[1]) >= len(fence):
+                fence = None
+            yield raw_line, True
+            continue
+        match = ITEM_FENCE.match(line)
+        if match and not (match[1][0] == '`' and '`' in match[2]):
+            fence = match[1]
+            yield raw_line, True
+            continue
+        yield raw_line, False
+
+
+def _pin_match(item):
+    """First <!-- beyin:pin --> outside fenced blocks and inline code spans (#890)."""
+    if not PINNED_RULE.search(item):
+        return None
+    for line, fenced in _item_lines(item):
+        found = None if fenced else PINNED_RULE.search(_strip_inline_code(line.rstrip('\r')))
+        if found:
+            return found
+    return None
+
+
+FENCED, INLINE = '\0', '\1'
+
+
+def _masked_code(text):
+    """text with its code masked for REASON (#924), read item by item as _pin_match reads it:
+    every character of a fenced line turns into FENCED, of an inline code span into INLINE. An
+    empty line in a fence takes its line break along, so it ends no reason. Offsets stay."""
+    if '`' not in text and '~' not in text:
+        return text
+    out = []
+    bounds = sorted({0, len(text), *rule_starts(text)})
+    for a, b in zip(bounds, bounds[1:]):
+        lines = list(_item_lines(text[a:b]))
+        for index, (line, fenced) in enumerate(lines):
+            if index:
+                out.append(FENCED if fenced and not line and index < len(lines) - 1 else '\n')
+            if fenced:
+                out.append(FENCED * len(line))
+                continue
+            last = 0
+            for start, end in _inline_spans(line):
+                out.append(line[last:start] + INLINE * (end - start))
+                last = end
+            out.append(line[last:])
+    return ''.join(out)
 
 
 def _is_pinned(item):
-    """A <!-- beyin:pin --> outside fenced code (#890): a marker in an example block, as
-    rule_starts treats a list item there, pins nothing."""
-    if not PINNED_RULE.search(item):
-        return False
-    fence = None
-    for line in item.split('\n'):
-        match = FENCE.match(line)
-        if fence:
-            if match and match[1][0] == fence[0] and len(match[1]) >= len(fence):
-                fence = None
-        elif match:
-            fence = match[1]
-        elif PINNED_RULE.search(line):
-            return True
-    return False
+    """A <!-- beyin:pin --> outside fenced code and inline code (#890): a marker quoted
+    as an example does not pin the rule that carries it."""
+    return _pin_match(item) is not None
 
 
 def _pinned(items, room):
@@ -1261,6 +1468,18 @@ def ends(text, budget, *, rules_report=None):
 
 
 CLIP_MARKER = '\n[truncated: read source]\n'
+
+
+def _omitted_section(total_chars, budget):
+    """Single-line omission pointer when a section's share cannot hold a usable excerpt (#916)."""
+    if budget <= 0:
+        return ''
+    for candidate in (f'[omitted ({total_chars} chars); read source]\n',
+                      '[omitted: read full source]\n',
+                      '[omitted: read source]\n'):
+        if len(candidate) <= budget:
+            return candidate
+    return '[omitted: read source]\n'[:budget]
 
 
 def fit_opening_overflow(harness, text, budget):
@@ -1795,6 +2014,11 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
             pass
     fixed = len(header) + len(notice) + sum(len(label) for label, _, _ in sections)
     if fixed > budget:
+        if report is not None:
+            report['files'] = {
+                name: {'chars': len(body), 'share': 0, 'clipped': True, 'omitted': True}
+                for _, body, name in sections[:len(records)]
+            }
         return clip(header + notice + 'Read companion files: ' + ', '.join(r['source'] for r in records), budget)
     floors = dict(FLOORS)
     opened = {name for _, _, name in sections}
@@ -1903,10 +2127,27 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
                     if needs[i] <= len(view) < lengths[i]:
                         parts = parts[:i] + [(label, view, name)] + parts[i + 1:]
                         lengths = share(available, parts, protect=True)
+        omitted_stubs = {}
+        spare_saved = 0
+        lengths = list(lengths)
+        for i, (label, body, name) in enumerate(parts):
+            if (name not in ('Kurallar.md', 'Threads.md', 'Last-Session.md')
+                    and lengths[i] < len(body) and lengths[i] <= MIN_USABLE_EXCERPT):
+                stub = _omitted_section(len(sections[i][1]), lengths[i])
+                omitted_stubs[i] = stub
+                spare_saved += max(0, lengths[i] - len(stub))
+                lengths[i] = len(stub)
+        while spare_saved > 0 and any(
+                i not in omitted_stubs and lengths[i] < len(item[1]) for i, item in enumerate(parts)):
+            for i, (_, body, _) in enumerate(parts):
+                if spare_saved > 0 and i not in omitted_stubs and lengths[i] < len(body):
+                    lengths[i] += 1
+                    spare_saved -= 1
         h = header if header_text is None else header_text
-        rendered, rules, project_rules = h + notice, None, []
+        rendered, rules, project_rules, opening_files = h + notice, None, [], {}
         for i, (label, body, name) in enumerate(parts):
             rules_report = None
+            omitted = i in omitted_stubs
             if name == 'Kurallar.md':
                 entry = {'chars': len(sections[i][1]), 'share': lengths[i], 'clipped': lengths[i] < len(body),
                          'reasons_omitted': body != sections[i][1]}
@@ -1917,10 +2158,22 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
                     entry['source'] = label.strip().strip('[]').strip()
                     project_rules.append(entry)
                     rules_report = entry
-            rendered += label + (thread_view(body, lengths[i], brief) if name == 'Threads.md' else
-                                 clip(body, lengths[i], both=name == 'Kurallar.md', rules_report=rules_report,
-                                      tail=name == 'Kurallar.md' or (name == 'Journal.md' and not re.search(r'(?m)^## ', body))))
-        return rendered, rules, project_rules
+            if i < len(records):
+                # clipped means the source does not arrive whole: share < chars. A topic file
+                # reduced to its overview or rules without their reasons count as clipped too.
+                opening_files[name] = {
+                    'chars': len(sections[i][1]),
+                    'share': 0 if omitted else lengths[i],
+                    'clipped': omitted or lengths[i] < len(sections[i][1]),
+                    'omitted': omitted,
+                }
+            if omitted:
+                rendered += label + omitted_stubs[i]
+            else:
+                rendered += label + (thread_view(body, lengths[i], brief) if name == 'Threads.md' else
+                                     clip(body, lengths[i], both=name == 'Kurallar.md', rules_report=rules_report,
+                                          tail=name == 'Kurallar.md' or (name == 'Journal.md' and not re.search(r'(?m)^## ', body))))
+        return rendered, rules, project_rules, opening_files
 
     needed = sum(len(body) for _, body, _ in sections)
     # Reserve the protected core before maps, receipts or retrieval. If even this core
@@ -1933,7 +2186,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         core_size = budget
     available = max(0, max(int(budget * .83), core_size if core_size <= budget else 0) - fixed)
     companion_clipped = needed > available
-    text, rules, project_rules = companion(available)
+    text, rules, project_rules, opening_files = companion(available)
     extra = ''
     related_records = []
     index = knowledge_map(store)
@@ -2006,9 +2259,9 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         extra += clip(receipt, budget - len(text) - len(extra))
     # Retrieval takes its share first; every character it did not use goes back to the
     # clipped companion sources instead of being dropped.
-    regained, regained_rules, regained_project_rules = companion(budget - fixed - len(extra))
+    regained, regained_rules, regained_project_rules, regained_files = companion(budget - fixed - len(extra))
     if len(text) < len(regained) <= budget - len(extra):
-        text, rules, project_rules = regained, regained_rules, regained_project_rules
+        text, rules, project_rules, opening_files = regained, regained_rules, regained_project_rules, regained_files
     if rules and rules.get('clipped'):
         # Reserve the longest possible numeric share before allocating. Reclaiming
         # its spare digits can oscillate (999 -> 1000 -> 999), so keep this small
@@ -2025,6 +2278,10 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
             final_rules.pop('pinned_omitted', None)
             if report is not None:
                 report['Kurallar.md'] = final_rules
+                report['files'] = {
+                    name: {'chars': len(body), 'share': 0, 'clipped': True, 'omitted': True}
+                    for _, body, name in sections[:len(records)]
+                }
                 if project_rules:
                     report['project_rules'] = [
                         {k: v for k, v in dict(item, share=0).items() if k not in ('omitted_rules', 'pinned_omitted')}
@@ -2038,18 +2295,60 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         if new_fixed + len(extra) > budget:
             extra = ''
         allocation = budget - new_fixed - len(extra)
-        _, final_rules, _ = companion(allocation, header_text=reserved_header)
+        _, final_rules, _, _ = companion(allocation, header_text=reserved_header)
         full_header = hygiene_line + hygiene_notice(None, rules=final_rules) + header_tail
-        text, final_rules, project_rules = companion(allocation, header_text=full_header)
+        text, final_rules, project_rules, opening_files = companion(allocation, header_text=full_header)
         if report is not None and final_rules:
             report['Kurallar.md'] = final_rules
     elif report is not None and rules:
         report['Kurallar.md'] = rules
+    if report is not None and opening_files:
+        report['files'] = opening_files
     if report is not None and project_rules:
         report['project_rules'] = project_rules
     if report is not None and extra:
         report['related_records'] = related_records
     return text + extra
+
+
+def opening_report(store, budget, receipt=''):
+    """Read-only (#374, #916): Kurallar.md and per-file opening shares from a single render."""
+    report = {}
+    context(store, budget, '0' * 24, 'claude', receipt=receipt, report=report)
+    rules = report.get('Kurallar.md')
+    if rules is None:
+        target = directory(store.vault_root)
+        if target is not None:
+            # Use the same privacy, trust and freshness gates; never infer rules from
+            # other stale companions or read excluded content into the diagnostic.
+            snapshot = store.source_snapshot(['Kurallar.md'], budget_chars=0,
+                                             source_directory=target.relative_to(store.vault_root).as_posix())
+            if snapshot['stale_excluded']:
+                rules = {'stale': True}
+    files = report.get('files') or {}
+    identity = 'Core.md' if 'Core.md' in files else ('Soul.md' if 'Soul.md' in files else None)
+    identity_entry = files.get(identity) if identity else None
+    if not files:
+        # Nothing was measured (no companion folder, more than one candidate folder, or no
+        # readable source): not an "ok".
+        status = 'no_sources'
+    elif identity_entry and identity_entry.get('clipped') and (
+            identity_entry.get('omitted') or identity_entry.get('share', 0) < IDENTITY_WARN_SHARE):
+        status = 'warn'
+    elif any(item.get('clipped') for item in files.values()):
+        status = 'clipped'
+    else:
+        status = 'ok'
+    opening = {
+        'status': status,
+        'budget': budget,
+        'harness': 'claude',
+        'measurement': 'reference_opening',
+        'identity': identity,
+        'identity_warn_share': IDENTITY_WARN_SHARE,
+        'files': files,
+    }
+    return rules, opening
 
 
 def rules_opening(store, budget, receipt=''):
@@ -2060,20 +2359,7 @@ def rules_opening(store, budget, receipt=''):
     a fixed ceiling: a shorter rule set can reclaim room from optional detail. Filesystem
     import references do not change this report or prove client delivery (#610).
     None without a rules section."""
-    report = {}
-    context(store, budget, '0' * 24, 'claude', receipt=receipt, report=report)
-    rules = report.get('Kurallar.md')
-    if rules is not None:
-        return rules
-    target = directory(store.vault_root)
-    if target is not None:
-        # Use the same privacy, trust and freshness gates; never infer rules from
-        # other stale companions or read excluded content into the diagnostic.
-        snapshot = store.source_snapshot(['Kurallar.md'], budget_chars=0,
-                                         source_directory=target.relative_to(store.vault_root).as_posix())
-        if snapshot['stale_excluded']:
-            return {'stale': True}
-    return None
+    return opening_report(store, budget, receipt=receipt)[0]
 
 
 def _project_rule_candidates(vault, state=None, max_projects=50, report=None):

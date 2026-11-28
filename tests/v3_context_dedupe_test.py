@@ -190,7 +190,7 @@ class ContextDedupeHookTest(unittest.TestCase):
         human_prefs = beyin_entry.human_result(saved, 'preferences')
         self.assertIn('Oturum ici tekrar onleme: acik', human_prefs)
         human_doc = beyin_entry.human_result(doc, 'doctor')
-        self.assertIn('Oturum ici tekrar onleme: acik', human_doc)
+        self.assertIn('Oturum içi tekrar önleme: açık', human_doc)
 
         # 5. Disable context_dedupe
         disabled = self.cli('preferences', '--context-dedupe', 'off')
@@ -311,43 +311,174 @@ class ContextDedupeHookTest(unittest.TestCase):
         self.assert_turn(self.invoke('UserPromptSubmit', prompt='why is the GoPlus quota wasted'),
                          ['knowledge/goplus-quota.md'], 'zebra-one')
 
-    # The receipt coverage notice is a session fact too: before this it repeated on every turn,
-    # with the same count, even when the turn had nothing else to say.
+    # The receipt coverage notice is once per session regardless of context-dedupe (#960):
+    # parallel-session churn in N must not repeat the warning on every turn.
 
     COVERAGE = 'Prior checkpoints may lack structured receipts'
 
-    def set_missing_receipts(self, count):
+    def set_missing_receipts(self, count, no_edits=0):
         health = self.state / 'hook-health.json'
         value = json.loads(health.read_text(encoding='utf-8')) if health.is_file() else {}
-        value.setdefault('sync', {}).update(status='succeeded', recent_missing_receipts=count)
+        value.setdefault('sync', {}).update(
+            status='succeeded',
+            recent_missing_receipts=count,
+            recent_no_observed_edit=no_edits,
+        )
         health.write_text(json.dumps(value), encoding='utf-8')
 
-    def test_coverage_notice_is_said_once_per_session_and_again_when_it_changes(self):
-        self.cli('preferences', '--context-dedupe', 'on')
-        self.set_missing_receipts(26)
-        self.assertIn(self.COVERAGE + ' (26 in the last 7 days)', self.context_of(self.invoke('SessionStart', source='startup')))
-        text = self.assert_turn(self.invoke('UserPromptSubmit', prompt='why is the GoPlus quota wasted'),
-                                ['knowledge/goplus-quota.md'])
-        self.assertNotIn(self.COVERAGE, text, 'the opening already said it')
-        self.assertEqual(self.invoke('UserPromptSubmit', prompt='why is the GoPlus quota wasted'), {},
-                         'a turn with nothing new stays silent instead of repeating the notice')
-        self.set_missing_receipts(27)
-        text = self.assert_turn(self.invoke('UserPromptSubmit', prompt='how does postgres performance indexing work'),
-                                ['knowledge/postgres-index.md'])
-        self.assertIn(self.COVERAGE + ' (27 in the last 7 days)', text, 'a changed count is news')
-        self.assertNotIn(self.COVERAGE, self.context_of(
-            self.invoke('UserPromptSubmit', prompt='how does postgres performance indexing work')))
-        self.assertIn(self.COVERAGE, self.context_of(self.invoke('UserPromptSubmit', session_id='other-session',
-                                                                 prompt='why is the GoPlus quota wasted')), 'per session')
-        self.invoke('PreCompact')
-        self.assertIn(self.COVERAGE, self.context_of(self.invoke('UserPromptSubmit', prompt='why is the GoPlus quota wasted')),
-                      'compaction clears it')
+    def test_coverage_notice_is_said_once_per_session_even_when_count_changes(self):
+        for setting in (None, 'off', 'on'):
+            with self.subTest(context_dedupe=setting):
+                if setting is not None:
+                    self.cli('preferences', '--context-dedupe', setting)
+                session = f'cov-churn-{setting}'
+                self.set_missing_receipts(274)
+                opening = self.context_of(self.invoke('SessionStart', session_id=session, source='startup'))
+                self.assertIn(self.COVERAGE + ' (274 in the last 7 days)', opening)
 
-    def test_dedupe_off_repeats_the_coverage_notice_like_before(self):
-        self.set_missing_receipts(3)
-        for _ in range(2):
-            self.assertIn(self.COVERAGE, self.context_of(self.invoke('UserPromptSubmit', prompt='why is the GoPlus quota wasted')))
-        self.assertFalse((self.state / 'session-delivery').exists())
+                # Parallel sessions change N repeatedly; the warning must not repeat.
+                self.set_missing_receipts(296)
+                turn1 = self.assert_turn(self.invoke('UserPromptSubmit', session_id=session,
+                                                     prompt='why is the GoPlus quota wasted'),
+                                         ['knowledge/goplus-quota.md'])
+                self.assertNotIn(self.COVERAGE, turn1, 'the opening already delivered the notice')
+
+                self.set_missing_receipts(300, no_edits=4)
+                self.assertEqual(self.invoke('UserPromptSubmit', session_id=session,
+                                             prompt='unmatched zeppelin'), {},
+                                 'an unmatched turn stays silent instead of repeating the notice')
+
+                self.set_missing_receipts(299, no_edits=3)
+                turn3 = self.assert_turn(self.invoke('UserPromptSubmit', session_id=session,
+                                                     prompt='how does postgres performance indexing work'),
+                                         ['knowledge/postgres-index.md'])
+                self.assertNotIn(self.COVERAGE, turn3, 'a fluctuating count must not repeat the notice')
+
+                # Dedupe toggle semantics for regular records stay intact.
+                repeat = self.invoke('UserPromptSubmit', session_id=session,
+                                     prompt='why is the GoPlus quota wasted')
+                if setting == 'on':
+                    self.assertEqual(repeat, {})
+                else:
+                    self.assertIn('knowledge/goplus-quota.md', self.context_of(repeat))
+                    self.assertNotIn(self.COVERAGE, self.context_of(repeat))
+
+                # Another session is independent and receives the notice once.
+                other = f'other-{setting}'
+                self.assertIn(self.COVERAGE + ' (299 in the last 7 days (3 without observed edits))',
+                              self.context_of(self.invoke('UserPromptSubmit', session_id=other,
+                                                          prompt='why is the GoPlus quota wasted')))
+                self.set_missing_receipts(305)
+                self.assertNotIn(self.COVERAGE, self.context_of(
+                    self.invoke('UserPromptSubmit', session_id=other, prompt='how does postgres performance indexing work')))
+
+    def test_coverage_notice_without_session_start_suppresses_later_turns(self):
+        for setting in (None, 'on'):
+            with self.subTest(context_dedupe=setting):
+                if setting is not None:
+                    self.cli('preferences', '--context-dedupe', setting)
+                session = f'no-start-{setting}'
+                self.set_missing_receipts(274)
+                first = self.context_of(self.invoke('UserPromptSubmit', session_id=session,
+                                                    prompt='why is the GoPlus quota wasted'))
+                self.assertIn(self.COVERAGE + ' (274 in the last 7 days)', first)
+                self.set_missing_receipts(296)
+                second = self.context_of(self.invoke('UserPromptSubmit', session_id=session,
+                                                     prompt='how does postgres performance indexing work'))
+                self.assertNotIn(self.COVERAGE, second)
+                self.set_missing_receipts(300, no_edits=2)
+                self.assertEqual(self.invoke('UserPromptSubmit', session_id=session,
+                                             prompt='unmatched zeppelin'), {})
+
+    def test_coverage_notice_resets_on_compaction_and_session_end(self):
+        for setting in (None, 'on'):
+            with self.subTest(context_dedupe=setting):
+                if setting is not None:
+                    self.cli('preferences', '--context-dedupe', setting)
+                session = f'reset-{setting}'
+                self.set_missing_receipts(274)
+                self.assertIn(self.COVERAGE, self.context_of(self.invoke('SessionStart', session_id=session)))
+                self.set_missing_receipts(296)
+                self.assertNotIn(self.COVERAGE, self.context_of(
+                    self.invoke('UserPromptSubmit', session_id=session, prompt='why is the GoPlus quota wasted')))
+
+                # PreCompact clears the session notice marker.
+                self.invoke('PreCompact', session_id=session)
+                self.set_missing_receipts(300)
+                self.assertIn(self.COVERAGE + ' (300 in the last 7 days)', self.context_of(
+                    self.invoke('UserPromptSubmit', session_id=session, prompt='why is the GoPlus quota wasted')))
+                self.set_missing_receipts(301)
+                self.assertNotIn(self.COVERAGE, self.context_of(
+                    self.invoke('UserPromptSubmit', session_id=session, prompt='how does postgres performance indexing work')))
+
+                # SessionStart(source="compact") resets and delivers once in the compacted opening.
+                self.set_missing_receipts(302)
+                self.assertIn(self.COVERAGE + ' (302 in the last 7 days)', self.context_of(
+                    self.invoke('SessionStart', session_id=session, source='compact')))
+                self.set_missing_receipts(303)
+                self.assertNotIn(self.COVERAGE, self.context_of(
+                    self.invoke('UserPromptSubmit', session_id=session, prompt='why is the GoPlus quota wasted')))
+
+                # SessionEnd clears the session notice marker.
+                self.invoke('SessionEnd', session_id=session)
+                self.set_missing_receipts(304)
+                self.assertIn(self.COVERAGE + ' (304 in the last 7 days)', self.context_of(
+                    self.invoke('SessionStart', session_id=session)))
+                self.set_missing_receipts(305)
+                self.assertNotIn(self.COVERAGE, self.context_of(
+                    self.invoke('UserPromptSubmit', session_id=session, prompt='why is the GoPlus quota wasted')))
+
+    def test_coverage_notice_appears_later_when_opening_had_zero_gaps(self):
+        for setting in (None, 'on'):
+            with self.subTest(context_dedupe=setting):
+                if setting is not None:
+                    self.cli('preferences', '--context-dedupe', setting)
+                session = f'delayed-{setting}'
+                self.set_missing_receipts(0)
+                opening = self.context_of(self.invoke('SessionStart', session_id=session, source='startup'))
+                self.assertNotIn(self.COVERAGE, opening)
+                if setting is None:
+                    self.assertFalse((self.state / 'session-delivery').exists())
+                # Gaps appear later in the session: deliver once, then suppress even if N changes.
+                self.set_missing_receipts(5)
+                first = self.context_of(self.invoke('UserPromptSubmit', session_id=session,
+                                                    prompt='why is the GoPlus quota wasted'))
+                self.assertIn(self.COVERAGE + ' (5 in the last 7 days)', first)
+                self.set_missing_receipts(9)
+                second = self.context_of(self.invoke('UserPromptSubmit', session_id=session,
+                                                     prompt='how does postgres performance indexing work'))
+                self.assertNotIn(self.COVERAGE, second)
+
+    def test_coverage_notice_works_with_abstain_coverage_enabled(self):
+        self.set_missing_receipts(4)
+        extra = {'BEYIN_V3_ABSTAIN_COVERAGE': '0.5'}
+        first = self.context_of(self.invoke('UserPromptSubmit', session_id='abstain-cov',
+                                            prompt='why is the GoPlus quota wasted', extra_env=extra))
+        self.assertIn(self.COVERAGE + ' (4 in the last 7 days)', first)
+        self.assertFalse((self.state / 'hook-error.json').exists())
+        self.set_missing_receipts(5)
+        second = self.context_of(self.invoke('UserPromptSubmit', session_id='abstain-cov',
+                                             prompt='how does postgres performance indexing work', extra_env=extra))
+        self.assertNotIn(self.COVERAGE, second)
+        self.assertFalse((self.state / 'hook-error.json').exists())
+
+    def test_coverage_notice_with_abstain_coverage_and_dedupe_on_keeps_the_turn(self):
+        # 3.18.0 rebound the notice's variable to the abstention float; with dedupe on the
+        # turn then failed with AttributeError and lost its context.
+        self.cli('preferences', '--context-dedupe', 'on')
+        self.set_missing_receipts(4)
+        extra = {'BEYIN_V3_ABSTAIN_COVERAGE': '0.5'}
+        first = self.context_of(self.invoke('UserPromptSubmit', session_id='abstain-on',
+                                            prompt='why is the GoPlus quota wasted', extra_env=extra))
+        self.assertIn(self.COVERAGE + ' (4 in the last 7 days)', first)
+        self.assertIn('knowledge/goplus-quota.md', first)
+        self.assertFalse((self.state / 'hook-error.json').exists())
+        self.set_missing_receipts(5)
+        second = self.context_of(self.invoke('UserPromptSubmit', session_id='abstain-on',
+                                             prompt='how does postgres performance indexing work', extra_env=extra))
+        self.assertNotIn(self.COVERAGE, second)
+        self.assertIn('knowledge/postgres-index.md', second)
+        self.assertFalse((self.state / 'hook-error.json').exists())
 
     def test_coverage_without_matches_and_companion_delivery_share_the_session(self):
         self.cli('preferences', '--context-dedupe', 'on')
@@ -554,6 +685,65 @@ class DedupeLedgerTest(unittest.TestCase):
         self.assertFalse(d.receipt_delivered(self.state, 'claude', 's', '\nLatest receipt (x):\n7'))
         self.assertEqual(d.filter_novel(self.state, 'claude', 's', [self.record('a')])[0], [],
                          'a bad receipt value does not discard the records')
+
+    def test_notice_tracking_applies_independently_of_context_dedupe_toggle(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        d = self.dedupe
+        key = 'receipt_coverage_gap'
+        one = '\nLatest receipt (receipts/one.md; ...):\nbody one'
+
+        # Both absent settings file and explicit enabled=False leave dedupe off.
+        (self.state / d.SETTINGS_FILE).unlink()
+        for off_mode in ('absent', 'false'):
+            if off_mode == 'false':
+                d.save_settings(self.state, False)
+            sess = f's-{off_mode}'
+            # Records and receipts must NOT create a ledger when dedupe is off.
+            d.record_delivered(self.state, 'claude', sess, [self.record('a')], receipt=one)
+            self.assertFalse(d._session_file(self.state, 'claude', sess).exists())
+
+            # A notice IS recorded when dedupe is off, without storing records or receipts.
+            self.assertFalse(d.notice_delivered(self.state, 'claude', sess, key))
+            d.record_delivered(self.state, 'claude', sess, [self.record('a')], receipt=one, notice=key)
+            self.assertTrue(d.notice_delivered(self.state, 'claude', sess, key))
+            self.assertFalse(d.notice_delivered(self.state, 'claude', 'other', key), 'per session')
+            self.assertFalse(d.notice_delivered(self.state, 'codex', sess, key), 'per harness')
+            stored = json.loads(d._session_file(self.state, 'claude', sess).read_text(encoding='utf-8'))
+            self.assertEqual(stored['version'], 1)
+            self.assertEqual(stored['records'], {}, 'dedupe off must not store delivered records')
+            self.assertNotIn('receipt', stored, 'dedupe off must not store delivered receipts')
+
+            # Turning dedupe on later preserves the notice without falsely suppressing records/receipts.
+            d.save_settings(self.state, True)
+            self.assertTrue(d.notice_delivered(self.state, 'claude', sess, key))
+            self.assertEqual(d.filter_novel(self.state, 'claude', sess, [self.record('a')])[0], [self.record('a')])
+            self.assertFalse(d.receipt_delivered(self.state, 'claude', sess, one))
+            d.save_settings(self.state, False)
+
+            # Compaction / SessionEnd reset clears the notice even when dedupe is off.
+            d.reset_session(self.state, 'claude', sess)
+            self.assertFalse(d.notice_delivered(self.state, 'claude', sess, key))
+
+        # Fail-open checks: expired, damaged notice value, oversized, reparse point.
+        now = 1_800_000_000.0
+        d.record_delivered(self.state, 'claude', 'ttl', [], now=now, notice=key)
+        self.assertTrue(d.notice_delivered(self.state, 'claude', 'ttl', key, now=now + 60))
+        self.assertFalse(d.notice_delivered(self.state, 'claude', 'ttl', key, now=now + d.MAX_AGE_SECONDS + 1))
+
+        path = d._session_file(self.state, 'claude', 'bad-notice', create=True)
+        path.write_text(json.dumps({'version': 1, 'harness': 'claude', 'at': now, 'notice': 7, 'records': {}}),
+                        encoding='utf-8')
+        self.assertFalse(d.notice_delivered(self.state, 'claude', 'bad-notice', key, now=now))
+
+        big = d._session_file(self.state, 'claude', 'oversized', create=True)
+        big.write_text(' ' * (d.MAX_FILE_BYTES + 1), encoding='utf-8')
+        self.assertFalse(d.notice_delivered(self.state, 'claude', 'oversized', key, now=now))
+
+        reparse = SimpleNamespace(st_mode=0o100600, st_size=64, st_reparse_tag=0xA0000003)
+        with patch.object(d.os, 'lstat', return_value=reparse):
+            self.assertFalse(d.notice_delivered(self.state, 'claude', 'ttl', key, now=now))
+            self.assertIsNone(d._session_file(self.state, 'claude', 'ttl'))
 
 
 if __name__ == '__main__':

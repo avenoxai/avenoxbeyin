@@ -32,7 +32,7 @@ flowchart TB
 
 Asıl kaynak dosyaların. Beyin bunların yerel indeksini tutar ve seçilen bağlamı kullandığın AI istemcisine verir. Sohbet geçmişinin tamamını kendiliğinden bilgiye dönüştürmez; kalıcı olmasını istediğin şeyi nota yazdırırsın.
 
-> **V3.18.0** ile kırpılmasını istemediğin kuralları `<!-- beyin:pin -->` ile sabitleyebilirsin. Antigravity açılışı her mesajda yeniden basmıyor, Web Clipper yazıları tam taşınıyor ve backtick içindeki gizli değerler yeniden maskeleniyor. [Sürüm notu](docs/v3/releases/3.18.0.md) · [Önceki sürüm](docs/v3/releases/3.17.0.md).
+> **V3.19.0** ile Obsidian'da elle yazdığın `private: true` gibi gizlilik alanları notu gerçekten gizli yapıyor, `doctor --human` Türkçe ve sade konuşuyor, Antigravity izleri Claude Code ile eşitlendi. [Sürüm notu](docs/v3/releases/3.19.0.md) · [Önceki sürüm](docs/v3/releases/3.18.0.md).
 
 <a id="kurulum"></a>
 ## Üç adımda kurulum
