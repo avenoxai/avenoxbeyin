@@ -834,7 +834,8 @@ class ShellEditUnitTest(unittest.TestCase):
 
     def test_claude_and_antigravity_transcripts_count_the_same_commands(self):
         # #950 ports the Claude rule to run_command and does not widen it: one command and one window
-        # give one answer in both transcript shapes, and a command that only reads never counts.
+        # give one answer in both transcript shapes, and a read (cat, grep, ls, git log, note-read,
+        # context) whose named files did not change while it ran never counts.
         tool = 'PowerShell' if os.name == 'nt' else 'Bash'  # the tokenizer Antigravity uses here
 
         def iso(at):
