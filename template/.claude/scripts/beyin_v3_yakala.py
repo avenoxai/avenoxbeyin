@@ -2058,8 +2058,10 @@ def extract(vault, card, found, allow_audio=True, info=None, state=None):
         if kind == 'youtube' and kind_of(url) != 'youtube':
             kind = kind_of(url)  # an edited field never hands another site to yt-dlp's generic extractor
     clipped, legacy = _clipper_text(vault, card, _clipper_section(body))
-    if clipped is _CLIPPER_PRESERVED and kind != 'youtube':
-        return None, 'web-clipper-mevcut', legacy
+    if clipped is _CLIPPER_PRESERVED:
+        if kind != 'youtube':
+            return None, 'web-clipper-mevcut', legacy
+        clipped, legacy = '', None  # a YouTube card is transcribed, as before #926; the marker has no length
     if clipped and len(clipped) > 200 and kind != 'youtube':
         return clipped, 'web-clipper', legacy
     if kind == 'youtube' and url:

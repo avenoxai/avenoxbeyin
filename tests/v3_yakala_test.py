@@ -668,6 +668,37 @@ class YakalaUnitTest(unittest.TestCase):
         self.assertEqual(raw_path.read_bytes(), before)
         self.assertIn('Paywall arkasindaki ayrinti.', raw_path.read_text(encoding='utf-8'))
 
+    def test_web_clipper_pointer_on_a_card_turned_youtube_still_reaches_the_transcript_path(self):
+        # #926 follow-up: the "already in the raw file" marker is not page text. A processed Web Clipper
+        # card whose kaynak_turu is later edited to youtube goes to yt-dlp as before, not to len(marker).
+        env = patch.dict(os.environ, {'XDG_STATE_HOME': str(Path(self.tmp.name) / 'state')})
+        env.start()
+        self.addCleanup(env.stop)
+        none = {name: None for name in ('npx', 'yt_dlp', 'whisper', 'pdftotext', 'ffmpeg')}
+        resolve = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('8.8.8.8', 443))]
+        url = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+        path = self.vault / INBOX / 'clip-video.md'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '---\ntur: yakala\ndurum: bekliyor\nkaynak_turu: makale\nbaslik: "Video"\nurl: "' + url + '"\n'
+            'arac: web-clipper\nvisibility: internal\n---\n# Video\n\n## Kaynak\n\n' + url + '\n\n## Icerik\n\n'
+            + 'Video sayfasinin Web Clipper ile yakalanan aciklama metni. ' * 6 + '\n',
+            encoding='utf-8', newline='\n'
+        )
+        with patch.object(yakala, 'tools', return_value=none), patch.object(socket, 'getaddrinfo', return_value=resolve):
+            first = yakala.process(self.vault, [path.stem])['kartlar'][0]
+        self.assertEqual((first['durum'], first['yontem']), ('cikarildi', 'web-clipper'))
+        raw_path = self.vault / first['ham']
+        before = raw_path.read_bytes()
+        text = re.sub(r'(?m)^kaynak_turu: .*$', 'kaynak_turu: youtube', path.read_text(encoding='utf-8'))
+        path.write_text(text, encoding='utf-8', newline='\n')
+        with patch.object(yakala, 'tools', return_value=none), patch.object(socket, 'getaddrinfo', return_value=resolve), \
+                patch.object(yakala, 'via_youtube', return_value=(None, None, 'yt-dlp yok')) as transcript:
+            second = yakala.process(self.vault, [path.stem])['kartlar'][0]
+        transcript.assert_called_once()
+        self.assertEqual((second['durum'], second['not']), ('hata', 'yt-dlp yok'))
+        self.assertEqual(raw_path.read_bytes(), before)
+
     def test_vtt_text(self):
         raw = ('WEBVTT\nKind: captions\n\n00:00:00.000 --> 00:00:02.000\nmerhaba <c>dunya</c>\n\n'
                '00:00:02.000 --> 00:00:04.000\nmerhaba dunya\nikinci satir\n\n00:00:40.000 --> 00:00:42.000\nyeni paragraf\n'
