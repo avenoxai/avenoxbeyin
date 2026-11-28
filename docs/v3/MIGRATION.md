@@ -245,8 +245,13 @@ variable, a script that computes its paths, a background write, a rename or a
 deletion is still not observed, and Codex shell commands are not read. Neither
 are commands of a Task subagent (its transcript is a separate file) or commands
 before an interrupt, compaction or slash-command record in the same turn.
+An Antigravity Stop applies the same rule to the turn's `run_command` steps
+(#949): it reads only step metadata and the command line and working directory
+(`Cwd`) of each call, never the tool output, and a relative name resolves from
+that `Cwd` first, as from a Claude record's `cwd`.
 A `note-create`, `note-edit`, `task-create` or `task-update` run through the
-Claude Code Bash tool names its session through `CLAUDE_CODE_SESSION_ID`: it
+Claude Code Bash tool or an Antigravity `run_command` step names its session
+through `CLAUDE_CODE_SESSION_ID` or `ANTIGRAVITY_CONVERSATION_ID` (#938): it
 opens the reminder window itself and leaves a small flag that the next Stop of
 that session queues as `PostToolUse` metadata marked `observed: cli`, stamped
 with the write's time, so such a turn is also an edited turn for coverage.
