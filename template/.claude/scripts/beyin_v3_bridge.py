@@ -1312,6 +1312,23 @@ def _main(argv=None):
         if not args.project_root:
             print(quiet); return 0
 
+        payload = None
+        if args.harness == 'antigravity' and not (args.print_config or args.install or args.uninstall):
+            # Antigravity runs PreInvocation on every model call (invocationNum=1, 2, ...) and Stop
+            # on non-idle pauses; exit before resolving roots or importing hook/preferences modules.
+            if hasattr(sys.stdin, 'reconfigure'):
+                sys.stdin.reconfigure(encoding='utf-8-sig', errors='replace')
+            payload = json.loads(sys.stdin.read(1_000_000).lstrip('\ufeff').strip() or '{}')
+            if not isinstance(payload, dict):
+                raise ValueError('Invalid hook payload')
+            early_native = args.native_event or payload.get('hookEventName')
+            if early_native == 'Stop':
+                quiet = '{"decision":"stop"}'
+            if early_native == 'PreInvocation' and payload.get('invocationNum') != 0:
+                print(quiet); return 0
+            if early_native == 'Stop' and payload.get('fullyIdle') is not True:
+                print(quiet); return 0
+
         vault = args.vault.expanduser().resolve()
         if not vault.is_dir() or not 0 <= args.context_chars <= 4000:
             raise ValueError('Invalid vault or context budget')
@@ -1370,14 +1387,15 @@ def _main(argv=None):
         # A payload cut at the read limit is not JSON: the handler below answers '{}'.
         # Parser/help and management calls do not consume the embedding host's input.
         # Reconfigure only the hook stream, immediately before reading its payload.
-        if hasattr(sys.stdin, 'reconfigure'):
-            sys.stdin.reconfigure(encoding='utf-8-sig', errors='replace')
-        payload = json.loads(sys.stdin.read(1_000_000).lstrip('\ufeff').strip() or '{}')
-        if not isinstance(payload, dict):
-            raise ValueError('Invalid hook payload')
+        if payload is None:
+            if hasattr(sys.stdin, 'reconfigure'):
+                sys.stdin.reconfigure(encoding='utf-8-sig', errors='replace')
+            payload = json.loads(sys.stdin.read(1_000_000).lstrip('\ufeff').strip() or '{}')
+            if not isinstance(payload, dict):
+                raise ValueError('Invalid hook payload')
         if args.harness == 'antigravity':
             from beyin_v3_hook import (antigravity_tool_input, antigravity_session_marker, antigravity_continued_stop,
-                                       _antigravity_nonhuman_start, _antigravity_nonhuman_turn)
+                                       antigravity_abnormal_stop, _antigravity_nonhuman_start, _antigravity_nonhuman_turn)
             native = args.native_event or payload.get('hookEventName')
             if native == 'Stop':
                 quiet = '{"decision":"stop"}'
@@ -1386,7 +1404,7 @@ def _main(argv=None):
             marker = (antigravity_session_marker(state, json.dumps(['bridge', conversation, payload.get('workspacePaths')]))
                       if isinstance(conversation, str) and conversation else None)
             # Same boundaries as the vault adapter: the conversation's start, once (#903), and a
-            # fully idle Stop; a PostToolUse counts only for a successful file write. A nested
+            # normal, fully idle Stop; a PostToolUse counts only for a successful file write. A nested
             # agent's start and turns (#885: no user input) stay silent here as they do there.
             if native == 'SessionStart':
                 first = not _antigravity_nonhuman_start(payload)
@@ -1398,6 +1416,7 @@ def _main(argv=None):
                 first = payload['tool_input'] is not None
             else:
                 first = (native == 'Stop' and payload.get('fullyIdle') is True
+                         and not antigravity_abnormal_stop(payload)  # before any transcript read
                          and not _antigravity_nonhuman_turn(payload, native))
             paths = payload.get('workspacePaths')
             # A vault among the workspaces runs its own local hooks; do not count the session twice.

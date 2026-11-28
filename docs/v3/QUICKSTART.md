@@ -358,8 +358,8 @@ interactive operation.
 
 Set `BEYIN_V3_SKIP=1` in a delegated or headless agent process to keep the V3
 memory hooks out of that run; the hook and bridge return `{}` without queuing an
-event, injecting context or starting a worker (a non-idle Antigravity `Stop`
-still answers `decision: stop`). Only the exact value `1` skips; any other value,
+event, injecting context or starting a worker (an Antigravity `Stop` answers
+`{"decision":"stop"}` instead, its form of the same no-op). Only the exact value `1` skips; any other value,
 including `0`, `false` or an empty value, leaves the hooks on. Child processes
 inherit the variable, so set it on the delegated process only, not in a shell
 profile or shared environment file where it would also silence the main session.

@@ -165,12 +165,20 @@ Genel ayarlar kullanıcıya aittir ve vault güncellemesinin rollback kapsamına
   kullanıcı mesajında 0'dan başladığı için `PreInvocation` yalnız `SessionStart` gelmemiş bir
   konuşmada (o olayı göndermeyen istemci, güncellemeden önce açılmış konuşma) bir kez başlangıç
   sayılır (#903). Kullanıcı girdisi olmadan başlayan iç içe ajan konuşması (#885) vault
-  adaptöründe olduğu gibi açılış ve checkpoint almaz. `PostToolUse` yalnız başarılı dosya yazımında (`write_file`, `edit_file`,
+  adaptöründe olduğu gibi açılış ve checkpoint almaz; kullanıcı mesajı olmadan gelen uyanma turu
+  (`initialNumSteps - 1` adımı `PLANNER_RESPONSE`) da başlangıç sayılmaz. Bu ayrım mesaj metnine
+  bakmadan, `lastUserInput` alanının boş olup olmadığı, `initialNumSteps` ve `transcriptPath`
+  içindeki adım türleriyle yapılır. 2 MB'ı aşan transcript'in ilk 64 KB'ı ile son 2 MB'ı satır
+  sınırından okunur; arada okunmayan adım kalırsa `Stop` turu sayar. `PostToolUse` yalnız başarılı dosya yazımında (`write_file`, `edit_file`,
   `code_action`, IDE'deki `write_to_file`, `replace_file_content`, `multi_replace_file_content`;
   `matcher` grubu içinde) düzenleme penceresini açar ve `{}` döner. `Stop` yalnız
-  `fullyIdle: true` iken sayılır; receipt eksikse bir kez `{"decision":"continue"}` döner,
-  devam ettirilen `Stop` (`continuationActive: true` ya da `executionNum` 0'dan büyük; 1.5.18
-  devamdan sonraki `Stop`'u `continuationActive: false`, `executionNum: 1` ile gönderdi) aynı turda
+  `fullyIdle: true` iken ve tur normal bittiğinde sayılır. `error` boş değilse ya da
+  `terminationReason` `NO_TOOL_CALL` veya `UNSPECIFIED` dışında bir değer taşıyorsa (kullanıcı
+  iptali, hata, çağrı ya da token bütçesi sınırı gibi) `{"decision":"stop"}` döner; checkpoint
+  kuyruğa alınmaz, hatırlatma yapılmaz ve düzenleme işareti sonraki normal `Stop`'a kalır. Bu iki
+  alanı göndermeyen istemcide davranış değişmez. Normal bir `Stop`'ta receipt eksikse bir kez
+  `{"decision":"continue"}` döner, devam ettirilen `Stop` (`continuationActive: true` ya da
+  `executionNum` 0'dan büyük; 1.5.18 devamdan sonraki `Stop`'u `continuationActive: false`, `executionNum: 1` ile gönderdi) aynı turda
   yeniden sormaz. `SessionStart` ve `PostToolUse`
   komutları `--native-event` taşımaz, olayı payload'daki `hookEventName`'den okur; bu yüzden
   3.17.0'a dönülürse o sürümün köprüsü bu iki kayda `{}` döner (yalnız 3.17.0 köprüsü sınandı). Hook komutu `hooks.json` klasöründe çalıştığı için proje, payload'daki ilk

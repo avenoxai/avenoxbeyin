@@ -1142,6 +1142,70 @@ class BridgeTest(unittest.TestCase):
         self.env['BEYIN_V3_FILTER_HARNESS_TURNS'] = '0'
         self.assertIn('injectSteps', self.agy_run(start, dict(base, hookEventName='SessionStart')))
 
+    def test_antigravity_bridge_large_transcript_filters_nonhuman_turn(self):
+        config = self.agy_config()
+        turn = config['PreInvocation'][0]['command']
+        pad = 'x' * 8192
+        def write_large(path, last_type):
+            lines = [json.dumps({'step_index': 0, 'type': 'USER_INPUT'}) + '\n']
+            size = len(lines[0].encode('utf-8'))
+            step = 1
+            while size < hook.ANTIGRAVITY_TRANSCRIPT_LIMIT + 256 * 1024:
+                line = json.dumps({'step_index': step, 'type': 'TOOL_OUTPUT', 'detail': pad}) + '\n'
+                lines.append(line)
+                size += len(line.encode('utf-8'))
+                step += 1
+            lines.append(json.dumps({'step_index': step, 'type': last_type}) + '\n')
+            path.write_text(''.join(lines), encoding='utf-8', newline='\n')
+            return step + 1
+
+        transcript = (self.root / 'bridge-large.jsonl').resolve()
+        count = write_large(transcript, 'PLANNER_RESPONSE')
+        base = dict(conversationId='agy-bridge-large', workspacePaths=[str(self.project)],
+                    hookEventName='PreInvocation', invocationNum=0, lastUserInput='old prompt',
+                    initialNumSteps=count, transcriptPath=str(transcript))
+        self.assertEqual(self.agy_run(turn, base), {})
+        self.assertEqual(self.queued(), [])
+
+        count_human = write_large(transcript, 'USER_INPUT')
+        self.assertIn('injectSteps', self.agy_run(turn, dict(base, conversationId='agy-bridge-large-human',
+                                                             initialNumSteps=count_human, lastUserInput='new prompt')))
+
+    def test_antigravity_bridge_fast_path_skips_hook_and_preferences_imports(self):
+        probe = (
+            'import contextlib, io, json, sys\n'
+            'sys.path.insert(0, sys.argv[1])\n'
+            'import beyin_v3_bridge\n'
+            'raw_input = sys.stdin.read()\n'
+            'sys.stdin = io.StringIO(raw_input)\n'
+            'out = io.StringIO()\n'
+            'with contextlib.redirect_stdout(out):\n'
+            '    code = beyin_v3_bridge.main(sys.argv[2:])\n'
+            'loaded = sorted(m for m in ("beyin_v3_hook", "beyin_v3", "beyin_v3_preferences") if m in sys.modules)\n'
+            'print(json.dumps({"code": code, "output": out.getvalue().strip(), "loaded": loaded}))\n'
+        )
+        cases = [
+            (['--native-event', 'PreInvocation'],
+             {'hookEventName': 'PreInvocation', 'conversationId': 'fast-b1', 'invocationNum': 3,
+              'workspacePaths': [str(self.project)]}, '{}'),
+            (['--native-event', 'Stop'],
+             {'hookEventName': 'Stop', 'conversationId': 'fast-b2', 'fullyIdle': False,
+              'workspacePaths': [str(self.project)]}, '{"decision":"stop"}'),
+        ]
+        for extra, payload, expected in cases:
+            with self.subTest(extra=extra):
+                result = subprocess.run(
+                    [sys.executable, '-c', probe, str(SCRIPTS),
+                     '--vault', str(self.vault), '--state', str(self.state),
+                     '--harness', 'antigravity', '--project-root', str(self.root / 'Projects'), *extra],
+                    input=json.dumps(payload), text=True, encoding='utf-8', capture_output=True,
+                    cwd=self.home, env=self.env, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                report = json.loads(result.stdout)
+                self.assertEqual(report['code'], 0)
+                self.assertEqual(report['output'], expected)
+                self.assertEqual(report['loaded'], [])
+
     def test_antigravity_post_tool_use_opens_the_receipt_window_and_stop_continues_once(self):
         # #903 (OzzWizard): PostToolUse under a matcher group answers {}; Stop asks once with
         # decision "continue" and honours continuationActive.
@@ -1166,6 +1230,98 @@ class BridgeTest(unittest.TestCase):
         self.assertIn('note-create', reminder['reason'])
         self.assertIn('--harness antigravity', reminder['reason'])
         self.assertEqual(self.agy_run(stop_command, stop), {'decision': 'stop'})
+
+    def test_antigravity_abnormal_stop_respects_termination_reason_and_error(self):
+        # Abnormal/terminal Stop reasons and non-empty errors must stop immediately without
+        # queuing, spawning a worker, or clearing the external-project .edited marker.
+        abnormal_reasons = (
+            'USER_CANCELED',
+            'ERROR',
+            'MAX_INVOCATIONS',
+            'MAX_FORCED_INVOCATIONS',
+            'MAX_TOKEN_BUDGET_EXCEEDED',
+            'TERMINAL_STEP_TYPE',
+            'TERMINAL_CUSTOM_HOOK',
+            'INJECTED_RESPONSE',
+        )
+        session = 'agy-bridge-abnormal'
+        target = str(self.project / 'app.py')
+        tool = dict(hookEventName='PostToolUse', conversationId=session, workspacePaths=[str(self.project)],
+                    lastUserInput='edit it', error='', toolCall={'name': 'write_file', 'args': {'Path': target}})
+        self.assertEqual(self.invoke(tool, harness='antigravity', cwd=self.home), {})
+        namespaced = json.dumps([str(self.project.resolve()), session])
+        digest = hashlib.sha256(namespaced.encode('utf-8')).hexdigest()
+        edited = self.state / 'receipt-reminders' / (digest + '.edited')
+        done = self.state / 'receipt-reminders' / (digest + '.done')
+        self.assertTrue(edited.exists())
+        self.assertEqual(self.queued(), [])
+
+        base_stop = dict(hookEventName='Stop', conversationId=session, workspacePaths=[str(self.project)],
+                         fullyIdle=True, continuationActive=False, executionNum=0, lastUserInput='edit it')
+
+        def stop_run(**fields):
+            return self.invoke(dict(base_stop, **fields), extra=['--native-event', 'Stop'],
+                               harness='antigravity', cwd=self.home)
+
+        for reason in abnormal_reasons:
+            with self.subTest(terminationReason=reason):
+                res = stop_run(terminationReason=reason, error='')
+                self.assertEqual(res, {'decision': 'stop'})
+                self.assertTrue(edited.exists())
+                self.assertFalse(done.exists())
+                self.assertEqual(self.queued(), [])
+
+        for fields in ({'terminationReason': 'NO_TOOL_CALL', 'error': 'model failure'}, {'error': 'tool failure'}):
+            with self.subTest(error_case=fields):
+                res = stop_run(**fields)
+                self.assertEqual(res, {'decision': 'stop'})
+                self.assertTrue(edited.exists())
+                self.assertFalse(done.exists())
+                self.assertEqual(self.queued(), [])
+
+        # In-process: an abnormal Stop is answered before the nested-agent check reads the transcript
+        # (up to 2 MB + 64 KB) and spawns nothing. The control, a normal Stop in a workspace the
+        # bridge skips, shows the probe is live: it does read the transcript before answering.
+        argv = ['--vault', str(self.vault), '--state', str(self.state), '--harness', 'antigravity',
+                '--project-root', str(self.root / 'Projects'), '--native-event', 'Stop']
+        wakeup = dict(base_stop, lastUserInput='', initialNumSteps=2,
+                      transcriptPath=str(self.root / 'agy-transcript.jsonl'))
+        for fields, reads in (({'terminationReason': 'USER_CANCELED', 'error': ''}, 0),
+                              ({'terminationReason': 'NO_TOOL_CALL', 'error': 'boom'}, 0),
+                              ({'terminationReason': 'NO_TOOL_CALL', 'error': '',
+                                'workspacePaths': ['relative/project']}, 1)):
+            with self.subTest(inprocess=fields):
+                out = io.StringIO()
+                with patch.object(sys, 'stdin', io.StringIO(json.dumps(dict(wakeup, **fields)))), \
+                        contextlib.redirect_stdout(out), \
+                        patch.object(hook, '_antigravity_transcript_steps', return_value=None) as read_mock, \
+                        patch.object(subprocess, 'Popen') as popen_mock:
+                    code = bridge.main(argv)
+                self.assertEqual(code, 0)
+                self.assertEqual(json.loads(out.getvalue()), {'decision': 'stop'})
+                self.assertEqual(read_mock.call_count, reads)
+                popen_mock.assert_not_called()
+        self.assertTrue(edited.exists())
+        self.assertFalse(done.exists())
+        self.assertEqual(self.queued(), [])
+
+        # Next normal NO_TOOL_CALL turn still sees preserved .edited and asks for a receipt.
+        normal = stop_run(terminationReason='NO_TOOL_CALL', error='')
+        self.assertEqual(normal.get('decision'), 'continue')
+        self.assertIn('note-create', normal.get('reason', ''))
+        self.assertIn('--harness antigravity', normal['reason'])
+
+        # Legacy clients omitting terminationReason and error keep normal reminder behaviour.
+        legacy_session = 'agy-bridge-legacy'
+        self.assertEqual(self.invoke(dict(tool, conversationId=legacy_session),
+                                     harness='antigravity', cwd=self.home), {})
+        legacy_payload = dict(hookEventName='Stop', conversationId=legacy_session,
+                              workspacePaths=[str(self.project)], fullyIdle=True,
+                              continuationActive=False, lastUserInput='edit it')
+        legacy_res = self.invoke(legacy_payload, extra=['--native-event', 'Stop'],
+                                 harness='antigravity', cwd=self.home)
+        self.assertEqual(legacy_res.get('decision'), 'continue')
+        self.assertIn('note-create', legacy_res.get('reason', ''))
 
     def test_folder_below_another_installed_vault_is_skipped_for_every_client(self):
         # The owning vault is found by walking up, so a subfolder is as silent as the vault root.
