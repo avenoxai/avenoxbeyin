@@ -1493,13 +1493,14 @@ class SyncEngine:
         return result
 
     def _check_note_create_path(self, source):
-        """Resolve source within vault and reject any symlink or Windows junction along the path."""
-        path = self._path(source)
-        cursor = path
+        """Reject any symlink or Windows junction along the unresolved source, then resolve within vault."""
+        if not isinstance(source, str) or Path(source).is_absolute() or '..' in Path(source).parts:
+            raise ValueError('relative source required')
+        cursor = self.root / source
         while cursor != self.root and cursor != cursor.parent:
             _unlinked(cursor)
             cursor = cursor.parent
-        return path
+        return self._path(source)
 
     def _workspace_allows_note_create(self, source, parts):
         """True when a registered workspace or valid project scope owns source's folder (#958).

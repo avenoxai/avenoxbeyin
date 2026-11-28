@@ -332,15 +332,21 @@ class NoteCreateProjectPathsTest(unittest.TestCase):
     def test_note_create_rejects_symlink_under_projects(self):
         outside = self.root / 'outside'
         outside.mkdir()
+        inside = self.vault / 'real-inside'
+        inside.mkdir()
         (self.vault / 'projects').mkdir()
         try:
             (self.vault / 'projects/linked').symlink_to(outside, target_is_directory=True)
+            (self.vault / 'projects/linked-inside').symlink_to(inside, target_is_directory=True)
         except OSError as exc:
             self.skipTest('symlink unavailable: ' + str(exc))
 
         with self.assertRaisesRegex(ValueError, 'symlink'):
             self.engine.note_create('projects/linked/Kurallar.md', 'Escape attempt.\n', {})
+        with self.assertRaisesRegex(ValueError, 'symlink'):
+            self.engine.note_create('projects/linked-inside/Kurallar.md', 'In-vault symlink.\n', {})
         self.assertEqual(list(outside.iterdir()), [])
+        self.assertEqual(list(inside.iterdir()), [])
         self.assert_no_journal()
 
     @unittest.skipUnless(os.name == 'nt', 'Windows junction test')
