@@ -355,6 +355,16 @@ class PrivacyFrontmatterTest(unittest.TestCase):
         self.assertEqual([w['source'] for w in last_sync['warnings']], ['notes/broken.md'])
         for leaked in ('Saglik Raporu', 'Banka Sifresi', 'CANARY'):
             self.assertNotIn(leaked, proc.stdout)
+        # doctor --human counts the spelling warnings in its summary and names no note (3.19.0, #990).
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('beyin_entry_privacy_doctor', ROOT / 'scripts/beyin_entry.py')
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        human = entry.human_result(doctor, 'doctor', '3.19.0')
+        self.assertNotEqual(human.splitlines()[0], 'Her şey yolunda; yapmanız gereken bir şey yok.')
+        self.assertIn('Gizlilik yazımı uyarısı: 2 notun gizlilik alanı standart dışı yazılmış', human)
+        for leaked in ('Saglik Raporu', 'Banka Sifresi', 'CANARY'):
+            self.assertNotIn(leaked, human)
 
     def test_cli_sync_and_context_repro_from_issue_963(self):
         self.write_note('notes/a.md', '---\nVisibility: private\n---\nZirkon ISSUE963_A_CANARY.\n')

@@ -395,10 +395,10 @@ class DoctorEnvOverridesTest(unittest.TestCase):
         human = run_python(self.vault / 'beyin.py', ['doctor', '--human'], self.vault, env)
         self.assertEqual(human.returncode, 0, human.stderr)
         text = human.stdout.decode('utf-8')
-        env_lines = [line for line in text.splitlines() if line.startswith('Ortam ayarlari')]
+        env_lines = [line for line in text.splitlines() if line.startswith('Ortam ayarları (bilgi): ')]
         self.assertEqual(len(env_lines), 1, text)
-        self.assertIn('bu komut ortami', env_lines[0])
-        self.assertIn('hook ortami farkli olabilir', env_lines[0])
+        self.assertIn('bunlar bu komutun ortamı', env_lines[0])
+        self.assertIn('kanca ortamı farklı olabilir', env_lines[0])
         self.assertIn('RECEIPT_REMINDER=context', env_lines[0])
         self.assertIn('ABSTAIN_COVERAGE=0.6', env_lines[0])
 
@@ -411,7 +411,7 @@ class DoctorEnvOverridesTest(unittest.TestCase):
 
         human = run_python(self.vault / 'beyin.py', ['doctor', '--human'], self.vault, env)
         self.assertEqual(human.returncode, 0, human.stderr)
-        self.assertNotIn('Ortam ayarlari', human.stdout.decode('utf-8'))
+        self.assertNotIn('Ortam ayarları (bilgi): ', human.stdout.decode('utf-8'))
 
         entry = self._load_module('v3_entry_env_empty', ROOT / 'scripts/beyin_entry.py')
         self.assertEqual(
@@ -465,10 +465,10 @@ class DoctorEnvOverridesTest(unittest.TestCase):
         human = run_python(self.vault / 'beyin.py', ['doctor', '--human'], self.vault, env)
         self.assertEqual(human.returncode, 0, human.stderr)
         text = human.stdout.decode('utf-8')
-        env_lines = [line for line in text.splitlines() if line.startswith('Ortam ayarlari')]
+        env_lines = [line for line in text.splitlines() if line.startswith('Ortam ayarları (bilgi): ')]
         self.assertEqual(len(env_lines), 1, text)
         self.assertIn('INJECTED_LINE', env_lines[0])
-        self.assertNotIn('INJECTED_LINE', '\n'.join(line for line in text.splitlines() if not line.startswith('Ortam ayarlari')))
+        self.assertNotIn('INJECTED_LINE', '\n'.join(line for line in text.splitlines() if not line.startswith('Ortam ayarları (bilgi): ')))
         for bad in ('\x1b', '\x07', '\u202e'):
             self.assertNotIn(bad, text)
 
@@ -480,9 +480,9 @@ class DoctorEnvOverridesTest(unittest.TestCase):
             {'status': 'never_seen', 'env_overrides': {'BEYIN_V3_SKIP': '1\nRAW_INJECT\r\n' + 'z' * 80}},
             'doctor',
         )
-        rendered_env_lines = [line for line in rendered.splitlines() if line.startswith('Ortam ayarlari')]
+        rendered_env_lines = [line for line in rendered.splitlines() if line.startswith('Ortam ayarları (bilgi): ')]
         self.assertEqual(len(rendered_env_lines), 1, rendered)
-        self.assertNotIn('RAW_INJECT', '\n'.join(line for line in rendered.splitlines() if not line.startswith('Ortam ayarlari')))
+        self.assertNotIn('RAW_INJECT', '\n'.join(line for line in rendered.splitlines() if not line.startswith('Ortam ayarları (bilgi): ')))
         self.assertIn('...', rendered_env_lines[0])
 
 

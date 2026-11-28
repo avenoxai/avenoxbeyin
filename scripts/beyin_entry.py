@@ -203,6 +203,17 @@ def receipt_line_endings_lines(report):
     return []
 
 
+def privacy_spelling_count(result):
+    """How many notes the last stored sync kept private or read through a non-standard spelling (#963).
+
+    doctor carries only this count, never the paths; `sync` names the notes.
+    """
+    health = result.get('hook-health.json') if isinstance(result.get('hook-health.json'), dict) else {}
+    sync_info = health.get('sync') if isinstance(health.get('sync'), dict) else {}
+    count = sync_info.get('privacy_frontmatter_count')
+    return count if isinstance(count, int) and not isinstance(count, bool) and count > 0 else 0
+
+
 def sync_copy_lines(result):
     """Sync lines for file-sync copies (#205): a stamped copy is out of the index, a numbered one is only listed."""
     lines = []
@@ -229,10 +240,10 @@ def privacy_frontmatter_lines(result):
         return []
     lines = []
     for warning in items[:5]:
-        lines.append('Gizlilik frontmatter uyarisi (' + plain_text(warning.get('source')) + '): ' +
+        lines.append('Gizlilik frontmatter uyarısı (' + plain_text(warning.get('source')) + '): ' +
                      plain_text(warning.get('reason')))
     if len(items) > 5:
-        lines.append('+' + str(len(items) - 5) + ' gizlilik frontmatter uyarisi daha; ayrinti icin --json.')
+        lines.append('+' + str(len(items) - 5) + ' gizlilik frontmatter uyarısı daha; ayrıntı için --json.')
     return lines
 
 
@@ -297,7 +308,7 @@ def env_override_lines(overrides):
         items.append(clean_name + '=' + clean_value)
     if not items:
         return []
-    return ['Ortam ayarlari (bu komut ortami; hook ortami farkli olabilir): ' + ', '.join(items)]
+    return ['Ortam ayarları (bilgi): ' + ', '.join(items) + '; bunlar bu komutun ortamı, kanca ortamı farklı olabilir.']
 
 
 def megabytes(value):
@@ -375,6 +386,8 @@ def doctor_attention_count(result):
     sync_info = health.get('sync') if isinstance(health.get('sync'), dict) else {}
     if sync_info.get('status') in ('conflict', 'degraded', 'error'):
         count += 1
+    if privacy_spelling_count(result):
+        count += 1  # the line names no note; `sync` does
     if result.get('hook-error.json'):
         count += 1
     if (result.get('pending_events') or 0) > 0:
@@ -405,6 +418,9 @@ def doctor_attention_count(result):
     for proj in rules_opening.get('project_rules') or []:
         if isinstance(proj, dict) and proj.get('status') in ('clipped', 'stale'):
             count += 1
+    opening = result.get('companion_opening') if isinstance(result.get('companion_opening'), dict) else {}
+    if opening.get('status') == 'warn':
+        count += 1  # the starved identity line; a clipped Journal.md line is '(bilgi)'
     tc = result.get('task_completion') if isinstance(result.get('task_completion'), dict) else {}
     if tc.get('strict_issue_count') or tc.get('error'):
         count += 1
@@ -944,6 +960,13 @@ def human_result(result, command, installed_version=None):
         sync_info = health.get('sync') if isinstance(health.get('sync'), dict) else {}
         if sync_info.get('status') in ('conflict', 'degraded', 'error'):
             lines.append('Kaynak eşitlemesinde sorun var; durumu düzeltmek için: ' + py_cmd + ' beyin.py sync')
+        privacy_spellings = privacy_spelling_count(result)
+        if privacy_spellings:
+            # Count only: doctor output reaches agents, and the path of such a note is often its title.
+            lines.append('Gizlilik yazımı uyarısı: ' + str(privacy_spellings) + ' notun gizlilik alanı standart dışı '
+                         'yazılmış (ör. private: true, tags: [private], Visibility: Private). Bu sürüm onları tanıyor; '
+                         'eski bir sürüme dönülürse not açığa çıkabilir ya da indeksten düşebilir. Not adlarını ve '
+                         'doğru yazımı görmek için: ' + py_cmd + ' beyin.py sync')
         if result.get('hook-error.json'):
             lines.append('Son kanca (hook) çalışmasında hata kaydedildi; ayrıntıyı görmek için ajanınıza "beyin doktor" deyin.')
         tc = result.get('task_completion') if isinstance(result.get('task_completion'), dict) else {}

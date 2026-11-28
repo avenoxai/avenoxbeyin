@@ -450,7 +450,7 @@ class PreferencesTest(unittest.TestCase):
         self.assertEqual(plain.returncode, 0, plain.stderr)
         plain_data = json.loads(plain.stdout)
         self.assertNotIn('env_overrides', plain_data)
-        self.assertNotIn('Ortam ayarlari', beyin_entry.human_result(plain_data, 'preferences'))
+        self.assertNotIn('Ortam ayarları (bilgi): ', beyin_entry.human_result(plain_data, 'preferences'))
 
         active_env = dict(clean_env,
                           BEYIN_V3_ABSTAIN_COVERAGE='0.6',
@@ -463,7 +463,7 @@ class PreferencesTest(unittest.TestCase):
         active_data = json.loads(active.stdout)
         self.assertEqual(active_data['env_overrides'], {'BEYIN_V3_ABSTAIN_COVERAGE': '0.6'})
         human = beyin_entry.human_result(active_data, 'preferences')
-        self.assertIn('Ortam ayarlari', human)
+        self.assertIn('Ortam ayarları (bilgi): ', human)
         self.assertIn('ABSTAIN_COVERAGE=0.6', human)
         self.assertNotIn('should-not-appear', human)
 

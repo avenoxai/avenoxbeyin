@@ -162,7 +162,27 @@ ATTENTION_GRID = (
     ('receipt line endings', {'receipt_line_endings': {'status': 'warning'}}, 1),
     ('tracked machine files', {'tracked_machine_files': {'status': 'warning', 'tracked': ['.beyin-runtime.json']}}, 1),
     ('git check unavailable', {'tracked_machine_files': {'status': 'unavailable', 'reason': 'git_timeout'}}, 1),
+    # Lines merged beside #990 in 3.19.0: a note only a non-standard spelling keeps private (#963,
+    # a succeeded sync, so no sync line) and an identity file the opening starves (#916, #932).
+    ('privacy spelling count', {'hook-health.json': {'sync': {'status': 'succeeded', 'warnings': [],
+                                                              'privacy_frontmatter_count': 2}}}, 1),
+    ('privacy spelling count and degraded sync', {'hook-health.json': {'sync': {
+        'status': 'degraded', 'warnings': [{'source': 'a.md', 'reason': 'x'}], 'privacy_frontmatter_count': 1}}}, 2),
+    ('identity omitted from opening', {'companion_opening': {'status': 'warn', 'identity': 'Core.md', 'budget': 8000,
+                                                             'files': {'Core.md': {'chars': 900, 'share': 0,
+                                                                                   'clipped': True, 'omitted': True}}}}, 1),
+    ('identity clipped at opening', {'companion_opening': {'status': 'warn', 'identity': 'Soul.md', 'budget': 8000,
+                                                           'files': {'Soul.md': {'chars': 900, 'share': 120,
+                                                                                 'clipped': True, 'omitted': False}}}}, 1),
     # Information only: never counted.
+    ('journal omitted from opening', {'companion_opening': {'status': 'ok', 'budget': 8000, 'files': {
+        'Journal.md': {'chars': 900, 'share': 0, 'clipped': True, 'omitted': True}}}}, 0),
+    ('journal clipped at opening', {'companion_opening': {'status': 'ok', 'budget': 8000, 'files': {
+        'Journal.md': {'chars': 900, 'share': 40, 'clipped': True, 'omitted': False}}}}, 0),
+    ('companion opening has no sources', {'companion_opening': {'status': 'no_sources', 'files': {}}}, 0),
+    ('env overrides', {'env_overrides': {'BEYIN_V3_SKIP': '1', 'BEYIN_V3_ABSTAIN_COVERAGE': '0.6'}}, 0),
+    ('privacy spelling count zero', {'hook-health.json': {'sync': {'status': 'succeeded', 'warnings': [],
+                                                                   'privacy_frontmatter_count': 0}}}, 0),
     ('backup remote', {'backup': {'status': 'remote_configured', 'backup_verified': False}}, 0),
     ('unmanaged skills', {'skill_unmanaged': ['mine']}, 0),
     ('note usage', {'note_usage': {'tracked': 3, 'dead_weight_count': 1, 'feedback_totals': {}}}, 0),
