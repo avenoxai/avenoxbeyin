@@ -131,21 +131,30 @@ Okuyucu komut satırına, kancalara ve özet yazımına bağlı değildir. Vault
 
 SQLite şeması belgelenmemiştir. Prototip yalnız tanıdığı şemayı okur. Yan dosya
 yoksa `mode=ro&immutable=1` kullanır ve dosyanın okuma sırasında değişmediğini
-kontrol eder. `-wal` ve `-shm` birlikte varsa `mode=ro` ve `PRAGMA query_only=ON`
-kullanır. Her veritabanı bir okuma işlemi içinde kendi tutarlı anlık görüntüsünü
-sağlar. İki veritabanının anlık görüntüleri farklı zamanlara ait olabilir.
+kontrol eder. `-wal` ve `-shm` birlikte varsa `mode=ro&readonly_shm=1` ve
+`PRAGMA query_only=ON` kullanır. Her veritabanı bir okuma işlemi içinde kendi
+tutarlı anlık görüntüsünü sağlar. İki veritabanının anlık görüntüleri farklı
+zamanlara ait olabilir.
 
-WAL kipinde SQLite mevcut `-shm` dosyasında paylaşımlı bellek okuma kilitleri alır
-ve okuma işaretlerini güncelleyebilir. Okuyucu veritabanı sayfalarına veya
-`-wal` içeriğine yazmaz. Codex çalışırken bu dosyalar değişebildiği için önceki
-ve sonraki içerikleri karşılaştırmak okuyucunun yazmadığını doğrulayamaz.
-Okuma sonrasında iki veritabanının bulunduğu dizinin üst düzeyinde yeni bir normal
-dosya görülürse SQLite sonuçları atılır (`new_home_files`). Bu kontrol alt
-dizinlere inmez ve bağlantıları izlemez. Normal açılış mevcut yan dosyaları
-kullanır ve yeni dosya oluşturmaz. Yazıcı açılış sırasında yan dosyaları kaldırırsa SQLite
-bunları yeniden oluşturabilir. Yalnız bir WAL yan dosyası (`partial_sidecars`)
-veya `-journal` (`rollback_journal`) açılıştan önce görülürse okuyucu yalnız
-JSONL kullanır.
+`readonly_shm=1` ile SQLite mevcut `-shm` dosyasını salt okunur eşler ve yalnız
+paylaşımlı kilit alır: veritabanı sayfalarına, `-wal` içeriğine ve `-shm` içindeki
+okuma işaretlerine yazmaz. Bu, ayrı bir süreçte açık duran sentetik bir yazıcıyla
+bayt bayt sınanır. Okuma işlemi açıkken Codex yazmaya devam eder; yalnız
+`TRUNCATE`/`RESTART` checkpoint'i okuma bitene kadar bekler. Okuma sonrasında iki
+veritabanının bulunduğu dizinin üst düzeyinde yeni bir normal dosya görülürse
+SQLite sonuçları atılır (`new_home_files`). Bu kontrol alt dizinlere inmez ve
+bağlantıları izlemez. Yazıcı açılış sırasında yan dosyaları kaldırırsa SQLite boş
+bir `-wal` bırakabilir, `-shm` oluşturmaz. Yalnız bir WAL yan dosyası
+(`partial_sidecars`) veya `-journal` (`rollback_journal`) açılıştan önce görülürse
+okuyucu yalnız JSONL kullanır.
+
+Köken kuralı canlı kancayla aynıdır: rollout'ta `originator=codex_cli_rs` ve
+`source=cli`, SQLite'ta `threads.originator=codex_cli_rs` ve `threads.source=cli`.
+`originator` sütunu boş olan eski satırlar belirsiz köken sayılır ve listelenmez;
+sütun yoksa SQLite okunmaz (`missing_column`). `[kaydetme]` kapanmamış bir bağlam
+etiketinden sonra yazılmışsa da oturum listelenmez. Döküm, vault dışındaki runtime
+klasörünü (`secret-patterns.txt`) açıkça ister. Toplam 2.000'den fazla konu
+(`threads` satırı) olan kurulumda SQLite okunmaz (`thread_limit`).
 
 ## Ayar ve rollback
 
