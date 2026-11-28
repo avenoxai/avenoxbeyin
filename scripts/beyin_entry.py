@@ -377,6 +377,10 @@ def human_result(result, command, installed_version=None):
             lines.append('Oturum ici tekrar onleme: ' + ('acik' if result['context_dedupe'] == 'on' else 'kapali'))
         if result.get('context_dedupe_notice'):
             lines.append(result['context_dedupe_notice'])
+        if result.get('context_share'):
+            lines.append('Baglam butce paylasimi: ' + ascii_text(result['context_share']))
+        if result.get('context_share_notice'):
+            lines.append(result['context_share_notice'])
         hermes_p = result.get('hermes_platforms') or {}
         if hermes_p.get('attended') or hermes_p.get('unattended'):
             h_parts = []

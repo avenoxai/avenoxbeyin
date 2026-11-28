@@ -322,6 +322,22 @@ python3 beyin.py preferences --context-dedupe on
 - Defter oturum başına en çok 512 kayıt ve kayıt başına 8 pencere tutar (en eskisi düşer). Her yazımda 24 saatten eski defterler silinir ve en fazla 128 defter tutulur.
 - Ayar, rollback güvenliği için `.beyin-preferences.json` içinde değil, runtime klasöründeki `context-dedupe.json` dosyasında tutulur (varsayılan kapalı). Kapatmak için `--context-dedupe off`.
 
+## Açık aramada bütçe paylaşımı (`--context-share`) ve aday listesi (`--list`)
+
+`beyin.py context` varsayılan olarak (`top`) bütçenin büyük payını ilk kayda verir, sonrakiler kısa bir pasaj alır (#79, #83). Doğru not sık sık 2-5. sıraya düşüyorsa `--share balanced` bütçeyi kayıtlar arasında eşit paylaştırır (#975):
+
+```bash
+python3 beyin.py context "konu" --share balanced
+python3 beyin.py preferences --context-share balanced   # bu makinede varsayılan yap
+```
+
+- Kırpma yine eşleşen pasaja ortalanır; payını doldurmayan kısa notun artanı uzun notlara geçer, toplam bütçe aşılmaz.
+- İlk kaydın skoru ikincinin en az iki katıysa ya da eşit pay kırpılan bir kayda 1.000 karakterden az bırakacaksa (dar bütçe, geniş `--limit`) arama `top` gibi paketlenir.
+- Yalnız açık `context` aramasını etkiler; mesaj başı ve oturum başı hook bağlamı değişmez. `--share` komutta verilirse kayıtlı ayarı geçersiz kılar; `--jev` ile kullanılamaz.
+- Ayar, rollback güvenliği için `.beyin-preferences.json` içinde değil, runtime klasöründeki `context-share.json` dosyasında tutulur (varsayılan `top`). Geri almak için `--context-share top`.
+
+Bir konuda çok aday varsa `context "konu" --list --limit 30` tam metin yerine her kayıt için `source`, `title`, `score` ve eşleşen yere ortalanmış en çok 150 karakterlik pasaj döner (#974). `--limit` liste modunda bütçeden bağımsızdır (varsayılan 20), kesilen aday sayısı `omitted_count` alanındadır; gizlilik ve kapsam kuralları normal aramayla aynıdır. Seçilen not sonra `note-read` ya da dar bir `context` ile açılır. Liste not metni taşımadığı için `--share` ile birlikte verilemez; kayıtlı paylaşım ayarı listeyi değiştirmez.
+
 ## Stop'ta receipt hatırlatması
 
 Kurulum, Claude ve Codex için PostToolUse hook'unu yalnız dosya düzenleyen araçlara bağlar (`Edit|Write|apply_patch|MultiEdit|NotebookEdit`). Bu olay geldiğinde hook, vault dışındaki runtime klasörüne oturum kimliğinin hash'iyle adlandırılmış küçük bir düzenleme işareti yazar; transcript okunmaz. Kabuk komutları bu olayı tetiklemez; her komutta bir hook süreci başlatmamak için Bash eşleştiriciye eklenmez. Bunun yerine Claude Code'da, turda editör düzenlemesi yoksa Stop kancası yalnız o oturumun kendi transcript dosyasının son 2 MB'ını okur ve turun başındaki kullanıcı mesajında durur (#212). Turdaki bir Bash veya PowerShell komutunun adını açıkça verdiği (tırnaklı yol, düz yol ya da son parçada `*.md` gibi bir glob) bir vault Markdown dosyası, en son o komut çalışırken (çağrı ile sonuç kaydı arasında) değiştiyse aynı düzenleme işareti o komutun zamanıyla açılır. Komutun yalnız okuduğu bir notu daha sonra başka bir oturumun ya da editörün değiştirmesi bu oturuma yazılmaz. Komut metni hiçbir yere yazılmaz; yalnız zaman damgası tutulur. Değişkenle verilen yol, yolunu kendisi hesaplayan betik, arka planda yazan komut, taşıma ve silme görülmez; nokta klasörleri ve sync'in yeniden yazdığı receipt görünümleri sayılmaz. Task alt ajanlarının komutları (transcript'leri ayrı dosyadadır) ve aynı turda bir kesme, sıkıştırma ya da slash komutu kaydından önceki komutlar da görülmez. Codex'te kabuk komutları okunmaz. Bash aracından çalışan `note-create`, `note-edit`, `task-create` ve `task-update` oturumu `CLAUDE_CODE_SESSION_ID` ile bilir: düzenleme işaretini kendisi açar ve küçük bir bayrak bırakır; o oturumun bir sonraki Stop'u bu yazmayı yazma zamanıyla `observed: cli` işaretli `PostToolUse` metadata'sı olarak kuyruğa alır, böylece receipt kapsamı bu turu da düzenlenmiş tur sayar. Stop'ta runtime kaydında aynı istemci ve aynı `session` değeriyle, düzenlemelerden sonra yazılmış bir receipt yoksa hook oturum başına bir kez Stop'u engeller ve `python3 beyin.py receipt --harness claude --session <değer> --event-id ... --summary ... --ref ...` komutunu (Codex için `--harness codex`, Windows'ta `py -3`; JSON alternatifi `--file RECEIPT_JSON`) `Receipt session=<değer>` bilgisiyle birlikte hatırlatır. Bu değer `--session` ile ya da receipt JSON'undaki `session` alanına yazılmazsa receipt bu checkpoint'i kapatmaz. Receipt'ten sonra yapılan yeni düzenlemeler yeni bir pencere açar.

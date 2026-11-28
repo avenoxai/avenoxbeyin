@@ -1268,6 +1268,8 @@ def parser(note_namespace=None, is_json=False):
                           help="Opt-in one-line notice when another session is open on this vault")
     settings.add_argument("--context-dedupe", choices=("on", "off"),
                           help="Prevent re-injecting already delivered records within the same session (#363)")
+    settings.add_argument("--context-share", choices=("top", "balanced"),
+                          help="Default budget sharing for local context searches: top (default) or balanced (#975)")
     settings.add_argument("--hermes-attended-platform", action="append", default=[], metavar="PLATFORM",
                           help="Treat platform as attended/interactive in Hermes (e.g. slack); repeatable")
     settings.add_argument("--hermes-unattended-platform", action="append", default=[], metavar="PLATFORM",
@@ -1353,10 +1355,13 @@ def parser(note_namespace=None, is_json=False):
     context.add_argument("--project")
     context.add_argument("--audience", choices=("internal", "public"), default="internal")
     context.add_argument("--status", action="append", dest="statuses")
-    context.add_argument("--limit", type=int, default=5)
+    context.add_argument("--limit", type=int, default=None)
     context.add_argument("--budget-chars", type=int, default=8000)
     context.add_argument("--no-sync", action="store_true", help="Read an existing index without writing to the vault or runtime")
     context.add_argument("--strip-fillers", action="store_true", help="Drop Turkish question wrappers in local context searches")
+    context.add_argument("--share", choices=("top", "balanced"), default=None,
+                         help="Budget sharing across matched records in local context: top (default) or balanced")
+    context.add_argument("--list", action="store_true", dest="list_mode", help="Return a compact candidate list with short matching snippets instead of full note bodies")
     context.add_argument("--jev", action="store_true", help="Explicit optional remote advisor; requires state/jev.json and --project")
     review = sub.add_parser("jev-review", help="Advisory source review; never saves or approves a candidate")
     review.add_argument("--file", required=True, help="JSON proposal (maximum 24,000 characters)")
@@ -1563,6 +1568,8 @@ def main(argv=None, return_result=False):
             sys.dont_write_bytecode = True
         if read_only_context and args.jev:
             raise ValueError("context --no-sync cannot be combined with --jev")
+        if args.command == "context" and args.list_mode and args.jev:
+            raise ValueError("--list is only available for local context")
         # The advisor switch reads and writes one small file; it needs no index or sync engine.
         engine = load_engine() if not context_selftest and args.command not in ("jev", "project-scope", "ingest-server", "bridge", "chat-trace", "mutation-queue", "devices", "workspace", "lint", "moc", "triage", "feedback", "checkpoint") else None
         database = state / "memory.sqlite3"
@@ -1661,6 +1668,10 @@ def main(argv=None, return_result=False):
                 if not limits_valid:
                     raise ValueError('companion-limits.json in the runtime state is invalid; fix or remove it first')
                 companion.check_limits(dict(current_limits, **limits))
+            if args.context_share is not None:  # validated before anything is saved
+                _, share_valid = preferences.read_context_share(state)
+                if not share_valid:
+                    raise ValueError(preferences.CONTEXT_SHARE_FILE + ' in the runtime state is invalid; fix or remove it first')
             # Context-fill config (issue #685): machine-local in state/context-fill.json
             import beyin_v3_context_fill as context_fill
             fill_changes = {}
@@ -1783,6 +1794,15 @@ def main(argv=None, return_result=False):
             result['context_dedupe'] = 'on' if dedupe_on else 'off'
             if not dedupe_valid:
                 result['context_dedupe_notice'] = 'context-dedupe.json gecersiz; oturum ici tekrar onleme kapali sayiliyor.'
+            # Machine-local context budget sharing (#975); never a .beyin-preferences.json key.
+            if args.context_share is not None:
+                result['context_share'] = preferences.save_context_share(state, args.context_share)
+                result['status'] = 'saved'
+            else:
+                share_mode, share_valid = preferences.read_context_share(state)
+                result['context_share'] = share_mode
+                if not share_valid:
+                    result['context_share_notice'] = 'context-share.json gecersiz; baglam paylasimi varsayilan (top) olarak kullaniliyor.'
             # Machine-local Hermes platform settings (state/hermes-platforms.json, #350)
             try:
                 import beyin_v3_hermes as hermes_settings
@@ -2416,12 +2436,20 @@ def main(argv=None, return_result=False):
             else:
                 result = devices_mod.status(vault, state)
         elif args.command == "context":
+            default_limit = 20 if args.list_mode else 5
             params = {"query": args.query, "project": args.project, "audience": args.audience,
-                      "statuses": args.statuses, "limit": args.limit, "budget_chars": args.budget_chars}
+                      "statuses": args.statuses,
+                      "limit": default_limit if args.limit is None else args.limit,
+                      "budget_chars": args.budget_chars}
+            explicit_share = args.share
             if args.file:
                 supplied = read_json(args.file)
-                if not isinstance(supplied, dict) or set(supplied) - set(params):
+                if not isinstance(supplied, dict) or set(supplied) - (set(params) | {"share"}):
                     raise ValueError("Context JSON contains unsupported fields")
+                if "share" in supplied:
+                    file_share = supplied.pop("share")
+                    if explicit_share is None:
+                        explicit_share = file_share
                 params.update(supplied)
             if args.project is not None:
                 params["project"] = args.project
@@ -2434,9 +2462,36 @@ def main(argv=None, return_result=False):
                 if args.jev:
                     raise ValueError("--strip-fillers is only available for local context")
                 params["query"] = engine.strip_query_fillers(params["query"])
+            if args.list_mode:
+                if args.jev:
+                    raise ValueError("--list is only available for local context")
+                if explicit_share is not None:
+                    raise ValueError("--share cannot be combined with --list")
+                params["list_mode"] = True
+            if explicit_share is not None:
+                if args.jev:
+                    raise ValueError("--share is only available for local context")
+                if explicit_share not in ("top", "balanced"):
+                    raise ValueError("share must be 'top' or 'balanced'")
+                share = explicit_share
+            elif args.list_mode:
+                share = "top"  # a candidate list carries no note bodies to share a budget across
+            elif not args.jev:
+                share_pref = state / "context-share.json"
+                if share_pref.exists() or share_pref.is_symlink():
+                    try:
+                        _ensure_scripts_path()
+                        import beyin_v3_preferences as preferences
+                        share = preferences.read_context_share(state)[0]
+                    except ImportError:
+                        share = "top"
+                else:
+                    share = "top"
+            else:
+                share = None
 
             if read_only_context:
-                result = store.context_for(args.harness, explicit=True, **params)
+                result = store.context_for(args.harness, explicit=True, share=share, **params)
                 result['source_sync'] = {'status': 'skipped', 'reason': 'explicit_no_sync'}
             else:
                 refreshed = sync.sync()
@@ -2449,7 +2504,7 @@ def main(argv=None, return_result=False):
                     from beyin_v3_jev import advise_context
                     result = advise_context(sync.store, **params)
                 else:
-                    result = sync.store.context_for(args.harness, explicit=True, **params)
+                    result = sync.store.context_for(args.harness, explicit=True, share=share, **params)
                 view_conflicts = [c for c in refreshed.get('conflicts', []) if is_receipt_view_conflict(c)]
                 if view_conflicts:
                     result['view_conflicts'] = view_conflicts
@@ -2605,7 +2660,10 @@ def main(argv=None, return_result=False):
             mark_session_edit(state, vault, result.get("source"))
         if return_result:
             return result, 0
-        print(json.dumps(result, ensure_ascii=True, indent=2))
+        if args.command == "context" and args.list_mode:
+            print(json.dumps(result, ensure_ascii=True, separators=(",", ":")))
+        else:
+            print(json.dumps(result, ensure_ascii=True, indent=2))
         return 0
     except Exception as exc:
         # No traceback or raw input dump: callers retain their local source files.

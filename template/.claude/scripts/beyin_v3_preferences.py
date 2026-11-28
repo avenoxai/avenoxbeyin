@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import stat
 import tempfile
 import time
 
@@ -13,6 +14,9 @@ PROFILES = {
     'economical': dict(auto_sync=True, interval_minutes=15, context_mode='session', context_chars=2000, secret_filter=False),
     'manual': dict(auto_sync=False, interval_minutes=15, context_mode='off', context_chars=2000, secret_filter=False),
 }
+CONTEXT_SHARE_FILE = 'context-share.json'
+CONTEXT_SHARE_MODES = ('top', 'balanced')
+_CONTEXT_SHARE_MAX_BYTES = 4096
 
 
 def validate(value):
@@ -90,6 +94,74 @@ def save_daily_layout(vault, layout):
         if os.path.exists(temporary):
             os.unlink(temporary)
     return layout
+
+
+def _is_redirected_or_nonregular(info):
+    return (stat.S_ISLNK(info.st_mode) or bool(getattr(info, 'st_reparse_tag', 0))
+            or not stat.S_ISREG(info.st_mode))
+
+
+def read_context_share(state):
+    """(mode, valid). Machine-local in <state>/context-share.json, never in .beyin-preferences.json:
+    older releases reject unknown vault preference keys, so rollback stays safe (#975).
+    Missing file: ('top', True). Symlink/reparse, non-regular, oversized or invalid: ('top', False).
+    """
+    path = Path(state) / CONTEXT_SHARE_FILE
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return 'top', True
+    except OSError:
+        return 'top', False
+    try:
+        if _is_redirected_or_nonregular(info) or info.st_size > _CONTEXT_SHARE_MAX_BYTES:
+            return 'top', False
+        with path.open('r', encoding='utf-8') as handle:
+            raw = handle.read(_CONTEXT_SHARE_MAX_BYTES + 1)
+        if len(raw) > _CONTEXT_SHARE_MAX_BYTES:
+            return 'top', False
+        data = json.loads(raw)
+        if (not isinstance(data, dict) or set(data) != {'schema', 'context_share'} or
+                type(data.get('schema')) is not int or data['schema'] != 1 or
+                data.get('context_share') not in CONTEXT_SHARE_MODES):
+            return 'top', False
+        return data['context_share'], True
+    except (ValueError, OSError):
+        return 'top', False
+
+
+def save_context_share(state, mode):
+    """Atomically persist machine-local context_share preference ('top' or 'balanced')."""
+    if mode not in CONTEXT_SHARE_MODES:
+        raise ValueError('context_share must be top or balanced')
+    _, valid = read_context_share(state)
+    if not valid:
+        raise ValueError(CONTEXT_SHARE_FILE + ' in the runtime state is invalid; fix or remove it first')
+    folder = Path(state)
+    try:
+        dir_info = os.lstat(folder)
+        if stat.S_ISLNK(dir_info.st_mode) or bool(getattr(dir_info, 'st_reparse_tag', 0)):
+            raise ValueError('runtime state directory must not be a symlink')
+    except FileNotFoundError:
+        pass
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = folder / CONTEXT_SHARE_FILE
+    try:
+        info = os.lstat(path)
+        if _is_redirected_or_nonregular(info):
+            raise ValueError(CONTEXT_SHARE_FILE + ' must be a regular file')
+    except FileNotFoundError:
+        pass
+    fd, temporary = tempfile.mkstemp(prefix='.context-share-', dir=folder)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as out:
+            json.dump({'schema': 1, 'context_share': mode}, out)
+            out.write('\n'); out.flush(); os.fsync(out.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return mode
 
 
 def save(vault, changes, profile=None):
