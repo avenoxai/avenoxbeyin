@@ -1096,6 +1096,25 @@ def note_request(filename, args):
     return payload
 
 
+def _body_text(payload, command):
+    """Accept 'text' or 'content' as the body field; refuse conflicting duplicates."""
+    has_text = "text" in payload
+    has_content = "content" in payload
+    if has_text and has_content:
+        if type(payload["text"]) is not type(payload["content"]) or payload["text"] != payload["content"]:
+            raise ValueError("provide either 'text' or 'content', not both with different values")
+        body = payload["text"]
+    elif has_text:
+        body = payload["text"]
+    elif has_content:
+        body = payload["content"]
+    else:
+        raise ValueError(f"{command} requires 'text' (or 'content') string")
+    if not isinstance(body, str) or not body.strip():
+        raise ValueError(f"{command} requires 'text' (or 'content') string")
+    return body
+
+
 def load_skills():
     _ensure_scripts_path()
     import beyin_v3_skills
@@ -2296,16 +2315,32 @@ def main(argv=None, return_result=False):
             result = sync.note_edit(note_request(args.file, args))
         elif args.command == "note-create":
             payload = note_request(args.file, args)
-            result = sync.note_create(payload['source'], payload['text'], payload.get('metadata'),
-                                      idempotency_key=payload.get('idempotency_key'),
-                                      evidence_refs=payload.get('evidence_refs'))
+            source = payload.get("source")
+            if not isinstance(source, str) or not source.strip():
+                raise ValueError("note-create requires 'source' (string path)")
+            body = _body_text(payload, "note-create")
+            metadata = payload.get("metadata")
+            if metadata is not None and not isinstance(metadata, dict):
+                raise ValueError("note-create 'metadata' must be a JSON object")
+            result = sync.note_create(source, body, metadata,
+                                      idempotency_key=payload.get("idempotency_key"),
+                                      evidence_refs=payload.get("evidence_refs"))
         elif args.command == "homepage-create":
             _ensure_scripts_path()
             from beyin_v3_homepages import create
             result = create(sync, read_json(args.file))
         elif args.command == "task-create":
             payload = read_json(args.file)
-            result = sync.task_create(payload['source'], payload['text'], payload['metadata'])
+            if not isinstance(payload, dict):
+                raise ValueError("task-create payload must be a JSON object")
+            source = payload.get("source")
+            if not isinstance(source, str) or not source.strip():
+                raise ValueError("task-create requires 'source' (string path)")
+            body = _body_text(payload, "task-create")
+            metadata = payload.get("metadata")
+            if not isinstance(metadata, dict):
+                raise ValueError("task-create requires 'metadata' object")
+            result = sync.task_create(source, body, metadata)
         elif args.command == "feedback":
             _ensure_scripts_path()
             import beyin_v3_usage as usage
@@ -2530,7 +2565,17 @@ def main(argv=None, return_result=False):
             result = linter.manage(vault, "moc", folder=args.folder, moc_file=args.file)
         else:
             payload = read_json(args.file)
-            result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])
+            if not isinstance(payload, dict):
+                raise ValueError("task-update payload must be a JSON object")
+            task_id = payload.get("id")
+            if not isinstance(task_id, str) or not task_id.strip():
+                raise ValueError("task-update requires 'id' (string task id)")
+            if "expected_revision" not in payload or type(payload["expected_revision"]) is not int:
+                raise ValueError("task-update requires 'expected_revision' (integer)")
+            changes = payload.get("changes")
+            if not isinstance(changes, dict):
+                raise ValueError("task-update requires 'changes' object")
+            result = sync.update_task(task_id, payload["expected_revision"], changes)
         if ((args.command in SOURCE_WRITE_COMMANDS or
              (args.command == "mutation-queue" and args.replay and result.get("applied", 0) > 0))
                 and (args.command not in ("note-edit", "homepage-create") or result.get('status') == 'written')
