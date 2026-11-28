@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import re
+import stat
 from pathlib import Path
 
 from beyin_v3 import _trusted_record
@@ -18,6 +19,8 @@ from beyin_v3_learning import stage_candidate
 from beyin_v3_parallel import receipt_session
 from beyin_v3_sync import parse
 import beyin_v3_chat_trace
+
+_MAX_PREVIEW_BYTES = 8 * 1024 * 1024
 
 def _step_key(session, step, *content):
     data = json.dumps([session, step, *content], ensure_ascii=False, separators=(",", ":"))
@@ -55,7 +58,38 @@ def _confirm_replayed_note(sync, source, previous):
     return "unchanged"
 
 
-def _update_card(sync, source, card, session, now):
+def _read_plain_note(path, vault, max_bytes=_MAX_PREVIEW_BYTES):
+    """Read an existing UTF-8 regular file inside vault without following links."""
+    cursor = path
+    while cursor != vault and cursor != cursor.parent:
+        try:
+            info = cursor.lstat()
+        except FileNotFoundError:
+            cursor = cursor.parent
+            continue
+        if (stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0)
+                or (getattr(info, "st_file_attributes", 0)
+                    & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))):
+            raise ValueError("reparse point in companion path")
+        cursor = cursor.parent
+    if not path.resolve().is_relative_to(vault):
+        raise ValueError("companion path escapes vault")
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return ""
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("companion path is not a regular file")
+    if info.st_size > max_bytes:
+        raise ValueError("companion path exceeds preview read bound")
+    with path.open("rb") as handle:
+        raw = handle.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise ValueError("companion path exceeds preview read bound")
+    return raw.decode("utf-8")
+
+
+def _prepare_card(content, card, session, now):
     label = (card.get("label") or card.get("title") or "oturum").strip() or "oturum"
     if label.splitlines() != [label]:
         raise ValueError("checkpoint card label must be one line")
@@ -63,8 +97,6 @@ def _update_card(sync, source, card, session, now):
     revision = _step_key(session, "card", label, body)
     # An anonymous handoff can replay its own text but has no session whose card it can replace.
     owner = _step_key(session, "card-owner") if session else revision
-    previous = note_read(sync, source)
-    content = previous["content"] or ""
     newline = "\r\n" if "\r\n" in content else "\n"
     # A receipt key is already normalized. Raw inputs use the same display key as
     # active-session markers without changing the card owner or its replay identity.
@@ -89,27 +121,48 @@ def _update_card(sync, source, card, session, now):
         if not ending:
             raise ValueError("checkpoint card end marker missing")
         if opening.group(1) == revision:
-            return _confirm_replayed_note(sync, source, previous)
+            return None, owner, marker, end, "replayed"
         updated = content[:opening.start()] + card_text + content[opening.end() + ending.end():]
-    else:
+        return updated, owner, marker, end, "replace"
+    # A legacy eight-character suffix cannot prove ownership. Preserve those cards.
+    start = starts[0] if starts else len(content)
+    preamble = content[:start]
+    if preamble and not preamble.endswith(newline * 2):
+        preamble += newline if preamble.endswith(newline) else newline * 2
+    updated = preamble + card_text + (newline + content[start:] if starts else "")
+    return updated, owner, marker, end, "prepend"
+
+
+def _leads_file(content, owner):
+    """True when this owner's card is still the first level-2 card: nothing was prepended above it."""
+    starts = headings(content, 2)
+    return bool(starts) and re.match(
+        rf"## [^\r\n]+ <!-- beyin-checkpoint:{owner}:[a-f0-9]{{64}} -->\r?$", content[starts[0]:],
+        re.MULTILINE) is not None
+
+
+def _update_card(sync, source, card, session, now):
+    previous = note_read(sync, source)
+    content = previous["content"] or ""
+    updated, owner, marker, end, mode = _prepare_card(content, card, session, now)
+    if mode == "replayed":
+        # A retry after an interrupted or needs_rewrite run finds its card live. While no newer
+        # card sits above it, it is still the handoff this call wrote: protect it again so the
+        # retry neither archives it nor plans a different archive move than the first run.
+        status = _confirm_replayed_note(sync, source, previous)
+        return status, owner if _leads_file(content, owner) else None
+    if mode == "prepend":
         # Automatic compaction can move a completed card before its retry.
         note = sync.root / previous["source"]
         if content and (note.parent / ARCHIVE_DIRECTORY).is_dir():
             moves, _ = _archive_history(note.parent, note.name, sync.root, now=now)
             if any(marker in moved and end in moved for moved, _ in moves.values()):
-                return _confirm_replayed_note(sync, source, previous)
-        # A legacy eight-character suffix cannot prove ownership. Preserve those cards.
-        start = starts[0] if starts else len(content)
-        preamble = content[:start]
-        if preamble and not preamble.endswith(newline * 2):
-            preamble += newline if preamble.endswith(newline) else newline * 2
-        updated = preamble + card_text + (newline + content[start:] if starts else "")
-    return _update_note(sync, source, previous, updated)
+                return _confirm_replayed_note(sync, source, previous), None
+    status = _update_note(sync, source, previous, updated)
+    return status, owner if status == "written" else None
 
 
-def _update_threads(sync, source, threads, session):
-    previous = note_read(sync, source)
-    content = previous["content"] or ""
+def _prepare_threads(content, threads, session):
     newline = "\r\n" if "\r\n" in content else "\n"
     applied = set(re.findall(r"^<!-- beyin-checkpoint-thread:([a-f0-9]{64}) -->\r?$",
                              content, re.MULTILINE))
@@ -167,7 +220,7 @@ def _update_threads(sync, source, threads, session):
         markers.append(f"<!-- beyin-checkpoint-thread:{key} -->")
 
     if not markers:
-        return _confirm_replayed_note(sync, source, previous) if replayed else "unchanged"
+        return None, replayed
     # Commit the keys and their edits together. A crash after replacement can be
     # recognized without a second file or a state directory shared across clients.
     # Keep the keys in the preamble so archiving a closed thread cannot move them.
@@ -179,7 +232,16 @@ def _update_threads(sync, source, threads, session):
     elif body.startswith("\ufeff"):
         start += 1
     content = content[:start] + newline.join(markers) + newline + content[start:]
-    return _update_note(sync, source, previous, content)
+    return content, replayed
+
+
+def _update_threads(sync, source, threads, session):
+    previous = note_read(sync, source)
+    content = previous["content"] or ""
+    updated, replayed = _prepare_threads(content, threads, session)
+    if updated is None:
+        return _confirm_replayed_note(sync, source, previous) if replayed else "unchanged"
+    return _update_note(sync, source, previous, updated)
 
 
 def _learning_source(sync, source):
@@ -219,45 +281,97 @@ def run_checkpoint(sync, vault, state, request, harness=None, session=None, dry_
         now_dt = datetime.now(timezone.utc)
 
     steps = {}
-
-    # Use the same character limits, opt-outs and archive policy as the standalone command.
     companion_dir = locate_companion(vault, strict=False)
-    try:
-        preview = companion_compact(vault, state, dry_run=True, now=now_dt)
-        needs_work = any(item["status"] in ("planned", "needs_rewrite") for item in preview["files"].values())
-        if needs_work:
-            steps["compact"] = ("planned" if dry_run else
-                                companion_compact(vault, state, now=now_dt)["status"])
-        elif preview["status"] == "dry_run":
-            steps["compact"] = "skipped_within_limit"
-        else:
-            steps["compact"] = preview["status"]
-    except Exception as exc:
-        steps["compact"] = {"status": "error", "message": str(exc)}
+    protected_owners = set()
+    preview_overrides = {}
 
-    # 2. Last-Session card update
+    # 1. Last-Session card update
     card_data = request.get("card")
     if card_data:
         if dry_run:
             steps["card"] = "planned"
+            if companion_dir is not None:
+                try:
+                    card_path = companion_dir / "Last-Session.md"
+                    content = _read_plain_note(card_path, vault)
+                    updated, owner, marker, end, mode = _prepare_card(content, card_data, session, now_dt)
+                    if mode == "prepend" and content and (companion_dir / ARCHIVE_DIRECTORY).is_dir():
+                        moves, _ = _archive_history(companion_dir, card_path.name, vault, now=now_dt)
+                        if any(marker in moved and end in moved for moved, _ in moves.values()):
+                            updated = None
+                    if updated is not None and updated != content:
+                        preview_overrides["Last-Session.md"] = updated
+                        protected_owners.add(owner)
+                    elif mode == "replayed" and _leads_file(content, owner):
+                        protected_owners.add(owner)
+                except (ValueError, TypeError, AttributeError, OSError, UnicodeError):
+                    pass
         else:
             try:
                 last_session_rel = (companion_dir / "Last-Session.md").relative_to(vault).as_posix()
-                steps["card"] = _update_card(sync, last_session_rel, card_data, session, now_dt)
+                card_status, written_owner = _update_card(sync, last_session_rel, card_data, session, now_dt)
+                steps["card"] = card_status
+                if written_owner:
+                    protected_owners.add(written_owner)
             except Exception as exc:
                 steps["card"] = {"status": "error", "message": str(exc)}
 
-    # 3. Threads update
+    # 2. Threads update
     threads_data = request.get("threads")
     if threads_data:
         if dry_run:
             steps["threads"] = "planned"
+            if companion_dir is not None:
+                try:
+                    threads_path = companion_dir / "Threads.md"
+                    content = _read_plain_note(threads_path, vault)
+                    updated, _ = _prepare_threads(content, threads_data, session)
+                    if updated is not None and updated != content:
+                        preview_overrides["Threads.md"] = updated
+                except (ValueError, TypeError, AttributeError, NoteConflict, OSError, UnicodeError):
+                    pass
         else:
             try:
                 threads_rel = (companion_dir / "Threads.md").relative_to(vault).as_posix()
                 steps["threads"] = _update_threads(sync, threads_rel, threads_data, session)
             except Exception as exc:
                 steps["threads"] = {"status": "error", "message": str(exc)}
+
+    # 3. Companion compaction — runs after card/threads writes so a new write pushing a
+    # handoff file past its limit is compacted or reported immediately (#952).
+    try:
+        owners = protected_owners or None
+        preview = companion_compact(
+            vault, state, dry_run=True, now=now_dt,
+            protected_owners=owners, overrides=(preview_overrides or None) if dry_run else None,
+        )
+        files_preview = preview["files"].values()
+        if dry_run:
+            if preview["status"] != "dry_run":
+                steps["compact"] = preview["status"]
+            elif any(item["status"] == "needs_rewrite" or item.get("within_limit_after") is False
+                     for item in files_preview):
+                steps["compact"] = "needs_rewrite"
+            elif any(item["status"] == "planned" for item in files_preview):
+                steps["compact"] = "planned"
+            else:
+                steps["compact"] = "skipped_within_limit"
+        else:
+            needs_work = any(item["status"] in ("planned", "needs_rewrite") for item in files_preview)
+            if needs_work:
+                compact_res = companion_compact(vault, state, now=now_dt, protected_owners=owners)
+                steps["compact"] = compact_res["status"]
+                if sync is not None and any(
+                    entry.get("status") == "compacted" or entry.get("backup") == "written"
+                    for entry in compact_res.get("files", {}).values()
+                ):
+                    sync.sync()
+            elif preview["status"] == "dry_run":
+                steps["compact"] = "skipped_within_limit"
+            else:
+                steps["compact"] = preview["status"]
+    except Exception as exc:
+        steps["compact"] = {"status": "error", "message": str(exc)}
 
     # 4. Learn candidates
     learn_data = request.get("learn")

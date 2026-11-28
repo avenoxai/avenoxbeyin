@@ -363,7 +363,7 @@ def _checkpoint_ranges(lines, start):
             if ending[1] == owner:
                 # A historical raw suffix does not identify an active session, but its
                 # correctly delimited body must still be kept together during rotation.
-                ranges[first] = index, key if re.fullmatch(r'[0-9a-f]{8}', key) else None
+                ranges[first] = index, key if re.fullmatch(r'[0-9a-f]{8}', key) else None, owner
             pending = None
     return ranges
 
@@ -421,8 +421,9 @@ def blocks(lines, name):
             elif key := stamp(bare, heading=True):
                 begin('entry', index, key, level)
                 if index in checkpoints:
-                    checkpoint_end, session_key = checkpoints[index]
+                    checkpoint_end, session_key, owner_key = checkpoints[index]
                     found[-1]['checkpoint_session'] = session_key
+                    found[-1]['checkpoint_owner'] = owner_key
             elif found[-1]['kind'] in ('history', 'entry'):
                 # An undated heading closes a dated paragraph and a dated heading of the same
                 # or a higher level: it is the file's own structure, not part of the old entry.
@@ -439,7 +440,7 @@ def blocks(lines, name):
     return [block for block in found if block['end'] > block['start']]
 
 
-def plan(text, name, limit, pointer, active_sessions=None):
+def plan(text, name, limit, pointer, active_sessions=None, protected_owners=None):
     """Decide what moves. Returns None when nothing can move (the file needs a rewrite)."""
     lines = LINE.findall(text)
     parsed = blocks(lines, name)
@@ -456,6 +457,7 @@ def plan(text, name, limit, pointer, active_sessions=None):
             groups.setdefault(owner, []).append(position)
     order, protected = {}, set()
     active_keys = {k.lower() for k in active_sessions} if active_sessions else set()
+    owner_keys = {k.lower() for k in protected_owners} if protected_owners else set()
     for positions in groups.values():
         keys = [parsed[p]['key'] for p in positions]
         rising = any(a < b for a, b in zip(keys, keys[1:]))
@@ -466,14 +468,17 @@ def plan(text, name, limit, pointer, active_sessions=None):
         newest_first = falling if rising != falling else name == 'Last-Session.md'
         for rank, p in enumerate(positions):
             order[p] = (parsed[p]['key'], -rank if newest_first else rank, p)
-            if name == 'Last-Session.md' and active_keys:
-                key = parsed[p].get('checkpoint_session')
-                if key is None:
-                    first_line = lines[parsed[p]['start']].rstrip('\r\n')
-                    match = CARD_SESSION_KEY.search(first_line)
-                    key = match[1].lower() if match else None
-                if key in active_keys:
+            if name == 'Last-Session.md':
+                if owner_keys and parsed[p].get('checkpoint_owner') in owner_keys:
                     protected.add(p)
+                if active_keys:
+                    key = parsed[p].get('checkpoint_session')
+                    if key is None:
+                        first_line = lines[parsed[p]['start']].rstrip('\r\n')
+                        match = CARD_SESSION_KEY.search(first_line)
+                        key = match[1].lower() if match else None
+                    if key in active_keys:
+                        protected.add(p)
         protected.add(max(positions, key=order.get))
     histories = [p for p, block in enumerate(parsed) if block['kind'] == 'history']
     kept_pointers = {i for p in histories for i in range(parsed[p]['start'] + 1, parsed[p]['end'])
@@ -717,7 +722,9 @@ def _compact_lock(target, timeout=10.0, step=0.1):
             pass
 
 
-def compact(vault, state, dry_run=False, now=None):
+def compact(vault, state, dry_run=False, now=None, protected_owners=None, overrides=None):
+    if overrides is not None and not dry_run:
+        raise ValueError('overrides are only supported in dry_run mode')
     vault = Path(vault).resolve()
     target = directory(vault, strict=True)
     if target is None:
@@ -729,7 +736,8 @@ def compact(vault, state, dry_run=False, now=None):
         return {'status': 'needs_attention', 'files': {}, 'limits_file': 'invalid',
                 'reason': 'companion-limits.json in the runtime state is invalid; nothing moved. Fix or remove it first.'}
     if dry_run:
-        return _compact_files(vault, target, configured, dry_run=True, now=now, state=state)
+        return _compact_files(vault, target, configured, dry_run=True, now=now, state=state,
+                              protected_owners=protected_owners, overrides=overrides)
     # An uninitialized vault has nothing to compact and should not gain a companion
     # directory merely because the lock lives beside the files it protects.
     if not target.is_dir():
@@ -747,14 +755,16 @@ def compact(vault, state, dry_run=False, now=None):
             return {'status': 'needs_attention', 'reason': 'cannot acquire note lock: ' + str(exc), 'files': {}}
         try:
             with _compact_lock(target):
-                return _compact_files(vault, target, configured, dry_run=False, now=now, state=state)
+                return _compact_files(vault, target, configured, dry_run=False, now=now, state=state,
+                                      protected_owners=protected_owners)
         except TimeoutError as exc:
             return {'status': 'conflict', 'reason': str(exc), 'files': {}}
         except _LockError as exc:
             return {'status': 'needs_attention', 'reason': str(exc), 'files': {}}
 
 
-def _compact_files(vault, target, configured, dry_run=False, now=None, state=None):
+def _compact_files(vault, target, configured, dry_run=False, now=None, state=None,
+                   protected_owners=None, overrides=None):
     now = now or datetime.now(timezone.utc)
     month = now.strftime('%Y-%m')
     relative = target.relative_to(vault).as_posix()
@@ -769,15 +779,21 @@ def _compact_files(vault, target, configured, dry_run=False, now=None, state=Non
     for name in LIMITS:
         path = target / name
         limit = configured[name]
-        if path.is_symlink() or not path.is_file():
-            continue
-        _inside(path, vault)
-        raw = path.read_bytes()
-        try:
-            text = raw.decode('utf-8')
-        except UnicodeDecodeError:
-            files[name] = {'status': 'needs_attention', 'reason': 'not UTF-8; nothing moved', 'limit': limit}
-            continue
+        if dry_run and overrides and name in overrides:
+            if path.is_symlink() or (path.exists() and not path.is_file()):
+                continue
+            _inside(path, vault)
+            text = overrides[name]
+        else:
+            if path.is_symlink() or not path.is_file():
+                continue
+            _inside(path, vault)
+            raw = path.read_bytes()
+            try:
+                text = raw.decode('utf-8')
+            except UnicodeDecodeError:
+                files[name] = {'status': 'needs_attention', 'reason': 'not UTF-8; nothing moved', 'limit': limit}
+                continue
         chars = companion_chars(name, text)
         report = {'chars': chars, 'limit': limit}
         if not limit or chars <= limit:
@@ -785,7 +801,9 @@ def _compact_files(vault, target, configured, dry_run=False, now=None, state=Non
             continue
         archive_name = f'{Path(name).stem}-{month}.md'
         archive_relative = f'{relative}/{ARCHIVE_DIRECTORY}/{archive_name}'
-        result = plan(text, name, limit, POINTER.format(archive_relative), active_keys)
+        result = (plan(text, name, limit, POINTER.format(archive_relative), active_keys, protected_owners)
+                  if protected_owners else
+                  plan(text, name, limit, POINTER.format(archive_relative), active_keys))
         report.update(archive=archive_relative)
         if result is None:
             backup = text
@@ -844,7 +862,9 @@ def _compact_files(vault, target, configured, dry_run=False, now=None, state=Non
             # turn a retry into a new archive operation; changed payloads still differ.
             identity = _hash(json.dumps([source, _hash(result['archive'])], ensure_ascii=False))
             committed = moves.get(identity)
-            replanned = (plan(text, name, limit, POINTER.format(committed[1]), active_keys)
+            replanned = ((plan(text, name, limit, POINTER.format(committed[1]), active_keys, protected_owners)
+                          if protected_owners else
+                          plan(text, name, limit, POINTER.format(committed[1]), active_keys))
                          if committed is not None and committed[0] == result['archive'] else None)
             if replanned is not None and replanned['archive'] == result['archive']:
                 # A retry in another month must point at the actual committed
