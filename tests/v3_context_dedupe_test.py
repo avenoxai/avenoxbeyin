@@ -190,7 +190,7 @@ class ContextDedupeHookTest(unittest.TestCase):
         human_prefs = beyin_entry.human_result(saved, 'preferences')
         self.assertIn('Oturum ici tekrar onleme: acik', human_prefs)
         human_doc = beyin_entry.human_result(doc, 'doctor')
-        self.assertIn('Oturum ici tekrar onleme: acik', human_doc)
+        self.assertIn('Oturum içi tekrar önleme: açık', human_doc)
 
         # 5. Disable context_dedupe
         disabled = self.cli('preferences', '--context-dedupe', 'off')

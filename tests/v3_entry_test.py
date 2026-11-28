@@ -123,7 +123,7 @@ class CrossPlatformPinTest(unittest.TestCase):
         self.assertEqual(list(elsewhere.iterdir()), [])
         human = run_python(self.vault / 'beyin.py', ['doctor', '--human'], elsewhere, self.env)
         self.assertEqual(human.returncode, 0, human.stderr)
-        self.assertIn('mutlak bir yol degil', human.stdout.decode('utf-8'))
+        self.assertIn('mutlak bir yol değil', human.stdout.decode('utf-8'))
 
     def test_every_command_says_it_on_stderr_and_stdout_stays_the_result(self):
         # #205: the fallback was visible only in doctor; sync, context and receipt changed state silently.

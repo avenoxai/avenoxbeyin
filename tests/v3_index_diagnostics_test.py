@@ -54,9 +54,9 @@ class IndexDiagnosticsTest(unittest.TestCase):
                 self.assertIn('state_storage', result, 'the rest of doctor still runs')
                 self.assertNotIn(canary, text)
         human = self.cli('doctor', '--human')
-        self.assertIn('Indeks kapsami denetlenemedi (JSONDecodeError)', human)
-        self.assertNotIn('index.json gecersiz', human)
-        self.assertNotIn('her sey indeksleniyor', human)
+        self.assertIn('İndeks kapsamı denetlenemedi (JSONDecodeError)', human)
+        self.assertNotIn('index.json geçersiz', human)
+        self.assertNotIn('her şey indeksleniyor', human)
         self.assertNotIn(canary, human)
         self.assertEqual(self.note.read_bytes(), notes_before)
         self.assertEqual(settings.read_bytes(), settings_before)
@@ -69,7 +69,7 @@ class IndexDiagnosticsTest(unittest.TestCase):
         result = json.loads(self.cli('doctor'))
         self.assertEqual(result['index_exclusions'], {'status': 'unavailable', 'error': 'OperationalError'})
         self.assertIn('state_storage', result)
-        self.assertIn('Indeks kapsami denetlenemedi (OperationalError)', self.cli('doctor', '--human'))
+        self.assertIn('İndeks kapsamı denetlenemedi (OperationalError)', self.cli('doctor', '--human'))
         columns = [row[1] for row in self.sql('PRAGMA table_info(markdown_sources)')]
         self.assertIn('broken_source', columns, 'doctor must not attempt to repair the index')
         self.assertNotIn('source', columns)
@@ -81,7 +81,7 @@ class IndexDiagnosticsTest(unittest.TestCase):
         result = json.loads(self.cli('doctor'))['index_exclusions']
         self.assertEqual(result, {'file': 'index.json', 'excluded_dirs': [], 'status': 'none',
                                   'always_excluded': ['__pycache__', 'node_modules', 'receipts']})
-        self.assertNotIn('Indeks kapsami denetlenemedi', self.cli('doctor', '--human'))
+        self.assertNotIn('İndeks kapsamı denetlenemedi', self.cli('doctor', '--human'))
         self.assertEqual(self.sql("SELECT name FROM sqlite_master WHERE name='markdown_sources'"), [])
 
     def test_invalid_settings_keep_their_existing_diagnostic(self):
@@ -92,8 +92,8 @@ class IndexDiagnosticsTest(unittest.TestCase):
         self.assertEqual((result['status'], result['error']), ('invalid', 'not valid JSON'))
         self.assertEqual(result['vendored_hint']['notes'], 1)
         human = self.cli('doctor', '--human')
-        self.assertIn('index.json gecersiz (not valid JSON)', human)
-        self.assertNotIn('Indeks kapsami denetlenemedi', human)
+        self.assertIn('index.json geçersiz (not valid JSON)', human)
+        self.assertNotIn('İndeks kapsamı denetlenemedi', human)
         self.assertEqual(settings.read_bytes(), b'{not valid JSON')
 
 

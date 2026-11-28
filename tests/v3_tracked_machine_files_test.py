@@ -137,7 +137,7 @@ class TrackedMachineFilesTest(unittest.TestCase):
         self.assertEqual(report['tracked_machine_files']['status'], 'warning')
         self.assertEqual(report['tracked_machine_files']['tracked'], ['.beyin-runtime.json', plugin])
         self.assertEqual(report['status'], initial_report['status'])
-        human = subprocess.run(command + ['--human'], cwd=self.vault, env=self.env, capture_output=True, text=True, timeout=30)
+        human = subprocess.run(command + ['--human'], cwd=self.vault, env=self.env, capture_output=True, text=True, encoding='utf-8', timeout=30)
         self.assertEqual(human.returncode, 0, human.stderr)
         self.assertIn('Git', human.stdout)
         self.assertIn('.beyin-runtime.json', human.stdout)
