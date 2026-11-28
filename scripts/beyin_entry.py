@@ -387,7 +387,7 @@ def _client_detail_notes(details):
             if stripped:
                 notes.append(plain_text(stripped))
         elif value is True:
-            notes.append('hata' if key == 'error' else 'uyari')
+            notes.append('hata' if key == 'error' else 'uyarı')
         elif value and not isinstance(value, bool):
             notes.append(plain_text(value))
     for key in ('errors', 'warnings'):
@@ -423,7 +423,7 @@ def _client_doctor_issues(result):
         err = hook_error.get('error') or hook_error.get('message')
         if isinstance(err, str):
             err = err.strip()
-        add(client, 'hook hatasi: ' + plain_text(err) if err else 'hook hatasi')
+        add(client, 'kanca hatası: ' + plain_text(err) if err else 'kanca hatası')
 
     paths = result.get('hook_paths')
     if isinstance(paths, dict) and paths.get('status') == 'stale':
@@ -433,7 +433,7 @@ def _client_doctor_issues(result):
                 if isinstance(row, dict):
                     client = _HOOK_FILE_CLIENTS.get(row.get('file'))
                     if client:
-                        add(client, 'hook dosyasi okunamadi' if row.get('reason') == 'unreadable' else 'hook yolu eski')
+                        add(client, 'kanca dosyası okunamadı' if row.get('reason') == 'unreadable' else 'kanca yolu eski')
 
     bridges = result.get('global_bridge_paths')
     if isinstance(bridges, dict) and bridges.get('status') == 'stale':
@@ -441,7 +441,7 @@ def _client_doctor_issues(result):
         if isinstance(stale_bridges, (list, tuple)):
             for row in stale_bridges:
                 if isinstance(row, dict):
-                    add(row.get('harness'), 'genel kopru yolu eski')
+                    add(row.get('harness'), 'genel köprü yolu eski')
 
     omp_hook = result.get('omp_global_hook')
     if isinstance(omp_hook, dict):
@@ -449,14 +449,14 @@ def _client_doctor_issues(result):
         if isinstance(omp_error, str):
             omp_error = omp_error.strip()
         if omp_hook.get('stale') is True:
-            add('omp', 'genel hook kopyasi eski')
+            add('omp', 'genel kanca kopyası eski')
         elif omp_error and not isinstance(omp_error, bool):
-            add('omp', 'genel hook denetlenemedi: ' + plain_text(omp_error))
+            add('omp', 'genel kanca denetlenemedi: ' + plain_text(omp_error))
 
     cov = result.get('receipt_coverage')
     hermes_missing = cov.get('hermes_without_terminal') if isinstance(cov, dict) else None
     if type(hermes_missing) is int and hermes_missing > 0:
-        add('hermes', 'kapanis sinyali eksik')
+        add('hermes', 'kapanış sinyali eksik')
 
     return issues
 
@@ -468,10 +468,10 @@ def lifecycle_lines(result):
         return []
     doctor_issues = _client_doctor_issues(result)
     status_labels = {
-        'observed_metadata': 'olay goruldu',
-        'never_seen': 'henuz dogrulanmadi',
+        'observed_metadata': 'olay görüldü',
+        'never_seen': 'henüz oturum gözlenmedi',
         'error': 'hata',
-        'warning': 'uyari',
+        'warning': 'uyarı',
         'needs_attention': 'kontrol gerekiyor',
     }
     lines = []
@@ -496,7 +496,7 @@ def lifecycle_lines(result):
         else:
             lines.append(label + ': ' + state_text)
     if unused:
-        lines.append('Kullanilmayan istemciler: ' + ', '.join(unused) + ' (' + str(len(unused)) + ')')
+        lines.append('Kullanılmayan istemciler: ' + ', '.join(unused) + ' (' + str(len(unused)) + ')')
     return lines
 
 
@@ -923,21 +923,20 @@ def _render_human_result(result, command, installed_version=None):
         if hygiene.get('status') == 'unavailable':
             lines.append('Hafıza hijyeni ölçülemedi (' + plain_text(hygiene.get('error', 'hata')) + '); daha sonra tekrar deneyin.')
         parallel_on = isinstance(result.get('parallel_sessions'), dict) and result['parallel_sessions'].get('enabled') is True
-        python_cmd = 'py -3' if sys.platform == 'win32' else 'python3'
         for label, file_name, entry in _companion_hygiene_entries(hygiene):
-            prefix = f'Hafiza hijyeni: {plain_text(label)} {entry["chars"]} karakter (sinir {entry["limit"]}). '
+            prefix = f'Hafıza hijyeni: {plain_text(label)} {entry["chars"]} karakter (sınır {entry["limit"]}). '
             if parallel_on and file_name == 'Last-Session.md':
                 suggested = ((int(entry['chars']) + 999) // 1000) * 1000
-                if suggested <= 200000:
-                    advice = (f'Bu kartlar hala gerekliyse: "{python_cmd} beyin.py preferences '
+                if suggested <= 200000:  # beyin_v3_companion.LIMIT_RANGE upper bound
+                    advice = (f'Bu kartlar hala gerekliyse: "{py_cmd} beyin.py preferences '
                               f'--last-session-chars {suggested}". ')
                 else:
-                    advice = 'Dosya desteklenen sinir tavanini asiyor; arsivlemeden once devir kartlarini gozden gecir. '
-                lines.append(prefix + 'Paralel oturum bildirimi acik; diger oturumlarin taze kartlarini yalniz bu uyariyi '
-                             'kaldirmak icin sikistirma. ' + advice + 'Sikistirmayi diger oturumlar bittikten sonra yap.')
+                    advice = 'Dosya desteklenen sınır tavanını aşıyor; arşivlemeden önce devir kartlarını gözden geçirin. '
+                lines.append(prefix + 'Paralel oturum bildirimi açık; diğer oturumların taze kartlarını yalnız bu uyarıyı '
+                             'kaldırmak için sıkıştırmayın. ' + advice + 'Sıkıştırmayı diğer oturumlar bittikten sonra yapın.')
             else:
-                lines.append(prefix + 'Ajanina "' + python_cmd +
-                             ' beyin.py companion-compact" calistirmasini soyle; eski kayitlar arsive tasinir, metin silinmez.')
+                lines.append(prefix + 'Ajanınıza "' + py_cmd +
+                             ' beyin.py companion-compact" çalıştırmasını söyleyin; eski kayıtlar arşive taşınır, metin silinmez.')
         storage = result.get('state_storage') or {}
         if storage.get('compact_suggested'):
             lines.append('Yerel indeks (bilgi): ' + megabytes(storage['database_bytes']) + ' MB, bunun ' +

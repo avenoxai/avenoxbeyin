@@ -48,12 +48,12 @@ class DoctorUnusedClientsUnitTest(unittest.TestCase):
             'hook_paths': {'status': 'ok', 'checked': 16},
         })
         lines = text.splitlines()
-        self.assertIn('claude: olay goruldu', lines)
+        self.assertIn('claude: olay görüldü', lines)
         self.assertIn(
-            'Kullanilmayan istemciler: codex, antigravity, hermes, opencode, omp, kiro, pi (7)',
+            'Kullanılmayan istemciler: codex, antigravity, hermes, opencode, omp, kiro, pi (7)',
             lines,
         )
-        self.assertNotIn('henuz dogrulanmadi', text)
+        self.assertNotIn('henüz oturum gözlenmedi', text)
 
     def test_multiple_observed_clients_stay_on_own_lines_and_collapse_rest(self):
         text = self.render({
@@ -62,13 +62,13 @@ class DoctorUnusedClientsUnitTest(unittest.TestCase):
             'lifecycle': make_lifecycle(observed=('codex', 'claude')),
         })
         lines = text.splitlines()
-        self.assertIn('codex: olay goruldu', lines)
-        self.assertIn('claude: olay goruldu', lines)
+        self.assertIn('codex: olay görüldü', lines)
+        self.assertIn('claude: olay görüldü', lines)
         self.assertIn(
-            'Kullanilmayan istemciler: antigravity, hermes, opencode, omp, kiro, pi (6)',
+            'Kullanılmayan istemciler: antigravity, hermes, opencode, omp, kiro, pi (6)',
             lines,
         )
-        self.assertNotIn('henuz dogrulanmadi', text)
+        self.assertNotIn('henüz oturum gözlenmedi', text)
 
     def test_zero_observed_clients_collapses_all_without_eight_line_spam(self):
         text = self.render({
@@ -77,12 +77,12 @@ class DoctorUnusedClientsUnitTest(unittest.TestCase):
             'lifecycle': make_lifecycle(),
         })
         lines = text.splitlines()
-        self.assertIn('Henuz gercek istemci oturumu gozlenmedi.', lines)
+        self.assertIn('Henüz gerçek bir istemci oturumu gözlenmedi; ilk sohbetinizi açtığınızda otomatik olarak izlenir.', lines)
         self.assertIn(
-            'Kullanilmayan istemciler: codex, claude, antigravity, hermes, opencode, omp, kiro, pi (8)',
+            'Kullanılmayan istemciler: codex, claude, antigravity, hermes, opencode, omp, kiro, pi (8)',
             lines,
         )
-        self.assertNotIn('henuz dogrulanmadi', text)
+        self.assertNotIn('henüz oturum gözlenmedi', text)
 
     def test_all_clients_observed_omits_unused_summary_line(self):
         text = self.render({
@@ -92,8 +92,8 @@ class DoctorUnusedClientsUnitTest(unittest.TestCase):
         })
         lines = text.splitlines()
         for client in ALL_CLIENTS:
-            self.assertIn(f'{client}: olay goruldu', lines)
-        self.assertNotIn('Kullanilmayan istemciler', text)
+            self.assertIn(f'{client}: olay görüldü', lines)
+        self.assertNotIn('Kullanılmayan istemciler', text)
 
     def test_empty_missing_or_malformed_lifecycle_fails_open(self):
         for payload in (
@@ -104,16 +104,16 @@ class DoctorUnusedClientsUnitTest(unittest.TestCase):
         ):
             with self.subTest(payload=payload):
                 text = self.render(payload)
-                self.assertIn('Henuz gercek istemci oturumu gozlenmedi.', text)
-                self.assertNotIn('Kullanilmayan istemciler', text)
+                self.assertIn('Henüz gerçek bir istemci oturumu gözlenmedi; ilk sohbetinizi açtığınızda otomatik olarak izlenir.', text)
+                self.assertNotIn('Kullanılmayan istemciler', text)
 
         non_dict_entry = self.render({
             'status': 'never_seen',
             'pending_events': 0,
             'lifecycle': {'codex': None, 'claude': {'status': 'observed_metadata', 'events': ['Stop']}},
         })
-        self.assertIn('claude: olay goruldu', non_dict_entry.splitlines())
-        self.assertIn('Kullanilmayan istemciler: codex (1)', non_dict_entry.splitlines())
+        self.assertIn('claude: olay görüldü', non_dict_entry.splitlines())
+        self.assertIn('Kullanılmayan istemciler: codex (1)', non_dict_entry.splitlines())
 
     def test_never_seen_client_with_lifecycle_error_or_warning_is_not_collapsed(self):
         text = self.render({
@@ -131,11 +131,11 @@ class DoctorUnusedClientsUnitTest(unittest.TestCase):
         })
         lines = text.splitlines()
         self.assertIn('codex: hata (config unreadable)', lines)
-        self.assertIn('claude: olay goruldu', lines)
-        self.assertIn('antigravity: henuz dogrulanmadi (untrusted hook)', lines)
-        self.assertIn('kiro: uyari', lines)
-        self.assertIn('pi: henuz dogrulanmadi (bad schema)', lines)
-        self.assertIn('Kullanilmayan istemciler: hermes, opencode, omp (3)', lines)
+        self.assertIn('claude: olay görüldü', lines)
+        self.assertIn('antigravity: henüz oturum gözlenmedi (untrusted hook)', lines)
+        self.assertIn('kiro: uyarı', lines)
+        self.assertIn('pi: henüz oturum gözlenmedi (bad schema)', lines)
+        self.assertIn('Kullanılmayan istemciler: hermes, opencode, omp (3)', lines)
 
     def test_empty_error_or_warning_fields_still_collapse(self):
         text = self.render({
@@ -150,7 +150,7 @@ class DoctorUnusedClientsUnitTest(unittest.TestCase):
             ),
         })
         self.assertIn(
-            'Kullanilmayan istemciler: codex, antigravity, hermes, opencode, omp, kiro, pi (7)',
+            'Kullanılmayan istemciler: codex, antigravity, hermes, opencode, omp, kiro, pi (7)',
             text.splitlines(),
         )
 
@@ -170,10 +170,10 @@ class DoctorUnusedClientsUnitTest(unittest.TestCase):
             },
         })
         lines = text.splitlines()
-        self.assertIn('codex: henuz dogrulanmadi (hook dosyasi okunamadi)', lines)
-        self.assertIn('claude: olay goruldu', lines)
-        self.assertIn('kiro: henuz dogrulanmadi (hook yolu eski)', lines)
-        self.assertIn('Kullanilmayan istemciler: antigravity, hermes, opencode, omp, pi (5)', lines)
+        self.assertIn('codex: henüz oturum gözlenmedi (kanca dosyası okunamadı)', lines)
+        self.assertIn('claude: olay görüldü', lines)
+        self.assertIn('kiro: henüz oturum gözlenmedi (kanca yolu eski)', lines)
+        self.assertIn('Kullanılmayan istemciler: antigravity, hermes, opencode, omp, pi (5)', lines)
 
     def test_never_seen_client_with_bridge_omp_hook_error_or_hermes_warning_is_kept_visible(self):
         text = self.render({
@@ -189,12 +189,12 @@ class DoctorUnusedClientsUnitTest(unittest.TestCase):
             'receipt_coverage': {'total': 0, 'covered': 0, 'ratio': None, 'hermes_without_terminal': 2},
         })
         lines = text.splitlines()
-        self.assertIn('claude: olay goruldu', lines)
-        self.assertIn('antigravity: henuz dogrulanmadi (hook hatasi: PermissionError)', lines)
-        self.assertIn('hermes: henuz dogrulanmadi (kapanis sinyali eksik)', lines)
-        self.assertIn('opencode: henuz dogrulanmadi (genel kopru yolu eski)', lines)
-        self.assertIn('omp: henuz dogrulanmadi (genel hook kopyasi eski)', lines)
-        self.assertIn('Kullanilmayan istemciler: codex, kiro, pi (3)', lines)
+        self.assertIn('claude: olay görüldü', lines)
+        self.assertIn('antigravity: henüz oturum gözlenmedi (kanca hatası: PermissionError)', lines)
+        self.assertIn('hermes: henüz oturum gözlenmedi (kapanış sinyali eksik)', lines)
+        self.assertIn('opencode: henüz oturum gözlenmedi (genel köprü yolu eski)', lines)
+        self.assertIn('omp: henüz oturum gözlenmedi (genel kanca kopyası eski)', lines)
+        self.assertIn('Kullanılmayan istemciler: codex, kiro, pi (3)', lines)
 
     def test_omp_error_untyped_hook_error_and_observed_client_warning(self):
         text = self.render({
@@ -210,10 +210,10 @@ class DoctorUnusedClientsUnitTest(unittest.TestCase):
             'hook-error.json': {'at': 1.0, 'harness': 'codex', 'error': '   '},
         })
         lines = text.splitlines()
-        self.assertIn('codex: henuz dogrulanmadi (hook hatasi)', lines)
-        self.assertIn('claude: olay goruldu (hook yolu eski)', lines)
-        self.assertIn('omp: henuz dogrulanmadi (genel hook denetlenemedi: PermissionError)', lines)
-        self.assertIn('Kullanilmayan istemciler: antigravity, hermes, opencode, kiro, pi (5)', lines)
+        self.assertIn('codex: henüz oturum gözlenmedi (kanca hatası)', lines)
+        self.assertIn('claude: olay görüldü (kanca yolu eski)', lines)
+        self.assertIn('omp: henüz oturum gözlenmedi (genel kanca denetlenemedi: PermissionError)', lines)
+        self.assertIn('Kullanılmayan istemciler: antigravity, hermes, opencode, kiro, pi (5)', lines)
 
     def test_healthy_sibling_reports_and_unscoped_hook_error_do_not_uncollapse_unused_clients(self):
         text = self.render({
@@ -227,9 +227,9 @@ class DoctorUnusedClientsUnitTest(unittest.TestCase):
             'receipt_coverage': {'total': 1, 'covered': 1, 'ratio': 1.0, 'hermes_without_terminal': False},
         })
         lines = text.splitlines()
-        self.assertIn('claude: olay goruldu', lines)
+        self.assertIn('claude: olay görüldü', lines)
         self.assertIn(
-            'Kullanilmayan istemciler: codex, antigravity, hermes, opencode, omp, kiro, pi (7)',
+            'Kullanılmayan istemciler: codex, antigravity, hermes, opencode, omp, kiro, pi (7)',
             lines,
         )
 
@@ -244,8 +244,8 @@ class DoctorUnusedClientsUnitTest(unittest.TestCase):
         })
         self.assertNotIn('\x1b', text)
         self.assertNotIn('\u202e', text)
-        self.assertIn('codex / fake: henuz dogrulanmadi (bad??hook / line)', text.splitlines())
-        self.assertIn('Kullanilmayan istemciler: pi client (1)', text.splitlines())
+        self.assertIn('codex / fake: henüz oturum gözlenmedi (bad??hook / line)', text.splitlines())
+        self.assertIn('Kullanılmayan istemciler: pi client (1)', text.splitlines())
 
 
 class DoctorUnusedClientsEndToEndTest(unittest.TestCase):
@@ -283,12 +283,12 @@ class DoctorUnusedClientsEndToEndTest(unittest.TestCase):
             self.assertEqual(fresh_json['lifecycle'][name], {'status': 'never_seen', 'events': []})
 
         fresh_human = self.doctor('--human')
-        self.assertIn('Henuz gercek istemci oturumu gozlenmedi.', fresh_human.splitlines())
+        self.assertIn('Henüz gerçek bir istemci oturumu gözlenmedi; ilk sohbetinizi açtığınızda otomatik olarak izlenir.', fresh_human.splitlines())
         self.assertIn(
-            'Kullanilmayan istemciler: codex, claude, antigravity, hermes, opencode, omp, kiro, pi (8)',
+            'Kullanılmayan istemciler: codex, claude, antigravity, hermes, opencode, omp, kiro, pi (8)',
             fresh_human.splitlines(),
         )
-        self.assertNotIn('henuz dogrulanmadi', fresh_human)
+        self.assertNotIn('henüz oturum gözlenmedi', fresh_human)
 
         # 2. Single observed client (claude) + 7 unused clients.
         self.mark_observed('claude')
@@ -301,12 +301,12 @@ class DoctorUnusedClientsEndToEndTest(unittest.TestCase):
 
         single_human = self.doctor('--human')
         single_lines = single_human.splitlines()
-        self.assertIn('claude: olay goruldu', single_lines)
+        self.assertIn('claude: olay görüldü', single_lines)
         self.assertIn(
-            'Kullanilmayan istemciler: codex, antigravity, hermes, opencode, omp, kiro, pi (7)',
+            'Kullanılmayan istemciler: codex, antigravity, hermes, opencode, omp, kiro, pi (7)',
             single_lines,
         )
-        self.assertNotIn('henuz dogrulanmadi', single_human)
+        self.assertNotIn('henüz oturum gözlenmedi', single_human)
 
         # 3. Never-seen client (codex) with unreadable hook file is NOT hidden as unused.
         codex_hooks = self.vault / '.codex/hooks.json'
@@ -320,16 +320,16 @@ class DoctorUnusedClientsEndToEndTest(unittest.TestCase):
 
             broken_human = self.doctor('--human')
             broken_lines = broken_human.splitlines()
-            self.assertIn('codex: henuz dogrulanmadi (hook dosyasi okunamadi)', broken_lines)
-            self.assertIn('claude: olay goruldu', broken_lines)
+            self.assertIn('codex: henüz oturum gözlenmedi (kanca dosyası okunamadı)', broken_lines)
+            self.assertIn('claude: olay görüldü', broken_lines)
             self.assertIn(
-                'Kullanilmayan istemciler: antigravity, hermes, opencode, omp, kiro, pi (6)',
+                'Kullanılmayan istemciler: antigravity, hermes, opencode, omp, kiro, pi (6)',
                 broken_lines,
             )
         finally:
             codex_hooks.write_bytes(original_codex_hooks)
 
-        # 4. All 8 clients observed -> no Kullanilmayan istemciler line.
+        # 4. All 8 clients observed -> no unused-clients line.
         for name in ALL_CLIENTS:
             if name != 'claude':
                 self.mark_observed(name)
@@ -340,8 +340,8 @@ class DoctorUnusedClientsEndToEndTest(unittest.TestCase):
         all_human = self.doctor('--human')
         all_lines = all_human.splitlines()
         for name in ALL_CLIENTS:
-            self.assertIn(f'{name}: olay goruldu', all_lines)
-        self.assertNotIn('Kullanilmayan istemciler', all_human)
+            self.assertIn(f'{name}: olay görüldü', all_lines)
+        self.assertNotIn('Kullanılmayan istemciler', all_human)
 
 
 if __name__ == '__main__':

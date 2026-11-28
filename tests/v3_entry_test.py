@@ -94,7 +94,7 @@ class EntryPresentationTest(unittest.TestCase):
             },
         }
         text = entry.human_result(result, 'doctor')
-        self.assertIn('projects/demo/Last-Session.md 3500 karakter (sinir 3000)', text)
+        self.assertIn('projects/demo/Last-Session.md 3500 karakter (sınır 3000)', text)
         self.assertIn('companion-compact', text)
 
         # End-to-end CLI check: doctor --human on an installed vault with an over-limit project handoff file.
@@ -131,7 +131,7 @@ class EntryPresentationTest(unittest.TestCase):
         }, 'doctor')
         last_line = next(line for line in with_parallel.splitlines() if 'Last-Session.md' in line)
         threads_line = next(line for line in with_parallel.splitlines() if 'Threads.md' in line)
-        self.assertIn('Paralel oturum bildirimi acik', last_line)
+        self.assertIn('Paralel oturum bildirimi açık', last_line)
         self.assertIn('--last-session-chars 7000', last_line)
         self.assertNotIn('companion-compact', last_line)
         self.assertIn('companion-compact', threads_line)
