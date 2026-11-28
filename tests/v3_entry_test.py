@@ -338,7 +338,7 @@ class LeadingGlobalOptionsTest(unittest.TestCase):
         for args in (
             ('--vault', str(self.vault), 'note-read', source, '--human'),
             (f'--vault={self.vault}', '--human', 'note-read', source),
-            ('--vault', str(self.vault), '--', 'note-read', source, '--human'),
+            ('--vault', str(self.vault), '--state', str(self.state), 'note-read', source, '--human'),
         ):
             with self.subTest(args=args):
                 read = self.run_entry(*args)
