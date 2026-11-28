@@ -434,5 +434,287 @@ class CheckpointTest(unittest.TestCase):
                         self.assertEqual(changed, set())
                         self.assertEqual(after, before)
 
+    def test_post_write_compaction_when_new_card_pushes_over_limit(self):
+        # Issue #952: file starts below 3,000 chars (~2,312 chars), new ~1,500-char card pushes it
+        # past 3,000; checkpoint must compact older cards after writing rather than reporting
+        # skipped_within_limit while leaving Last-Session.md over limit.
+        card = self.comp / "Last-Session.md"
+        older_a = "## 2026-11-01 10:00 · eski a · aaaaaaaa\nESKI_KART_A " + ("detay satırı. " * 78) + "\n"
+        older_b = "## 2026-11-02 10:00 · eski b · bbbbbbbb\nESKI_KART_B " + ("not satırı. " * 90) + "\n"
+        initial = "# Last-Session\n\n" + older_b + "\n" + older_a
+        self.assertGreater(len(initial), 2200)
+        self.assertLess(len(initial), 2500)
+        card.write_text(initial, encoding="utf-8", newline="\n")
+        before = card.read_bytes()
+
+        new_body = "YENI_KART_952 " + ("güncel çalışma özeti. " * 68)
+        self.assertGreater(len(new_body), 1400)
+        req = {"card": {"label": "güncel", "body": new_body}, "now": "2026-11-21T10:00:00"}
+
+        preview = run_checkpoint(None, self.vault, self.state, req, session="post-write-952", dry_run=True)
+        self.assertEqual(preview["steps"]["compact"], "planned")
+        self.assertEqual(card.read_bytes(), before)
+        self.assertFalse((self.comp / "Arşiv").exists())
+
+        res = run_checkpoint(self.sync, self.vault, self.state, req, harness="claude", session="post-write-952")
+        self.assertEqual(res["status"], "succeeded")
+        self.assertEqual(res["steps"]["card"], "written")
+        self.assertEqual(res["steps"]["compact"], "compacted")
+
+        live = card.read_text(encoding="utf-8")
+        self.assertLessEqual(len(live), 3000)
+        self.assertIn("YENI_KART_952", live)
+        self.assertNotIn("ESKI_KART_A", live)
+        archive = (self.comp / "Arşiv" / "Last-Session-2026-11.md").read_text(encoding="utf-8")
+        self.assertIn("ESKI_KART_A", archive)
+
+        with self.sync.store._connect() as db:
+            payload, = db.execute(
+                "SELECT r.payload FROM records r JOIN markdown_sources m ON r.id=m.id WHERE m.source=?",
+                (card.relative_to(self.vault).as_posix(),),
+            ).fetchone()
+        self.assertEqual(json.loads(payload)["source_sha256"], hashlib.sha256(card.read_bytes()).hexdigest())
+
+        compacted_bytes = card.read_bytes()
+        retry = run_checkpoint(self.sync, self.vault, self.state, req, harness="claude", session="post-write-952")
+        self.assertEqual(retry["status"], "succeeded")
+        self.assertEqual(retry["steps"]["card"], "unchanged")
+        self.assertEqual(retry["steps"]["compact"], "skipped_within_limit")
+        self.assertEqual(card.read_bytes(), compacted_bytes)
+
+    def test_post_write_compaction_reports_needs_rewrite_when_single_card_exceeds_limit(self):
+        card = self.comp / "Last-Session.md"
+        card.write_text("# Last-Session\n", encoding="utf-8", newline="\n")
+        before = card.read_bytes()
+
+        req = {
+            "card": {"label": "tek büyük kart", "body": "TEK_BUYUK_KART " + ("uzun içerik satırı. " * 165)},
+            "now": "2026-11-21T10:00:00",
+        }
+        preview = run_checkpoint(None, self.vault, self.state, req, session="oversized-single", dry_run=True)
+        self.assertEqual(preview["steps"]["compact"], "needs_rewrite")
+        self.assertEqual(preview["status"], "partial")
+        self.assertEqual(card.read_bytes(), before)
+        self.assertFalse((self.comp / "Arşiv").exists())
+
+        res = run_checkpoint(self.sync, self.vault, self.state, req, session="oversized-single")
+        self.assertEqual(res["steps"]["card"], "written")
+        self.assertEqual(res["steps"]["compact"], "needs_rewrite")
+        self.assertEqual(res["status"], "partial")
+        self.assertIn("TEK_BUYUK_KART", card.read_text(encoding="utf-8"))
+        archive = (self.comp / "Arşiv" / "Last-Session-2026-11.md").read_text(encoding="utf-8")
+        self.assertIn("TEK_BUYUK_KART", archive)
+
+    def test_post_write_compaction_reports_needs_rewrite_when_parallel_sessions_protect_all_cards(self):
+        from beyin_v3_parallel import receipt_session, touch
+
+        card = self.comp / "Last-Session.md"
+        peer_session = "parallel-peer-session"
+        peer_short = receipt_session(peer_session)[:8]
+        now_dt = datetime(2026, 11, 21, 10, 0, tzinfo=timezone.utc)
+        touch(self.state, "claude", peer_session, now=now_dt.timestamp(), vault=self.vault)
+
+        peer_card = (
+            f"# Last-Session\n\n## 2026-11-21 09:50 · paralel · {peer_short}\n"
+            "PARALEL_KART " + ("aktif oturum ayrıntısı. " * 85) + "\n"
+        )
+        self.assertLess(len(peer_card), 3000)
+        card.write_text(peer_card, encoding="utf-8", newline="\n")
+
+        req = {
+            "card": {"label": "ikinci oturum", "body": "BENIM_KARTIM " + ("yeni oturum ayrıntısı. " * 60)},
+            "now": now_dt.isoformat(),
+        }
+        res = run_checkpoint(self.sync, self.vault, self.state, req, session="second-parallel-session")
+        self.assertEqual(res["steps"]["card"], "written")
+        self.assertEqual(res["steps"]["compact"], "needs_rewrite")
+        self.assertEqual(res["status"], "partial")
+        live = card.read_text(encoding="utf-8")
+        self.assertIn("PARALEL_KART", live)
+        self.assertIn("BENIM_KARTIM", live)
+        self.assertTrue((self.comp / "Arşiv" / "Last-Session-2026-11.md").is_file())
+
+    def test_post_write_compaction_never_archives_freshly_written_card_with_older_timestamp(self):
+        card = self.comp / "Last-Session.md"
+        future_card = "## 2026-11-25 12:00 · ileride · ffffffff\nILERI_KART " + ("ileri saat notu. " * 75) + "\n"
+        old_card = "## 2026-11-01 10:00 · eski · 11111111\nESKI_KART " + ("eski kayıt. " * 120) + "\n"
+        initial = "# Last-Session\n\n" + future_card + "\n" + old_card
+        self.assertLess(len(initial), 3000)
+        card.write_text(initial, encoding="utf-8", newline="\n")
+
+        req = {
+            "card": {"label": "taze kart", "body": "TAZE_KART " + ("yeni içerik. " * 70)},
+            "now": "2026-11-21T10:00:00",
+        }
+        res = run_checkpoint(self.sync, self.vault, self.state, req, session="fresh-older-clock")
+        self.assertEqual(res["status"], "succeeded")
+        self.assertEqual(res["steps"]["card"], "written")
+        self.assertEqual(res["steps"]["compact"], "compacted")
+        live = card.read_text(encoding="utf-8")
+        self.assertLessEqual(len(live), 3000)
+        self.assertIn("TAZE_KART", live)
+        self.assertIn("ILERI_KART", live)
+        self.assertNotIn("ESKI_KART", live)
+
+        # When only the ahead-clock card and the freshly written card exist and together exceed
+        # the limit, compaction must protect both rather than archiving the card just written.
+        card.write_text("# Last-Session\n\n" + future_card, encoding="utf-8", newline="\n")
+        req2 = {
+            "card": {"label": "korunan taze kart", "body": "KORUNAN_TAZE_KART " + ("yeni detay. " * 165)},
+            "now": "2026-11-21T10:05:00",
+        }
+        res2 = run_checkpoint(self.sync, self.vault, self.state, req2, session="fresh-protected-only")
+        self.assertEqual(res2["steps"]["card"], "written")
+        self.assertEqual(res2["steps"]["compact"], "needs_rewrite")
+        self.assertEqual(res2["status"], "partial")
+        live2 = card.read_text(encoding="utf-8")
+        self.assertIn("KORUNAN_TAZE_KART", live2)
+        self.assertIn("ILERI_KART", live2)
+
+    def test_post_write_stays_skipped_within_limit_when_file_remains_under_limit(self):
+        req = {
+            "card": {"label": "kısa", "body": "Kısa oturum özeti."},
+            "threads": [{"heading": "Aktif İşler", "next_step": "kısa adım"}],
+            "now": "2026-11-21T10:00:00",
+        }
+        preview = run_checkpoint(None, self.vault, self.state, req, session="within-limit", dry_run=True)
+        self.assertEqual(preview["steps"]["compact"], "skipped_within_limit")
+        self.assertEqual(preview["status"], "succeeded")
+
+        res = run_checkpoint(self.sync, self.vault, self.state, req, session="within-limit")
+        self.assertEqual(res["steps"]["compact"], "skipped_within_limit")
+        self.assertEqual(res["steps"]["card"], "written")
+        self.assertEqual(res["steps"]["threads"], "written")
+        self.assertEqual(res["status"], "succeeded")
+        self.assertFalse((self.comp / "Arşiv").exists())
+
+    def test_post_write_compaction_when_threads_update_pushes_over_limit(self):
+        from beyin_v3_companion import companion_chars
+
+        threads = self.comp / "Threads.md"
+        active_block = "# Threads\n\n## Active Threads\n### Aktif İşler\n" + ("- aktif ayrıntı satırı burada yer alır.\n" * 115)
+        closed_block = "\n## Closed Threads\n" + ("- kapanan eski iş kaydı ayrıntısı.\n" * 80)
+        initial = active_block + closed_block
+        self.assertGreater(len(initial), 7000)
+        self.assertLess(len(initial), 7800)
+        threads.write_text(initial, encoding="utf-8", newline="\n")
+        before = threads.read_bytes()
+
+        new_step = "YENI_THREAD_ADIMI " + ("uzun yeni görev açıklaması " * 40).strip()
+        req = {"threads": [{"heading": "Aktif İşler", "next_step": new_step}], "now": "2026-11-21T10:00:00"}
+
+        preview = run_checkpoint(None, self.vault, self.state, req, session="threads-952", dry_run=True)
+        self.assertEqual(preview["steps"]["compact"], "planned")
+        self.assertEqual(threads.read_bytes(), before)
+        self.assertFalse((self.comp / "Arşiv").exists())
+
+        res = run_checkpoint(self.sync, self.vault, self.state, req, session="threads-952")
+        self.assertEqual(res["status"], "succeeded")
+        self.assertEqual(res["steps"]["threads"], "written")
+        self.assertEqual(res["steps"]["compact"], "compacted")
+        live = threads.read_text(encoding="utf-8")
+        self.assertLessEqual(companion_chars("Threads.md", live), 8000)
+        self.assertIn("YENI_THREAD_ADIMI", live)
+        self.assertNotIn("kapanan eski iş kaydı", live)
+        archive = (self.comp / "Arşiv" / "Threads-2026-11.md").read_text(encoding="utf-8")
+        self.assertIn("kapanan eski iş kaydı", archive)
+
+        # If Threads.md has no movable history/dated entries and the update pushes over limit,
+        # checkpoint must honestly report needs_rewrite instead of skipped_within_limit.
+        threads.write_text(
+            "# Threads\n\n## Active Threads\n### Aktif İşler\n" + ("- aktif sabit madde satırı burada.\n" * 215),
+            encoding="utf-8", newline="\n",
+        )
+        self.assertLess(companion_chars("Threads.md", threads.read_text(encoding="utf-8")), 8000)
+        req_over = {
+            "threads": [{"heading": "Aktif İşler", "next_step": "TASAN_ADIM " + ("uzun ekleme " * 80).strip()}],
+            "now": "2026-11-21T10:05:00",
+        }
+        res_over = run_checkpoint(self.sync, self.vault, self.state, req_over, session="threads-952-over")
+        self.assertEqual(res_over["steps"]["threads"], "written")
+        self.assertEqual(res_over["steps"]["compact"], "needs_rewrite")
+        self.assertEqual(res_over["status"], "partial")
+
+    def test_already_oversized_single_old_card_compacts_cleanly_after_new_card(self):
+        card = self.comp / "Last-Session.md"
+        card.write_text(
+            "# Last-Session\n\n## 2026-11-01 10:00 · eski büyük · 11111111\n"
+            "ESKI_BUYUK_KART " + ("eski ayrıntı satırı. " * 165) + "\n",
+            encoding="utf-8", newline="\n",
+        )
+        self.assertGreater(len(card.read_text(encoding="utf-8")), 3000)
+        req = {"card": {"label": "yeni kısa", "body": "YENI_KISA_KART özeti."}, "now": "2026-11-21T10:00:00"}
+
+        res = run_checkpoint(self.sync, self.vault, self.state, req, session="replace-oversized-old")
+        self.assertEqual(res["status"], "succeeded")
+        self.assertEqual(res["steps"]["card"], "written")
+        self.assertEqual(res["steps"]["compact"], "compacted")
+        live = card.read_text(encoding="utf-8")
+        self.assertLessEqual(len(live), 3000)
+        self.assertIn("YENI_KISA_KART", live)
+        self.assertNotIn("ESKI_BUYUK_KART", live)
+        archive = (self.comp / "Arşiv" / "Last-Session-2026-11.md").read_text(encoding="utf-8")
+        self.assertIn("ESKI_BUYUK_KART", archive)
+        self.assertNotIn("needs_rewrite", archive)
+
+    def test_post_write_partial_compaction_still_over_limit_reports_needs_rewrite(self):
+        from beyin_v3_compact import compact as companion_compact
+
+        with self.assertRaises(ValueError):
+            companion_compact(self.vault, self.state, dry_run=False, overrides={"Last-Session.md": "x"})
+
+        card = self.comp / "Last-Session.md"
+        card.write_text(
+            "# Last-Session\n\n## 2026-11-01 10:00 · eski · 11111111\nESKI_KART_MOVE " + ("eski not. " * 100) + "\n",
+            encoding="utf-8", newline="\n",
+        )
+        self.assertLess(len(card.read_text(encoding="utf-8")), 3000)
+        before = card.read_bytes()
+
+        req = {
+            "card": {"label": "dev kart", "body": "DEV_KART " + ("çok uzun kart içeriği. " * 145)},
+            "now": "2026-11-21T10:00:00",
+        }
+        preview = run_checkpoint(None, self.vault, self.state, req, session="still-over-after-compact", dry_run=True)
+        self.assertEqual(preview["steps"]["compact"], "needs_rewrite")
+        self.assertEqual(preview["status"], "partial")
+        self.assertEqual(card.read_bytes(), before)
+
+        res = run_checkpoint(self.sync, self.vault, self.state, req, session="still-over-after-compact")
+        self.assertEqual(res["steps"]["card"], "written")
+        self.assertEqual(res["steps"]["compact"], "needs_rewrite")
+        self.assertEqual(res["status"], "partial")
+        live = card.read_text(encoding="utf-8")
+        self.assertIn("DEV_KART", live)
+        self.assertNotIn("ESKI_KART_MOVE", live)
+        archive = (self.comp / "Arşiv" / "Last-Session-2026-11.md").read_text(encoding="utf-8")
+        self.assertIn("ESKI_KART_MOVE", archive)
+        self.assertIn("DEV_KART", archive)
+
+    def test_dry_run_recognizes_already_archived_card_replay(self):
+        limits = self.state / "companion-limits.json"
+        limits.write_text('{"Last-Session.md": 0}', encoding="utf-8")
+        old = {"card": {"body": "Eski arşivlik kart.\n" * 190}, "now": "2026-11-18T12:00:00"}
+        run_checkpoint(self.sync, self.vault, self.state, old, session="archived-replay")
+        run_checkpoint(self.sync, self.vault, self.state,
+                       {"card": {"body": "Güncel kısa kart."}, "now": "2026-11-19T12:00:00"}, session="newer-short")
+        limits.unlink()
+
+        # First live retry compacts the old oversized card into Arşiv.
+        first = run_checkpoint(self.sync, self.vault, self.state, dict(old, now="2026-11-21T12:00:00"),
+                               session="archived-replay")
+        self.assertEqual(first["steps"]["compact"], "compacted")
+        self.assertEqual(first["steps"]["card"], "unchanged")
+
+        # Subsequent dry-run and live replay recognize the archived card without over-limit false alarms.
+        replay_req = dict(old, now="2026-11-21T13:00:00")
+        preview = run_checkpoint(None, self.vault, self.state, replay_req, session="archived-replay", dry_run=True)
+        self.assertEqual(preview["steps"]["compact"], "skipped_within_limit")
+        self.assertEqual(preview["status"], "succeeded")
+        second = run_checkpoint(self.sync, self.vault, self.state, replay_req, session="archived-replay")
+        self.assertEqual(second["steps"]["card"], "unchanged")
+        self.assertEqual(second["steps"]["compact"], "skipped_within_limit")
+        self.assertEqual(second["status"], "succeeded")
+
 if __name__ == "__main__":
     unittest.main()
