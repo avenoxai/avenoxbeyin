@@ -177,6 +177,28 @@ class EntryPresentationTest(unittest.TestCase):
         self.assertIn('companion-compact', last_off)
         self.assertNotIn('--last-session-chars', last_off)
 
+        # Root and project Last-Session.md both over: one limit serves both, so both lines name the
+        # size that fits the larger file; the project line does not point at companion-compact.
+        both = dict(base_hygiene, over_limit=['Last-Session.md', 'projects/demo/Last-Session.md'], projects=[
+            {'directory': 'projects/demo', 'over_limit': ['Last-Session.md'],
+             'files': {'Last-Session.md': {'chars': 3500, 'limit': 3000, 'over_limit': True}}}])
+        text = entry.human_result({'status': 'ok', 'companion_hygiene': both,
+                                   'parallel_sessions': {'enabled': True, 'valid': True, 'active': 2}}, 'doctor')
+        lines = [line for line in text.splitlines() if 'Last-Session.md' in line and 'Hafıza hijyeni' in line]
+        self.assertEqual(len(lines), 2, text)
+        for line in lines:
+            self.assertIn('--last-session-chars 7000"', line)
+        self.assertIn('Sıkıştırmayı diğer oturumlar bittikten sonra yapın.', lines[0])
+        self.assertIn('ayrı bir arşiv notuna taşıyın; companion-compact bu proje dosyasını kapsamaz.', lines[1])
+        self.assertNotIn('Sıkıştırmayı', lines[1])
+        # A root file past the 200000 cap cannot be fitted; the project line keeps its own fit.
+        huge = dict(both, files=dict(both['files'], **{'Last-Session.md': {'chars': 250000, 'limit': 3000}}))
+        text = entry.human_result({'status': 'ok', 'companion_hygiene': huge,
+                                   'parallel_sessions': {'enabled': True, 'valid': True, 'active': 2}}, 'doctor')
+        lines = [line for line in text.splitlines() if 'Last-Session.md' in line and 'Hafıza hijyeni' in line]
+        self.assertIn('sınır tavanını aşıyor', lines[0])
+        self.assertIn('--last-session-chars 4000"', lines[1])
+
 
 # The installer pins a resolved absolute path; this is one another OS wrote into a synced vault (#249).
 FOREIGN_PIN = ('/home/ada/.local/state/beyin-v3/ab12' if sys.platform == 'win32' else

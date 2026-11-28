@@ -955,19 +955,27 @@ def human_result(result, command, installed_version=None):
         if hygiene.get('status') == 'unavailable':
             lines.append('Hafıza hijyeni ölçülemedi (' + plain_text(hygiene.get('error', 'hata')) + '); daha sonra tekrar deneyin.')
         parallel_on = isinstance(result.get('parallel_sessions'), dict) and result['parallel_sessions'].get('enabled') is True
-        for label, file_name, entry, project in _companion_hygiene_entries(hygiene):
+        hygiene_entries = _companion_hygiene_entries(hygiene)
+        # --last-session-chars is one limit for every Last-Session.md: suggest the one size that fits them all.
+        session_sizes = [entry['chars'] for _, file_name, entry, _ in hygiene_entries if file_name == 'Last-Session.md'
+                         and isinstance(entry.get('chars'), int) and isinstance(entry.get('limit'), int)]
+        suggested = ((max(session_sizes) + 999) // 1000) * 1000 if session_sizes else 0
+        for label, file_name, entry, project in hygiene_entries:
             sized = isinstance(entry.get('chars'), int) and isinstance(entry.get('limit'), int)
             prefix = ('Hafıza hijyeni: ' + plain_text(label) +
                       (f' {entry["chars"]} karakter (sınır {entry["limit"]}). ' if sized else ' sınırı aşıyor. '))
             if parallel_on and file_name == 'Last-Session.md' and sized:
-                suggested = ((entry['chars'] + 999) // 1000) * 1000
-                if suggested <= 200000:  # beyin_v3_companion.LIMIT_RANGE upper bound
+                own = ((entry['chars'] + 999) // 1000) * 1000
+                if own <= 200000:  # beyin_v3_companion.LIMIT_RANGE upper bound
                     advice = (f'Bu kartlar hala gerekliyse: "{py_cmd} beyin.py preferences '
-                              f'--last-session-chars {suggested}". ')
+                              f'--last-session-chars {suggested if suggested <= 200000 else own}". ')
                 else:
                     advice = 'Dosya desteklenen sınır tavanını aşıyor; arşivlemeden önce devir kartlarını gözden geçirin. '
                 lines.append(prefix + 'Paralel oturum bildirimi açık; diğer oturumların taze kartlarını yalnız bu uyarıyı '
-                             'kaldırmak için sıkıştırmayın. ' + advice + 'Sıkıştırmayı diğer oturumlar bittikten sonra yapın.')
+                             'kaldırmak için sıkıştırmayın. ' + advice +
+                             ('Diğer oturumlar bittikten sonra eski kayıtları ayrı bir arşiv notuna taşıyın; '
+                              'companion-compact bu proje dosyasını kapsamaz.' if project else
+                              'Sıkıştırmayı diğer oturumlar bittikten sonra yapın.'))
             elif project:
                 # companion-compact only shortens the main companion folder; naming it here sends the
                 # user to a command that leaves this file untouched.
