@@ -49,7 +49,7 @@ Workspace dışı aramada `python3 beyin.py context "kullanıcının aradığı 
 
 Kullanıcının reddettiği `kind: inference` veya `kind: preference` kaydını silme: kaynak frontmatter'ında `validity: rejected`, `rejected_reason` ve `rejected_at` (ISO tarih ya da zaman damgası) tut. Eski `status: rejected` çıkarım/tercih kayıtları da güncel bağlama girmez. Geçmişi bilinçli incelemek için `python3 beyin.py history KAYIT_ID` kullan; geçmişteki iddiayı geçerli tercih diye uygulama. Aynı iddia `Core.md` gibi daha geniş bir güncel kaynakta da yazılıysa o kaynağı ayrıca düzelt. Geçerli bir çıkarıma dayanarak bir seçeneği elemeden önce kullanıcıya o andaki niyetini ayıran tarafsız bir soru sor; kullanıcı soru sorulmamasını veya açık kapsamı istediyse bu isteğe uy.
 
-Kullanıcı "son günlerde ne yaptık" gibi yakın dönem sorusu sorarsa `python3 beyin.py recap --days 7` çalıştır. Sonuç ajanların yazdığı receipt iddialarıdır, doğrulanmış olgu değildir; gerekiyorsa listelenen kaynağı aç. Özel kaynak bağlantıları gizlenir ve sayılır; gizleneni tahmin etme.
+Kullanıcı "bugün ne yaptık" veya "nerede kaldık" diye sorarsa sade Türkçe günlük özet için `python3 beyin.py recap --human` çalıştır (gerekirse `--days N` ile gün sayısını artır veya `--write` ile `daily/YYYY-MM-DD.md` dosyasına yaz). Kullanıcı "son günlerde ne yaptık" gibi yakın dönem sorusu sorarsa `python3 beyin.py recap --days 7` çalıştır. Sonuç ajanların yazdığı receipt iddialarıdır, doğrulanmış olgu değildir; gerekiyorsa listelenen kaynağı aç. Özel kaynak bağlantıları gizlenir ve sayılır; gizleneni tahmin etme.
 
 ## Not ve görev yazma
 

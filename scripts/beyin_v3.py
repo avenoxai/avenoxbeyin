@@ -1187,6 +1187,10 @@ def parser(note_namespace=None, is_json=False):
     recap.add_argument("--until", type=recap_bound, metavar="DATE",
                        help="Explicit range end, inclusive: YYYY-MM-DD covers that whole local day; without "
                             "--since there is no lower bound")
+    recap.add_argument("--human", action="store_true",
+                       help="Plain-language Turkish daily summary (defaults to --days 1 unless specified)")
+    recap.add_argument("--write", action="store_true",
+                       help="Write or update the 'Günün özeti' section in daily/YYYY-MM-DD.md (requires --human)")
     recap.set_defaults(usage_error=recap.error)  # cross-flag checks in main() report with recap's own usage
     triage = sub.add_parser("triage", help="Vault digestion report: inbox items, stale tasks/threads, and weekly knowledge summary")
     triage.add_argument("--stale-days", type=int, default=14, help="Age threshold for open tasks and Threads ISO date mentions (default: 14)")
@@ -1526,6 +1530,11 @@ def main(argv=None, return_result=False):
         state = (args.state.expanduser() if args.state else default_state(vault)).resolve()
         if state == vault or vault in state.parents:
             raise ValueError("--state must be outside the vault")
+        if args.command == "recap" and args.write:
+            if not args.human:
+                raise ValueError("--write requires --human")
+            if args.since is not None or args.until is not None:
+                raise ValueError("--write cannot be combined with --since/--until")
         read_only_context = args.command == "context" and args.no_sync
         context_selftest = args.command == "selftest" and args.mode == "context"
         if args.command == "selftest" and args.budget is not None and (not context_selftest or args.budget < 0):
@@ -2191,7 +2200,8 @@ def main(argv=None, return_result=False):
             recover = getattr(args, "recover_views", False) or args.command == "recover-views"
             result = sync.sync(full=getattr(args, "full", False), recover_views=recover)
         elif args.command == "recap":
-            days = 7 if args.days is None else args.days
+            is_daily_human = bool(args.human) and args.since is None and args.until is None
+            days = (1 if is_daily_human else 7) if args.days is None else args.days
             if not 1 <= days <= 366 or not 1 <= args.limit <= 100:
                 raise ValueError('recap days must be 1..366 and limit must be 1..100')
             refreshed = sync.sync()
@@ -2201,9 +2211,21 @@ def main(argv=None, return_result=False):
                 raise RuntimeError('Recap blocked: source sync conflict. Run sync to inspect sources.')
             from beyin_v3_projections import recent_receipts
             with store._connect() as db:
-                # Without the range flags this is exactly the call recap made before they existed.
-                bounds = {name: bound for name, bound in (('since', args.since), ('until', args.until)) if bound is not None}
-                result = recent_receipts(db, days=days, limit=args.limit, vault=vault, **bounds)
+                if is_daily_human:
+                    from datetime import datetime, timedelta, timezone
+                    _ensure_scripts_path()
+                    import beyin_v3_recap as recap_mod
+                    local_today = datetime.now(timezone.utc).astimezone().date()
+                    since_day = local_today - timedelta(days=days - 1)
+                    result = recent_receipts(db, days=days, limit=args.limit, vault=vault,
+                                             since=since_day, until=local_today)
+                    result['daily_summary'] = recap_mod.collect_daily_summary(
+                        vault, state, store, db, result, refreshed, days=days, today=local_today
+                    )
+                else:
+                    # Without the range flags this is exactly the call recap made before they existed.
+                    bounds = {name: bound for name, bound in (('since', args.since), ('until', args.until)) if bound is not None}
+                    result = recent_receipts(db, days=days, limit=args.limit, vault=vault, **bounds)
             view_conflicts = [c for c in refreshed.get('conflicts', []) if is_receipt_view_conflict(c)]
             if view_conflicts:
                 result['view_conflicts'] = view_conflicts
@@ -2212,6 +2234,9 @@ def main(argv=None, return_result=False):
                 result['partial'] = True
                 result['source_sync'] = {'status': 'degraded', 'warnings': warnings[:20],
                                          'warning_count': len(warnings), 'truncated': len(warnings) > 20}
+            if is_daily_human and args.write:
+                daily_body = recap_mod.format_human(result, heading_level=3, include_write_note=False)
+                result['written_daily'] = recap_mod.write_daily_summary(vault, daily_body, today=local_today)
         elif args.command == "triage":
             _ensure_scripts_path()
             import beyin_v3_triage as triage_module
@@ -2538,6 +2563,11 @@ def main(argv=None, return_result=False):
             mark_session_edit(state, vault, result.get("source"))
         if return_result:
             return result, 0
+        if args.command == "recap" and args.human and not args.json and isinstance(result.get("daily_summary"), dict):
+            _ensure_scripts_path()
+            import beyin_v3_recap as recap_mod
+            recap_mod.write_human_output(recap_mod.format_human(result), stream=sys.stdout)
+            return 0
         print(json.dumps(result, ensure_ascii=True, indent=2))
         return 0
     except Exception as exc:
