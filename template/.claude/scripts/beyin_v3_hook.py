@@ -936,7 +936,10 @@ def antigravity_abnormal_stop(payload):
     Antigravity sends terminationReason='NO_TOOL_CALL' with an empty error on a normal turn;
     USER_CANCELED, ERROR, MAX_INVOCATIONS, MAX_FORCED_INVOCATIONS, MAX_TOKEN_BUDGET_EXCEEDED,
     TERMINAL_STEP_TYPE, TERMINAL_CUSTOM_HOOK and INJECTED_RESPONSE must not be asked to
-    continue. Absent or empty fields stay False so older clients keep normal Stop behaviour."""
+    continue. Absent or empty fields stay False so older clients keep normal Stop behaviour;
+    UNSPECIFIED, the enum's zero value (no reason recorded), counts as absent. Other names the
+    1.5.18 binary defines but its hook document does not list (CHAINED, EARLY_CONTINUE,
+    HALTED_STEP) are not a normal end: the reminder waits for the next NO_TOOL_CALL Stop."""
     if not isinstance(payload, dict):
         return False
     err = payload.get('error')
@@ -945,7 +948,7 @@ def antigravity_abnormal_stop(payload):
     reason = payload.get('terminationReason')
     if isinstance(reason, str):
         reason = reason.strip()
-        if reason and reason != 'NO_TOOL_CALL':
+        if reason and reason not in ('NO_TOOL_CALL', 'UNSPECIFIED'):
             return True
     return False
 

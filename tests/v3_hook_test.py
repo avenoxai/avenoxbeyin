@@ -1053,9 +1053,16 @@ class HookInstallerTest(unittest.TestCase):
             {'terminationReason': '   ', 'error': '   '},
             {'terminationReason': 123, 'error': True},
             {'terminationReason': False, 'error': ['err']},
+            # The enum's zero value records no reason; like an absent field it keeps normal Stop.
+            {'terminationReason': 'UNSPECIFIED', 'error': ''},
         ):
             with self.subTest(helper_normal=payload):
                 self.assertFalse(abnormal(payload))
+        # Names the 1.5.18 binary defines but its hook document does not list are not a normal end.
+        for reason in ('CHAINED', 'EARLY_CONTINUE', 'HALTED_STEP'):
+            with self.subTest(undocumented=reason):
+                self.assertTrue(abnormal({'terminationReason': reason, 'error': ''}))
+        self.assertTrue(abnormal({'terminationReason': 'UNSPECIFIED', 'error': 'model failure'}))
 
     def test_antigravity_tool_input_maps_only_successful_file_writes(self):
         for call, error, expected in (
