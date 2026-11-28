@@ -850,6 +850,21 @@ with locked(engine):
         self.assertEqual(result['status'], 'written')
         self.assertEqual(path.read_bytes(), replacement.encode('utf-8'))
 
+    def test_whole_note_anchor_in_long_crlf_note_skips_the_line_ending_scan(self):
+        # The lookahead scan took seconds on a long repetitive CRLF note (20k equal lines); the
+        # whole-note anchor of the internal writers is found directly, with the same result.
+        import beyin_v3_notes
+        for text in ('same line\r\n' * 20000, '\r\n' * 20000, 'a\r\nb\nc\r', '\r\n'):
+            with self.subTest(size=len(text)):
+                with patch.object(beyin_v3_notes.re, 'finditer', side_effect=AssertionError('scanned')):
+                    self.assertEqual(beyin_v3_notes._anchor_matches(text, text, True), [(0, len(text))])
+                    self.assertEqual(beyin_v3_notes._anchor_matches(text, text, False), [(0, len(text))])
+        raw = ('- item\r\n' * 20000).encode('utf-8')
+        path = self.write(source='Long.md', raw=raw)
+        result = self.engine.note_edit(self.request(raw.decode('utf-8'), '# Done\n', source='Long.md'))
+        self.assertEqual(result['status'], 'written')
+        self.assertEqual(path.read_bytes(), b'# Done\n')
+
     def test_line_ending_grid_matches_lf_semantics(self):
         # Invariants over a fixed grid, checked in-process on the matcher and end to end:
         # 1. a note without CRLF is searched exactly as before (literal, overlapping, byte for byte);

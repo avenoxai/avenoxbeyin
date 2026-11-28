@@ -714,6 +714,10 @@ def _anchor_matches(text, old, crlf):
     in old matches either ending, so an agent's LF anchor finds CRLF and mixed lines, and every
     spelling counts towards 'exactly once' instead of the first one found winning (#951).
     """
+    if old == text:
+        # The whole note, the shape internal writers send, occurs once at 0 in either mode;
+        # the lookahead scan below would grow with the square of a long repetitive note.
+        return [(0, len(text))]
     if not crlf or '\n' not in old:
         found, start = [], text.find(old)
         while start >= 0:
