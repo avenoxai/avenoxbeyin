@@ -18,6 +18,8 @@ from beyin_v3 import _receipt_lf
 EXCLUDED_DIRS_ROW = 'index_excluded_dirs'
 # metadata row: the sources the last sync could not read or parse, as a JSON list.
 UNREADABLE_SOURCES_ROW = 'index_unreadable_sources'
+# metadata row: bounded summary of degraded sync warnings (with reasons) from the last sync (#964).
+LAST_SYNC_WARNINGS_ROW = 'last_sync_warnings'
 RECEIPT_VIEW_SOURCES_ROW = 'receipt_view_sources'
 # Shown in place of a summary whose receipt refers to a private or untrusted source: removing the
 # ref alone does not anonymize the summary, which usually describes that source.
@@ -660,6 +662,18 @@ def is_receipt_view_conflict(item):
     # become writable merely because its name falls under a generated directory.
     return (isinstance(item, dict) and is_receipt_view_source(item.get('source'), proven=True) and
             item.get('reason') in RECEIPT_VIEW_REASONS)
+
+
+def is_actionable_sync_warning(item):
+    """True for sync warnings that excluded or flagged a note/source, excluding info-only and receipt views."""
+    if not isinstance(item, dict):
+        return False
+    reason = str(item.get('reason', ''))
+    if reason.startswith('possible file sync copy') or item.get('kind') == 'missing_receipt_source':
+        return False
+    if item.get('kind') == 'receipt_view' or is_receipt_view_conflict(item):
+        return False
+    return True
 
 
 def _archive_receipt_view(engine, path, expected_hash, _hash):

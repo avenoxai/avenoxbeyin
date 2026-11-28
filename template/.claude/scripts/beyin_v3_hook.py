@@ -12,11 +12,83 @@ import subprocess
 import sys
 sys.dont_write_bytecode = True
 import time
+import unicodedata
 import uuid
 EVENTS = {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "PreCompact", "SessionEnd"}
 HOOK_BUDGET = 3.8  # seconds; installed POSIX hooks are killed at 5
 SYNC_WAIT = 1.5  # seconds the prompt hook waits for the source sync before reading the last index
 UNMATCHED_SHOWN = 8  # prompt words listed as unmatched (#909); each at most 64 characters
+HOOK_HEALTH_MAX_BYTES = 8 * 1024 * 1024
+_BIDI_CONTROLS = frozenset('\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069')
+
+
+def _sanitize_hook_path(value):
+    """One safe line fragment for a warning path: strip controls/bidi and bound length (#964)."""
+    text = str(value).replace('\r\n', '\n')
+    cleaned = ''.join(
+        ' ' if ch in '\n\r\t\u2028\u2029\x85'
+        else '?' if unicodedata.category(ch) == 'Cc' or ch in _BIDI_CONTROLS
+        else ch
+        for ch in text
+    ).strip()
+    if len(cleaned) > 120:
+        return cleaned[:117] + '...'
+    return cleaned
+
+
+def _read_hook_health(path):
+    """Read hook-health.json with symlink/regular-file/size guards; returns (present, sync_dict_or_None)."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False, None
+    except OSError:
+        return True, None
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode) or st.st_size > HOOK_HEALTH_MAX_BYTES:
+        return True, None
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return True, None
+    sync = data.get('sync') if isinstance(data, dict) else None
+    return True, (sync if isinstance(sync, dict) else {})
+
+
+def _sync_attention_notice(sync):
+    """Format the degraded-sync hook notice with bounded, sanitized warning filenames (#964)."""
+    from beyin_v3 import sensitive_source
+    from beyin_v3_projections import is_actionable_sync_warning, is_receipt_view_conflict
+    sources = []
+    seen = set()
+    warnings = sync.get('warnings') if isinstance(sync.get('warnings'), list) else []
+    conflicts = sync.get('conflicts') if isinstance(sync.get('conflicts'), list) else []
+    for item in warnings:
+        if not is_actionable_sync_warning(item):
+            continue
+        src = item.get('source')
+        if isinstance(src, str) and src.strip() and not sensitive_source(src):
+            clean = _sanitize_hook_path(src)
+            if clean and clean not in seen:
+                seen.add(clean)
+                sources.append(clean)
+    for item in conflicts:
+        if not isinstance(item, dict) or is_receipt_view_conflict(item):
+            continue
+        src = item.get('source')
+        if isinstance(src, str) and src.strip() and not sensitive_source(src):
+            clean = _sanitize_hook_path(src)
+            if clean and clean not in seen:
+                seen.add(clean)
+                sources.append(clean)
+    if not sources:
+        return "V3 sync needs attention; consult current sources and doctor.\n"
+    limit = 5
+    shown = ', '.join(sources[:limit])
+    extra = len(sources) - limit
+    if extra > 0:
+        shown += f', +{extra} more'
+    label = 'warning' if len(sources) == 1 else 'warnings'
+    return f"V3 sync needs attention ({len(sources)} {label}: {shown}); consult current sources and doctor.\n"
 
 
 def abstain_coverage():
@@ -1213,13 +1285,14 @@ def main():
             else:
                 warning = ''
             coverage = ''
-            health = state / "hook-health.json"
-            if health.exists():
-                sync = json.loads(health.read_text(encoding="utf-8")).get("sync", {})
+            health_present, sync = _read_hook_health(state / "hook-health.json")
+            if health_present and sync is None:
+                warning += "V3 sync needs attention; consult current sources and doctor.\n"
+            elif health_present and isinstance(sync, dict):
                 if sync.get("status") not in ("ok", "succeeded", "synced"):
-                    warning += "V3 sync needs attention; consult current sources and doctor.\n"
+                    warning += _sync_attention_notice(sync)
                 from beyin_v3_projections import is_receipt_view_conflict
-                if any(is_receipt_view_conflict(c) for c in sync.get('conflicts', []) + sync.get('warnings', [])):
+                if any(is_receipt_view_conflict(c) for c in (sync.get('conflicts') or []) + (sync.get('warnings') or [])):
                     warning += "V3 receipt view preserved; consult doctor or run beyin.py sync --recover-views to archive and regenerate.\n"
                 if sync.get('skill_conflicts'):
                     warning += 'Shared skills differ between harnesses; both versions are preserved. Run doctor before trusting skill text.\n'
