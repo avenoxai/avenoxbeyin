@@ -575,6 +575,44 @@ class SecretEnvAssignmentsTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(redact(text, self.state), (expected, 1))
 
+    def test_empty_assignment_kept_as_text_passes_jev_card_scan(self):
+        # Jev's context and manual paths send a card whose statement is a JSON
+        # string inside JSON: a line break after the closing backtick is \\n there
+        # and the end of the note adds \", to the marks. The guard read only the
+        # note form, so redact() kept "API key: `OPENAI_API_KEY=`" before a line
+        # break, a period or the end as written, yet Jev refused every query that
+        # found the note; 3.17.0 kept it and Jev judged it, 3.18.0 masked it.
+        store = runtime.MemoryStore(self.state, self.vault)
+        secret = 'Xy7kL9amN2pQ4zR8'
+
+        def card(text):
+            statement = json.dumps(dict(text=text, excerpt_truncated=False, project='p'), ensure_ascii=False)
+            return ['kurulum nasil', [dict(id='n1', title='Kurulum', statement=statement,
+                                           scope='project:p', domains=['note'])]]
+
+        labels = ('Token: ', 'API key: ', '- Secret: ', 'OPENAI_API_KEY=')
+        afters = ('', '\nsonra', '.', '.\nsonra', '...', '!?', ',\n- sonraki', "'yi\nayarla", '’nin.',
+                  '”\nsonra', '"', ' gerekli', "'yi ayarla")
+        # An empty quoted value (`NAME=''`) is left out: in the JSON form 3.17.0's
+        # quoted rule reads the escapes after it as a value, as it did in 3.17.0.
+        for label, after in itertools.product(labels, afters):
+            for form in ('`GITHUB_TOKEN=`', '``DB_PASSWORD=``', '`OPENAI_API_KEY=`'):
+                text = label + form + after
+                with self.subTest(text=text):
+                    self.assertEqual(redact(text, self.state), (text, 0))
+                    advisor._safe(store, {'statement': text})
+                    advisor._safe(store, card(text))
+            for form in (f'`GITHUB_TOKEN={secret}`', f'`GITHUB_TOKEN=`{secret}', f'`GITHUB_TOKEN=`.{secret}',
+                         f'`GITHUB_TOKEN=`"{secret}'):
+                text = label + form + after
+                with self.subTest(text=text):
+                    result, count = redact(text, self.state)
+                    self.assertGreaterEqual(count, 1)
+                    self.assertNotIn('Xy7kL9', result)
+                    self.assertNotIn('N2pQ4zR8', result)
+                    with self.assertRaises(ValueError):
+                        advisor._safe(store, card(text))
+
     def test_pem_body_is_masked_without_trailer_and_does_not_swallow_prose(self):
         begin = "-----BEGIN PRIVATE KEY-----"
         body = "QUJD" * 16  # Synthetic base64, no private key.

@@ -135,9 +135,17 @@ def _backtick_span():
 # It stays text only when its closing run ends the token (a space, the end,
 # trailing marks, a Turkish suffix or a JSON escape follow), so a value glued
 # after the run ("`NAME=`Xy7kL9amN2pQ") is still masked with the span.
+# Jev scans the note as JSON, and a card statement is a JSON string inside
+# JSON, so a line break there is \n or \\n, a quote is \" or \\\", and the end
+# of the string adds a quote and closing brackets ("}, \",). The token end is
+# read the same way in every form, or Jev refuses every query that finds a
+# note redact() kept as written. Only marks, escaped quotes and brackets may
+# stand before the break, so a value glued to them is still masked.
+_EMPTY_END = (r"""(?:\\{0,8}["']|[.,;:!?)\]}*_~|\u2019\u201d\u00bb\u203a\u2026\u2014\u2013]){0,8}"""
+              r"""(?:\s|\Z|\\{1,8}[nrt])""")
 _EMPTY_ASSIGNMENT = (r"""(?!(?-i:\x60+[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+="""
                      r"""(?:\\{0,8}"\\{0,8}"|\\{0,8}'\\{0,8}')?\x60+)(?="""
-                     + _AFTER_VALUE + "|" + _TURKISH_SUFFIX + r"|\\[nrt]))")
+                     + _EMPTY_END + r"|['\u2019](?-i:[a-zçğıöşü]){1,20}(?=" + _EMPTY_END + ")))")
 _SECRET_VALUE = ("(?:" + _QUOTED_VALUE + "|" + _EMPTY_ASSIGNMENT + _backtick_span()
                  + "|" + _unquoted_value() + ")")
 
