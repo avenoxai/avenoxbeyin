@@ -395,7 +395,7 @@ class ShellEditReminderTest(unittest.TestCase):
         self.assertIn('Oturum kaydı kapsamı: %25 (1/4 oturum, son 7 gün: %25); 2 eksik oturumda düzenleme gözlenmedi', text)
         text = beyin_entry.human_result({'status': 'ok', 'receipt_coverage': dict(coverage, missing_no_observed_edit=0)}, 'doctor')
         self.assertIn('Oturum kaydı kapsamı: %25 (1/4 oturum, son 7 gün: %25)\n', text + '\n')
-        self.assertNotIn('düzenleme gözlenmedi', text)
+        self.assertNotIn('gözlenmedi', text)
 
 
 class ShellEditUnitTest(unittest.TestCase):
