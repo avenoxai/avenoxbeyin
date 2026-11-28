@@ -613,13 +613,18 @@ def human_result(result, command, installed_version=None):
             ident = plain_text(opening.get('identity') or 'Core.md')
             ientry = opening_files.get(opening.get('identity') or 'Core.md') or {}
             if ientry.get('omitted'):
+                # In this case the identity's own size does not matter: the protected core
+                # (rules, newest handoff card, topic overview) took the whole opening first.
                 lines.append(f'{ident} acilisa sigmiyor (uyari): {ientry.get("chars", "?")} karakter; '
                              f'Claude Code acilisi ({opening.get("budget")} karakter) yalniz okuma isareti gosteriyor. '
-                             'Dosyayi kisalt ya da acilis butcesini (--companion-context-chars) gozden gecir.')
+                             'Acilis payini once Kurallar.md, Last-Session.md ve Threads.md aliyor; bunlari kisalt '
+                             'ya da acilis butcesini (--companion-context-chars) gozden gecir.')
             else:
                 lines.append(f'{ident} acilista cok kirpiliyor (uyari): {ientry.get("chars", "?")} karakterin '
                              f'yalniz {ientry.get("share", 0)} karakteri gorunuyor '
-                             f'(butce {opening.get("budget")} karakter). Dosyayi kisalt veya acilis butcesini gozden gecir.')
+                             f'(butce {opening.get("budget")} karakter). Acilis payini once Kurallar.md, '
+                             'Last-Session.md ve Threads.md aliyor; bunlari ya da dosyayi kisalt veya acilis '
+                             'butcesini gozden gecir.')
         journal_entry = opening_files.get('Journal.md')
         if isinstance(journal_entry, dict) and (journal_entry.get('omitted') or
                 (journal_entry.get('clipped') and journal_entry.get('share', 0) < 100)):

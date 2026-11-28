@@ -228,7 +228,17 @@ Düzeltme dört parçadır:
   kırpılıyorsa `--human` çıktısında tek satır görünür. Bilgi amaçlıdır, `doctor` durumunu
   değiştirmez ve hiçbir dosya yazmaz (#374). Ayrıca açılışta `Kurallar.md` kırpılıyorsa oturum
   başı bağlamının tepesinde `Memory hygiene: Kurallar.md opens clipped (share X of Y chars)...`
-  uyarısı yer alır (#461).
+  uyarısı yer alır (#461). Kimlik (`Core.md`/`Soul.md`), `Journal.md` gibi korunan çekirdek
+  dışındaki bir kaynağın açılış payı kullanılabilir bir parçaya yetmiyorsa (50 karakter ve altı)
+  yarım başlık yerine tek satırlık `[omitted (<N> chars); read source]` işareti gelir (#916).
+  `doctor` her companion dosyasının açılış payını `companion_opening.files` altında (`chars`,
+  `share`, `clipped`, `omitted`) aynı referans açılışla verir; `clipped` dosyanın tamamının
+  gelmediğini söyler (`share` < `chars`; gerekçeleri atılan kurallar ve yalnız özetiyle gelen
+  konular dahil). Etkin kimlik dosyası yalnız bu işaretle geliyorsa ya da 400 karakterin altına
+  kırpılıyorsa `companion_opening.status` `warn` olur ve `--human` çıktısında tek satır görünür.
+  Bu durumda kimliğin kendi boyutu belirleyici değildir: açılış payını önce `Kurallar.md`, en
+  yeni devir kartı ve konu özeti alır (#528). Bu ölçüm de bilgi amaçlıdır, `doctor` durumunu
+  değiştirmez ve hiçbir dosya yazmaz.
 - **Kayıpsız arşivleme.** `python3 beyin.py companion-compact` açık bir komuttur; hook,
   worker veya zamanlayıcı onu kendiliğinden çalıştırmaz. Yalnız sınırı aşan dosyada önce
   `## Previous`/`## Önceki` (Last-Session) veya `## Closed`/`## Kapanan`/`## Kapalı`

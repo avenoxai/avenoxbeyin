@@ -2002,10 +2002,12 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
                     project_rules.append(entry)
                     rules_report = entry
             if i < len(records):
+                # clipped means the source does not arrive whole: share < chars. A topic file
+                # reduced to its overview or rules without their reasons count as clipped too.
                 opening_files[name] = {
                     'chars': len(sections[i][1]),
                     'share': 0 if omitted else lengths[i],
-                    'clipped': omitted or lengths[i] < len(body),
+                    'clipped': omitted or lengths[i] < len(sections[i][1]),
                     'omitted': omitted,
                 }
             if omitted:
@@ -2169,7 +2171,10 @@ def opening_report(store, budget, receipt=''):
     files = report.get('files') or {}
     identity = 'Core.md' if 'Core.md' in files else ('Soul.md' if 'Soul.md' in files else None)
     identity_entry = files.get(identity) if identity else None
-    if identity_entry and identity_entry.get('clipped') and (
+    if not files:
+        # Nothing was measured (no companion folder or no readable source): not an "ok".
+        status = 'no_sources'
+    elif identity_entry and identity_entry.get('clipped') and (
             identity_entry.get('omitted') or identity_entry.get('share', 0) < IDENTITY_WARN_SHARE):
         status = 'warn'
     elif any(item.get('clipped') for item in files.values()):
