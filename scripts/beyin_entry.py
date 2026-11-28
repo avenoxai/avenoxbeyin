@@ -369,6 +369,137 @@ def doctor_attention_count(result):
     return count
 
 
+_HOOK_FILE_CLIENTS = {
+    '.claude/settings.local.json': 'claude',
+    '.codex/hooks.json': 'codex',
+    '.agents/hooks.json': 'antigravity',
+    '.kiro/hooks/beyin-v3.json': 'kiro',
+}
+
+
+def _client_detail_notes(details):
+    """Collect explicit error/warning text from a lifecycle entry, if present."""
+    notes = []
+    for key in ('error', 'warning'):
+        value = details.get(key)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                notes.append(plain_text(stripped))
+        elif value is True:
+            notes.append('hata' if key == 'error' else 'uyari')
+        elif value and not isinstance(value, bool):
+            notes.append(plain_text(value))
+    for key in ('errors', 'warnings'):
+        items = details.get(key)
+        if isinstance(items, (list, tuple)):
+            for item in items:
+                if isinstance(item, str):
+                    stripped = item.strip()
+                    if stripped:
+                        notes.append(plain_text(stripped))
+                elif item and not isinstance(item, bool):
+                    notes.append(plain_text(item))
+        elif isinstance(items, str):
+            stripped = items.strip()
+            if stripped:
+                notes.append(plain_text(stripped))
+    return list(dict.fromkeys(notes))
+
+
+def _client_doctor_issues(result):
+    """Map client names to active hook/config warnings reported elsewhere in doctor."""
+    issues = {}
+
+    def add(client, reason):
+        if isinstance(client, str) and client:
+            bucket = issues.setdefault(client, [])
+            if reason not in bucket:
+                bucket.append(reason)
+
+    hook_error = result.get('hook-error.json')
+    if isinstance(hook_error, dict):
+        client = hook_error.get('harness') or hook_error.get('client')
+        err = hook_error.get('error') or hook_error.get('message')
+        if isinstance(err, str):
+            err = err.strip()
+        add(client, 'hook hatasi: ' + plain_text(err) if err else 'hook hatasi')
+
+    paths = result.get('hook_paths')
+    if isinstance(paths, dict) and paths.get('status') == 'stale':
+        stale_rows = paths.get('stale')
+        if isinstance(stale_rows, (list, tuple)):
+            for row in stale_rows:
+                if isinstance(row, dict):
+                    client = _HOOK_FILE_CLIENTS.get(row.get('file'))
+                    if client:
+                        add(client, 'hook dosyasi okunamadi' if row.get('reason') == 'unreadable' else 'hook yolu eski')
+
+    bridges = result.get('global_bridge_paths')
+    if isinstance(bridges, dict) and bridges.get('status') == 'stale':
+        stale_bridges = bridges.get('stale')
+        if isinstance(stale_bridges, (list, tuple)):
+            for row in stale_bridges:
+                if isinstance(row, dict):
+                    add(row.get('harness'), 'genel kopru yolu eski')
+
+    omp_hook = result.get('omp_global_hook')
+    if isinstance(omp_hook, dict):
+        omp_error = omp_hook.get('error')
+        if isinstance(omp_error, str):
+            omp_error = omp_error.strip()
+        if omp_hook.get('stale') is True:
+            add('omp', 'genel hook kopyasi eski')
+        elif omp_error and not isinstance(omp_error, bool):
+            add('omp', 'genel hook denetlenemedi: ' + plain_text(omp_error))
+
+    cov = result.get('receipt_coverage')
+    hermes_missing = cov.get('hermes_without_terminal') if isinstance(cov, dict) else None
+    if type(hermes_missing) is int and hermes_missing > 0:
+        add('hermes', 'kapanis sinyali eksik')
+
+    return issues
+
+
+def lifecycle_lines(result):
+    """Doctor lines for client lifecycle; collapse idle never-seen clients into one summary line (#962)."""
+    lifecycle = result.get('lifecycle')
+    if not isinstance(lifecycle, dict) or not lifecycle:
+        return []
+    doctor_issues = _client_doctor_issues(result)
+    status_labels = {
+        'observed_metadata': 'olay goruldu',
+        'never_seen': 'henuz dogrulanmadi',
+        'error': 'hata',
+        'warning': 'uyari',
+        'needs_attention': 'kontrol gerekiyor',
+    }
+    lines = []
+    unused = []
+    for name, raw_details in lifecycle.items():
+        label = plain_text(name)
+        details = raw_details if isinstance(raw_details, dict) else {}
+        client_status = details.get('status')
+        if not isinstance(client_status, str) or not client_status:
+            client_status = 'never_seen'
+        detail_notes = _client_detail_notes(details)
+        extra_notes = [note for note in doctor_issues.get(name, ()) if note not in detail_notes]
+        notes = detail_notes + extra_notes
+        events = details.get('events')
+        has_events = isinstance(events, (list, tuple)) and any(events)
+        if client_status == 'never_seen' and not notes and not has_events:
+            unused.append(label)
+            continue
+        state_text = status_labels.get(client_status, plain_text(client_status))
+        if notes:
+            lines.append(label + ': ' + state_text + ' (' + '; '.join(notes) + ')')
+        else:
+            lines.append(label + ': ' + state_text)
+    if unused:
+        lines.append('Kullanilmayan istemciler: ' + ', '.join(unused) + ' (' + str(len(unused)) + ')')
+    return lines
+
+
 def human_result(result, command, installed_version=None, *, stream=None):
     text = _render_human_result(result, command, installed_version)
     return safe_stream_text(text, stream) if stream is not None else text
@@ -680,8 +811,7 @@ def _render_human_result(result, command, installed_version=None):
         if omp_global.get('stale'):
             lines.append('Genel OMP kanca kopyası güncel değil: ' + plain_text(omp_global.get('path')) +
                          '. Eski kopyayı güncelleyin veya kaldırın.')
-        for name, details in result.get('lifecycle', {}).items():
-            lines.append(name + ': ' + ('olay görüldü' if details.get('status') == 'observed_metadata' else 'henüz oturum gözlenmedi'))
+        lines += lifecycle_lines(result)
         jev = result.get('jev') or {}
         if jev.get('mode', 'off') == 'off':
             lines.append('Akıllı bağlam desteği (Jev): kapalı (ek işlem gerekmiyor).')
