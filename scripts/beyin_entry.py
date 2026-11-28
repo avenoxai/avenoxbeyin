@@ -159,29 +159,29 @@ def state_location_lines(location):
     if not isinstance(location, dict):
         return []
     codes = {str(warning).split(':', 1)[0] for warning in location.get('warnings') or []}
-    prefix = 'Çalışma dizini konumu (bilgi): '
+    prefix = 'State konumu (bilgi): '  # docs/v3/UPDATE.md step 7 tells users to look for this prefix
     lines = []
     if 'state_split' in codes:
-        lines.append(prefix + 'bu kasa için paket yönlendirmesinin iki tarafında da kurulu çalışma verisi var (' +
+        lines.append(prefix + 'bu kasa için paket yönlendirmesinin iki tarafında da kurulu bir state klasörü var (' +
                      ', '.join(plain_text(root) for root in location.get('sibling_state_roots') or []) +
                      '). Oturumun hangi yarıyı okuduğu paket içinde çalışıp çalışmamasına bağlı;'
                      ' güncel olanı seçip taşıyın: https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/UPDATE.md')
     if 'pinned_in_package_container' in codes:
-        lines.append(prefix + 'sabitlenmiş çalışma dizini MSIX paket kapsayıcısının (Packages\\...\\LocalCache) içinde;'
+        lines.append(prefix + 'sabitlenmiş state klasörü MSIX paket kapsayıcısının (Packages\\...\\LocalCache) içinde;'
                      ' paket sıfırlanır ya da başka kimlikle kurulursa bu yol kaybolur. Taşıma: https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/UPDATE.md')
     if 'pin_resolves_elsewhere' in codes:
         lines.append(prefix + 'sabitlenmiş yol bu süreçte başka bir dizine çözümleniyor (' +
                      plain_text(location.get('pinned_resolves_here_to')) +
                      '). doctor komutunu paket içinden ve dışından çalıştırıp karşılaştırın.')
     if 'pinned_state_not_absolute' in codes:
-        lines.append(prefix + '.beyin-runtime.json içindeki çalışma dizini yolu bu makinede mutlak bir yol değil; başka bir'
-                     ' işletim sisteminden eşitlenmiş olabilir. beyin.py bu makinenin varsayılan çalışma dizinini'
+        lines.append(prefix + '.beyin-runtime.json içindeki state yolu bu makinede mutlak bir yol değil; başka bir'
+                     ' işletim sisteminden eşitlenmiş olabilir. beyin.py bu makinenin varsayılan state klasörünü'
                      ' kullanıyor. Kurulum dosyaları makineye özeldir, eşitlemeyin: https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/MULTI-MACHINE.md')
     if 'pinned_state_empty' in codes:
-        lines.append(prefix + 'sabitlenmiş çalışma dizininde kurulum bulunamadı. Dizin taşındıysa kurucuyu yeni'
+        lines.append(prefix + 'sabitlenmiş state klasöründe kurulum bulunamadı. Klasör taşındıysa kurucuyu yeni'
                      ' --state ile yeniden çalıştırın.')
     if 'effective_state_differs' in codes:
-        lines.append(prefix + 'bu çalışma sabitlenmiş konum yerine başka bir çalışma dizinini okuyor.')
+        lines.append(prefix + 'bu çalışma sabitlenmiş konum yerine başka bir state klasörünü okuyor.')
     return lines
 
 

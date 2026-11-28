@@ -383,6 +383,45 @@ class DoctorHumanLanguageUnitTest(unittest.TestCase):
                 for line in self.entry.human_result(report, 'doctor', '3.12.0').splitlines()[1:]:
                     self.assertTrue(INFORMATION_LINE.match(line), 'problem line under "nothing to do": ' + line)
 
+    def test_docs_quote_the_lines_doctor_prints(self):
+        # Every doctor --human line the user guides quote, pinned to the report that prints it:
+        # UPDATE.md step 7 has users scan for a prefix before they delete a state directory.
+        laya = {'mode': 'shadow', 'provider': 'laya', 'automatic_model_calls': False, 'last_24h': {'calls': 0}}
+        vendored = {'status': 'none', 'excluded_dirs': [], 'vendored_hint': {
+            'notes': 3, 'dirs': [{'dir': 'vendor/lib', 'notes': 3}], 'names': ['vendor'], 'truncated': False}}
+        rows = (
+            ('docs/v3/UPDATE.md', '`State konumu (bilgi):`', 'State konumu (bilgi): ',
+             {'state_location': {'warnings': ['state_split: two'], 'sibling_state_roots': ['/a', '/b']}}),
+            ('docs/v3/PREFERENCES.md', '`Son bilgi damıtması: 3 gün önce (o tarihten beri 12 oturum kaydı)`',
+             'Son bilgi damıtması: 3 gün önce (o tarihten beri 12 oturum kaydı)',
+             {'knowledge_freshness': {'last_distilled_at': '2026-11-01T00:00:00Z', 'days_ago': 3, 'receipts_since': 12}}),
+            ('docs/v3/PREFERENCES.md', '`Son bilgi damıtması: henüz kavram notu damıtılmadı (toplam N oturum kaydı; çalıştıkça oluşur)`',
+             'Son bilgi damıtması: henüz kavram notu damıtılmadı (toplam 0 oturum kaydı; çalıştıkça oluşur)', {}),
+            ('docs/v3/PREFERENCES.md', '`Son bilgi damıtması: ölçülemedi (<hata>); daha sonra tekrar deneyin.`',
+             'Son bilgi damıtması: ölçülemedi (OperationalError); daha sonra tekrar deneyin.',
+             {'knowledge_freshness': {'status': 'unavailable', 'error': 'OperationalError'}}),
+            ('docs/v3/PREFERENCES.md', '`Talimat çelişkisi: ...`', 'Talimat çelişkisi: ',
+             {'instruction_conflicts': [{'file': 'AGENTS.md', 'snippet': 'derleyici yönetir'}]}),
+            ('docs/v3/PREFERENCES.md', '`İndeks kapsamı (bilgi): ...`', 'İndeks kapsamı (bilgi): ', {'index_exclusions': vendored}),
+            ('docs/v3/PREFERENCES.md', '`İndeks dışı klasör adları`', 'İndeks dışı klasör adları',
+             {'index_exclusions': {'status': 'ok', 'excluded_dirs': ['3rdparty']}}),
+            ('docs/v3/PREFERENCES.md', '`index.json geçersiz (...)`', 'index.json geçersiz (',
+             {'index_exclusions': {'status': 'ok', 'excluded_dirs': [], 'error': 'not valid JSON'}}),
+            ('docs/v3/PREFERENCES.md', '`İndeks kapsamı denetlenemedi (...)`', 'İndeks kapsamı denetlenemedi (',
+             {'index_exclusions': {'status': 'unavailable', 'error': 'OSError'}}),
+            ('docs/v3/JEV.md', '`doctor --human` çıktısında `gölge (yalnız)`', 'Akıllı bağlam desteği (Jev): gölge (yalnız)', {'jev': laya}),
+        )
+        for doc, quoted, printed, overrides in rows:
+            with self.subTest(doc=doc, quoted=quoted):
+                self.assertIn(quoted, (ROOT / doc).read_text(encoding='utf-8'))
+                text = self.entry.human_result(dict(healthy_report(), **overrides), 'doctor', '3.12.0')
+                self.assertIn(printed, text)
+        # UPDATE.md's prefix reads the same on a console that cannot print Turkish letters.
+        self.assertEqual(self.entry.turkish_to_ascii('State konumu (bilgi): '), 'State konumu (bilgi): ')
+        self.assertIn('`Son bilgi damitmasi: ...`', (ROOT / 'docs/v3/PREFERENCES.md').read_text(encoding='utf-8'))
+        self.assertIn('golge (yalniz)', self.entry.human_result(dict(laya, features={}), 'jev'))
+        self.assertIn('`jev status` insan çıktısında `golge (yalniz)`', (ROOT / 'docs/v3/JEV.md').read_text(encoding='utf-8'))
+
     def test_queue_line_names_the_step_for_each_waiting_record(self):
         lines = {label: self.entry.human_result(dict(healthy_report(), **overrides), 'doctor', '3.12.0')
                  for label, overrides, _ in ATTENTION_GRID if label.startswith('queue')}

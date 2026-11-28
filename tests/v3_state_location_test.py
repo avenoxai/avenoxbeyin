@@ -321,7 +321,7 @@ beyin_v3_hook.main()
                                  "pinned_state_not_absolute: x"],
                     "sibling_state_roots": ["A", "B"], "pinned_resolves_here_to": "C"}
         text = entry.human_result({"status": "observed_metadata", "state_location": location}, "doctor", "3.4.0")
-        lines = [line for line in text.splitlines() if line.startswith("Çalışma dizini konumu (bilgi): ")]
+        lines = [line for line in text.splitlines() if line.startswith("State konumu (bilgi): ")]
         self.assertEqual(len(lines), 5)
         self.assertIn("(A, B)", lines[0])
         self.assertIn("https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/UPDATE.md", lines[0])
@@ -335,7 +335,7 @@ beyin_v3_hook.main()
             self.assertTrue(entry.turkish_to_ascii(line).isascii(), line)
         quiet = entry.human_result({"status": "observed_metadata",
                                     "state_location": {"status": "unavailable", "warnings": []}}, "doctor", "3.4.0")
-        self.assertNotIn("Çalışma dizini konumu", quiet)
+        self.assertNotIn("State konumu", quiet)
 
 
 # Runs the source CLI in a clean interpreter; BOOM_DRIVER makes the location report fail.
