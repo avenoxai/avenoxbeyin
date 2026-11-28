@@ -10,7 +10,7 @@ import time
 
 import beyin_v3_jev_client as client
 from beyin_v3_secrets import redact
-from beyin_v3 import PackedContext, pack_context, pack_widened
+from beyin_v3 import PackedContext, effective_visibility, pack_context, pack_widened
 
 
 AUTO_CONTEXT_AUDIT_FILE = 'jev-auto-context-audit.json'
@@ -121,7 +121,7 @@ def _clear(advice, code):
 
 def remote_allowed(record):
     """Local-only is a data policy, not a lower ranking or permission to send a title."""
-    return (record.get('visibility') != 'private' and record.get('remote_allowed', True) is True
+    return (effective_visibility(record) in ('public', 'internal') and record.get('remote_allowed', True) is True
             and record.get('sensitivity', 'internal') in ('public', 'internal', 'normal'))
 
 
