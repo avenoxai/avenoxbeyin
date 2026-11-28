@@ -2378,8 +2378,9 @@ def main(argv=None, return_result=False):
                 params["project"] = args.project
             if not isinstance(params["query"], str) or not params["query"].strip():
                 raise ValueError("context requires a nonempty query")
+            named_workspaces = []
             if params["project"] is None:
-                params["project"] = engine.context_project(vault, params["query"])
+                params["project"], named_workspaces = engine.context_workspaces(vault, params["query"])
             if args.strip_fillers:
                 if args.jev:
                     raise ValueError("--strip-fillers is only available for local context")
@@ -2430,6 +2431,9 @@ def main(argv=None, return_result=False):
                     for key in ('text', 'title', 'facts', 'aliases'))))
             result['unmatched_terms'] = sorted({word for word in re.findall(r'[a-z0-9]+', engine._fold(params['query']))
                                                  if engine._stem(word) not in engine.STOPWORDS | covered})
+            result['project'] = params['project']
+            if len(named_workspaces) > 1:
+                result['named_workspaces'] = list(named_workspaces)
         elif args.command in ("jev-review", "jev-answer", "jev-memory"):
             from beyin_v3_jev import review_candidate, verify_answer
             max_chars = 32000 if args.command == "jev-answer" else 24000

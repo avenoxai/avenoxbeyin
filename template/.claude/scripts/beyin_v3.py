@@ -2333,15 +2333,26 @@ def pack_widened(records, wider, limit=5, budget_chars=8000, stale_count=0, *, e
     return packed
 
 
-def context_project(vault, query):
+def context_workspaces(vault, query):
+    """Resolve implicit Workspace scoping for a natural-language context query.
+
+    Returns (project, named_workspaces): one active Workspace scopes to it;
+    multiple active Workspaces stay unscoped (project=None) and return every
+    matched ID so callers can report them without failing the query (#956).
+    """
+    vault = Path(vault)
     files = (vault / ".beyin-workspaces.json", vault / ".beyin-projects.json")
     if not any(path.exists() or path.is_symlink() for path in files):
-        return None
+        return None, []
     from beyin_v3_workspaces import matching_workspace_ids
     named = matching_workspace_ids(vault, query)
-    if len(named) > 1:
-        raise ValueError("context query names multiple Workspaces; specify --project")
-    return named[0] if named else None
+    if len(named) == 1:
+        return named[0], named
+    return None, named
+
+
+def context_project(vault, query):
+    return context_workspaces(vault, query)[0]
 
 
 def shared_context(store, harness, query, **kwargs):
