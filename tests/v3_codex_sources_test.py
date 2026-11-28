@@ -308,6 +308,18 @@ class CodexSourcesTest(unittest.TestCase):
         for sid in ('db-optout', 'rollout-optout', 'other-rollout', 'subagent'):
             self.assertEqual(self.show(session_hash(sid))['status'], 'unavailable')
 
+    def test_oversized_rollout_lines_and_files_are_never_offered(self):
+        self.schema()
+        self.rollout('long-line', ('user', 'x' * 400))
+        self.sqlite_session('long-line', ('user', CANARY))  # a readable copy does not override it
+        self.rollout('big-file', ('user', CANARY), *[('assistant', 'y' * 50)] * 20)
+        with patch.object(sources, 'MAX_LINE', 300), patch.object(sources, 'MAX_SCAN_BYTES', 1500):
+            result = self.plan()
+            shown = [self.show(session_hash(sid))['status'] for sid in ('long-line', 'big-file')]
+        self.assertEqual(result['pending'], [])
+        self.assertEqual(result['counts']['unreadable'], 2)
+        self.assertEqual(shown, ['unavailable', 'unavailable'])
+
     def test_unparseable_rollout_can_fall_back_to_sqlite(self):
         self.schema()
         sid = 'malformed-rollout'
