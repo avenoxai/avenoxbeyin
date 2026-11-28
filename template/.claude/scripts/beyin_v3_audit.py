@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timezone
+import functools
 import os
 from pathlib import Path
 import re
@@ -272,24 +273,32 @@ def _extract_template_structure(body: str, explicit_title: str, title_tokens: se
     }
 
 
+@functools.lru_cache(maxsize=4096)
+def _slot_terms(slot: str) -> frozenset[str]:
+    """Terms of one folded heading or field label; labels repeat across every card of a template."""
+    return frozenset(_strict_terms(_tokens(slot) - STOPWORDS))
+
+
 def _non_scaffold_tokens(cand: dict, shared_headings: frozenset[str], shared_fields: frozenset[str]) -> set[str]:
     """Substantive tokens of a structured note after discounting shared template slots."""
     tpl = cand['template']
     tokens = set(tpl['value_tokens'])
     if tpl['norm_title'] and tpl['norm_title'] not in shared_headings:
         tokens |= tpl['title_tokens']
-    unshared = (tpl['headings'] - shared_headings) | (tpl['fields'] - shared_fields)
-    if unshared:
-        tokens |= _strict_terms(_tokens('\n'.join(unshared)) - STOPWORDS)
+    for slot in (tpl['headings'] - shared_headings) | (tpl['fields'] - shared_fields):
+        tokens |= _slot_terms(slot)
     return tokens
 
 
 def _template_only_overlap(a: dict, b: dict, threshold: float) -> bool:
     """True when two structured notes only crossed the overlap gate via shared template scaffold.
 
-    Two empty templates (no substantive values) return False so accidental blank duplicates
-    still report. Two cards sharing the same template AND the same entity values also return
-    False so genuine duplicates and same-entity status flips still report (#953).
+    The test is the overlap gate itself, applied to what is left once the shared headings and
+    field labels are discounted: the smaller value set's containment (shared / smaller) stays
+    below `threshold`. No Jaccard or size-ratio condition, so a note whose values are a subset
+    of the other's always reports: the same card saved twice, or a later copy with more fields
+    or notes filled in. Two empty templates (no substantive values) also report, so accidental
+    blank duplicates stay visible. Only cards for different records go quiet (#953).
     """
     tpl_a = a.get('template')
     tpl_b = b.get('template')
@@ -306,14 +315,7 @@ def _template_only_overlap(a: dict, b: dict, threshold: float) -> bool:
     if not val_a or not val_b:
         return False
 
-    val_shared = len(val_a & val_b)
-    min_val = min(len(val_a), len(val_b))
-    max_val = max(len(val_a), len(val_b))
-    val_overlap = val_shared / min_val
-    val_jaccard = val_shared / len(val_a | val_b)
-    val_vocab_ratio = max_val / min_val
-    values_overlap = val_overlap >= threshold and val_jaccard >= 0.20 and val_vocab_ratio <= 4.0
-    return not values_overlap
+    return len(val_a & val_b) / min(len(val_a), len(val_b)) < threshold
 
 
 def _candidate(path: Path, rel_path: str, meta: dict, body: str) -> dict:

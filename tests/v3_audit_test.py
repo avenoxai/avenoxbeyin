@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 _TEMPLATE_SCRIPTS = str(ROOT / 'template/.claude/scripts')
@@ -918,6 +919,156 @@ class MemoryAuditorTest(unittest.TestCase):
         report = audit_module.audit_memory(self.vault, state=self.state, threshold=0.60, min_shared=5)
         self.assertEqual(len(report['findings']), 1, report)
         self.assertEqual(report['template_pairs_skipped'], 0)
+
+
+class TemplatePairInvariantTest(unittest.TestCase):
+    """#953 as a class: the template rule may only quiet pairs of different records.
+
+    Every case is audited twice, with the rule and with `_template_only_overlap` switched off.
+    A pair whose values are a subset of the other note's (same card saved twice, a copy filled in
+    later or given extra notes, a same-record status flip) must give the identical report; notes
+    with fewer than three headings/field labels must too. Only sibling cards for different
+    records may disappear, and then they are counted in `template_pairs_skipped`.
+    """
+
+    LAYOUTS = {
+        'en': (('Company', ('Legal name', 'City', 'Sector', 'Website')),
+               ('Contact', ('Contact person', 'Phone', 'E-mail')),
+               ('Trade', ('Products bought', 'Payment terms'))),
+        'tr': (('Şirket Bilgileri', ('Ünvan', 'Şehir', 'Sektör', 'Web sitesi')),
+               ('İletişim', ('İletişim Kişisi', 'Telefon', 'E-posta')),
+               ('Ticari Bilgiler', ('Alınan Ürünler', 'Ödeme Koşulları'))),
+    }
+    RECORDS = {
+        'en': ({'Legal name': 'North Bakery Ltd', 'City': 'Leeds', 'Sector': 'food', 'Website': 'northbakery.example',
+                'Contact person': 'Clara Bennett', 'Phone': '+44 113 555 0101', 'E-mail': 'clara@northbakery.example',
+                'Products bought': 'Industrial ovens', 'Payment terms': 'Net 30'},
+               {'Legal name': 'Harbour Paints GmbH', 'City': 'Hamburg', 'Sector': 'coatings',
+                'Website': 'harbourpaints.example', 'Contact person': 'Jonas Weber', 'Phone': '+49 40 555 0199',
+                'E-mail': 'jonas@harbourpaints.example', 'Products bought': 'Marine primers', 'Payment terms': 'Net 60'}),
+        'tr': ({'Ünvan': 'Kuzey Fırın AŞ', 'Şehir': 'İzmir', 'Sektör': 'gıda', 'Web sitesi': 'kuzeyfirin.example',
+                'İletişim Kişisi': 'Ayşe Çelik', 'Telefon': '0232 555 0101', 'E-posta': 'ayse@kuzeyfirin.example',
+                'Alınan Ürünler': 'Endüstriyel fırın', 'Ödeme Koşulları': 'Otuz gün vadeli'},
+               {'Ünvan': 'Liman Boya Ltd', 'Şehir': 'Bursa', 'Sektör': 'kimya', 'Web sitesi': 'limanboya.example',
+                'İletişim Kişisi': 'Oğuz Güneş', 'Telefon': '0224 555 0199', 'E-posta': 'oguz@limanboya.example',
+                'Alınan Ürünler': 'Gemi astar boyası', 'Ödeme Koşulları': 'Peşin ödeme'}),
+    }
+    STYLES = {
+        'dash': ('##', '- {label}: {value}'),
+        'bold': ('##', '**{label}:** {value}'),
+        'dash_bold': ('###', '- **{label}**: {value}'),
+        'dataview': ('##', '{label}:: {value}'),
+    }
+    SPARSE = 3  # the first three fields (name, city, sector) are filled, the rest left blank
+    EXTRA = ('ziyaret bakim sozlesmesi yenileme sezon tahmini teslimat saati fatura itirazi satin alma '
+             'muduru teklif talebi dolap uretim hatti kapasite planlamasi numune onayi kalite raporu '
+             'nakliye sigortasi depo kirasi yillik indirim paketi ihracat belgesi gumruk beyannamesi '
+             'odeme hatirlatmasi')
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='v3-audit-template-')
+        self.addCleanup(self.tmp.cleanup)
+
+    def card(self, lang, style, record, filled, *, notes='', status='', created='2026-10-01'):
+        heading, line = self.STYLES[style]
+        fields = [label for _head, labels in self.LAYOUTS[lang] for label in labels]
+        keep = set(fields[:filled])
+        name = record[fields[0]] if fields[0] in keep else ''
+        head = f"---\ntitle: {name or 'Kart'}\ncreated: {created}\n" + (f"status: {status}\n" if status else '') + "---\n"
+        body = f"# {name or 'Kart'}\n\n"
+        for section, labels in self.LAYOUTS[lang]:
+            body += f"{heading} {section}\n"
+            body += ''.join(line.format(label=label, value=record[label] if label in keep else '').rstrip() + '\n'
+                            for label in labels) + '\n'
+        return head + body + f"{heading} Notes\n{notes}\n"
+
+    def audit_both(self, files):
+        root = Path(tempfile.mkdtemp(dir=self.tmp.name))
+        vault, state = root / 'vault', root / 'state'
+        state.mkdir(parents=True)
+        for rel, text in files.items():
+            path = vault / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding='utf-8', newline='\n')
+        report = audit_module.audit_memory(vault, state=state)
+        with mock.patch.object(audit_module, '_template_only_overlap', return_value=False):
+            baseline = audit_module.audit_memory(vault, state=state)
+        return report, baseline
+
+    def assert_unchanged(self, report, baseline, expected_type=None):
+        self.assertEqual(report['template_pairs_skipped'], 0, report)
+        self.assertEqual(json.dumps(report, sort_keys=True), json.dumps(baseline, sort_keys=True))
+        self.assertEqual(len(report['findings']), 1, report)  # the case really is a reported pair
+        if expected_type:
+            self.assertEqual(report['findings'][0]['type'], expected_type)
+
+    def test_same_record_copies_always_report_as_without_the_rule(self):
+        full = sum(len(labels) for _head, labels in self.LAYOUTS['en'])
+        cases = 0
+        for lang in self.LAYOUTS:
+            record = self.RECORDS[lang][0]
+            for style in self.STYLES:
+                for filled in (self.SPARSE, full):
+                    first = self.card(lang, style, record, filled)
+                    variants = {
+                        'identical': self.card(lang, style, record, filled, created='2026-10-05'),
+                        'filled_later': self.card(lang, style, record, full, created='2026-10-05'),
+                        'notes_12': self.card(lang, style, record, filled, created='2026-10-05',
+                                              notes=' '.join(self.EXTRA.split()[:12])),
+                        'notes_30': self.card(lang, style, record, filled, created='2026-10-05', notes=self.EXTRA),
+                        'filled_later_with_notes': self.card(lang, style, record, full, created='2026-10-05',
+                                                             notes=self.EXTRA),
+                    }
+                    for variant, second in variants.items():
+                        with self.subTest(lang=lang, style=style, filled=filled, variant=variant):
+                            self.assert_unchanged(*self.audit_both({'notes/kart/a.md': first, 'notes/kart/b.md': second}))
+                            cases += 1
+                    with self.subTest(lang=lang, style=style, filled=filled, variant='status_flip'):
+                        report, baseline = self.audit_both({
+                            'notes/kart/a.md': self.card(lang, style, record, filled, status='active'),
+                            'notes/kart/b.md': self.card(lang, style, record, filled, status='inactive',
+                                                         created='2026-10-05'),
+                        })
+                        self.assert_unchanged(report, baseline, 'status_contradiction')
+                        cases += 1
+        self.assertEqual(cases, 2 * 4 * 2 * 6)
+
+    def test_sibling_cards_for_different_records_are_counted_not_reported(self):
+        for lang in self.LAYOUTS:
+            ours, theirs = self.RECORDS[lang]
+            for style in self.STYLES:
+                for filled in (self.SPARSE, 9):
+                    with self.subTest(lang=lang, style=style, filled=filled):
+                        report, baseline = self.audit_both({
+                            'notes/kart/a.md': self.card(lang, style, ours, filled, status='active'),
+                            'notes/kart/b.md': self.card(lang, style, theirs, filled, status='inactive',
+                                                         created='2026-10-05'),
+                        })
+                        self.assertEqual(report['findings'], [], report)
+                        self.assertEqual(report['template_pairs_skipped'], len(baseline['findings']))
+                        if filled == self.SPARSE:
+                            self.assertEqual(len(baseline['findings']), 1, baseline)  # 3.18.0 reported this pair
+
+    def test_notes_without_three_template_slots_report_as_without_the_rule(self):
+        prose = ('Konteyner orkestrasyonu katmaninda servis kesfi, saglik yoklamasi, gunluk dondurme politikasi '
+                 've olcekleme esikleri belgelendi. Yuk dengeleyici ayarlari ve sertifika yenileme takvimi eklendi.')
+        shapes = {
+            'plain': prose,
+            'h1': '# Mimari Notu\n\n' + prose,
+            'two_headings': '# Mimari Notu\n\n## Ozet\n\n' + prose,
+            'heading_and_field': '# Mimari Notu\n\nDurum: tamamlandı\n\n' + prose,
+            'two_fields': 'Sonuç: kabul edildi\nKaynak: toplanti\n\n' + prose,
+            'colons_in_prose': 'Saat 10:30 toplantisinda https://ornek.example adresi konusuldu.\n\n' + prose,
+        }
+        for shape, body in shapes.items():
+            with self.subTest(shape=shape):
+                files = {'notes/prose/a.md': f"---\ntitle: Mimari\ncreated: 2026-10-01\n---\n{body}\n",
+                         'notes/prose/b.md': f"---\ntitle: Mimari\ncreated: 2026-10-05\n---\n{body}\n"}
+                report, baseline = self.audit_both(files)
+                self.assert_unchanged(report, baseline, 'near_duplicate')
+                meta, text = audit_module.parse_frontmatter_and_body(files['notes/prose/a.md'])
+                self.assertIsNone(audit_module._extract_template_structure(text, 'Mimari', set()))
+
 
 if __name__ == '__main__':
     unittest.main()
