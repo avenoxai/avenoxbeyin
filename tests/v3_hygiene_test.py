@@ -311,9 +311,9 @@ class HarnessGateTest(unittest.TestCase):
         self.payload = {'hook_event_name': 'PostToolUse', 'tool_input': {'file_path': str(self.note)}}
 
     def test_only_verified_adapters_receive_the_warning(self):
-        for harness in ('claude', 'codex', 'pi'):
+        for harness in ('claude', 'codex', 'pi', 'antigravity'):
             self.assertIn('Bolum SINYALI', hygiene.hook_cap_warning(self.vault, self.payload, harness=harness))
-        for harness in ('antigravity', 'opencode', 'omp', 'hermes'):
+        for harness in ('opencode', 'omp', 'hermes'):
             self.assertEqual(hygiene.hook_cap_warning(self.vault, self.payload, harness=harness), '')
 
 

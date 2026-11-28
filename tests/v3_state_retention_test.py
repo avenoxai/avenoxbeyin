@@ -216,6 +216,30 @@ class StateRetentionTest(unittest.TestCase):
         self.assertFalse(again.exists())
         self.assertEqual(retention.sweep_session_markers(self.state), 0)
 
+    def test_antigravity_notices_go_after_a_day(self):
+        folder = self.state / 'antigravity-notices'
+        old = [self.stale(folder / (HEX64 + '.json')),
+               self.stale(folder / ('0123456789abcdef' * 4 + '.json'), age=retention.SESSION_MARKER_MAX_AGE_SECONDS + 60)]
+        temp = [self.stale(folder / (HEX64 + '.json.' + HEX32 + '.tmp'))]
+        kept = [self.stale(folder / ('c' * 64 + '.json'), age=60),
+                self.stale(folder / ('d' * 64 + '.json'), age=retention.SESSION_MARKER_MAX_AGE_SECONDS - 60),
+                self.stale(folder / ('E' * 64 + '.json')),
+                self.stale(folder / ('e' * 63 + '.json')),
+                self.stale(self.vault / 'antigravity-notices' / (HEX64 + '.json'))]
+        (folder / ('9' * 64 + '.json')).mkdir()
+        self.assertEqual(retention.stale_session_markers(self.state), sorted(old))
+        self.assertEqual(retention.stale_temp_files(self.state), sorted(temp))
+        plan = retention.compact(self.store, dry_run=True)
+        self.assertEqual((plan['status'], plan['stale_session_markers']), ('planned', 2))
+        result = retention.maintain(self.store)
+        self.assertEqual((result['session_markers_removed'], result['temp_files_removed']), (2, 1))
+        self.assertFalse(any(path.exists() for path in old + temp))
+        self.assertTrue(all(path.exists() for path in kept))
+        again = self.stale(folder / ('f' * 64 + '.json'))
+        self.assertEqual(retention.compact(self.store)['session_markers_removed'], 1)
+        self.assertFalse(again.exists())
+        self.assertEqual(retention.sweep_session_markers(self.state), 0)
+
     def test_session_marker_sweep_ignores_missing_and_linked_folders(self):
         self.assertEqual(retention.sweep_session_markers(self.state), 0)
         if os.name == 'nt':

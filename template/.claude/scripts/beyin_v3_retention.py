@@ -34,9 +34,10 @@ when their names match a temp name this runtime itself writes there, and only wh
 they are older than TEMP_MAX_AGE_SECONDS.
 
 Antigravity's once-per-conversation markers (`antigravity-sessions/<sha256>.json`, #903)
-are per-session state like the dedupe, parallel-session and context-fill files, and go
-after the same day (SESSION_MARKER_MAX_AGE_SECONDS, by modification time). A conversation
-idle longer than that gets its opening once more, the behaviour before the marker existed.
+and deferred post-edit notices (`antigravity-notices/<sha256>.json`) are per-session state
+like the dedupe, parallel-session and context-fill files, and go after the same day
+(SESSION_MARKER_MAX_AGE_SECONDS, by modification time). A conversation idle longer than
+that gets its opening once more, the behaviour before the marker existed.
 The folder's `key.json` (the prompt digest key) is never removed.
 
 Expired Jev score entries (#772) go the same way: `<state>/.cache/jev/<sha256>.json`
@@ -80,10 +81,12 @@ _FOLDER_TEMP = {
     'hook-queue': re.compile(r'[0-9a-f]{64}\.json\.[0-9a-f]{32}\.tmp'),
     'receipt-reminders': re.compile(r'[0-9a-f]{64}\.edited\.[0-9a-f]{32}\.tmp'),
     'antigravity-sessions': re.compile(r'(?:[0-9a-f]{64}|key)\.json\.[0-9a-f]{32}\.tmp'),
+    'antigravity-notices': re.compile(r'[0-9a-f]{64}\.json\.[0-9a-f]{32}\.tmp'),
 }
-# Per-conversation markers the hook and the global bridge write (#903); never key.json.
+# Per-conversation markers and deferred notices the hook and bridge write (#903); never key.json.
 _SESSION_MARKERS = {
     'antigravity-sessions': re.compile(r'[0-9a-f]{64}\.json'),
+    'antigravity-notices': re.compile(r'[0-9a-f]{64}\.json'),
 }
 
 _JEV_CACHE_ENTRY = re.compile(r'[0-9a-f]{64}\.json')

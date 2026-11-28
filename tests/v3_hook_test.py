@@ -1629,6 +1629,444 @@ class HookInstallerTest(unittest.TestCase):
         self.assertIn('"records"', result['injectSteps'][0]['ephemeralMessage'])
         self.assertEqual((markers / 'key.json').read_text(encoding='utf-8'), 'not json')
 
+    def test_antigravity_latest_checkpoint_reads_bounded_tail_and_rejects_unsafe_paths(self):
+        transcript = (self.root / 'agy-cp.jsonl').resolve()
+        rows = [
+            {'step_index': 0, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'start'},
+            {'step_index': 12, 'source': 'SYSTEM', 'type': 'CHECKPOINT', 'status': 'DONE'},
+            {'step_index': 20, 'source': 'USER_EXPLICIT', 'type': 'CHECKPOINT'},  # wrong source ignored
+            {'step_index': 25, 'type': 'CHECKPOINT'},  # minimal fixture (source None) accepted
+            {'step_index': True, 'source': 'SYSTEM', 'type': 'CHECKPOINT'},  # bool rejected
+            {'step_index': -3, 'source': 'SYSTEM', 'type': 'CHECKPOINT'},  # negative rejected
+        ]
+        transcript.write_text(''.join(json.dumps(r) + '\n' for r in rows) + '{truncated\n',
+                              encoding='utf-8', newline='\n')
+        self.assertEqual(self.hook.antigravity_latest_checkpoint(str(transcript)), 25)
+
+        # File larger than ANTIGRAVITY_TRANSCRIPT_LIMIT still reads CHECKPOINT from bounded tail.
+        big = (self.root / 'agy-cp-big.jsonl').resolve()
+        big_rows = [
+            {'step_index': 0, 'source': 'SYSTEM', 'type': 'CHECKPOINT', 'padding': 'x' * 1000},
+            {'step_index': 99, 'source': 'SYSTEM', 'type': 'CHECKPOINT'},
+        ]
+        big.write_text(''.join(json.dumps(r) + '\n' for r in big_rows), encoding='utf-8', newline='\n')
+        with patch.object(self.hook, 'ANTIGRAVITY_TRANSCRIPT_LIMIT', 256):
+            self.assertEqual(self.hook.antigravity_latest_checkpoint(str(big)), 99)
+
+        # Unsafe paths fail open (None).
+        wrong_ext = (self.root / 'agy-cp.txt').resolve()
+        wrong_ext.write_text(transcript.read_text(encoding='utf-8'), encoding='utf-8')
+        folder = (self.root / 'agy-dir.jsonl').resolve()
+        folder.mkdir()
+        for bad in (None, '', 'relative.jsonl', str(wrong_ext), str(folder),
+                    str(transcript) + '\0.jsonl', '//server/share/t.jsonl', r'\\server\share\t.jsonl'):
+            with self.subTest(bad=bad):
+                self.assertIsNone(self.hook.antigravity_latest_checkpoint(bad))
+        link = self.root.resolve() / 'agy-cp-link.jsonl'
+        try:
+            link.symlink_to(transcript)
+        except OSError:
+            pass
+        else:
+            self.assertIsNone(self.hook.antigravity_latest_checkpoint(str(link)))
+
+    def test_antigravity_checkpoint_resets_dedupe_context_fill_and_injects_own_card_once(self):
+        conversation = 'agy-compact-e2e'
+        short = hashlib.sha256(conversation.encode()).hexdigest()[:8]
+        own_marker = 'Next: finish phase two verification (marker agy-own-card).'
+        companion = self.vault / '🔮 850-Companion'
+        companion.mkdir(parents=True, exist_ok=True)
+        other_card = ('## 2026-11-27 01:30 · other · Parallel session card · aaaaaaaa\n'
+                      '- What: parallel work. ' + 'Filler sentence for the newest card. ' * 120 + '\n')
+        own_card = (f'## 2026-11-27 01:05 · agy · Active antigravity session · {short}\n'
+                    f'- {own_marker}\n')
+        (companion / 'Last-Session.md').write_text(
+            '# Last session\n\n' + other_card + '\n' + own_card + '\n## Previous sessions\n- older\n',
+            encoding='utf-8', newline='\n')
+        self.seed()
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / 'context-dedupe.json').write_text(
+            json.dumps({'schema': 1, 'enabled': True}), encoding='utf-8')
+        (self.state / 'context-fill.json').write_text(
+            json.dumps({'enabled': True, 'first_threshold': 150000, 'repeat_threshold': 75000}),
+            encoding='utf-8')
+
+        transcript = (self.root / 'agy-e2e.jsonl').resolve()
+        rows = [
+            {'step_index': 0, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'hello'},
+            {'step_index': 1, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE',
+             'input_tokens': 10000, 'cache_read_tokens': 190000},
+        ]
+        def write_rows():
+            transcript.write_text(''.join(json.dumps(r) + '\n' for r in rows), encoding='utf-8', newline='\n')
+        write_rows()
+
+        base = {'conversationId': conversation, 'cwd': str(self.vault),
+                'workspacePaths': [str(self.vault)], 'transcriptPath': str(transcript)}
+        # 1. SessionStart opens the conversation without checkpoint_step.
+        start = self.invoke(dict(base, hookEventName='SessionStart', lastUserInput='hello'),
+                            'antigravity', extra=['--event', 'SessionStart'])
+        self.assertIn('injectSteps', start)
+        marker_path = self.hook.antigravity_session_marker(self.state, conversation)
+        self.assertNotIn('checkpoint_step', json.loads(marker_path.read_text(encoding='utf-8')))
+
+        # 2. First retrieval turn delivers notes/task.md; second identical turn is deduplicated.
+        rows.append({'step_index': 2, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT',
+                     'content': 'Who owns Nebula calibration?'})
+        write_rows()
+        turn1 = self.invoke(dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                 initialNumSteps=len(rows), lastUserInput='Who owns Nebula calibration?'),
+                            'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertIn('Synthetic Reviewer', turn1['injectSteps'][0]['ephemeralMessage'])
+        self.assertNotIn("This session's own handoff card", turn1['injectSteps'][0]['ephemeralMessage'])
+
+        rows.append({'step_index': 3, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT',
+                     'content': 'Who owns Nebula calibration?'})
+        write_rows()
+        turn2 = self.invoke(dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                 initialNumSteps=len(rows), lastUserInput='Who owns Nebula calibration?'),
+                            'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertNotIn('Synthetic Reviewer', json.dumps(turn2))
+
+        # 3. Stop fires context-fill reminder with decision "continue" and saves state.
+        rows.append({'step_index': 4, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE',
+                     'input_tokens': 10000, 'cache_read_tokens': 190000})
+        write_rows()
+        stop1 = self.invoke(dict(base, hookEventName='Stop', fullyIdle=True, executionNum=0,
+                                 continuationActive=False, lastUserInput='Who owns Nebula calibration?'),
+                            'antigravity', extra=['--event', 'Stop'])
+        self.assertEqual(stop1.get('decision'), 'continue')
+        self.assertIn('200.000', stop1.get('reason', ''))
+        fill_digest = hashlib.sha256(conversation.encode('utf-8')).hexdigest()[:24]
+        fill_file = self.state / 'context-fill' / f'{fill_digest}.json'
+        self.assertTrue(fill_file.is_file())
+        # Continued Stop does not remind a second time.
+        self.assertEqual(self.invoke(dict(base, hookEventName='Stop', fullyIdle=True, executionNum=1,
+                                          continuationActive=False, lastUserInput='Who owns Nebula calibration?'),
+                                     'antigravity', extra=['--event', 'Stop']), {'decision': 'stop'})
+
+        # 4. CHECKPOINT arrives -> next PreInvocation resets dedupe + context-fill AND injects own card!
+        rows.extend([
+            {'step_index': 5, 'source': 'SYSTEM', 'type': 'CHECKPOINT', 'status': 'DONE'},
+            {'step_index': 6, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT',
+             'content': 'Who owns Nebula calibration?'},
+        ])
+        write_rows()
+        after_cp = self.invoke(dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                    initialNumSteps=len(rows), lastUserInput='Who owns Nebula calibration?'),
+                               'antigravity', extra=['--event', 'PreInvocation'])
+        msg = after_cp['injectSteps'][0]['ephemeralMessage']
+        self.assertIn("This session's own handoff card", msg)
+        self.assertIn(own_marker, msg)
+        self.assertIn('Synthetic Reviewer', msg)  # dedupe was reset!
+        self.assertFalse(fill_file.exists())  # context-fill state was reset!
+        self.assertEqual(json.loads(marker_path.read_text(encoding='utf-8')).get('checkpoint_step'), 5)
+
+        # 5. Next turn with NO newer checkpoint must NOT re-inject own card or reset dedupe!
+        rows.append({'step_index': 7, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT',
+                     'content': 'Who owns Nebula calibration?'})
+        write_rows()
+        no_new_cp = self.invoke(dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                     initialNumSteps=len(rows), lastUserInput='Who owns Nebula calibration?'),
+                                'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertNotIn("This session's own handoff card", json.dumps(no_new_cp))
+        self.assertNotIn('Synthetic Reviewer', json.dumps(no_new_cp))
+
+        # 6. A second CHECKPOINT on an unmatched, non-continuity prompt still delivers own_notice!
+        rows.extend([
+            {'step_index': 12, 'source': 'SYSTEM', 'type': 'CHECKPOINT', 'status': 'DONE'},
+            {'step_index': 13, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'devam edelim'},
+        ])
+        write_rows()
+        unmatched = self.invoke(dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                     initialNumSteps=len(rows), lastUserInput='devam edelim'),
+                                'antigravity', extra=['--event', 'PreInvocation'])
+        unmatched_msg = unmatched['injectSteps'][0]['ephemeralMessage']
+        self.assertIn("This session's own handoff card", unmatched_msg)
+        self.assertIn(own_marker, unmatched_msg)
+        self.assertEqual(json.loads(marker_path.read_text(encoding='utf-8')).get('checkpoint_step'), 12)
+        # Subsequent turn with same unmatched prompt stays silent.
+        rows.append({'step_index': 14, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'devam edelim'})
+        write_rows()
+        self.assertEqual(self.invoke(dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                          initialNumSteps=len(rows), lastUserInput='devam edelim'),
+                                     'antigravity', extra=['--event', 'PreInvocation']), {})
+
+        # 7. Continuity prompt (relevant(query)=True) when opening already shows own card deduplicates own_notice.
+        short_other = '## 2026-11-27 01:30 · other · Short card · aaaaaaaa\n- What: short.\n'
+        (companion / 'Last-Session.md').write_text(
+            '# Last session\n\n' + short_other + '\n' + own_card + '\n## Previous sessions\n- older\n',
+            encoding='utf-8', newline='\n')
+        from beyin_v3_sync import SyncEngine
+        SyncEngine(self.vault, self.state).sync()
+        rows.extend([
+            {'step_index': 20, 'source': 'SYSTEM', 'type': 'CHECKPOINT', 'status': 'DONE'},
+            {'step_index': 21, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'nerede kalmistik?'},
+        ])
+        write_rows()
+        continuity = self.invoke(dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                      initialNumSteps=len(rows), lastUserInput='nerede kalmistik?'),
+                                 'antigravity', extra=['--event', 'PreInvocation'])
+        cont_msg = continuity['injectSteps'][0]['ephemeralMessage']
+        self.assertEqual(cont_msg.count(own_marker), 1)
+        self.assertNotIn("This session's own handoff card", cont_msg)
+
+    def test_antigravity_session_start_records_existing_checkpoint_without_false_trigger(self):
+        conversation = 'agy-existing-cp'
+        short = hashlib.sha256(conversation.encode()).hexdigest()[:8]
+        companion = self.vault / '🔮 850-Companion'
+        companion.mkdir(parents=True, exist_ok=True)
+        other_card = ('## 2026-11-27 01:30 · other · Parallel · aaaaaaaa\n'
+                      '- ' + 'Filler sentence. ' * 120 + '\n')
+        own_card = f'## 2026-11-27 01:05 · agy · Own · {short}\n- EXISTING_CP_OWN_MARKER\n'
+        (companion / 'Last-Session.md').write_text(
+            '# Last session\n\n' + other_card + '\n' + own_card, encoding='utf-8', newline='\n')
+        self.seed()
+        transcript = (self.root / 'agy-existing.jsonl').resolve()
+        rows = [
+            {'step_index': 5, 'source': 'SYSTEM', 'type': 'CHECKPOINT'},
+            {'step_index': 6, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'hi'},
+        ]
+        transcript.write_text(''.join(json.dumps(r) + '\n' for r in rows), encoding='utf-8', newline='\n')
+        base = {'conversationId': conversation, 'cwd': str(self.vault),
+                'workspacePaths': [str(self.vault)], 'transcriptPath': str(transcript)}
+        self.invoke(dict(base, hookEventName='SessionStart', lastUserInput='hi'),
+                    'antigravity', extra=['--event', 'SessionStart'])
+        marker_path = self.hook.antigravity_session_marker(self.state, conversation)
+        self.assertEqual(json.loads(marker_path.read_text(encoding='utf-8')).get('checkpoint_step'), 5)
+        # First PreInvocation clears pending while preserving checkpoint_step.
+        self.assertEqual(self.invoke(dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                          initialNumSteps=2, lastUserInput='hi'),
+                                     'antigravity', extra=['--event', 'PreInvocation']), {})
+        self.assertEqual(json.loads(marker_path.read_text(encoding='utf-8')).get('checkpoint_step'), 5)
+        # Next turn without a newer checkpoint must not falsely trigger compaction.
+        rows.append({'step_index': 7, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'zzqx'})
+        transcript.write_text(''.join(json.dumps(r) + '\n' for r in rows), encoding='utf-8', newline='\n')
+        self.assertEqual(self.invoke(dict(base, hookEventName='PreInvocation', invocationNum=0,
+                                          initialNumSteps=3, lastUserInput='zzqx'),
+                                     'antigravity', extra=['--event', 'PreInvocation']), {})
+
+    def test_antigravity_post_edit_companion_limit_notice_delivers_on_next_pre_invocation(self):
+        self.seed()
+        companion = self.vault / '🔮 850-Companion'
+        companion.mkdir()
+        last = companion / 'Last-Session.md'
+        last.write_text('# Son oturum\n' + 'x' * 3100, encoding='utf-8')
+        conversation = 'agy-companion-limit'
+        base = {'conversationId': conversation, 'cwd': str(self.vault), 'workspacePaths': [str(self.vault)]}
+        self.invoke(dict(base, hookEventName='SessionStart', lastUserInput='devam'), 'antigravity',
+                    extra=['--event', 'SessionStart'])
+        # PostToolUse must strictly answer {} and queue the over-limit notice.
+        self.assertEqual(self.agy_tool(conversation, 'write_file', {'Path': str(last.resolve())}), {})
+        # A second write of the same over-limit file deduplicates the notice line.
+        self.assertEqual(self.agy_tool(conversation, 'edit_file', {'Path': str(last.resolve())}), {})
+        notice_file = self.state / 'antigravity-notices' / (hashlib.sha256(conversation.encode()).hexdigest() + '.json')
+        self.assertTrue(notice_file.is_file())
+        # Next mid-turn PreInvocation delivers the notice once and removes the file.
+        mid = dict(base, hookEventName='PreInvocation', invocationNum=1, initialNumSteps=3, lastUserInput='devam')
+        delivered = self.invoke(mid, 'antigravity', extra=['--event', 'PreInvocation'])
+        text = delivered['injectSteps'][0]['ephemeralMessage']
+        self.assertIn('Memory hygiene: Last-Session.md', text)
+        self.assertEqual(text.count('Memory hygiene: Last-Session.md'), 1)
+        self.assertFalse(notice_file.exists())
+        # Subsequent PreInvocation in the same turn is silent again.
+        self.assertEqual(self.invoke(dict(mid, invocationNum=2, initialNumSteps=5), 'antigravity',
+                                     extra=['--event', 'PreInvocation']), {})
+
+    def test_antigravity_post_edit_word_cap_warning_delivers_on_next_pre_invocation(self):
+        self.seed()
+        big = self.vault / 'notes/uzun.md'
+        big.write_text('kelime ' * 600, encoding='utf-8')
+        self.enable(word_cap_warning=True)
+        conversation = 'agy-word-cap'
+        base = {'conversationId': conversation, 'cwd': str(self.vault), 'workspacePaths': [str(self.vault)]}
+        self.assertEqual(self.agy_tool(conversation, 'write_file', {'Path': str(big.resolve())}), {})
+        mid = dict(base, hookEventName='PreInvocation', invocationNum=1, initialNumSteps=3, lastUserInput='not yaz')
+        delivered = self.invoke(mid, 'antigravity', extra=['--event', 'PreInvocation'])
+        text = delivered['injectSteps'][0]['ephemeralMessage']
+        self.assertIn('Bolum SINYALI', text)
+        self.assertIn('notes/uzun.md', text)
+        self.assertEqual(self.invoke(dict(mid, invocationNum=2, initialNumSteps=5), 'antigravity',
+                                     extra=['--event', 'PreInvocation']), {})
+
+    def test_antigravity_pending_notice_delivers_on_next_turn_invocation_zero(self):
+        self.seed()
+        big = self.vault / 'notes/uzun.md'
+        big.write_text('kelime ' * 600, encoding='utf-8')
+        self.enable(word_cap_warning=True)
+        conversation = 'agy-next-turn'
+        base = {'conversationId': conversation, 'cwd': str(self.vault), 'workspacePaths': [str(self.vault)]}
+        self.invoke(dict(base, hookEventName='SessionStart', lastUserInput='basla'), 'antigravity',
+                    extra=['--event', 'SessionStart'])
+        # Edit as the last tool call of the turn; no mid-turn invocationNum > 0 follows.
+        self.assertEqual(self.agy_tool(conversation, 'write_file', {'Path': str(big.resolve())}), {})
+        # Next user message with no matching records still delivers the pending notice once.
+        turn = dict(base, hookEventName='PreInvocation', invocationNum=0, initialNumSteps=5, lastUserInput='zzqx')
+        delivered = self.invoke(turn, 'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertIn('Bolum SINYALI', delivered['injectSteps'][0]['ephemeralMessage'])
+        self.assertEqual(self.invoke(dict(turn, initialNumSteps=8), 'antigravity',
+                                     extra=['--event', 'PreInvocation']), {})
+        # When the next turn DOES match records, both the notice and retrieval context arrive together.
+        self.assertEqual(self.agy_tool(conversation, 'write_file', {'Path': str(big.resolve())}), {})
+        matched = self.invoke(dict(turn, initialNumSteps=11, lastUserInput='Who owns Nebula calibration?'),
+                              'antigravity', extra=['--event', 'PreInvocation'])
+        combined = matched['injectSteps'][0]['ephemeralMessage']
+        self.assertIn('Bolum SINYALI', combined)
+        self.assertIn('"records"', combined)
+        self.assertIn('Synthetic Reviewer', combined)
+
+    def test_antigravity_post_edit_auto_sync_false_stays_empty_and_respects_opt_outs(self):
+        self.seed()
+        big = self.vault / 'notes/uzun.md'
+        big.write_text('kelime ' * 600, encoding='utf-8')
+        self.enable(word_cap_warning=True)
+        (self.vault / '.beyin-preferences.json').write_text(
+            json.dumps({'auto_sync': False, 'context_mode': 'off'}), encoding='utf-8')
+        conversation = 'agy-manual'
+        base = {'conversationId': conversation, 'cwd': str(self.vault), 'workspacePaths': [str(self.vault)]}
+        self.assertEqual(self.agy_tool(conversation, 'write_file', {'Path': str(big.resolve())}), {})
+        notice_file = self.state / 'antigravity-notices' / (hashlib.sha256(conversation.encode()).hexdigest() + '.json')
+        self.assertTrue(notice_file.is_file())
+        mid = dict(base, hookEventName='PreInvocation', invocationNum=1, initialNumSteps=3, lastUserInput='yaz')
+        # no_memory and BEYIN_V3_SKIP must not consume or inject the notice.
+        self.assertEqual(self.invoke(dict(mid, no_memory=True), 'antigravity', extra=['--event', 'PreInvocation']), {})
+        self.assertTrue(notice_file.is_file())
+        self.env['BEYIN_V3_SKIP'] = '1'
+        self.assertEqual(self.invoke(mid, 'antigravity', extra=['--event', 'PreInvocation']), {})
+        del self.env['BEYIN_V3_SKIP']
+        self.assertTrue(notice_file.is_file())
+        # Normal next PreInvocation delivers it once even when auto_sync is off.
+        delivered = self.invoke(mid, 'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertIn('Bolum SINYALI', delivered['injectSteps'][0]['ephemeralMessage'])
+        self.assertFalse(notice_file.exists())
+        # Same when delivered via invocationNum == 0 with auto_sync=False and context_mode=off.
+        self.assertEqual(self.agy_tool(conversation, 'write_file', {'Path': str(big.resolve())}), {})
+        turn0 = dict(base, hookEventName='PreInvocation', invocationNum=0, initialNumSteps=6, lastUserInput='devam')
+        delivered0 = self.invoke(turn0, 'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertIn('Bolum SINYALI', delivered0['injectSteps'][0]['ephemeralMessage'])
+        self.assertEqual(self.invoke(dict(turn0, initialNumSteps=9), 'antigravity',
+                                     extra=['--event', 'PreInvocation']), {})
+
+    def test_antigravity_notice_stale_oversized_and_symlink_fail_open(self):
+        self.seed()
+        conversation = 'agy-safety'
+        notice_dir = self.state / 'antigravity-notices'
+        notice_dir.mkdir(parents=True, exist_ok=True)
+        notice_file = notice_dir / (hashlib.sha256(conversation.encode()).hexdigest() + '.json')
+        mid = {'hookEventName': 'PreInvocation', 'conversationId': conversation,
+               'invocationNum': 1, 'initialNumSteps': 3, 'lastUserInput': 'devam'}
+        # Stale (> 1h) notice is ignored safely.
+        notice_file.write_text(json.dumps({'at': time.time() - 4000, 'text': 'old warning\n'}), encoding='utf-8')
+        self.assertEqual(self.invoke(mid, 'antigravity', extra=['--event', 'PreInvocation']), {})
+        # Oversized (> 8192 bytes) notice file is refused without crashing.
+        notice_file.write_text(json.dumps({'at': time.time(), 'text': 'x' * 9000}), encoding='utf-8')
+        self.assertEqual(self.invoke(mid, 'antigravity', extra=['--event', 'PreInvocation']), {})
+        notice_file.unlink()
+        # Invalid schema / boolean timestamp fails open.
+        notice_file.write_text(json.dumps({'at': True, 'text': 'bad ts\n'}), encoding='utf-8')
+        self.assertEqual(self.hook._consume_antigravity_notice(self.state, conversation), '')
+        # Symlink / reparse point check (real symlinks on POSIX; simulated reparse point on Windows).
+        if os.name != 'nt':
+            outside = self.root / 'outside-notice.json'
+            outside.write_text(json.dumps({'at': time.time(), 'text': 'secret\n'}), encoding='utf-8')
+            notice_file.symlink_to(outside)
+            self.assertEqual(self.hook._consume_antigravity_notice(self.state, conversation), '')
+            self.assertTrue(notice_file.is_symlink(), 'symlink target must not be unlinked')
+            self.hook._queue_antigravity_notice(self.state, conversation, 'new warning\n')
+            self.assertTrue(notice_file.is_symlink())
+            self.assertEqual(json.loads(outside.read_text(encoding='utf-8'))['text'], 'secret\n')
+            notice_file.unlink()
+            outside_dir = self.root / 'outside-notices-dir'
+            outside_dir.mkdir()
+            shutil.rmtree(notice_dir)
+            notice_dir.symlink_to(outside_dir, target_is_directory=True)
+            self.hook._queue_antigravity_notice(self.state, conversation, 'new warning\n')
+            self.assertEqual(list(outside_dir.iterdir()), [])
+            self.assertEqual(self.hook._consume_antigravity_notice(self.state, conversation), '')
+        else:
+            import stat as stat_mod
+            real_lstat = Path.lstat
+            class FakeReparse:
+                st_mode = stat_mod.S_IFREG | 0o600
+                st_size = 64
+                st_file_attributes = getattr(stat_mod, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
+            notice_file.write_text(json.dumps({'at': time.time(), 'text': 'reparse\n'}), encoding='utf-8')
+            def fake_lstat(p):
+                if p == notice_file:
+                    return FakeReparse()
+                return real_lstat(p)
+            with patch.object(Path, 'lstat', fake_lstat):
+                self.assertEqual(self.hook._consume_antigravity_notice(self.state, conversation), '')
+                self.assertTrue(notice_file.exists(), 'reparse file must not be unlinked')
+                self.hook._queue_antigravity_notice(self.state, conversation, 'overwrite attempt\n')
+            self.assertEqual(json.loads(notice_file.read_text(encoding='utf-8'))['text'], 'reparse\n')
+            class FakeDirReparse:
+                st_mode = stat_mod.S_IFDIR | 0o700
+                st_size = 0
+                st_file_attributes = getattr(stat_mod, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
+            def fake_dir_lstat(p):
+                if p == notice_dir:
+                    return FakeDirReparse()
+                return real_lstat(p)
+            with patch.object(Path, 'lstat', fake_dir_lstat):
+                self.assertEqual(self.hook._consume_antigravity_notice(self.state, conversation), '')
+                self.hook._queue_antigravity_notice(self.state, conversation, 'dir reparse attempt\n')
+            self.assertEqual(json.loads(notice_file.read_text(encoding='utf-8'))['text'], 'reparse\n')
+
+    def test_antigravity_hook_lifecycle_receipt_coverage_parity(self):
+        # End-to-end Antigravity lifecycle (#903): SessionStart + PreInvocation + PostToolUse + Stop
+        # feeds receipt coverage with per-turn scope and edit observation matching Claude/Codex.
+        engine = self.seed()
+        note = str((self.vault / 'notes/task.md').resolve())
+
+        edited = 'agy-cov-edited'
+        edited_base = {'conversationId': edited, 'cwd': str(self.vault), 'workspacePaths': [str(self.vault)]}
+        self.assertIn('injectSteps', self.invoke(
+            dict(edited_base, hookEventName='SessionStart', lastUserInput='Update notes/task.md'),
+            'antigravity', extra=['--event', 'SessionStart']))
+        self.assertEqual(self.invoke(
+            dict(edited_base, hookEventName='PreInvocation', invocationNum=0, initialNumSteps=1,
+                 lastUserInput='Update notes/task.md'),
+            'antigravity', extra=['--event', 'PreInvocation']), {})
+        self.assertEqual(self.agy_tool(edited, 'write_file', {'Path': note, 'Content': 'x'}), {})
+        time.sleep(0.02)
+        edited_hash = hashlib.sha256(edited.encode()).hexdigest()[:24]
+        engine.receipt('agy-cov-receipt', 'Updated task note.', ['notes/task.md'], 'antigravity', session=edited_hash)
+        stop_edited = dict(edited_base, hookEventName='Stop', fullyIdle=True, continuationActive=False, executionNum=0)
+        self.assertEqual(self.invoke(stop_edited, 'antigravity', extra=['--event', 'Stop']), {'decision': 'stop'})
+        time.sleep(0.02)
+        # Follow-up question-only turn must not reopen the covered Antigravity session.
+        self.invoke(dict(edited_base, hookEventName='PreInvocation', invocationNum=0, initialNumSteps=6,
+                         lastUserInput='Thanks, what is the status?'),
+                    'antigravity', extra=['--event', 'PreInvocation'])
+        self.assertEqual(self.invoke(stop_edited, 'antigravity', extra=['--event', 'Stop']), {'decision': 'stop'})
+
+        readonly = 'agy-cov-readonly'
+        ro_base = {'conversationId': readonly, 'cwd': str(self.vault), 'workspacePaths': [str(self.vault)]}
+        self.assertIn('injectSteps', self.invoke(
+            dict(ro_base, hookEventName='SessionStart', lastUserInput='Just checking status'),
+            'antigravity', extra=['--event', 'SessionStart']))
+        self.assertEqual(self.invoke(
+            dict(ro_base, hookEventName='PreInvocation', invocationNum=0, initialNumSteps=1,
+                 lastUserInput='Just checking status'),
+            'antigravity', extra=['--event', 'PreInvocation']), {})
+        self.assertEqual(self.invoke(
+            dict(ro_base, hookEventName='Stop', fullyIdle=True, continuationActive=False, executionNum=0),
+            'antigravity', extra=['--event', 'Stop']), {'decision': 'stop'})
+
+        self.assertEqual(self.hook.drain_queue(self.vault, self.state)['failed'], 0)
+        gaps = json.loads((self.state / 'receipt-gaps.json').read_text(encoding='utf-8'))
+        ro_hash = hashlib.sha256(readonly.encode()).hexdigest()[:24]
+        self.assertEqual([item['session'] for item in gaps['checkpoints']], [ro_hash])
+        self.assertEqual(gaps['checkpoints'][0]['harness'], 'antigravity')
+        self.assertEqual(gaps['checkpoints'][0]['scope'], 'turn')
+        self.assertIs(gaps['checkpoints'][0].get('no_observed_edit'), True)
+        self.assertEqual((gaps['potential_missing_receipts'], gaps['no_observed_edit']), (1, 1))
+        self.assertNotIn('antigravity', gaps['scope_limits'])
+        cov = gaps['receipt_coverage']
+        self.assertEqual((cov['total'], cov['covered'], cov['missing'], cov['no_observed_edit'], cov['missing_no_observed_edit']),
+                         (2, 1, 1, 1, 1))
+
     def test_internal_recursion_guard_skips_queue(self):
         self.env['BEYIN_V3_INTERNAL'] = '1'
         self.assertEqual(self.invoke(self.payload), {})

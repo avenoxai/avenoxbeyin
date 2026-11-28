@@ -1323,6 +1323,67 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(legacy_res.get('decision'), 'continue')
         self.assertIn('note-create', legacy_res.get('reason', ''))
 
+    def test_antigravity_bridge_stop_fires_context_fill_and_resets_after_checkpoint(self):
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / 'context-fill.json').write_text(
+            json.dumps({'enabled': True, 'first_threshold': 150000, 'repeat_threshold': 75000}),
+            encoding='utf-8')
+        config = self.agy_config()
+        start_cmd = config['SessionStart'][0]['command']
+        stop_cmd = config['Stop'][0]['command']
+        transcript = (self.root / 'agy-bridge-fill.jsonl').resolve()
+        rows = [
+            {'step_index': 0, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'work'},
+            {'step_index': 1, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE',
+             'input_tokens': 10000, 'cache_read_tokens': 160000},
+        ]
+        def write_rows():
+            transcript.write_text(''.join(json.dumps(r) + '\n' for r in rows), encoding='utf-8', newline='\n')
+        write_rows()
+
+        base = dict(conversationId='agy-bridge-fill', workspacePaths=[str(self.project)],
+                    lastUserInput='work', transcriptPath=str(transcript))
+        self.assertIn('injectSteps', self.agy_run(start_cmd, dict(base, hookEventName='SessionStart')))
+        stop = dict(base, hookEventName='Stop', fullyIdle=True, continuationActive=False, executionNum=0)
+
+        # Non-idle and continued Stops stay quiet.
+        self.assertEqual(self.agy_run(stop_cmd, dict(stop, fullyIdle=False)), {'decision': 'stop'})
+        self.assertEqual(self.agy_run(stop_cmd, dict(stop, executionNum=1)), {'decision': 'stop'})
+
+        # First idle Stop above threshold returns decision "continue".
+        first = self.agy_run(stop_cmd, stop)
+        self.assertEqual(first['decision'], 'continue')
+        self.assertIn('170.000', first['reason'])
+        self.assertIn('150.000', first['reason'])
+
+        # Immediate repeat stays quiet (below 170k + 75k).
+        self.assertEqual(self.agy_run(stop_cmd, stop), {'decision': 'stop'})
+
+        # Compaction CHECKPOINT followed by two turns resets reminders automatically in bridge!
+        rows.extend([
+            {'step_index': 40, 'source': 'SYSTEM', 'type': 'CHECKPOINT', 'status': 'DONE'},
+            {'step_index': 41, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'after 1'},
+            {'step_index': 42, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE',
+             'input_tokens': 5000, 'cache_read_tokens': 20000},
+        ])
+        write_rows()
+        self.assertEqual(self.agy_run(stop_cmd, dict(stop, lastUserInput='after 1')), {'decision': 'stop'})
+
+        rows.extend([
+            {'step_index': 43, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'after 2'},
+            {'step_index': 44, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE',
+             'input_tokens': 10000, 'cache_read_tokens': 150000},
+        ])
+        write_rows()
+        # [kaydetme] opt-out suppresses reminder.
+        self.assertEqual(self.agy_run(stop_cmd, dict(stop, lastUserInput='[kaydetme] after 2')),
+                         {'decision': 'stop'})
+        # Without opt-out, reminds again at first_threshold (150k)!
+        second = self.agy_run(stop_cmd, dict(stop, lastUserInput='after 2'))
+        self.assertEqual(second['decision'], 'continue')
+        self.assertIn('160.000', second['reason'])
+        self.assertIn('150.000', second['reason'])
+
     def test_folder_below_another_installed_vault_is_skipped_for_every_client(self):
         # The owning vault is found by walking up, so a subfolder is as silent as the vault root.
         below = self.root / 'Projects' / 'second-vault' / 'notes' / 'deep'; below.mkdir(parents=True)

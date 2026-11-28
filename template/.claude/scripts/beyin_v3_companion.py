@@ -894,9 +894,9 @@ def hook_limit_notice(vault, state, payload, harness=None):
 
     SessionStart already reports it; without this the agent that wrote the card learns it only
     in the next session. Only edited companion handoff files are measured, so any other write
-    costs no read. Same harness gate as the word-cap signal (claude, codex, pi).
+    costs no read. Same harness gate as the word-cap signal (claude, codex, pi, antigravity).
     """
-    if harness is not None and harness not in ('claude', 'codex', 'pi'):
+    if harness is not None and harness not in ('claude', 'codex', 'pi', 'antigravity'):
         return ''
     if payload.get('hook_event_name') != 'PostToolUse':
         return ''

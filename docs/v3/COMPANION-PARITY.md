@@ -213,7 +213,9 @@ Düzeltme dört parçadır:
   gösterir (en fazla 200.000); bu otomatik ayar değişikliği, oturum sayısı hesabı veya
   gelecekteki büyümeye garanti değildir. Daha büyük dosyada koordineli inceleme önerilir.
   Claude, Codex ve Pi'de aynı satır, sınırı aşan dosya yazıldığı anda (PostToolUse) da
-  gelir; böylece kartı yazan ajan bunu bir sonraki oturumu beklemeden görür. Yalnız
+  gelir; böylece kartı yazan ajan bunu bir sonraki oturumu beklemeden görür. Antigravity'nin
+  PostToolUse yanıtı `{}` olduğundan orada satır aynı konuşmanın bir sonraki `PreInvocation`
+  adımında bir kez gelir. Yalnız
   düzenlenen companion devir dosyası ölçülür, başka yazımlar dosya okumaz (#707).
   `doctor` bütün companion dosyalarının boyutunu `companion_hygiene` altında
   raporlar; `--human` çıktısında sınırı aşan her dosya için bir satır görünür. Bu bir

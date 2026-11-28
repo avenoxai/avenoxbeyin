@@ -23,7 +23,7 @@ cli_spec.loader.exec_module(cli_beyin_v3)
 mark_session_edit = cli_beyin_v3.mark_session_edit
 import beyin_entry
 import beyin_v3_hook as hook
-from beyin_v3_projections import receipt_coverage, _checkpoint_schema
+from beyin_v3_projections import EDIT_OBSERVING_HARNESSES, receipt_coverage, _checkpoint_schema
 from beyin_v3_sync import SyncEngine
 
 
@@ -41,7 +41,7 @@ class ReceiptCoverageTest(unittest.TestCase):
         environment.start()
         self.addCleanup(environment.stop)
 
-    def _enqueue(self, event, session_id, at=None, harness='claude'):
+    def _enqueue(self, event, session_id, at=None, harness='claude', **extra):
         queue_dir = self.state / 'hook-queue'
         queue_dir.mkdir(parents=True, exist_ok=True)
         t = time.time() if at is None else at
@@ -50,6 +50,7 @@ class ReceiptCoverageTest(unittest.TestCase):
             'event': event,
             'session': session_id,
             'at': t,
+            **extra,
         }
         item_path = queue_dir / f"{int(t * 1000)}-{os.urandom(4).hex()}.json"
         item_path.write_text(json.dumps(payload), encoding='utf-8')
@@ -332,24 +333,24 @@ class ReceiptCoverageTest(unittest.TestCase):
             self.assertIn('prompt_at', cols)
             self.assertIn('edit_at', cols)
 
-    def _edit_session(self, session, now, receipt_turns, turns):
+    def _edit_session(self, session, now, receipt_turns, turns, harness='claude'):
         """One session: each turn is a prompt, optional edit and optional receipt, drained after its Stop."""
         engine = SyncEngine(self.vault, self.state)
         if not (self.vault / 'notes/task.md').exists():
             engine.note_create('notes/task.md', 'Work.', {'id': 'task'})
         for index, edits in enumerate(turns):
             start = now + index * 100
-            self._enqueue('UserPromptSubmit', session, at=start)
+            self._enqueue('UserPromptSubmit', session, at=start, harness=harness)
             if edits:
-                self._enqueue('PostToolUse', session, at=start + 10)
+                self._enqueue('PostToolUse', session, at=start + 10, harness=harness)
             hook.drain_queue(self.vault, self.state)
             if index in receipt_turns:
                 event_id = f'{session}-{index}'
-                engine.receipt(event_id, 'Bitti.', ['notes/task.md'], 'claude', session=session)
+                engine.receipt(event_id, 'Bitti.', ['notes/task.md'], harness, session=session)
                 stamp = datetime.fromtimestamp(start + 30, timezone.utc).isoformat()
                 with engine.store._connect() as db:
                     db.execute("UPDATE receipts SET payload=json_set(payload,'$.created_at',?) WHERE id=?", (stamp, event_id))
-            self._enqueue('Stop', session, at=start + 50)
+            self._enqueue('Stop', session, at=start + 50, harness=harness)
             hook.drain_queue(self.vault, self.state)
         return json.loads((self.state / 'receipt-gaps.json').read_text(encoding='utf-8'))
 
@@ -475,10 +476,10 @@ class ReceiptCoverageTest(unittest.TestCase):
         self._enqueue('UserPromptSubmit', 'sess_read_only', at=now - 35)
         self._enqueue('Stop', 'sess_read_only', at=now - 30)
 
-        # 3. Harness without edit observation (Antigravity: scope limitation preserved)
-        self._enqueue('SessionStart', 'sess_ag', at=now - 25, harness='antigravity')
-        self._enqueue('UserPromptSubmit', 'sess_ag', at=now - 23, harness='antigravity')
-        self._enqueue('Stop', 'sess_ag', at=now - 20, harness='antigravity')
+        # 3. Harness without edit observation (Hermes: no PostToolUse hook)
+        self._enqueue('SessionStart', 'sess_hermes', at=now - 25, harness='hermes')
+        self._enqueue('UserPromptSubmit', 'sess_hermes', at=now - 23, harness='hermes')
+        self._enqueue('SessionEnd', 'sess_hermes', at=now - 20, harness='hermes')
 
         hook.drain_queue(self.vault, self.state)
 
@@ -493,7 +494,7 @@ class ReceiptCoverageTest(unittest.TestCase):
         gap_items = {g['session']: g for g in gaps_data['checkpoints']}
         self.assertTrue(gap_items['sess_read_only'].get('no_observed_edit'))
         self.assertNotIn('no_observed_edit', gap_items['sess_edit_only'])
-        self.assertNotIn('no_observed_edit', gap_items['sess_ag'])
+        self.assertNotIn('no_observed_edit', gap_items['sess_hermes'])
 
         # Check hook-health.json
         health_data = json.loads((self.state / 'hook-health.json').read_text(encoding='utf-8'))
@@ -513,6 +514,118 @@ class ReceiptCoverageTest(unittest.TestCase):
         out = json.loads(proc.stdout)
         context = out.get('hookSpecificOutput', {}).get('additionalContext', '')
         self.assertIn('Prior checkpoints may lack structured receipts (3 in the last 7 days (1 without observed edits))', context)
+
+    def test_antigravity_read_only_turn_reports_no_observed_edit_and_turn_scope(self):
+        """Antigravity observes file edits and per-turn boundaries (#903): read-only turns report no_observed_edit and scope='turn'."""
+        self.assertIn('antigravity', EDIT_OBSERVING_HARNESSES)
+        self.assertNotIn('hermes', EDIT_OBSERVING_HARNESSES)
+        engine = SyncEngine(self.vault, self.state)
+        now = time.time()
+
+        # 1. Multi-turn / UserPromptSubmit read-only Antigravity session (no PostToolUse)
+        self._enqueue('SessionStart', 'ag_read_prompt', at=now - 60, harness='antigravity')
+        self._enqueue('UserPromptSubmit', 'ag_read_prompt', at=now - 50, harness='antigravity')
+        self._enqueue('Stop', 'ag_read_prompt', at=now - 40, harness='antigravity')
+
+        # 2. Single-turn Antigravity session whose first prompt arrived on SessionStart (no PostToolUse)
+        self._enqueue('SessionStart', 'ag_read_first', at=now - 30, harness='antigravity', prompted=True)
+        self._enqueue('Stop', 'ag_read_first', at=now - 20, harness='antigravity')
+
+        hook.drain_queue(self.vault, self.state)
+
+        gaps_data = json.loads((self.state / 'receipt-gaps.json').read_text(encoding='utf-8'))
+        self.assertEqual(gaps_data['potential_missing_receipts'], 2)
+        self.assertEqual(gaps_data['no_observed_edit'], 2)
+        self.assertNotIn('antigravity', gaps_data['scope_limits'])
+        self.assertEqual(
+            gaps_data['scope_limits'],
+            {'missing_prompt_event': 'terminal_only; receipt attribution may be incomplete'},
+        )
+
+        gap_items = {item['session']: item for item in gaps_data['checkpoints']}
+        self.assertEqual(set(gap_items), {'ag_read_prompt', 'ag_read_first'})
+        for session_id in ('ag_read_prompt', 'ag_read_first'):
+            self.assertEqual(gap_items[session_id]['harness'], 'antigravity')
+            self.assertEqual(gap_items[session_id]['scope'], 'turn')
+            self.assertIs(gap_items[session_id].get('no_observed_edit'), True)
+
+        cov = gaps_data['receipt_coverage']
+        self.assertEqual((cov['total'], cov['covered'], cov['missing']), (2, 0, 2))
+        self.assertEqual(cov['no_observed_edit'], 2)
+        self.assertEqual(cov['missing_no_observed_edit'], 2)
+        self.assertEqual(cov['last_7d']['no_observed_edit'], 2)
+        self.assertEqual(cov['last_7d']['missing_no_observed_edit'], 2)
+        self.assertEqual(cov['last_30d']['no_observed_edit'], 2)
+        self.assertEqual(cov['last_30d']['missing_no_observed_edit'], 2)
+
+        with engine.store._connect() as db:
+            direct = receipt_coverage(db, now=now, state=self.state)
+            self.assertEqual(direct['no_observed_edit'], 2)
+            self.assertEqual(direct['missing_no_observed_edit'], 2)
+
+    def test_antigravity_edited_turn_uses_turn_scope_and_is_covered_by_receipt(self):
+        """An edited Antigravity turn omits no_observed_edit, uses scope='turn', and closes on a later receipt."""
+        engine = SyncEngine(self.vault, self.state)
+        engine.note_create('notes/task.md', 'Work.', {'id': 'task'})
+        now = time.time()
+
+        self._enqueue('SessionStart', 'ag_edit', at=now - 60, harness='antigravity')
+        self._enqueue('UserPromptSubmit', 'ag_edit', at=now - 50, harness='antigravity')
+        self._enqueue('PostToolUse', 'ag_edit', at=now - 40, harness='antigravity')
+        self._enqueue('Stop', 'ag_edit', at=now - 30, harness='antigravity')
+        hook.drain_queue(self.vault, self.state)
+
+        before = json.loads((self.state / 'receipt-gaps.json').read_text(encoding='utf-8'))
+        self.assertEqual(before['potential_missing_receipts'], 1)
+        self.assertEqual(before['no_observed_edit'], 0)
+        self.assertNotIn('antigravity', before['scope_limits'])
+        self.assertEqual(len(before['checkpoints']), 1)
+        gap = before['checkpoints'][0]
+        self.assertEqual((gap['harness'], gap['session'], gap['scope']), ('antigravity', 'ag_edit', 'turn'))
+        self.assertNotIn('no_observed_edit', gap)
+        self.assertEqual(before['receipt_coverage']['no_observed_edit'], 0)
+        self.assertEqual(before['receipt_coverage']['missing_no_observed_edit'], 0)
+
+        engine.receipt('ag-edit-receipt', 'Antigravity work done.', ['notes/task.md'], 'antigravity', session='ag_edit')
+        engine.sync()
+
+        after = json.loads((self.state / 'receipt-gaps.json').read_text(encoding='utf-8'))
+        self.assertEqual(after['potential_missing_receipts'], 0)
+        self.assertEqual(after['checkpoints'], [])
+        self.assertEqual((after['receipt_coverage']['covered'], after['receipt_coverage']['total'], after['receipt_coverage']['missing']), (1, 1, 0))
+
+    def test_antigravity_followup_question_keeps_covered_session_closed_and_later_edit_reopens(self):
+        """A later question-only Antigravity turn does not reopen a covered edit session; a new edit does (#212, #903)."""
+        now = time.time() - 1000
+        self._edit_session('ag_late_thanks', now, {0}, [True, False], harness='antigravity')
+        data = self._edit_session('ag_two_edit_turns', now, {1}, [True, True, False], harness='antigravity')
+        self.assertEqual(data['potential_missing_receipts'], 0)
+        self.assertEqual((data['receipt_coverage']['covered'], data['receipt_coverage']['total']), (2, 2))
+        self.assertNotIn('antigravity', data['scope_limits'])
+
+        reopened = self._edit_session('ag_next_edit', now, {0}, [True, True], harness='antigravity')
+        self.assertEqual([item['session'] for item in reopened['checkpoints']], ['ag_next_edit'])
+        self.assertEqual(reopened['checkpoints'][0]['scope'], 'turn')
+        self.assertNotIn('no_observed_edit', reopened['checkpoints'][0])
+        self.assertEqual((reopened['receipt_coverage']['covered'], reopened['receipt_coverage']['missing'], reopened['receipt_coverage']['total']), (2, 1, 3))
+
+    def test_antigravity_checkpoint_without_turn_at_uses_terminal_only_scope(self):
+        """An Antigravity row lacking turn_at falls back to terminal_only, never session_only."""
+        engine = SyncEngine(self.vault, self.state)
+        now = time.time()
+        with engine.store._connect() as db:
+            _checkpoint_schema(db)
+            db.execute(
+                "INSERT INTO receipt_checkpoints(harness,session,at,turn_at,prompt_at,edit_at) VALUES ('antigravity','ag_terminal',?,0,?,0)",
+                (now - 10, now - 20),
+            )
+        engine.sync()
+        gaps_data = json.loads((self.state / 'receipt-gaps.json').read_text(encoding='utf-8'))
+        self.assertEqual(len(gaps_data['checkpoints']), 1)
+        gap = gaps_data['checkpoints'][0]
+        self.assertEqual(gap['scope'], 'terminal_only')
+        self.assertIs(gap.get('no_observed_edit'), True)
+        self.assertNotIn('antigravity', gaps_data['scope_limits'])
 
     def test_coverage_counts_sessions_without_prompt_separately(self):
         """Bridge sessions see no UserPromptSubmit: kept out of the ratio, but counted."""

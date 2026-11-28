@@ -261,6 +261,199 @@ class ContextFillTest(unittest.TestCase):
             self.assertEqual(reset_st['tokens'], 0)
             self.assertEqual(reset_st['reminders_sent'], 0)
 
+    def _write_ag_steps(self, path, rows):
+        path.write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8', newline='\n')
+
+    def test_antigravity_stop_reminds_with_continue_and_respects_stop_hook_active(self):
+        cf.save_config(self.state, dict(enabled=True, first_threshold=150000, repeat_threshold=75000))
+        transcript = (self.state / 'agy.jsonl').resolve()
+        self._write_ag_steps(transcript, [
+            {'step_index': 0, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'status': 'DONE', 'content': 'analyze'},
+            {'step_index': 1, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE', 'status': 'DONE',
+             'input_tokens': 10000, 'cache_read_tokens': 20000},
+            {'step_index': 2, 'source': 'SYSTEM', 'type': 'GENERIC', 'status': 'DONE'},
+            {'step_index': 3, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE', 'status': 'DONE',
+             'input_tokens': 7949, 'cache_read_tokens': 507670, 'output_tokens': 1652},
+        ])
+        payload = {'session_id': 'agy-session-1', 'transcriptPath': str(transcript), 'lastUserInput': 'analyze'}
+        first = cf.context_fill_reminder(payload, self.state, 'antigravity', 'Stop')
+        self.assertIsNotNone(first)
+        self.assertEqual(first['decision'], 'continue')
+        self.assertIn('515.619', first['reason'])
+        self.assertIn('150.000', first['reason'])
+        # Repeat at same token count stays silent (below 515619 + 75000).
+        self.assertIsNone(cf.context_fill_reminder(payload, self.state, 'antigravity', 'Stop'))
+        # stop_hook_active, continuationActive and executionNum > 0 all silence even a fresh session.
+        for extra in ({'stop_hook_active': True}, {'continuationActive': True}, {'executionNum': 1}):
+            with self.subTest(extra=extra):
+                suppressed = dict(payload, session_id='agy-suppressed', **extra)
+                self.assertIsNone(cf.context_fill_reminder(suppressed, self.state, 'antigravity', 'Stop'))
+        # Non-int / bool / negative token fields are ignored cleanly.
+        self._write_ag_steps(transcript, [
+            {'step_index': 0, 'type': 'USER_INPUT', 'content': 'go'},
+            {'step_index': 1, 'type': 'PLANNER_RESPONSE', 'input_tokens': True, 'cache_read_tokens': -500000},
+            {'step_index': 2, 'type': 'PLANNER_RESPONSE', 'input_tokens': '200000', 'cache_read_tokens': None},
+        ])
+        self.assertIsNone(cf.context_fill_reminder(
+            dict(payload, session_id='agy-bad-types'), self.state, 'antigravity', 'Stop'))
+
+    def test_antigravity_checkpoint_stops_backward_scan_and_resets_reminders(self):
+        cf.save_config(self.state, dict(enabled=True, first_threshold=150000, repeat_threshold=75000))
+        transcript = (self.state / 'agy-compact.jsonl').resolve()
+        rows = [
+            {'step_index': 0, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'turn 1'},
+            {'step_index': 1, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE',
+             'input_tokens': 10000, 'cache_read_tokens': 190000},
+        ]
+        self._write_ag_steps(transcript, rows)
+        payload = {'session_id': 'agy-compact-session', 'transcriptPath': str(transcript), 'lastUserInput': 'turn 1'}
+        first = cf.context_fill_reminder(payload, self.state, 'antigravity', 'Stop')
+        self.assertEqual(first['decision'], 'continue')
+
+        # CHECKPOINT arrives with no post-compaction PLANNER_RESPONSE yet:
+        # pre-compaction 200k tokens must NOT trigger reminder, and reminders_sent resets.
+        rows.append({'step_index': 328, 'source': 'SYSTEM', 'type': 'CHECKPOINT', 'status': 'DONE'})
+        self._write_ag_steps(transcript, rows)
+        self.assertIsNone(cf.context_fill_reminder(payload, self.state, 'antigravity', 'Stop'))
+        saved = cf.load_session_state(self.state, cf._session_digest('agy-compact-session'))
+        self.assertEqual(saved['reminders_sent'], 0)
+        self.assertEqual(saved.get('checkpoint_step'), 328)
+
+        # Post-compaction turn 1 below threshold -> silent.
+        rows.extend([
+            {'step_index': 329, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'turn 2'},
+            {'step_index': 330, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE',
+             'input_tokens': 6395, 'cache_read_tokens': 16763},
+        ])
+        self._write_ag_steps(transcript, rows)
+        self.assertIsNone(cf.context_fill_reminder(
+            dict(payload, lastUserInput='turn 2'), self.state, 'antigravity', 'Stop'))
+
+        # Post-compaction turn 2 grows past first_threshold (150k) -> reminds again with first_threshold!
+        rows.extend([
+            {'step_index': 331, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'turn 3'},
+            {'step_index': 332, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE',
+             'input_tokens': 10000, 'cache_read_tokens': 150000},
+        ])
+        self._write_ag_steps(transcript, rows)
+        second = cf.context_fill_reminder(
+            dict(payload, lastUserInput='turn 3'), self.state, 'antigravity', 'Stop')
+        self.assertIsNotNone(second)
+        self.assertEqual(second['decision'], 'continue')
+        self.assertIn('160.000', second['reason'])
+        self.assertIn('150.000', second['reason'])
+
+        # Same CHECKPOINT still in tail on next turn below repeat threshold -> must NOT re-reset!
+        rows.extend([
+            {'step_index': 333, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'turn 4'},
+            {'step_index': 334, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE',
+             'input_tokens': 10000, 'cache_read_tokens': 160000},
+        ])
+        self._write_ag_steps(transcript, rows)
+        self.assertIsNone(cf.context_fill_reminder(
+            dict(payload, lastUserInput='turn 4'), self.state, 'antigravity', 'Stop'))
+
+        # Second CHECKPOINT followed directly by two turns reaching 155k (no intermediate Stop) resets cleanly.
+        rows.extend([
+            {'step_index': 600, 'source': 'SYSTEM', 'type': 'CHECKPOINT', 'status': 'DONE'},
+            {'step_index': 601, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'turn 5'},
+            {'step_index': 602, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE',
+             'input_tokens': 5000, 'cache_read_tokens': 150000},
+        ])
+        self._write_ag_steps(transcript, rows)
+        third = cf.context_fill_reminder(
+            dict(payload, lastUserInput='turn 5'), self.state, 'antigravity', 'Stop')
+        self.assertIsNotNone(third)
+        self.assertEqual(third['decision'], 'continue')
+        self.assertIn('155.000', third['reason'])
+        self.assertIn('150.000', third['reason'])
+
+    def test_antigravity_kaydetme_opt_out_suppresses_reminder(self):
+        cf.save_config(self.state, dict(enabled=True, first_threshold=150000, repeat_threshold=75000))
+        transcript = (self.state / 'agy-optout.jsonl').resolve()
+        # Case-insensitive [KAYDETME] in USER_INPUT content suppresses reminder.
+        self._write_ag_steps(transcript, [
+            {'step_index': 0, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'Bunu [KAYDETME] lutfen'},
+            {'step_index': 1, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE',
+             'input_tokens': 200000, 'cache_read_tokens': 0},
+        ])
+        payload = {'session_id': 'agy-optout-1', 'transcriptPath': str(transcript), 'lastUserInput': 'plain'}
+        self.assertIsNone(cf.context_fill_reminder(payload, self.state, 'antigravity', 'Stop'))
+        self.assertFalse((self.state / 'context-fill').exists())
+
+        # [kaydetme] in payload lastUserInput also suppresses even without opt-out in transcript.
+        self._write_ag_steps(transcript, [
+            {'step_index': 0, 'source': 'USER_EXPLICIT', 'type': 'USER_INPUT', 'content': 'normal'},
+            {'step_index': 1, 'source': 'MODEL', 'type': 'PLANNER_RESPONSE',
+             'input_tokens': 200000, 'cache_read_tokens': 0},
+        ])
+        payload2 = {'session_id': 'agy-optout-2', 'transcriptPath': str(transcript),
+                    'lastUserInput': 'sadece bak [Kaydetme]'}
+        self.assertIsNone(cf.context_fill_reminder(payload2, self.state, 'antigravity', 'Stop'))
+        # Same transcript without [kaydetme] reminds normally (proving suppression came from opt-out).
+        normal = cf.context_fill_reminder(
+            {'session_id': 'agy-optout-3', 'transcriptPath': str(transcript), 'lastUserInput': 'normal'},
+            self.state, 'antigravity', 'Stop')
+        self.assertEqual(normal['decision'], 'continue')
+
+    def test_antigravity_unsafe_transcript_paths_fail_open(self):
+        cf.save_config(self.state, dict(enabled=True, first_threshold=150000, repeat_threshold=75000))
+        real = (self.state / 'real.jsonl').resolve()
+        self._write_ag_steps(real, [
+            {'step_index': 0, 'type': 'USER_INPUT', 'content': 'go'},
+            {'step_index': 1, 'type': 'PLANNER_RESPONSE', 'input_tokens': 200000, 'cache_read_tokens': 0},
+        ])
+        wrong_ext = (self.state / 'real.txt').resolve()
+        wrong_ext.write_text(real.read_text(encoding='utf-8'), encoding='utf-8')
+        folder = (self.state / 'dir.jsonl').resolve()
+        folder.mkdir()
+
+        unsafe = [
+            None, 123, '', 'relative.jsonl', str(wrong_ext), str(folder),
+            str(real) + '\0.jsonl', '//server/share/transcript.jsonl', r'\\server\share\transcript.jsonl',
+            str((self.state / 'missing.jsonl').resolve()),
+        ]
+        for bad in unsafe:
+            with self.subTest(path=bad):
+                res = cf.context_fill_reminder(
+                    {'session_id': 'agy-unsafe', 'transcriptPath': bad}, self.state, 'antigravity', 'Stop')
+                self.assertIsNone(res)
+
+        link = self.state.resolve() / 'link.jsonl'
+        try:
+            link.symlink_to(real)
+        except OSError:
+            pass
+        else:
+            res = cf.context_fill_reminder(
+                {'session_id': 'agy-link', 'transcriptPath': str(link)}, self.state, 'antigravity', 'Stop')
+            self.assertIsNone(res)
+
+        # Positive control: the real regular .jsonl path succeeds.
+        ok = cf.context_fill_reminder(
+            {'session_id': 'agy-safe', 'transcriptPath': str(real)}, self.state, 'antigravity', 'Stop')
+        self.assertEqual(ok['decision'], 'continue')
+
+    def test_antigravity_bounded_tail_reads_only_last_limit_bytes(self):
+        from unittest.mock import patch
+        import beyin_v3_hook as hook
+        cf.save_config(self.state, dict(enabled=True, first_threshold=150000, repeat_threshold=75000))
+        transcript = (self.state / 'agy-big.jsonl').resolve()
+        rows = [
+            {'step_index': 0, 'type': 'PLANNER_RESPONSE', 'input_tokens': 500000, 'cache_read_tokens': 0,
+             'padding': 'x' * 1500},
+            {'step_index': 1, 'source': 'SYSTEM', 'type': 'CHECKPOINT'},
+            {'step_index': 2, 'type': 'USER_INPUT', 'content': 'after'},
+            {'step_index': 3, 'type': 'PLANNER_RESPONSE', 'input_tokens': 160000, 'cache_read_tokens': 0},
+        ]
+        self._write_ag_steps(transcript, rows)
+        with patch.object(hook, 'ANTIGRAVITY_TRANSCRIPT_LIMIT', 512):
+            res = cf.context_fill_reminder(
+                {'session_id': 'agy-big', 'transcriptPath': str(transcript)}, self.state, 'antigravity', 'Stop')
+        self.assertIsNotNone(res)
+        self.assertEqual(res['decision'], 'continue')
+        self.assertIn('160.000', res['reason'])
+
 
 if __name__ == '__main__':
     unittest.main()

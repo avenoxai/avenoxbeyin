@@ -257,12 +257,9 @@ Claude Code Bash tool names its session through `CLAUDE_CODE_SESSION_ID`: it
 opens the reminder window itself and leaves a small flag that the next Stop of
 that session queues as `PostToolUse` metadata marked `observed: cli`, stamped
 with the write's time, so such a turn is also an edited turn for coverage.
-Antigravity only
-provides the initial invocation boundary in this adapter, so its result is
-explicitly session-limited rather than proof of per-turn completeness. Missing
-prompt events are reported as a terminal-only limitation. Explicit `no_memory`
-hook metadata suppresses the
-checkpoint signal. Respect a user's no-memory request regardless of that signal.
+Missing prompt events are reported as a terminal-only limitation. Explicit
+`no_memory` hook metadata suppresses the checkpoint signal. Respect a user's
+no-memory request regardless of that signal.
 A turn no person typed (a `<task-notification>`, a message from another agent
 session, or the prompt Codex Desktop sends to a fork to draft a suggested next
 user message) keeps its lifecycle event, marked `synthetic`, but opens no
@@ -274,14 +271,18 @@ The per-turn context names receipt gaps only for sessions that finished in the
 last 7 days, with their count as measured by the latest sync. Checkpoints from
 edit-observing harnesses that saw no file edits are reported separately in the
 warning (`(N without observed edits)`) and tagged in `receipt-gaps.json`,
-matching `doctor`'s `no_observed_edit` counter (#462). The all-time count stays
+matching `doctor`'s `no_observed_edit` counter (#462). Antigravity counts as
+edit-observing since its file writes reach `PostToolUse` (3.18.0); its checkpoints
+recorded before that release saw no edits by construction, so they can appear
+among those without observed edits. The all-time count stays
 in `doctor` as `potential_missing_receipts`.
 
 `doctor` also reports `receipt_coverage`: the share of finished sessions with a
 matching receipt, for all time and for the last 7 and 30 days, measured when
 `doctor` runs. Only sessions with an observed user prompt count, either a
 UserPromptSubmit or a SessionStart that carries the first prompt (Hermes,
-OpenCode); the queue keeps only that fact, never the prompt text. Its `missing`
+OpenCode, Antigravity); the queue keeps only that fact, never the prompt text.
+Its `missing`
 count can therefore be smaller than `potential_missing_receipts`, which counts
 every finished checkpoint. Checkpoints recorded before this field existed have
 no prompt marker, so the ratio starts with sessions after the upgrade and stays
