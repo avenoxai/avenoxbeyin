@@ -1376,7 +1376,7 @@ def _main(argv=None):
             raise ValueError('Invalid hook payload')
         if args.harness == 'antigravity':
             from beyin_v3_hook import (antigravity_tool_input, antigravity_session_marker, antigravity_continued_stop,
-                                       _antigravity_nonhuman_start, _antigravity_nonhuman_turn)
+                                       antigravity_abnormal_stop, _antigravity_nonhuman_start, _antigravity_nonhuman_turn)
             native = args.native_event or payload.get('hookEventName')
             if native == 'Stop':
                 quiet = '{"decision":"stop"}'
@@ -1385,7 +1385,7 @@ def _main(argv=None):
             marker = (antigravity_session_marker(state, json.dumps(['bridge', conversation, payload.get('workspacePaths')]))
                       if isinstance(conversation, str) and conversation else None)
             # Same boundaries as the vault adapter: the conversation's start, once (#903), and a
-            # fully idle Stop; a PostToolUse counts only for a successful file write. A nested
+            # normal, fully idle Stop; a PostToolUse counts only for a successful file write. A nested
             # agent's start and turns (#885: no user input) stay silent here as they do there.
             if native == 'SessionStart':
                 first = not _antigravity_nonhuman_start(payload)
@@ -1397,7 +1397,8 @@ def _main(argv=None):
                 first = payload['tool_input'] is not None
             else:
                 first = (native == 'Stop' and payload.get('fullyIdle') is True
-                         and not _antigravity_nonhuman_turn(payload, native))
+                         and not _antigravity_nonhuman_turn(payload, native)
+                         and not antigravity_abnormal_stop(payload))
             paths = payload.get('workspacePaths')
             # A vault among the workspaces runs its own local hooks; do not count the session twice.
             if (not first or not isinstance(paths, list) or not all(isinstance(p, str) and Path(p).is_absolute() for p in paths)

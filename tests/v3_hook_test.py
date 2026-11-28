@@ -945,6 +945,118 @@ class HookInstallerTest(unittest.TestCase):
         self.assertTrue(continued({'executionNum': 2}))
         self.assertTrue(continued({'executionNum': 0, 'continuationActive': True}))
 
+    def test_antigravity_abnormal_stop_respects_termination_reason_and_error(self):
+        # Antigravity Stop payloads carry terminationReason and error; abnormal/terminal stops
+        # must return {"decision":"stop"} without spawning a worker or clearing .edited.
+        abnormal_reasons = (
+            'USER_CANCELED',
+            'ERROR',
+            'MAX_INVOCATIONS',
+            'MAX_FORCED_INVOCATIONS',
+            'MAX_TOKEN_BUDGET_EXCEEDED',
+            'TERMINAL_STEP_TYPE',
+            'TERMINAL_CUSTOM_HOOK',
+            'INJECTED_RESPONSE',
+        )
+        self.seed()
+        session = 'agy-abnormal-stop'
+        reminders = self.state / 'receipt-reminders'
+        digest = hashlib.sha256(session.encode()).hexdigest()
+        edited = reminders / (digest + '.edited')
+        done = reminders / (digest + '.done')
+        note = str((self.vault / 'notes/task.md').resolve())
+        self.assertEqual(self.agy_tool(session, 'write_file', {'Path': note, 'Content': 'x'}), {})
+        self.assertTrue(edited.exists())
+        queued_before = len(list((self.state / 'hook-queue').glob('*.json')))
+        base_stop = {'hookEventName': 'Stop', 'conversationId': session, 'fullyIdle': True,
+                     'continuationActive': False, 'executionNum': 0, 'lastUserInput': 'edit the note'}
+
+        for reason in abnormal_reasons:
+            with self.subTest(terminationReason=reason):
+                res = self.invoke(dict(base_stop, terminationReason=reason, error=''),
+                                  'antigravity', extra=['--event', 'Stop'])
+                self.assertEqual(res, {'decision': 'stop'})
+                self.assertTrue(edited.exists())
+                self.assertFalse(done.exists())
+                self.assertEqual(len(list((self.state / 'hook-queue').glob('*.json'))), queued_before)
+
+        for fields in ({'terminationReason': 'NO_TOOL_CALL', 'error': 'model error'}, {'error': 'tool error'}):
+            with self.subTest(error_case=fields):
+                res = self.invoke(dict(base_stop, **fields), 'antigravity', extra=['--event', 'Stop'])
+                self.assertEqual(res, {'decision': 'stop'})
+                self.assertTrue(edited.exists())
+                self.assertFalse(done.exists())
+                self.assertEqual(len(list((self.state / 'hook-queue').glob('*.json'))), queued_before)
+
+        # Verify no background sync worker is spawned on an abnormal Stop even when spawning is enabled.
+        spawn_flag = self.root / 'spawned.flag'
+        guard = self.root / 'guard_no_spawn_hook.py'
+        guard.write_text(
+            f'import pathlib, runpy, subprocess, sys\n'
+            f'sys.path.insert(0, {str(SCRIPTS)!r})\n'
+            f'def record_spawn(*args, **kwargs):\n'
+            f'    pathlib.Path({str(spawn_flag)!r}).write_text("spawned", encoding="utf-8")\n'
+            f'    raise RuntimeError("unexpected worker spawn")\n'
+            f'subprocess.Popen = record_spawn\n'
+            f'sys.argv[0] = {str(HOOK)!r}\n'
+            f'runpy.run_path({str(HOOK)!r}, run_name="__main__")\n',
+            encoding='utf-8',
+        )
+        saved_no_spawn = self.env.pop('BEYIN_V3_NO_SPAWN', None)
+        try:
+            res = self.invoke(dict(base_stop, terminationReason='USER_CANCELED', error=''),
+                              'antigravity', script=guard, extra=['--event', 'Stop'])
+            self.assertEqual(res, {'decision': 'stop'})
+            self.assertFalse(spawn_flag.exists())
+        finally:
+            if saved_no_spawn is not None:
+                self.env['BEYIN_V3_NO_SPAWN'] = saved_no_spawn
+
+        # Next normal NO_TOOL_CALL turn still sees preserved .edited and asks for a receipt.
+        normal = self.invoke(dict(base_stop, terminationReason='NO_TOOL_CALL', error=''),
+                             'antigravity', extra=['--event', 'Stop'])
+        self.assertEqual(normal.get('decision'), 'continue')
+        self.assertIn('Receipt session=', normal.get('reason', ''))
+
+        # Legacy clients that omit terminationReason and error keep normal reminder behaviour.
+        legacy_session = 'agy-legacy-stop'
+        legacy_edited = reminders / (hashlib.sha256(legacy_session.encode()).hexdigest() + '.edited')
+        self.assertEqual(self.agy_tool(legacy_session, 'write_file', {'Path': note, 'Content': 'y'}), {})
+        self.assertTrue(legacy_edited.exists())
+        legacy_stop = {'hookEventName': 'Stop', 'conversationId': legacy_session, 'fullyIdle': True,
+                       'continuationActive': False, 'lastUserInput': 'edit the note'}
+        legacy_res = self.invoke(legacy_stop, 'antigravity', extra=['--event', 'Stop'])
+        self.assertEqual(legacy_res.get('decision'), 'continue')
+        self.assertIn('Receipt session=', legacy_res.get('reason', ''))
+
+        # Direct helper coverage across reasons, errors, legacy omissions and non-string values.
+        abnormal = self.hook.antigravity_abnormal_stop
+        for reason in abnormal_reasons + ('UNKNOWN_TERMINAL_REASON',):
+            with self.subTest(helper_reason=reason):
+                self.assertTrue(abnormal({'terminationReason': reason, 'error': ''}))
+        for payload in (
+            {'terminationReason': 'NO_TOOL_CALL', 'error': 'rate limit exceeded'},
+            {'error': 'upstream failure'},
+            {'terminationReason': None, 'error': 'timeout'},
+            {'terminationReason': '', 'error': 'cancelled'},
+        ):
+            with self.subTest(helper_error=payload):
+                self.assertTrue(abnormal(payload))
+        for payload in (
+            {'terminationReason': 'NO_TOOL_CALL', 'error': ''},
+            {'terminationReason': ' NO_TOOL_CALL ', 'error': '   '},
+            {'terminationReason': 'NO_TOOL_CALL', 'error': None},
+            {'terminationReason': 'NO_TOOL_CALL'},
+            {},
+            {'terminationReason': None, 'error': None},
+            {'terminationReason': '', 'error': ''},
+            {'terminationReason': '   ', 'error': '   '},
+            {'terminationReason': 123, 'error': True},
+            {'terminationReason': False, 'error': ['err']},
+        ):
+            with self.subTest(helper_normal=payload):
+                self.assertFalse(abnormal(payload))
+
     def test_antigravity_tool_input_maps_only_successful_file_writes(self):
         for call, error, expected in (
                 ({'name': 'write_file', 'args': {'Path': '/v/a.md', 'Content': 'x'}}, '', {'file_path': '/v/a.md'}),
