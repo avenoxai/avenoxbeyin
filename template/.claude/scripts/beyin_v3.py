@@ -238,6 +238,21 @@ def effective_visibility(record):
     return vis
 
 
+def agent_sync_warnings(warnings):
+    """Sync warnings an agent may read, and how many privacy_frontmatter warnings were held back.
+
+    A privacy_frontmatter warning names a note that only a non-standard spelling keeps private
+    (`private: true`, `tags: [private]`), and in Obsidian its path is the note's title. Only
+    `sync`, where the user fixes the spelling, names it (#963). Every other output that embeds
+    sync warnings (context, recap, history, note/task writes, receipts, doctor) reaches agents
+    and carries the count instead, as it never names a `visibility: private` note. Without such
+    a warning the list is returned as it was, so those outputs stay as released.
+    """
+    warnings = list(warnings or [])
+    kept = [w for w in warnings if not (isinstance(w, dict) and w.get("kind") == "privacy_frontmatter")]
+    return kept, len(warnings) - len(kept)
+
+
 def _in_package_container(pinned: str) -> bool:
     """True when a pinned path runs through an MSIX package container."""
     parts = [part.lower() for part in pinned.replace("\\", "/").split("/") if part]

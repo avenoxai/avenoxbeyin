@@ -1817,10 +1817,10 @@ def main(argv=None, return_result=False):
             # user fixes it; doctor output reaches agents, so it carries only the count, not the path.
             last_sync = (result["hook-health.json"] or {}).get("sync") if isinstance(result["hook-health.json"], dict) else None
             if isinstance(last_sync, dict) and isinstance(last_sync.get("warnings"), list):
-                spelled = [w for w in last_sync["warnings"] if isinstance(w, dict) and w.get("kind") == "privacy_frontmatter"]
-                if spelled:
-                    last_sync["warnings"] = [w for w in last_sync["warnings"] if not any(w is item for item in spelled)]
-                    last_sync["privacy_frontmatter_count"] = len(spelled)
+                kept, withheld = engine.agent_sync_warnings(last_sync["warnings"])
+                if withheld:
+                    last_sync["warnings"] = kept
+                    last_sync["privacy_frontmatter_count"] = withheld
             result['legacy_external_schedules'] = 'not_inspected; review custom OS/compiler schedules before migration'
             try:  # information only: the last scheduled-check run, if the user set one up (#267)
                 _ensure_scripts_path()
@@ -2216,10 +2216,12 @@ def main(argv=None, return_result=False):
             if view_conflicts:
                 result['view_conflicts'] = view_conflicts
             if refreshed.get('status') == 'degraded':
-                warnings = refreshed.get('warnings', [])
+                warnings, withheld = engine.agent_sync_warnings(refreshed.get('warnings', []))
                 result['partial'] = True
                 result['source_sync'] = {'status': 'degraded', 'warnings': warnings[:20],
                                          'warning_count': len(warnings), 'truncated': len(warnings) > 20}
+                if withheld:
+                    result['source_sync']['privacy_frontmatter_count'] = withheld
         elif args.command == "triage":
             _ensure_scripts_path()
             import beyin_v3_triage as triage_module
@@ -2412,7 +2414,7 @@ def main(argv=None, return_result=False):
                 if view_conflicts:
                     result['view_conflicts'] = view_conflicts
                 if refreshed.get('status') == 'degraded':
-                    warnings = refreshed.get('warnings', [])
+                    warnings, withheld = engine.agent_sync_warnings(refreshed.get('warnings', []))
                     result['partial'] = True
                     result['source_sync'] = {
                         'status': 'degraded',
@@ -2420,6 +2422,8 @@ def main(argv=None, return_result=False):
                         'warnings': warnings[:20],
                         'truncated': len(warnings) > 20,
                     }
+                    if withheld:
+                        result['source_sync']['privacy_frontmatter_count'] = withheld
             # Diagnose only the final delivered payload, never hidden/stale/unselected
             # records. This is lexical coverage, not evidence that a topic is absent.
             def delivered_text(value):
@@ -2489,10 +2493,12 @@ def main(argv=None, return_result=False):
             if refreshed.get('status') == 'degraded':
                 # The public stdout contract remains a JSON list. Warning sources are vault
                 # paths a person reads, so they keep their real characters (#587).
-                warnings = refreshed.get('warnings', [])
-                print_error({'source_sync': {'status': 'degraded', 'warnings': warnings[:20],
-                                             'warning_count': len(warnings), 'truncated': len(warnings) > 20}},
-                            sys.stderr, embedded=return_result)
+                warnings, withheld = engine.agent_sync_warnings(refreshed.get('warnings', []))
+                report = {'status': 'degraded', 'warnings': warnings[:20],
+                          'warning_count': len(warnings), 'truncated': len(warnings) > 20}
+                if withheld:
+                    report['privacy_frontmatter_count'] = withheld
+                print_error({'source_sync': report}, sys.stderr, embedded=return_result)
         elif args.command == "learn":
             _ensure_scripts_path()
             from beyin_v3_learning import stage_candidate, list_candidates, resolve_candidates

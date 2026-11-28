@@ -23,7 +23,7 @@ if _MODULE_DIR not in sys.path:
 
 from beyin_v3 import (HARNESSES, MAX_RECEIPT_LINKS, RECEIPT_CLIENT_NAME, RECEIPT_CLIENTS, REJECTED_AT, RETIRED_STATUSES, VALID_VISIBILITIES, MemoryStore, ReceiptConflict, RevisionConflict, _fold_privacy_token, _json,
                       _receipt_lf, _receipt_same_summary,
-                      _path_redirected, _plain_link, _rejected_inference, _status_word, normalize_privacy_metadata, rejected_dependents, resolve_supersedes)
+                      _path_redirected, _plain_link, _rejected_inference, _status_word, agent_sync_warnings, normalize_privacy_metadata, rejected_dependents, resolve_supersedes)
 from beyin_v3_index import applied_keys, dir_key, exclusions as index_exclusions, prune as prune_excluded
 from beyin_v3_hygiene import sensitive_excluded, sensitive_source
 from beyin_v3_projections import (is_receipt_view_source, is_receipt_view_conflict, project_receipts,
@@ -630,13 +630,15 @@ class SyncEngine:
     @staticmethod
     def _write_diagnostics(output, result):
         if result.get('status') in ('degraded', 'conflict'):
-            warnings = result.get('warnings', [])
+            warnings, withheld = agent_sync_warnings(result.get('warnings', []))
             conflicts = result.get('conflicts', [])
             output['source_sync'] = {'status': result['status'], 'warnings': warnings[:20],
                                      'warning_count': len(warnings), 'truncated': len(warnings) > 20}
             if conflicts:
                 output['source_sync'].update(conflicts=conflicts[:20], conflict_count=len(conflicts),
                                              truncated=len(warnings) > 20 or len(conflicts) > 20)
+            if withheld:
+                output['source_sync']['privacy_frontmatter_count'] = withheld
         return output
 
     @staticmethod
@@ -1596,11 +1598,14 @@ class SyncEngine:
             if record.get('source') != source or record.get('source_sha256') != _hash(intended) or path.read_bytes() != intended.encode('utf-8'):
                 raise RevisionConflict('created note source readback mismatch')
             self._record_redactions(redacted)
+            warnings, withheld = agent_sync_warnings(result['warnings'])
             created_details = {'status': 'succeeded', 'source': source, 'sha256': _hash(intended),
                                'redacted': redacted, 'secrets_redacted': redacted,
-                               'warnings': result['warnings'], 'conflicts': result['conflicts'],
-                               'source_sync': {'status': result['status'], 'warnings': result['warnings'],
+                               'warnings': warnings, 'conflicts': result['conflicts'],
+                               'source_sync': {'status': result['status'], 'warnings': warnings,
                                                'conflicts': result['conflicts']}}
+            if withheld:
+                created_details['source_sync']['privacy_frontmatter_count'] = withheld
             if idempotency_file:
                 _seal_idempotency(idempotency_file, journal, fingerprint, created_details)
             if refs:
@@ -1672,10 +1677,12 @@ class SyncEngine:
         if any(record.get(key) != value for key, value in metadata.items()) or record['source_sha256'] != _hash(intended) or path.read_bytes() != intended.encode('utf-8'):
             raise RevisionConflict('created task metadata or source readback mismatch')
         self._record_redactions(redacted)
+        warnings, withheld = agent_sync_warnings(result['warnings'])
+        source_sync = {'status': result['status'], 'warnings': warnings, 'conflicts': result['conflicts']}
+        if withheld:
+            source_sync['privacy_frontmatter_count'] = withheld
         return dict(record, redacted=redacted, secrets_redacted=redacted,
-                    warnings=result['warnings'], conflicts=result['conflicts'],
-                    source_sync={'status': result['status'], 'warnings': result['warnings'],
-                                 'conflicts': result['conflicts']})
+                    warnings=warnings, conflicts=result['conflicts'], source_sync=source_sync)
 
     def _links(self, links):
         """External results (a pull request, a published page) as plain http(s) URLs.

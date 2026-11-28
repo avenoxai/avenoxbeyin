@@ -638,5 +638,103 @@ class PrivacyAliasBackgroundAndReplayTest(unittest.TestCase):
         self.assertEqual(mutation._stored_task_fields(engine, {'visibility': 'Private'})['visibility'], 'private')
 
 
+class PrivacyAliasAgentOutputTest(unittest.TestCase):
+    """Only `sync` names a note kept private by a non-standard spelling; every output an agent reads
+    carries the count, as it never names a `visibility: private` note (#963)."""
+
+    TITLES = ('Saglik Raporu', 'Terapi Seansi', 'Banka Sifresi')
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='beyin-privacy-alias-output-')
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name).resolve()
+        self.root, self.vault, self.state = root, root / 'vault', root / 'state'
+        for relative, content in {
+            'notes/Saglik Raporu.md': '---\nprivate: true\n---\nZirkon kan degerleri.\n',
+            'notes/Terapi Seansi.md': '---\ntags: [gizli]\n---\nZirkon seans.\n',
+            'notes/Banka Sifresi.md': '---\nVisibility: private\n---\nZirkon banka.\n',
+            # An unknown visibility value is still refused and named, so every sync is degraded.
+            'notes/broken.md': '---\nvisibility: secret\n---\nZirkon kirik.\n',
+            'notes/open.md': 'Zirkon acik not.\n',
+        }.items():
+            path = self.vault / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding='utf-8', newline='\n')
+
+    def cli(self, *args):
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / 'scripts/beyin_v3.py'), '--vault', str(self.vault), '--state', str(self.state),
+             *args], capture_output=True, text=True, encoding='utf-8', timeout=120, env=inherited_env())
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return proc
+
+    def request(self, name, payload):
+        path = self.root / name
+        path.write_text(json.dumps(payload), encoding='utf-8', newline='\n')
+        return str(path)
+
+    def assert_count_only(self, label, proc, source_sync):
+        for title in self.TITLES:
+            self.assertNotIn(title, proc.stdout + proc.stderr, label)
+        self.assertEqual(source_sync.get('privacy_frontmatter_count'), 3, (label, source_sync))
+        self.assertEqual([w.get('source') for w in source_sync['warnings']], ['notes/broken.md'], label)
+        if 'warning_count' in source_sync:
+            self.assertEqual(source_sync['warning_count'], 1, label)
+
+    def test_only_sync_names_alias_private_notes(self):
+        synced = json.loads(self.cli('sync').stdout)
+        self.assertEqual(synced['status'], 'degraded')
+        self.assertEqual(sorted(w['source'] for w in synced['warnings'] if w.get('kind') == 'privacy_frontmatter'),
+                         ['notes/Banka Sifresi.md', 'notes/Saglik Raporu.md', 'notes/Terapi Seansi.md'])
+
+        proc = self.cli('note-create', '--file', self.request('nc.json', {'source': 'notes/new.md', 'text': 'Zirkon yeni.'}))
+        created = json.loads(proc.stdout)
+        self.assert_count_only('note-create', proc, created['source_sync'])
+        self.assertEqual(created['warnings'], created['source_sync']['warnings'])
+        proc = self.cli('task-create', '--file', self.request('tc.json', {
+            'source': 'tasks/t1.md', 'text': 'Yap.', 'metadata': {'id': 't1', 'status': 'active', 'owner': 'me'}}))
+        created = json.loads(proc.stdout)
+        self.assert_count_only('task-create', proc, created['source_sync'])
+        self.assertEqual(created['warnings'], created['source_sync']['warnings'])
+        proc = self.cli('task-update', '--file', self.request('tu.json', {
+            'id': 't1', 'expected_revision': 1, 'changes': {'status': 'waiting'}}))
+        self.assert_count_only('task-update', proc, json.loads(proc.stdout)['source_sync'])
+        sha = json.loads(self.cli('note-read', 'notes/open.md').stdout)['sha256']
+        proc = self.cli('note-edit', '--file', self.request('ne.json', {
+            'source': 'notes/open.md', 'expected_sha256': sha, 'edits': [{'old': 'acik not', 'new': 'acik not 2'}]}))
+        self.assert_count_only('note-edit', proc, json.loads(proc.stdout)['source_sync'])
+        proc = self.cli('receipt', '--file', self.request('rc.json', {
+            'event_id': 'ev-alias-output-1', 'summary': 'alias output receipt', 'refs': ['notes/open.md']}))
+        self.assert_count_only('receipt', proc, json.loads(proc.stdout)['source_sync'])
+        self.cli('mutation-queue', '--enable')
+        self.cli('mutation-queue', '--enqueue', '--file', self.request('mq.json', {
+            'action': 'note_create', 'source': 'notes/queued.md', 'payload': {'text': 'Zirkon kuyruk.'}}))
+        proc = self.cli('mutation-queue', '--replay')
+        self.assert_count_only('mutation-queue', proc, json.loads(proc.stdout)['source_sync'])
+        for label, args in (('context', ('context', 'tamamen alakasiz sorgu')), ('recap', ('recap', '--days', '7'))):
+            proc = self.cli(*args)
+            self.assert_count_only(label, proc, json.loads(proc.stdout)['source_sync'])
+        proc = self.cli('history', 't1')
+        self.assert_count_only('history', proc, json.loads(proc.stderr)['source_sync'])
+        (self.state / 'hook-health.json').write_text(json.dumps({'at': 1.0, 'worker_pid': 1, 'sync': synced}),
+                                                     encoding='utf-8', newline='\n')
+        proc = self.cli('doctor')
+        self.assert_count_only('doctor', proc, json.loads(proc.stdout)['hook-health.json']['sync'])
+
+    def test_warnings_without_a_privacy_spelling_come_back_as_they_were(self):
+        privacy = {'source': 'notes/a.md', 'kind': 'privacy_frontmatter', 'reason': 'r'}
+        others = [{'source': 'notes/b.md', 'reason': 'invalid visibility'},
+                  {'source': 'notes/c.md', 'kind': 'receipt_view', 'reason': 'v'},
+                  {'source': 'notes/d.md', 'kind': 'missing_receipt_source', 'reason': 'm'}, 'plain text']
+        for size in range(len(others) + 1):
+            for start in range(len(others)):
+                listed = (others[start:] + others[:start])[:size]
+                self.assertEqual(beyin_v3.agent_sync_warnings(listed), (listed, 0))
+                for at in range(size + 1):
+                    mixed = listed[:at] + [privacy, dict(privacy, source='notes/e.md')] + listed[at:]
+                    self.assertEqual(beyin_v3.agent_sync_warnings(mixed), (listed, 2))
+        self.assertEqual(beyin_v3.agent_sync_warnings(None), ([], 0))
+
+
 if __name__ == '__main__':
     unittest.main()
