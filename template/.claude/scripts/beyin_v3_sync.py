@@ -33,7 +33,7 @@ from beyin_v3_projections import (is_receipt_view_source, is_receipt_view_confli
                                   RECEIPT_VIEW_SOURCES_ROW)
 from beyin_v3_preferences import read as read_preferences
 from beyin_v3_secrets import redact as redact_secrets, record as record_redactions
-from beyin_v3_notes import (NoteConflict, locked as note_locked,
+from beyin_v3_notes import (NoteConflict, locked as note_locked, _unlinked,
                             validate_source_name, refuse_unicode_alias,
                             read as note_read_source, apply as note_apply_edits,
                             decode_utf8, require_utf8_text, require_utf8_values)
@@ -310,6 +310,19 @@ def _receipt_harness(event):
 
 EXCLUDED_FILES = {'agents.md', 'claude.md', 'gemini.md', 'skill.md', 'hooks.md', 'config.md', 'settings.md', 'instructions.md', 'codex.md', 'setup.md', 'install.md'}
 EXCLUDED_DIRS = {'node_modules', 'receipts', '__pycache__'}
+NOTE_CREATE_RESERVED_ROOTS = frozenset({'tasks', 'receipts', 'daily', 'raw'})
+WORKSPACE_CONFIG_MAX_BYTES = 1024 * 1024
+
+
+def _is_regular_local_file(path, max_bytes=WORKSPACE_CONFIG_MAX_BYTES):
+    """True when path is an existing regular vault-local file (no symlink/junction) within size bound."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    return (stat.S_ISREG(info.st_mode) and
+            not getattr(info, 'st_reparse_tag', 0) and
+            info.st_size <= max_bytes)
 # User-chosen directory names (<state>/index.json) are pruned on top of these; see beyin_v3_index.
 # Nothing else is skipped by name: "vendor" or "external" is also an ordinary notes folder.
 COMPLETION_FIELDS = {'completion_contract', 'completion_criterion', 'evidence_refs'}
@@ -1479,6 +1492,95 @@ class SyncEngine:
             self._homepage_busy = previous
         return result
 
+    def _check_note_create_path(self, source):
+        """Reject any symlink or Windows junction along the unresolved source, then resolve within vault."""
+        if not isinstance(source, str) or Path(source).is_absolute() or '..' in Path(source).parts:
+            raise ValueError('relative source required')
+        cursor = self.root / source
+        while cursor != self.root and cursor != cursor.parent:
+            _unlinked(cursor)
+            cursor = cursor.parent
+        return self._path(source)
+
+    def _workspace_allows_note_create(self, source, parts):
+        """True when a registered workspace or valid project scope owns source's folder (#958).
+
+        Fails closed on symlinks, junctions, oversized files, or malformed/invalid config.
+        """
+        from beyin_v3_projects import PROJECT_SCOPES_FILE, _scope_key, _scope_path, check_project_scopes
+        from beyin_v3_workspaces import WORKSPACES_FILE, _read_registry
+
+        parent_key = _scope_key('/'.join(parts[:-1]))
+        source_key = _scope_key(source)
+
+        ws_path = self.root / WORKSPACES_FILE
+        if _is_regular_local_file(ws_path):
+            try:
+                registry, present = _read_registry(self.root)
+            except (ValueError, OSError):
+                registry, present = None, False
+            if present and isinstance(registry, dict):
+                for entry in registry.get('workspaces', {}).values():
+                    if not isinstance(entry, dict):
+                        continue
+                    rules_file = entry.get('rules_file')
+                    if isinstance(rules_file, str) and rules_file.strip():
+                        try:
+                            if source_key == _scope_key(_scope_path(rules_file)):
+                                return True
+                        except ValueError:
+                            pass
+                    for root_dir in entry.get('note_roots', ()):
+                        try:
+                            folder_key = _scope_key(_scope_path(root_dir))
+                        except ValueError:
+                            continue
+                        if parent_key == folder_key or parent_key.startswith(folder_key + '/'):
+                            return True
+
+        scopes_path = self.root / PROJECT_SCOPES_FILE
+        if _is_regular_local_file(scopes_path):
+            try:
+                report = check_project_scopes(self.root)
+            except (ValueError, OSError):
+                report = None
+            if isinstance(report, dict):
+                for folder in report.get('folders', ()):
+                    try:
+                        folder_key = _scope_key(_scope_path(folder))
+                    except ValueError:
+                        continue
+                    if parent_key == folder_key or parent_key.startswith(folder_key + '/'):
+                        return True
+        return False
+
+    def _check_note_create_source(self, source):
+        """Allow notes/, knowledge/, <project_parent>/<project>/..., or registered workspace folders (#958)."""
+        parts = source.split('/')
+        folded = [part.casefold() for part in parts]
+        if not source.endswith('.md'):
+            raise ValueError('new semantic notes belong under notes/, knowledge/, or a project folder and must end with .md')
+        if folded[0] in ('tasks', 'receipts') or folded[:2] in (['daily', 'v3'], ['knowledge', 'v3']):
+            raise ValueError(
+                'new semantic notes belong under notes/, knowledge/, or a project folder; '
+                'managed paths under tasks/, receipts/, daily/v3/, and knowledge/v3/ require their dedicated V3 command'
+            )
+        if (folded[-1] in EXCLUDED_FILES or folded[-1].startswith('setup-') or
+                any(part in EXCLUDED_DIRS for part in folded[:-1])):
+            raise ValueError('configuration or excluded source rejected')
+        if len(parts) >= 2 and folded[0] not in NOTE_CREATE_RESERVED_ROOTS:
+            if parts[0] in ('notes', 'knowledge'):
+                return
+            from beyin_v3_projects import candidate_project_folders
+            if len(parts) >= 3 and parts[0] in candidate_project_folders(self.root):
+                return
+            if self._workspace_allows_note_create(source, parts):
+                return
+        raise ValueError(
+            'new semantic notes belong under notes/, knowledge/, or a project folder (<projects>/<project>/...); '
+            'for other Markdown files use note-edit with expected_sha256: null and content'
+        )
+
     def note_create(self, source, text, metadata=None, idempotency_key=None, evidence_refs=None):
         if _MODULE_DIR not in sys.path:
             sys.path.insert(0, _MODULE_DIR)
@@ -1492,9 +1594,9 @@ class SyncEngine:
         if text.lstrip().startswith('---'):
             raise ValueError('text must be body only; put frontmatter fields in metadata')
         validate_source_name(source)
-        if not source.startswith(('notes/', 'knowledge/')) or not source.endswith('.md'):
-            raise ValueError('new semantic notes belong under notes/ or knowledge/')
         self._refuse_excluded(source)
+        self._check_note_create_source(source)
+        self._check_note_create_path(source)
         metadata = dict(metadata or {})
         from beyin_v3_notes import check_idempotency_key, evidence_refs as note_evidence_refs
         # The key and refs may also arrive in metadata; the key never reaches frontmatter.
@@ -1541,8 +1643,9 @@ class SyncEngine:
         # clients use different state roots. Acquire it before the DB transaction.
         with note_locked(self) as folder:
             self._refuse_excluded(source)
+            self._check_note_create_source(source)
             refuse_unicode_alias(self.root, source)
-            path = self._path(source)
+            path = self._check_note_create_path(source)
             idempotency_file = None
             journal = {'status': 'succeeded', 'source': source, 'sha256': _hash(intended)}
             if idempotency_key is not None:
