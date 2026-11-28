@@ -1881,6 +1881,11 @@ def main(argv=None, return_result=False):
                 result['companion_hygiene'] = companion.hygiene(vault, state, include_projects=True)
             except Exception as exc:  # a size report must never hide the rest of doctor
                 result['companion_hygiene'] = {'status': 'unavailable', 'error': type(exc).__name__}
+            try:  # information only (#964): missing expected companion files (Core.md/Soul.md etc.)
+                import beyin_v3_companion as companion
+                result['companion_sources'] = companion.sources_health(vault, state)
+            except Exception as exc:  # never hides the rest of doctor
+                result['companion_sources'] = {'status': 'unavailable', 'error': type(exc).__name__, 'missing': []}
             # Information only (#374): how much of Kurallar.md the Claude Code opening shows whole.
             # The hook's own render on a read-only store; never raises the doctor status.
             try:
@@ -1946,10 +1951,74 @@ def main(argv=None, return_result=False):
             result['skill_conflicts'] = health.get('sync', {}).get('skill_conflicts', [])
             # Entries beside the skills that this vault never owned. Information only.
             result['skill_unmanaged'] = health.get('sync', {}).get('skill_unmanaged', [])
-            from beyin_v3_projections import is_receipt_view_conflict
+            from beyin_v3_projections import is_receipt_view_conflict, is_actionable_sync_warning, LAST_SYNC_WARNINGS_ROW, UNREADABLE_SOURCES_ROW
             view_sync = health.get('sync', {})
             result['receipt_view_conflicts'] = [c for c in view_sync.get('conflicts', []) + view_sync.get('warnings', [])
                                                 if is_receipt_view_conflict(c)]
+            hook_sync = health.get('sync') if isinstance(health, dict) and isinstance(health.get('sync'), dict) else None
+            hook_at = 0.0
+            if hook_sync is not None:
+                try:
+                    hook_at = float(health.get('at') or 0.0)
+                except (TypeError, ValueError):
+                    hook_at = 0.0
+                try:
+                    hook_health_path = state / 'hook-health.json'
+                    if hook_health_path.is_file() and not hook_health_path.is_symlink():
+                        hook_at = max(hook_at, hook_health_path.stat().st_mtime)
+                except OSError:
+                    pass
+            db_sync = None
+            db_unreadable_fallback = []
+            if store is not None:
+                try:
+                    with store._connect() as db:
+                        if db.execute("SELECT 1 FROM sqlite_master WHERE name = 'metadata' COLLATE NOCASE").fetchone():
+                            row = db.execute('SELECT value FROM metadata WHERE key = ?', (LAST_SYNC_WARNINGS_ROW,)).fetchone()
+                            if row and row[0]:
+                                parsed = json.loads(row[0])
+                                if isinstance(parsed, dict):
+                                    db_sync = parsed
+                            else:
+                                row2 = db.execute('SELECT value FROM metadata WHERE key = ?', (UNREADABLE_SOURCES_ROW,)).fetchone()
+                                if row2 and row2[0]:
+                                    names = json.loads(row2[0])
+                                    if isinstance(names, list):
+                                        db_unreadable_fallback = [
+                                            {'source': name, 'reason': 'unreadable or invalid source'}
+                                            for name in names if isinstance(name, str)
+                                        ]
+                except Exception:
+                    pass
+            db_at = 0.0
+            if isinstance(db_sync, dict):
+                try:
+                    db_at = float(db_sync.get('at') or 0.0)
+                except (TypeError, ValueError):
+                    db_at = 0.0
+            use_db_sync = isinstance(db_sync, dict) and (hook_sync is None or db_at > hook_at)
+            if use_db_sync:
+                raw_sync_warnings = [w for w in (db_sync.get('warnings') or []) if is_actionable_sync_warning(w)]
+                raw_count = db_sync.get('count')
+                sync_warning_count = max(raw_count if isinstance(raw_count, int) and not isinstance(raw_count, bool) else 0, len(raw_sync_warnings))
+                effective_sync_status = db_sync.get('status')
+            elif hook_sync is not None:
+                raw_sync_warnings = [w for w in (hook_sync.get('warnings') or []) if is_actionable_sync_warning(w)]
+                sync_warning_count = len(raw_sync_warnings)
+                effective_sync_status = hook_sync.get('status')
+            elif db_unreadable_fallback:
+                raw_sync_warnings = db_unreadable_fallback
+                sync_warning_count = len(raw_sync_warnings)
+                effective_sync_status = 'degraded'
+            else:
+                raw_sync_warnings = []
+                sync_warning_count = 0
+                effective_sync_status = None
+            result['sync_warnings'] = {
+                'count': sync_warning_count,
+                'warnings': [{'source': w.get('source'), 'reason': w.get('reason')} for w in raw_sync_warnings[:20]],
+                'truncated': sync_warning_count > 20,
+            }
             if store is None:
                 result['task_completion'] = {'strict_issue_count': 0, 'strict_issues': [], 'legacy_done_count': 0,
                                              'legacy_done': [], 'truncated': False}
@@ -2072,7 +2141,7 @@ def main(argv=None, return_result=False):
                 result['devices'] = devices_mod.doctor(state)
             except Exception as exc:
                 result['devices'] = {'status': 'unavailable', 'error': type(exc).__name__}
-            result['status'] = ('needs_attention' if health.get('sync', {}).get('status') in ('conflict', 'degraded') or result['hook_paths'].get('status') == 'stale' or result['skill_conflicts'] or result.get('instruction_conflicts') or result['hook-error.json'] or result['task_completion']['strict_issue_count'] or result['task_completion'].get('error') or result['validity']['ignored_rejection_count'] or result['validity'].get('error') or result.get('project_scopes', {}).get('status') in ('error', 'warning') else 'pending' if result['pending_events'] else 'observed_metadata' if result['acknowledged_events'] else 'never_seen')
+            result['status'] = ('needs_attention' if effective_sync_status in ('conflict', 'degraded') or sync_warning_count > 0 or result['hook_paths'].get('status') == 'stale' or result['skill_conflicts'] or result.get('instruction_conflicts') or result['hook-error.json'] or result['task_completion']['strict_issue_count'] or result['task_completion'].get('error') or result['validity']['ignored_rejection_count'] or result['validity'].get('error') or result.get('project_scopes', {}).get('status') in ('error', 'warning') else 'pending' if result['pending_events'] else 'observed_metadata' if result['acknowledged_events'] else 'never_seen')
             if result['updates'].get('status') == 'recovery_required':
                 result['status'] = 'needs_attention'
             # Information only: a leftover global OMP hook copy predates the vault-owned plan
