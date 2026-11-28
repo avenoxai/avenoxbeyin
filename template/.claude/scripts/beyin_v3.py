@@ -1035,7 +1035,9 @@ def query_term_coverage(query, records):
 
     The explicit context command's unmatched_terms rule (#768) for automatic context (#909):
     a word matches by its stem in the records' text, title, fact values and aliases as given
-    (a clipped text counts only as far as it was clipped). Question wrappers, stopwords,
+    (a clipped text counts only as far as it was clipped). The record's own project and its
+    source's file name also count, without folders or extension (#930): retrieval matches the
+    file name too, and both stand in the delivered record. Question wrappers, stopwords,
     pronouns and auxiliaries, single letters, short numbers and words over 64 characters (a
     pasted hex or base64 blob) are not terms, and one stem counts once. A hyphenated name (claude-mem, e-posta) is one term, as retrieval reads it
     (#430): a record holds it by its joined spelling or by every part that is a term itself.

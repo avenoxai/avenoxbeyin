@@ -186,8 +186,12 @@ class HookFieldNeverCostsARecordTest(HookVault):
         f'ops/orbit-runbook-{n}.md': f'Orbit deploy runbook {n}. ' + ' '.join(
             ('traffic', 'canary', 'replica', 'gateway', 'quota', 'window', 'shard', 'tenant')[(n * 3 + i * i) % 8]
             for i in range(700)) + '.'
-        for n in range(4)}, **{'notes/hiz.md': 'Orbit API hız sınırı dakikada 120 istek; aşılırsa 429 döner.'})
+        for n in range(4)}, **{'notes/hiz.md': 'Orbit API hız sınırı dakikada 120 istek; aşılırsa 429 döner.',
+                                # Held by its project field and file name only (#930), not by its body.
+                                'projects/atlas/failover.md': '---\nproject: atlas\n---\nPromote the standby '
+                                                              'replica within five minutes during a drill.'})
     PROMPTS = {
+        'project and file name': 'atlas failover drill zircon',
         'short': 'Orbit rate limit GraphQL schema',
         'giant word': 'why does this calldata hit the Orbit rate limit? 0x' + BLOB,
         'eight long words': 'Orbit rate limit ' + ' '.join(f'z{k}' + BLOB[k * 600:(k + 1) * 600 - 2] for k in range(8)),
@@ -245,6 +249,11 @@ class HookFieldNeverCostsARecordTest(HookVault):
                 body = envelope(self.invoke('why does this calldata hit the Orbit rate limit? 0x' + BLOB[:size]))
                 self.assertEqual([r['source'] for r in body['records']], ['projects/orbit/decisions.md'])
                 self.assertEqual(body['unmatched_terms'], ['calldata', 'hit'])
+
+    def test_project_and_file_name_words_are_not_listed(self):
+        body = envelope(self.invoke(self.PROMPTS['project and file name']))
+        self.assertEqual([r['source'] for r in body['records']], ['projects/atlas/failover.md'])
+        self.assertEqual(body['unmatched_terms'], ['zircon'])
 
     def test_eight_long_words_keep_the_record(self):
         body = envelope(self.invoke(self.PROMPTS['eight long words']))
