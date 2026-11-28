@@ -276,6 +276,8 @@ def doctor_attention_count(result):
 
     Informational checks (unused clients, skipped Git check, backup advisory,
     knowledge freshness counts, receipt coverage, boundary hints) do not count.
+    Every counted item prints its own line in the doctor --human report; a check
+    that prints nothing (an 'unavailable' optional report) is not counted.
     """
     if not isinstance(result, dict):
         return 0
@@ -321,7 +323,7 @@ def doctor_attention_count(result):
     if val.get('ignored_rejection_count') or val.get('error'):
         count += 1
     scopes = result.get('project_scopes') if isinstance(result.get('project_scopes'), dict) else {}
-    if scopes.get('status') in ('error', 'warning', 'unavailable'):
+    if scopes.get('status') in ('error', 'warning'):
         count += 1
     if isinstance(result.get('updates'), dict) and result['updates'].get('status') == 'recovery_required':
         count += 1
@@ -341,22 +343,22 @@ def doctor_attention_count(result):
     if supersedes.get('dead_count'):
         count += 1
     parallel = result.get('parallel_sessions') if isinstance(result.get('parallel_sessions'), dict) else {}
-    if parallel.get('valid') is False or parallel.get('status') == 'unavailable':
+    if parallel.get('valid') is False:
         count += 1
     dedupe = result.get('context_dedupe') if isinstance(result.get('context_dedupe'), dict) else {}
-    if dedupe.get('valid') is False or dedupe.get('status') == 'unavailable':
+    if dedupe.get('valid') is False:
         count += 1
     queue = result.get('mutation_queue') if isinstance(result.get('mutation_queue'), dict) else {}
-    if queue.get('valid') is False or queue.get('status') in ('invalid', 'unavailable'):
+    if queue.get('valid') is False or (queue.get('status') == 'invalid' and
+                                       (queue.get('enabled') or queue.get('queue_exists'))):
         count += 1
     devices = result.get('devices') if isinstance(result.get('devices'), dict) else {}
-    if devices.get('valid') is False or devices.get('status') == 'unavailable':
+    if devices.get('valid') is False:
         count += 1
     index_scope = result.get('index_exclusions') if isinstance(result.get('index_exclusions'), dict) else {}
     if index_scope.get('status') == 'unavailable' or index_scope.get('error'):
         count += 1
-    state_loc = result.get('state_location') if isinstance(result.get('state_location'), dict) else {}
-    if state_loc.get('warnings'):
+    if state_location_lines(result.get('state_location')):
         count += 1
     rle = result.get('receipt_line_endings') if isinstance(result.get('receipt_line_endings'), dict) else {}
     if rle.get('status') == 'warning':

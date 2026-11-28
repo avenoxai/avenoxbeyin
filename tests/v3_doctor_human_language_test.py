@@ -75,6 +75,72 @@ FORBIDDEN_JARGON = (
 )
 
 
+
+# One fault per row: (label, report overrides, expected summary count). A counted row must
+# print its own line; a check that prints nothing (an 'unavailable' optional report) counts 0.
+ATTENTION_GRID = (
+    ('sync degraded', {'hook-health.json': {'sync': {'status': 'degraded'}}}, 1),
+    ('sync conflict', {'hook-health.json': {'sync': {'status': 'conflict'}}}, 1),
+    ('hook error', {'hook-error.json': {'at': 1.0, 'error': 'OSError'}}, 1),
+    ('pending events', {'status': 'pending', 'pending_events': 2}, 1),
+    ('stale hook paths', {'hook_paths': {'status': 'stale', 'stale': [{'file': '.codex/hooks.json', 'reason': 'unreadable'}]}}, 1),
+    ('stale bridges', {'global_bridge_paths': {'status': 'stale', 'stale': [{'harness': 'codex'}]}}, 1),
+    ('stale omp copy', {'omp_global_hook': {'path': '/home/u/.omp/agent/hooks/pre/beyin-v3.ts', 'stale': True}}, 1),
+    ('skill conflict', {'skill_conflicts': ['beyin']}, 1),
+    ('instruction conflict', {'instruction_conflicts': [{'file': 'AGENTS.md', 'snippet': 'derle'}]}, 1),
+    ('receipt view conflict', {'receipt_view_conflicts': [{'source': 'daily/v3/2026-11-01.md'}]}, 1),
+    ('exclusions error', {'exclusions_error': 'not valid JSON'}, 1),
+    ('companion over limit', {'companion_hygiene': {'status': 'over_limit', 'over_limit': ['Threads.md'],
+                                                    'files': {'Threads.md': {'chars': 9000, 'limit': 8000}}}}, 1),
+    ('companion unavailable', {'companion_hygiene': {'status': 'unavailable', 'error': 'OSError'}}, 1),
+    ('rules clipped', {'companion_rules_opening': {'status': 'clipped', 'chars': 9000, 'budget': 5000, 'share': 2400}}, 1),
+    ('rules stale', {'companion_rules_opening': {'status': 'stale'}}, 1),
+    ('project rules clipped', {'companion_rules_opening': {'status': 'ok', 'budget': 5000, 'project_rules': [
+        {'status': 'clipped', 'source': 'projects/a/Kurallar.md', 'chars': 4000, 'share': 2000}]}}, 1),
+    ('project rules stale', {'companion_rules_opening': {'status': 'ok', 'project_rules': [
+        {'status': 'stale', 'source': 'projects/a/Kurallar.md'}]}}, 1),
+    ('task completion', {'task_completion': {'strict_issue_count': 2, 'strict_issues': []}}, 1),
+    ('task completion error', {'task_completion': {'strict_issue_count': 0, 'error': 'OperationalError: x'}}, 1),
+    ('validity', {'validity': {'ignored_rejection_count': 1, 'ignored_rejections': []}}, 1),
+    ('validity error', {'validity': {'ignored_rejection_count': 0, 'error': 'OperationalError: x'}}, 1),
+    ('project scopes error', {'project_scopes': {'status': 'error', 'error': 'invalid JSON: JSONDecodeError'}}, 1),
+    ('project scopes warning', {'project_scopes': {'status': 'warning', 'missing_folders': ['Gone']}}, 1),
+    ('project scopes unavailable', {'project_scopes': {'status': 'unavailable', 'error': 'OSError'}}, 0),
+    ('recovery required', {'updates': {'status': 'recovery_required'}}, 1),
+    ('context fill invalid', {'context_fill': {'status': 'invalid', 'error': 'bad value'}}, 1),
+    ('jev config invalid', {'jev': {'mode': 'off', 'configured': True, 'config_valid': False}}, 1),
+    ('knowledge freshness unavailable', {'knowledge_freshness': {'status': 'unavailable', 'error': 'OperationalError'}}, 1),
+    ('references unavailable', {'instruction_references': {'status': 'unavailable', 'error': 'PermissionError'}}, 1),
+    ('dead references', {'instruction_references': {'dead_count': 1, 'dead': [{'file': 'AGENTS.md', 'line': 1, 'target': 'Yok'}]}}, 1),
+    ('dead supersedes', {'supersedes': {'dead_count': 1, 'dead': [
+        {'source': 'a.md', 'value': 'b', 'reason': 'unresolved supersedes reference'}]}}, 1),
+    ('parallel invalid', {'parallel_sessions': {'valid': False}}, 1),
+    ('parallel unavailable', {'parallel_sessions': {'status': 'unavailable', 'error': 'OSError'}}, 0),
+    ('dedupe invalid', {'context_dedupe': {'valid': False}}, 1),
+    ('dedupe unavailable', {'context_dedupe': {'status': 'unavailable', 'error': 'OSError'}}, 0),
+    ('queue settings invalid', {'mutation_queue': {'valid': False}}, 1),
+    ('queue file unreadable', {'mutation_queue': {'valid': True, 'enabled': True, 'queue_exists': True, 'status': 'invalid'}}, 1),
+    ('queue unavailable', {'mutation_queue': {'status': 'unavailable', 'error': 'OSError'}}, 0),
+    ('devices invalid', {'devices': {'valid': False}}, 1),
+    ('devices unavailable', {'devices': {'status': 'unavailable', 'error': 'OSError'}}, 0),
+    ('index scope unavailable', {'index_exclusions': {'status': 'unavailable', 'error': 'OSError'}}, 1),
+    ('index json invalid', {'index_exclusions': {'status': 'ok', 'excluded_dirs': [], 'error': 'not valid JSON'}}, 1),
+    ('state split', {'state_location': {'warnings': ['state_split: two'], 'sibling_state_roots': ['/a', '/b']}}, 1),
+    ('unknown state warning', {'state_location': {'warnings': ['future_code: later']}}, 0),
+    ('receipt line endings', {'receipt_line_endings': {'status': 'warning'}}, 1),
+    ('tracked machine files', {'tracked_machine_files': {'status': 'warning', 'tracked': ['.beyin-runtime.json']}}, 1),
+    ('git check unavailable', {'tracked_machine_files': {'status': 'unavailable', 'reason': 'git_timeout'}}, 1),
+    # Information only: never counted.
+    ('backup remote', {'backup': {'status': 'remote_configured', 'backup_verified': False}}, 0),
+    ('unmanaged skills', {'skill_unmanaged': ['mine']}, 0),
+    ('note usage', {'note_usage': {'tracked': 3, 'dead_weight_count': 1, 'feedback_totals': {}}}, 0),
+    ('receipt coverage', {'receipt_coverage': {'total': 4, 'covered': 1, 'ratio': 0.25, 'last_7d': {}}}, 0),
+    ('storage compact', {'state_storage': {'compact_suggested': True, 'database_bytes': 9000000, 'free_bytes': 5000000}}, 0),
+    ('features on', {'parallel_sessions': {'enabled': True, 'active': 1}, 'context_dedupe': {'enabled': True, 'sessions': 2},
+                     'mutation_queue': {'enabled': True, 'valid': True}, 'devices': {'enabled': True, 'level': 'icloud'}}, 0),
+)
+
+
 class DoctorHumanLanguageUnitTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -239,6 +305,21 @@ class DoctorHumanLanguageUnitTest(unittest.TestCase):
         bare = {'status': 'needs_attention'}
         text = self.entry.human_result(bare, 'doctor', '3.12.0')
         self.assertEqual(text.splitlines()[0], 'Bakmanız gereken 1 şey var.')
+
+    def test_every_counted_item_prints_its_own_line(self):
+        baseline = self.entry.human_result(healthy_report(), 'doctor', '3.12.0').splitlines()
+        self.assertEqual(baseline[0], 'Her şey yolunda; yapmanız gereken bir şey yok.')
+        for label, overrides, expected in ATTENTION_GRID:
+            with self.subTest(label):
+                report = dict(healthy_report(), **overrides)
+                count = self.entry.doctor_attention_count(report)
+                self.assertEqual(count, expected)
+                lines = self.entry.human_result(report, 'doctor', '3.12.0').splitlines()
+                self.assertEqual(lines[0], 'Her şey yolunda; yapmanız gereken bir şey yok.' if expected == 0
+                                 else f'Bakmanız gereken {expected} şey var.')
+                new = [line for line in lines[1:] if line not in baseline and not line.startswith('Ajanınıza "beyin doktor"')]
+                if expected:
+                    self.assertTrue(new, 'counted but printed nothing: ' + label)
 
     def test_stream_encoding_fallback_handles_utf8_cp1254_cp1252_ascii_and_unknown(self):
         sample = self.entry.human_result(
