@@ -2227,7 +2227,8 @@ def opening_report(store, budget, receipt=''):
     identity = 'Core.md' if 'Core.md' in files else ('Soul.md' if 'Soul.md' in files else None)
     identity_entry = files.get(identity) if identity else None
     if not files:
-        # Nothing was measured (no companion folder or no readable source): not an "ok".
+        # Nothing was measured (no companion folder, more than one candidate folder, or no
+        # readable source): not an "ok".
         status = 'no_sources'
     elif identity_entry and identity_entry.get('clipped') and (
             identity_entry.get('omitted') or identity_entry.get('share', 0) < IDENTITY_WARN_SHARE):

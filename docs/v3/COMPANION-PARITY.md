@@ -232,9 +232,10 @@ Düzeltme dört parçadır:
   dışındaki bir kaynağın açılış payı kullanılabilir bir parçaya yetmiyorsa (50 karakter ve altı)
   yarım başlık yerine tek satırlık `[omitted (<N> chars); read source]` işareti gelir (#916).
   `doctor` her companion dosyasının açılış payını `companion_opening.files` altında (`chars`,
-  `share`, `clipped`, `omitted`) aynı referans açılışla verir; `clipped` dosyanın tamamının
-  gelmediğini söyler (`share` < `chars`; gerekçeleri atılan kurallar ve yalnız özetiyle gelen
-  konular dahil). Etkin kimlik dosyası yalnız bu işaretle geliyorsa ya da 400 karakterin altına
+  `share`, `clipped`, `omitted`) aynı referans açılışla verir. `chars` dosyanın değil açılışa
+  giren bölümün boyudur (örneğin `Journal.md`'de son kayıt, `Threads.md`'de açık konular bölümü);
+  `clipped` bu bölümün tamamının gelmediğini söyler (`share` < `chars`; gerekçeleri atılan
+  kurallar ve yalnız özetiyle gelen konular dahil). Etkin kimlik dosyası yalnız bu işaretle geliyorsa ya da 400 karakterin altına
   kırpılıyorsa `companion_opening.status` `warn` olur ve `--human` çıktısında tek satır görünür.
   Bu durumda kimliğin kendi boyutu belirleyici değildir: açılış payını önce `Kurallar.md`, en
   yeni devir kartı ve konu özeti alır (#528). Bu ölçüm de bilgi amaçlıdır, `doctor` durumunu
