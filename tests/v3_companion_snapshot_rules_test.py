@@ -268,6 +268,28 @@ class SnapshotTest(unittest.TestCase):
                 self.assertEqual((omitted, total), (last - first + 1 - pinned, count))
                 self.assertNotIn('pinned_omitted', report)
 
+    def test_pin_marker_inside_inline_code_or_indented_fence_pins_nothing(self):
+        # Inline backticks and 4-space list-indented fences quote <!-- beyin:pin --> as an
+        # example; they must neither pin the rule nor turn into a real pin when reasons drop.
+        self.assertFalse(companion._is_pinned('- Kritik kurallara `<!-- beyin:pin -->` etiketi koy.\n'))
+        self.assertFalse(companion._is_pinned('- Ornek ``<!-- beyin:pin -->`` kullanimi.\n'))
+        self.assertFalse(companion._is_pinned('- Ornek ```<!-- beyin:pin -->``` tek satir.\n'))
+        self.assertFalse(companion._is_pinned('- Ornek:\n    ~~~\n    <!-- beyin:pin -->\n    ~~~\n'))
+        self.assertFalse(companion._is_pinned('- Ornek:\n    ```md\n    <!-- beyin:pin -->\n    ```\n'))
+        # A real pin outside inline code still pins even when the same rule also quotes the syntax.
+        self.assertTrue(companion._is_pinned('- `<!-- beyin:pin -->` kullanimi <!-- beyin:pin -->\n'))
+        self.assertTrue(companion._is_pinned('- `kod` metni <!-- beyin:pin -->\n'))
+        # Stripping **neden:** must never unquote an inline-code mention into a live pin marker.
+        with_quoted_reason = '- **kural:** Normal kural metni. **neden:** `<!-- beyin:pin -->` ornegini aciklar.\n'
+        stripped_quoted = companion.without_reasons(with_quoted_reason)
+        self.assertFalse(companion._is_pinned(stripped_quoted), stripped_quoted)
+        self.assertNotIn('<!-- beyin:pin -->', stripped_quoted)
+        # A real pin after a reason that also quotes the syntax is preserved.
+        with_both = '- **kural:** Kritik kural. **neden:** `<!-- beyin:pin -->` kurali anlatir. <!-- beyin:pin -->\n'
+        stripped_both = companion.without_reasons(with_both)
+        self.assertTrue(companion._is_pinned(stripped_both), stripped_both)
+        self.assertIn('Kritik kural. <!-- beyin:pin -->\n', stripped_both)
+
     def test_pinned_rule_alone_in_the_cut_names_no_empty_rule_range(self):
         # When the only rule in the cut is a pinned one, only the prose before the first rule
         # was left out; "rules 1-1 (0 of 5)" would misreport it. The plain marker stands where
