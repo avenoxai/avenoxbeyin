@@ -213,6 +213,134 @@ def pinned_overflow(count, source=None):
             'kural payinin en fazla yarisini kullanir. Isareti en onemli birkac maddeye indir.')
 
 
+def unreadable_note_reason(reason):
+    """Map sync warning reasons to plain, actionable Turkish for doctor --human (#964)."""
+    raw = str(reason or '').strip()
+    low = raw.lower()
+    if not raw:
+        return 'okunamadi veya ayristirilamadi'
+    if 'unterminated frontmatter' in low:
+        return "ust bilgi (frontmatter) '---' kapatilmamis; kapanis '---' satiri ekle"
+    if 'not valid utf-8' in low or ('utf-8' in low and any(tok in low for tok in ('codec', 'decode', 'invalid', 'surrogate'))):
+        return 'UTF-8 degil (baska kodlama, or. UTF-16/Windows-1254); notu UTF-8 olarak yeniden kaydet'
+    if 'unsupported yaml metadata' in low:
+        return 'desteklenmeyen veya bozuk YAML ust bilgisi; ust bilgiyi sade YAML veya JSON olarak duzelt'
+    if 'frontmatter must be an object' in low:
+        return 'ust bilgi (frontmatter) gecerli bir nesne degil; alanlari kontrol et'
+    if 'unresolved git conflict markers' in low:
+        return 'cozulmemis git cakisma isaretleri (<<<<<<< / ======= / >>>>>>>) var; birlestirmeyi tamamla'
+    if low.startswith('nested ') and 'top-level frontmatter' in low:
+        parts = raw.split()
+        field = plain_text(parts[1]) if len(parts) > 1 else 'alan'
+        return f"ust bilgide ic ice '{field}' alani gecersiz; ust duzeye tasi"
+    if 'invalid visibility' in low:
+        return 'gecersiz visibility degeri; public, internal veya private kullan'
+    if 'positive revision required' in low:
+        return 'gecersiz revision degeri; 1 veya daha buyuk tam sayi olmali'
+    if 'facts must be an object' in low:
+        return 'gecersiz facts alani; anahtar-deger nesnesi olmali'
+    if low.endswith(' must be a string'):
+        field = plain_text(raw[:-len(' must be a string')].strip())
+        return f"gecersiz '{field}' alani; metin olmali"
+    if 'inference validity must be current or rejected' in low:
+        return 'gecersiz validity degeri; current veya rejected olmali'
+    if 'rejected_reason required for rejected validity' in low:
+        return 'validity: rejected icin rejected_reason alani eksik'
+    if 'rejected_at must be an iso date' in low:
+        return 'gecersiz rejected_at tarihi; YYYY-MM-DD bicimi kullan'
+    if 'supersedes must contain record ids' in low or 'record cannot supersede itself' in low:
+        return 'gecersiz supersedes alani; not kimliklerini kontrol et'
+    if 'workspace_readers must be distinct' in low:
+        return 'gecersiz workspace_readers alani'
+    if 'record id required' in low:
+        return 'gecersiz id alani; bos olmayan metin olmali'
+    if 'task has embedded frontmatter' in low:
+        return "gorev govdesinde ikinci '---' ust bilgisi var; duzelt"
+    if low.startswith('file sync conflict copy'):
+        return 'senkron cakisma kopyasi; asil notla karsilastirip birini sil'
+    if low.startswith('file sync copy of a receipt'):
+        return 'makbuz senkron cakisma kopyasi; asil makbuzla karsilastirip kopyayi sil'
+    if 'symlink source rejected' in low:
+        return 'sembolik baglanti (symlink) indekse alinmaz; gercek dosya kullan'
+    if 'source outside vault' in low or 'source missing or outside vault' in low:
+        return 'dosya vault disinda veya bulunamadi'
+    if 'source changed while scanning' in low:
+        return 'tarama sirasinda degisti; beyin.py sync ile tekrar dene'
+    if 'invalid daily layout' in low:
+        return '.beyin-daily-layout.json gecersiz; dosyayi duzelt'
+    if 'state regression detected' in low:
+        return 'durum zaman damgasi ileride; beyin.py sync --full calistir'
+    if any(tok in low for tok in ('expecting property name', 'expecting value', "expecting ','", "expecting ':'",
+                                  'unterminated string', 'extra data', 'invalid control character')):
+        return 'bozuk JSON ust bilgisi (frontmatter); sozdizimini duzelt'
+    if 'permission denied' in low or 'errno 13' in low or 'access is denied' in low:
+        return 'dosya okunamadi (izin hatasi)'
+    if 'unreadable or invalid source' in low:
+        return 'not okunamadi veya ayristirilamadi; beyin.py sync --json ile ayrintiya bak'
+    fallback = plain_text(raw)
+    return fallback[:117] + '...' if len(fallback) > 120 else fallback
+
+
+def unreadable_notes_lines(result):
+    """Doctor lines for unreadable/warning notes from sync health (#964)."""
+    sw = result.get('sync_warnings')
+    if isinstance(sw, dict) and ('warnings' in sw or 'count' in sw):
+        items = [w for w in (sw.get('warnings') or []) if isinstance(w, dict)]
+        raw_count = sw.get('count')
+        count = max(raw_count if isinstance(raw_count, int) and not isinstance(raw_count, bool) else 0, len(items))
+    else:
+        health = result.get('hook-health.json')
+        sync_data = health.get('sync') if isinstance(health, dict) else None
+        raw = sync_data.get('warnings') if isinstance(sync_data, dict) else None
+        items = [
+            w for w in (raw or [])
+            if isinstance(w, dict)
+            and not str(w.get('reason', '')).startswith('possible file sync copy')
+            and w.get('kind') not in ('missing_receipt_source', 'receipt_view')
+            and w.get('reason') not in ('manual receipt view edit preserved', 'untracked receipt view preserved')
+        ]
+        count = len(items)
+    if not count:
+        return []
+    limit = 5
+    lines = ['Okunamayan veya indekslenmeyen notlar (' + str(count) + '):']
+    for item in items[:limit]:
+        src = plain_text(item.get('source', '?'))
+        if len(src) > 160:
+            src = src[:157] + '...'
+        lines.append('  - ' + src + ': ' + unreadable_note_reason(item.get('reason')))
+    shown = min(limit, len(items))
+    if count > shown:
+        lines.append('  +' + str(count - shown) + ' not daha (ayrinti icin --json).')
+    lines.append('Bu notlar duzeltilene kadar indekste ve baglamda yer almaz. Ayrinti: --json.')
+    return lines
+
+
+def missing_companion_lines(report):
+    """Doctor lines for missing expected companion files (#964)."""
+    if not isinstance(report, dict):
+        return []
+    status = report.get('status')
+    if status == 'ambiguous_directory':
+        return ['Hafiza (companion) klasoru belirsiz: birden fazla companion klasoru var; kullanilacak klasoru netlestir.']
+    if status == 'unavailable':
+        return ['Hafiza (companion) dosyalari denetlenemedi (' + plain_text(report.get('error', 'unknown')) + ').']
+    missing = [name for name in (report.get('missing') or []) if isinstance(name, str) and name.strip()]
+    if not missing:
+        return []
+    identity_missing = bool(report.get('identity_missing'))
+    shown = []
+    for name in missing:
+        if name == 'Core.md' and identity_missing and 'Soul.md' not in missing:
+            shown.append('Core.md (veya Soul.md)')
+        else:
+            shown.append(plain_text(name))
+    directory = report.get('directory')
+    where = ' (' + plain_text(directory) + ')' if directory else ''
+    return ['Eksik hafiza (companion) dosyalari' + where + ': ' + ', '.join(shown) +
+            '. Oturum baslangici bu dosyalari yukleyemez; yedekten geri yukle veya yeniden olustur.']
+
+
 def human_result(result, command, installed_version=None):
     status = result.get('status', '')
     if command == 'scheduled-check' and 'status' in result:
@@ -483,6 +611,8 @@ def human_result(result, command, installed_version=None):
                   'pending': 'Bekleyen isler var.', 'needs_attention': 'Kontrol gerektiren bir sorun var.'}
         lines = ['Beyin ' + (installed_version or 'surumu bilinmiyor'), labels.get(status, 'Saglik kontrolu tamamlandi.'),
                  'Bekleyen is: ' + str(result.get('pending_events', 0))]
+        lines += unreadable_notes_lines(result)
+        lines += missing_companion_lines(result.get('companion_sources'))
         for name, details in result.get('lifecycle', {}).items():
             lines.append(name + ': ' + ('olay goruldu' if details.get('status') == 'observed_metadata' else 'henuz dogrulanmadi'))
         jev = result.get('jev') or {}

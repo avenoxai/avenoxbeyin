@@ -783,6 +783,108 @@ def hygiene(vault, state=None, names=NAMES, target=None, include_projects=False)
     return combined
 
 
+EXPECTED_SOURCES = ('Kurallar.md', 'Last-Session.md', 'Threads.md', 'Journal.md')
+
+
+def _is_vault_regular_file(path, vault_resolved):
+    """True only for an existing regular non-symlink file resolving inside vault_resolved."""
+    try:
+        if path.is_symlink():
+            return False
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode):
+            return False
+        resolved = path.resolve()
+        return resolved.is_relative_to(vault_resolved) and resolved.is_file()
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+def _is_vault_directory(path, vault_resolved):
+    """True only for an existing non-symlink directory resolving inside vault_resolved."""
+    try:
+        if path.is_symlink():
+            return False
+        st = os.lstat(path)
+        if not stat.S_ISDIR(st.st_mode):
+            return False
+        return path.resolve().is_relative_to(vault_resolved)
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+def _bootstrapped_directory(vault_resolved, state):
+    """Read companion-bootstrap.json safely (regular file, <= 64 KiB, vault-relative dir)."""
+    if state is None:
+        return None
+    marker = Path(state) / 'companion-bootstrap.json'
+    try:
+        if marker.is_symlink():
+            return None
+        st = os.lstat(marker)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > 65536:
+            return None
+        data = json.loads(marker.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    rel = data.get('directory') if isinstance(data, dict) else None
+    if not isinstance(rel, str) or not rel.strip():
+        return None
+    rel_path = Path(rel)
+    if rel_path.is_absolute() or '..' in rel_path.parts:
+        return None
+    candidate = vault_resolved / rel_path
+    try:
+        if any(part.is_symlink() for part in (candidate, *candidate.parents)
+               if part != vault_resolved and part.is_relative_to(vault_resolved)):
+            return None
+        if not candidate.resolve().is_relative_to(vault_resolved):
+            return None
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return candidate
+
+
+def sources_health(vault, state=None):
+    """Read-only check for missing expected companion files (#964).
+
+    A bare vault with no companion directory and no bootstrap marker reports
+    status='absent' with no missing files so fresh vaults never false-alarm.
+    Once a companion directory exists (or was bootstrapped), Core.md/Soul.md
+    are treated as alternative identity files, matching context() semantics.
+    """
+    vault_resolved = Path(vault).resolve()
+    target = directory(vault_resolved, strict=True)
+    if target is None:
+        return {'status': 'ambiguous_directory', 'directory': None, 'missing': []}
+    if not _is_vault_directory(target, vault_resolved):
+        boot = _bootstrapped_directory(vault_resolved, state)
+        if boot is None:
+            return {'status': 'absent', 'directory': None, 'missing': []}
+        if not _is_vault_directory(boot, vault_resolved):
+            rel = boot.relative_to(vault_resolved).as_posix()
+            return {
+                'status': 'missing',
+                'directory': rel,
+                'directory_missing': True,
+                'identity_missing': True,
+                'missing': ['Core.md', *EXPECTED_SOURCES],
+            }
+        target = boot
+    rel = target.relative_to(vault_resolved).as_posix()
+    has_identity = any(_is_vault_regular_file(target / name, vault_resolved) for name in ('Core.md', 'Soul.md'))
+    identity_missing = not has_identity
+    missing = (['Core.md'] if identity_missing else []) + [
+        name for name in EXPECTED_SOURCES if not _is_vault_regular_file(target / name, vault_resolved)
+    ]
+    return {
+        'status': 'missing' if missing else 'ok',
+        'directory': rel,
+        'identity_missing': identity_missing,
+        'missing': missing,
+    }
+
+
 def hook_limit_notice(vault, state, payload, harness=None):
     """PostToolUse notice when this write left a companion handoff file over its limit (#707).
 
