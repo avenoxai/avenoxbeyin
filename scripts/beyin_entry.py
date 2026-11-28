@@ -384,8 +384,13 @@ def doctor_attention_count(result):
     count = 0
     health = result.get('hook-health.json') if isinstance(result.get('hook-health.json'), dict) else {}
     sync_info = health.get('sync') if isinstance(health.get('sync'), dict) else {}
-    if sync_info.get('status') in ('conflict', 'degraded', 'error'):
+    # The sync line and the unreadable-notes block (#964) report one fault: the last sync left
+    # sources out. Either one is counted once, whichever sync (hook or CLI) recorded it.
+    sync_fault = sync_info.get('status') in ('conflict', 'degraded', 'error') or bool(unreadable_notes_lines(result))
+    if sync_fault:
         count += 1
+    if missing_companion_lines(result.get('companion_sources')):
+        count += 1  # missing Core.md and the like (#964): SessionStart cannot load them
     if privacy_spelling_count(result):
         count += 1  # the line names no note; `sync` does
     if result.get('hook-error.json'):
@@ -484,8 +489,8 @@ def doctor_attention_count(result):
         count += 1
     elif scheduled.get('status') == 'needs_attention':
         found = scheduled.get('issues') if isinstance(scheduled.get('issues'), dict) else {}
-        live = {'sync_conflict': sync_info.get('status') in ('conflict', 'degraded', 'error'),
-                'sync_degraded': sync_info.get('status') in ('conflict', 'degraded', 'error'),
+        live = {'sync_conflict': sync_fault,
+                'sync_degraded': sync_fault,
                 'hook': bool(result.get('hook-error.json')) or
                         (isinstance(result.get('hook_paths'), dict) and result['hook_paths'].get('status') == 'stale'),
                 'skill_or_instruction': bool(result.get('skill_conflicts') or result.get('instruction_conflicts')),

@@ -665,11 +665,16 @@ def is_receipt_view_conflict(item):
 
 
 def is_actionable_sync_warning(item):
-    """True for sync warnings that excluded or flagged a note/source, excluding info-only and receipt views."""
+    """True for sync warnings that excluded or flagged a note/source, excluding info-only and receipt views.
+
+    A privacy_frontmatter warning (#963) is not one: its note is indexed as private and the sync
+    stays succeeded, and its path must not reach doctor's sync_warnings or the SessionStart count
+    (agent_sync_warnings withholds it everywhere but `sync`)."""
     if not isinstance(item, dict):
         return False
     reason = str(item.get('reason', ''))
-    if reason.startswith('possible file sync copy') or item.get('kind') == 'missing_receipt_source':
+    if (reason.startswith('possible file sync copy') or
+            item.get('kind') in ('missing_receipt_source', 'privacy_frontmatter')):
         return False
     if item.get('kind') == 'receipt_view' or is_receipt_view_conflict(item):
         return False

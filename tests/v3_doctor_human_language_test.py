@@ -174,7 +174,19 @@ ATTENTION_GRID = (
     ('identity clipped at opening', {'companion_opening': {'status': 'warn', 'identity': 'Soul.md', 'budget': 8000,
                                                            'files': {'Soul.md': {'chars': 900, 'share': 120,
                                                                                  'clipped': True, 'omitted': False}}}}, 1),
+    # #988 (#964): the unreadable-notes block and the sync line are one fault, counted once.
+    ('unreadable notes from the CLI sync', {'sync_warnings': {'count': 2, 'truncated': False, 'warnings': [
+        {'source': 'a.md', 'reason': 'unterminated frontmatter'}, {'source': 'b.md', 'reason': 'invalid visibility'}]}}, 1),
+    ('unreadable notes and a degraded hook sync', {'hook-health.json': {'sync': {'status': 'degraded'}},
+                                                   'sync_warnings': {'count': 1, 'truncated': False, 'warnings': [
+                                                       {'source': 'a.md', 'reason': 'unterminated frontmatter'}]}}, 1),
+    ('missing companion file', {'companion_sources': {'status': 'missing', 'missing': ['Core.md'],
+                                                      'identity_missing': True, 'directory': '850-Companion'}}, 1),
+    ('companion folder ambiguous', {'companion_sources': {'status': 'ambiguous_directory', 'missing': []}}, 1),
+    ('companion sources unavailable', {'companion_sources': {'status': 'unavailable', 'error': 'OSError', 'missing': []}}, 1),
     # Information only: never counted.
+    ('no unreadable notes, companion files present', {'sync_warnings': {'count': 0, 'warnings': [], 'truncated': False},
+                                                      'companion_sources': {'status': 'ok', 'missing': []}}, 0),
     ('journal omitted from opening', {'companion_opening': {'status': 'ok', 'budget': 8000, 'files': {
         'Journal.md': {'chars': 900, 'share': 0, 'clipped': True, 'omitted': True}}}}, 0),
     ('journal clipped at opening', {'companion_opening': {'status': 'ok', 'budget': 8000, 'files': {

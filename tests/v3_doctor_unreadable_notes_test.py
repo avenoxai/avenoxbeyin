@@ -196,6 +196,39 @@ class DoctorUnreadableAndCompanionTest(unittest.TestCase):
         self.assertIn('notes/broken.md', human)
         self.assertIn('notes/other-editor.md', human)
 
+    def test_alias_private_note_is_neither_counted_nor_named_beside_a_broken_note(self):
+        # 3.19.0 merges #988 with #977: a note only a non-standard spelling keeps private is
+        # indexed as private (no degraded sync), so it is no actionable warning. The SessionStart
+        # count and doctor's sync_warnings match, and neither names it; doctor --human counts it
+        # on its own line, by number only.
+        notes = self.vault / 'notes'
+        notes.mkdir()
+        (notes / 'Saglik Raporu.md').write_text('---\nprivate: true\n---\nZirkon ALIAS_964_CANARY.\n',
+                                                encoding='utf-8', newline='\n')
+        (notes / 'broken.md').write_text('---\ntitle: Unclosed\nBROKEN_964_CANARY\n', encoding='utf-8', newline='\n')
+        self.drain_hook()
+        health = json.loads((self.state / 'hook-health.json').read_text(encoding='utf-8'))
+        self.assertEqual(health['sync']['status'], 'degraded')
+        self.assertEqual(sorted(w.get('kind', '') for w in health['sync']['warnings']), ['', 'privacy_frontmatter'])
+        ctx = self.invoke_session_start()
+        self.assertIn(attention_notice(1), ctx)
+        self.assertNotIn('Saglik Raporu', ctx)
+        self.drain_hook()  # the SessionStart event itself; no worker runs here (NO_SPAWN)
+        doc_json = self.beyin_json('doctor')
+        self.assertEqual(doc_json['sync_warnings']['count'], 1)
+        self.assertEqual([w['source'] for w in doc_json['sync_warnings']['warnings']], ['notes/broken.md'])
+        self.assertEqual(doc_json['hook-health.json']['sync']['privacy_frontmatter_count'], 1)
+        human = self.beyin('doctor', '--human')
+        self.assertEqual(human.splitlines()[0], 'Bakmanız gereken 2 şey var.')  # the sync fault, the spelling
+        self.assertIn('Okunamayan veya indekslenmeyen notlar (1):', human)
+        self.assertIn('Gizlilik yazımı uyarısı: 1 notun', human)
+        for text in (json.dumps(doc_json), human):
+            self.assertNotIn('Saglik Raporu', text)
+            self.assertNotIn('CANARY', text)
+        # The CLI sync row (newer than hook-health) gives the same count.
+        self.beyin_json('sync')
+        self.assertEqual(self.beyin_json('doctor')['sync_warnings']['count'], 1)
+
     def test_session_start_names_no_crafted_warning_source(self):
         # First produce a valid index so SessionStart renders context.
         self.drain_hook()
