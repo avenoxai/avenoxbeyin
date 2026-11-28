@@ -366,7 +366,8 @@ class StatusReportTest(JevToggleTestCase):
         self.assertIs(absent['key_present'], False)
         self.assertNotIn(KEY, json.dumps(present))
 
-    def test_human_output_is_ascii_for_jev_and_doctor(self):
+    def test_human_output_is_ascii_for_jev_and_plain_turkish_for_doctor(self):
+        import io
         entry = load_module('v3_jev_toggle_entry', ENTRY)
         client.set_mode(self.state, 'on', enable=['auto_context'])
         with patch.dict(os.environ, {}, clear=True):
@@ -383,11 +384,15 @@ class StatusReportTest(JevToggleTestCase):
         with patch.dict(os.environ, {}, clear=True):
             edited = client.status(self.state)
         rendered += [entry.human_result(edited, 'jev'), entry.human_result({'status': 'never_seen', 'jev': edited}, 'doctor')]
-        for text in rendered:
-            self.assertEqual(text, text.encode('ascii', 'replace').decode('ascii'))
+        for index in (0, 3, 5):
+            self.assertEqual(rendered[index], rendered[index].encode('ascii', 'replace').decode('ascii'))
+        ascii_stream = io.TextIOWrapper(io.BytesIO(), encoding='ascii', errors='strict')
+        for index in (1, 2, 4, 6):
+            fallback = entry.safe_stream_text(rendered[index], ascii_stream)
+            self.assertTrue(fallback.isascii())
         self.assertIn('Jev: acik', rendered[0])
-        self.assertIn('otomatik baglam: acik', rendered[1])
-        self.assertIn('Jev: kapali', rendered[2])
+        self.assertIn('otomatik bağlam: açık', rendered[1])
+        self.assertIn('Akıllı bağlam desteği (Jev): kapalı', rendered[2])
         self.assertIn('Jev: golge (yalniz)', rendered[3])
         self.assertIn('Saglayici: laya (yerel, model multilingual)', rendered[3])
         self.assertIn('Anahtar: gerekmez', rendered[3])
@@ -395,12 +400,12 @@ class StatusReportTest(JevToggleTestCase):
         self.assertIn('Laya sunucusuna ulasilamadi', rendered[3])
         self.assertNotIn('TYPESAFE_API_KEY', rendered[3])
         self.assertNotIn('jev.json acik mod istiyor', rendered[3])
-        self.assertIn('Jev: golge (yalniz), saglayici: laya', rendered[4])
+        self.assertIn('Akıllı bağlam desteği (Jev): gölge (yalnız), sağlayıcı: laya', rendered[4])
         # A hand-edited `on` is shown as shadow-only, with the reason, never as acik.
         self.assertIn('Jev: golge (yalniz)', rendered[5])
         self.assertIn('jev.json acik mod istiyor ama Laya yalniz golge modda calisir', rendered[5])
         self.assertNotIn('Jev: acik', rendered[5])
-        self.assertIn('Jev: golge (yalniz), saglayici: laya', rendered[6])
+        self.assertIn('Akıllı bağlam desteği (Jev): gölge (yalnız), sağlayıcı: laya', rendered[6])
 
     def test_jev_status_and_doctor_report_context_mode_notice_when_not_turn(self):
         import beyin_v3_preferences as prefs

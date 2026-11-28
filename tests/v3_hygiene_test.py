@@ -574,8 +574,8 @@ class InboxReportTest(unittest.TestCase):
                               {'folder': 'Gone', 'notes': 0, 'oldest_days': None, 'attention': False,
                                'error': 'not_found'}], 'attention': True}
         text = entry.human_result({'status': 'observed_metadata', 'inbox': report}, 'doctor', '3.8.1')
-        self.assertIn('Gelen kutusunda bekleyen (bilgi, isleme karari senin): 📥 000-Inbox (14 not, en eskisi 12 gun), '
-                      'Gone (okunamadi: not_found).', text)
+        self.assertIn('Gelen kutusunda bekleyen (bilgi, işleme kararı sizin): 📥 000-Inbox (14 not, en eskisi 12 gün), '
+                      'Gone (okunamadı: not_found).', text)
         quiet = entry.human_result({'status': 'observed_metadata', 'inbox': {'enabled': False}}, 'doctor', '3.8.1')
         self.assertNotIn('Gelen kutusu', quiet)
         prefs = {'auto_sync': True, 'interval_minutes': 0, 'context_mode': 'auto', 'context_chars': 6000,

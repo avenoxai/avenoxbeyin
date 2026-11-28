@@ -153,16 +153,18 @@ class ReceiptLineEndingsTest(unittest.TestCase):
         self.assertEqual(warned["receipt_line_endings"]["status"], "warning")
         self.assertEqual(warned["status"], quiet["status"])
 
-    def test_human_doctor_names_the_warning_in_ascii_only_when_it_applies(self):
+    def test_human_doctor_names_the_warning_only_when_it_applies(self):
+        import io
         warning = {"status": "warning", "warning": "line_endings: x"}
         text = ENTRY.human_result({"status": "never_seen", "receipt_line_endings": warning}, "doctor", "3.7.1")
-        lines = [line for line in text.splitlines() if line.startswith("Receipt satir sonu (bilgi): ")]
+        lines = [line for line in text.splitlines() if line.startswith("Oturum kaydı satır sonu (bilgi): ")]
         self.assertEqual(len(lines), 1)
-        lines[0].encode("ascii")
+        ascii_stream = io.TextIOWrapper(io.BytesIO(), encoding="ascii", errors="strict")
+        ENTRY.safe_stream_text(lines[0], ascii_stream).encode("ascii")
         self.assertIn("receipts/** -text", lines[0])
         self.assertIn("https://github.com/avenoxai/avenoxbeyin/blob/main/docs/v3/MULTI-MACHINE.md", lines[0])
         quiet = ENTRY.human_result({"status": "never_seen", "receipt_line_endings": {"status": "ok"}}, "doctor", "3.7.1")
-        self.assertNotIn("Receipt satir sonu", quiet)
+        self.assertNotIn("Oturum kaydı satır sonu", quiet)
 
 
 if __name__ == "__main__":

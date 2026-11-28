@@ -16,7 +16,7 @@ SPEC = importlib.util.spec_from_file_location('supersedes_entry', ROOT / 'script
 entry = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(entry)
 QUERY = 'synthetic calibration amber'
-NOTICE = 'referans su anda hicbir notu emekli etmiyor'
+NOTICE = 'referans şu anda hiçbir notu emekli etmiyor'
 
 
 class HumanSupersedesTest(unittest.TestCase):
@@ -38,11 +38,11 @@ class HumanSupersedesTest(unittest.TestCase):
                 text = entry.human_result(result, command)
                 self.assertIn('25 ' + NOTICE, text)
                 self.assertIn('notes/plan / ?[31m?.md -> plan / ??.md', text)
-                self.assertIn('birden fazla notla eslesiyor', text)
-                self.assertIn('hedef bulunamadi', text)
-                self.assertIn('notun kendisine isaret ediyor', text)
+                self.assertIn('birden fazla notla eşleşiyor', text)
+                self.assertIn('hedef bulunamadı', text)
+                self.assertIn('notun kendisine işaret ediyor', text)
                 self.assertIn('+22 referans daha', text)
-                self.assertIn('acik id veya tam vault yolu', text)
+                self.assertIn('açık id veya tam kasa yolu', text)
                 self.assertIn('--json', text)
                 self.assertNotIn('HIDDEN_FOURTH_SOURCE', text)
                 self.assertNotIn('FOURTH_VALUE', text)
@@ -65,16 +65,16 @@ class HumanSupersedesTest(unittest.TestCase):
         result = self.report([{'source': 'notes/a.md', 'value': 'b',
                               'reason': 'supersedes reference is part of a cycle'}])
         for command in ('sync', 'doctor'):
-            self.assertIn('dongunun parcasi', entry.human_result(result, command))
+            self.assertIn('döngünün parçası', entry.human_result(result, command))
 
     def test_healthy_reports_and_other_commands_stay_quiet(self):
         for result in ({'status': 'succeeded'}, self.report([])):
             for command in ('sync', 'doctor'):
-                self.assertNotIn('Supersedes uyarisi', entry.human_result(result, command))
+                self.assertNotIn('Supersedes uyarısı', entry.human_result(result, command))
         result = self.report([{'source': 'notes/new.md', 'value': 'old',
                               'reason': 'unresolved supersedes reference'}])
         result.update(records=[], abstained=True)
-        self.assertNotIn('Supersedes uyarisi', entry.human_result(result, 'context'))
+        self.assertNotIn('Supersedes uyarısı', entry.human_result(result, 'context'))
 
 
 class StatelessResolutionLimitsTest(unittest.TestCase):
@@ -163,18 +163,18 @@ class InstalledSupersedesDiagnosticsTest(unittest.TestCase):
         for text in (text, sync_text):
             self.assertIn('1 ' + NOTICE, text)
             self.assertIn('notes/plan-v2.md -> plan.md', text)
-            self.assertIn('birden fazla notla eslesiyor', text)
-            self.assertIn('yeniden baglama girebilir', text)
-            self.assertIn('acik id veya tam vault yolu', text)
+            self.assertIn('birden fazla notla eşleşiyor', text)
+            self.assertIn('yeniden bağlama girebilir', text)
+            self.assertIn('açık id veya tam kasa yolu', text)
         # Explicit reads and per-turn hooks do not acquire a repeating warning.
-        self.assertNotIn('Supersedes uyarisi', self.run_cli('context', QUERY, '--human'))
+        self.assertNotIn('Supersedes uyarısı', self.run_cli('context', QUERY, '--human'))
         payload = {'hook_event_name': 'UserPromptSubmit', 'session_id': 'supersedes-diagnostic',
                    'prompt': QUERY, 'cwd': str(self.vault)}
         hook = run_python(self.vault / '.claude/scripts/beyin_v3_hook.py',
                           ['--vault', self.vault, '--state', self.state, '--harness', 'claude'],
                           self.vault, self.env, payload)
         self.assertEqual(hook.returncode, 0, hook.stderr)
-        self.assertNotIn('Supersedes uyarisi', hook.stdout.decode())
+        self.assertNotIn('Supersedes uyarısı', hook.stdout.decode())
         self.assertNotIn('needs attention', hook.stdout.decode())
 
     def test_explicit_id_and_path_restore_retirement_without_removing_the_duplicate(self):
@@ -192,7 +192,7 @@ class InstalledSupersedesDiagnosticsTest(unittest.TestCase):
                 self.assertEqual(self.active(), {'n-new', 'n-other'})
                 self.assertEqual(self.cli('doctor')['supersedes']['dead_count'], 0)
                 for command in ('sync', 'doctor'):
-                    self.assertNotIn('Supersedes uyarisi', self.run_cli(command, '--human'))
+                    self.assertNotIn('Supersedes uyarısı', self.run_cli(command, '--human'))
                 self.assertEqual(snapshot(self.vault), sources)
 
     def test_unresolved_and_self_references_remain_informational(self):
@@ -205,8 +205,8 @@ class InstalledSupersedesDiagnosticsTest(unittest.TestCase):
         for command in ('sync', 'doctor'):
             text = self.run_cli(command, '--human')
             self.assertIn('2 ' + NOTICE, text)
-            self.assertIn('hedef bulunamadi', text)
-            self.assertIn('notun kendisine isaret ediyor', text)
+            self.assertIn('hedef bulunamadı', text)
+            self.assertIn('notun kendisine işaret ediyor', text)
 
 
 if __name__ == '__main__':
