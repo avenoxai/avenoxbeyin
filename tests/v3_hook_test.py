@@ -1093,6 +1093,25 @@ class HookInstallerTest(unittest.TestCase):
         self.assertIn('injectSteps', self.invoke(start, 'antigravity', extra=['--event', 'SessionStart']))
         self.assertEqual(len(list(markers.glob('[0-9a-f]*.json'))), 1)
 
+    def test_antigravity_stop_keeps_stop_decision_on_skip_no_memory_and_errors(self):
+        # Antigravity's Stop contract expects {"decision":"stop"} on every quiet exit,
+        # matching quiet() and the global bridge (#903).
+        self.seed()
+        stop = {'hookEventName': 'Stop', 'conversationId': 'agy-stop-quiet', 'fullyIdle': True}
+        for variable in ('BEYIN_V3_SKIP', 'BEYIN_V3_INTERNAL'):
+            with self.subTest(variable=variable):
+                self.env[variable] = '1'
+                self.assertEqual(self.invoke(stop, 'antigravity', extra=['--event', 'Stop']), {'decision': 'stop'})
+                del self.env[variable]
+        self.assertEqual(self.invoke(dict(stop, no_memory=True), 'antigravity', extra=['--event', 'Stop']),
+                         {'decision': 'stop'})
+        # Invalid JSON on stdin (unexpected error path) still returns {"decision":"stop"} for Stop.
+        bad = subprocess.run([sys.executable, str(HOOK), '--vault', str(self.vault), '--state', str(self.state),
+                              '--harness', 'antigravity', '--event', 'Stop'],
+                             input=b'{invalid json', capture_output=True, env=self.env, timeout=60)
+        self.assertEqual(bad.returncode, 0, bad.stderr.decode(errors='replace'))
+        self.assertEqual(json.loads(bad.stdout), {'decision': 'stop'})
+
     def test_antigravity_marker_keeps_a_keyed_digest_never_the_plain_prompt_hash(self):
         self.seed()
         prompt = 'evet'
