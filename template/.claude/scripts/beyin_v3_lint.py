@@ -242,7 +242,7 @@ def _withheld_path(relative):
 
 def _withheld_metadata(metadata):
     from beyin_v3 import RETIRED_STATUSES, _status_word
-    return (_norm_key(metadata.get("visibility")) == "private"
+    return (metadata.get("visibility", "internal") not in ("public", "internal")
             or _status_word(metadata) in RETIRED_STATUSES)
 
 

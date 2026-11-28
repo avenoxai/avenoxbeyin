@@ -131,7 +131,8 @@ def save_project_context(state, enabled):
 
 def _visible(record):
     """The default internal audience gate shared with retrieval (_eligible)."""
-    return (record.get('visibility', 'internal') in ('public', 'internal') and record.get('trust') != 'untrusted' and
+    from beyin_v3 import effective_visibility
+    return (effective_visibility(record) in ('public', 'internal') and record.get('trust') != 'untrusted' and
             record.get('trusted') is not False and record.get('status') != 'untrusted' and record.get('kind') != 'untrusted')
 
 
