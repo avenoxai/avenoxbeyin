@@ -42,6 +42,216 @@ if _MODULE_DIR not in sys.path:
 # Frontmatter keys other tools write instead of updated_at, in precedence order.
 RECENCY_ALIASES = ("updated", "modified", "last_modified", "date_modified")
 
+VALID_VISIBILITIES = ("public", "internal", "private")
+PRIVACY_ALIAS_KEYS = ("private", "gizli")
+# A `private`/`gizli` flag is honored unless its value is an explicit no (fail closed):
+# `private: 1`, `on`, `y` or `doğru` must not leave the note open. An empty property says nothing.
+# Folded spellings: `hayır`/`HAYIR` fold to "hayir", `yanlış`/`YANLIŞ` to "yanliş".
+PRIVACY_FALSY_VALUES = ("", "false", "no", "n", "off", "0", "hayir", "yok", "yanlis", "yanli\u015f")
+PRIVACY_TAG_KEYS = ("tags", "tag")
+
+
+def _fold_privacy_token(value):
+    """Fold ASCII and Turkish dotted/dotless i for case-insensitive privacy keys/values."""
+    if not isinstance(value, str):
+        return ""
+    stripped = value.strip()
+    if stripped.isascii():
+        return stripped.casefold()
+    text = unicodedata.normalize("NFC", stripped).replace("\u0130", "i").replace("\u0131", "i")
+    return unicodedata.normalize("NFC", text.casefold().replace("i\u0307", "i"))
+
+
+def _is_privacy_truthy(value):
+    """True unless the flag is missing or an explicit no; unknown values fail closed (#963)."""
+    if value is None or value is False:
+        return False
+    if value is True:
+        return True
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return _fold_privacy_token(value) not in PRIVACY_FALSY_VALUES
+    return True
+
+
+def _privacy_tag_match(entries):
+    items_iter = entries.items() if isinstance(entries, dict) else entries
+    for key, value in items_iter:
+        if _fold_privacy_token(key) not in PRIVACY_TAG_KEYS:
+            continue
+        if isinstance(value, str):
+            items = [part.strip() for part in value.split(",")] if "," in value else [value.strip()]
+        elif isinstance(value, list):
+            items = [item.strip() for item in value if isinstance(item, str)]
+        else:
+            continue
+        for item in items:
+            token = _fold_privacy_token(item.lstrip("#"))
+            if token in PRIVACY_ALIAS_KEYS or token.startswith(("private/", "gizli/")):
+                return key, item
+    return None
+
+
+def _privacy_alias_match(entries):
+    items_iter = entries.items() if isinstance(entries, dict) else entries
+    for key, value in items_iter:
+        if _fold_privacy_token(key) in PRIVACY_ALIAS_KEYS and _is_privacy_truthy(value):
+            return key
+    return None
+
+
+def normalize_privacy_metadata(metadata, *, pairs=None):
+    """Normalize case-variant visibility keys/values and fail-safe privacy aliases (#963).
+
+    Returns (normalized_dict, warnings, conflict). Unrelated metadata is left untouched;
+    no 'visibility' key is added unless a visibility key or privacy-intent alias is present.
+    Metadata without such a key or alias, or with one canonical lowercase `visibility`
+    and no alias, is returned as the same object: key order and rendered bytes stay as
+    released. Every other reinterpretation carries a warning, so sync never changes the
+    meaning of a note silently.
+    """
+    if not isinstance(metadata, dict):
+        return metadata, [], False
+    entries = list(pairs) if pairs is not None else list(metadata.items())
+    vis_entries = [(k, v) for k, v in entries if _fold_privacy_token(k) == "visibility"]
+    alias_key = _privacy_alias_match(entries)
+    tag_match = _privacy_tag_match(entries)
+    if not vis_entries and alias_key is None and tag_match is None:
+        return metadata, [], False
+    if (alias_key is None and tag_match is None and len(vis_entries) == 1
+            and vis_entries[0][0] == "visibility" and isinstance(vis_entries[0][1], str)
+            and vis_entries[0][1] in VALID_VISIBILITIES):
+        return metadata, [], False
+
+    warnings = []
+    conflict = False
+    valid_visibility = None
+    has_invalid_visibility = False
+
+    # `final` may legitimately be None (`visibility:` left empty stays invalid), so track presence.
+    final, has_final = None, False
+    if vis_entries:
+        normalized_values = []
+        for _, v in vis_entries:
+            if isinstance(v, str):
+                folded = _fold_privacy_token(v)
+                if folded in VALID_VISIBILITIES:
+                    normalized_values.append(folded)
+                    continue
+            has_invalid_visibility = True
+            normalized_values.append(v)
+
+        if len(vis_entries) > 1:
+            unique_valid = {v for v in normalized_values if isinstance(v, str) and v in VALID_VISIBILITIES}
+            key_names = ", ".join(str(k) for k, _ in vis_entries)
+            if has_invalid_visibility or len(unique_valid) > 1:
+                conflict = True
+                valid_visibility = "private"
+                has_invalid_visibility = False
+                final, has_final = "private", True
+                warnings.append(
+                    f"conflicting visibility keys ({key_names}); treating note as private "
+                    "- keep a single lowercase 'visibility: private' key"
+                )
+            else:
+                valid_visibility = next(iter(unique_valid))
+                final, has_final = valid_visibility, True
+                warnings.append(
+                    f"duplicate visibility keys ({key_names}); using 'visibility: {valid_visibility}' "
+                    "- keep a single lowercase 'visibility' key"
+                )
+        else:
+            raw_key, raw_value = vis_entries[0]
+            if not has_invalid_visibility:
+                valid_visibility = normalized_values[0]
+                final, has_final = valid_visibility, True
+                if raw_key != "visibility" or raw_value != valid_visibility:
+                    # Older releases ignore `Visibility:` and refuse `visibility: Private`;
+                    # a rollback would open or drop the note, so name the canonical form.
+                    warnings.append(
+                        f"non-standard visibility spelling '{raw_key}: {raw_value}'; reading it as "
+                        f"'visibility: {valid_visibility}' - write the lowercase 'visibility: {valid_visibility}'"
+                    )
+            else:
+                final, has_final = raw_value, True
+
+    if not has_invalid_visibility and valid_visibility != "private":
+        if alias_key is not None:
+            final, has_final = "private", True
+            warnings.append(
+                f"privacy frontmatter alias '{alias_key}' is non-standard; treating note as private "
+                "- use 'visibility: private' instead"
+            )
+        elif tag_match is not None:
+            tag_key, tag_val = tag_match
+            final, has_final = "private", True
+            # Only the root of a nested tag: `private/terapi` would say what the hidden note is
+            # about in sync output and hook-health.json, which agents read.
+            root, nested, _ = tag_val.partition("/")
+            warnings.append(
+                f"privacy tag '{root}{'/...' if nested else ''}' in '{tag_key}' is not a visibility gate by itself; "
+                "treating note as private - add 'visibility: private'"
+            )
+
+    # One lowercase `visibility` takes the place of the first visibility key, so a rewrite
+    # (task-update, homepages) keeps the frontmatter order; an alias appends it at the end.
+    result = {}
+    placed = False
+    for key, value in metadata.items():
+        if _fold_privacy_token(key) == "visibility":
+            if not placed and has_final:
+                result["visibility"] = final
+                placed = True
+            continue
+        result[key] = value
+    if not placed and has_final:
+        result["visibility"] = final
+    return result, warnings, conflict
+
+
+def effective_visibility(record):
+    """Visibility gate value for an indexed record; narrows stale pre-fix rows fail-closed.
+
+    Never widens an invalid or non-canonical `visibility` value; only narrows a looser
+    stored `visibility` to `'private'` if a case-variant visibility key or privacy-intent
+    alias is also present on the record.
+    """
+    if not isinstance(record, dict):
+        return None
+    vis = record.get("visibility", "internal")
+    if vis not in VALID_VISIBILITIES:
+        return vis
+    if vis == "private":
+        return "private"
+    for key, value in record.items():
+        if key == "visibility":
+            continue
+        folded = _fold_privacy_token(key)
+        if folded == "visibility":
+            if not isinstance(value, str) or _fold_privacy_token(value) != vis:
+                return "private"
+        elif folded in PRIVACY_ALIAS_KEYS and _is_privacy_truthy(value):
+            return "private"
+    if _privacy_tag_match(record) is not None:
+        return "private"
+    return vis
+
+
+def agent_sync_warnings(warnings):
+    """Sync warnings an agent may read, and how many privacy_frontmatter warnings were held back.
+
+    A privacy_frontmatter warning names a note that only a non-standard spelling keeps private
+    (`private: true`, `tags: [private]`), and in Obsidian its path is the note's title. Only
+    `sync`, where the user fixes the spelling, names it (#963). Every other output that embeds
+    sync warnings (context, recap, history, note/task writes, receipts, doctor) reaches agents
+    and carries the count instead, as it never names a `visibility: private` note. Without such
+    a warning the list is returned as it was, so those outputs stay as released.
+    """
+    warnings = list(warnings or [])
+    kept = [w for w in warnings if not (isinstance(w, dict) and w.get("kind") == "privacy_frontmatter")]
+    return kept, len(warnings) - len(kept)
+
 
 def _in_package_container(pinned: str) -> bool:
     """True when a pinned path runs through an MSIX package container."""
@@ -660,7 +870,7 @@ def workspace_read_grant(record, project, scopes):
     The source folder must also survive the current scope file's blocked boundaries.
     """
     readers = record.get("workspace_readers")
-    if (record.get("visibility") == "private" or not isinstance(project, str)
+    if (effective_visibility(record) == "private" or not isinstance(project, str)
             or not project.strip() or not isinstance(readers, list)
             or any(not isinstance(value, str) or not value.strip() for value in readers)
             or len(readers) != len(set(readers))
@@ -1396,9 +1606,10 @@ class MemoryStore:
         record.setdefault("revision", 1)
         if type(record["revision"]) is not int or record["revision"] < 1:
             raise ValueError("positive revision required")
+        record, _, _ = normalize_privacy_metadata(record)
         record.setdefault("visibility", "internal")
-        if record["visibility"] not in ("public", "internal", "private"):
-            raise ValueError("invalid visibility")
+        if record["visibility"] not in VALID_VISIBILITIES:
+            raise ValueError("invalid visibility (expected public, internal, or private)")
         if "workspace_readers" in record:
             readers = record["workspace_readers"]
             if (not isinstance(readers, list) or any(not isinstance(value, str) or not value.strip()
@@ -1477,7 +1688,7 @@ class MemoryStore:
         # trail. Later clean notes at a retired path have sequences past the cutoff.
         if rows[-1][0] <= quarantined.get(boundary.get("source"), 0):
             return []
-        if (boundary.get("visibility") not in allowed or boundary.get("trust") == "untrusted" or
+        if (effective_visibility(boundary) not in allowed or boundary.get("trust") == "untrusted" or
                 boundary.get("trusted") is False or boundary.get("status") == "untrusted" or
                 boundary.get("kind") == "untrusted"):
             return []
@@ -1491,7 +1702,7 @@ class MemoryStore:
                 return []
         return [{"sequence": row[0], "event_type": row[1], "record_id": row[2], "revision": row[3],
                  "record": dict(record, remote_allowed=False) if boundary.get('remote_allowed') is False else record}
-                for row in rows if (record := json.loads(row[4])).get("visibility") in allowed and
+                for row in rows if effective_visibility(record := json.loads(row[4])) in allowed and
                 row[0] > quarantined.get(record.get("source"), 0) and
                 record.get("trust") != "untrusted" and record.get("trusted") is not False and
                 record.get("status") != "untrusted" and record.get("kind") != "untrusted"]
@@ -1605,7 +1816,7 @@ class MemoryStore:
         for record in records:
             if sensitive_source(record.get("source")):
                 continue
-            if (record.get("visibility") not in allowed or record.get("trust") == "untrusted" or
+            if (effective_visibility(record) not in allowed or record.get("trust") == "untrusted" or
                     record.get("trusted") is False or record.get("status") == "untrusted" or
                     record.get("kind") == "untrusted" or _rejected_inference(record)):
                 continue
@@ -1920,7 +2131,7 @@ class MemoryStore:
             # Old indexes can still hold these notes until the next sync. Never deliver them.
             if sensitive_source(record.get("source")):
                 continue
-            if record["visibility"] not in allowed or record.get("trust") == "untrusted" or record.get("trusted") is False or record.get("status") == "untrusted" or record.get("kind") == "untrusted" or _rejected_inference(record) != rejected_only:
+            if effective_visibility(record) not in allowed or record.get("trust") == "untrusted" or record.get("trusted") is False or record.get("status") == "untrusted" or record.get("kind") == "untrusted" or _rejected_inference(record) != rejected_only:
                 continue
             if project is not None:
                 if scopes is None:

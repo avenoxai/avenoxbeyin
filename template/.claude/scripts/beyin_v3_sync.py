@@ -21,9 +21,9 @@ _MODULE_DIR = str(Path(__file__).resolve().parent)
 if _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
-from beyin_v3 import (HARNESSES, MAX_RECEIPT_LINKS, RECEIPT_CLIENT_NAME, RECEIPT_CLIENTS, REJECTED_AT, RETIRED_STATUSES, MemoryStore, ReceiptConflict, RevisionConflict, _json,
+from beyin_v3 import (HARNESSES, MAX_RECEIPT_LINKS, RECEIPT_CLIENT_NAME, RECEIPT_CLIENTS, REJECTED_AT, RETIRED_STATUSES, VALID_VISIBILITIES, MemoryStore, ReceiptConflict, RevisionConflict, _fold_privacy_token, _json,
                       _receipt_lf, _receipt_same_summary,
-                      _path_redirected, _plain_link, _rejected_inference, _status_word, rejected_dependents, resolve_supersedes)
+                      _path_redirected, _plain_link, _rejected_inference, _status_word, agent_sync_warnings, normalize_privacy_metadata, rejected_dependents, resolve_supersedes)
 from beyin_v3_index import applied_keys, dir_key, exclusions as index_exclusions, prune as prune_excluded
 from beyin_v3_hygiene import sensitive_excluded, sensitive_source
 from beyin_v3_projections import (is_receipt_view_source, is_receipt_view_conflict, project_receipts,
@@ -187,6 +187,9 @@ def _parse_yaml_value(value):
 # Keys that narrow what context may show. Nested under another key they would be
 # silently ignored (only top-level metadata reaches the gates), so such a source
 # stays excluded with a warning, as before nested mappings were read (#179).
+# Exact spelling only: the privacy aliases and case variants of #963 are read at the top
+# level. Nested under another key, `private: true` (a GitHub repo, an account) says nothing
+# about the note, so a nested mapping reads exactly as in 3.18.0.
 GATE_KEYS = ('visibility', 'trust', 'trusted', 'remote_allowed')
 COMMA_LIST_KEYS = ('tags', 'aliases')
 
@@ -201,23 +204,29 @@ def _mapping_value(sub_key, value):
     return parsed
 
 
-def parse(text):
-    """Parse source text, rejecting an unresolved Git merge before ingest."""
+def _parse_frontmatter(text):
+    """Parse source text and normalize privacy frontmatter, returning (metadata, body, warnings, conflict)."""
     if _has_conflict_markers(text):
         raise ValueError('unresolved git conflict markers; resolve the merge before sync')
     lines = text.splitlines(keepends=True)
     if not lines or lines[0].lstrip('\ufeff').strip() != '---':
-        return {}, text
+        return {}, text, [], False
     end = next((i for i in range(1, len(lines)) if lines[i].strip() == '---'), None)
     if end is None:
         raise ValueError('unterminated frontmatter')
     header = ''.join(lines[1:end]).strip()
     body = ''.join(lines[end + 1:])
     if header.startswith('{'):
-        metadata = json.loads(header)
+        top_pairs = None
+        def _capture_pairs(pairs):
+            nonlocal top_pairs
+            top_pairs = pairs
+            return dict(pairs)
+        metadata = json.loads(header, object_pairs_hook=_capture_pairs)
         if not isinstance(metadata, dict):
             raise ValueError('frontmatter must be an object')
-        return metadata, body
+        normalized, warnings, conflict = normalize_privacy_metadata(metadata, pairs=top_pairs)
+        return normalized, body, warnings, conflict
     metadata = {}
     header_lines = header.splitlines()
     index = 0
@@ -284,6 +293,13 @@ def parse(text):
             if len(items) > 1:
                 parsed = items
         metadata[key] = parsed
+    normalized, warnings, conflict = normalize_privacy_metadata(metadata)
+    return normalized, body, warnings, conflict
+
+
+def parse(text):
+    """Parse source text, rejecting an unresolved Git merge before ingest."""
+    metadata, body, _, _ = _parse_frontmatter(text)
     return metadata, body
 
 
@@ -395,7 +411,7 @@ def numbered_copy_of(name, siblings):
 # the same signature RACY_WINDOW_NS after it was first seen. The second proof compares this
 # clock only with itself, so it also holds where another clock stamps the files (a file
 # server, a VM shared folder) and runs behind this one.
-SIGNATURE_SCHEMA = 'source-signatures/2'
+SIGNATURE_SCHEMA = 'source-signatures/3'
 RACY_WINDOW_NS = 2_000_000_000
 
 
@@ -614,20 +630,24 @@ class SyncEngine:
     @staticmethod
     def _write_diagnostics(output, result):
         if result.get('status') in ('degraded', 'conflict'):
-            warnings = result.get('warnings', [])
+            warnings, withheld = agent_sync_warnings(result.get('warnings', []))
             conflicts = result.get('conflicts', [])
             output['source_sync'] = {'status': result['status'], 'warnings': warnings[:20],
                                      'warning_count': len(warnings), 'truncated': len(warnings) > 20}
             if conflicts:
                 output['source_sync'].update(conflicts=conflicts[:20], conflict_count=len(conflicts),
                                              truncated=len(warnings) > 20 or len(conflicts) > 20)
+            if withheld:
+                output['source_sync']['privacy_frontmatter_count'] = withheld
         return output
 
     @staticmethod
     def _source_issues(result, source, record_id=None):
         return [item for key in ('warnings', 'conflicts') for item in result.get(key, [])
-                if isinstance(item, dict) and (item.get('source') == source or
-                                               (record_id is not None and item.get('id') == record_id))]
+                if isinstance(item, dict)
+                and not (key == 'warnings' and item.get('kind') == 'privacy_frontmatter')
+                and (item.get('source') == source or
+                     (record_id is not None and item.get('id') == record_id))]
 
     @staticmethod
     def _write_blockers(result, source=None, record_ids=()):
@@ -939,7 +959,7 @@ class SyncEngine:
                     text = decode_utf8(raw)  # Names CESU-8 and lone surrogates in the warning.
                     if _has_conflict_markers(text):
                         raise ValueError('unresolved git conflict markers; resolve the merge before sync')
-                    metadata, body = parse(text)
+                    metadata, body, privacy_warnings, _ = _parse_frontmatter(text)
                     if metadata.get('kind') == 'task' and body.lstrip().startswith('---'):
                         raise ValueError('task has embedded frontmatter; reconcile metadata and body explicitly')
                     if metadata.get('kind') == 'receipt' or metadata.get('generated') is True:
@@ -954,11 +974,13 @@ class SyncEngine:
                     record = self.store._validate(record, _resolved_source=resolved)
                     if record['source_sha256'] != _hash(raw):
                         raise ValueError('source changed while scanning')
+                    for reason in privacy_warnings:
+                        warnings.append({'source': relative, 'kind': 'privacy_frontmatter', 'reason': reason})
                     if record['id'] in records:
                         duplicate.add(record['id'])
                     source_ids[relative] = record['id']
                     records[record['id']] = record
-                    if cache is not None:
+                    if cache is not None and not privacy_warnings:
                         cache.read(relative, st, record['id'])
                 except (ValueError, OSError, UnicodeError) as exc:
                     warnings.append({'source': relative, 'reason': str(exc)})
@@ -1344,8 +1366,9 @@ class SyncEngine:
                 db.execute("DELETE FROM metadata WHERE key='receipt_scan_signature'")
         for entry in completed:
             entry.unlink(missing_ok=True)
-        # Numbered copy and missing-receipt-source warnings are informational; they don't degrade the sync status.
-        degraded_warnings = [w for w in warnings if not str(w.get('reason', '')).startswith('possible file sync copy') and w.get('kind') != 'missing_receipt_source']
+        # Numbered copy, missing-receipt-source, and privacy-frontmatter normalization warnings are
+        # informational (the source is safely indexed as private); they don't degrade the sync status.
+        degraded_warnings = [w for w in warnings if not str(w.get('reason', '')).startswith('possible file sync copy') and w.get('kind') not in ('missing_receipt_source', 'privacy_frontmatter')]
         result = {'status': 'conflict' if conflicts else 'degraded' if degraded_warnings else 'succeeded', 'indexed': len(records), 'deleted': deleted, 'warnings': warnings, 'conflicts': conflicts}
         if recover_views:
             result['recovered_views'] = recovered_views or []
@@ -1392,6 +1415,10 @@ class SyncEngine:
             raise ValueError('unsupported task metadata changes')
         if 'status' in changes and changes['status'] not in TASK_STATUSES:
             raise ValueError('valid explicit task status required')
+        if 'visibility' in changes and isinstance(changes['visibility'], str):
+            folded = _fold_privacy_token(changes['visibility'])
+            if folded in VALID_VISIBILITIES:
+                changes = dict(changes, visibility=folded)
         _check_task_dates(changes)
         changes, redacted = self._protect_metadata(changes)
         with self.store._connect() as db:
@@ -1516,7 +1543,8 @@ class SyncEngine:
             raise ValueError('facts must be an object')
         if 'revision' in metadata and (type(metadata['revision']) is not int or metadata['revision'] < 1):
             raise ValueError('positive revision required')
-        if metadata.get('visibility', 'internal') not in ('public', 'internal', 'private'):
+        metadata, _, privacy_conflict = normalize_privacy_metadata(metadata)
+        if privacy_conflict or metadata.get('visibility', 'internal') not in VALID_VISIBILITIES:
             raise ValueError('invalid visibility')
         supersedes = metadata.get('supersedes', [])
         if isinstance(supersedes, str):
@@ -1570,11 +1598,14 @@ class SyncEngine:
             if record.get('source') != source or record.get('source_sha256') != _hash(intended) or path.read_bytes() != intended.encode('utf-8'):
                 raise RevisionConflict('created note source readback mismatch')
             self._record_redactions(redacted)
+            warnings, withheld = agent_sync_warnings(result['warnings'])
             created_details = {'status': 'succeeded', 'source': source, 'sha256': _hash(intended),
                                'redacted': redacted, 'secrets_redacted': redacted,
-                               'warnings': result['warnings'], 'conflicts': result['conflicts'],
-                               'source_sync': {'status': result['status'], 'warnings': result['warnings'],
+                               'warnings': warnings, 'conflicts': result['conflicts'],
+                               'source_sync': {'status': result['status'], 'warnings': warnings,
                                                'conflicts': result['conflicts']}}
+            if withheld:
+                created_details['source_sync']['privacy_frontmatter_count'] = withheld
             if idempotency_file:
                 _seal_idempotency(idempotency_file, journal, fingerprint, created_details)
             if refs:
@@ -1611,7 +1642,11 @@ class SyncEngine:
             raise ValueError('new task revision must be 1')
         if metadata.get('kind', 'task') != 'task':
             raise ValueError('task kind required')
-        if not isinstance(metadata.get('facts', {}), dict) or metadata.get('visibility', 'internal') not in ('internal', 'public', 'private'):
+        if 'visibility' in metadata and isinstance(metadata['visibility'], str):
+            folded = _fold_privacy_token(metadata['visibility'])
+            if folded in VALID_VISIBILITIES:
+                metadata['visibility'] = folded
+        if not isinstance(metadata.get('facts', {}), dict) or metadata.get('visibility', 'internal') not in VALID_VISIBILITIES:
             raise ValueError('invalid task facts or visibility')
         for field in ('title', 'project', 'next_action', 'updated_at', 'created_at'):
             if field in metadata and not isinstance(metadata[field], str):
@@ -1642,10 +1677,12 @@ class SyncEngine:
         if any(record.get(key) != value for key, value in metadata.items()) or record['source_sha256'] != _hash(intended) or path.read_bytes() != intended.encode('utf-8'):
             raise RevisionConflict('created task metadata or source readback mismatch')
         self._record_redactions(redacted)
+        warnings, withheld = agent_sync_warnings(result['warnings'])
+        source_sync = {'status': result['status'], 'warnings': warnings, 'conflicts': result['conflicts']}
+        if withheld:
+            source_sync['privacy_frontmatter_count'] = withheld
         return dict(record, redacted=redacted, secrets_redacted=redacted,
-                    warnings=result['warnings'], conflicts=result['conflicts'],
-                    source_sync={'status': result['status'], 'warnings': result['warnings'],
-                                 'conflicts': result['conflicts']})
+                    warnings=warnings, conflicts=result['conflicts'], source_sync=source_sync)
 
     def _links(self, links):
         """External results (a pull request, a published page) as plain http(s) URLs.

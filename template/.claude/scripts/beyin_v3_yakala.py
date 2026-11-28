@@ -10985,9 +10985,63 @@ def _agent_read_note(path, own=False):
                 metadata.get('sensitivity') in ('sensitive', 'secret', 'restricted', 'confidential', 'hassas', 'gizli') or
                 metadata.get('kaynak_guveni') in ('blocked', 'engellendi', 'yasak')):
             raise ValueError('This note\'s frontmatter forbids remote/background reading.')
-        if metadata.get('visibility') == 'private' and not own:
+        if not own and (metadata.get('visibility') == 'private' or _agent_index_private(text)):
             raise ValueError('visibility: private notes stay out of background jobs, as they stay out of hook context.')
     return text
+
+
+def _agent_index_private(text):
+    """True when sync indexes the note as private: `private: true`, `gizli: evet`, a private tag
+    or a case variant of `visibility` keep it out of hook context (#963), so out of this job too."""
+    from beyin_v3_sync import parse
+    try:
+        metadata, _ = parse(text)
+    except (TypeError, ValueError, RecursionError):
+        return _agent_alias_private(text)
+    return metadata.get('visibility') == 'private'
+
+
+def _agent_alias_private(text):
+    """Fail closed where sync cannot read the header (a flow map, merge markers): the strict
+    reader has accepted it, so a top-level `private`/`gizli` flag or a private tag decides.
+    Called only after the strict reader, which already refused duplicates and odd lines."""
+    from beyin_v3 import _privacy_alias_match, _privacy_tag_match
+    closing = re.search(r'(?m)^---[ \t]*\r?$', text[3:])
+    front = text[3:3 + closing.start()] if closing else ''
+    if front.strip().startswith(('{', '[')):
+        try:
+            data = json.loads(front)
+        except ValueError:
+            return False  # the strict reader parsed it already; unreachable in practice
+        entries = list(data.items()) if isinstance(data, dict) else []
+    else:
+        def scalar(raw):
+            raw = re.split(r'\s+#', raw.strip(), maxsplit=1)[0].strip()
+            if len(raw) > 1 and raw[0] == raw[-1] and raw[0] in '"\'':
+                return raw[1:-1]
+            return raw
+        entries, items = [], None
+        for line in front.splitlines():
+            if not line.strip() or line.lstrip().startswith('#'):
+                continue
+            item = re.match(r'^\s*-\s+(.*)$', line)
+            if item and items is not None:
+                items.append(scalar(item.group(1)))  # Obsidian's `tags:` block list
+                continue
+            items = None
+            match = re.match(r'''^("(?:\\.|[^"\\])*"|'(?:''|[^'])*'|[\w-]+):\s?(.*)$''', line)
+            if not match:
+                continue
+            key, raw = scalar(match.group(1)), scalar(match.group(2))
+            if not raw:
+                items = []
+                entries.append((key, items))
+            elif raw.startswith('[') and raw.endswith(']'):
+                entries.append((key, [scalar(part) for part in raw[1:-1].split(',')]))
+            else:
+                entries.append((key, raw))
+        entries = [(key, None if value == [] else value) for key, value in entries]
+    return _privacy_alias_match(entries) is not None or _privacy_tag_match(entries) is not None
 
 
 _AGENT_SEARCH_FOLD = {0x130: 'i', 0x131: 'i'}  # İ and ı meet I/i; the user may type either

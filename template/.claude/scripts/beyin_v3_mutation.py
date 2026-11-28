@@ -390,6 +390,11 @@ def _created_note(engine, payload):
     for field in ('project', 'kind', 'status', 'updated_at'):
         if metadata.get(field) is None:
             metadata.pop(field, None)
+    # As note_create: `Visibility: Private` or `private: true` is written as `visibility: private`.
+    from beyin_v3 import normalize_privacy_metadata
+    metadata, _, conflict = normalize_privacy_metadata(metadata)
+    if conflict:
+        return None
     text, _ = engine._protect(payload.get('text', ''))
     metadata, _ = engine._protect_metadata(metadata)
     return render(metadata, text + '\n').encode('utf-8')
@@ -407,7 +412,12 @@ def _updated_note(engine, raw, payload):
 
 def _stored_task_fields(engine, fields):
     """Task fields as task_create and update_task store them, or None if they refuse them."""
-    fields, _ = engine._protect_metadata(dict(fields or {}))
+    fields = dict(fields or {})
+    if isinstance(fields.get('visibility'), str):  # as task_create and update_task store it
+        from beyin_v3 import VALID_VISIBILITIES, _fold_privacy_token
+        if _fold_privacy_token(fields['visibility']) in VALID_VISIBILITIES:
+            fields['visibility'] = _fold_privacy_token(fields['visibility'])
+    fields, _ = engine._protect_metadata(fields)
     fields = dict(fields)
     try:
         engine._canonical_refs(fields)  # evidence_refs as vault-relative POSIX paths
