@@ -283,7 +283,11 @@ def doctor_attention_count(result):
     Informational checks (unused clients, skipped Git check, backup advisory,
     knowledge freshness counts, receipt coverage, boundary hints) do not count.
     Every counted item prints its own line in the doctor --human report; a check
-    that prints nothing (an 'unavailable' optional report) is not counted.
+    that prints nothing (an 'unavailable' optional report) is not counted. The
+    reverse holds for problem lines (a fault, a queued change waiting for a step, a
+    feature that cannot run, a scheduled check that found something), so the summary
+    never says "nothing to do" above one; '(bilgi)' advice and an optional new release
+    stay uncounted.
     """
     if not isinstance(result, dict):
         return 0
@@ -339,6 +343,8 @@ def doctor_attention_count(result):
     jev = result.get('jev') if isinstance(result.get('jev'), dict) else {}
     if jev.get('config_valid') is False:
         count += 1
+    if jev.get('mode', 'off') != 'off' and jev.get('context_mode_notice'):
+        count += 1  # automatic context is on but cannot run in this context_mode
     kf = result.get('knowledge_freshness') if isinstance(result.get('knowledge_freshness'), dict) else {}
     if kf.get('status') == 'unavailable':
         count += 1
@@ -355,8 +361,9 @@ def doctor_attention_count(result):
     if dedupe.get('valid') is False:
         count += 1
     queue = result.get('mutation_queue') if isinstance(result.get('mutation_queue'), dict) else {}
-    if queue.get('valid') is False or (queue.get('status') == 'invalid' and
-                                       (queue.get('enabled') or queue.get('queue_exists'))):
+    if queue.get('valid') is False:
+        count += 1
+    if _queue_needs_action(queue):
         count += 1
     devices = result.get('devices') if isinstance(result.get('devices'), dict) else {}
     if devices.get('valid') is False:
@@ -374,7 +381,29 @@ def doctor_attention_count(result):
         count += 1
     if count == 0 and result.get('status') in ('needs_attention', 'pending'):
         count = 1
+    # The last scheduled run is a record of an earlier check: its sync findings come from a
+    # CLI sync this report does not repeat, and its notice sends the user here. It never lets
+    # the summary say "nothing to do", but a live finding already covers what it saw.
+    scheduled = result.get('scheduled_check') if isinstance(result.get('scheduled_check'), dict) else {}
+    if count == 0 and scheduled.get('status') in ('needs_attention', 'error'):
+        count = 1
     return count
+
+
+def _queue_needs_action(queue):
+    """True when the offline queue line names something the user has to run (#965 summary)."""
+    if not (queue.get('enabled') or queue.get('queue_exists')):
+        return False  # doctor prints no queue line
+    if queue.get('status') == 'invalid':
+        return True  # the queue file could not be read
+    return any(isinstance(queue.get(key), int) and queue[key] > 0
+               for key in ('pending_count', 'conflict_count', 'failed_count'))
+
+
+# beyin_v3_scheduled.ISSUE_LABELS in doctor --human wording; an unknown kind is not shown.
+_SCHEDULED_ISSUES = (('sync_conflict', 'eşitleme çakışması'), ('sync_degraded', 'eşitleme uyarısı'),
+                     ('hook', 'kanca uyarısı'), ('skill_or_instruction', 'beceri/talimat çakışması'),
+                     ('task', 'görev kaydı sorunu'), ('validity', 'geçerlilik sorunu'))
 
 
 _HOOK_FILE_CLIENTS = {
@@ -893,9 +922,16 @@ def human_result(result, command, installed_version=None):
             else:
                 lines.append('Son bilgi damıtması: henüz kavram notu damıtılmadı (toplam ' + str(kf.get('receipts_since', 0)) + ' oturum kaydı; çalıştıkça oluşur)')
         scheduled = result.get('scheduled_check') or {}
-        if scheduled.get('status') in ('ok', 'needs_attention', 'error'):
-            lines.append('Zamanlanmış denetim (bilgi): son kontrol ' + str(scheduled.get('age_hours', '?')) + ' saat önce, ' +
-                         {'ok': 'sağlıklı', 'needs_attention': 'dikkat gerekiyor', 'error': 'denetim tamamlanamadı'}[scheduled['status']] + '.')
+        if scheduled.get('status') == 'ok':
+            lines.append('Zamanlanmış denetim (bilgi): son kontrol ' + str(scheduled.get('age_hours', '?')) + ' saat önce, sağlıklı.')
+        elif scheduled.get('status') in ('needs_attention', 'error'):
+            # Its sync findings come from a sync this report does not run: name them and the way to see them now.
+            found = scheduled.get('issues') if isinstance(scheduled.get('issues'), dict) else {}
+            kinds = ', '.join(label + ' (' + str(found[kind]) + ')' for kind, label in _SCHEDULED_ISSUES if kind in found)
+            lines.append('Zamanlanmış denetim: son kontrol ' + str(scheduled.get('age_hours', '?')) + ' saat önce, ' +
+                         ('dikkat gerekiyor' + (' (' + kinds + ')' if kinds else '') if scheduled['status'] == 'needs_attention'
+                          else 'denetim tamamlanamadı') +
+                         '. Güncel durumu görmek için: ' + py_cmd + ' beyin.py sync')
         for conflict in result.get('instruction_conflicts', []):
             lines.append('Talimat çelişkisi: ' + plain_text(conflict['file']) + ' içinde V2 derleyici ifadesi var ("' +
                          plain_text(conflict.get('snippet', '')) + '"). Bu metin V3 ajan damıtmasıyla çelişiyor; eski derleyici talimatlarını kaldırın.')
@@ -1074,10 +1110,20 @@ def human_result(result, command, installed_version=None):
         if queue.get('valid') is False:
             lines.append('mutation-queue-settings.json geçersiz; çevrimdışı kuyruk kapalı sayılıyor, dosyayı kontrol edin.')
         if queue.get('enabled') or queue.get('queue_exists'):
+            steps = []
+            if queue.get('status') != 'invalid':
+                if queue.get('pending_count'):
+                    steps.append('kasaya uygulamak için: ' + py_cmd + ' beyin.py mutation-queue --replay')
+                reviewed = [name for name, key in (('conflict', 'conflict_count'), ('failed', 'failed_count')) if queue.get(key)]
+                if reviewed:
+                    steps.append('incelemek için: ' + py_cmd + ' beyin.py mutation-queue --list' +
+                                 (' --status ' + reviewed[0] if len(reviewed) == 1 else '') +
+                                 '; inceledikten sonra kayıt kimliğiyle --retry ya da --dismiss')
             lines.append('Çevrimdışı işlem kuyruğu: ' + ('açık' if queue.get('enabled') else 'kapalı') +
                          (' (kuyruk dosyası okunamadı)' if queue.get('status') == 'invalid' else
                           ' (' + str(queue.get('pending_count', 0)) + ' bekleyen, ' + str(queue.get('conflict_count', 0)) +
-                          ' çakışma, ' + str(queue.get('failed_count', 0)) + ' başarısız)'))
+                          ' çakışma, ' + str(queue.get('failed_count', 0)) + ' başarısız)') +
+                         ''.join('; ' + step for step in steps))
         devices = result.get('devices') or {}
         if devices.get('valid') is False:
             lines.append('devices.json geçersiz; çoklu cihaz düzeni kapalı sayılıyor, dosyayı kontrol edin.')

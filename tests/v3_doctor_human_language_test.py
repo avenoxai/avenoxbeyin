@@ -3,8 +3,10 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
 import sys
 import tempfile
+import time
 import unittest
 
 from v3_package_helpers import install, isolated_env, run_python
@@ -76,6 +78,11 @@ FORBIDDEN_JARGON = (
 
 
 
+# beyin_v3_mutation.status() for an enabled queue file with no records in it.
+QUEUE_ON = {'enabled': True, 'valid': True, 'identity': True, 'queue_exists': True, 'pending_count': 0,
+            'conflict_count': 0, 'applied_count': 0, 'failed_count': 0, 'dismissed_count': 0, 'status': 'ok'}
+
+
 # One fault per row: (label, report overrides, expected summary count). A counted row must
 # print its own line; a check that prints nothing (an 'unavailable' optional report) counts 0.
 ATTENTION_GRID = (
@@ -121,6 +128,23 @@ ATTENTION_GRID = (
     ('queue settings invalid', {'mutation_queue': {'valid': False}}, 1),
     ('queue file unreadable', {'mutation_queue': {'valid': True, 'enabled': True, 'queue_exists': True, 'status': 'invalid'}}, 1),
     ('queue unavailable', {'mutation_queue': {'status': 'unavailable', 'error': 'OSError'}}, 0),
+    # Counts as beyin_v3_mutation.status() reports them: a conflict or failed record is not applied
+    # until it is retried or dismissed, a pending one until --replay runs.
+    ('queue conflict', {'mutation_queue': dict(QUEUE_ON, status='needs_attention', conflict_count=1)}, 1),
+    ('queue failed', {'mutation_queue': dict(QUEUE_ON, status='needs_attention', failed_count=1)}, 1),
+    ('queue pending', {'mutation_queue': dict(QUEUE_ON, status='pending', pending_count=2)}, 1),
+    ('queue off with conflict', {'mutation_queue': dict(QUEUE_ON, enabled=False, status='needs_attention', conflict_count=1)}, 1),
+    ('queue settings invalid and conflict', {'mutation_queue': dict(QUEUE_ON, valid=False, enabled=False,
+                                                                    status='needs_attention', conflict_count=1)}, 2),
+    ('jev cannot run in context mode', {'jev': {'mode': 'on', 'provider': 'typesafe', 'automatic_model_calls': True,
+                                                'context_mode': 'session', 'last_24h': {'calls': 0},
+                                                'context_mode_notice': "Automatic context requires context_mode 'turn'"}}, 1),
+    ('scheduled check found something', {'scheduled_check': {'status': 'needs_attention', 'age_hours': 3,
+                                                             'issues': {'sync_conflict': 1}}}, 1),
+    ('scheduled check failed', {'scheduled_check': {'status': 'error', 'age_hours': 3, 'error': 'RuntimeError'}}, 1),
+    # A live finding already covers what the earlier scheduled run saw: no second count.
+    ('scheduled check and live fault', {'scheduled_check': {'status': 'needs_attention', 'age_hours': 3, 'issues': {'hook': 1}},
+                                        'hook-error.json': {'at': 1.0, 'error': 'OSError'}}, 1),
     ('devices invalid', {'devices': {'valid': False}}, 1),
     ('devices unavailable', {'devices': {'status': 'unavailable', 'error': 'OSError'}}, 0),
     ('index scope unavailable', {'index_exclusions': {'status': 'unavailable', 'error': 'OSError'}}, 1),
@@ -138,7 +162,28 @@ ATTENTION_GRID = (
     ('storage compact', {'state_storage': {'compact_suggested': True, 'database_bytes': 9000000, 'free_bytes': 5000000}}, 0),
     ('features on', {'parallel_sessions': {'enabled': True, 'active': 1}, 'context_dedupe': {'enabled': True, 'sessions': 2},
                      'mutation_queue': {'enabled': True, 'valid': True}, 'devices': {'enabled': True, 'level': 'icloud'}}, 0),
+    ('queue on and empty', {'mutation_queue': dict(QUEUE_ON, status='ok', applied_count=3, dismissed_count=1)}, 0),
+    ('scheduled check healthy', {'scheduled_check': {'status': 'ok', 'age_hours': 3}}, 0),
+    ('jev on in turn mode', {'jev': {'mode': 'on', 'provider': 'typesafe', 'automatic_model_calls': True,
+                                     'context_mode': 'turn', 'last_24h': {'calls': 4}}}, 0),
+    ('new release', {'updates': {'status': 'available', 'version': '9.9.9', 'release_url': 'https://example.invalid/r'}}, 0),
 )
+
+# Lines a report may carry under "nothing to do": '(bilgi)' advice, feature states, client states
+# and the optional release notice. Anything else is a problem line and must be counted.
+INFORMATION_LINE = re.compile('|'.join((
+    r'.*\(bilgi\)',
+    r'Beyin \S', r'Henüz gerçek bir istemci oturumu gözlenmedi', r'Oturum olayları normal şekilde gözleniyor',
+    r'Sağlık kontrolü tamamlandı', r'Bekleyen iş: 0$',
+    r'Kullanılmayan istemciler: ', r'[a-z]+: olay görüldü$',
+    r'Akıllı bağlam desteği \(Jev\): ', r'Bağlam doluluk hatırlatması: (etkin|kapalı)',
+    r'Son bilgi damıtması: (bugün|\d+ gün önce|henüz kavram notu)', r'Oturum kaydı kapsamı: ', r'Hermes: \d+ oturumda',
+    r'Not kullanım takibi: ', r'Paralel oturum bildirimi: açık ', r'Oturum içi tekrar önleme: açık ',
+    r'Çevrimdışı işlem kuyruğu: (açık|kapalı) \(0 bekleyen, 0 çakışma, 0 başarısız\)$', r'Çoklu cihaz: ',
+    r'Sır süzgeci ', r'Hariç tutulan bileşenler: ', r'Sıcak klasörler ', r'Soğuk klasörler ',
+    r'Beyin güncel: ', r'Yeni sürüm: ', r'Sürüm notları: ', r'Güncellemek için: ', r'Son kontrol: ',
+    r'Sürüm (bildirimleri kapalı|kontrolü henüz yapılmadı|kontrolü yapılamadı)', r'Kurulu sürüm resmi',
+)))
 
 
 class DoctorHumanLanguageUnitTest(unittest.TestCase):
@@ -321,6 +366,67 @@ class DoctorHumanLanguageUnitTest(unittest.TestCase):
                 if expected:
                     self.assertTrue(new, 'counted but printed nothing: ' + label)
 
+    def test_nothing_to_do_summary_never_sits_above_a_problem_line(self):
+        # The reverse direction: under "Her şey yolunda" every line is information, and a
+        # sub-report whose own verdict is needs_attention is always counted.
+        reports = [('healthy', healthy_report())] + [(label, dict(healthy_report(), **overrides))
+                                                     for label, overrides, _ in ATTENTION_GRID]
+        for label, report in reports:
+            with self.subTest(label):
+                count = self.entry.doctor_attention_count(report)
+                verdicts = [key for key, value in report.items()
+                            if isinstance(value, dict) and value.get('status') == 'needs_attention']
+                if verdicts:
+                    self.assertGreater(count, 0, 'needs_attention not counted: ' + ', '.join(verdicts))
+                if count:
+                    continue
+                for line in self.entry.human_result(report, 'doctor', '3.12.0').splitlines()[1:]:
+                    self.assertTrue(INFORMATION_LINE.match(line), 'problem line under "nothing to do": ' + line)
+
+    def test_queue_line_names_the_step_for_each_waiting_record(self):
+        lines = {label: self.entry.human_result(dict(healthy_report(), **overrides), 'doctor', '3.12.0')
+                 for label, overrides, _ in ATTENTION_GRID if label.startswith('queue')}
+        self.assertIn('Çevrimdışı işlem kuyruğu: açık (0 bekleyen, 1 çakışma, 0 başarısız); incelemek için: '
+                      'python3 beyin.py mutation-queue --list --status conflict; inceledikten sonra kayıt kimliğiyle '
+                      '--retry ya da --dismiss', lines['queue conflict'].replace('py -3', 'python3'))
+        self.assertIn('--list --status failed;', lines['queue failed'])
+        self.assertIn('(2 bekleyen, 0 çakışma, 0 başarısız); kasaya uygulamak için: ', lines['queue pending'])
+        self.assertIn('beyin.py mutation-queue --replay', lines['queue pending'])
+        both = dict(healthy_report(), mutation_queue=dict(QUEUE_ON, status='needs_attention', pending_count=1,
+                                                          conflict_count=1, failed_count=1))
+        text = self.entry.human_result(both, 'doctor', '3.12.0')
+        self.assertEqual(self.entry.doctor_attention_count(both), 1)  # one queue, one line
+        self.assertIn('--replay; incelemek için: ', text)
+        self.assertIn('beyin.py mutation-queue --list; inceledikten', text)  # both kinds: no --status filter
+        self.assertNotIn('incelemek', lines['queue file unreadable'])
+
+    def test_scheduled_record_read_by_the_real_reader_is_counted_and_named(self):
+        scripts = ROOT / 'template/.claude/scripts'
+        spec = importlib.util.spec_from_file_location('v3_doctor_human_scheduled', scripts / 'beyin_v3_scheduled.py')
+        scheduled = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(scheduled)
+        finished = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() - 7200))
+        with tempfile.TemporaryDirectory(prefix='v3-doctor-human-scheduled-') as tmp:
+            record = Path(tmp) / scheduled.RECORD_FILE
+            for status, issues, expected in (('needs_attention', {'sync_conflict': 1, 'sync_degraded': 2}, 1),
+                                             ('error', {}, 1), ('ok', {}, 0)):
+                with self.subTest(status):
+                    record.write_text(json.dumps({'schema': 1, 'status': status, 'started_at': finished,
+                                                  'finished_at': finished, 'issues': issues}),
+                                      encoding='utf-8', newline='\n')
+                    report = dict(healthy_report(), scheduled_check=scheduled.doctor(tmp))
+                    self.assertEqual(report['scheduled_check']['status'], status)
+                    self.assertEqual(self.entry.doctor_attention_count(report), expected)
+                    text = self.entry.human_result(report, 'doctor', '3.12.0')
+                    line = next(line for line in text.splitlines() if line.startswith('Zamanlanmış denetim'))
+                    if status == 'needs_attention':
+                        self.assertIn('2 saat önce, dikkat gerekiyor (eşitleme çakışması (1), eşitleme uyarısı (2)).', line)
+                    if expected:
+                        self.assertTrue(line.endswith(' beyin.py sync'), line)
+                        self.assertNotIn('(bilgi)', line)
+                    else:
+                        self.assertEqual(line, 'Zamanlanmış denetim (bilgi): son kontrol 2 saat önce, sağlıklı.')
+
     def test_ascii_fallback_folds_every_letter_doctor_prints(self):
         # Doctor's own wording uses only letters the fallback folds, so a cp1252/cp437/ascii
         # console never shows '?' in it (resmî and hâlâ did before).
@@ -469,6 +575,48 @@ class DoctorHumanInstalledCliTest(unittest.TestCase):
             self.assertEqual(machine_warn.returncode, 0, machine_warn.stderr)
             warn_payload = json.loads(machine_warn.stdout.decode('utf-8'))
             self.assertEqual(warn_payload['companion_hygiene']['over_limit'], ['Threads.md'])
+
+    def test_installed_queue_conflict_is_counted_until_dismissed(self):
+        # A queued note_create on a path that already exists replays as a conflict; doctor's own
+        # status stays never_seen, so only the queue report says something is waiting.
+        with tempfile.TemporaryDirectory(prefix='v3-doctor-human-queue-') as tmp:
+            root = Path(tmp)
+            vault = root / 'vault'
+            vault.mkdir()
+            env = isolated_env(root / 'home')
+            installed = install(vault, root / 'state', env)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            (vault / 'notes').mkdir(exist_ok=True)
+            (vault / 'notes' / 'conflict.md').write_text('# Conflict\n\nbody\n', encoding='utf-8', newline='\n')
+            mutation = root / 'mutation.json'
+            mutation.write_text(json.dumps({'action': 'note_create', 'source': 'notes/conflict.md',
+                                            'payload': {'text': '# New\n'}}), encoding='utf-8', newline='\n')
+
+            def cli(*args):
+                ran = run_python(vault / 'beyin.py', list(args), vault, env)
+                self.assertEqual(ran.returncode, 0, ran.stderr)
+                return ran.stdout.decode('utf-8')
+
+            cli('sync')
+            cli('mutation-queue', '--enable')
+            cli('mutation-queue', '--enqueue', '--file', mutation)
+            pending = cli('doctor', '--human')
+            self.assertEqual(pending.splitlines()[0], 'Bakmanız gereken 1 şey var.', pending)
+            self.assertIn('(1 bekleyen, 0 çakışma, 0 başarısız); kasaya uygulamak için: ', pending)
+            replayed = json.loads(cli('mutation-queue', '--replay'))
+            self.assertEqual(replayed['conflicts'], 1)
+            payload = json.loads(cli('doctor', '--json'))
+            self.assertEqual(payload['status'], 'never_seen')
+            self.assertEqual(payload['mutation_queue']['status'], 'needs_attention')
+            human = cli('doctor', '--human')
+            self.assertEqual(human.splitlines()[0], 'Bakmanız gereken 1 şey var.', human)
+            self.assertIn('(0 bekleyen, 1 çakışma, 0 başarısız); incelemek için: ', human)
+            listed = json.loads(cli('mutation-queue', '--list', '--status', 'conflict'))
+            records = listed['mutations'] if isinstance(listed, dict) else listed
+            self.assertEqual(len(records), 1)
+            cli('mutation-queue', '--dismiss', records[0]['mutation_id'])
+            settled = cli('doctor', '--human')
+            self.assertEqual(settled.splitlines()[0], 'Her şey yolunda; yapmanız gereken bir şey yok.', settled)
 
 
 if __name__ == '__main__':
