@@ -4,6 +4,7 @@ import argparse
 import errno
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -866,6 +867,123 @@ def antigravity_session_marker(state, conversation):
     return Path(state) / 'antigravity-sessions' / (digest + '.json')
 
 
+ANTIGRAVITY_NOTICE_LIMIT = 2000
+ANTIGRAVITY_NOTICE_FILE_LIMIT = 8192
+ANTIGRAVITY_NOTICE_MAX_AGE = 3600
+
+
+def _is_link_or_reparse(info):
+    reparse = getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, 'st_file_attributes', 0) & reparse)
+
+
+def _antigravity_notice_path(state, conversation):
+    digest = hashlib.sha256(conversation.encode('utf-8', 'replace')).hexdigest()
+    return Path(state) / 'antigravity-notices' / (digest + '.json')
+
+
+def _read_antigravity_notice(path, info, max_age=ANTIGRAVITY_NOTICE_MAX_AGE):
+    """Read a verified regular notice file. Returns None on security/size mismatch, '' when stale/invalid."""
+    if (not stat.S_ISREG(info.st_mode) or _is_link_or_reparse(info)
+            or info.st_size > ANTIGRAVITY_NOTICE_FILE_LIMIT):
+        return None
+    flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+    with os.fdopen(os.open(path, flags), 'rb') as handle:
+        opened = os.fstat(handle.fileno())
+        if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(info, opened):
+            return None
+        raw = handle.read(ANTIGRAVITY_NOTICE_FILE_LIMIT + 1)
+    if len(raw) > ANTIGRAVITY_NOTICE_FILE_LIMIT:
+        return None
+    try:
+        data = json.loads(raw.decode('utf-8'))
+    except (UnicodeDecodeError, ValueError):
+        return ''
+    if not isinstance(data, dict):
+        return ''
+    text = data.get('text')
+    at = data.get('at')
+    if (not isinstance(text, str) or not text.strip()
+            or not isinstance(at, (int, float)) or isinstance(at, bool) or not math.isfinite(at)):
+        return ''
+    now = time.time()
+    if now - at > max_age or at > now + 300:
+        return ''
+    if len(text) > ANTIGRAVITY_NOTICE_LIMIT:
+        text = text[:ANTIGRAVITY_NOTICE_LIMIT - 1].rstrip() + '\n'
+    elif not text.endswith('\n'):
+        text += '\n'
+    return text
+
+
+def _queue_antigravity_notice(state, conversation, text):
+    """Store a bounded, deduplicated post-edit notice for the conversation's next PreInvocation."""
+    if not isinstance(conversation, str) or not conversation or not isinstance(text, str) or not text.strip():
+        return
+    path = _antigravity_notice_path(state, conversation)
+    folder = path.parent
+    try:
+        try:
+            folder_info = folder.lstat()
+        except FileNotFoundError:
+            folder.mkdir(parents=True, exist_ok=True)
+            folder_info = folder.lstat()
+        if _is_link_or_reparse(folder_info) or not stat.S_ISDIR(folder_info.st_mode):
+            return
+        existing = ''
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            info = None
+        if info is not None:
+            if not stat.S_ISREG(info.st_mode) or _is_link_or_reparse(info):
+                return
+            if info.st_size <= ANTIGRAVITY_NOTICE_FILE_LIMIT:
+                prior = _read_antigravity_notice(path, info, max_age=ANTIGRAVITY_NOTICE_MAX_AGE)
+                if prior is None:
+                    return
+                existing = prior
+        lines = []
+        seen = set()
+        for chunk in (existing, text):
+            for line in chunk.splitlines():
+                cleaned = line.strip()
+                if cleaned and cleaned not in seen:
+                    seen.add(cleaned)
+                    lines.append(cleaned)
+        if not lines:
+            return
+        combined = '\n'.join(lines) + '\n'
+        if len(combined) > ANTIGRAVITY_NOTICE_LIMIT:
+            combined = combined[:ANTIGRAVITY_NOTICE_LIMIT - 1].rstrip() + '\n'
+        atomic(path, {'at': time.time(), 'text': combined})
+    except (OSError, ValueError, RuntimeError):
+        return
+
+
+def _consume_antigravity_notice(state, conversation, max_age=ANTIGRAVITY_NOTICE_MAX_AGE):
+    """Consume and return a pending Antigravity post-edit notice at most once; fail open."""
+    if not isinstance(conversation, str) or not conversation:
+        return ''
+    path = _antigravity_notice_path(state, conversation)
+    folder = path.parent
+    try:
+        folder_info = folder.lstat()
+        if _is_link_or_reparse(folder_info) or not stat.S_ISDIR(folder_info.st_mode):
+            return ''
+        info = path.lstat()
+        text = _read_antigravity_notice(path, info, max_age=max_age)
+        if text is None:
+            return ''
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return text
+    except (OSError, ValueError, RuntimeError):
+        return ''
+
+
 def _antigravity_marker_key(folder):
     """This state's random key for prompt digests, created on first use; None when unavailable.
 
@@ -1048,9 +1166,26 @@ def main():
                     except OSError:
                         pass  # the first PreInvocation then repeats the opening, as before #903
             elif event == "PreInvocation":
-                if payload.get("invocationNum") != 0 or _antigravity_nonhuman_turn(payload, event):
+                if payload.get("invocationNum") != 0:
+                    if serves and isinstance(conversation, str) and conversation:
+                        notice_path = _antigravity_notice_path(state, conversation)
+                        try:
+                            notice_path.lstat()
+                            has_notice = True
+                        except OSError:
+                            has_notice = False
+                        if has_notice and not _antigravity_nonhuman_turn(payload, event):
+                            pending_notice = _consume_antigravity_notice(state, conversation)
+                            if pending_notice:
+                                print(json.dumps(output_context("antigravity", "PreInvocation", pending_notice)))
+                                return
                     print("{}")
                     return
+                if _antigravity_nonhuman_turn(payload, event):
+                    print("{}")
+                    return
+                pending_notice = (_consume_antigravity_notice(state, conversation)
+                                  if serves and isinstance(conversation, str) and conversation else "")
                 if marker is not None:
                     latest_cp = antigravity_latest_checkpoint(payload.get("transcriptPath"))
                     event, antigravity_compacted = _antigravity_turn_event(
@@ -1063,8 +1198,10 @@ def main():
                     receipt_reminder(dict(payload, session_id=conversation, hook_event_name="UserPromptSubmit",
                                           prompt=payload.get("lastUserInput") or ""),
                                      state, args.harness, "UserPromptSubmit", vault=vault)
-                    print("{}")
+                    print(json.dumps(output_context("antigravity", "PreInvocation", pending_notice)) if pending_notice else "{}")
                     return
+                if pending_notice:
+                    notice = pending_notice + notice
             elif event == "PostToolUse":
                 tool_input = antigravity_tool_input(payload)
                 if tool_input is None:
@@ -1088,7 +1225,7 @@ def main():
             return
         if event == 'SessionStart' and not args.metadata_only:
             from beyin_v3_releases import session_start
-            notice = session_start(vault, state)
+            notice += session_start(vault, state)
         settings = read(vault)
         if event == 'SessionStart' and not args.metadata_only and (state / 'yakala.json').is_file():
             # Opt-in capture queue (beyin.py yakala kur): one directory listing, never a model call.
@@ -1132,6 +1269,11 @@ def main():
                                                    harness=args.harness, state=state)
             except Exception:
                 pass
+        if args.harness == 'antigravity' and event == 'PostToolUse' and notice:
+            # Antigravity's PostToolUse contract expects {}; deliver post-edit notices on the next PreInvocation.
+            if serves and isinstance(conversation, str) and conversation:
+                _queue_antigravity_notice(state, conversation, notice)
+            notice = ''
         if not args.metadata_only:
             # Opt-in parallel-session notice (#170), machine-local in state/parallel-sessions.json.
             # Without that file a prompt costs one stat; SessionEnd still removes its own marker.

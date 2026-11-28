@@ -259,9 +259,9 @@ class HygieneCliTest(unittest.TestCase):
         path = self.write('Last-Session.md', '# Son oturum\n' + 'x' * 3100)
         payload = {'hook_event_name': 'PostToolUse', 'tool_input': {'file_path': str(path)}}
         self.state.mkdir(parents=True, exist_ok=True)
-        for harness in ('claude', 'codex', 'pi'):
+        for harness in ('claude', 'codex', 'pi', 'antigravity'):
             self.assertIn('Memory hygiene', companion_module.hook_limit_notice(self.vault, self.state, payload, harness))
-        for harness in ('antigravity', 'opencode', 'omp', 'hermes'):
+        for harness in ('opencode', 'omp', 'hermes'):
             self.assertEqual(companion_module.hook_limit_notice(self.vault, self.state, payload, harness), '')
         self.assertEqual(companion_module.hook_limit_notice(
             self.vault, self.state, dict(payload, hook_event_name='Stop'), 'claude'), '')
