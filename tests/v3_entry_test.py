@@ -75,6 +75,77 @@ class EntryPresentationTest(unittest.TestCase):
         self.assertNotIn('Codex', older)
         self.assertNotIn('Hook tanimi', entry.human_result(dict(updated, trust_review_required=False), 'update'))
 
+    def test_human_doctor_formats_project_companion_over_limit_without_keyerror(self):
+        spec = importlib.util.spec_from_file_location('v3_entry_hygiene_proj', ROOT / 'scripts/beyin_entry.py')
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        result = {
+            'status': 'ok',
+            'companion_hygiene': {
+                'status': 'over_limit',
+                'files': {'Last-Session.md': {'chars': 120, 'limit': 3000, 'over_limit': False}},
+                'over_limit': ['projects/demo/Last-Session.md'],
+                'projects': [{
+                    'directory': 'projects/demo',
+                    'status': 'over_limit',
+                    'files': {'Last-Session.md': {'chars': 3500, 'limit': 3000, 'over_limit': True}},
+                    'over_limit': ['Last-Session.md'],
+                }],
+            },
+        }
+        text = entry.human_result(result, 'doctor')
+        self.assertIn('projects/demo/Last-Session.md 3500 karakter (sinir 3000)', text)
+        self.assertIn('companion-compact', text)
+
+        # End-to-end CLI check: doctor --human on an installed vault with an over-limit project handoff file.
+        with tempfile.TemporaryDirectory(prefix='v3-entry-proj-hygiene-') as t:
+            root = Path(t); vault = root / 'vault'; vault.mkdir(); state = root / 'state'; env = isolated_env(root / 'home')
+            installed = install(vault, state, env)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            proj = vault / 'projects' / 'demo'
+            proj.mkdir(parents=True)
+            (proj / 'Last-Session.md').write_text('# Demo\n' + 'x' * 3500, encoding='utf-8')
+            human = run_python(vault / 'beyin.py', ['doctor', '--human'], vault, env)
+            self.assertEqual(human.returncode, 0, human.stderr.decode('utf-8', errors='replace'))
+            out = human.stdout.decode('utf-8')
+            self.assertIn('projects/demo/Last-Session.md', out)
+
+    def test_human_doctor_respects_parallel_sessions_for_last_session_hygiene(self):
+        spec = importlib.util.spec_from_file_location('v3_entry_hygiene_parallel', ROOT / 'scripts/beyin_entry.py')
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        base_hygiene = {
+            'status': 'over_limit',
+            'files': {
+                'Last-Session.md': {'chars': 6400, 'limit': 3000, 'over_limit': True},
+                'Threads.md': {'chars': 9200, 'limit': 8000, 'over_limit': True},
+            },
+            'over_limit': ['Last-Session.md', 'Threads.md'],
+            'projects': [],
+        }
+        # Parallel sessions ON: Last-Session.md avoids blind compaction; Threads.md keeps companion-compact.
+        with_parallel = entry.human_result({
+            'status': 'ok',
+            'companion_hygiene': base_hygiene,
+            'parallel_sessions': {'enabled': True, 'valid': True, 'markers': 2, 'active': 2},
+        }, 'doctor')
+        last_line = next(line for line in with_parallel.splitlines() if 'Last-Session.md' in line)
+        threads_line = next(line for line in with_parallel.splitlines() if 'Threads.md' in line)
+        self.assertIn('Paralel oturum bildirimi acik', last_line)
+        self.assertIn('--last-session-chars 7000', last_line)
+        self.assertNotIn('companion-compact', last_line)
+        self.assertIn('companion-compact', threads_line)
+
+        # Parallel sessions OFF (negative control): Last-Session.md still recommends companion-compact.
+        without_parallel = entry.human_result({
+            'status': 'ok',
+            'companion_hygiene': base_hygiene,
+            'parallel_sessions': {'enabled': False, 'valid': True, 'markers': 0, 'active': 0},
+        }, 'doctor')
+        last_off = next(line for line in without_parallel.splitlines() if 'Last-Session.md' in line)
+        self.assertIn('companion-compact', last_off)
+        self.assertNotIn('--last-session-chars', last_off)
+
 
 # The installer pins a resolved absolute path; this is one another OS wrote into a synced vault (#249).
 FOREIGN_PIN = ('/home/ada/.local/state/beyin-v3/ab12' if sys.platform == 'win32' else
