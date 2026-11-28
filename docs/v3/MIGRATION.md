@@ -250,12 +250,9 @@ Claude Code Bash tool names its session through `CLAUDE_CODE_SESSION_ID`: it
 opens the reminder window itself and leaves a small flag that the next Stop of
 that session queues as `PostToolUse` metadata marked `observed: cli`, stamped
 with the write's time, so such a turn is also an edited turn for coverage.
-Antigravity only
-provides the initial invocation boundary in this adapter, so its result is
-explicitly session-limited rather than proof of per-turn completeness. Missing
-prompt events are reported as a terminal-only limitation. Explicit `no_memory`
-hook metadata suppresses the
-checkpoint signal. Respect a user's no-memory request regardless of that signal.
+Missing prompt events are reported as a terminal-only limitation. Explicit
+`no_memory` hook metadata suppresses the checkpoint signal. Respect a user's
+no-memory request regardless of that signal.
 A turn no person typed (a `<task-notification>`, a message from another agent
 session, or the prompt Codex Desktop sends to a fork to draft a suggested next
 user message) keeps its lifecycle event, marked `synthetic`, but opens no
@@ -274,7 +271,8 @@ in `doctor` as `potential_missing_receipts`.
 matching receipt, for all time and for the last 7 and 30 days, measured when
 `doctor` runs. Only sessions with an observed user prompt count, either a
 UserPromptSubmit or a SessionStart that carries the first prompt (Hermes,
-OpenCode); the queue keeps only that fact, never the prompt text. Its `missing`
+OpenCode, Antigravity); the queue keeps only that fact, never the prompt text.
+Its `missing`
 count can therefore be smaller than `potential_missing_receipts`, which counts
 every finished checkpoint. Checkpoints recorded before this field existed have
 no prompt marker, so the ratio starts with sessions after the upgrade and stays

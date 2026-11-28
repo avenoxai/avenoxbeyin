@@ -446,7 +446,7 @@ def _latest_receipts(db):
     return latest
 
 
-EDIT_OBSERVING_HARNESSES = frozenset({'claude', 'codex', 'kiro', 'opencode', 'omp', 'pi'})
+EDIT_OBSERVING_HARNESSES = frozenset({'antigravity', 'claude', 'codex', 'kiro', 'opencode', 'omp', 'pi'})
 
 
 def _coverage_threshold(at, turn_at, edit_at):
@@ -573,7 +573,7 @@ def refresh_gaps(engine, db):
                 'session': row[1],
                 'checkpoint_at': row[2],
                 'turn_at': row[3],
-                'scope': 'session_only' if row[0] == 'antigravity' else 'turn' if row[3] else 'terminal_only'
+                'scope': 'turn' if row[3] else 'terminal_only'
             }
             if row[0] in EDIT_OBSERVING_HARNESSES and not row[6]:
                 gap_item['no_observed_edit'] = True
@@ -586,7 +586,7 @@ def refresh_gaps(engine, db):
         'no_observed_edit': sum(1 for item in gaps if item.get('no_observed_edit')),
         'receipt_coverage': coverage,
         'checkpoints': gaps,
-        'scope_limits': {'antigravity': 'session_only; later per-turn boundaries unsupported', 'missing_prompt_event': 'terminal_only; receipt attribution may be incomplete'},
+        'scope_limits': {'missing_prompt_event': 'terminal_only; receipt attribution may be incomplete'},
         'meaning': 'Checkpoint without a matching structured receipt; may be trivial or deliberately omitted. No summary inferred.'
     }))
 
