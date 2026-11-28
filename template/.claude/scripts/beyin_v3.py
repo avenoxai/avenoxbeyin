@@ -2138,6 +2138,7 @@ LIST_SNIPPET_CHARS = 150   # compact candidate snippet cap for `context --list` 
 SHORT_CONTEXT_TEXT = 500   # a short source is reserved whole when it fits, else like a long one
 TOP_CONTEXT_TEXT = 1100    # the best source keeps at least this much: one passage window (#83)
 TOP_CONTEXT_SHARE = 0.4    # ... or this share of the budget, whichever is larger
+BALANCED_MIN_TEXT = 1000   # balanced sharing (#975) only while every clipped source keeps this much
 _SNIPPET_TOKEN = re.compile(r"[^\W_]+(?:[-\u2010][^\W_]+)*", re.UNICODE)
 
 
@@ -2427,7 +2428,9 @@ def pack_context(records, limit=5, budget_chars=8000, stale_count=0, query=None,
     In `balanced` mode (#975), unless rank 1 clearly dominates rank 2 (falling back to
     `top`), each admitted source reserves its floor first and remaining text budget is
     distributed evenly via iterative water-filling so short notes redistribute unused
-    characters to longer notes without ever exceeding budget_chars.
+    characters to longer notes without ever exceeding budget_chars. When an even share
+    would leave a clipped source fewer than BALANCED_MIN_TEXT characters, it falls back
+    to `top` as well.
     Reservations are exact serialized sizes, JSON escaping included, so an admitted
     source is never dropped later and one long note can no longer starve the rest.
     """
@@ -2485,6 +2488,13 @@ def pack_context(records, limit=5, budget_chars=8000, stale_count=0, query=None,
                     spare -= give
                 break
             active = next_active
+        # An even share is only worth it while every clipped source still keeps a real excerpt.
+        # Below that, a narrow budget or a wide --limit cuts every source to a stub and the best
+        # one loses the window top mode keeps for it, so balanced behaves as top instead.
+        if any(item[3] < item[2] and item[3] < _clipped_size(item[0], item[1], BALANCED_MIN_TEXT)
+               for item in admitted):
+            return pack_context(records, limit, budget_chars, stale_count,
+                                query=query, project=project, share="top")
     else:
         admitted, reserved, protected = [], 0, 0
         for idx, record in enumerate(records):

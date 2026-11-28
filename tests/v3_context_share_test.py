@@ -180,6 +180,21 @@ class BalancedPackContextUnitTest(unittest.TestCase):
                 got = runtime.pack_context(records, limit=5, budget_chars=8000, share="balanced", scores=scores)
                 self.assertTrue(all(len(r["text"]) >= 1000 for r in got["records"]))
 
+    def test_balanced_falls_back_to_top_when_an_even_share_leaves_only_stubs(self):
+        # A narrow budget or a wide limit: an even split would cut every note to ~200
+        # characters and take the best note's passage window away, so balanced behaves as top.
+        records = [_make_record(i, 6000, metadata=True) for i in range(10)]
+        scores = [1.0 - i * 0.01 for i in range(10)]
+        for limit, budget in ((10, 4000), (10, 8000), (8, 6000), (5, 4000)):
+            with self.subTest(limit=limit, budget=budget):
+                top = runtime.pack_context(records, limit=limit, budget_chars=budget, share="top")
+                got = runtime.pack_context(records, limit=limit, budget_chars=budget, share="balanced", scores=scores)
+                self.assertEqual(json.dumps(got, ensure_ascii=False), json.dumps(top, ensure_ascii=False))
+        # While every clipped note keeps BALANCED_MIN_TEXT characters, the budget is still shared.
+        got = runtime.pack_context(records, limit=5, budget_chars=8000, share="balanced", scores=scores)
+        self.assertTrue(all(len(r["text"]) >= runtime.BALANCED_MIN_TEXT for r in got["records"]))
+        self.assertLess(max(len(r["text"]) for r in got["records"]) - min(len(r["text"]) for r in got["records"]), 50)
+
     def test_oversized_metadata_candidate_skipped_without_consuming_slot(self):
         rec0 = _make_record(0, 400)
         rec1 = dict(_make_record(1, 1000), facts={"blob": "z" * 1200})
