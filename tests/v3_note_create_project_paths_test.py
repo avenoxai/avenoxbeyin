@@ -486,7 +486,9 @@ class NoteCreateProjectPathsTest(unittest.TestCase):
         try:
             (self.vault / 'projects/kitchen/Kurallar.md').symlink_to(outside)
         except OSError as exc:
-            self.skipTest('symlink unavailable: ' + str(exc))
+            if getattr(exc, 'winerror', None) != 1314:  # ERROR_PRIVILEGE_NOT_HELD
+                raise
+            self.skipTest('symlink not permitted here: ' + str(exc))
         with self.assertRaisesRegex(ValueError, 'symlink'):
             self.engine.note_create('projects/kitchen/Kurallar.md', 'Through a dangling link.\n', {})
         self.assertFalse(outside.exists())
