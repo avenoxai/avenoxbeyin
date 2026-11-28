@@ -11,7 +11,7 @@ import time
 import tempfile
 import math
 
-from beyin_v3 import _receipt_lf
+from beyin_v3 import _receipt_lf, effective_visibility
 
 
 # metadata row: the folded directory names the last sync kept out of the index, as a JSON list.
@@ -130,7 +130,7 @@ def _hidden_ref_sources(db, refs):
                 rows.extend((ref, payload) for source, payload in folded for ref in aliases[ref_key(source)])
         for source, payload in rows:
             record = json.loads(payload)
-            if (record.get('visibility', 'internal') not in ('public', 'internal') or record.get('trust') == 'untrusted' or
+            if (effective_visibility(record) not in ('public', 'internal') or record.get('trust') == 'untrusted' or
                     record.get('trusted') is False or record.get('status') == 'untrusted' or record.get('kind') == 'untrusted'):
                 hidden.add(source)
     return hidden

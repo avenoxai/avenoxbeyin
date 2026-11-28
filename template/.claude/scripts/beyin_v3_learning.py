@@ -126,7 +126,8 @@ def _check_source_trust(state: Path, source: str) -> None:
                                   if isinstance(value, str) and value.strip())
                     if target not in identities:
                         continue
-                    if (rec.get("visibility") == "private" or
+                    from beyin_v3 import effective_visibility
+                    if (effective_visibility(rec) not in ("public", "internal") or
                         rec.get("trust") == "untrusted" or
                         rec.get("trusted") is False or
                         rec.get("status") == "untrusted" or

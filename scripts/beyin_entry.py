@@ -148,6 +148,21 @@ def sync_copy_lines(result):
     return lines
 
 
+def privacy_frontmatter_lines(result):
+    """Sync lines for non-standard privacy frontmatter warnings (#963)."""
+    items = [w for w in result.get('warnings') or []
+             if isinstance(w, dict) and w.get('kind') == 'privacy_frontmatter']
+    if not items:
+        return []
+    lines = []
+    for warning in items[:5]:
+        lines.append('Gizlilik frontmatter uyarisi (' + plain_text(warning.get('source')) + '): ' +
+                     plain_text(warning.get('reason')))
+    if len(items) > 5:
+        lines.append('+' + str(len(items) - 5) + ' gizlilik frontmatter uyarisi daha; ayrinti icin --json.')
+    return lines
+
+
 def supersedes_lines(issues, count):
     """Present existing sync/doctor findings only; do not guess or remember a target."""
     issues = issues or []
@@ -897,6 +912,7 @@ def human_result(result, command, installed_version=None):
                 message = '\n'.join([message] + recovered_lines)
             message = '\n'.join([message] + index_exclusion_lines(result.get('index_exclusions'), pruned=True) +
                                 (sync_copy_lines(result) if command == 'sync' else []) +
+                                (privacy_frontmatter_lines(result) if command == 'sync' else []) +
                                 supersedes_lines(result.get('supersedes_issues'), result.get('supersedes_issue_count')))
     if result.get('trust_review_required'):
         message += '\n' + trust_review_line(result.get('trust_review_files'))
