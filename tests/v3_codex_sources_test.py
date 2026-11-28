@@ -2,10 +2,13 @@
 from contextlib import closing
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 
@@ -14,6 +17,7 @@ sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
 
 import beyin_v3_codex_sources as sources
 from beyin_v3_chat_backfill import session_hash
+from v3_package_helpers import inherited_env
 
 STAMP = '2026-09-10T12:00:00Z'
 LATER = '2026-09-12T12:00:00Z'
@@ -21,6 +25,23 @@ EPOCH = int(datetime.fromisoformat(STAMP).timestamp())
 FIRST_DAY = datetime.fromisoformat(STAMP).astimezone().date().isoformat()
 LAST_DAY = datetime.fromisoformat(LATER).astimezone().date().isoformat()
 CANARY = 'SYNTHETIC_MESSAGE_CANARY'
+# A separate process standing in for a running Codex: it switches both databases to WAL, writes
+# the given rows without checkpointing and keeps its connections (and so -wal and -shm) open
+# until it reads a line. Shared memory is per process, so only another process shows whether
+# the reader writes the existing -shm.
+LIVE_WRITER = textwrap.dedent('''
+    import json, sqlite3, sys
+    connections = []
+    for path, statements in json.loads(sys.stdin.readline()):
+        db = sqlite3.connect(path, isolation_level=None)
+        db.execute('PRAGMA journal_mode = WAL')
+        db.execute('PRAGMA wal_autocheckpoint = 0')
+        for sql, params in statements:
+            db.execute(sql, params)
+        connections.append(db)
+    print('ready', flush=True)
+    sys.stdin.readline()
+''')
 
 
 class CodexSourcesTest(unittest.TestCase):
@@ -28,9 +49,10 @@ class CodexSourcesTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory(prefix='v3-codex-sources-')
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
-        self.home, self.vault = root / 'codex-home', root / 'Vault'
+        self.home, self.vault, self.runtime = root / 'codex-home', root / 'Vault', root / 'runtime'
         self.home.mkdir()
         self.vault.mkdir()
+        self.runtime.mkdir()
         self.state = self.home / 'state_5.sqlite'
         self.history = self.home / 'thread_history_1.sqlite'
 
@@ -52,27 +74,38 @@ class CodexSourcesTest(unittest.TestCase):
             if wal:
                 db.execute('PRAGMA journal_mode = WAL')
             db.execute('CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, created_at INTEGER,'
-                       ' updated_at INTEGER, source TEXT, title TEXT, cwd TEXT)')
+                       ' updated_at INTEGER, source TEXT, title TEXT, cwd TEXT, originator TEXT)')
         with closing(sqlite3.connect(self.history)) as db, db:
             db.execute('CREATE TABLE thread_items (thread_id TEXT, rollout_ordinal INTEGER,'
                        ' created_at_ms INTEGER, item_json TEXT, item_type TEXT)')
 
-    def sqlite_session(self, sid, *messages, cwd=None, source='cli', rollout=''):
-        with closing(sqlite3.connect(self.state)) as db, db:
-            db.execute('INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?)',
-                       (sid, rollout, EPOCH, EPOCH + 86400, source, 'synthetic title',
-                        str(self.vault if cwd is None else cwd)))
-        with closing(sqlite3.connect(self.history)) as db, db:
-            for ordinal, (role, text) in enumerate(messages):
-                if role == 'user':
-                    kind, item = 'userMessage', {'content': [{'type': 'text', 'text': text}]}
-                else:
-                    kind, item = 'agentMessage', {'text': text}
-                db.execute('INSERT INTO thread_items VALUES (?, ?, ?, ?, ?)',
-                           (sid, ordinal, EPOCH * 1000 + ordinal, json.dumps(item), kind))
+    def sqlite_rows(self, sid, *messages, cwd=None, source='cli', originator='codex_cli_rs', rollout=''):
+        """(threads statements, thread_items statements) for one synthetic thread."""
+        thread = [('INSERT INTO threads (id, rollout_path, created_at, updated_at, source, title, cwd,'
+                   ' originator) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                   (sid, rollout, EPOCH, EPOCH + 86400, source, 'synthetic title',
+                    str(self.vault if cwd is None else cwd), originator))]
+        items = []
+        for ordinal, (role, text) in enumerate(messages):
+            if role == 'user':
+                kind, item = 'userMessage', {'content': [{'type': 'text', 'text': text}]}
+            else:
+                kind, item = 'agentMessage', {'text': text}
+            items.append(('INSERT INTO thread_items VALUES (?, ?, ?, ?, ?)',
+                          (sid, ordinal, EPOCH * 1000 + ordinal, json.dumps(item), kind)))
+        return thread, items
+
+    def sqlite_session(self, sid, *messages, **kwargs):
+        for path, statements in zip((self.state, self.history), self.sqlite_rows(sid, *messages, **kwargs)):
+            with closing(sqlite3.connect(path)) as db, db:
+                for sql, params in statements:
+                    db.execute(sql, params)
 
     def plan(self, **kwargs):
         return sources.plan(self.vault, self.home, **kwargs)
+
+    def show(self, session):
+        return sources.show(self.vault, self.home, session, state=self.runtime)
 
     def snapshot(self):
         return {path.relative_to(self.home): (path.stat().st_mtime_ns,
@@ -183,7 +216,7 @@ class CodexSourcesTest(unittest.TestCase):
             self.assertEqual(result['sqlite'], 'supported')
             self.assertEqual([row['session'] for row in result['pending']], [session_hash(sid)])
             self.assertEqual(result['writes'], 0)
-            digest = sources.show(self.vault, self.home, session_hash(sid))
+            digest = self.show(session_hash(sid))
             self.assertEqual(digest['messages'], [{'role': 'user', 'text': CANARY}])
             self.assertEqual(set(self.home.rglob('*')), files)
             self.assertEqual({path: path.read_bytes() for path in data_files}, before_read)
@@ -273,7 +306,7 @@ class CodexSourcesTest(unittest.TestCase):
         counts = result['counts']
         self.assertEqual((counts['other_vault'], counts['opted_out'], counts['non_interactive']), (2, 2, 3))
         for sid in ('db-optout', 'rollout-optout', 'other-rollout', 'subagent'):
-            self.assertEqual(sources.show(self.vault, self.home, session_hash(sid))['status'], 'unavailable')
+            self.assertEqual(self.show(session_hash(sid))['status'], 'unavailable')
 
     def test_unparseable_rollout_can_fall_back_to_sqlite(self):
         self.schema()
@@ -296,7 +329,7 @@ class CodexSourcesTest(unittest.TestCase):
         before = self.snapshot()
         listed = {row['session']: row for row in self.plan()['pending']}
         self.assertEqual(listed[session_hash('selected')]['human_turns'], 1)
-        result = sources.show(self.vault, self.home, session_hash('selected'))
+        result = self.show(session_hash('selected'))
         self.assertEqual(result['status'], 'digest')
         self.assertEqual([item['role'] for item in result['messages']], ['user', 'assistant'])
         output = json.dumps(result, ensure_ascii=False)
@@ -305,6 +338,90 @@ class CodexSourcesTest(unittest.TestCase):
         for private in ('sample@example.invalid', 'SYNTHETIC_KEY_BODY', CANARY, 'UNSELECTED_MESSAGE'):
             self.assertNotIn(private, output)
         self.assertEqual(self.snapshot(), before)
+
+    def test_live_codex_wal_is_read_without_writing_any_database_file(self):
+        self.schema()
+        sid = 'live-wal'
+        thread, items = self.sqlite_rows(sid, ('user', CANARY), ('assistant', 'Synthetic answer'))
+        writer = subprocess.Popen([sys.executable, '-c', LIVE_WRITER], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, env=inherited_env(), text=True, encoding='utf-8')
+
+        def stop():
+            try:
+                writer.communicate('\n', timeout=60)
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                writer.kill()
+                writer.wait(timeout=60)
+
+        self.addCleanup(stop)
+        writer.stdin.write(json.dumps([[str(self.state), thread], [str(self.history), items]]) + '\n')
+        writer.stdin.flush()
+        self.assertEqual(writer.stdout.readline().strip(), 'ready')
+        files = [path.with_name(path.name + suffix) for path in (self.state, self.history)
+                 for suffix in ('', '-wal', '-shm')]
+        self.assertTrue(all(path.is_file() for path in files))
+
+        def contents():
+            try:
+                return {path.name: path.read_bytes() for path in files}
+            except PermissionError as error:
+                if getattr(error, 'winerror', None) == 33:  # ERROR_LOCK_VIOLATION from the writer
+                    self.skipTest('a Windows byte-range lock blocks reading the live -shm')
+                raise
+
+        before, names = contents(), set(self.home.iterdir())
+        result = self.plan()
+        digest = self.show(session_hash(sid))
+        self.assertEqual(result['sqlite'], 'supported', result.get('sqlite_reason'))
+        self.assertEqual([row['session'] for row in result['pending']], [session_hash(sid)])
+        self.assertEqual(digest['messages'][0], {'role': 'user', 'text': CANARY})
+        self.assertEqual(set(self.home.iterdir()), names)
+        # Not even the read marks in the writer's -shm change.
+        self.assertEqual(contents(), before)
+
+    def test_sqlite_origin_follows_the_rollout_rule(self):
+        # Real threads tables carry an originator column; rows from before it was added are NULL.
+        self.schema()
+        self.sqlite_session('cli-rs', ('user', CANARY))
+        self.sqlite_session('cli-null', ('user', CANARY), originator=None)
+        self.sqlite_session('cli-tui', ('user', CANARY), originator='codex-tui')
+        self.sqlite_session('desktop', ('user', CANARY), source='vscode', originator='Codex Desktop')
+        result = self.plan()
+        self.assertEqual(result['sqlite'], 'supported', result.get('sqlite_reason'))
+        self.assertEqual([row['session'] for row in result['pending']], [session_hash('cli-rs')])
+        self.assertEqual(result['counts']['non_interactive'], 3)
+        for sid in ('cli-null', 'cli-tui', 'desktop'):
+            self.assertEqual(self.show(session_hash(sid))['status'], 'unavailable')
+
+        self.rollout('jsonl-only', ('user', CANARY))
+        with closing(sqlite3.connect(self.state)) as db, db:
+            db.execute('ALTER TABLE threads DROP COLUMN originator')
+        result = self.plan()
+        self.assertEqual(result['sqlite_reason'], 'missing_column')
+        self.assertEqual([row['session'] for row in result['pending']], [session_hash('jsonl-only')])
+
+    def test_unclosed_context_block_cannot_hide_an_opt_out(self):
+        # An opened, never closed context tag hides the rest of the prompt from the digest; an
+        # opt-out in that rest still counts. A closed block's marker does not (see above).
+        self.schema()
+        hidden = '<turn_aborted>\nstill typed by the person [kaydetme]'
+        self.rollout('rollout-hidden', ('user', 'Synthetic prompt'), ('user', hidden))
+        self.sqlite_session('sqlite-hidden', ('user', 'Synthetic prompt'), ('user', hidden))
+        result = self.plan()
+        self.assertEqual(result['pending'], [])
+        self.assertEqual(result['counts']['opted_out'], 2)
+        for sid in ('rollout-hidden', 'sqlite-hidden'):
+            self.assertEqual(self.show(session_hash(sid))['status'], 'unavailable')
+
+    def test_show_needs_the_runtime_state_for_secret_literals(self):
+        (self.runtime / 'secret-patterns.txt').write_text(
+            '# synthetic\nSYNTHETIC-LITERAL-4711\n', encoding='utf-8', newline='\n')
+        self.rollout('literal', ('user', 'value SYNTHETIC-LITERAL-4711 here'))
+        digest = self.show(session_hash('literal'))
+        self.assertEqual(digest['messages'], [{'role': 'user', 'text': 'value [REDACTED] here'}])
+        # The literals live in the runtime folder outside the vault; there is no in-vault default.
+        with self.assertRaises(TypeError):
+            sources.show(self.vault, self.home, session_hash('literal'))
 
 
 if __name__ == '__main__':

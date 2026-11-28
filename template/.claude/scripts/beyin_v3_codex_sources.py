@@ -1,12 +1,13 @@
 """Read-only Codex session discovery for #875. No CLI, hook or persistence entry point.
 
-WAL readers take shared-memory read locks in the existing -shm file and may
-update its read marks. They never write database pages or WAL contents. Live
-writer changes mean before/after byte equality cannot verify this. Each
-database gets its own read snapshot. The reader requires existing WAL sidecars
-and rejects results if new regular files are observed directly in the
-directory containing the databases. If the writer removes sidecars during
-open, SQLite may recreate them before that check.
+Without sidecars a database is opened immutable (no locks, no new files) and its fingerprint
+is compared after the read. With an existing -wal/-shm pair (Codex running, or left behind by
+a crash) it is opened mode=ro&readonly_shm=1: SQLite maps the existing -shm read-only and takes
+only shared locks, so it writes neither database pages nor WAL contents nor the read marks in
+-shm. Each database gets its own read snapshot; while it is open, Codex keeps writing but a
+TRUNCATE/RESTART checkpoint waits for it. Results are rejected if new regular files appear
+directly in the directory holding the databases. If the writer removes the sidecars during
+open, SQLite can still leave an empty -wal behind (never a -shm) before that check.
 """
 from collections import Counter
 from contextlib import ExitStack, closing
@@ -32,7 +33,7 @@ CONTEXT = re.compile(
     r'turn_aborted)>[\s\S]*?(?:</\1>|\Z)'
     r'|(?m:^[ \t]*# AGENTS\.md instructions[^\n]*(?:\n|$))'
 )
-THREAD_COLUMNS = ('id', 'rollout_path', 'created_at', 'updated_at', 'source', 'title', 'cwd')
+THREAD_COLUMNS = ('id', 'rollout_path', 'created_at', 'updated_at', 'source', 'title', 'cwd', 'originator')
 ITEM_COLUMNS = ('thread_id', 'rollout_ordinal', 'created_at_ms', 'item_json', 'item_type')
 
 
@@ -78,6 +79,24 @@ def _fingerprint(info):
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
 
 
+def _without_context(text):
+    """(text without injected context blocks, opt-out inside an unclosed block).
+
+    An unclosed block runs to the end, so it may swallow what the person typed after a stray
+    tag; an opt-out there still counts. A closed block (AGENTS.md, environment) never does.
+    """
+    hidden = False
+
+    def drop(match):
+        nonlocal hidden
+        tag = match.group(1)
+        if tag and not match.group().endswith('</' + tag + '>'):
+            hidden = hidden or OPT_OUT in match.group().casefold()
+        return ''
+
+    return CONTEXT.sub(drop, text).strip(), hidden
+
+
 @dataclass
 class _Session:
     key: str
@@ -92,10 +111,10 @@ class _Session:
 
     def add(self, role, text, state):
         if role == 'user':
-            text = CONTEXT.sub('', text).strip()
+            text, hidden_opt_out = _without_context(text)
             if text.startswith(HARNESS_SYNTHETIC_PROMPT_PREFIXES):
                 return
-            if OPT_OUT in text.casefold():
+            if hidden_opt_out or OPT_OUT in text.casefold():
                 self.status = 'opted_out'
                 self.messages.clear()
                 return
@@ -330,7 +349,9 @@ def _sqlite(home, keys, selected, state):
                 # Recheck sidecars as close as possible to SQLite's first access.
                 if _sqlite_signature(path) != signature:
                     raise _UnsupportedSQLite('changed_during_read')
-                options = '?mode=ro' if signature is None else '?mode=ro&immutable=1'
+                # readonly_shm=1 maps the existing -shm read-only (unix and Windows VFS): no
+                # read marks or wal-index recovery are written into the running Codex's file.
+                options = '?mode=ro&readonly_shm=1' if signature is None else '?mode=ro&immutable=1'
                 db = stack.enter_context(closing(sqlite3.connect(
                     path.absolute().as_uri() + options, uri=True)))
                 db.execute('PRAGMA query_only = ON')
@@ -344,14 +365,17 @@ def _sqlite(home, keys, selected, state):
             rows = users.execute('SELECT ' + ', '.join(THREAD_COLUMNS)
                                  + ' FROM threads ORDER BY created_at, id LIMIT ?', (MAX_FILES + 1,))
             found = {}
-            for raw_id, rollout, created, updated, source, title, cwd in rows:
+            for raw_id, rollout, created, updated, source, title, cwd, originator in rows:
                 if len(found) == MAX_FILES:
                     raise _UnsupportedSQLite('thread_limit')
                 if (not all(isinstance(value, str) for value in (raw_id, rollout, source, title, cwd))
+                        or not isinstance(originator, (str, type(None)))
                         or type(created) is not int or type(updated) is not int):
                     raise _UnsupportedSQLite('unexpected_type')
-                # SQLite has no originator column. Accept only its positive CLI source label.
-                session = _classify(raw_id, cwd, datetime.fromtimestamp(created).date(), source == 'cli', keys)
+                # The rollout and live hook rule: originator codex_cli_rs and source cli. Rows
+                # written before Codex added the column have no originator: ambiguous, silent.
+                interactive = source == 'cli' and originator == 'codex_cli_rs'
+                session = _classify(raw_id, cwd, datetime.fromtimestamp(created).date(), interactive, keys)
                 if session.key in found:
                     raise _UnsupportedSQLite('duplicate_thread')
                 if session.status == 'ready':
@@ -433,12 +457,15 @@ def plan(vault, codex_home, limit=LIST_DEFAULT):
     return result
 
 
-def show(vault, codex_home, session, *, state=None):
-    """Return one bounded, redacted digest for an explicitly selected session hash."""
+def show(vault, codex_home, session, *, state):
+    """Return one bounded, redacted digest for an explicitly selected session hash.
+
+    state is the runtime folder outside the vault (default_state); its secret-patterns.txt
+    literals are masked like in the Claude backfill.
+    """
     if not isinstance(session, str) or not SESSION.fullmatch(session):
         raise ValueError('expected a session hash')
-    directory = Path(state) if state is not None else Path(vault) / 'state'
-    sessions, _, _ = _discover(vault, codex_home, session, directory)
+    sessions, _, _ = _discover(vault, codex_home, session, Path(state))
     for item in sessions:
         if item.key == session:
             return {'status': 'digest', 'session': session, 'messages': item.messages,
